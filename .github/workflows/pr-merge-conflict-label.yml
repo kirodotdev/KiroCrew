@@ -38,7 +38,7 @@ concurrency:
 jobs:
   label:
     name: Sync merge-conflict label
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     timeout-minutes: 10
     steps:
       - name: Sync "merge conflict" label across open pull requests

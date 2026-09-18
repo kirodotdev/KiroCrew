@@ -36,8 +36,8 @@ from kiro_crew.apps.builtins.meetings.backend.domain import translate
 
 @pytest.fixture(autouse=True)
 def _m1_exists(root: Path):
-    """``append_translation`` refuses to write for a meeting that no longer
-    exists (the delete-race guard, so a cancelled worker write cannot recreate
+    """``append_translation`` refuses to write for a meeting that does not
+    exist (the delete-race guard, so a cancelled worker write cannot recreate
     a deleted meeting's directory) — the tests exercising the queue, the store
     and the routes therefore need the meeting's metadata on disk first."""
     store.write_meeting_meta("m1", store.new_meeting_meta("m1", "Test meeting"), root)

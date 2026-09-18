@@ -12,6 +12,9 @@ import pytest
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.cron_script import (
+    _MAX_BAD_OUTPUT_HEAD,
+    _MAX_SCRIPT_STDERR_TAIL,
+    _REDACT_STRADDLE_MARGIN,
     Done,
     Report,
     ScriptContext,
@@ -192,7 +195,7 @@ class TestRunCommandSandboxed:
         fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
         # Sized so the 1000-char tail window starts 2 chars into the credential:
         # a slice-then-redact order keeps "IA" + all 16 B's but drops the
-        # "AK" prefix, so the pattern no longer matches and the tail leaks.
+        # "AK" prefix, so the pattern does not match and the tail leaks.
         padding = "p" * 100
         trailing = "e" * 982
         stderr_text = padding + fake_key + trailing
@@ -514,7 +517,7 @@ class TestRunScriptSandboxed:
 
         If the suffix is sliced first, a credential that straddles the cut
         point loses its leading characters before ``redact`` runs — and the
-        surviving fragment no longer matches any credential pattern, so it
+        surviving fragment does not match any credential pattern, so it
         reaches logs and the persisted ``last_error`` unmasked.
 
         Byte layout (written verbatim, ``os._exit`` so no traceback shifts
@@ -1013,10 +1016,10 @@ class TestMcpToolClient:
         a SCRIPT CRON name itself another session and reach that session's jobs --
         ``cron_remove_all`` over its rows, ``cron_list`` over its contents.
 
-        ``KIROCREW_CLI`` is asserted here too, as history rather than as a live
-        consumer: it was an ambient admin flag that skipped ownership outright,
-        and #6624 deleted the consumer instead of re-grounding it, because nothing
-        in ``src/`` ever set the variable. The deny stays because the CLASS is
+        ``KIROCREW_CLI`` is asserted here too, as an inert subject rather than a
+        live consumer: it is an ambient admin flag that skips ownership outright,
+        and it has no producer in ``src/`` and its consumer is gone, so nothing
+        sets or reads it. The deny stays because the CLASS is
         live -- the next identity key somebody adds is the reason.
 
         Neither existing filter stops it: ``_CRON_ENV_DENY`` covers secrets and
@@ -1079,9 +1082,9 @@ class TestMcpToolClient:
         return the forged session, so a spec's ``env`` block cannot name another
         session even if some future refactor changes which filter drops the key.
 
-        The key under test used to be ``KIROCREW_CLI``, an ambient admin flag
-        whose consumer #6624 deleted outright -- it had no producer in ``src/``,
-        so there was no claim to re-ground. ``KIROCREW_SESSION_KEY`` is the right
+        ``KIROCREW_CLI`` is not the key under test: it is an ambient admin flag
+        with no producer in ``src/`` and no consumer, so there is no claim to
+        re-ground. ``KIROCREW_SESSION_KEY`` is the right
         successor subject precisely because it DOES have legitimate producers
         (the ACP spawn path, this bridge), so for it the filter is load-bearing
         rather than belt-and-braces over a dead name.
@@ -1767,7 +1770,7 @@ class TestRunScriptSandboxedErrorPaths:
         """A credential straddling the 200-char boundary must not leak its head.
 
         Redaction must run on the WHOLE stdout before the head slice: slicing
-        first can cut a secret mid-pattern, so redaction no longer matches and
+        first can cut a secret mid-pattern, so redaction does not match and
         the raw head reaches the diagnostic.
         """
         # Built at runtime so no credential-shaped literal lands in the repo.
@@ -1794,6 +1797,429 @@ class TestRunScriptSandboxedErrorPaths:
         # into the replacement marker, so its head survives the slice.
         assert "[REDACTED:" in result["error"]
         assert padding in result["error"]
+
+    def test_stderr_redaction_input_is_bounded_to_a_window(self, tmp_path, monkeypatch):
+        """The stderr-tail redaction must not copy an unbounded capture.
+
+        ``proc.communicate`` caps neither stream and ``redact_credentials``
+        materialises its base64 runs into a list beside the input, so redacting
+        the WHOLE stderr costs a multiple of an unbounded string: a script
+        streaming gigabytes and then failing would OOM the gateway in redaction
+        that survived capture. Redaction reads a TAIL window of the kept 500
+        chars plus ``_REDACT_STRADDLE_MARGIN``, which keeps the footprint fixed.
+
+        Asserted on redact's INPUT rather than on the output, because the output
+        cannot tell the two apart -- a credential far before the window is
+        truncated away whether or not it was ever scanned. A credential
+        straddling the -500 boundary proves the window overshoot still lets the
+        pattern see it whole.
+        """
+        from kiro_crew import cron_script
+
+        seen: list[int] = []
+        real_redact = cron_script.redact
+
+        def _spy(text: str) -> str:
+            seen.append(len(text))
+            return real_redact(text)
+
+        monkeypatch.setattr(cron_script, "redact", _spy)
+        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        # The -500 cut lands ONE character into the key: slice-then-redact
+        # would leak the 19-char fragment, and a window that failed to reach
+        # back past the cut would leak it the same way.
+        # Newline-separated filler: the window then starts inside an ordinary
+        # short line, so only that line's severed remainder is masked and the
+        # straddling credential is still exercised against the pattern pass.
+        stderr_text = ("n" * 100 + "\n") * 200 + "W" * 300 + fake_key + "X" * 481
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert fake_key not in result["error"]
+        # The discriminator for the straddle: the fragment slice-then-redact
+        # (or an undershooting window) leaves behind.
+        assert fake_key[1:] not in result["error"]
+        assert "credential]" in result["error"]
+        assert seen, "redact was never called on the captured stderr"
+        assert max(seen) <= _MAX_SCRIPT_STDERR_TAIL + _REDACT_STRADDLE_MARGIN
+
+    def test_bad_output_redaction_input_is_bounded_to_a_window(
+        self, tmp_path, monkeypatch
+    ):
+        """The bad-stdout redaction must not copy an unbounded capture either.
+
+        Same denial-of-service shape as the stderr tail, on the ``Bad output``
+        diagnostic path: this cut keeps the HEAD, so its window reaches
+        ``_REDACT_STRADDLE_MARGIN`` PAST the first 200 chars instead of back
+        before them. A credential straddling the 200-char boundary proves the
+        overshoot still lets the pattern see it whole.
+        """
+        from kiro_crew import cron_script
+
+        seen: list[int] = []
+        real_redact = cron_script.redact
+
+        def _spy(text: str) -> str:
+            seen.append(len(text))
+            return real_redact(text)
+
+        monkeypatch.setattr(cron_script, "redact", _spy)
+        fake_key = "AKIA" + "B" * 16  # matches the AWS access-key-id pattern
+        # The 200-char head cut lands 10 chars into the key; the trailing run
+        # pushes the capture far past the window so the bound is discriminating.
+        stdout_text = "p" * 190 + fake_key + "e" * 30000
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.communicate.return_value = (stdout_text, "")
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert fake_key not in result["error"]
+        # The head of the replacement marker survives the slice, proving the
+        # straddling key was whole inside the window when redaction ran.
+        assert "[REDACTED:" in result["error"]
+        assert seen, "redact was never called on the captured stdout"
+        assert max(seen) <= _MAX_BAD_OUTPUT_HEAD + _REDACT_STRADDLE_MARGIN
+
+    def test_grant_value_longer_than_the_margin_is_still_scrubbed(self, tmp_path):
+        """The grant scrub must read the WHOLE capture, not the redact window.
+
+        A vault value has no shape, so ``_scrub_grant_values`` matches it only
+        whole (``value in text``): if the scrub ran on the bounded window, a
+        granted value LONGER than ``_REDACT_STRADDLE_MARGIN`` straddling the
+        window's far edge would lose its head, stop matching, and its tail --
+        which no pattern recognises either -- would reach the persisted
+        ``last_error`` verbatim. The scrub is exact-substring replacement, so
+        whole-capture input carries none of the memory amplification the
+        redact window exists to bound.
+        """
+        # Longer than the margin, and shaped like nothing redact recognises,
+        # so only the scrub stands between it and the diagnostic.
+        secret_value = "grantval-" * 700  # 6300 chars > _REDACT_STRADDLE_MARGIN
+        assert len(secret_value) > _REDACT_STRADDLE_MARGIN
+        # Ends 100 chars before the capture's end: it STARTS well before the
+        # stderr window's far edge (window = last 4596 chars), so a scrub that
+        # only saw the window would see a headless fragment and skip it, and
+        # the fragment's tail would sit inside the kept 500 chars.
+        stderr_text = "n" * 2000 + secret_value + "X" * 100
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script._read_script_body",
+            return_value=b"def run(ctx):\n    return None\n",
+        ), patch(
+            "kiro_crew.cron_script._secret_env_precheck",
+            return_value=({"TOKEN": secret_value}, None),
+        ), patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed(
+                "/f.py:run", "j1", "", secret_env={"TOKEN": "vault:t"},
+                secret_env_pin="pin",
+            )
+        assert result["status"] == "error"
+        # No recognisable run of the value survives -- neither the whole value
+        # nor the fragment a window-scoped scrub would have left in the tail.
+        assert "grantval-" * 20 not in result["error"]
+        assert "[redacted-grant-value]" in result["error"]
+
+    def test_pem_opened_before_the_tail_window_is_still_masked(self, tmp_path):
+        """A PEM block spanning the whole tail window must not leak body lines.
+
+        A PEM block has no length ceiling, so the straddle margin cannot cover
+        it: a block whose ``-----BEGIN `` line falls before the window start
+        loses the anchor the pattern needs, and its body lines inside the
+        window -- shaped like nothing else redact recognises -- would reach
+        the persisted ``last_error`` verbatim. ``_pem_safe_tail_window``
+        tracks open-block state across the discarded prefix and masks the
+        retained bytes through the END line.
+        """
+        label = "OPENSSH PRIVATE" + " KEY"
+        # Body lines deliberately lowercase-only: they trip neither the
+        # base64-run pass nor any anchored pattern, so ONLY the open-block
+        # tracking stands between them and the diagnostic.
+        body = ("keybodyline" * 5 + "\n") * 120  # ~6.7KB > 500 + margin
+        pem = f"-----BEGIN {label}-----\n{body}-----END {label}-----\n"
+        stderr_text = pem + "trailing diagnostic context"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "keybodyline" not in result["error"]
+        assert "credential]" in result["error"]
+        # Post-block content survives: the mask reaches the END line, not the
+        # whole report.
+        assert "trailing diagnostic context" in result["error"]
+
+    def test_pem_that_never_closes_masks_the_whole_tail(self, tmp_path):
+        """An unterminated over-window PEM yields the tag, not body lines."""
+        label = "RSA PRIVATE" + " KEY"
+        body = ("keybodyline" * 5 + "\n") * 120
+        stderr_text = f"-----BEGIN {label}-----\n{body}"  # no END marker
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "keybodyline" not in result["error"]
+        assert "credential]" in result["error"]
+
+    def test_closed_pem_before_the_window_does_not_mask_the_tail(self, tmp_path):
+        """A block that CLOSED in the discarded prefix must not cost the tail.
+
+        The open-block test is last-BEGIN vs last-END order; a closed block
+        followed by ordinary diagnostics is the common case and must report
+        those diagnostics whole.
+        """
+        label = "EC PRIVATE" + " KEY"
+        pem = f"-----BEGIN {label}-----\nshortbody\n-----END {label}-----\n"
+        stderr_text = pem + ("n" * 80 + "\n") * 75 + "REAL_TERMINAL_DIAGNOSIS"
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "REAL_TERMINAL_DIAGNOSIS" in result["error"]
+
+    def test_foreign_end_marker_does_not_close_an_open_key_block(self, tmp_path):
+        """A certificate footer inside an open key block must not close it.
+
+        END markers pair by LABEL: ``-----END CERTIFICATE-----`` interleaved
+        inside an open ``RSA PRIVATE KEY`` block is body text. A tracker that
+        paired any BEGIN with any END would treat the key as closed and hand
+        its remaining body lines to the pattern pass anchor-less.
+        """
+        label = "RSA PRIVATE" + " KEY"
+        stderr_text = (
+            f"-----BEGIN {label}-----\n"
+            + ("keybodyline\n" * 30)
+            + "-----END CERTIFICATE-----\n"
+            + ("keybodyline" * 5 + "\n") * 120  # pushes the window inside the block
+            + f"-----END {label}-----\n"
+            + "trailing diagnostic context"
+        )
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "keybodyline" not in result["error"]
+        assert "trailing diagnostic context" in result["error"]
+
+    def test_severed_single_line_run_is_masked_not_reported(self, tmp_path):
+        """A single-line token severed by the window start leaks no suffix.
+
+        Every single-line credential shape is whitespace-free, so when the
+        window boundary lands mid-line the possible credential tail is the
+        window's leading non-whitespace run. All-same-letter content is the
+        discriminator: it trips no pattern (no mixed case, no digits, no
+        anchor), so only the severed-run rule stands between it and the
+        persisted ``last_error``.
+        """
+        stderr_text = "warmup line\n" + "Z" * 6000 + "\n" + ("post-token diagnostic\n" * 10)
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "Z" * 40 not in result["error"]
+        assert "credential]" in result["error"]
+        assert "post-token diagnostic" in result["error"]
+
+    def test_whitespace_after_the_cut_does_not_unmask_the_severed_line(self, tmp_path):
+        """A severed line is masked whole, wherever the credential sits on it.
+
+        The cut can land inside whitespace that PRECEDES the credential (an
+        indented value, a wrapped ``Authorization:`` header), so a rule that
+        masked only a leading non-whitespace run would see whitespace at the
+        window start, match nothing, and hand the raw token through. The
+        whole in-window remainder of the severed line is masked instead.
+        """
+        stderr_text = (
+            ("n" * 100 + "\n") * 2
+            + "authheader:"
+            + " " * 60
+            + "Z" * 4200
+            + "\n"
+            + ("post diagnostic\n" * 22)
+        )
+        # Geometry check: the cut lands INSIDE the whitespace run that
+        # precedes the token, the exact shape a leading-run rule misses.
+        window_span = 500 + _REDACT_STRADDLE_MARGIN
+        cut = len(stderr_text.rstrip()) - window_span
+        ws_start = stderr_text.index("authheader:") + len("authheader:")
+        assert ws_start <= cut < ws_start + 60
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "Z" * 40 not in result["error"]
+        assert "post diagnostic" in result["error"]
+
+    def test_begin_marker_straddling_the_cut_fails_closed(self, tmp_path):
+        """A BEGIN marker split by the cut must not leak the block body.
+
+        The prefix scan cannot see the marker (incomplete before the cut) and
+        the window's pattern pass cannot either (its anchor is destroyed), so
+        the label is unknowable from either side; the window fails closed to
+        the tag alone.
+        """
+        label = "RSA PRIVATE" + " KEY"
+        key_open = f"-----BEGIN {label}-----"
+        body = ("b" * 64 + "\n") * 68  # ~4.4KB: END stays inside the window
+        stderr_text = (
+            ("n" * 100 + "\n") * 50
+            + key_open
+            + "\n"
+            + body
+            + f"-----END {label}-----\n"
+            + ("c" * 11 + "\n") * 10
+        )
+        # Geometry check: the cut lands INSIDE the BEGIN marker line.
+        window_span = 500 + _REDACT_STRADDLE_MARGIN
+        cut = len(stderr_text.rstrip()) - window_span
+        marker_at = stderr_text.index(key_open)
+        assert marker_at <= cut < marker_at + len(key_open)
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "b" * 40 not in result["error"]
+        assert "credential]" in result["error"]
+
+    def test_begin_marker_after_the_cut_on_the_severed_line_keeps_its_block_masked(
+        self, tmp_path
+    ):
+        """Masking the severed line must not delete a BEGIN anchor it carries.
+
+        A key printed inline in an error string (``Error: ... -----BEGIN
+        ...``) puts the BEGIN marker AFTER the cut on the severed line. A rule
+        that masked the severed line as an opaque unit would delete the anchor
+        with the line while the key body survives in the remainder, unmatched
+        by the pattern pass. The marker walk continues through the severed
+        segment, so the block is masked through its labelled END like any
+        other open block.
+        """
+        label = "RSA PRIVATE" + " KEY"
+        key_open = f"-----BEGIN {label}-----"
+        body = ("b" * 64 + "\n") * 68
+        stderr_text = (
+            ("n" * 100 + "\n") * 44
+            + "Error: dumping key "
+            + key_open
+            + "\n"
+            + body
+            + f"-----END {label}-----\n"
+            + ("c" * 11 + "\n") * 9
+        )
+        # Geometry check: the cut lands inside the prose BEFORE the marker.
+        window_span = 500 + _REDACT_STRADDLE_MARGIN
+        cut = len(stderr_text.rstrip()) - window_span
+        assert stderr_text.index("Error:") <= cut < stderr_text.index(key_open)
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "b" * 40 not in result["error"]
+        assert "c" * 11 in result["error"]
+
+    def test_inline_prefixed_begin_marker_split_by_the_cut_fails_closed(self, tmp_path):
+        """Inline prose before a marker must not defeat the severed-BEGIN rule.
+
+        A key printed mid-sentence (``Error: dumping key -----BEGIN ...``)
+        with the cut landing INSIDE the marker leaves an inline prefix before
+        the partial marker on the pre-cut line, so a check that requires the
+        LINE to start with the marker never fires while the marker walk sees
+        no complete marker on either side. The rule inspects the pre-cut
+        line's SUFFIX instead, so this shape fails closed to the tag.
+        """
+        label = "RSA PRIVATE" + " KEY"
+        key_open = f"-----BEGIN {label}-----"
+        body = ("b" * 64 + "\n") * 68
+        stderr_text = (
+            ("n" * 100 + "\n") * 44
+            + "Error: dumping key "
+            + key_open
+            + "\n"
+            + body
+            + f"-----END {label}-----\n"
+            + ("c" * 11 + "\n") * 10
+        )
+        # Geometry check: the cut lands INSIDE the marker, after inline prose.
+        window_span = 500 + _REDACT_STRADDLE_MARGIN
+        cut = len(stderr_text.rstrip()) - window_span
+        marker_at = stderr_text.index(key_open)
+        assert marker_at < cut < marker_at + len(key_open)
+        mock_proc = MagicMock()
+        mock_proc.returncode = 1
+        mock_proc.communicate.return_value = ("", stderr_text)
+        with patch(
+            "kiro_crew.cron_script.resolve_script_path", return_value=("/f.py", "run")
+        ), patch("kiro_crew.cron_script.wrap_argv", return_value=(["true"], None)), patch(
+            "subprocess.Popen", return_value=mock_proc
+        ):
+            result = run_script_sandboxed("/f.py:run", "j1", "")
+        assert result["status"] == "error"
+        assert "b" * 40 not in result["error"]
+        assert "credential]" in result["error"]
 
 
 class TestMcpCronHandlerPaths:
@@ -2236,3 +2662,95 @@ class TestPostKillDrainTimeoutHardening:
         }
         mock_proc.stdout.close.assert_called_once()
         mock_proc.stderr.close.assert_called_once()
+
+
+class TestCronSpawnTiersAreAligned:
+    """The two cron spawn paths must ask for the SAME sandbox tier.
+
+    A script body is agent-written and a command body is a fixed string the vet
+    already narrowed, so the script path is the HIGHER-capability surface of the
+    two. It nonetheless ran ``standard`` while the command path ran ``cc``,
+    leaving ``~/.aws/credentials``, the SSO cache, ``~/.kube``, ``~/.netrc``,
+    ``~/.git-credentials``, ``~/.npmrc`` and ``~/.pypirc`` readable by the more
+    capable child. These tests pin the alignment rather than the literal, so a
+    later change that moves ONE path re-fails here instead of silently
+    re-opening the gap.
+    """
+
+    def _capture_mode(self, monkeypatch):
+        """Record the ``mode`` each wrap_argv call asks for."""
+        seen: list[str] = []
+
+        def _fake(argv, **kwargs):
+            seen.append(kwargs.get("mode", "<default>"))
+            return (list(argv), None)
+
+        monkeypatch.setattr("kiro_crew.cron_script.wrap_argv", _fake)
+        return seen
+
+    def test_an_ungranted_script_asks_for_the_same_tier_as_a_command(
+        self, tmp_path, monkeypatch, posix_test_shell
+    ):
+        """The alignment itself: neither path may be wider than the other."""
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._resolve_command_shell", lambda: posix_test_shell
+        )
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True)
+        script = crons_dir / "aligned.py"
+        script.write_text("def run(ctx):\n    return None\n")
+
+        script_modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-align", timeout=10)
+
+        command_modes = self._capture_mode(monkeypatch)
+        run_command_sandboxed("true", timeout=10)
+
+        assert script_modes, "the script path never reached wrap_argv"
+        assert command_modes, "the command path never reached wrap_argv"
+        # The ungranted script spawn is the LAST wrap_argv call the script path
+        # makes (a shell probe may precede it); same for the command path.
+        assert script_modes[-1] == command_modes[-1]
+
+    def test_an_ungranted_script_is_not_handed_the_wide_profile(self, tmp_path, monkeypatch):
+        """``standard`` leaves every credential store open — never the default here."""
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True)
+        script = crons_dir / "narrow.py"
+        script.write_text("def run(ctx):\n    return None\n")
+
+        modes = self._capture_mode(monkeypatch)
+        run_script_sandboxed(f"{script}:run", job_id="job-narrow", timeout=10)
+
+        assert modes[-1] == "cc"
+        assert "standard" not in modes
+
+    def test_a_secret_granted_script_still_takes_the_narrowest_tier(self, tmp_path, monkeypatch):
+        """A grant is the operator-approved route, and it tightens rather than widens.
+
+        This is the escape hatch a script needing a host credential uses, so it
+        must keep running ``strict`` — the alignment above must not have widened
+        the granted branch to ``cc``.
+        """
+        monkeypatch.setattr("kiro_crew.cron_script.Path.home", lambda: tmp_path)
+        crons_dir = tmp_path / ".kirocrew" / "crons"
+        crons_dir.mkdir(parents=True)
+        script = crons_dir / "granted.py"
+        script.write_text("def run(ctx):\n    return None\n")
+
+        modes = self._capture_mode(monkeypatch)
+        monkeypatch.setattr(
+            "kiro_crew.cron_script._secret_env_precheck",
+            lambda *a, **k: ({"TOKEN": "v"}, ""),
+        )
+        run_script_sandboxed(
+            f"{script}:run",
+            job_id="job-granted",
+            timeout=10,
+            secret_env={"TOKEN": "vault:t"},
+            secret_env_pin="pin",
+        )
+
+        assert modes[-1] == "strict"

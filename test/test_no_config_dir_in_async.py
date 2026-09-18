@@ -1,4 +1,4 @@
-"""Regression test for #1057: no config_dir() inside async functions.
+"""No config_dir() inside async functions.
 
 config_dir() performs start-of-process maintenance (mkdir, breadcrumb refresh,
 ungated-archive sweep with shutil.rmtree) on every call. Calling it from an
@@ -16,7 +16,7 @@ from pathlib import Path
 
 SRC = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
 
-# Files that historically had config_dir() inside async functions (issue #1057).
+# Files the AST guard checks for config_dir() calls inside async functions.
 _ASYNC_CHECKED_FILES = [
     "dashboard/handlers/files.py",
     "dashboard/chat_runner.py",
@@ -31,7 +31,7 @@ _ASYNC_CHECKED_FILES = [
 
 
 class TestNoConfigDirInAsync:
-    """config_dir() must not be called inside async functions (#1057)."""
+    """config_dir() must not be called inside async functions."""
 
     def test_update_layout_channel_helpers_never_maintain(self) -> None:
         """The channel read/write must use ``data_home()``, not ``config_dir()``.
@@ -41,8 +41,8 @@ class TestNoConfigDirInAsync:
         update check and ``set_release_channel()`` from ``POST
         /api/update/channel``. ``config_dir()`` is resolve-and-maintain (breadcrumb
         refresh + a leftover-archive sweep that can ``shutil.rmtree``), so using it
-        there would run a destructive sweep on the event loop — #1057 through an
-        indirect call chain, which is exactly how it would come back.
+        there would run a destructive sweep on the event loop, reached through an
+        indirect call chain.
         """
         tree = ast.parse((SRC / "platform" / "update_layout.py").read_text(encoding="utf-8"))
         # AST, not a substring scan: the module's docstrings NAME config_dir to

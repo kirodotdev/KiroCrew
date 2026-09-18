@@ -160,7 +160,7 @@ class TestPersistKiroWindowsUsesSharedHelper:
         assert squatter.is_dir(), "the helper must not have touched the squatter"
 
     def test_persist_creates_the_parent_and_keeps_umask_default_mode(self):
-        """The helper owns the ``mkdir`` the site used to perform by hand."""
+        """The helper owns the ``mkdir`` that creates the site's parent."""
         path = mr._kiro_windows_cache_path()
 
         mr.persist_kiro_windows()

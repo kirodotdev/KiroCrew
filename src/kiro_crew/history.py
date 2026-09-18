@@ -20,7 +20,7 @@ import re
 import threading
 import time as _time
 import uuid
-from collections.abc import Callable, Container, Iterator, Sequence
+from collections.abc import Callable, Container, Iterable, Iterator, Sequence
 from collections.abc import Set as AbstractSet
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -28,6 +28,7 @@ from typing import Any, Literal, overload
 
 from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
+from kiro_crew.chat_attachments import persist_inline_images, same_text_modulo_images
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.executors import run_in_embed_pool  # noqa: F401 - facade re-export
 from kiro_crew.frontmatter import (  # noqa: F401 - facade re-exports
@@ -118,7 +119,7 @@ from kiro_crew.llm_helpers import (  # noqa: F401 - facade re-exports
     stream_and_collect,
     stream_and_collect_json,
 )
-from kiro_crew.messaging.link import canonical_key, legacy_key
+from kiro_crew.messaging.link import canonical_key, is_legacy_slack_key, legacy_key
 from kiro_crew.preview_text import strip_markdown_preview  # noqa: F401 - facade re-export
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel  # noqa: F401 - facade re-export
@@ -178,6 +179,12 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "autocompact_pct",
         "mode",
         "workspace",
+        # Slot-owned so ABSENCE can retract it. A crew rebound from a named
+        # memory store back to the default writes no key at all, and an unowned
+        # key is carried forward forever by ``carry_unowned_metadata`` -- so the
+        # rebind would be un-erasable and the session would keep consolidating
+        # into the silo it left.
+        "memory_store",
         "project",
         # Remote-execution binding: owned by the slot, so clearing it in memory
         # clears it on disk. Left unowned, a rebind or an unbind would be undone
@@ -194,11 +201,16 @@ SLOT_OWNED_META_KEYS: frozenset[str] = frozenset(
         "folder_id",
         "app",
         "artifact",
-        # Durable copy of the slot's held /note lines (issue #4093). Owned, not
+        # Durable copy of the slot's held /note lines. Owned, not
         # monotonic: the hold is written while notes are held and must be
         # CLEARED by absence once the flush delivers them — carried forward
         # instead, a restart would re-deliver a note the user already saw.
         "deferred_notes",
+        # Durable copy of the queued user prompts. Owned, not monotonic: the
+        # value is written while prompts wait and must be CLEARED by absence
+        # once the drain consumes them — carried forward instead, a restart
+        # would hand back a prompt whose turn already ran.
+        "queued_prompts",
         "pinned",
         "color_index",
         "color_hex",
@@ -922,6 +934,13 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     When *retention_days* is None, the value is resolved from config
     (``session.archive_retention_days``).  A negative value disables cleanup
     entirely — the user manages archive deletion manually.
+
+    The same pass expires closed SESSION LEDGERS, on the same setting and inside
+    the same throttle (:func:`kiro_crew.crew_log.store.sweep_expired`). One switch
+    governs both because a session's message bodies live in its crew log now: a
+    build that expired the transcript archive while the crew log it points into grew
+    forever would keep the larger half of the same history indefinitely, and a
+    second setting for it would be a second thing to find and turn off.
     """
     global _last_cleanup
 
@@ -946,20 +965,53 @@ def _cleanup_old_archives(retention_days: int | None = None, base: Path | None =
     if retention_days < 0:
         return 0  # cleanup disabled
     adir = _archive_dir(base)
-    if not adir.exists():
-        return 0
     cutoff = now - retention_days * 86400
     removed = 0
-    for p in adir.glob("*.jsonl"):
-        try:
-            if p.stat().st_mtime < cutoff:
-                p.unlink()
-                removed += 1
-        except OSError:
-            pass
+    # An absent archive directory is not a reason to skip the crew log half: a
+    # session can hold a crew log long before anything of its transcript is
+    # archived, so returning here would leave that half uncollected until the
+    # first archive ever written.
+    if adir.exists():
+        for p in adir.glob("*.jsonl"):
+            try:
+                if p.stat().st_mtime < cutoff:
+                    p.unlink()
+                    removed += 1
+            except OSError:
+                pass
     if removed:
         logger.info("Cleaned %d expired archive files (>%dd)", removed, retention_days)
+    _cleanup_expired_ledgers(retention_days, now)
     return removed
+
+
+def _cleanup_expired_ledgers(retention_days: int, now: float) -> None:
+    """Expire closed the sessions' logs, best-effort, never at the transcript's cost.
+
+    Off the event loop, which is what makes the added filesystem work safe rather
+    than merely cheap: the only caller is ``_cleanup_old_archives``, reached from
+    ``_archive_lines`` on the rotation path, and that path runs in the dashboard's
+    flush executor thread (see ``chat_persistence``, which documents
+    ``_save_slot_to_history`` running there) or on the shutdown save. The sweep
+    reads a header and a bounded tail per closed unit, inside the hourly throttle
+    the archive cleanup already has, so the cost is once an hour in a worker rather
+    than per delete on the loop.
+
+    Imported lazily and swallowed on failure for one reason each. Lazily because
+    this module is imported on every startup while the crew log store is only
+    reachable behind ``KIROCREW_CREW_LOG``, and a launch without the flag
+    should not pay for the import. Swallowed because the caller is on the
+    transcript ARCHIVE path: a crew log tree that cannot be swept is a disk-space
+    problem, and letting it raise here would turn that into a failure to archive
+    the transcript, which loses history rather than retaining too much of it. The
+    sweep logs its own counts.
+    """
+    try:
+        from kiro_crew.crew_log.store import sweep_expired
+
+        sweep_expired(retention_days, now=now)
+    except Exception:
+        logger.debug("The session's log retention sweep failed", exc_info=True)
 
 
 def transcript_sort_key(ts: str) -> tuple[int, float]:
@@ -1016,7 +1068,7 @@ def metadata_now_iso() -> str:
     offset, so a reader (the browser, or a merge running on another host) has no
     way to know which timezone produced it -- the dashboard then renders it
     verbatim, showing a Slack/channel session's creation time in UTC instead of
-    the viewer's local zone (issue #1948). Resolving to an absolute instant with
+    the viewer's local zone. Resolving to an absolute instant with
     ``astimezone()`` records the offset, matching the message-row convention in
     :func:`monotonic_transcript_ts` so both the metadata line and the rows below
     it speak the same, unambiguous format.
@@ -1029,7 +1081,7 @@ def mint_row_mid() -> str:
 
     The ONE place the ``meta.mid`` format is spelled. ``_ChatSlot.append`` mints
     the id for a row that enters a dashboard window, and the dashboard
-    dual-writers (``cron_inject``, ``workflow_inject``, ``crew_chat``) read it back
+    dual-writers (``cron_inject``, ``workflow_inject``) read it back
     off that append to stamp their durable copy (``row_mid``). A writer with no
     slot to mint from -- a channel dispatcher persisting a turn it ran on its own
     session -- has to mint the id itself, and it must produce the SAME shape,
@@ -1165,6 +1217,24 @@ def transcript_stems(key: str) -> tuple[str, ...]:
         if legacy not in stems:
             stems.append(legacy)
     return tuple(stems)
+
+
+def transcript_lock_stems(key: str) -> tuple[str, ...]:
+    """Canonical and bare physical lock stems for either Slack spelling.
+
+    Unlike :func:`transcript_stems`, which preserves the caller's exact path
+    identity for ownership decisions, this helper is deliberately symmetric:
+    ``slack:<ts>``, ``slack_<ts>``, and bare ``<ts>`` all lock the same two
+    sidecars. Non-Slack keys have one lock stem.
+    """
+    bare = legacy_key(canonical_key(key))
+    if bare is None and key.startswith("slack_"):
+        candidate = key[len("slack_") :]
+        if is_legacy_slack_key(candidate):
+            bare = candidate
+    if bare is None:
+        return (_safe_key(key),)
+    return (_safe_key(f"slack:{bare}"), _safe_key(bare))
 
 
 def _redact_at_write_boundary(role: str, content: str) -> str:
@@ -1524,14 +1594,32 @@ class ConversationLog:
         fut.add_done_callback(lambda f: f.exception())
 
     @contextlib.contextmanager
-    def _locked(self, key: str) -> Iterator[None]:
-        """Hold BOTH the in-process RLock and a cross-process advisory flock.
+    def locked_stems(self, stems: Iterable[str]) -> Iterator[None]:
+        """Hold exact physical transcript stems in deterministic order."""
+        with contextlib.ExitStack() as locks:
+            for stem in sorted(set(stems)):
+                locks.enter_context(self._locked_stem(stem))
+            yield
 
-        Serializes create/append/rotate/rewrite/metadata mutations of a single
-        session file against every other writer — threads in this process (via
-        the RLock) *and* other processes such as subagents, crons, and the CLI
-        (via the ``flock`` on the sidecar lock file). Reentrant: a nested
-        ``_locked`` for the same key on the same thread reuses the held fd.
+    @contextlib.contextmanager
+    def _locked(self, key: str) -> Iterator[None]:
+        """Hold every physical lock that can represent one transcript.
+
+        Slack's canonical, sanitized, and pre-migration bare spellings all map
+        to one sorted lock set. Target-path resolution must happen inside this
+        context so a waiter cannot publish a filename choice made before a
+        concurrent restore.
+        """
+        with self.locked_stems(transcript_lock_stems(key)):
+            yield
+
+    @contextlib.contextmanager
+    def _locked_stem(self, key: str) -> Iterator[None]:
+        """Hold the in-process and cross-process locks for one physical stem.
+
+        Callers use :meth:`_locked`, which acquires every stable alias stem in
+        deterministic order. This primitive stays separate so that alias locking
+        never resolves a target path before all sidecars are held.
         """
         # Fail loud (strict) or diagnose (production) if a mutation reached the
         # lock ON the event loop — the un-offloaded-call-site guard (see
@@ -1633,13 +1721,13 @@ class ConversationLog:
                     # Depth hit 0. ``platform_compat.release_lock`` (flock
                     # LOCK_UN) and ``os.close`` are both ``blocking: true``
                     # syscalls, so run them off the event loop — a wedged
-                    # descriptor must never freeze chat/WS/heartbeat (the
-                    # finding this addresses). We DO NOT pop the state here:
+                    # descriptor must never freeze chat/WS/heartbeat. We DO NOT
+                    # pop the state here:
                     # the entry stays alive with ``held``=1 so a sequential
                     # same-key re-acquire before the release runs reuses the
-                    # still-held flock instead of ``flock``-ing a fresh fd (the
-                    # regression that spuriously raised HistoryLockTimeout under
-                    # executor load). The deferred release re-checks depth and
+                    # still-held flock instead of ``flock``-ing a fresh fd, which
+                    # would spuriously raise HistoryLockTimeout under executor
+                    # load. The deferred release re-checks depth and
                     # its own fd under the guard, so a reuse cancels it.
                     self._schedule_flock_release(key, lock_key, state[0])
 
@@ -1733,6 +1821,48 @@ class ConversationLog:
     def has_log(self, key: str) -> bool:
         """Return True if a conversation log file exists for *key*."""
         return self._path(key).exists()
+
+    def has_messages(self, key: str) -> bool:
+        """Return True if *key*'s transcript holds at least one message row.
+
+        A transcript file is created by the first METADATA write -- a title,
+        an agent pick, a model pick -- long before any message is exchanged,
+        so :meth:`has_log` answers "does a file exist", not "was anything
+        said". Callers deciding whether a conversation already carries V1
+        history (the private-memory admission seam) need the second question:
+        a metadata-only file is an empty conversation.
+
+        Fails CLOSED, because that seam grants permanent private ownership on
+        a False: an absent file is empty, but a file that exists and cannot be
+        read raises ``OSError`` rather than reading as empty, and a record that
+        cannot be delivered intact or is not valid JSON counts as content --
+        unverifiable history is still history. The forgiving tail readers are
+        not used here for that reason.
+        """
+        from kiro_crew.jsonl_util import UnreadableRecord, strict_records
+
+        path = self._path(key)
+        with self._locked(key):
+            try:
+                handle = open(path, "rb")
+            except FileNotFoundError:
+                return False
+            with handle:
+                try:
+                    for record in strict_records(handle, path):
+                        line = record.strip()
+                        if not line:
+                            continue
+                        try:
+                            data = json.loads(line)
+                        except ValueError:
+                            return True
+                        if isinstance(data, dict) and data.get("_type") == "metadata":
+                            continue
+                        return True
+                except UnreadableRecord:
+                    return True
+        return False
 
     def session_mtime(self, key: str) -> float | None:
         """Return the session file's mtime, or None if it can't be stat'd.
@@ -1912,6 +2042,36 @@ class ConversationLog:
             logger.warning("set_cached_intent_summary: lock timeout, not writing key=%s", key)
             return False
 
+    def _persist_inline_attachments(self, key: str, role: str, content: str) -> str:
+        """*content* with the images it references copied into session storage.
+
+        The write boundary for inline images, mirroring
+        :func:`_redact_at_write_boundary`: this is where a message's text becomes
+        a durable row, so it is where a referenced image has to stop being a path
+        into someone else's temp directory. The agent scratch dir the picture
+        usually lives in is reclaimed when the agent process dies, so without
+        this the transcript keeps the reference long after the bytes are gone.
+        See :mod:`kiro_crew.chat_attachments` for the copy contract.
+
+        Gated on ``role != "user"``, the same gate the redaction boundary uses:
+        an inline image is something the agent produced, and a path the user
+        typed names a file of their own that this must not duplicate.
+
+        MUST be called under ``_locked(key)``. ``delete_session`` reclaims the
+        attachments directory under that same lock, so a copy made outside it can
+        be deleted between the copy and the append -- persisting a row that names
+        a file already gone, which is the exact defect this exists to remove. The
+        lock therefore costs one bounded file copy inside the critical section;
+        the dashboard slot save already holds it across a whole-transcript
+        read-modify-write, so this is in family. What one call can do is bounded
+        per message by :mod:`kiro_crew.chat_attachments`, so the section cannot be
+        held for an unbounded time.
+        """
+        if role == "user" or "![" not in content:
+            return content
+        path = self._path(key)
+        return persist_inline_images(content, sessions_dir=path.parent, stem=path.stem)
+
     def append(
         self,
         key: str,
@@ -1950,13 +2110,18 @@ class ConversationLog:
         correct agent later.  (Has no effect if the file already exists;
         use :meth:`update_metadata` to change the agent after creation.)
         """
-        path = self._path(key)
         # Serialize the create-if-missing + append + rotate against concurrent
         # rewrites (compaction / consolidation) so no write is lost and readers
-        # never observe a torn file. ``_locked`` also takes a cross-process
-        # advisory flock so a subagent / cron / CLI writing the SAME session
-        # file in another process can't interleave and lose this append.
+        # never observe a torn file. ``_locked`` also takes every stable
+        # cross-process alias lock so a subagent / cron / CLI writing the same
+        # logical session in another process cannot interleave or split its
+        # canonical and pre-migration files.
         with self._locked(key):
+            # Inside the lock, so a concurrent ``delete_session`` cannot reclaim
+            # the attachment between the copy and this row naming it. Idempotent,
+            # so the re-entrant call from ``append_if_absent`` is a no-op.
+            content = self._persist_inline_attachments(key, role, content)
+            path = self._path(key)
             created_with_tab_id = False
             created_now = False
             if not path.exists():
@@ -1987,7 +2152,7 @@ class ConversationLog:
                 # created provably holds no rows yet, so it is not consulted.
                 #
                 # ``astimezone()`` resolves the clock to an absolute instant
-                # before it is stored. This used to record a bare local wall
+                # before it is stored. A bare local wall
                 # clock, which repeats for an hour when daylight saving ends and
                 # cannot be ordered against the offset-aware rows the dashboard
                 # writes into this same file.
@@ -2065,16 +2230,30 @@ class ConversationLog:
         What counts as "already persisted" depends on whether the caller holds
         an identity. Without *mid*, any row with the same ``(role, content)``
         does — body equality is all an id-less writer can check. WITH *mid*,
-        only a body-equal row carrying the SAME ``meta.mid`` does: that row is
-        this very message, landed by the slot save or an earlier attempt of
-        this write. A body-equal row under another id (or none) is a DIFFERENT
-        occurrence that happens to repeat the text — an id-carrying twin of an
-        earlier injection, or a pre-id legacy row — and skipping on it would
-        drop THIS occurrence's only durable copy: the in-memory window is lost
-        on restart, so nothing would replay the newer message.
+        a same-role row carrying the SAME ``meta.mid`` AND a corroborating
+        body does: equal, or equal modulo preserved images
+        (:func:`same_text_modulo_images`). That row is this very message,
+        landed by the slot save or an earlier attempt of this write. The
+        image allowance is there because the slot save rewrites an inline
+        image to its stored copy, and if the agent's scratch file is gone by
+        the time this append runs, the rewrite here fails open to the
+        original path — strict body equality would miss the row and append a
+        duplicate under the same id naming a dead file. The corroboration
+        itself stays required because ``meta.mid`` is caller-suppliable, so a
+        bare id equality could pair two genuinely distinct messages. A
+        body-equal row under another id (or none) is a DIFFERENT occurrence
+        that happens to repeat the text — an id-carrying twin of an earlier
+        injection, or a pre-id legacy row — and skipping on it would drop
+        THIS occurrence's only durable copy: the in-memory window is lost on
+        restart, so nothing would replay the newer message.
         """
         supplied_mid = mid if isinstance(mid, str) and mid else None
         with self._locked(key):
+            # Rewritten HERE, not left to ``append``: the id-less comparison
+            # below is against what is already on disk, which carries
+            # rewritten paths. Comparing the original text would never match
+            # a persisted row and would append this message a second time.
+            content = self._persist_inline_attachments(key, role, content)
             if self._path(key).exists():
                 # Compare against the form ``append`` actually stores: the
                 # write boundary redacts non-user content, so matching on the
@@ -2082,12 +2261,27 @@ class ConversationLog:
                 # that contained a credential and would append it twice.
                 persisted = _redact_at_write_boundary(role, content)
                 for m in self._read_messages(key):
-                    if m.get("role") != role or m.get("content") != persisted:
+                    if m.get("role") != role:
                         continue
+                    on_disk = m.get("content")
                     if supplied_mid is None:
-                        return False
+                        if on_disk == persisted:
+                            return False
+                        continue
                     m_meta = m.get("meta")
-                    if isinstance(m_meta, dict) and m_meta.get("mid") == supplied_mid:
+                    if not (isinstance(m_meta, dict) and m_meta.get("mid") == supplied_mid):
+                        continue
+                    # Same id: corroborate by body, allowing for the other
+                    # writer having preserved an image this one could not.
+                    if on_disk == persisted or (
+                        isinstance(on_disk, str)
+                        and same_text_modulo_images(
+                            on_disk,
+                            persisted,
+                            sessions_dir=self._path(key).parent,
+                            stem=self._path(key).stem,
+                        )
+                    ):
                         return False
             # Reentrant: ``append`` re-enters ``_locked`` for the same key on
             # this thread (RLock + refcounted flock), so the write stays inside
@@ -2226,10 +2420,11 @@ class ConversationLog:
         them from memory/history extraction). When neither trips, the offset is
         applied as-is.
         """
-        path = self._path(key)
-        # Serialize behind the cross-process lock and re-read under it so a
-        # concurrent append (in this or another process) is never lost.
+        # Serialize behind the cross-process lock and resolve/re-read under it so
+        # a concurrent append or restore cannot redirect this key after its path
+        # was chosen.
         with self._locked(key):
+            path = self._path(key)
             if not path.exists():
                 return
             prev_mtime = _safe_mtime(path)
@@ -2706,6 +2901,36 @@ class ConversationLog:
             return self._metadata_projection.delete_session(key, skip_pinned=True)
         return self._metadata_projection.delete_session(key, skip_pinned=False)
 
+    def delete_memory_consolidation_session(self, key: str, expected_store: str) -> bool:
+        """Delete every artifact of one retired generated consolidation turn."""
+        from kiro_crew.member_memory_auth import (
+            read_private_session_store,
+            require_memory_consolidation_session_key,
+        )
+
+        require_memory_consolidation_session_key(key, expected_store)
+        binding = read_private_session_store(key)
+        if binding is not None and binding != expected_store:
+            raise ValueError("The transient session belongs to another private store")
+        path = self._path(key)
+        existed = path.exists()
+        deleted = self.delete_session(key)
+        if existed and not deleted:
+            raise OSError(f"Could not delete transient consolidation session {key!r}")
+
+        removed = bool(deleted)
+        archive_dir = _archive_dir(self._dir)
+        stem = _safe_key(key) + ARCHIVE_SEGMENT_DELIMITER
+        if archive_dir.exists():
+            for archived in archive_dir.glob(f"{stem}*.jsonl"):
+                archived.unlink()
+                removed = True
+        lock_path = self._lock_path(key)
+        if lock_path.exists():
+            lock_path.unlink()
+            removed = True
+        return removed
+
     def set_title(self, key: str, title: str) -> None:
         self._metadata_projection.set_title(key, title)
 
@@ -2849,7 +3074,7 @@ class ConversationLog:
     def last_message_preview(self, key: str, sanitize=None) -> str:
         return self._read_projection.last_message_preview(key, sanitize=sanitize)
 
-    def last_message_info(self, key: str, sanitize=None) -> tuple[str, float]:
+    def last_message_info(self, key: str, sanitize=None) -> tuple[str, float, bool]:
         return self._read_projection.last_message_info(key, sanitize=sanitize)
 
     @staticmethod

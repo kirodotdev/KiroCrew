@@ -12,6 +12,7 @@ from kiro_crew.context import ContextBuilder, _neutralize_structural_markers
 from kiro_crew.hooks import ContextRule, HookManager, HooksConfig
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
+from kiro_crew.memory_stores import memory_store_name_defect
 from kiro_crew.skills import SkillsLoader
 
 # One xdist worker for the whole module: every test here derives from ONE module-cached
@@ -31,6 +32,13 @@ _name_st = st.text(
     max_size=30,
 )
 
+# A store name is a single path segment, so its grammar is narrower than a
+# workspace's: lowercase alphanumerics and interior hyphens only. Generating an
+# invalid name here would only ever exercise the refusal path.
+_store_name_st = st.from_regex(r"\A[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?\Z", fullmatch=True).filter(
+    lambda name: name != "default" and memory_store_name_defect(name) is None
+)
+
 
 # ---------------------------------------------------------------------------
 # Property-based tests
@@ -39,7 +47,7 @@ _name_st = st.text(
 
 class TestMemoryStoreOverrideProperty:
     # Feature: multi-agent-orchestration, Property 7: Memory store parameter overrides workspace for memory lookup
-    @given(workspace=_name_st, memory_store=_name_st)
+    @given(workspace=_name_st, memory_store=_store_name_st)
     @settings(deadline=None)
     def test_memory_store_overrides_workspace_in_build_session_context(
         self, workspace: str, memory_store: str, tmp_path_factory
@@ -50,18 +58,34 @@ class TestMemoryStoreOverrideProperty:
         distinct memory_store parameter, get_memory_for must be called
         with the memory_store value, not the workspace value.
         """
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.config.sections import MemoryStoreConfig
+        from kiro_crew.memory_stores import memory_store_dir_for
+
+        # These are legacy named V1 stores: the property checks routing, while
+        # the member-isolation suite covers owned V2 provisioning and algorithms.
+        # The shared test fixture pins the data home to a temporary directory.
+        cfg = KiroCrewConfig.load()
+        cfg.memory_stores[memory_store] = MemoryStoreConfig()
+        cfg.save()
+        memory_store_dir_for(memory_store).mkdir(parents=True, exist_ok=True)
         tmp = tmp_path_factory.mktemp("ws")
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp / "ws"),
             skills=SkillsLoader(skills_path=tmp / "skills", install_builtins=False),
         )
 
-        calls: list[str | None] = []
+        # Assert the resolved target: store names and workspace names use
+        # separate namespaces, so inspecting one positional argument can miss
+        # a store-routing error.
+        from kiro_crew import context as ctx_mod
+
+        calls: list[tuple[str | None, str | None]] = []
         original_get_memory = ContextBuilder.get_memory_for
 
-        def _tracking_get_memory(key=None):
-            calls.append(key)
-            return original_get_memory(key)
+        def _tracking_get_memory(ws=None, store=None):
+            calls.append((ws, store))
+            return original_get_memory(ws, store)
 
         with patch.object(ContextBuilder, "get_memory_for", side_effect=_tracking_get_memory):
             builder.build_session_context(
@@ -69,18 +93,32 @@ class TestMemoryStoreOverrideProperty:
                 memory_store=memory_store,
             )
 
-        # get_memory_for should have been called with memory_store, not workspace
+        assert calls, "build_session_context must resolve a memory target"
+        # Both names reach the resolver; the store is what it prefers.
         assert any(
-            c == memory_store for c in calls
-        ), f"Expected get_memory_for to be called with {memory_store!r}, got calls: {calls}"
-        # When memory_store differs from workspace, workspace should NOT appear
-        if memory_store != workspace:
-            assert not any(
-                c == workspace for c in calls
-            ), f"get_memory_for should NOT be called with workspace {workspace!r} when memory_store={memory_store!r}"
+            store == memory_store for _ws, store in calls
+        ), f"Expected the store name {memory_store!r} to reach get_memory_for, got {calls}"
+
+        # Assert the actual destination, so ignoring the store argument cannot
+        # pass by routing both names into global or workspace memory.
+        ws_key, _ = ctx_mod._target_key(workspace, None)
+        store_key, store_name = ctx_mod._target_key(workspace, memory_store)
+        assert store_name == memory_store, (
+            f"a DECLARED store must win over the workspace; got {store_name!r} for "
+            f"{memory_store!r}"
+        )
+        assert store_key == f"store:{memory_store}", store_key
+        assert store_key != ws_key, "a declared store must not share the workspace's target"
+        assert ContextBuilder.get_memory_for(
+            workspace, memory_store
+        )._workspace == memory_store_dir_for(memory_store)
 
 
 class TestContextBuilder:
+    # Every test here asserts the SHAPE of a built turn, so the host's own free
+    # memory must not be an input: see the fixture for the advisory it pins off.
+    pytestmark = pytest.mark.usefixtures("ample_host_resources")
+
     def test_empty_context_has_critical_rules(self, tmp_path):
         builder = ContextBuilder(
             memory=MemoryStore(workspace=tmp_path / "ws"),
@@ -232,6 +270,11 @@ class TestContextBuilder:
         assert "END YOUR TURN" in dash
         assert "does not block" in dash
         assert "[OPTIONS:]" in dash
+        # A card is an interruption, so the nudge must also carry the restraint
+        # contract: silence is the default and only a human-only decision that
+        # actually blocks the work earns the interruption.
+        assert "DEFAULT TO SILENCE" in dash
+        assert "human alone can make" in dash
         assert "suggest_followup" in dash, "dashboard session must get the follow-up nudge"
 
         for sk in (None, "cron:job-1", "subagent:abc", "slack:C123"):
@@ -1516,6 +1559,35 @@ class TestMemoryGetContextQueryWiring:
         msg, _ = builder.build_message("q", True, "s1")
         assert "JSONL-SENTINEL" in msg
 
+    def test_withheld_only_vector_store_still_yields_jsonl_lessons(self, tmp_path):
+        from kiro_crew.learn import Lesson
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        vector_store = VectorMemoryStore(db_path=tmp_path / "vectors.db", embedding_dim=4)
+        vector_store.init()
+        try:
+            memory._vector_store = vector_store
+            vector_store.set_semantic(
+                "lesson.legacyvolatile",
+                {
+                    "rule": "The current model identity is gpt-5.6-sol.",
+                    "category": "preference",
+                    "negative": None,
+                },
+                1.0,
+                "user_explicit",
+            )
+            builder.lessons.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
+
+            msg, _ = builder.build_message("q", True, "s1")
+
+            assert "JSONL-SENTINEL" in msg
+            assert "gpt-5.6-sol" not in msg
+        finally:
+            vector_store.close()
+
     def test_episodic_injected_exactly_once(self, tmp_path):
         from types import SimpleNamespace
 
@@ -1551,13 +1623,171 @@ class TestMemoryGetContextQueryWiring:
         assert seen == ["find my tokyo notes"]
 
 
+class TestDurableModelVersionLessonContext:
+    RULE = "the Python 3.12 wheel needs claude-opus-4.8 pinned in role_models"
+    NEGATIVE = "assume gpt-5.6-sol supports the streaming flag"
+    MODEL_TOOLING_RULES = (
+        ("Always use the tokenizer shipped with gpt-5.6-sol", "tool"),
+        ("Prefer the retry wrapper when calling opus-4.8 endpoints", "preference"),
+        ("Never use the streaming flag with gpt-5.6-sol", "tool"),
+        ("Always use the gpt-5-compatible tokenizer", "tool"),
+        ("Always use the gpt-5 compatible tokenizer", "tool"),
+        ("Never use gpt-5.6-sol endpoints without the retry wrapper", "tool"),
+    )
+    BACKEND_PROCESS_RULES = (
+        ("Never run as the backend service account", "tool"),
+        ("The service is running as the backend worker", "preference"),
+        ("The service is running as the active backend service account", "tool"),
+        ("The service is running as the current backend worker", "preference"),
+        ("Restart the backend after config changes", "tool"),
+        ("Run the worker as the backend user, never as root", "preference"),
+    )
+    TOOLING_RULES = MODEL_TOOLING_RULES + BACKEND_PROCESS_RULES
+
+    def _builder(self, tmp_path):
+        return ContextBuilder(
+            memory=MemoryStore(workspace=tmp_path / "ws"),
+            skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
+            lessons=LessonStore(base_dir=tmp_path),
+        )
+
+    def test_jsonl_context_renders_durable_model_version_references(self, tmp_path):
+        from types import SimpleNamespace
+
+        from kiro_crew.learn import Lesson
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        memory._vector_store = SimpleNamespace(
+            get_episodic_context=lambda query_text, cap: "",
+            get_semantic_context=lambda query_text, cap: "",
+            get_lessons_context=lambda query_text, cap, project_dir=None: "",
+            has_any_lesson=lambda: False,
+        )
+        assert builder.lessons.save(Lesson(ts="t", rule=self.RULE, category="tool")) == "inserted"
+        assert (
+            builder.lessons.save(
+                Lesson(
+                    ts="t",
+                    rule="check streaming compatibility before release",
+                    category="preference",
+                    negative=self.NEGATIVE,
+                )
+            )
+            == "inserted"
+        )
+        for rule, category in self.TOOLING_RULES:
+            assert builder.lessons.save(Lesson(ts="t", rule=rule, category=category)) == "inserted"
+
+        message, _ = builder.build_message("check wheel compatibility", True, "s-version-jsonl")
+
+        assert self.RULE in message
+        assert self.NEGATIVE in message
+        for rule, _category in self.TOOLING_RULES:
+            assert rule in message
+
+    def test_vector_context_renders_durable_model_version_references(self, tmp_path):
+        from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        vector_store = VectorMemoryStore(db_path=tmp_path / "vectors.db", embedding_dim=4)
+        vector_store.init()
+        try:
+            memory._vector_store = vector_store
+            first = vector_store.write_lesson(self.RULE, "tool")
+            second = vector_store.write_lesson(
+                "check streaming compatibility before release",
+                "preference",
+                negative=self.NEGATIVE,
+            )
+
+            assert first.outcome is LessonWriteOutcome.INSERTED
+            assert second.outcome is LessonWriteOutcome.INSERTED
+            assert vector_store.has_any_lesson() is True
+            rendered = vector_store.get_lessons_context("wheel compatibility")
+            assert self.RULE in rendered
+            assert self.NEGATIVE in rendered
+
+            message, _ = builder.build_message(
+                "check wheel compatibility",
+                True,
+                "s-version-vector",
+            )
+            assert self.RULE in message
+            assert self.NEGATIVE in message
+        finally:
+            vector_store.close()
+
+    @pytest.mark.parametrize("rule,category", TOOLING_RULES)
+    def test_vector_context_renders_model_qualified_tooling(
+        self, tmp_path, rule: str, category: str
+    ) -> None:
+        from kiro_crew.vector_memory import LessonWriteOutcome, VectorMemoryStore
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        vector_store = VectorMemoryStore(db_path=tmp_path / "tooling.db", embedding_dim=4)
+        vector_store.init()
+        try:
+            memory._vector_store = vector_store
+            result = vector_store.write_lesson(rule, category)
+
+            assert result.outcome is LessonWriteOutcome.INSERTED
+            assert vector_store.has_any_lesson() is True
+            assert rule in vector_store.get_lessons_context(rule)
+
+            message, _ = builder.build_message(rule, True, "s-version-tooling")
+            assert rule in message
+        finally:
+            vector_store.close()
+
+    def test_key_confirmed_legacy_negative_pin_yields_jsonl_fallback(self, tmp_path):
+        from kiro_crew.learn import Lesson
+        from kiro_crew.vector_memory import (
+            _LESSON_NEGATIVE_SEP,
+            VectorMemoryStore,
+            _lesson_key,
+        )
+
+        builder = self._builder(tmp_path)
+        memory = builder.get_memory_for(None)
+        vector_store = VectorMemoryStore(db_path=tmp_path / "legacy-vectors.db", embedding_dim=4)
+        vector_store.init()
+        rule = "automatic selection is safest"
+        try:
+            memory._vector_store = vector_store
+            vector_store.set_semantic(
+                _lesson_key(rule),
+                f"{rule}{_LESSON_NEGATIVE_SEP}Select gpt-5.6-sol for reviews",
+                1.0,
+                "user_explicit",
+            )
+            assert vector_store.has_any_lesson() is False
+            assert vector_store.get_lessons_context() == ""
+            assert (
+                builder.lessons.save(Lesson(ts="t", rule="JSONL-SENTINEL", category="tool"))
+                == "inserted"
+            )
+
+            message, _ = builder.build_message(
+                "check fallback",
+                True,
+                "s-legacy-negative-fallback",
+            )
+
+            assert "JSONL-SENTINEL" in message
+            assert "gpt-5.6-sol" not in message
+        finally:
+            vector_store.close()
+
+
 class TestKeepVisibleMarkerRule:
-    """#7948: the keep-visible collapse exemption must be documented in the
-    DASHBOARD critical rules (collapse-all is a dashboard-transcript feature
-    and rehype-raw is what renders the marker invisible), and must NOT ship in
-    the channel variant -- Slack/Discord outbound formatters never strip HTML
-    comments, so a channel agent following the rule would show users the
-    literal marker text."""
+    """The keep-visible collapse exemption must be documented in the DASHBOARD
+    critical rules (collapse-all is a dashboard-transcript feature and rehype-raw
+    is what renders the marker invisible), and must NOT ship in the channel
+    variant -- Slack/Discord outbound formatters never strip HTML comments, so a
+    channel agent following the rule would show users the literal marker text."""
 
     def test_marker_documented_in_dashboard_rules_only(self):
         from kiro_crew.context import _CRITICAL_RULES, _CRITICAL_RULES_CHANNEL

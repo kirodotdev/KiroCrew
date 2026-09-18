@@ -1288,7 +1288,7 @@ def set_element_focus(elem: Any) -> int:
     """``IUIAutomationElement::SetFocus``. Returns the HRESULT.
 
     **This is the one observation-adjacent call that takes the operator's keyboard
-    focus**, so it is never used to "aim" an element-addressed action: the pattern
+    focus**, so it is never called to "aim" an element-addressed action: the pattern
     rungs above need no focus, and calling this first would move the caret for a
     gesture that did not require it. It exists for the keyboard verbs, which have
     no focus-free route on Windows at all.
@@ -2518,7 +2518,7 @@ def window_render_scale(hwnd: int) -> float:
     ``PrintWindow`` asks a window to draw itself in ITS OWN coordinate space, not
     the caller's. A DPI-unaware window therefore renders at its logical size into
     whatever buffer it is given, and an aware-sized buffer is left with a black
-    margin on two sides — an image that no longer maps linearly onto the window rect
+    margin on two sides — an image that does not map linearly onto the window rect
     the element frames are expressed in. Measured on a 125% monitor: a WinForms
     window (``GetDpiForWindow`` 96, monitor 120) drew 620x392 into both a 620x400
     buffer and a 775x500 one, while a Chromium window (both 120) filled each buffer

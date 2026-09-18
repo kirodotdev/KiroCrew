@@ -298,9 +298,9 @@ class TestReceiptTransport:
 
         DISPATCH TIME, even if that env var is unset again before the
         background thread finishes. Regression test for a real-home leak: the
-        worker used to call beacon.config_dir() itself, lazily, on the
-        background thread — a race against the caller's teardown unpatching
-        KIROCREW_HOME meant the secret file could land in the operator's real
+        worker must not call beacon.config_dir() itself, lazily, on the
+        background thread: a race against the caller's teardown unpatching
+        KIROCREW_HOME could land the secret file in the operator's real
         data home instead of the pinned test one.
         """
         pinned_home = tmp_path / "pinned-home"

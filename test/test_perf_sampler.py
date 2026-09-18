@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import cli_perf, perf_sampler
+from kiro_crew import cli_perf, gateway_lock, perf_sampler
 
 # ── The debug gate ──
 
@@ -449,10 +449,12 @@ def _raises_after_work() -> None:
 
 class TestGatewayPid:
     def test_reads_the_recorded_pid_when_the_lock_is_held(self, monkeypatch, tmp_path):
-        (tmp_path / "gateway.lock").write_text("4242\n", encoding="utf-8")
         monkeypatch.setattr(cli_perf, "config_dir", lambda: tmp_path)
-        monkeypatch.setattr(cli_perf, "_gateway_lock_is_held", lambda _p: True)
-        monkeypatch.setattr(cli_perf.platform_compat, "pid_exists", lambda _p: True)
+        monkeypatch.setattr(
+            cli_perf.gateway_lock,
+            "lock_holder",
+            lambda _home: gateway_lock.LockHolder(pid=4242, alive=True, source="flock_owner"),
+        )
         assert cli_perf._read_gateway_pid() == 4242
 
     def test_stale_pid_is_rejected_when_no_gateway_holds_the_lock(self, monkeypatch, tmp_path):
@@ -461,20 +463,21 @@ class TestGatewayPid:
         Without the held-lock check, the default target would be whatever process
         inherited that pid, and the profile would be labelled as the gateway's.
         """
-        (tmp_path / "gateway.lock").write_text("4242\n", encoding="utf-8")
         monkeypatch.setattr(cli_perf, "config_dir", lambda: tmp_path)
-        monkeypatch.setattr(cli_perf, "_gateway_lock_is_held", lambda _p: False)
-        # pid_exists is pinned True so the held-lock check is the ONLY thing that
-        # can reject. Without this the real pid 4242 is absent on the test host and
-        # the assertion passes even with the lock gate removed (a vacuous test).
-        monkeypatch.setattr(cli_perf.platform_compat, "pid_exists", lambda _p: True)
+        monkeypatch.setattr(
+            cli_perf.gateway_lock,
+            "lock_holder",
+            lambda _home: gateway_lock.LockHolder(pid=None, alive=False, source="none"),
+        )
         assert cli_perf._read_gateway_pid() is None
 
     def test_dead_pid_is_rejected_even_if_the_lock_looks_held(self, monkeypatch, tmp_path):
-        (tmp_path / "gateway.lock").write_text("4242\n", encoding="utf-8")
         monkeypatch.setattr(cli_perf, "config_dir", lambda: tmp_path)
-        monkeypatch.setattr(cli_perf, "_gateway_lock_is_held", lambda _p: True)
-        monkeypatch.setattr(cli_perf.platform_compat, "pid_exists", lambda _p: False)
+        monkeypatch.setattr(
+            cli_perf.gateway_lock,
+            "lock_holder",
+            lambda _home: gateway_lock.LockHolder(pid=4242, alive=False, source="flock_owner"),
+        )
         assert cli_perf._read_gateway_pid() is None
 
     def test_missing_file_is_none(self, monkeypatch, tmp_path):
@@ -483,20 +486,13 @@ class TestGatewayPid:
 
     @pytest.mark.parametrize("content", ["", "not-a-pid", "0\n", "-5\n"])
     def test_unusable_content_is_none(self, monkeypatch, tmp_path, content):
+        """An unlocked file (nothing holds its flock) is 'not a gateway'
+        regardless of what garbage its contents name -- lock_holder only
+        trusts a recorded pid as a LAST resort, and even then only once
+        something actually holds the lock."""
         (tmp_path / "gateway.lock").write_text(content, encoding="utf-8")
         monkeypatch.setattr(cli_perf, "config_dir", lambda: tmp_path)
         assert cli_perf._read_gateway_pid() is None
-
-    def test_absent_lock_file_is_not_held(self, tmp_path):
-        assert cli_perf._gateway_lock_is_held(tmp_path / "nope.lock") is False
-
-    def test_unheld_lock_probe_releases_and_reports_free(self, tmp_path):
-        # An unlocked file must probe as free, and the probe must not leave it
-        # locked (a real gateway starting right after must still be able to take it).
-        lock = tmp_path / "gateway.lock"
-        lock.write_text("1\n", encoding="utf-8")
-        assert cli_perf._gateway_lock_is_held(lock) is False
-        assert cli_perf._gateway_lock_is_held(lock) is False
 
 
 class TestArtifactWriteFailure:
@@ -577,8 +573,8 @@ class TestPySpyPathShortening:
     def test_pyspy_output_is_shortened_before_being_written(self, monkeypatch, tmp_path):
         """The documented path-shortening guarantee must hold for BOTH strategies.
 
-        It previously lived only in _frame_label (in-process), so a py-spy profile
-        still carried the operator's home directory.
+        Applied only in _frame_label (in-process), it misses the py-spy path, so
+        a py-spy profile would still carry the operator's home directory.
         """
         monkeypatch.setenv(perf_sampler.DEBUG_ENV_VAR, "1")
         out = tmp_path / "p.folded"

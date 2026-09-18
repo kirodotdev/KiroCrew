@@ -72,6 +72,9 @@ translation shows first.
 
 - **의존명사 takes a space**: `할 수 있습니다`, not `할수 있습니다`; `한 개`, not
   `한개`.
+- **A verb ending stays attached**: `작업할수록` and `볼수록` use the ending
+  `-ㄹ수록`, not the bound noun `수`. The spacing guard must allow these while
+  still detecting a separate `할수 있습니다` error in the same sentence.
 - **A 조사 attaches with no space**, including to a Latin run: `Slack에서`,
   `GitHub을`, `MCP를`. Never `Slack 에서`. A 접미사 (`Transcribe용`), a 단위명사 after
   a numeral (`N개`) and a 하다/되다 conjugation on a Latin stem (`POST할 수 있습니다`)

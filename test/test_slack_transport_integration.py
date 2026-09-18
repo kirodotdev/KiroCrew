@@ -13,6 +13,7 @@ import asyncio
 import importlib
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TEXT_CHUNK, STOP_REASON_END_TURN
 from kiro_crew.messaging.transport import InboundMessage
@@ -39,7 +40,12 @@ def _build(monkeypatch):
     monkeypatch.setattr(slack_handler, "is_owner", lambda uid: True)
     monkeypatch.setattr(slack_handler, "is_allowed_user", lambda uid: True)
     monkeypatch.setattr(slack_handler, "_get_default_agent", lambda: "")
-    monkeypatch.setattr(slack_handler, "_hydrate_thread_overrides", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(
+        slack_handler,
+        "_hydrate_thread_overrides",
+        AsyncMock(return_value=None),
+        raising=False,
+    )
     monkeypatch.setattr(slack_handler, "_hydrate_conv_flags", lambda *a, **k: None, raising=False)
 
     slack = RecordingSlackClient()

@@ -129,7 +129,7 @@ class TestSegmentBoundaryDedupe:
     Rotation archives the live file's head BEFORE rewriting the live file, so a
     hard crash between the two writes leaves the archived rows at the head of
     the live file too — and the NEXT rotation archives that same prefix again.
-    ``read_rotated_messages`` used to concatenate segments blind, so the
+    ``read_rotated_messages`` would concatenate segments blind, so the
     duplicate was already inside ``rotated`` before the archive-to-live guard
     ever ran. These pin that each segment is merged through
     ``drop_persisted_tail_prefix`` at the segment boundary.

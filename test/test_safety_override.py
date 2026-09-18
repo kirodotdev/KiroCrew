@@ -1164,7 +1164,7 @@ class TestRenamedConfigKey:
     def test_falsy_looking_string_is_never_an_affirmative_grant(self, value: str) -> None:
         """A bare ``bool(...)`` treats any non-empty string as True, so a
         stringly-typed value from a templated/generated config -- someone's
-        hand-edit, a Docker-style generator that quotes every value -- used to
+        hand-edit, a Docker-style generator that quotes every value -- can
         silently turn "explicitly disabled" into the standing, unattended
         tool-auto-approve grant this key controls. A non-bool value must never
         be read as an affirmative grant, regardless of what it looks like."""

@@ -1046,8 +1046,8 @@ class TestNativeCrewAutoApproveGate:
 
 
 class TestNativeAutoApproveLogSanitization:
-    """Regression for CWE-117 log forging in the native-crew auto-approve
-    debug line.
+    """The native-crew auto-approve debug line is sanitized against CWE-117 log
+    forging.
 
     Driving the full ``_native_crew_should_auto_approve`` -> ``logger.debug``
     path requires the whole chat_runner ACP event loop with a live client and

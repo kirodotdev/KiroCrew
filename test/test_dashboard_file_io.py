@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import errno
+import io
 import json
 import os
 import stat
 import threading
 from unittest.mock import AsyncMock, MagicMock, patch
+from urllib.parse import quote
 
 import pytest
 from aiohttp import web
@@ -121,6 +123,177 @@ class TestFileRead:
             assert "中文標籤範例" in text
             # Round-trip parse to prove the bytes are valid UTF-8 JSON.
             assert json.loads(text)["label"] == "中文標籤範例"
+
+    @pytest.mark.asyncio
+    async def test_read_binary_returns_envelope_not_mojibake(self, tmp_path, mock_sel, home_patch):
+        # A NUL byte inside the sniff window is the binary verdict. Before the
+        # sniff this returned the whole file decoded with errors="replace" --
+        # a screenful of U+FFFD rendered in the side panel's code editor.
+        f = tmp_path / "archive.bin"
+        f.write_bytes(b"PK\x03\x04\x00\x00garbage\xff\xfe" * 8)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert resp.headers["X-File-Binary"] == "true"
+            body = await resp.json()
+            assert body["binary"] is True
+            assert body["content"] == ""
+            # The header plus the empty body is the whole contract: nothing in
+            # the envelope is decoded file content.
+            assert set(body) == {"binary", "content"}
+            assert "\ufffd" not in json.dumps(body)
+            mock_sel.log_tool_invocation.assert_called_with(
+                session_key="dashboard",
+                tool_name="file_read",
+                outcome="success",
+                resources=str(f),
+            )
+
+    @pytest.mark.asyncio
+    async def test_read_extensionless_binary_is_sniffed(self, tmp_path, mock_sel, home_patch):
+        # The sniff -- not an extension list -- is the source of truth, which is
+        # the whole reason detectFileType is left alone: this file has no
+        # extension to look up.
+        f = tmp_path / "coredump"
+        f.write_bytes(b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 64)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert resp.headers["X-File-Binary"] == "true"
+            body = await resp.json()
+            assert body["binary"] is True
+
+    @pytest.mark.asyncio
+    async def test_read_undecodable_but_nul_free_stays_text(self, tmp_path, mock_sel, home_patch):
+        # Control: the sniff must NOT widen to "has undecodable bytes". A
+        # latin-1 source file is still a source file, and the lossy decode is
+        # the right answer for it -- turning this into a download card would be
+        # the regression this test exists to catch.
+        f = tmp_path / "legacy.py"
+        f.write_bytes(b"# caf\xe9 na\xefve\nx = 1\n")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert "X-File-Binary" not in resp.headers
+            assert "x = 1" in await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_read_nul_past_sniff_window_stays_text(self, tmp_path, mock_sel, home_patch):
+        # The window is bounded on purpose (8 KiB, matching the Files app), so a
+        # NUL beyond it reads as text. Pins the boundary rather than asserting
+        # the implementation happens to read the whole file.
+        f = tmp_path / "late.log"
+        f.write_bytes(b"a" * 9000 + b"\x00tail")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert "X-File-Binary" not in resp.headers
+
+    @pytest.mark.asyncio
+    async def test_read_verdict_and_content_come_from_one_snapshot(
+        self, tmp_path, mock_sel, home_patch, monkeypatch
+    ):
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        text = b"hello world\n"
+        replacement = b"PK\x03\x04\x00\x00garbage"
+        original_open = files_mod._open_checked_file
+
+        class RewriteAfterSeek(io.BytesIO):
+            def seek(self, offset, whence=0):
+                if not self.closed:
+                    super().seek(0)
+                    super().truncate(0)
+                    super().write(replacement)
+                return super().seek(offset, whence)
+
+        def open_with_rewrite(*args, **kwargs):
+            checked = original_open(*args, **kwargs)
+            assert not isinstance(checked, files_mod._OpenDenied)
+            checked.file.close()  # the real descriptor is stood in for below
+            return checked._replace(file=RewriteAfterSeek(text))
+
+        monkeypatch.setattr(files_mod, "_open_checked_file", open_with_rewrite)
+        f = tmp_path / "changing.txt"
+        f.write_bytes(text)
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert "X-File-Binary" not in resp.headers
+            body = await resp.text()
+            assert body == text.decode("utf-8")
+            assert "\x00" not in body and "\ufffd" not in body
+
+    @pytest.mark.asyncio
+    async def test_read_answers_binary_for_a_nul_free_binary_format(
+        self, tmp_path, mock_sel, home_patch
+    ):
+        # A GNU thin `.a` archive stores only ASCII member-header references, so
+        # it holds no NUL at all and the sniff alone would serve it as text --
+        # an editable buffer over an archive, where a save is corruption. The
+        # extension is answered first for exactly this class.
+        f = tmp_path / "libthin.a"
+        f.write_bytes(b"!<thin>\n/               0           0     0     0       14        `\nmain.o/\n")
+        assert b"\x00" not in f.read_bytes()
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert resp.headers["X-File-Binary"] == "true"
+            assert await resp.json() == {"binary": True, "content": ""}
+
+    def test_binary_extension_list_matches_the_files_app(self):
+        # The endpoint's comment says the two surfaces disagreeing about what
+        # "binary" means is the worst outcome; this is what makes that true.
+        from kiro_crew.apps.builtins.file_explorer.server import BINARY_EXTS
+        from kiro_crew.dashboard.handlers.files import _FILE_READ_BINARY_EXTS
+
+        assert set(_FILE_READ_BINARY_EXTS) == set(BINARY_EXTS)
+
+    @pytest.mark.asyncio
+    async def test_read_keeps_a_visible_marker_for_a_file_ending_mid_codepoint(
+        self, tmp_path, mock_sel, home_patch
+    ):
+        # A NUL-free file whose last bytes are an incomplete UTF-8 sequence is
+        # malformed either way; what must not happen is the tail vanishing with
+        # no trace, because an edit-and-save would then write the shortened text
+        # back. The decode is lossy by design (errors="replace"), so the tail
+        # reads as U+FFFD -- the same visible marker the endpoint produced
+        # before the snapshot read.
+        f = tmp_path / "cut.txt"
+        f.write_bytes("héllo wörld".encode("utf-8") + b"\xe2\x82")  # first 2 of 3 bytes of U+20AC
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert "X-File-Binary" not in resp.headers
+            body = await resp.text()
+            assert body.startswith("héllo wörld")
+            assert body.endswith("\ufffd")
+
+    @pytest.mark.asyncio
+    async def test_read_text_truncation_survives_the_sniff(self, tmp_path, mock_sel, home_patch):
+        # The snapshot reads enough bytes for the character cap while the sniff
+        # still checks only its first 8 KiB, so truncation remains detectable.
+        f = tmp_path / "big.txt"
+        f.write_text("x" * (512_000 + 10), encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert resp.headers["X-Truncated"] == "true"
+            assert len(await resp.text()) == 512_000
+
+    @pytest.mark.asyncio
+    async def test_read_head_on_binary_still_answers_from_the_stat(
+        self, tmp_path, mock_sel, home_patch
+    ):
+        # HEAD passes read_cap 0 and must open nothing, so it never reaches the
+        # sniff -- it stays a path-kind probe for a binary file too.
+        f = tmp_path / "blob.bin"
+        f.write_bytes(b"\x00\x01\x02")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.head(f"/api/file-read?path={f}")
+            assert resp.status == 200
+            assert resp.headers["X-Path-Kind"] == "file"
+            assert "X-File-Binary" not in resp.headers
 
     @pytest.mark.asyncio
     async def test_read_jsonl_sets_x_ndjson_content_type(self, tmp_path, mock_sel, home_patch):
@@ -266,6 +439,97 @@ class TestFileReadPathKind:
             resp = await client.get(f"/api/file-read?path={key}")
             assert resp.status == 400
             assert "X-Path-Kind" not in resp.headers
+
+
+class TestFileReadReservedCharacterPaths:
+    """A path holding URL-reserved but filesystem-legal characters must serve.
+
+    The client percent-encodes the path into the query string, so the server
+    receives the characters literally and FILE_READ_SCHEMA's syntax gate is what
+    decides. A punctuation allowlist there answers 400 "invalid input" before
+    any disk access for a whole notes folder named by the "Name (alias).md"
+    convention, and the client cannot work around it: encodeURIComponent leaves
+    "(" and ")" literal by design. /api/file-diff, which has no such gate,
+    serves the same files.
+    """
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "Ada Lovelace (ada).md",
+            "Q1 2026 (draft) #2.md",
+            "is it done?.md",
+            "a & b, c'd.md",
+            "50% done [final]+1.md",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_read_serves_reserved_characters(self, name, mock_sel, home_patch):
+        folder = home_patch / "One on one (2026)"
+        folder.mkdir()
+        f = folder / name
+        f.write_text("note body", encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/file-read?path=" + quote(str(f), safe=""))
+            assert resp.status == 200
+            assert "note body" in await resp.text()
+
+    @pytest.mark.asyncio
+    async def test_write_serves_reserved_characters(self, mock_sel, home_patch):
+        folder = home_patch / "AI Projects" / "(AI) Fluency Workshop"
+        folder.mkdir(parents=True)
+        f = folder / "agenda (v2) #1.md"
+        f.write_text("before", encoding="utf-8")
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/file-write", json={"path": str(f), "content": "after"})
+            assert resp.status == 200
+        assert f.read_text(encoding="utf-8") == "after"
+
+    @pytest.mark.parametrize(
+        "encoded",
+        [
+            # NUL: realpath raises ValueError on it.
+            "/tmp/a%00b",
+            # The same NUL wearing characters this gate now admits, so widening
+            # the body class cannot be what carries it to the filesystem.
+            "/tmp/(a%00b)",
+            # An ESC wearing characters this gate now admits. Sanitization hides
+            # it from the schema pattern, so only the path seam can refuse it.
+            "/tmp/(a%1B%5B2Jb)",
+            # CR and LF, which forge a line in the record below.
+            "/tmp/a%0Db",
+        ],
+    )
+    @pytest.mark.asyncio
+    async def test_a_control_or_unusable_path_is_400_not_an_uncaught_500(
+        self, encoded, mock_sel, home_patch
+    ):
+        """A path the OS path layer cannot carry must be refused, not crash.
+
+        The schema gate matches the SANITIZED copy of the value, which has had
+        its control characters and surrogates stripped, while the raw string is
+        what reaches the filesystem. So a NUL-bearing path passed the gate as
+        its stripped spelling and reached an unguarded realpath, which raised
+        outside the handler's try and propagated as HTTP 500.
+
+        Only NUL is exercised here. The other unrepresentable shape -- a lone
+        surrogate -- cannot be delivered through this transport, because URL
+        decoding never yields one; it is covered against the seam itself in
+        test_hooks_coverage.py.
+        """
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get("/api/file-read?path=" + encoded)
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_read_still_refuses_a_newline_in_the_path(self, mock_sel, home_patch):
+        # The gate's remaining refusal: a CR/LF splits the log line the path is
+        # written into. It is not relaxed along with the punctuation.
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.get(
+                "/api/file-read?path=" + quote(str(home_patch / "a\nb.md"), safe="")
+            )
+            assert resp.status == 400
 
 
 class TestFileWrite:
@@ -754,8 +1018,8 @@ class TestSendMessage:
     async def test_send_message_session_origin_rehydrate_reads_off_the_loop(self):
         """The cold-slot rehydration must not parse the transcript on the loop.
 
-        Issue #7408: this handler called the SYNCHRONOUS rehydrate, which read and
-        JSON-parsed the whole transcript inline -- 100-300 ms on a large store,
+        This handler must not call the SYNCHRONOUS rehydrate, which reads and
+        JSON-parses the whole transcript inline -- 100-300 ms on a large store,
         stalling every other request. Asserted by thread identity rather than by
         the name of the function called, so the guarantee survives a rename.
         """
@@ -777,7 +1041,7 @@ class TestSendMessage:
             seen.append(threading.get_ident())
             # messages=None means "nothing persisted", so the handler falls back to
             # the notification path -- keeping this test about the read's location.
-            return ({}, True, None, {}, None)
+            return ({}, True, None, {}, None, None)
 
         with patch.object(chat_persistence, "_prefetch_rehydrate_inputs", _prefetch):
             async with TestClient(TestServer(app)) as client:

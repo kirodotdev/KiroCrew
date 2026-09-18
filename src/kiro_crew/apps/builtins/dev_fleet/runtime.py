@@ -13,7 +13,7 @@ import sys
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.apps.builtins.dev_fleet import npm_preflight, sync_runner
@@ -60,7 +60,7 @@ _RUN_DEADLINE_S = 1800
 #                    ``prov.has_dist``, both plain filesystem checks) may be
 #                    called. True on every platform unless the import failed.
 #   _POD_AVAILABLE — pods can actually RUN here, i.e. Linux with ``systemctl``.
-# Conflating the two used to report every worktree as "not built" off Linux,
+# Conflating the two reports every worktree as "not built" off Linux,
 # even though the build state is knowable everywhere.
 _POD_IMPORTED = False
 _POD_AVAILABLE = False
@@ -330,10 +330,10 @@ def _bin_override_var(name: str) -> str:
 def _unresolved_tool_message(name: str) -> str:
     """User-facing message for an unresolved trusted tool.
 
-    Blames the HOST toolchain, not the checkout (issue #2530: the previous
-    wording folded this failure into "git worktree discovery failed in
-    <repo>", sending users to debug a healthy repository), and names the
-    operator remedy in the same voice as the missing-checkout branch. The
+    Blames the HOST toolchain, not the checkout (folding this failure into
+    "git worktree discovery failed in <repo>" sends users to debug a healthy
+    repository), and names the operator remedy in the same voice as the
+    missing-checkout branch. The
     trusted-PATH detail stays in the log line, not here: it is unactionable
     noise in a UI banner.
     """
@@ -439,8 +439,16 @@ async def _run_cmd(
     env: dict | None = None,
     timeout: int = 30,
     mode: str = "standard",
+    pre_spawn: Callable[[], Awaitable[str | None]] | None = None,
 ) -> tuple[int, str, str]:
     """Run a subprocess asynchronously, return (returncode, stdout, stderr).
+
+    ``pre_spawn`` is a last gate evaluated AFTER sandbox preparation and IMMEDIATELY
+    before the child is spawned — the spawn is the only await that follows it. It
+    returns ``None`` to proceed or a reason to refuse (``(-1, "", reason)``). The
+    worktree removal passes its lease renewal here, so "the gateway still excludes
+    a cutover from this worktree" is proven with nothing of unbounded duration —
+    the preparation hop included — left between the proof and the mutation.
 
     Every spawn routes through ``sandboxed_spawn_argv`` (OS isolation +
     credential-scrubbed env): these commands run against agent-influenced
@@ -456,7 +464,11 @@ async def _run_cmd(
     # PATH begins with agent-writable dirs, where a planted git/gh shim
     # would otherwise run with workflow credentials on every auto-refresh.
     if cmd and "/" not in cmd[0]:
-        trusted = _trusted_bin(cmd[0])
+        # A cache miss stats and resolves candidates under _TRUSTED_PATH: filesystem
+        # work, so it hops off the loop like the preparation step below.
+        trusted = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(), _trusted_bin, cmd[0]
+        )
         if trusted is None:
             return -1, "", (f"{_UNRESOLVED_TOOL_PREFIX}{cmd[0]!r} in {_TRUSTED_PATH}")
         cmd = [trusted, *cmd[1:]]
@@ -478,6 +490,15 @@ async def _run_cmd(
     except RuntimeError as exc:
         # Fail closed: no sandbox backend and unsandboxed exec not opted in.
         return -1, "", f"sandbox unavailable: {exc}"
+    if pre_spawn is not None:
+        refusal = await pre_spawn()
+        if refusal is not None:
+            if cleanup:
+                try:
+                    os.unlink(cleanup)
+                except OSError:
+                    pass
+            return -1, "", refusal
     try:
         proc = await create_subprocess_limited(
             *cmd,
@@ -590,8 +611,8 @@ def _kill_tree_sync(pid: int) -> None:
         try:
             platform_compat.kill_process_tree(child)
         except (ProcessLookupError, OSError, ValueError):
-            # Already reaped by the group kill, or a pid we may no longer
-            # signal — the primary kill has happened either way.
+            # Already reaped by the group kill, or a pid we may not be able
+            # to signal — the primary kill has happened either way.
             continue
 
 
@@ -616,7 +637,7 @@ _ACTIVE_RUNS: dict[str, tuple[asyncio.Task, Any]] = {}
 # there is no risk of asyncio lock contention or done-callback deadlocks.
 # LoopBoundLock (not a bare asyncio.Lock) because a module-global primitive
 # binds to the import-time loop and raises RuntimeError from any other loop
-# (Python 3.10+, see #4800) — this module is imported once but serves
+# (Python 3.10+) — this module is imported once but serves
 # whichever loop the gateway runs.
 _SHUTDOWN_ADMISSION_LOCK = LoopBoundLock()
 _SHUTDOWN_IN_PROGRESS = False

@@ -9,7 +9,7 @@ MCP spawns through gatewayd, and nobody publishes a sidecar for the launcher pid
 So ``ctx.call_tool("kirocrew-cron", "cron_trigger", ...)`` reached the handler
 and came back with ``_unidentified_caller_refusal`` -- a plain string most
 scripts swallow, so the job reported ``ok`` while writing nothing. Reads were
-unaffected, which is why the compose fix (#6431) looked complete.
+unaffected, which is why the compose fix looked complete.
 
 The fix is the same channel ``acp/client.py`` gives every agent subprocess,
 including agent crons: the launcher injects ``KIROCREW_SESSION_KEY=cron:<job>``

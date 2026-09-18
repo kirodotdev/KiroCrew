@@ -69,11 +69,11 @@ class TestSecurityConductorInstaller:
         since it has no file-writing tool."""
         assert "kirocrew-security-conductor" in subagent.UNADVERTISED_AGENTS
 
-    def test_prompt_carries_the_verbosity_placeholder(self, tmp_path, monkeypatch):
-        """Custom agents get their OWN prompt, so the token must appear here or
-        the user's verbosity setting silently never reaches this agent."""
+    def test_prompt_does_not_carry_the_retired_verbosity_token(self, tmp_path, monkeypatch):
         data = self._install(tmp_path, monkeypatch)
-        assert "{{VERBOSITY_BLOCK}}" in data["prompt"]
+        # Reply style now arrives as session-context chrome for every
+        # agent; a token left here would reach the model as a literal.
+        assert "{{VERBOSITY_BLOCK}}" not in data["prompt"]
 
     def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
         data = self._install(tmp_path, monkeypatch)
@@ -89,6 +89,13 @@ class TestSecurityConductorInstaller:
         for role in ("Auditor", "Verifier", "Fixer"):
             assert role in prompt, role
         assert "prepare-pr" in prompt  # the fixer's own procedure
+
+    def test_prompt_closes_a_child_once_its_item_is_terminal(self, tmp_path, monkeypatch):
+        """Four child roles reach a terminal verdict and the loop is stopped for each
+        one; without the verb in the tool line the finished session stays open and the
+        operator cleans up by hand."""
+        prompt = " ".join(self._install(tmp_path, monkeypatch)["prompt"].split())
+        assert "`session_close` (close a child once its item is terminal)" in prompt
 
     def test_prompt_delegates_scope_and_acceptance_to_scripts(self, tmp_path, monkeypatch):
         """Both decisions this agent must NOT make by judgment: whether a target
@@ -166,6 +173,10 @@ class TestSecurityConductorInstaller:
         assert "@kirocrew-dashboard/session_read_message" in allowed
         assert "@kirocrew-dashboard/chat_folder_tree" in allowed
         assert "@kirocrew-dashboard/chat_folder_create" in allowed
+        # Writes only the caller's own placement, so it sits on the
+        # create/read side of the invariant: the conductor files ITSELF
+        # in the audit's folder without a prompt.
+        assert "@kirocrew-dashboard/chat_folder_file_self" in allowed
         for gated in (
             "@kirocrew-dashboard/session_send",
             "@kirocrew-dashboard/session_stop",
@@ -198,11 +209,14 @@ class TestSecurityConductorInstaller:
             assert gated not in allowed, gated
         assert "@kirocrew-core" in data["tools"]
 
-    def test_grants_match_the_pipeline_conductor_exactly(self, tmp_path, monkeypatch):
-        """The tuples are REUSED, not copied, and this is what makes that safe to
-        assert rather than merely intended: the two conductors' derived grant
-        sets are identical, so a divergence introduced by a future copy is
-        visible here instead of silently narrowing one agent's patrol."""
+    def test_grants_match_the_pipeline_conductor_plus_self_filing(self, tmp_path, monkeypatch):
+        """The tuples are SHARED, not copied: the security set is the pipeline
+        set plus exactly one verb, ``chat_folder_file_self``, so any other
+        divergence a future copy introduces is visible here instead of silently
+        narrowing one agent's patrol. The one difference is deliberate: this
+        conductor's procedure files itself in the audit's folder before the
+        first dispatch, and the pipeline conductor's does not yet -- a grant
+        nothing in a skill exercises is surface without a user."""
         _stub_environment(tmp_path, monkeypatch)
         agent._install_security_conductor_agent()
         agent._install_pipeline_conductor_agent()
@@ -214,8 +228,33 @@ class TestSecurityConductorInstaller:
         pipeline = json.loads(
             (tmp_path / PIPELINE_CONDUCTOR_AGENT_FILENAME).read_text(encoding="utf-8")
         )
-        assert security["allowedTools"] == pipeline["allowedTools"]
+        extra = set(security["allowedTools"]) - set(pipeline["allowedTools"])
+        assert extra == {"@kirocrew-dashboard/chat_folder_file_self"}
+        assert set(pipeline["allowedTools"]) <= set(security["allowedTools"])
         assert security["tools"] == pipeline["tools"]
+
+    def test_skill_files_the_conductor_itself_before_the_first_dispatch(self):
+        """The audit's folder holds the conductor too, not only its fleet.
+
+        Same shape as the goal conductor's pin: the session driving the audit
+        must not float at the top level while auditors and verifiers sit in a
+        folder. The skill names ``chat_folder_file_self`` (never prompts; writes
+        only the caller's own placement) and the ``<audit>/<agent>`` path every
+        child is created under.
+        """
+        from pathlib import Path
+
+        skill = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "kiro_crew"
+            / "builtin_skills"
+            / "security-conductor"
+            / "SKILL.md"
+        )
+        text = skill.read_text(encoding="utf-8")
+        assert "`chat_folder_file_self`" in text
+        assert "`<audit>/<agent>`" in text
 
     def test_mcp_servers_are_narrowed(self, tmp_path, monkeypatch):
         """Only kirocrew-core and the hand-built dashboard entry ship; inherited
@@ -225,8 +264,8 @@ class TestSecurityConductorInstaller:
         assert data["mcpServers"]["kirocrew-dashboard"]["args"] == ["mcp-dashboard"]
 
     def test_the_work_server_is_not_mounted(self, tmp_path, monkeypatch):
-        """The work-ledger flow belongs to ``kirocrew-ledger-conductor``, and no
-        shipped conductor mounts it. This agent's children report through the
+        """The work-ledger flow belongs to ``kirocrew-conductor``, and no other
+        conductor mounts it. This agent's children report through the
         ``security-conductor`` skill's ledger scripts, not the work ledger, so the
         mount would grant a flow whose procedure this conductor does not run."""
         data = self._install(tmp_path, monkeypatch)

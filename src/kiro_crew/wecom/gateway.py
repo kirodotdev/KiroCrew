@@ -12,23 +12,24 @@ The turn itself runs on the shared ``TurnDriver`` (credential/exfil redaction +
 tool-approval ladder + SEL audit) via the dispatcher -- no hand-rolled loop.
 
 ``warn_if_channel_uncredentialed`` is the diagnostic companion, generalized
-over every collapsed-flag channel (issue #5418): the channel registry's
+over every collapsed-flag channel: the channel registry's
 enabled-only gate never calls a factory when ``_<channel>_enabled`` is False,
 so ``_start_channel_transports`` logs each channel's enabled-but-uncredentialed
 skip reason through this helper at the start decision point, after
 ``KIROCREW_READY``. ``warn_if_wecom_uncredentialed`` remains as the
-WeCom-shaped wrapper pinning the original contract (issue #304).
+WeCom-shaped wrapper pinning the original contract.
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
 from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.wecom.client import WeComClient
-from kiro_crew.wecom.transport import WeComTransport
+from kiro_crew.wecom.transport import WeComTransport, allowed_userids_from_config
 from kiro_crew.wecom.transport_dispatch import WeComDispatcher
 
 if TYPE_CHECKING:
@@ -53,20 +54,30 @@ def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
 
 
 def _allowed_userids(orch: "GatewayOrchestrator") -> list[str]:
-    """Extract the configured WeCom allow-list userids (filtered)."""
-    out: list[str] = []
-    for u in orch._cfg.wecom.allowed_users:
-        uid = u.get("userid") if isinstance(u, dict) else None
-        if uid:
-            out.append(uid)
-    return out
+    """Extract the configured WeCom allow-list userids (filtered).
+
+    Same flattening the live reconfigure path uses; a roster that is not a list
+    authorizes nobody at boot (deny-by-default).
+    """
+    return allowed_userids_from_config(_wecom_section(orch).allowed_users) or []
+
+
+def _wecom_section(orch: "GatewayOrchestrator") -> Any:
+    """The ``wecom`` section in force NOW: the watcher's snapshot, else boot's.
+
+    The factory also runs on an in-process channel restart, by which time the
+    orchestrator's boot copy may be stale; the snapshot is what every other
+    live reader adopted.
+    """
+    cfg = live.snapshot() or orch._cfg
+    return cfg.wecom
 
 
 def warn_if_channel_uncredentialed(
     channel_type: str,
     settings_name: str,
     cfg_enabled: bool,
-    credentials: "Sequence[tuple[str, str]]",
+    credential_presence: "Sequence[tuple[str, bool]]",
 ) -> None:
     """Log WHY a channel will not start when enabled but missing credentials.
 
@@ -78,21 +89,21 @@ def warn_if_channel_uncredentialed(
     ever report the difference. This helper is therefore called by
     ``_start_channel_transports`` at the start decision point (after
     ``KIROCREW_READY``, off the boot-path window), once per collapsed-flag
-    channel, from the raw ingredients each flag was computed from (issue
-    #5418, generalizing the WeCom fix from issue #304).
+    channel, from the presence checks each flag was computed from.
 
-    ``credentials`` holds ``(name, value)`` pairs for exactly the operands the
-    channel's enabled-flag predicate reads -- no more (a name that does not
+    ``credential_presence`` holds ``(name, present)`` pairs for exactly the
+    operands the channel's enabled-flag predicate reads -- no more (a name that does not
     gate the flag would send the operator to configure something that cannot
     start the channel) and no fewer. When the operator enabled the channel but
     at least one operand is absent, it emits exactly one WARNING (visible at
     the default log level) on the channel's own gateway logger, naming the
     missing credential NAME(s), never values; when the channel is disabled, or
-    fully credentialed, it stays completely silent.
+    fully credentialed, it stays completely silent. Callers pass booleans so
+    the diagnostic never receives credential values.
     """
-    if not cfg_enabled or all(value for _, value in credentials):
+    if not cfg_enabled or all(present for _, present in credential_presence):
         return
-    missing = " and ".join(name for name, value in credentials if not value)
+    missing = " and ".join(name for name, present in credential_presence if not present)
     channel_logger = logging.getLogger(f"kiro_crew.{channel_type}.gateway")
     # The rule keys on the word "credential" in the format string; the call
     # logs only the MISSING credential variable name(s) and a static
@@ -110,19 +121,19 @@ def warn_if_channel_uncredentialed(
 def warn_if_wecom_uncredentialed(cfg_enabled: bool, bot_id: str, secret: str) -> None:
     """WeCom-shaped wrapper over :func:`warn_if_channel_uncredentialed`.
 
-    Preserves the public contract issue #304 introduced (pinned by
+    Preserves the public contract (pinned by
     ``test_wecom_gateway.py::TestSkipReasonWarning``): exactly one WARNING on
     this module's logger naming the missing credential name(s)
     (``WECOM_BOT_ID`` / ``WECOM_SECRET``), values never logged, silence when
     disabled or fully credentialed. Production routes through the
-    six-channel table in ``_start_channel_transports`` (issue #5418), which
-    feeds the generic helper the same ``(name, value)`` pairs.
+    channel table in ``_start_channel_transports``, which
+    feeds the generic helper the same ``(name, present)`` pairs.
     """
     warn_if_channel_uncredentialed(
         "wecom",
         "WeCom",
         cfg_enabled,
-        (("WECOM_BOT_ID", bot_id), ("WECOM_SECRET", secret)),
+        (("WECOM_BOT_ID", bool(bot_id)), ("WECOM_SECRET", bool(secret))),
     )
 
 
@@ -156,16 +167,17 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
             conv_log=getattr(orch, "conv_log", None),
             approval_mode=_resolve_approval_mode(orch),
         )
+        wecom_cfg = _wecom_section(orch)
         client = WeComClient(
             bot_id=orch._wecom_bot_id,
             secret=orch._wecom_secret,
-            ws_url=orch._cfg.wecom.ws_url,
+            ws_url=wecom_cfg.ws_url,
             proxy=proxy,
         )
         transport = WeComTransport(
             client,
             allowed_users=_allowed_userids(orch),
-            allow_all=bool(orch._cfg.wecom.allow_all_users),
+            allow_all=bool(wecom_cfg.allow_all_users),
             owner_id=orch._owner_id,
             dispatch=dispatcher.handle_message,
         )
@@ -174,6 +186,9 @@ async def maybe_start_wecom(orch: "GatewayOrchestrator") -> "WeComClient | None"
         # set_message_handler avoids the client<->transport construction cycle.
         client.set_message_handler(transport.receive)
         dispatcher.client = client
+        # The dispatcher's config applier pushes reloaded allow-list fields at
+        # the transport; wired here for the same construction-cycle reason.
+        dispatcher.transport = transport
 
         # Keep the settings badge truthful: connect() only SCHEDULES the WS
         # loop, so "started" proves nothing about the credentials. The client

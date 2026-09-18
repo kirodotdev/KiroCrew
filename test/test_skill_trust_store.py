@@ -923,7 +923,7 @@ class TestConsentCoversOnlyTheGrantedDirectory:
         bodies, pointers = loader.split_triggered(["triggered"], project)
         assert "triggered" in bodies + pointers
 
-        # Project-blind is what used to happen, and it silently dropped the name.
+        # Project-blind matching silently drops the name.
         assert loader.split_triggered(["triggered"]) == ([], [])
 
 
@@ -1080,7 +1080,7 @@ class TestCachedPathsCannotEscapeAfterVetting:
 
     @pytest.mark.skipif(
         platform_compat.IS_WINDOWS,
-        reason="POSIX mode bits; the Windows ACL path needs icacls and is asserted there",
+        reason="POSIX mode bits; the Windows ACL path applies a DACL in-process and is asserted there",
     )
     def test_the_trust_dir_is_owner_only_on_posix(self, project):
         """The directory, not just the store file, must be owner-only.
@@ -1130,10 +1130,10 @@ class TestRevokeIsNotBlockedByItsAudit:
         made the same call in safety_override.deactivate. Fail closed on
         escalation, fail open on de-escalation.
 
-        Also pins the caller-facing half: the failure must not escape, because it
-        previously surfaced as a 500 telling the operator the revoke had failed
-        when it had durably succeeded -- and the retry then reported
-        "nothing was revoked" while skipping the audit for good.
+        Also pins the caller-facing half: the failure must not escape. An escaping
+        failure surfaces as a 500 telling the operator the revoke had failed when
+        it had durably succeeded -- and the retry then reports "nothing was
+        revoked" while skipping the audit for good.
         """
 
         class _Boom:
@@ -1348,7 +1348,7 @@ class TestEveryEnumeratedPathHasARecordedRoot:
         assert {"from-project", "from-global"} <= names, names
 
         project_key = skill_trust.canonical_key(project)
-        # Every item carries a root -- three elements, always. A path can no longer
+        # Every item carries a root -- three elements, always. A path cannot
         # arrive without one, which is what the old side map allowed.
         assert all(len(item) == 3 for item in items), items
         roots = {n: root for n, _pth, root in items}
@@ -1387,9 +1387,9 @@ class TestEveryEnumeratedPathHasARecordedRoot:
 class TestOneEnforcementPointForEnumeratedReads:
     """Guard: both readers go through the choke point, and neither reads directly.
 
-    Round 2 hardened the body read alone and the metadata read of the same cached
-    paths stayed unchecked, which is how a reviewer found the sibling instead of a
-    test. This fails the build if they drift apart again.
+    Hardening the body read alone would leave the metadata read of the same cached
+    paths unchecked, which is how a reviewer found the sibling instead of a test.
+    This fails the build if they drift apart again.
     """
 
     def test_enumerated_readers_route_through_the_choke_point(self):
@@ -1557,9 +1557,9 @@ class TestLockFailuresAreFailClosed:
 
     `_locked_store` fails before any store I/O when the trust dir is not creatable,
     the lock file is not openable (read-only filesystem, permissions), or the lock
-    call itself fails. Those used to escape as raw OSError: the read-only listing
-    500ed a settings page it promises to degrade, and the grant/revoke handlers
-    reached aiohttp unhandled instead of returning their 409.
+    call itself fails. Those must not escape as raw OSError: otherwise the
+    read-only listing 500s a settings page it promises to degrade, and the
+    grant/revoke handlers reach aiohttp unhandled instead of returning their 409.
     """
 
     def test_listing_degrades_when_the_store_cannot_be_locked(self, project, monkeypatch):
@@ -1785,7 +1785,7 @@ class TestTrustEndpointAuthorization:
         monkeypatch.setattr(prompts, "_sel", lambda: audit)
         request = SimpleNamespace(get=lambda key, default=None: {"user": "owner"}.get(key, default))
 
-        assert prompts._deny_non_owner_skill_trust(request, "skill_trust_read") is None
+        assert prompts._deny_non_owner_skill_operation(request, "skill_trust_read") is None
         assert audit.log_api_access.call_args.kwargs == {
             "caller": "owner",
             "operation": "skill_trust_read",
@@ -1968,8 +1968,8 @@ class TestEnforcementIsAudited:
 
         `_trusted_project_key` runs on every message via `get_triggered_skills`. One
         governance event per message would bury the events that matter and add
-        hot-path cost a previous review round was specifically about, so the record
-        is written on first use per (directory, outcome).
+        hot-path cost on a path that runs on every message, so the record is
+        written on first use per (directory, outcome).
         """
         from kiro_crew.skills import SkillsLoader
 

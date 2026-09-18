@@ -1017,7 +1017,7 @@ class TestSlotWorkspace:
 
     @pytest.mark.asyncio
     async def test_switch_is_allowed_once_the_conversation_started(self):
-        # #1717: a started conversation used to answer 409. It now switches,
+        # A started conversation switches rather than answering 409,
         # because the transcript is workspace-independent -- only the live
         # agent process is restarted, exactly as the sibling switches do.
         slot = _ChatSlot("s1")
@@ -1036,7 +1036,7 @@ class TestSlotWorkspace:
     @pytest.mark.asyncio
     async def test_no_op_switch_does_not_reset(self):
         # Re-picking the workspace the slot already has changes nothing, so it
-        # must not tear the live session down (Opus review finding on #9084).
+        # must not tear the live session down.
         slot = _ChatSlot("s1")
         slot.workspace = "same-ws"
         slot.project = "/tmp/ws-same"
@@ -1054,7 +1054,7 @@ class TestSlotWorkspace:
     @pytest.mark.asyncio
     async def test_switch_on_started_conversation_marks_the_slot_dirty(self):
         # The periodic flush persists a slot's metadata only while _dirty is
-        # set (GPT review finding on #9084). Without this a crash before the
+        # set. Without this a crash before the
         # next message restores the OLD workspace over a switch the user saw
         # succeed. Only reachable now that a started conversation may switch.
         slot = _ChatSlot("s1")
@@ -1071,8 +1071,8 @@ class TestSlotWorkspace:
     @pytest.mark.asyncio
     async def test_switch_refused_while_subagents_attached(self):
         # The reset kills the runtime attached children run on, so the switch
-        # refuses like every sibling switch handler (GPT review finding on
-        # #9084). Before the commit: workspace/project untouched.
+        # refuses like every sibling switch handler. Before the commit:
+        # workspace/project untouched.
         slot = _ChatSlot("s1")
         slot.workspace = "default"
         slot.project = "/tmp/ws-default"

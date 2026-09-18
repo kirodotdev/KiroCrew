@@ -45,6 +45,32 @@ describe('/side slash command interception', () => {
     expect(mockSendChat).not.toHaveBeenCalled()
   })
 
+  // `/btw` is a pure alias of `/side` — same regex, same handling. Pinned as its
+  // own cases so a future SIDE_RE edit cannot silently drop the alias.
+  it('intercepts "/btw" exactly like "/side"', async () => {
+    const result = await interceptSlashCommand('/btw', SLOT, store.dispatch)
+    expect(result.intercepted).toBe(true)
+    expect(mockSideOpen).toHaveBeenCalledWith(SLOT)
+    expect(mockSideTurn).not.toHaveBeenCalled()
+    expect(mockSendChat).not.toHaveBeenCalled()
+    expect(store.getState().chat.activityTab).toBe('side')
+  })
+
+  it('intercepts "/btw <message>" and forwards body to sideTurn', async () => {
+    const result = await interceptSlashCommand('/btw is this cached', SLOT, store.dispatch)
+    expect(result.intercepted).toBe(true)
+    expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'is this cached')
+    expect(mockSendChat).not.toHaveBeenCalled()
+  })
+
+  it('does not intercept prefix look-alikes ("/btwx", "/sidebar")', async () => {
+    for (const text of ['/btwx', '/btwx q', '/sidebar', '/sidebar q']) {
+      const result = await interceptSlashCommand(text, SLOT, store.dispatch)
+      expect(result).toEqual({ intercepted: false })
+    }
+    expect(mockSideOpen).not.toHaveBeenCalled()
+  })
+
   it('does not intercept regular messages', async () => {
     const result = await interceptSlashCommand('hello world', SLOT, store.dispatch)
     expect(result.intercepted).toBe(false)

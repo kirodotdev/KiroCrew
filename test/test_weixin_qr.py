@@ -286,7 +286,7 @@ def test_render_qr_round_trips_the_scan_url():
 
 # -- _delete_env_key: it rewrites the user's credential file, so what it PRESERVES
 #    matters as much as what it removes. Untested before; the QR-encoder body that
-#    used to cover this file moved to kiro_crew.qr, which made the gap visible.
+#    covered this file, then moved to kiro_crew.qr, which made the gap visible.
 
 
 def test_delete_env_key_removes_only_the_named_key(tmp_path, monkeypatch):
@@ -446,3 +446,34 @@ def test_commit_credential_succeeds_when_env_lock_is_free(tmp_path, monkeypatch)
     assert qr._read_env_value("WEIXIN_TOKEN") == "newtoken"
     assert qr._read_env_value("OTHER") == "keepme"
     assert cp.exists() and json.loads(cp.read_text()) == {"weixin": {}}
+
+
+def test_config_save_answers_only_after_the_watcher_applied_it(tmp_path, monkeypatch):
+    """The Weixin save carries the allow-list, so it must await the watcher's
+    dispatch before answering: a removed sender is unauthorized on the running
+    transport when the caller sees "saved", not one poll interval later."""
+    import asyncio
+    import json
+    from unittest.mock import AsyncMock
+
+    from aiohttp import web
+    from aiohttp.test_utils import TestClient, TestServer
+
+    cp = tmp_path / "config.json"
+    cp.write_text(json.dumps({"weixin": {"enabled": True}}), encoding="utf-8")
+    monkeypatch.setattr(qr, "config_path", lambda: cp)
+    applied = AsyncMock()
+    monkeypatch.setattr(qr, "_hot_apply_after_write", applied)
+
+    app = web.Application()
+    qr.setup_weixin_routes(app)
+
+    async def _go():
+        async with TestClient(TestServer(app)) as client:
+            resp = await client.put("/api/weixin/config", json={"allowed_user_ids": ["u-1"]})
+            return resp.status, await resp.json()
+
+    status, body = asyncio.run(_go())
+    assert status == 200 and body["ok"] is True
+    applied.assert_awaited_once()
+    assert json.loads(cp.read_text(encoding="utf-8"))["weixin"]["allowed_user_ids"] == ["u-1"]

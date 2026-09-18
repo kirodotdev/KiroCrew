@@ -33,8 +33,23 @@ from kiro_crew.metrics.sessions import (
 )
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
+
+#: The teardown reason a destroy records when it could NOT establish that the ACP
+#: id is globally revoked. Retention authorizes deleting a unit's history only on
+#: ``destroyed``, which means "revocation completed", so this word records the same
+#: teardown while leaving the log in place. The map delete in ``destroy`` removes
+#: exactly one key, and two keys can legitimately point at one sid -- importing a
+#: transferred session twice allocates a new slot key each time and leaves the
+#: source intact -- so the tidier record is the wrong one to claim.
+_END_REASON_SID_RETAINED = "destroyed_sid_retained"
+
+#: Stands in for "a key may still map to this sid, but the map could not be read".
+#: Not a real key, and never logged as one: it only has to be non-None so the claim
+#: is withheld, because an unreadable map is not evidence of revocation.
+_SID_RETENTION_UNKNOWN = "<unreadable session map>"
 StopOutcome = Literal["soft", "hard", "idle"]
 ProviderFactory = Callable[..., Any]
+_ANY_SESSION = object()
 
 
 class _RecycleCallback(Protocol):
@@ -45,6 +60,7 @@ class _SessionEntry(Protocol):
     provider: Any
     semaphore: asyncio.BoundedSemaphore
     first_turn: object
+    provider_switch_replay: bool
     retire_on_identity_change: bool
     prev_turn_cancelled: bool
 
@@ -53,6 +69,11 @@ class _SessionMapPort(Protocol):
     def clear_sid(self, key: str) -> None: ...
 
     def delete(self, key: str, *, reason: str | None = None) -> None: ...
+
+    #: Read-only, and used ONLY to withhold a claim: a destroy asks whether any
+    #: other key still maps the session id it just unmapped, and records a
+    #: non-terminal teardown reason when one does.
+    def find_key_by_sid(self, session_id: str) -> str | None: ...
 
     def set(
         self,
@@ -69,7 +90,7 @@ class _SessionMapPort(Protocol):
 class _BackgroundRuntime(Protocol):
     def has_active_or_initializing_sessions(self) -> bool: ...
 
-    async def kill(self, expected: bool = False) -> None: ...
+    async def kill(self, expected: bool = False, reason: str = "") -> None: ...
 
 
 class SessionLifecycleOwner(Protocol):
@@ -80,6 +101,7 @@ class SessionLifecycleOwner(Protocol):
     _sessions: MutableMapping[str, _SessionEntry]
     _lock: asyncio.Lock
     _closing: bool
+    _update_pause_owned: bool
     _start_sem: asyncio.Semaphore
     _starting_pids: set[int]
 
@@ -87,6 +109,7 @@ class SessionLifecycleOwner(Protocol):
     _warm_pool: asyncio.Queue[tuple[Any, float]]
     _pool_size: int
     _pool_agent: str
+    _pool_ttl_secs: int
     _pool_cwd: str
     _pool_started: bool
     _pool_health_task: asyncio.Task[Any] | None
@@ -105,6 +128,12 @@ class SessionLifecycleOwner(Protocol):
     _session_map: _SessionMapPort
 
     def _fold_key(self, key: str) -> str: ...
+
+    def _has_allocation_reservation(self, key: str) -> bool: ...
+
+    def session_generation(self, key: str) -> int: ...
+
+    def _advance_session_generation(self, key: str) -> int: ...
 
     def set_autocompact_pct(self, key: str, pct: float | None) -> None: ...
 
@@ -204,6 +233,19 @@ class SessionLifecycleState:
     suppress_replay: set[str] = field(default_factory=set)
     origin_links: dict[str, Any] = field(default_factory=dict)
     on_recycled: _RecycleCallback | None = None
+    # Per-session-key count of Stop requests, keyed by folded key. Bumped by
+    # :meth:`SessionLifecycleService.stop_turn` BEFORE the provider cancel is
+    # awaited, so a turn runner that snapshots the count at turn start and
+    # re-reads it at its end-of-turn gates sees a Stop from ANY surface that
+    # reaches this session -- the dashboard, a linked channel command, a
+    # transport's stop verb -- not only the one that owns the runner's slot.
+    # Monotonic across ``reset``: a hard stop resets the session object, so a
+    # flag on the session itself would vanish with the very turn it stopped.
+    # Popped on the teardown paths that end the key's conversation for good
+    # (``remove``, ``remove_if_unclaimed``, ``destroy``, the identity sweep),
+    # beside the sibling per-key dicts, so a long-lived gateway does not keep
+    # one entry per channel thread it ever stopped.
+    stop_requests: dict[str, int] = field(default_factory=dict)
 
 
 class SessionLifecycleService:
@@ -226,6 +268,15 @@ class SessionLifecycleService:
     @_identity_sweep_lock.setter
     def _identity_sweep_lock(self, lock: asyncio.Lock) -> None:
         self.state.identity_sweep_lock = lock
+
+    def stop_generation(self, key: str) -> int:
+        """How many Stop requests :meth:`stop_turn` has recorded for *key*.
+
+        Monotonic per folded key; 0 for a key never stopped. A turn runner
+        snapshots this at turn start and treats any later change as a user
+        Stop, whichever surface issued it.
+        """
+        return self.state.stop_requests.get(self._owner._fold_key(key), 0)
 
     @property
     def _recycling(self) -> dict[str, _SessionEntry]:
@@ -259,10 +310,16 @@ class SessionLifecycleService:
     def _on_recycled(self, callback: _RecycleCallback | None) -> None:
         self.state.on_recycled = callback
 
-    async def refresh_defaults(self) -> None:
-        """Adopt config changes that only affect new sessions."""
+    async def refresh_defaults(self, cfg: Any = None) -> None:
+        """Adopt config changes that only affect new sessions.
+
+        ``cfg`` is an already-loaded config -- the config watcher hands in the
+        one it just loaded so the apply needs no second read. ``None`` loads
+        here, off-loop, for the request-handler callers.
+        """
         owner = self._owner
         logger = self._deps.logger
+        constants = self._deps.constants()
         async with owner._pool_fill_lock:
             # Loaded OFF the event loop, and INSIDE the fill lock. Both halves
             # are load-bearing:
@@ -282,10 +339,35 @@ class SessionLifecycleService:
             # method exists to prevent. Holding the lock across both makes
             # read-then-install atomic per refresh, and costs only that
             # serialization: the load still never touches the loop.
-            cfg = await asyncio.to_thread(self._deps.load_config)
+            if cfg is None:
+                cfg = await asyncio.to_thread(self._deps.load_config)
+            # Same reason as the load: default_project_dir() reads the config
+            # file and stats the workspace directory, so it stays off the loop
+            # and outside owner._lock, which every session turn contends for.
+            pool_cwd = await asyncio.to_thread(self._deps.default_project_dir)
+            # Built before the lock is taken and before either owner attribute
+            # is touched: if this raises, ``owner._cfg`` and
+            # ``owner._provider_factory`` must still be the previous,
+            # consistent pair -- not cfg swapped in with the old factory still
+            # live, which is what a watcher retry would otherwise re-enter
+            # against.
+            provider_factory = self._deps.build_provider_factory(cfg)
             async with owner._lock:
                 owner._cfg = cfg
-                owner._provider_factory = self._deps.build_provider_factory(cfg)
+                owner._provider_factory = provider_factory
+                # The warm pool's shape is config too: size, agent, cwd and TTL
+                # are captured into WarmPoolState at construction, so a refresh
+                # that rebuilt the factory but left them alone kept spawning the
+                # OLD pool size and agent, and the TTL was never re-adopted by
+                # any path. Same clamp as WarmSessionPool._state_from_owner.
+                owner._pool_size = min(constants.max_pool, max(0, cfg.session.pool_size))
+                owner._pool_agent = cfg.session.pool_agent or getattr(
+                    cfg.agent,
+                    "default_agent",
+                    "",
+                )
+                owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
+                owner._pool_cwd = pool_cwd
                 while not owner._warm_pool.empty():
                     try:
                         provider, _ = owner._warm_pool.get_nowait()
@@ -308,24 +390,34 @@ class SessionLifecycleService:
             cfg.agent.reasoning_effort,
         )
 
-    async def reload_provider_factory(self) -> None:
-        """Reload the provider factory and tear down providers from the old one."""
+    async def reload_provider_factory(self, cfg: Any = None) -> None:
+        """Reload the provider factory and tear down providers from the old one.
+
+        ``cfg`` is the already-loaded config the live applier hands in so the
+        switch does no filesystem work on the loop; ``None`` loads it here.
+        """
         owner = self._owner
         logger = self._deps.logger
         constants = self._deps.constants()
-        cfg = self._deps.load_config()
+        if cfg is None:
+            cfg = self._deps.load_config()
         stale: list[tuple[str, Any]] = []
         async with owner._pool_fill_lock:
+            pool_cwd = await asyncio.to_thread(self._deps.default_project_dir)
             async with owner._lock:
                 owner._cfg = cfg
                 owner._provider_factory = self._deps.build_provider_factory(cfg)
+                # The same four pool fields refresh_defaults adopts: a reset
+                # handler that loads a disk-edited pool_ttl_secs must not evict
+                # the warm pool at the stale TTL until the watcher's next cycle.
                 owner._pool_size = min(constants.max_pool, max(0, cfg.session.pool_size))
                 owner._pool_agent = cfg.session.pool_agent or getattr(
                     cfg.agent,
                     "default_agent",
                     "",
                 )
-                owner._pool_cwd = self._deps.default_project_dir()
+                owner._pool_ttl_secs = max(0, cfg.session.pool_ttl_secs)
+                owner._pool_cwd = pool_cwd
                 while not owner._warm_pool.empty():
                     try:
                         provider, _ = owner._warm_pool.get_nowait()
@@ -335,6 +427,8 @@ class SessionLifecycleService:
                 # Intentionally clear only the registry: the original reload
                 # path does not rewrite session-map or compaction state here.
                 stale = list(owner._sessions.items())
+                for stale_key, _ in stale:
+                    owner._advance_session_generation(stale_key)
                 owner._sessions.clear()
                 # Same tick as the clear. This removal had no end record, so a
                 # replacement under a reused key inherited the old start and
@@ -385,8 +479,31 @@ class SessionLifecycleService:
             if skip_if_busy and current is not None and current.semaphore.locked():
                 return False
             session = owner._sessions.pop(key, None)
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
-            self._suppress_replay.discard(key)
+            # ``clear_conversation`` means the conversation is being THROWN AWAY,
+            # and the successor's replay is the one thing that can put it back.
+            # Arming suppression here is what stops the reset that critical
+            # context escalates to (``_reset_still_critical``, this flag's only
+            # ``clear_conversation=True`` caller) from becoming a loop: the
+            # successor cold-starts, ``build_session_replay`` re-injects the whole
+            # conversation log as ONE prompt, a single prompt is not something
+            # ``/compact`` can shrink, so the reading stays above
+            # ``_POST_COMPACT_RESET_PCT`` and escalates again -- forever, since
+            # the pop above also takes the cooldown that would have damped it.
+            # A discard here is right for every OTHER reset (an idle expiry, a
+            # provider switch, the watchdog): those keep the conversation, so
+            # replaying it is the behaviour that preserves it. The manual
+            # ``discard_conversation(replay=False)`` path already arms the flag
+            # for exactly this reason; this branch is the one clear that forgot.
+            # Gated on ``session is not None`` for the same reason the
+            # ``clear_sid`` call below is: with nothing to clear there is no
+            # conversation to throw away, so arming the flag would only make the
+            # next cold start on an unrelated key amnesiac.
+            if clear_conversation and session is not None:
+                self._suppress_replay.add(key)
+            else:
+                self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
             if session is not None:
@@ -397,6 +514,24 @@ class SessionLifecycleService:
                 # this session's. The pop and the sample happen before this call's
                 # own suspension point, so that ordering still holds; only the
                 # crumb unlink is deferred to a worker.
+                # Append-only the session's log (flag-gated, fail-soft). Reset is
+                # the teardown that ends a crew log's life, since the successor
+                # cold-starts a new ACP session id. Written BEFORE the await
+                # below: the emitter hands the entry to its own thread and
+                # returns, so this adds no suspension point, while writing it
+                # after would let a live turn's entries take a lower seq than the
+                # teardown that already happened. Entries from turns that were
+                # in flight still follow it -- see `on_session_closed` -- but the
+                # teardown's own position stays where the decision was made.
+                # Deferred, not module-scope: this module is reached from the gateway
+                # boot path, and AUTOSDE's no-new-work-on-gateway-boot-path rule asks
+                # for a flag-gated subsystem's IMPORT to be gated, not just its use.
+                from kiro_crew.crew_log import emit as crew_log_emit
+
+                crew_log_emit.on_session_closed(
+                    crew_log_emit.session_id_of(session.provider),
+                    END_REASON_RESET,
+                )
                 await record_session_ended(key, end_reason=END_REASON_RESET)
         if clear_conversation and session is not None:
             # The registry lock, not an absence of suspension points, is what makes
@@ -508,10 +643,12 @@ class SessionLifecycleService:
         key = owner._fold_key(key)
         async with owner._lock:
             session = owner._sessions.pop(key, None)
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
+            self.state.stop_requests.pop(key, None)
             if session is not None:
                 # Same tick as the pop: see reset for why recording after the
                 # teardown awaits would consume a successor's start.
@@ -560,12 +697,14 @@ class SessionLifecycleService:
                             skipped = True
                             continue
                         del owner._sessions[key]
+                        owner._advance_session_generation(key)
                         owner._compact_cooldown_until.pop(key, None)
                         self._suppress_replay.discard(key)
                         self._origin_links.pop(key, None)
+                        self.state.stop_requests.pop(key, None)
                         retired_keys.append(key)
                         # Do not clear _compact_pending_verdict: the identity
-                        # recycle historically preserves that deferred verdict.
+                        # recycle preserves that deferred verdict.
                         doomed.append((key, sess.provider))
                     # Same lock hold as the removals, not down in the shutdown
                     # loop below: that loop awaits, and a replacement session can
@@ -680,10 +819,12 @@ class SessionLifecycleService:
             ):
                 return False
             del owner._sessions[key]
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
             self._origin_links.pop(key, None)
+            self.state.stop_requests.pop(key, None)
             # Same tick as the removal: see reset.
             await record_session_ended(key, end_reason=END_REASON_UNCLAIMED)
         await asyncio.to_thread(self._deps.get_unlink_session_queue(), session)
@@ -695,26 +836,131 @@ class SessionLifecycleService:
         )
         return True
 
-    async def destroy(self, key: str) -> None:
-        """Permanently destroy a live session and its persistence entry."""
+    async def destroy(
+        self,
+        key: str,
+        *,
+        should_destroy: Callable[[], bool] | None = None,
+        expect_generation: object = _ANY_SESSION,
+        skip_if_busy: bool = False,
+        preserve_autocompact_override: bool = False,
+    ) -> bool:
+        """Destroy *key* only while every synchronous under-lock guard allows it."""
         owner = self._owner
         constants = self._deps.constants()
-        key = owner._fold_key(key)
         async with owner._lock:
+            key = owner._fold_key(key)
+            if expect_generation is not _ANY_SESSION and owner._has_allocation_reservation(key):
+                return False
+            current = owner._sessions.get(key)
+            if (
+                expect_generation is not _ANY_SESSION
+                and owner.session_generation(key) != expect_generation
+            ):
+                return False
+            if skip_if_busy and current is not None and current.semaphore.locked():
+                return False
+            if should_destroy is not None:
+                try:
+                    allowed = should_destroy()
+                except Exception:
+                    self._deps.logger.warning(
+                        "Conditional session destroy guard failed for %s; skipping",
+                        key,
+                        exc_info=True,
+                    )
+                    return False
+                if not allowed:
+                    return False
             session = owner._sessions.pop(key, None)
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             self._suppress_replay.discard(key)
             owner._compact_pending_verdict.pop(key, None)
-            # The per-session compaction-threshold override dies with the
-            # session's permanent destruction (unlike reset/recycle, which it
-            # deliberately survives): a later session recreated on this key is
-            # a NEW conversation, and inheriting the deleted one's threshold
-            # while the slot reports "following global" is silent divergence.
-            owner.set_autocompact_pct(key, None)
+            self.state.stop_requests.pop(key, None)
+            # Ordinary permanent destroy starts a new conversation on reuse and
+            # therefore clears the old threshold. History deletion can race a
+            # same-key transcript claim in another process, so its explicit
+            # conditional mode preserves this independently owned sidecar.
+            if not preserve_autocompact_override:
+                owner.set_autocompact_pct(key, None)
             # _origin_links deliberately survives destroy; existing callers
             # rely on the historical asymmetry with reset/remove.
+            # The map delete is the destructive persistence linearization point.
+            # It must run before record_session_ended can suspend: dashboard slot
+            # publication does not take this registry lock and could otherwise
+            # adopt the predecessor's still-visible binding during that await.
+            owner._session_map.delete(
+                key,
+                reason=constants.unbind_reason_session_destroyed,
+            )
             if session is not None:
-                # Same tick as the pop: see reset.
+                # Append-only the session's log (flag-gated, fail-soft). Destroy is a
+                # teardown and has to record itself, for the same reason the reset
+                # route above does -- and for one more: without this entry the
+                # unit is never collected by EITHER half of retention. The emitter
+                # holds this session's cached handle, and the write lease that
+                # handle carries, so a removal claiming the lease `sole` answers
+                # `owned`; the sweep is blocked from the other side, because a unit
+                # whose newest lifecycle entry is not a close reads as OPEN
+                # whatever its age. One missing entry, both paths defeated.
+                #
+                # The REASON asserts how far the teardown got, and retention treats
+                # only `destroyed` as authorization to delete the unit's history.
+                # That word means the ACP id is globally revoked, so it is claimed
+                # only after checking that no OTHER key still maps to this sid: the
+                # map delete above removes exactly ONE key, and a second key
+                # pointing at the same sid still resolves it, which keeps the
+                # conversation resumable and its log needed. Two keys on one sid is
+                # a state the system itself produces -- importing a transferred
+                # session twice allocates a new slot key each time and deliberately
+                # leaves the source intact (see dashboard/session_transfer.py) --
+                # so this is not only an adversarial shape and the other holder must
+                # not be revoked to make this record tidy.
+                #
+                # Reading the map to WITHHOLD the claim is safe in a way that
+                # reading it to grant one is not: a forged or emptied map can only
+                # make this assert less than the truth, never more, and the sweep
+                # itself still reads nothing but the ledger.
+                #
+                # Placed here, before the await below, for the reason the reset
+                # site documents: the emitter hands the entry to its own thread and
+                # returns, so this adds no suspension point, while writing it after
+                # the await would let a live turn's entries take a lower seq than
+                # the teardown that already happened. Entries from turns that were
+                # in flight still follow it by design -- see `on_session_closed`.
+                #
+                # It cannot start a crew log for a session that has none: `_handle`
+                # never creates one, so a close for an unopened session writes
+                # nothing rather than leaving a header behind for a conversation
+                # that is being destroyed.
+                #
+                # Deferred, not module-scope: this module is reached from the
+                # gateway boot path, and AUTOSDE's no-new-work-on-gateway-boot-path
+                # rule asks for a flag-gated subsystem's IMPORT to be gated too.
+                from kiro_crew.crew_log import emit as crew_log_emit
+
+                ledger_sid = crew_log_emit.session_id_of(session.provider)
+                retained_key: str | None = None
+                if ledger_sid:
+                    try:
+                        retained_key = owner._session_map.find_key_by_sid(ledger_sid)
+                    except Exception:
+                        # An unreadable map is not evidence that the id is revoked.
+                        retained_key = _SID_RETENTION_UNKNOWN
+                if retained_key is not None:
+                    self._deps.logger.info(
+                        "Session destroy: %s still maps to session id of %s; recording a "
+                        "non-terminal teardown so its crew log is retained",
+                        retained_key,
+                        key,
+                    )
+                crew_log_emit.on_session_closed(
+                    ledger_sid,
+                    END_REASON_DESTROYED if retained_key is None else _END_REASON_SID_RETAINED,
+                )
+                # Still under the same lock as the pop; a manager successor cannot
+                # register until its predecessor's end record is sampled.
                 await record_session_ended(key, end_reason=END_REASON_DESTROYED)
         try:
             if session:
@@ -722,11 +968,25 @@ class SessionLifecycleService:
                 await session.provider.shutdown()
             await owner.release_subagent_runtime(key)
         finally:
-            owner._session_map.delete(
-                key,
-                reason=constants.unbind_reason_session_destroyed,
-            )
             self._deps.logger.info("Destroyed session (map deleted): %s", key)
+        return True
+
+    async def destroy_if(
+        self,
+        key: str,
+        expected_generation: int,
+        should_destroy: Callable[[], bool],
+        *,
+        preserve_autocompact_override: bool = False,
+    ) -> bool:
+        """Destroy the captured idle generation if its slot guard stays true."""
+        return await self.destroy(
+            key,
+            should_destroy=should_destroy,
+            expect_generation=expected_generation,
+            skip_if_busy=True,
+            preserve_autocompact_override=preserve_autocompact_override,
+        )
 
     async def discard_conversation(
         self, key: str, *, replay: bool = True, skip_if_busy: bool = False
@@ -763,6 +1023,7 @@ class SessionLifecycleService:
             if skip_if_busy and current is not None and current.semaphore.locked():
                 return False
             session = owner._sessions.pop(key, None)
+            owner._advance_session_generation(key)
             owner._compact_cooldown_until.pop(key, None)
             owner._compact_pending_verdict.pop(key, None)
             # Store replay suppression atomically with the pop. Origin-link
@@ -877,6 +1138,7 @@ class SessionLifecycleService:
         # landing in the multi-second window after that snapshot.
         async with owner._lock:
             owner._closing = True
+            owner._update_pause_owned = False
 
         try:
             await owner.drain_active_turns(timeout=drain_timeout)
@@ -939,8 +1201,13 @@ class SessionLifecycleService:
                 cwd_str = sess.provider.cwd
                 if isinstance(sess.provider, acp_provider_type):
                     sid = sess.provider.client._session_id
+                    # A replay-pending fresh child is not yet the durable
+                    # conversation. Allocation retained the prior full-history
+                    # SID; shutdown must not overwrite it before the replay
+                    # settlement in chat_runner commits the fresh transcript.
                     if (
                         sid
+                        and not sess.provider_switch_replay
                         and key != constants.background_key
                         and (
                             not any(
@@ -988,6 +1255,8 @@ class SessionLifecycleService:
                 logger.debug("close_all: session map flush failed", exc_info=True)
 
             sessions = dict(owner._sessions)
+            for session_key in sessions:
+                owner._advance_session_generation(session_key)
             owner._sessions.clear()
             owner._compact_cooldown_until.clear()
             self._suppress_replay.clear()
@@ -1063,6 +1332,11 @@ class SessionLifecycleService:
         if not session:
             return "idle"
 
+        # Record the Stop against the session key before anything is awaited:
+        # the runner's end-of-turn gates may run as soon as the provider's
+        # cancel lands, and `prev_turn_cancelled` (set only after the ack) is
+        # too late for them.
+        self.state.stop_requests[key] = self.state.stop_requests.get(key, 0) + 1
         if not preserve_queue:
             owner.clear_queue(key)
         budget: float = owner._cfg.agent.soft_stop_budget_secs
@@ -1186,6 +1460,7 @@ class SessionLifecycleService:
             ended: list[str] = []
             for key in keys:
                 session = owner._sessions.pop(key, None)
+                owner._advance_session_generation(key)
                 if session:
                     providers.append(session.provider)
                     popped.append(session)

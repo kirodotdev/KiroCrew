@@ -412,7 +412,7 @@ def _read_info_plist(path: str) -> dict:
         # Reading ``MAX_INFO_PLIST_BYTES + 1`` rather than the cap: the extra byte is
         # what distinguishes "exactly at the limit" from "larger than the limit"
         # without a second ``getsize`` call, and the size check has to be on the bytes
-        # actually READ rather than on a stat of a path that may no longer be the same
+        # actually READ rather than on a stat of a path that may not still be the same
         # file — the same race, one step further along.
         raw = safe_read_prefix(path, MAX_INFO_PLIST_BYTES + 1)
         if raw is None:

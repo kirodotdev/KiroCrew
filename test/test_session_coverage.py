@@ -75,6 +75,9 @@ def _stub_provider(**attrs):
     base = {
         "shutdown": AsyncMock(),
         "context_usage_pct": lambda: 0.0,
+        # Declared LLMProvider capability (H14), read directly by the companion
+        # runtime kwargs mirror; the base class answers None and so does this double.
+        "tool_search_settings": None,
     }
     base.update(attrs)
     return SimpleNamespace(**base)

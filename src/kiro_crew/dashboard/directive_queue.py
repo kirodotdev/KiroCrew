@@ -339,6 +339,32 @@ def depth(session_key: str) -> int:
         return len(_pending.get(session_key, []))
 
 
+def unclaimed_digest_markers(
+    session_key: str,
+    *,
+    not_before: float,
+) -> tuple[str, ...]:
+    """Return diagnostic markers for records still parked from this turn.
+
+    Each marker is ``<kind>:<12-char input-digest prefix>``, matching the
+    prefix-only convention used by :func:`claim`. The payload and full digest
+    never leave the queue. This is a read-only snapshot: it does not claim,
+    discard, or age-sweep a record.
+    """
+    if not session_key:
+        return ()
+    with _lock:
+        return tuple(
+            "%s:%s"
+            % (
+                str(record.get("kind") or "unknown"),
+                str(record.get("input_digest") or "")[:12] or "empty",
+            )
+            for record in _pending.get(session_key, [])
+            if float(record.get("at", 0.0)) >= not_before
+        )
+
+
 def reset() -> None:
     """Drop every parked record. For tests and gateway shutdown."""
     with _lock:

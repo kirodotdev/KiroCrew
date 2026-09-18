@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { animate, type MotionValue } from 'framer-motion'
 import { holdStreamingFlushes, releaseStreamingFlushes } from '../lib/streamHold'
+import { deepActiveElement } from '../utils/editableTarget'
 
 /**
  * Finger-tracking open/close gesture for a mobile edge panel — the sessions
@@ -804,8 +805,7 @@ function selectionOwnsTouch(chain: HTMLElement[]): boolean {
   if (sel && !sel.isCollapsed) return true
   // The deepest focused element: `document.activeElement` stops at a shadow
   // HOST, and each root names its own inner focus.
-  let active: Element | null = document.activeElement
-  while (active?.shadowRoot?.activeElement) active = active.shadowRoot.activeElement
+  const active = deepActiveElement()
   if (!active) return false
   for (const node of chain) {
     const editable = node instanceof HTMLInputElement

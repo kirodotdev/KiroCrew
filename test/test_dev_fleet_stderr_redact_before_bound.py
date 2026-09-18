@@ -5,7 +5,7 @@ error payload: the worktree-removal failure (head cut, ``[:300]``) and the
 rebase-conflict tail (``[-200:]``). Bounding BEFORE redaction can cut a
 credential mid-match, leaving a fragment no redaction regex recognises — a tail
 cut keeps the credential's RIGHT half, which equally matches nothing. The fix
-(issue #7374, same class as PR #7316 / PR #7350) feeds ``_redact`` the FULL
+feeds ``_redact`` the FULL
 text and applies the bound to its result: a cut of already-redacted text can at
 worst split a redaction marker, never a secret.
 

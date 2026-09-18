@@ -187,7 +187,7 @@ class TestOpenRbNofollow:
         assert exc_info.value.errno == errno.ELOOP
 
 
-# ── both file endpoints share ONE security envelope (#4031) ──────────────────
+# ── both file endpoints share ONE security envelope ──────────────────────────
 
 
 def test_both_endpoints_route_through_the_shared_envelope():
@@ -243,13 +243,22 @@ def test_both_endpoints_route_through_the_shared_envelope():
             line for line in lines if not line.lstrip().startswith("#")
         )
 
-    # Whole-read endpoints: the shared _open_checked envelope, offloaded.
+    # Whole-read endpoints: the shared _open_checked envelope, offloaded onto
+    # the bounded probe pool. Not asyncio.to_thread: that is the process-wide
+    # default executor, which a caller naming one dead mount can saturate for
+    # every other to_thread user in the gateway. _run_path_probe is the one
+    # sanctioned route; it caps the wedged threads and refuses with 503 past it.
     for fn in (mod.api_file_raw, mod.api_file_download):
         body = _body(fn)
         assert "_open_checked" in body, f"{fn.__name__} must use the shared envelope"
-        assert "asyncio.to_thread" in body, (
-            f"{fn.__name__} must offload the envelope to a worker thread -- the "
-            "envelope is synchronous file I/O and must not run on the event loop"
+        assert "_run_path_probe(" in body, (
+            f"{fn.__name__} must offload the envelope onto the bounded probe pool "
+            "-- the envelope is synchronous file I/O and must not run on the event "
+            "loop, nor on the shared default executor"
+        )
+        assert "asyncio.to_thread" not in body, (
+            f"{fn.__name__} hands the envelope to the default executor; use "
+            "_run_path_probe so a dead mount cannot starve unrelated work"
         )
         assert "_open_rb_nofollow(" not in body, (
             f"{fn.__name__} re-opened a file itself instead of going through "
@@ -273,18 +282,27 @@ def test_both_endpoints_route_through_the_shared_envelope():
     )
 
     # Streaming + sheet endpoints: the same prefix, their caps passed in as
-    # policy (fstat cap for the stream, bounded read for the sheet parser).
-    # No paren in the positive assertion: the sheet endpoint hands the helper
-    # to asyncio.to_thread as an argument rather than calling it inline.
+    # policy (fstat cap for the stream, bounded read for the sheet parser), on
+    # the same bounded pool.
     for fn in (mod.api_file_stream, mod.api_file_sheet):
         body = _body(fn)
         assert "_open_checked_file" in body, (
             f"{fn.__name__} must use the shared open-and-check prefix"
         )
-        assert "asyncio.to_thread" in body, (
-            f"{fn.__name__} must offload the prefix to a worker thread -- it is "
-            "synchronous file I/O and must not run on the event loop"
+        assert "_run_path_probe(" in body, (
+            f"{fn.__name__} must offload the prefix onto the bounded probe pool -- "
+            "it is synchronous file I/O and must not run on the event loop, nor on "
+            "the shared default executor"
         )
+        # The stream's per-chunk seek/read on the ALREADY-ADMITTED descriptor
+        # stays on to_thread: that is fd I/O after the probe, not a path probe,
+        # and gating every chunk would make media playback compete with path
+        # validation for the small pool. Only the sheet has no such loop.
+        if fn is mod.api_file_sheet:
+            assert "asyncio.to_thread" not in body, (
+                f"{fn.__name__} hands the prefix to the default executor; use "
+                "_run_path_probe so a dead mount cannot starve unrelated work"
+            )
         assert "_open_rb_nofollow(" not in body, (
             f"{fn.__name__} re-opened a file itself instead of going through "
             "_open_checked_file -- that is how the copies drifted apart"

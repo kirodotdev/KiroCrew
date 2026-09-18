@@ -165,7 +165,7 @@ from kiro_crew.connections.mint import (
     _mints_lock,
     _new_mint_token,
 )
-from kiro_crew.connections.registry import Provider, get_visible_providers
+from kiro_crew.connections.registry import Provider, get_visible_providers, is_preregistered
 from kiro_crew.connections.tool_aliases import declared_tool_aliases, resolve_tool_aliases
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.mcp_grant import grant_presence as grant_present
@@ -344,8 +344,35 @@ def _warm_spec_body(name: str, servers: dict[str, Any], description: str) -> dic
     return body
 
 
+def _operator_oauth_client(provider: Provider) -> Any:
+    """The operator's pre-registered client for ``provider``, or ``None``.
+
+    ``None`` both for a DCR provider (nothing to resolve) and for a pre-registered
+    one the operator has not configured. Reads config and the vault on every call:
+    the warm planner runs once per spawn, not per request, and a cached value would
+    outlive the Settings write that is the whole reason a re-plan happens.
+    """
+    if not is_preregistered(provider):
+        return None
+    from kiro_crew.config import config_dir
+    from kiro_crew.config.loader import read_config_for_update
+    from kiro_crew.connections.oauth_clients import resolve_oauth_client
+    from kiro_crew.secrets import SecretVault
+
+    try:
+        config = read_config_for_update()
+    except Exception:  # noqa: BLE001 -- an unreadable config reads as "not configured"
+        config = {}
+    return resolve_oauth_client(provider, config=config, vault=SecretVault(config_dir()))
+
+
 def _registry_server_entry(provider: Provider) -> dict[str, Any] | None:
-    """The remote MCP entry the registry implies for ``provider``, in wire shape."""
+    """The remote MCP entry the registry implies for ``provider``, in wire shape.
+
+    A pre-registered provider's entry carries the operator's client as well, or
+    ``None`` when the operator has not configured one: there is nothing the warm
+    process could authorize against, and the card is already saying so.
+    """
     entry: dict[str, Any] = {"url": provider["mcp_url"]}
     scopes = provider.get("recommended_scopes") or []
     if scopes:
@@ -354,7 +381,15 @@ def _registry_server_entry(provider: Provider) -> dict[str, Any] | None:
     if client_id:
         entry["clientId"] = client_id
     # store_entry=None: registry-derived, so no store owns it.
-    return kiro_oauth_wire_entry(entry, store_entry=None, server=str(provider["slug"]))
+    wire = kiro_oauth_wire_entry(entry, store_entry=None, server=str(provider["slug"]))
+    if not is_preregistered(provider):
+        return wire
+    from kiro_crew.connections.oauth_clients import apply_preregistered_oauth_client
+
+    resolved = _operator_oauth_client(provider)
+    if resolved is None:
+        return None
+    return apply_preregistered_oauth_client(wire, resolved)
 
 
 def _disabled_provider_slugs() -> set[str]:
@@ -503,10 +538,11 @@ def _warm_mintable_entry(
     Registry-derived on purpose: a plan built from the user's config changed on every
     Connect click, respawning a process holding other cards' live listeners.
 
-    None in two cases: no usable auth configuration (no DCR and no pre-registered public
-    client id -- GitHub is the standing example), or a CONFIGURED entry asking for
-    something different from the registry, which only the cold path can honour without
-    handing back a grant the user did not ask for.
+    None in two cases: no usable auth configuration (a pre-registered provider whose
+    operator has not entered a client yet -- ``_registry_server_entry`` already answers
+    None for it -- or a non-DCR provider carrying no client id at all), or a CONFIGURED
+    entry asking for something different from the registry, which only the cold path
+    can honour without handing back a grant the user did not ask for.
     """
     entry = _registry_server_entry(provider)
     if entry is None:
@@ -516,8 +552,20 @@ def _warm_mintable_entry(
     # bare ``clientId`` lookup reads every registered non-DCR provider as unregistered.
     if not bool(expectations.get("dcr")) and not kiro_entry_client_id(entry):
         return None
-    if isinstance(configured, dict) and _auth_shape(configured) != _auth_shape(entry):
-        return None
+    if isinstance(configured, dict):
+        compared = configured
+        if is_preregistered(provider):
+            # The store entry a Connect click writes is ``{url}`` alone; the operator's
+            # client joins it only when the agent spec is emitted. Compare what the
+            # runtime will actually see, or every configured pre-registered provider
+            # reads as "asking for something different" and never warms.
+            from kiro_crew.connections.oauth_clients import apply_preregistered_oauth_client
+
+            resolved = _operator_oauth_client(provider)
+            if resolved is not None:
+                compared = apply_preregistered_oauth_client(configured, resolved)
+        if _auth_shape(compared) != _auth_shape(entry):
+            return None
     return entry
 
 
@@ -584,7 +632,7 @@ def _resident_roster_is_asked_for(resident: _WarmSpecPlan, wanted: _WarmSpecPlan
 def _warm_spec_plan(providers: list[Provider]) -> _WarmSpecPlan:
     """Build (but do not write) the warm process's spec set."""
     agents_dir = _agent.kiro_agents_dir_path()
-    # Through the hardened reader (#6736's migration): the agents dir is user-writable and
+    # Through the hardened reader: the agents dir is user-writable and
     # shared with other tools, so a symlink planted at this path pointed a raw ``_load_json``
     # at a file outside it -- followed, parsed, uncapped and unaudited -- and the contents
     # then DECIDED the plan, because a configured entry vetoes its provider below. A refusal
@@ -762,27 +810,100 @@ def _warm_generation_marker_path(work_dir: Path) -> Path:
     return work_dir / _WARM_GENERATION_MARKER
 
 
+def _marker_process_start_id(pid: int) -> str | None:
+    """Start identity for a persisted ownership marker.
+
+    The identity comes from :func:`platform_compat.get_process_start_id`, the
+    routine this repository already uses wherever a start identity is WRITTEN
+    DOWN and compared back later (``mcp_gateway.claim``, ``session_pid``,
+    ``metrics.sessions``). It answers in-process on every platform it covers --
+    procfs field 22 on Linux, ``libproc`` microsecond start on macOS, the
+    creation ``FILETIME`` on Windows -- and never emits whitespace or ``:``.
+
+    It declines on other POSIX hosts, and there :func:`platform_compat.process_start_time`
+    still answers on Windows only: the process creation ``FILETIME`` read through a
+    query-only handle -- a machine integer at 100-ns resolution with no locale or
+    timezone in it, the same value :func:`get_process_start_id` returns there.
+    That leg is kept exactly as it is.
+
+    What is NOT consulted is that routine's remaining POSIX leg, ``ps
+    -o lstart=``: 1-second, locale- and TZ-rendered, and documented as safe
+    precisely because "a format or resolution drift can only make the guard
+    decline to act". That is a KILL-guard contract, where a mismatch means do
+    nothing. Both readers of this value act ON a mismatch instead --
+    :func:`_recorded_runtime_is_dead` releases the tree and
+    :func:`_scavenge_warm_generation_dirs` ``rmtree``s it -- so a drifted render
+    deletes the cwd and private agent scope of a process that is still running.
+    Two gateways sharing one data home need only differ in ``TZ`` or ``LC_TIME``
+    to render the same instant differently, and 1-second granularity cannot
+    separate two processes that started in the same second.
+
+    Returns ``None`` where the identity is unknown. Per those routines' own
+    contract a ``None`` must NOT be read as a mismatch: callers fall back to
+    "unproved", which keeps the tree.
+    """
+    start_id = platform_compat.get_process_start_id(pid)
+    if start_id is not None:
+        return start_id
+    if not platform_compat.IS_WINDOWS:
+        return None  # every remaining POSIX leg is the locale-rendered ``ps`` output
+    try:
+        return platform_compat.process_start_time(pid)
+    except Exception:
+        return None
+
+
+#: Shape of a start identity in the CURRENT representation: the digits of a
+#: Linux jiffy count or a Windows creation ``FILETIME``, or macOS's
+#: ``"<seconds>.<microseconds>"``. Deliberately an ALLOWLIST of what this build
+#: writes rather than a denylist of what older ones did: the retired
+#: representation was ``ps -o lstart=``, whose exact text is locale- and
+#: TZ-dependent, so no property of it can be relied on.
+_CURRENT_START_ID_RE = re.compile(r"\A\d+(?:\.\d+)?\Z")
+
+
+def _start_ids_comparable(recorded: str, current: str) -> bool:
+    """May *recorded* and *current* be compared as the same kind of identity?
+
+    A start identity is only evidence of PID reuse when both sides were
+    produced by the same representation. A marker written before this build
+    recorded a ``ps``-rendered token, which can never equal the value
+    :func:`_marker_process_start_id` reads now -- and every caller acts on a
+    mismatch DESTRUCTIVELY (:func:`_recorded_runtime_is_dead` releases the
+    tree; :func:`_scavenge_warm_generation_dirs` removes it). An overlapping
+    restart across that upgrade is exactly the case the scavenger documents a
+    live process as protecting.
+
+    So a value that is not in the current representation is "unknown", not
+    "different", and the caller keeps the tree. It is NOT converted: the
+    timezone and locale its writer rendered it under are not recoverable, and
+    guessing them would re-introduce the misjudgement this exists to prevent.
+    """
+    return bool(_CURRENT_START_ID_RE.match(recorded) and _CURRENT_START_ID_RE.match(current))
+
+
 def _warm_generation_owner(runtime: Any | None = None) -> dict[str, Any]:
     """Ownership record for one generation, with PID-reuse-resistant identities.
 
-    Both identities are taken from ``process_start_time`` because that is the helper
-    ``_process_identity_live`` compares them against on read. The neighbouring
-    ``own_process_start_time`` answers a deliberately different, reboot-unique format --
-    start ticks joined to the boot UUID on Linux, a ``proc_pidinfo`` microtime on macOS --
-    so a gateway token taken from it could never equal what the reader recomputes, and the
-    live gateway would read as dead. Scavenging removes a generation only once BOTH
-    identities are proven dead, so that mismatch would not merely lose a signal: it would
+    Both identities are taken from ``_marker_process_start_id`` because that is
+    the helper ``_process_identity_live`` compares them against on read. The
+    neighbouring ``own_process_start_time`` answers a deliberately different,
+    reboot-unique format -- start ticks joined to the boot UUID on Linux, a
+    ``proc_pidinfo`` microtime on macOS -- so a gateway token taken from it
+    could never equal what the reader recomputes, and the live gateway would
+    read as dead. Scavenging removes a generation only once BOTH identities are
+    proven dead, so that mismatch would not merely lose a signal: it would
     forfeit the gateway's veto and delete a directory still in use the moment its
     short-lived runtime exited.
     """
     gateway_pid = os.getpid()
     runtime_pid = int(getattr(runtime, "pid", 0) or 0)
-    runtime_started = platform_compat.process_start_time(runtime_pid) if runtime_pid > 0 else None
+    runtime_started = _marker_process_start_id(runtime_pid) if runtime_pid > 0 else None
     return {
         "sentinel": _WARM_GENERATION_SENTINEL,
         "version": _WARM_GENERATION_MARKER_VERSION,
         "gateway_pid": gateway_pid,
-        "gateway_started": platform_compat.process_start_time(gateway_pid) or "",
+        "gateway_started": _marker_process_start_id(gateway_pid) or "",
         "runtime_pid": runtime_pid,
         "runtime_started": runtime_started or "",
     }
@@ -984,16 +1105,30 @@ def _release_runtime_generation(runtime: Any) -> bool:
 
 
 def _process_identity_live(pid: int, started: str) -> bool | None:
-    """Tri-state PID identity: live, dead/reused, or unprovable."""
+    """Tri-state PID identity: live, dead/reused, or unprovable.
+
+    ``False`` is proof of death -- the PID is gone, or it names a live process
+    whose start identity positively differs from the recorded one. ``None`` is
+    every other inconclusive shape (no recorded identity, unreadable current
+    identity, unproven liveness), and every caller reads it as "keep the tree".
+
+    "Differs" requires the two values to be the same KIND of identity: a marker
+    written before this build recorded a locale-rendered ``ps`` token that can
+    never equal what is read now, and calling that a mismatch would delete the
+    cwd and private scope of a process still running across the upgrade. See
+    :func:`_start_ids_comparable`.
+    """
     if pid <= 0 or not started:
         return None
     liveness = platform_compat.pid_liveness(pid)
     if liveness == platform_compat.PID_DEAD:
         return False
-    current = platform_compat.process_start_time(pid)
+    current = _marker_process_start_id(pid)
     if current is None:
         return None
     if current != started:
+        if not _start_ids_comparable(started, current):
+            return None  # legacy marker: unknown rather than different
         return False
     if liveness in (platform_compat.PID_ALIVE, platform_compat.PID_UNSIGNALABLE):
         return True
@@ -1676,7 +1811,12 @@ class _WarmMintRuntime:
                 )
                 if activated_provider is None:
                     continue
-                activated_entry = _registry_server_entry(activated_provider)
+                # Off the loop: for a pre-registered provider this reads
+                # config.json and decrypts the vault (`_operator_oauth_client`),
+                # the same file work the current-entry read above offloads.
+                activated_entry = await asyncio.to_thread(
+                    _registry_server_entry, activated_provider
+                )
                 if activated_entry is None or _auth_shape(activated_entry) != _auth_shape(
                     current_entry
                 ):
@@ -1870,7 +2010,10 @@ async def _kill_quietly(runtime: Any) -> bool:
     raising would mask the original failure. The callers RETAIN instead of propagating.
     """
     try:
-        await asyncio.wait_for(runtime.kill(), timeout=_WARM_KILL_TIMEOUT_SECONDS)
+        await asyncio.wait_for(
+            runtime.kill(expected=True, reason="warm mint teardown"),
+            timeout=_WARM_KILL_TIMEOUT_SECONDS,
+        )
     except Exception:  # noqa: BLE001 — best-effort teardown of our own child
         logger.warning("warm mint runtime kill failed; the process stays tracked for a retry")
         logger.debug("warm mint runtime kill failed", exc_info=True)
@@ -1914,10 +2057,10 @@ async def _expire_shared_mints(reason: str, *, generation: int | None = None) ->
     """Flip live shared mints stale. Called when a process is gone.
 
     ``generation`` is the only narrowing there is, and every caller passes it: the rows a
-    dead process can no longer redeem are exactly the ones it minted. A pass narrowed by
-    the CALLER's own row tokens instead used to exist here; it read as "spare my retry" but
-    meant "expire every other generation", which withdrew a parked generation's redeemable
-    URL. Withdrawal follows the verifier, so it follows the generation.
+    dead process cannot redeem are exactly the ones it minted. Narrowing by the
+    CALLER's own row tokens instead reads as "spare my retry" but means "expire every
+    other generation", which withdraws a parked generation's redeemable URL.
+    Withdrawal follows the verifier, so it follows the generation.
     """
     flipped: list[str] = []
     async with _mints_lock:
@@ -2244,10 +2387,10 @@ def _mint_is_adopted(entry: MintState | None) -> bool:
 async def _adopt_shared_row(slug: str, mcp_url: str) -> str | None:
     """Take ownership of ``slug``'s UNCLAIMED premint. Returns its new row token, or None.
 
-    THE handoff, and the reason the premint has a consumer at all. Connect used to call
-    ``reserve_mint_row`` unconditionally, which pops WHATEVER row is at the slug -- so
-    ``start_oauth_mint`` disposed the very URL the warm table had minted for that click
-    and the cold spawn it then paid was the only thing the user ever saw. ``None`` means
+    THE handoff, and the reason the premint has a consumer at all. Without it Connect
+    would call ``reserve_mint_row`` unconditionally, which pops WHATEVER row is at the
+    slug -- so ``start_oauth_mint`` disposes the very URL the warm table minted for that
+    click, and the cold spawn it then pays is the only thing the user sees. ``None`` means
     no row was adoptable at this instant; the public flow may recover a late frame from the
     existing live session before it falls through to the dedicated cold path.
 
@@ -2269,7 +2412,7 @@ async def _adopt_shared_row(slug: str, mcp_url: str) -> str | None:
     adopting tab against the premint's own rollback and against a sibling tab, but
     every write in :func:`~kiro_crew.connections.mint._mint_watcher` is guarded on the
     token it was started with -- so rotating alone would leave the row watched by a
-    task that can no longer touch it: nothing would flip it to ``granted``, nothing
+    task that cannot touch it: nothing would flip it to ``granted``, nothing
     would expire it, and it would hold the shared process resident for good. Re-arming
     is therefore part of the same synchronous run, not a follow-up.
 
@@ -2327,10 +2470,10 @@ async def _claim_shared_mints(slugs: list[str]) -> tuple[dict[str, str], list[Mi
     same reasoning for the cold engine).
 
     ATOMIC BY CONSTRUCTION: the loop contains NO await, so the caller either gets every
-    claim or none. It used to await ``_dispose_mint`` on each replaced row, which suspends
+    claim or none. Awaiting ``_dispose_mint`` on each replaced row would suspend
     on a client teardown and again on the shielded spec removal in that function's
     ``finally`` -- and the claim is taken BEFORE ``warm_mint_all`` enters the try that rolls
-    it back, so a cancellation there left earlier slugs installed as ``minting`` with no
+    it back, so a cancellation there would leave earlier slugs installed as ``minting`` with no
     caller holding their tokens. Nothing withdraws such a row (``expire_dead_mints`` judges
     ``waiting`` only) and it keeps ``_shared_mints_pending`` true, so the process is never
     retired either. The replaced rows come back for the caller to dispose INSIDE that try

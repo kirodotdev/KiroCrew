@@ -203,14 +203,17 @@ def exported(tmp_path_factory):
     and forces an export; doing that once and asserting many things about the
     result is both faster and closer to how a real export cycle behaves than
     rebuilding per test.
-    """
-    from _pytest.monkeypatch import MonkeyPatch
 
-    mp = MonkeyPatch()
-    try:
-        yield _drive_live_build(tmp_path_factory.mktemp("otlp-e2e"), mp)
-    finally:
-        mp.undo()
+    The patches the build needs (``KIROCREW_HOME``, ``KIROCREW_TELEMETRY``, the
+    pinned readers) are undone BEFORE the value is handed out, not at module
+    teardown. Only the parsed shards are shared; the build tears its provider
+    down before returning, so nothing downstream reads that environment. Holding
+    the patches for the module's lifetime instead leaves both variables changed
+    across the first and the last test this module runs on a worker -- an
+    environment leak into whatever unrelated test runs next.
+    """
+    with pytest.MonkeyPatch.context() as mp:
+        return _drive_live_build(tmp_path_factory.mktemp("otlp-e2e"), mp)
 
 
 def test_every_declared_instrument_reaches_the_exporter(exported):

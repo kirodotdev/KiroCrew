@@ -41,6 +41,7 @@ import time
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
 
 logger = logging.getLogger(__name__)
@@ -153,12 +154,108 @@ _UNOWNED_GRACE_SECONDS = 3600.0
 
 
 def record_owner(path: Path, pid: int) -> None:
-    """Record the spawned backend's pid so the boot sweep can check liveness."""
+    """Record the spawned backend's pid so the boot sweep can check liveness.
+
+    A backend's ``TMPDIR`` IS this directory (:func:`tmp_env`), so the marker's
+    own path is server-controlled while this write runs in the UNSANDBOXED
+    gateway. Hence the two guards, matching
+    :func:`kiro_crew.agent_scratch.record_owner`: the directory and the marker
+    are link-checked with :func:`platform_compat.is_link_or_junction` (which,
+    unlike ``os.path.islink``, also sees a Windows directory junction), and the
+    bytes go on through ``atomic_write``'s ``O_EXCL`` temp plus ``os.replace``,
+    which does not follow the final component on any platform -- so a link
+    planted after the check replaces the LINK instead of truncating its target
+    the way ``Path.write_text`` did.
+
+    A refusal declines the WRITE and returns rather than raising, which is
+    where this differs from its agent-scratch twin. Neither caller can absorb
+    an exception: ``spawn_backend`` records the owner after the process is live
+    with no guard that reaps it, so a raise would leak the very process the
+    marker exists to track, and the probe path's marker sits OUTSIDE the
+    child's writable window by construction (:func:`probe_child_scratch`). An
+    unrecorded dir falls under the sweep's grace-window rule, which is also
+    where a FAILED write leaves it -- but only because the failure path
+    discards the provisional marker (:func:`_discard_owner_marker`); the atomic
+    install itself preserves the previous bytes. A directory that is absent or
+    is not a directory is declined for the same reason the twin declines it:
+    the atomic install would otherwise create one.
+    """
+    if platform_compat.is_link_or_junction(path):
+        logger.warning(
+            "backend-tmp: refusing to record an owner through a linked dir %r", path.name
+        )
+        return
+    if not _is_plain_dir(path):
+        # Absent or not a directory. ``atomic_write`` does
+        # ``mkdir(parents=True, exist_ok=True)`` on the parent, which
+        # ``Path.write_text`` never did, so an absent dir would be built back --
+        # under the managed root's target if that root had since become a link.
+        logger.debug("backend-tmp: no directory to record an owner in for %r", path.name)
+        return
+    marker = path / OWNER_FILENAME
+    if platform_compat.is_link_or_junction(marker):
+        logger.warning(
+            "backend-tmp: refusing to record an owner through a linked %s in %r",
+            OWNER_FILENAME,
+            path.name,
+        )
+        return
     try:
-        (path / OWNER_FILENAME).write_text(str(pid), encoding="utf-8")
+        atomic_write(marker, str(pid))
     except OSError:
-        # Fail-open: an unowned dir falls under the grace-window rule instead.
+        # Fail-open: the sweep never deletes an UNOWNED dir, so a failed write
+        # leaves one that is kept, not reclaimed -- but only once the
+        # provisional marker is gone, because a failed atomic write leaves the
+        # gateway's pid in place and a STALE owner reads as dead to the sweep
+        # while the backend it names is still running.
         logger.debug("backend-tmp: could not record owner for %r", path.name, exc_info=True)
+        if not _discard_owner_marker(path):
+            # REPORTED, not raised, and not reaped. Unlike the agent twin --
+            # whose spawners record the owner inside a guard that reaps a live
+            # child -- spawn_backend records after the process is live with no
+            # such guard, so raising here would leak the very process the marker
+            # tracks. A warning is what this surface can honestly do; giving it
+            # a reap path is its own change, at its own call sites.
+            logger.warning(
+                "backend-tmp: %r still names this gateway after a failed owner update",
+                path.name,
+            )
+
+
+def _discard_owner_marker(path: Path) -> bool:
+    """Remove *path*'s owner marker after a FAILED update; did it go?
+
+    ``atomic_write`` stages into a temp and moves it on, so a write that never
+    completed leaves the PREVIOUS marker byte-for-byte intact. On the update
+    path those bytes are the provisional pid of the SPAWNING gateway, and a
+    stale owner is worse than none: the gateway exits, its pgroup goes dead,
+    and the next boot sweep reads dead-owner-plus-idle on a directory whose
+    real owner -- the backend, spawned ``start_new_session=True`` -- is still
+    alive holding it. An UNOWNED dir is never swept, so removing the marker is
+    what keeps that backend's temp dir.
+
+    ``os.unlink`` removes a link itself and never follows one, but the marker is
+    still link-checked first, matching the refusal rule above: nothing here acts
+    on a path the server has turned into a link.
+
+    False means the stale marker SURVIVED -- a Windows file lock on the marker
+    is the reachable case, since deleting a file another process holds open is
+    refused there.
+    """
+    marker = path / OWNER_FILENAME
+    if platform_compat.is_link_or_junction(marker):
+        logger.warning(
+            "backend-tmp: refusing to discard a linked %s in %r", OWNER_FILENAME, path.name
+        )
+        return False
+    try:
+        os.unlink(marker)
+    except FileNotFoundError:
+        return True  # never installed, or already gone
+    except OSError:
+        logger.debug("backend-tmp: could not discard owner marker for %r", path.name, exc_info=True)
+        return False
+    return True
 
 
 def _pgroup_alive(pid: int) -> bool:
@@ -282,6 +379,22 @@ def sweep_all_backend_tmp() -> int:
         if idle < _UNOWNED_GRACE_SECONDS:
             continue  # recently active anywhere in the tree, whoever owns it
         owner_file = child / OWNER_FILENAME
+        if platform_compat.is_link_or_junction(owner_file):
+            # A LINK where the marker belongs, read by the one loop here that
+            # DELETES. ``read_text`` follows it, and a backend owns this
+            # directory as its ``TMPDIR``, so it can aim the marker at any file
+            # whose bytes parse as a pid; a dead one makes this sweep delete the
+            # live backend's own temp dir. ``record_owner`` declines to WRITE
+            # through such a link but cannot remove it -- see its docstring on
+            # why nothing here reaps -- so the refusal has to hold on the read
+            # side too. Joins the unowned-or-garbled rule below: never delete on
+            # evidence the subject controls.
+            logger.warning(
+                "backend-tmp: %r has a linked %s; not judging its owner",
+                entry.name,
+                OWNER_FILENAME,
+            )
+            continue
         try:
             pid = int(owner_file.read_text(encoding="utf-8").strip())
         except (OSError, ValueError):

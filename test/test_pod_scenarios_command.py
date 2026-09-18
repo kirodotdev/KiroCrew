@@ -319,8 +319,8 @@ def test_missing_empty_or_malformed_description_is_empty(
 def test_description_parser_needs_no_pyyaml(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setitem(sys.modules, "yaml", None)
 
-    # This used to assert the truncated first physical line. The command is a
-    # discovery API, so preserving only that line is data loss.
+    # The full first physical line is preserved, not truncated. The command is a
+    # discovery API, so preserving only the truncated line would be data loss.
     summary = seed_mod.fixture_summary("minimal")
     assert "\n\nUse ``rich``" in summary
     assert " ".join(summary.split()).endswith(

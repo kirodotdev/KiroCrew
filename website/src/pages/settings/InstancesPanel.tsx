@@ -27,6 +27,7 @@ import {
   Power,
 } from 'lucide-react'
 import { api, ApiError, type InstanceView, type InstanceTunnelStatus } from '../../api/client'
+import { WARM_SET_CAP_AUTO_CEILING } from '../../utils/remoteCrew'
 import { Card, Btn } from '../../components/ui'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { removeWarm, setCrewAddForm } from '../../store/instancesSlice'
@@ -236,7 +237,7 @@ export function InstancesPanel() {
       : ''
   const loading = instancesQuery.isLoading
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
-  const warmCap = instancesQuery.data?.warm_set_cap || 5
+  const warmCap = instancesQuery.data?.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
   // Runtime usability: true only when the SSH manager is actually running.
   // enabled (data present, no 403) but !active => the flag was set after the
   // gateway started, so a restart is required to activate it.

@@ -1,6 +1,6 @@
 """kiro_crew.mcp_grant -- the pod-aware OAuth-cache-directory resolver.
 
-Regression context: ``kiro_oauth_cache_dir()`` used to call ``Path.home()``
+The resolver ``kiro_oauth_cache_dir()`` must not call ``Path.home()``
 directly. A pod's gateway process and its OWN kiro-cli children both keep the
 REAL host ``$HOME`` unless something remaps it, so a pod's ``mcp_grant`` reads
 (mint, status, disconnect, mcp_discovery's remote probe) stated grants under

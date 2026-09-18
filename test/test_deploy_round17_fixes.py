@@ -1,4 +1,4 @@
-"""Tests for deploy Round 17 fixes.
+"""Tests for deploy fixes F1/F2/F3.
 
 F1: teardown manifest expiry is fail-closed -- no fresh-write fallback, and
     the identity check requires BOTH distribution_ids nonempty AND equal.

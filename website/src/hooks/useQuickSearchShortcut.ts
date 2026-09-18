@@ -40,7 +40,7 @@ export interface UseQuickSearchShortcut {
  * Recording captures on the window in the CAPTURE phase and `stopPropagation()`s
  * the accepted keypress, so the very chord being recorded can't also fire the
  * palette trigger (or any app shortcut) on the same keystroke. Bare modifier
- * presses and chords with no `mod`/`alt` are ignored (the recorder keeps
+ * presses and chords with no `mod`/`ctrl`/`alt` are ignored (the recorder keeps
  * waiting); Escape cancels.
  */
 export function useQuickSearchShortcut(): UseQuickSearchShortcut {
@@ -87,10 +87,13 @@ export function useQuickSearchShortcut(): UseQuickSearchShortcut {
       if (token === null) return // bare modifier — keep waiting for a real key
       const chord: QuickSearchChord = { key: token }
       if (isMac ? e.metaKey : e.ctrlKey) chord.mod = true
+      // On macOS Control is a modifier of its own (`mod` is Cmd); off macOS
+      // Control is already `mod` above, so never set both.
+      if (isMac && e.ctrlKey) chord.ctrl = true
       if (e.altKey) chord.alt = true
       if (e.shiftKey) chord.shift = true
-      // Require a command/option modifier — otherwise keep waiting rather than
-      // installing a bare-key binding that would fire mid-typing.
+      // Require a command/control/option modifier — otherwise keep waiting
+      // rather than installing a bare-key binding that would fire mid-typing.
       if (!isValidChord(chord)) return
       e.preventDefault()
       e.stopPropagation()

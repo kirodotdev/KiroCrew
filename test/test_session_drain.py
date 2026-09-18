@@ -1,9 +1,9 @@
 """Tests for the shutdown/restart drain of in-flight prompts.
 
 Covers SessionManager.drain_active_turns() and its wiring into close_all() —
-the fix for the empty-response-after-Make-Live incident (#200), where a slot
-killed mid-prompt left its kiro-cli native-session lock held so the next
-gateway's session/load hit "active in another process".
+a slot killed mid-prompt must not leave its kiro-cli native-session lock held,
+which would make the next gateway's session/load hit "active in another
+process".
 """
 
 from __future__ import annotations
@@ -328,7 +328,7 @@ async def test_close_all_drain_plus_kill_fit_tight_deadline(cfg):
 
 
 @pytest.mark.asyncio
-async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg):
+async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg, monkeypatch):
     """Codex HIGH2 — close_all must NOT swallow a cancel from an outer deadline.
     Slack wraps close_all in wait_for(..., 5s); the cap is enforced by
     cancelling close_all. If close_all ate that cancel, wait_for would block
@@ -342,18 +342,29 @@ async def test_close_all_propagates_outer_cancel_to_keep_deadline_honest(cfg):
     p = _FakeProvider(active=True, cancel_mode="block")  # drain never acks -> hangs
     _inject(mgr, "s1", p)
 
-    t0 = time.monotonic()
-    with pytest.raises(asyncio.TimeoutError):
-        # drain_timeout=5.0 (internal cap 6s) >> the 0.3s outer deadline; the
-        # cancel fires mid-drain and MUST propagate so the deadline is enforced.
-        await asyncio.wait_for(mgr.close_all(drain_timeout=5.0), timeout=0.3)
-    elapsed = time.monotonic() - t0
+    entered = asyncio.Event()
+    original_cancel = p.cancel
 
-    assert p.cancel_calls  # drain was attempted before the cancel
-    assert elapsed < 1.0  # the 0.3s deadline was honored, not ~6s
-    # The cancel propagated instead of being swallowed: close_all did not run the
-    # in-line kill to completion on this path (that is the reaper's job).
-    assert p.shutdown_called is False
+    async def observed_cancel(*, wait_ack_timeout: float = 0.0):
+        entered.set()
+        return await original_cancel(wait_ack_timeout=wait_ack_timeout)
+
+    monkeypatch.setattr(p, "cancel", observed_cancel)
+    task = asyncio.create_task(mgr.close_all(drain_timeout=5.0))
+    try:
+        # Establish mid-drain cancellation explicitly: an absolute deadline
+        # can otherwise expire before the provider gets scheduled on a busy host.
+        await asyncio.wait_for(entered.wait(), timeout=5.0)
+        with pytest.raises(asyncio.TimeoutError):
+            await asyncio.wait_for(task, timeout=0)
+
+        assert p.cancel_calls == [5.0]
+        # Swallowing cancellation would complete the fake's inline shutdown and
+        # return normally from wait_for instead of raising TimeoutError.
+        assert p.shutdown_called is False
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -376,6 +387,69 @@ async def test_close_all_sets_closing_state(cfg):
     assert mgr._closing is False
     await mgr.close_all()
     assert mgr._closing is True
+
+
+@pytest.mark.asyncio
+async def test_update_admission_pause_blocks_and_resumes_turns(cfg):
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+
+    assert mgr.admission_closed is False
+    assert await mgr.pause_turn_admission_for_update() is True
+    assert mgr.admission_closed is True
+    assert mgr.fence_update_restart() is True
+    assert mgr.update_restart_fenced is True
+    with pytest.raises(SessionClosingError):
+        mgr.begin_turn("s1")
+    with pytest.raises(SessionClosingError):
+        await mgr.get_or_create("s-new")
+
+    await mgr.resume_turn_admission_after_update()
+    assert mgr.admission_closed is False
+    assert mgr.update_restart_fenced is False
+    assert mgr.begin_turn("s1") is None
+
+
+@pytest.mark.asyncio
+async def test_inbound_callback_reservations_are_counted_and_idempotent(cfg):
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+
+    first = mgr.reserve_inbound_callback()
+    second = mgr.reserve_inbound_callback()
+    assert first is not None and second is not None
+    assert mgr.inbound_callback_count == 2
+
+    first.release()
+    first.release()
+    assert mgr.inbound_callback_count == 1
+    second.release()
+    assert mgr.inbound_callback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_update_pause_refuses_new_inbound_callback_reservations(cfg):
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+    held = mgr.reserve_inbound_callback()
+    assert held is not None
+
+    assert await mgr.pause_turn_admission_for_update() is True
+    assert mgr.reserve_inbound_callback() is None
+    assert mgr.inbound_callback_count == 1
+
+    held.release()
+    assert mgr.inbound_callback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_real_shutdown_revokes_update_pause_ownership(cfg):
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+
+    assert await mgr.pause_turn_admission_for_update() is True
+    await mgr.close_all()
+    await mgr.resume_turn_admission_after_update()
+
+    assert mgr._closing is True
+    assert mgr.admission_closed is True
+    assert mgr._update_pause_owned is False
 
 
 @pytest.mark.asyncio
@@ -491,3 +565,122 @@ def test_acp_client_kill_is_sigterm_first():
     src = _inspect.getsource(_client.AcpClient._kill_process)
     assert "SIGTERM" in src
     assert "wait_for" in src  # bounded wait after SIGTERM before force kill
+
+
+@pytest.mark.asyncio
+async def test_inbound_callback_reservation_releases_when_handler_task_finishes(cfg):
+    from kiro_crew.messaging import dispatch
+
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+    route = dispatch.InboundRoute(conversation_id="conv", text="hello", user_id="u")
+
+    async def _handler() -> None:
+        assert await dispatch.admit_inbound_callback(
+            mgr,
+            channel_type="teams",
+            route=route,
+        )
+        assert mgr.inbound_callback_count == 1
+
+    task = asyncio.create_task(_handler())
+    await task
+    await asyncio.sleep(0)
+
+    assert mgr.inbound_callback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_refused_callback_resolves_restriction_before_spooling(monkeypatch):
+    from kiro_crew.messaging import dispatch
+
+    route = dispatch.InboundRoute(conversation_id="conv", text="secret", user_id="u")
+    restricted = AsyncMock(return_value=True)
+    spool = AsyncMock(return_value=True)
+
+    class PausedSessions:
+        update_restart_fenced = False
+
+        @staticmethod
+        def reserve_inbound_callback():
+            return None
+
+    monkeypatch.setattr(dispatch, "spool_refused_turn", spool)
+
+    assert not await dispatch.admit_inbound_callback(
+        PausedSessions(),
+        channel_type="teams",
+        route=route,
+        restricted=restricted,
+    )
+    restricted.assert_awaited_once_with()
+    spool.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_refused_resume_ambiguity_denies_persistence():
+    from kiro_crew.messaging.session_resume import (
+        InboundResolution,
+        RoutingDecision,
+        refused_resume_is_restricted,
+    )
+
+    async def _resolve() -> RoutingDecision:
+        return RoutingDecision(observed=InboundResolution(key=None, ambiguous=True))
+
+    restricted = AsyncMock(return_value=False)
+    assert await refused_resume_is_restricted(
+        "telegram:kirocrew:direct:user",
+        resolve=_resolve,
+        is_restricted=restricted,
+    )
+    restricted.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_inline_inbound_callback_reservation_releases_when_scope_finishes(cfg):
+    from kiro_crew.messaging import dispatch
+
+    mgr = SessionManager(cfg, provider_factory=lambda **k: _FakeProvider())
+    route = dispatch.InboundRoute(conversation_id="conv", text="hello", user_id="u")
+
+    async with dispatch.hold_inbound_callback(
+        mgr,
+        channel_type="weixin",
+        route=route,
+    ) as admitted:
+        assert admitted is True
+        assert mgr.inbound_callback_count == 1
+
+    assert mgr.inbound_callback_count == 0
+
+
+@pytest.mark.asyncio
+async def test_restart_fence_spools_refusal_synchronously(monkeypatch):
+    from kiro_crew.messaging import dispatch
+
+    route = dispatch.InboundRoute(conversation_id="conv", text="hello", user_id="u")
+    calls: list[tuple[str, object]] = []
+
+    class PausedSessions:
+        update_restart_fenced = True
+
+        @staticmethod
+        def reserve_inbound_callback():
+            return None
+
+    def sync_spool(*, channel_type, route):
+        calls.append((channel_type, route))
+        return True
+
+    async def async_spool(**_kwargs):
+        raise AssertionError("fenced refusal must not schedule an async writer")
+
+    monkeypatch.setattr(dispatch, "spool_refused_turn_sync", sync_spool)
+    monkeypatch.setattr(dispatch, "spool_refused_turn", async_spool)
+
+    assert not await dispatch.admit_inbound_callback(
+        PausedSessions(),
+        channel_type="slack",
+        route=route,
+    )
+    assert calls == [("slack", route)]

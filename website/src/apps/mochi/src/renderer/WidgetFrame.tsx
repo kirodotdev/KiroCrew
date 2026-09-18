@@ -100,6 +100,12 @@ export const WidgetFrame: React.FC<WidgetFrameProps> = ({ html, title = 'Widget'
         ref={iframeRef}
         srcDoc={srcdoc}
         sandbox="allow-scripts"
+        // NO clipboard-write delegation here, deliberately. These frames host
+        // agent-generated HTML whose scripts run on load, so a delegated
+        // permission would let one overwrite the user's clipboard with no Copy
+        // action at all. Copying still works: lib/widgetSrcdoc.ts injects an
+        // execCommand fallback that a real button press satisfies and a
+        // gesture-less on-load script does not.
         style={{
           width: '100%',
           height,

@@ -10,10 +10,9 @@ had failed once on a cold cache or forty times in a row.
 This module is the missing durable fact: a per-server count of CONSECUTIVE
 failed probes, which the row then reports.
 
-It does NOT unmount the failing server -- see issue #6171. Three levers for that
-were implemented and each shown unsafe, because the generated agent config is
-simultaneously the mount decision and the only home for agent-scope MCP
-configuration. Nothing here writes any config file.
+It does NOT unmount the failing server. Every lever for that is unsafe, because
+the generated agent config is simultaneously the mount decision and the only home
+for agent-scope MCP configuration. Nothing here writes any config file.
 
 Nor does it ever write ``disabled``. That key is the USER's choice, living in
 ``~/.kiro/settings/mcp.json``; a count that flipped it would be
@@ -273,12 +272,12 @@ def _read() -> tuple[dict[str, dict[str, Any]], str]:
     try:
         raw = json.loads(data)
     except Exception:
-        # Deliberately NOT a list of exception types. Four review rounds found
-        # four different ones escaping successively wider tuples --
-        # ``JSONDecodeError``, then ``UnicodeDecodeError`` (a ValueError from the
-        # strict decode), then a plain ``ValueError`` from the scanner's own
-        # ``int()`` past ``sys.get_int_max_str_digits()``, then ``RecursionError``
-        # (a RuntimeError, not a ValueError at all) from a deeply nested
+        # Deliberately NOT a list of exception types. Successively wider tuples
+        # each leave one more escaping -- ``JSONDecodeError``, then
+        # ``UnicodeDecodeError`` (a ValueError from the strict decode), then a
+        # plain ``ValueError`` from the scanner's own ``int()`` past
+        # ``sys.get_int_max_str_digits()``, then ``RecursionError`` (a
+        # RuntimeError, not a ValueError at all) from a deeply nested
         # document. The classification here is a fact about the FILE, not about
         # which Python error happened to surface, so enumerating them is the bug.
         #
@@ -354,8 +353,7 @@ def record_verdicts(verdicts: Iterable[tuple[str, str, str]]) -> None:
     verdict and is skipped, so it neither advances nor clears the count.
 
     Returns nothing. Nothing acts on a crossing: this records a reading and the
-    row reports it. (An earlier revision returned the names whose MOUNT state
-    changed, for an unmount that is now issue #6171.)
+    row reports it.
     """
     limit = threshold()
     if limit <= 0:

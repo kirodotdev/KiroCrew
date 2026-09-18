@@ -247,7 +247,7 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
 
     ``snapshot_info`` is what the tick's ``list_apps`` read for this app (or
     ``None`` if it was absent then). It only decides that this app is WORTH
-    examining; the authoritative state used to act is re-read here under
+    examining; the authoritative state acted on is re-read here under
     ``app_lifecycle_lock(name)`` via ``get_app``, because a dashboard
     enable/disable/uninstall or a trust withdrawal may have run between the
     snapshot and now. Holding the lock is what closes the revive-during-
@@ -308,7 +308,7 @@ async def _reconcile_app(name: str, snapshot_info: dict[str, Any] | None) -> Non
                 # as a closure over a store the uninstall deleted, and
                 # notify_slot_closed reporting its failure is what
                 # api_chat_slot_delete turns into a tab the user cannot dismiss
-                # for an app that no longer exists.
+                # for an app that does not exist.
                 if gone:
                     forget_app_hooks(name)
             return

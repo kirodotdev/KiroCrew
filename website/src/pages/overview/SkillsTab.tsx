@@ -11,6 +11,7 @@ import SkillForm, { assembleSkillContent, parseSkillContent, skillPathProblem, s
 import SkillDirectoryBrowser from '../../components/SkillDirectoryBrowser'
 import SkillBrowserModal from '../../components/SkillBrowserModal'
 import DiffBlock from '../../components/DiffBlock'
+import ErrorNotice from '../../components/ErrorNotice'
 import ListDetailBack from '../../components/ListDetailBack'
 import { useListDetailView } from '../../hooks/useListDetailView'
 import { useProvider } from '../../providers'
@@ -21,7 +22,7 @@ import { Trans } from 'react-i18next'
 
 import { fmtBytes, fmtCompact } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
-import { parseErrorCode } from '../../utils/errorReport'
+import { parseErrorCode, findReport, type ErrorReport } from '../../utils/errorReport'
 import { SettingRef } from '../../components/settingRef/SettingRef'
 const EMPTY_FORM: SkillFormData = { name: '', category: '', description: '', triggers: '', tags: '', always: false, body: '' }
 
@@ -75,6 +76,18 @@ export default function SkillsTab() {
   // Multi-provider skill browser drawer (Add Skill button).
   const [skillBrowserOpen, setSkillBrowserOpen] = useState(false)
   const [createError, setCreateError] = useState('')
+  // Update/delete failures get their own state rather than sharing one string:
+  // the save failure belongs next to the detail editor where the save was
+  // attempted, the delete failure belongs on the list surface where the
+  // rolled-back row reappears — one shared slot would render in the wrong place.
+  const [updateError, setUpdateError] = useState('')
+  // The delete state carries the journal's structured report next to the
+  // display message: the visible text is a translated frame, not the raw
+  // `err.message` the journal is keyed on, so ErrorNotice's own message-match
+  // lookup would come up empty and the Ask-agent hand-off would lose the
+  // endpoint/status/code context. Recovered once at onError time and passed
+  // through the `report` prop; both halves clear together.
+  const [deleteError, setDeleteError] = useState<{ message: string; report?: ErrorReport } | null>(null)
 
   // Deep-linkable view param: ?view=budget swaps to the control plane.
   // Entering the budget view PUSHES a history entry so browser Back returns to
@@ -134,28 +147,84 @@ export default function SkillsTab() {
     mutationFn: ({ key, content }: { key: string; content: string }) => api.updateSkill(key, content),
     onSuccess: () => {
       setDetailEditing(false)
+      setUpdateError('')
+      // Deliberately NO setDeleteError(null) here: a delete failure that
+      // arrived while this editor was open was suppressed the whole time, and
+      // clearing it now would drop it unseen — the rolled-back row would sit
+      // in the list with no explanation, the original silent-failure symptom.
+      // A banner the user had already seen was retired when they entered the
+      // editor (the Edit button clears it), so nothing stale survives to
+      // contradict this success.
       queryClient.invalidateQueries({ queryKey: ['skills'] })
       queryClient.invalidateQueries({ queryKey: ['skill-detail'] })
+    },
+    // Same narrow as createSkill above. `readonly_skill_prefix` is the one
+    // coded refusal the PUT verb returns, and its server prose names on-disk
+    // territories — filesystem trivia next to a Save button — so it gets the
+    // translated hint. Every other failure keeps the server's own message;
+    // the notice's translated "Save failed" title carries the frame, so the
+    // message stays the raw actionable half (and the journal's lookup key).
+    onError: (e: Error) => {
+      const code = e instanceof ApiError ? parseErrorCode(e.body) : undefined
+      setUpdateError(code === 'readonly_skill_prefix'
+        ? i18nT('pages.overview.skillsTab.readonly_skill_error')
+        : e.message)
     },
   })
 
   const deleteSkill = useMutation({
     mutationFn: (key: string) => api.deleteSkill(key),
     onMutate: async (key) => {
+      // A retry retires the previous failure banner immediately: leaving the
+      // old "could not delete" up while the new attempt is in flight would
+      // report a stale outcome as current. A fresh failure re-sets it.
+      setDeleteError(null)
       await queryClient.cancelQueries({ queryKey: ['skills'] })
       const prev = queryClient.getQueryData<Skill[]>(['skills'])
       queryClient.setQueryData<Skill[]>(['skills'], old => old?.filter(s => s.key !== key) ?? [])
       return { prev }
     },
     onSuccess: () => {
-      setSelectedKey(null)
-      setDetailEditing(false)
+      // An OPEN editor must survive this teardown, whatever its save state:
+      // dropping the selection or the editing flag unmounts it (a null
+      // selection alone does, via the placeholder branch), which discards a
+      // typed-but-unsaved draft outright and leaves an in-flight PUT's later
+      // rejection with nothing to render it. `!detailEditing` covers both — a
+      // pending save can only exist while the editor is open, since every
+      // path that leaves it is disabled or no-ops during the save window.
+      // Outside the editor, the original teardown applies.
+      if (!detailEditing) {
+        setSelectedKey(null)
+        setDetailEditing(false)
+      }
+      setDeleteError(null)
       // Discover results carry an installed flag derived from the skills
       // dir -- drop them so the Add Skill browser reflects the deletion.
       queryClient.invalidateQueries({ queryKey: ['discover-skills'] })
     },
-    onError: (_err, _key, context) => {
+    onError: (err: Error, key, context) => {
       if (context?.prev) queryClient.setQueryData(['skills'], context.prev)
+      // Rollback first (above, unchanged), then say why the row came back:
+      // reversing the optimistic write alone re-renders the deleted row with
+      // no explanation, which reads as the delete silently not working.
+      // The report is looked up by the ORIGINAL message before it is framed.
+      // The banner names the skill the way the ROW does (its display name,
+      // from the rollback snapshot — guaranteed to hold the deleted skill),
+      // so the reader matches banner to row without decoding the raw key.
+      const target = context?.prev?.find(s => s.key === key)
+      const code = err instanceof ApiError ? parseErrorCode(err.body) : undefined
+      // The frame ALWAYS carries the skill name and the word "delete" — a bare
+      // hint next to several rows would name neither what failed nor on which
+      // skill. A coded refusal swaps only the {{error}} half for its hint.
+      setDeleteError({
+        report: findReport(err.message),
+        message: i18nT('pages.overview.skillsTab.delete_failed_error', {
+          name: target ? displayName(target) : key,
+          error: code === 'readonly_skill_prefix'
+            ? i18nT('pages.overview.skillsTab.readonly_skill_error')
+            : err.message,
+        }),
+      })
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: ['skills'] })
@@ -192,22 +261,53 @@ export default function SkillsTab() {
     }
   }, [allFiltered, selectedKey, detailEditing])
 
-  const selectSkill = (s: Skill) => { setSelectedKey(s.key); setDetailEditing(false); openDetail() }
+  // Moving on to another skill also retires a delete failure — but only one
+  // the user could have SEEN: the test is the banner's own render gate
+  // (visible unless the editor is showing), so a click made from inside a
+  // visible editor keeps the suppressed failure for later display, while a
+  // click made with the banner on screen — the mobile latched-session list
+  // included — retires it as acknowledged. While a save is in
+  // flight the click is a no-op instead — switching rows would unmount the
+  // editor mid-request, and the PUT's outcome (a failure included) would
+  // report nowhere; the Cancel button is disabled for the same window.
+  const selectSkill = (s: Skill) => {
+    if (updateSkill.isPending) return
+    // A LATCHED edit session (mobile Back) holds the only copy of a draft,
+    // and on a phone a row tap is the only way back to the detail pane —
+    // changing selection here would end the session and the next Edit would
+    // reseed formData, silently discarding the draft. Reopen the latched
+    // editor instead; leaving it goes through its own explicit exits (Cancel,
+    // Save), which settle the draft's fate visibly. Only while the latched
+    // selection still resolves: if the skill vanished underneath the latch
+    // (an external delete picked up by a refetch), reopening would land on
+    // the no-selection placeholder — the one detail branch with no Back —
+    // so a dead latch falls through to the normal select path instead.
+    if (detailEditing && !showDetail && selectedSkill) { openDetail(); return }
+    if (!(detailEditing && showDetail)) setDeleteError(null)
+    setSelectedKey(s.key); setDetailEditing(false); openDetail()
+  }
 
   /** One row in the left list. */
   const renderRow = (s: Skill) => {
     const isSel = s.key === selectedKey
+    // While a save is in flight `selectSkill` no-ops; the row says so instead
+    // of keeping its live cursor and hover — a silent no-op on a control that
+    // looks live reads as a broken UI.
+    const rowInert = updateSkill.isPending
     return (
       <div
         key={s.key}
         role="button"
         tabIndex={0}
         aria-current={isSel ? 'true' : undefined}
+        aria-disabled={rowInert ? 'true' : undefined}
         aria-label={i18nT('pages.overview.skillsTab.select', { name: displayName(s) })}
         onClick={() => selectSkill(s)}
         onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); selectSkill(s) } }}
-        className={`flex flex-col gap-0.5 px-3 py-2.5 rounded-md cursor-pointer mb-1 transition-colors ${
-          isSel ? 'list-selected bg-accent-subtle' : 'bg-bg-elevated hover:bg-bg-hover'
+        className={`flex flex-col gap-0.5 px-3 py-2.5 rounded-md mb-1 transition-colors ${
+          rowInert ? 'cursor-default opacity-60' : 'cursor-pointer'
+        } ${
+          isSel ? 'list-selected bg-accent-subtle' : `bg-bg-elevated ${rowInert ? '' : 'hover:bg-bg-hover'}`
         }`}
       >
         <div className="flex items-center gap-1.5 min-w-0">
@@ -298,6 +398,27 @@ export default function SkillsTab() {
         </div>
       </div>
 
+      {/* The delete failure lands here on the LIST surface, not in the detail
+        * pane: the mutation's rollback re-renders the deleted row, so the
+        * notice must sit next to the row that came back — the detail pane may
+        * have moved on (mobile shows one pane at a time). The hand-off is only
+        * safe because this banner never co-renders with a VISIBLE editor: the
+        * render is gated on the editor actually showing (detailEditing AND
+        * showDetail), which also covers a delayed failure arriving after the
+        * user already opened another skill's editor. On a phone, Back latches
+        * detailEditing (that latch restores the draft across a breakpoint
+        * crossing) while showDetail goes false — the banner may then show on
+        * the list. The error is retained, so it displays once the editor is
+        * out of view; dismiss, row selection, and a later success retire it. */}
+      {!(detailEditing && showDetail) && (
+        /* No hand-off while an edit session is LATCHED (mobile Back hides the
+           editor without ending it): the hand-off navigates to the chat and
+           unmounts this tab, and the latched formData is still the only copy
+           of that draft. The hand-off returns as soon as no session holds a
+           draft. */
+        <ErrorNotice className="mb-3" askAgent={!detailEditing} message={deleteError?.message} report={deleteError?.report} onDismiss={() => setDeleteError(null)} testId="skill-delete-failure" />
+      )}
+
       {skills.length === 0 ? <EmptyState icon={<Sparkles className="lucide-inline" />} title={i18nT('pages.overview.skillsTab.no_skills_yet')} subtitle={i18nT('pages.overview.skillsTab.empty_subtitle')} action={<Btn onClick={() => setSkillBrowserOpen(true)}><Download size={14} /> {i18nT('pages.overview.skillsTab.add_skill')}</Btn>} /> : (
         /* List-detail: skill list (pane 1) on the left, then the directory
          *  browser (panes 2+3: file tree + file content) on the right. */
@@ -329,18 +450,39 @@ export default function SkillsTab() {
                     third control to one row trips AUTOSDE's
                     max-two-buttons-per-row. A row that already carries three is
                     tolerated; a compliant one may not grow into that. */}
+                {/* Same in-flight window as Cancel and row selection: on a
+                    phone this is the editor's only other exit, and taking it
+                    mid-save would unmount the pane that renders the save's
+                    failure. Back deliberately does NOT exit the edit session:
+                    the latched detailEditing is what restores the draft if
+                    the viewport crosses back over the desktop breakpoint.
+                    The delete banner handles the latched state itself — its
+                    gate only suppresses it while the editor is VISIBLE. */}
                 {isMobile && (
                   <div className="px-4 pt-2.5 shrink-0">
-                    <ListDetailBack label={i18nT('pages.overview.skillsTab.skills')} onBack={closeDetail} />
+                    <ListDetailBack label={i18nT('pages.overview.skillsTab.skills')} onBack={() => { if (updateSkill.isPending) return; closeDetail() }} />
                   </div>
                 )}
                 <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-2.5 border-b border-border shrink-0">
                   <span className="text-sm font-mono font-bold text-text-strong truncate">{selectedSkill.key}</span>
                   <div className="flex gap-2 shrink-0">
-                    <Btn onClick={() => setDetailEditing(false)}>{i18nT('pages.overview.skillsTab.cancel')}</Btn>
-                    <Btn primary onClick={() => updateSkill.mutate({ key: selectedSkill.key, content: assembleSkillContent(formData) })}>{i18nT('pages.overview.skillsTab.save')}</Btn>
+                    <Btn disabled={updateSkill.isPending} onClick={() => setDetailEditing(false)}>{i18nT('pages.overview.skillsTab.cancel')}</Btn>
+                    <Btn primary disabled={updateSkill.isPending} onClick={() => updateSkill.mutate({ key: selectedSkill.key, content: assembleSkillContent(formData) })}>{updateSkill.isPending ? <><Loader2 size={14} className="animate-spin" /> {i18nT('pages.overview.skillsTab.saving')}</> : i18nT('pages.overview.skillsTab.save')}</Btn>
                   </div>
                 </div>
+                {updateError && (
+                  <div className="px-4 pt-2.5 shrink-0">
+                    {/* No hand-off: it navigates to the chat, which unmounts
+                        this editor — and a failed save means the form below
+                        holds the ONLY copy of the edit. This is exactly the
+                        draft-loss case ErrorNotice's opt-in exists for. The
+                        title carries the translated frame so the message can
+                        stay the raw server text (the journal's lookup key);
+                        dismiss matches the delete banner, so the two notices
+                        read as the same species. */}
+                    <ErrorNotice variant="inline" title={i18nT('pages.overview.skillsTab.update_failed_title')} message={updateError} onDismiss={() => setUpdateError('')} testId="skill-update-failure" />
+                  </div>
+                )}
                 <div className="flex-1 min-h-0 overflow-y-auto p-4">
                   <SkillForm data={formData} onChange={setFormData} hideIdentity />
                 </div>
@@ -364,8 +506,19 @@ export default function SkillsTab() {
                   </div>
                   {selectedSkill.source === 'kirocrew' && (
                     <div className="flex gap-2 shrink-0">
-                      <Btn disabled={!detailReady} onClick={() => { setDetailEditing(true); setFormData(parseSkillContent(detailContent, selectedSkill.key)) }}>{i18nT('pages.overview.skillsTab.edit')}</Btn>
-                      <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.delete_confirm', { name: selectedSkill.key }))) deleteSkill.mutate(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
+                      {/* Entering the editor retires a delete banner the user
+                          can SEE right now (Edit is only reachable from the
+                          non-editing branch, where the banner gate is open) —
+                          the same acknowledged-by-navigation rule as a row
+                          click. A failure arriving later, while the editor is
+                          open, is retained instead and displays after close. */}
+                      <Btn disabled={!detailReady} onClick={() => { setDetailEditing(true); setUpdateError(''); setDeleteError(null); setFormData(parseSkillContent(detailContent, selectedSkill.key)) }}>{i18nT('pages.overview.skillsTab.edit')}</Btn>
+                      {/* isPending gate: two overlapping deletes cross their
+                          hook-level callbacks — the first delete's onSuccess
+                          would clear the second's failure notice, and the
+                          optimistic snapshots would restore each other's
+                          rows. One delete at a time, like the create modal. */}
+                      <Btn danger disabled={deleteSkill.isPending} onClick={() => { if (deleteSkill.isPending) return; if (confirm(i18nT('pages.overview.skillsTab.delete_confirm', { name: selectedSkill.key }))) deleteSkill.mutate(selectedSkill.key) }}>{i18nT('pages.overview.skillsTab.delete')}</Btn>
                     </div>
                   )}
                 </div>

@@ -32,6 +32,7 @@ import uuid
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+from kiro_crew.config.sections import _coerce_opaque_str_ids
 from kiro_crew.messaging.tables import TABLE_POLICY_NATIVE
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -55,6 +56,11 @@ from kiro_crew.weixin.renderer import WEIXIN_CHUNK_LIMIT, render_chunks
 logger = logging.getLogger(__name__)
 
 DispatchFn = Callable[[InboundMessage], Awaitable[None]]
+
+#: The DM policies :meth:`WeixinTransport.authorize` implements. A reloaded value
+#: outside this set is REFUSED rather than adopted, so a typo in ``config.json``
+#: cannot land a policy the authorize ladder would fall through on.
+WEIXIN_DM_POLICIES = frozenset(("open", "allowlist", "disabled"))
 
 # iLink renders Markdown natively; DM-only; no threads. ``files_inbound=True``
 # because inbound image/voice/file items are downloaded from the WeChat CDN and
@@ -121,6 +127,62 @@ class WeixinTransport(MessagingTransport):
     @property
     def client(self) -> WeixinClient:
         return self._client
+
+    # -- Live config -----------------------------------------------------------
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``weixin`` config section's authorization fields.
+
+        Called by the dispatcher's config applier so a roster or policy edit from
+        the dashboard, the CLI or ``$EDITOR`` takes effect on the next inbound
+        message instead of the next restart. The allow-list is rebuilt through
+        :func:`_coerce_opaque_str_ids` -- iLink ids are opaque (``wxid_…``,
+        ``<hex>@im.bot``), so the digit-only coercion would silently empty the
+        list and, under the deny-by-default policy, lock every sender out.
+
+        Fails closed on shape: a policy outside the three known values, or a
+        roster that is not a list, keeps the PREVIOUS value and logs at WARNING.
+        Both fields are authorization boundaries, so each change is SEL-audited
+        by count and by policy NAME -- never by id.
+        """
+        raw_ids = getattr(section, "allowed_user_ids", None)
+        if not isinstance(raw_ids, (list, tuple)):
+            logger.warning(
+                "weixin: allowed_user_ids is not a list in the reloaded config; keeping the "
+                "previous allow-list (%d id(s))",
+                len(self._allowed),
+            )
+        else:
+            new_allowed = frozenset(_coerce_opaque_str_ids(list(raw_ids)))
+            if new_allowed != self._allowed:
+                added = len(new_allowed - self._allowed)
+                removed = len(self._allowed - new_allowed)
+                self._allowed = new_allowed
+                logger.info("weixin: allow-list reloaded (+%d/-%d id(s))", added, removed)
+                sel().log_api_access(
+                    caller="config",
+                    operation="weixin_transport.reconfigure",
+                    outcome="allow_list_changed",
+                    source="weixin",
+                    resources=f"added={added} removed={removed} size={len(new_allowed)}",
+                )
+        policy = getattr(section, "dm_policy", None)
+        if policy not in WEIXIN_DM_POLICIES:
+            logger.warning(
+                "weixin: dm_policy %r in the reloaded config is not one of %s; keeping %r",
+                policy,
+                "/".join(sorted(WEIXIN_DM_POLICIES)),
+                self._dm_policy,
+            )
+        elif policy != self._dm_policy:
+            previous, self._dm_policy = self._dm_policy, policy
+            logger.warning("weixin: dm_policy reloaded: %s -> %s", previous, policy)
+            sel().log_api_access(
+                caller="config",
+                operation="weixin_transport.reconfigure",
+                outcome="dm_policy_changed",
+                source="weixin",
+                resources=f"from={previous} to={policy}",
+            )
 
     # -- Tier-1 core -----------------------------------------------------------
     async def send_message(
@@ -269,8 +331,8 @@ class WeixinTransport(MessagingTransport):
                     continue
                 if errcode is not None:
                     # Unknown protocol error: still back off. Without this an
-                    # unrecognized code would spin the same way the two known
-                    # codes used to.
+                    # unrecognized code would spin instead of backing off the way
+                    # the two known codes do.
                     failures += 1
                     delay = 2 if failures < 3 else 30
                     logger.warning(
@@ -283,7 +345,14 @@ class WeixinTransport(MessagingTransport):
                     continue
                 self._sync_buf = resp.get("get_updates_buf", self._sync_buf)
                 for msg in resp.get("msgs") or []:
-                    await self.receive(msg)
+                    task = asyncio.current_task()
+                    if task is not None:
+                        self._client._handler_tasks.add(task)
+                    try:
+                        await self.receive(msg)
+                    finally:
+                        if task is not None:
+                            self._client._handler_tasks.discard(task)
                 failures = 0
             except asyncio.CancelledError:
                 # Propagate: cancellation is shutdown, and swallowing it here

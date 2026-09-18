@@ -1,9 +1,11 @@
-import type React from 'react'
-import { useState } from 'react'
+import { useId, useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
 import { Check, Download, Loader2 } from 'lucide-react'
 import { api } from '../api/client'
-import ErrorNotice from './ErrorNotice'
+import ErrorNotice, {
+  ErrorNoticeMenuItem,
+  type ErrorNoticeMenuItemComponent,
+} from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
 
@@ -18,12 +20,7 @@ interface ExportSessionItemProps {
   /** The session to export. */
   readonly slotKey: string
   /** The Radix menu-item primitive of the hosting menu family. */
-  readonly Item: React.ComponentType<{
-    title?: string
-    disabled?: boolean
-    onSelect?: (event: Event) => void
-    children?: React.ReactNode
-  }>
+  readonly Item: ErrorNoticeMenuItemComponent
   /**
    * Memory mode of the session. An incognito or temporary transcript exists
    * under a promise that nothing is kept, so the backend refuses to export one;
@@ -53,6 +50,7 @@ interface ExportSessionItemProps {
  * so a repeat click is harmless and needs no confirm step.
  */
 export default function ExportSessionItem({ slotKey, Item, memoryMode }: ExportSessionItemProps) {
+  const errorId = useId()
   const [state, setState] = useState<ExportState>({ kind: 'idle' })
   const notPersistent = memoryMode !== undefined && memoryMode !== 'persistent'
 
@@ -74,64 +72,70 @@ export default function ExportSessionItem({ slotKey, Item, memoryMode }: ExportS
   })
 
   return (
-    <Item
-      disabled={notPersistent || state.kind === 'exporting'}
-      onSelect={notPersistent
-        ? undefined
-        : (event: Event) => {
-          // Keep the menu open so the row can report the outcome.
-          event.preventDefault()
-          exportMutation.mutate()
-        }}
-    >
-      <Download size={13} className="shrink-0 text-muted" />
-      <span className="flex-1">{i18nT('components.exportSessionItem.export_to_file')}</span>
-      {notPersistent && (
-        <span className="ml-auto text-[10px] text-muted shrink-0">
-          {i18nT('components.exportSessionItem.not_saved_to_disk')}
-        </span>
-      )}
-      {state.kind === 'exporting' && (
-        <Loader2 size={13} className="ml-auto shrink-0 animate-spin text-muted" />
-      )}
-      {state.kind === 'done' && (
-        <span className="ml-auto flex items-center gap-1 text-[10px] text-ok shrink-0">
-          <Check size={12} />
-          {i18nT('components.exportSessionItem.exported')}
-        </span>
-      )}
+    <>
+      <Item
+        disabled={notPersistent || state.kind === 'exporting'}
+        onSelect={notPersistent
+          ? undefined
+          : (event: Event) => {
+            // Keep the menu open so the row can report the outcome.
+            event.preventDefault()
+            exportMutation.mutate()
+          }}
+      >
+        <Download size={13} className="shrink-0 text-muted" />
+        <span className="flex-1">{i18nT('components.exportSessionItem.export_to_file')}</span>
+        {notPersistent && (
+          <span className="ml-auto text-[10px] text-muted shrink-0">
+            {i18nT('components.exportSessionItem.not_saved_to_disk')}
+          </span>
+        )}
+        {state.kind === 'exporting' && (
+          <Loader2 size={13} className="ml-auto shrink-0 animate-spin text-muted" />
+        )}
+        {state.kind === 'done' && (
+          <span className="ml-auto flex items-center gap-1 text-[10px] text-ok shrink-0">
+            <Check size={12} />
+            {i18nT('components.exportSessionItem.exported')}
+          </span>
+        )}
+        {state.kind === 'error' && (
+          // The shared error surface, not a hand-rolled danger span: the message has
+          // to be READABLE rather than hidden in a `title=` a keyboard or touch user
+          // never reaches.
+          //
+          // The hand-off is the sibling ErrorNoticeMenuItem below. Keeping it out
+          // of this row gives Radix a real focus stop without changing what Enter,
+          // Space, or a pointer click on this export row does.
+          //
+          // This menu-only wrapper swallows pointer events on the passive alert. A
+          // click there would otherwise bubble to the row and replace the error with
+          // a fresh spinner. Other ErrorNotice hosts keep their ordinary bubbling.
+          <span
+            className="ml-auto"
+            // Not interactive: these handlers BLOCK events rather than acting on
+            // them, so the element carries no meaning of its own for a screen
+            // reader -- the alert inside it does.
+            role="presentation"
+            onClick={(e) => e.stopPropagation()}
+            onPointerDown={(e) => e.stopPropagation()}
+          >
+            <ErrorNotice
+              id={errorId}
+              message={state.message}
+              title={i18nT('components.exportSessionItem.failed')}
+              variant="inline"
+            />
+          </span>
+        )}
+      </Item>
       {state.kind === 'error' && (
-        // The shared error surface, not a hand-rolled danger span: the message has
-        // to be READABLE rather than hidden in a `title=` a keyboard or touch user
-        // never reaches.
-        //
-        // `askAgent` is on because nothing here is unsaved: an export is a read, so
-        // the hand-off's navigation destroys no draft. Worth recording what was
-        // measured against a real Radix menu, though -- arrow keys move between
-        // ITEMS and Tab is swallowed, so focus does not enter the notice and the
-        // button is reachable by pointer only. The readable text is what serves
-        // every other input method, and pressing Enter on the row retries.
-        //
-        // The wrapper swallows pointer events because a click inside the notice
-        // would otherwise bubble to the item and re-fire the export, replacing the
-        // error with a fresh spinner.
-        <span
-          className="ml-auto"
-          // Not interactive: these handlers BLOCK events rather than acting on
-          // them, so the element carries no meaning of its own for a screen
-          // reader -- the alert inside it does.
-          role="presentation"
-          onClick={(e) => e.stopPropagation()}
-          onPointerDown={(e) => e.stopPropagation()}
-        >
-          <ErrorNotice
-            message={state.message}
-            title={i18nT('components.exportSessionItem.failed')}
-            variant="inline"
-            askAgent
-          />
-        </span>
+        <ErrorNoticeMenuItem
+          Item={Item}
+          message={state.message}
+          describedBy={errorId}
+        />
       )}
-    </Item>
+    </>
   )
 }

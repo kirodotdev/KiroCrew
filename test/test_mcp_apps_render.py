@@ -240,9 +240,8 @@ async def test_handle_tool_result_broadcast_exception_degrades_gracefully(spool)
 
 @pytest.mark.asyncio
 async def test_handle_tool_result_offloads_spool_read(spool, monkeypatch):
-    """Regression for the no-blocking-call-on-event-loop rule: the multi-MB
-    spool read must execute in a worker thread (asyncio.to_thread), never on
-    the event loop thread that runs every co-scheduled chat task."""
+    """The multi-MB spool read runs in a worker thread (asyncio.to_thread),
+    never on the event loop thread that runs every co-scheduled chat task."""
     import threading
 
     sid = _hex()

@@ -9,7 +9,7 @@ notification + broadcasts ``skills.pending_changed``.
 The consumed hook is the counterpart for candidates LEAVING the queue
 (approved, dismissed, or TTL-pruned): the gateway registers a hook that
 retires the candidate's bell notification so the badge doesn't stay lit for a
-review that can no longer be acted on.
+review that cannot be acted on.
 """
 
 from __future__ import annotations

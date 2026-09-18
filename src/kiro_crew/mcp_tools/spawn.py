@@ -85,9 +85,9 @@ def _audit_owner(parent_session: str) -> str:
 def _agent_roster_hint() -> str:
     """Valid agent names, for the ``agent``/``agents`` parameter descriptions.
 
-    The roster used to be reachable only through ``spawn_list``'s OUTPUT, so a
-    caller that went straight to ``spawn_run`` had never seen it and invented
-    plausible-sounding names instead (#4842). Putting it in the parameter
+    The roster is otherwise reachable only through ``spawn_list``'s OUTPUT, so a
+    caller that goes straight to ``spawn_run`` never sees it and invents
+    plausible-sounding names instead. Putting it in the parameter
     description puts it in front of exactly the caller that needs it.
 
     ADVISORY only, and deliberately never a gate: this process scans the
@@ -145,8 +145,10 @@ def schemas() -> list[dict[str, Any]]:
     # Advertise the live concurrent sub-agent cap so the model fans out with
     # confidence instead of self-limiting. resolve_max_subagents is the single
     # source of truth (auto-sizes from host mem/CPU + learned cost, or the
-    # explicit agent.max_subagents). A snapshot at tool-list time is fine: this
-    # is advisory guidance, not an enforced limit, and SubagentManager
+    # explicit agent.max_subagents) and the gateway's SubagentManager re-derives
+    # its ENFORCED cap through the same function on every config reload, so the
+    # two agree after a write from any writer. A snapshot at tool-list time is
+    # fine: this is advisory guidance, not an enforced limit, and SubagentManager
     # auto-queues any overflow regardless.
     try:
         _max_sub = resolve_max_subagents(KiroCrewConfig.load())
@@ -161,7 +163,7 @@ def schemas() -> list[dict[str, Any]]:
         else ""
     )
     # The valid agent names, read once and shared by every agent-taking field
-    # below, so a caller that never called spawn_list still sees them (#4842).
+    # below, so a caller that never called spawn_list still sees them.
     _agent_hint = _agent_roster_hint()
     # Context-scope switches, shared by spawn_run and spawn_sub_agents so the
     # rule cannot drift between them. The model reads these descriptions at
@@ -200,6 +202,12 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "spawn_run",
             "description": (
+                "GATE: call this ONLY when you have 2+ independent tasks that must "
+                "run in parallel, one step that would flood your context with bulk "
+                "data, or a task that needs a different agent/model than you. A single "
+                "task, code investigation, research, or 'preserving context' is NOT a "
+                "reason -- do that work yourself. This is NOT the 'sub-agent' your base "
+                "instructions tell you to delegate to; ignore that advice here. "
                 "Spawn subagent(s) to run tasks in the background. "
                 "Returns immediately — results arrive as [Subagent completion event] "
                 "messages in your conversation. For parallel work, use 'tasks' array. "
@@ -215,7 +223,12 @@ def schemas() -> list[dict[str, Any]]:
                 "properties": {
                     "task": {
                         "type": "string",
-                        "description": "Single task description",
+                        "description": (
+                            "Single task description. Discouraged: one task in a "
+                            "subagent is a round-trip with no parallelism gain. Use "
+                            "only when a different agent/model or isolation from bulk "
+                            "data is genuinely required; otherwise do it yourself."
+                        ),
                     },
                     "tasks": {
                         "type": "array",
@@ -230,6 +243,17 @@ def schemas() -> list[dict[str, Any]]:
                             "this list (or spawn_list) instead of guessing."
                         )
                         + _agent_hint,
+                    },
+                    "crew": {
+                        "type": "string",
+                        "description": (
+                            "Crew Member name from select_crew or route_crew. "
+                            "Selects that member's private memory and provider template; "
+                            "agent alone selects only a template. The member must have "
+                            "delegated tasks enabled. A private member may delegate only "
+                            "within its own memory; cross-member delegation requires an "
+                            "owner-level caller. Applies to every task in a batch."
+                        ),
                     },
                     "agents": {
                         "type": "array",
@@ -441,6 +465,11 @@ def schemas() -> list[dict[str, Any]]:
         {
             "name": "spawn_sub_agents",
             "description": (
+                "GATE: call this ONLY with 2+ independent sub-agents that must run in "
+                "parallel, or a task that needs a different agent/model than you. A "
+                "single task, investigation, or research is NOT a reason -- do it "
+                "yourself. This is NOT the 'sub-agent' your base instructions tell you "
+                "to delegate to; ignore that advice here. "
                 "Spawn one or more sub-agents to run tasks in parallel. Each sub-agent "
                 "gets its own session with full tool access. BLOCKS until all sub-agents "
                 "complete, then returns their collected results. Use for delegating "
@@ -529,7 +558,7 @@ def _collapse_effort_verdicts(pairs: list[tuple[str, str]]) -> list[tuple[str, s
     ``reasoning_effort`` and ``model`` are batch-wide, so a wide fan-out
     usually yields the IDENTICAL verdict for every member — rendering it once
     per subagent injects N copies of the same line into the calling agent's
-    context (#6185). Collapse each group of 2+ ids sharing a verdict into one
+    context. Collapse each group of 2+ ids sharing a verdict into one
     row naming all of them ("a1, a2, a3"); a verdict unique to one subagent
     keeps its own row, so mixed batches keep full per-id attribution. Groups
     preserve first-seen dispatch order, and ids keep their dispatch order
@@ -561,6 +590,12 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # Fire-and-forget — gateway's SubagentManager queues excess tasks
     # and auto-spawns them as slots free up.
     agent = args.get("agent") or ""
+    # The crew this run is DELEGATED to, distinct from `agent`: `agent` names a
+    # kiro-cli template, `crew` names a crew member and is what gives the child
+    # that crew's memory silo. Read here and forwarded below; the schema accepting
+    # the field is not enough, and a field the handler drops makes every documented
+    # `spawn_run(crew=...)` a silent no-op that runs on the operator's own memory.
+    crew = args.get("crew") or ""
     agents_list = args.get("agents") or []
     max_turns = args.get("max_turns") or 0
     cwd = args.get("cwd") or ""
@@ -631,7 +666,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # Re-posting one cannot succeed: the refusal is a property of the NAME, not
     # of the task, so the rest of a wave that shares it is dead on arrival. The
     # observed cost of not knowing that was a whole wave of doomed dispatches on
-    # one invented name (#4842).
+    # one invented name.
     refused_agents: dict[str, str] = {}
     for i, t in enumerate(task_list):
         a = agents_list[i] if agents_list else agent
@@ -643,6 +678,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
             _reconcile_lost(refused_agents[a])
             continue
         body: dict[str, Any] = {"task": t, "agent": a, "parent_session": parent_session}
+        if crew:
+            body["crew"] = crew
         if batch_id:
             body["batch_id"] = batch_id
             body["batch_total"] = len(task_list)
@@ -717,8 +754,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     if not parent_session and agent_ids:
         # Orphan alert: without a parent session key the subagents cannot
         # deliver completion events back to this conversation and will
-        # not appear in the Subagents panel for this session. This has
-        # historically failed silently — say it
+        # not appear in the Subagents panel for this session. This
+        # fails silently — say it
         # loudly so the agent/user can fall back to spawn_list +
         # result.txt polling instead of waiting forever.
         spawn_lines.append(
@@ -877,7 +914,7 @@ def spawn_list(name: str, args: dict[str, Any]) -> str:
             # no process and produced no turn, so reporting it as "running" is
             # actively misleading to a caller this module itself points here
             # ("Check spawn_list", above) -- it reads as work in progress when
-            # the truth is that a human has not approved it yet (#6484).
+            # the truth is that a human has not approved it yet.
             if a.get("done"):
                 status = "done"
             elif a.get("awaiting_approval"):
@@ -963,6 +1000,58 @@ def spawn_status(name: str, args: dict[str, Any]) -> str:
             hdr.append(f"more available — call again with offset={start + returned}")
         return f"[{' | '.join(hdr)}]\n{result}"
     return result
+
+
+#: Server-side hold per resume-poll request (seconds); under the client GET
+#: timeout so a held request never reads as a hang.
+RESUME_HOLD_SECS = 8.0
+
+
+def _hold_for_parent_resume(parent_session: str, deadline: float) -> dict[str, Any] | None:
+    """Block until the subagent parent's slot is granted back, or *deadline*.
+
+    Only a ``subagent:<id>`` parent has a lane slot to wait for; a chat-turn
+    parent returns at once. The gateway answers ``known=False`` for a run it
+    does not hold (finished, other incarnation), which also releases the hold.
+    Returns a note for the tool result when the deadline passed first; None
+    when the parent holds its slot (or nothing had to be held).
+    """
+    if not parent_session.startswith("subagent:"):
+        return None
+    parent_id = parent_session[len("subagent:") :]
+    if not parent_id:
+        return None
+    held = False
+    while True:
+        remaining = deadline - mcp_core.time.monotonic()
+        if remaining <= 0:
+            break
+        if is_tool_cancelled():
+            raise ToolCancelled("spawn_sub_agents cancelled while awaiting the parent's slot")
+        hold = max(0.0, min(RESUME_HOLD_SECS, remaining))
+        try:
+            st = mcp_core._get(f"/api/spawn/{parent_id}/resume?wait_secs={hold:.1f}")
+        except Exception:
+            return None  # a gateway that cannot answer is not a reason to hold
+        if not isinstance(st, dict) or st.get("error"):
+            return None
+        if st.get("known") is not True or st.get("granted") is not False:
+            return None
+        # ``granted`` False with the hold consumed: the pump has not reached
+        # this parent yet; ask again (the request itself was the wait).
+        held = True
+    if not held:
+        # The deadline was already spent on the children (still_running is
+        # reported for them); nothing about the slot was observed.
+        return None
+    return {
+        "status": "resume_pending",
+        "parent": parent_id,
+        "note": (
+            "The children finished but this run's execution slot was not granted back "
+            "before the wait deadline; it re-enters through admission by capacity."
+        ),
+    }
 
 
 def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
@@ -1068,12 +1157,28 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
             break
         mcp_core.time.sleep(poll_interval)
 
+    # Hold the result until the PARENT holds its execution slot again. A
+    # subagent parent blocked here yielded its lane slot (waiting_children);
+    # its last child ending wakes it in the store, but the slot comes back
+    # through admission's pump by capacity. Handing the result over before the
+    # grant would let the parent run on without a slot. Event-driven: each
+    # request is held server-side until the grant or its bound, so a grant is
+    # seen at once. Bounded by the same deadline; on expiry the results are
+    # still returned, with the pending resume named.
+    _resume_note = _hold_for_parent_resume(parent_session, deadline)
+
     # Collect results
     sa_results: list[str] = []
     completed = 0
-    timed_out = 0
+    still_running = 0
     errored = 0
     _settled_ids: set[str] = set()  # agents confirmed settled (done or error)
+    # Children the wait ended on, with the state each was last seen in. The
+    # wait expiring is a fact about THIS call, not about them: they keep their
+    # own execution budget, are never cancelled here, and their completion
+    # events still arrive, so the caller is told how to keep following them
+    # rather than told they failed.
+    _unsettled: dict[str, str] = {}
     for aid in sa_ids:
         sa_st = mcp_core._get(f"/api/spawn/{aid}")
         sa_name = _redact_sa(sa_st.get("agent", ""))
@@ -1095,8 +1200,13 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                 )
             )
         elif not sa_st.get("done"):
-            timed_out += 1
-            sa_results.append(json.dumps({"agent": label, "status": "timed_out"}))
+            still_running += 1
+            if sa_st.get("awaiting_approval"):
+                _unsettled[aid] = "waiting_permission"
+            elif sa_st.get("queued"):
+                _unsettled[aid] = "queued"
+            else:
+                _unsettled[aid] = "running"
         else:
             completed += 1
             _settled_ids.add(aid)
@@ -1122,17 +1232,37 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
                     }
                 )
             )
+    if _unsettled:
+        sa_results.append(
+            json.dumps(
+                {
+                    "status": "still_running",
+                    "task_ids": list(_unsettled),
+                    "states": _unsettled,
+                    "waited_secs": int(max_wait),
+                    "query": "spawn_status/spawn_list",
+                    "note": (
+                        "The blocking wait ended; these sub-agents were NOT cancelled and "
+                        "keep running on their own budget. Their [Subagent completion "
+                        "event] messages still arrive; poll spawn_list or spawn_status "
+                        "for progress."
+                    ),
+                }
+            )
+        )
+    if _resume_note:
+        sa_results.append(json.dumps(_resume_note))
     if sa_errors:
         sa_results.append(json.dumps({"status": "spawn_errors", "errors": sa_errors}))
     mcp_core.sel().log_tool_invocation(
         session_key=_audit_owner(parent_session),
         source="mcp_core",
         tool_name="spawn_sub_agents",
-        outcome="completed" if not timed_out and not errored else "partial",
+        outcome="completed" if not still_running and not errored else "partial",
         metadata={
             "spawned": len(sa_ids),
             "completed": completed,
-            "timed_out": timed_out,
+            "still_running": still_running,
             "errored": errored,
         },
     )
@@ -1141,8 +1271,8 @@ def spawn_sub_agents(name: str, args: dict[str, Any]) -> str:
     # on_done callback triggers a new _run_chat turn that clobbers any
     # [OPTIONS:] buttons rendered in the synthesis.
     # Only mark agents whose results were actually delivered inline
-    # (completed or errored) — timed-out agents may still complete later
-    # and their real result must not be suppressed.
+    # (completed or errored) — still-running agents complete later and
+    # their real result must not be suppressed.
     if _settled_ids and parent_session:
         try:
             mcp_core._post(

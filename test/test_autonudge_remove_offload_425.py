@@ -1,8 +1,9 @@
-"""Regression: async remove() must offload persistence, not fsync on the loop (#425).
+"""async remove() must offload persistence, not fsync on the loop.
 
-``remove()`` called ``remove_sync(persist=True)`` -> ``_save()`` -> ``_write_state``
-which does a blocking ``os.fsync`` directly on the event loop. It must instead
-snapshot under the lock and offload the write to an executor (as update() does).
+``remove()`` delegates to ``remove_sync(persist=True)`` -> ``_save()`` ->
+``_write_state``. It must snapshot under the lock and offload the write to an
+executor (as update() does), never call a blocking ``os.fsync`` directly on the
+event loop.
 """
 
 from __future__ import annotations

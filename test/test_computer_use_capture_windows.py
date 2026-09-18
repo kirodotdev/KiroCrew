@@ -426,7 +426,7 @@ class TestTheEncodeAndSpoolPath:
             (-1, (320, 160)),
             (64, (320, 160)),  # below MIN_SCREENSHOT_MAX_PX
             # Derived from the constant rather than written out, so lowering the
-            # ceiling cannot leave this asserting a size the clamp no longer
+            # ceiling cannot leave this asserting a size the clamp does not
             # produces. A 10000x5000 source clamps to ceiling x ceiling/2.
             (
                 99999,
@@ -835,7 +835,7 @@ class TestCaptureWindowBitmap:
 
         A DPI-unaware window renders at its logical size into whatever buffer it is
         given, so sizing from the caller's DPI-aware rect leaves a black L-shaped
-        margin and an image that no longer maps linearly onto the window rect the
+        margin and an image that does not map linearly onto the window rect the
         element frames are expressed in. Measured: a WinForms window drew 620x392 into
         both a 620x400 buffer and a 775x500 one.
         """

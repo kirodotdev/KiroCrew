@@ -22,6 +22,24 @@ from kiro_crew.dashboard.handlers import mcp as mcp_mod
 from kiro_crew.slack.gateway import GatewayOrchestrator
 
 
+def _prime_refresh_window(monkeypatch: pytest.MonkeyPatch, hours: int) -> None:
+    """Put ``mcp_gateway.resolve_once_refresh_hours`` on a test-scoped watcher.
+
+    The prefetch loop reads the window from the live snapshot, so a test that
+    wants a specific cadence primes one. Scoped with ``monkeypatch`` so the
+    process singleton is restored and no poll task is ever armed.
+    """
+    from kiro_crew.config import live
+    from kiro_crew.config.live import ConfigWatch
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    watch = ConfigWatch()
+    monkeypatch.setattr(live, "_WATCH", watch)
+    cfg = KiroCrewConfig()
+    cfg.mcp_gateway.resolve_once_refresh_hours = hours
+    watch.prime(cfg)
+
+
 def _make_request(state: object, body: dict) -> web.Request:
     req = MagicMock(spec=web.Request)
     attach_body(req, body)
@@ -84,10 +102,14 @@ async def test_pre_resolve_pass_runs_on_a_clock_not_only_at_boot(monkeypatch) ->
 
     monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
     orch = SimpleNamespace(
-        _cfg=SimpleNamespace(mcp_gateway=SimpleNamespace(resolve_once_refresh_hours=24)),
         _prefetch_mcp_resolutions=fake_pass,
+        _mcp_resolve_refresh_secs=GatewayOrchestrator._mcp_resolve_refresh_secs,
         _MCP_RESOLVE_MIN_SLEEP_SECS=GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS,
     )
+    # The window is read from the live snapshot, not the boot copy, so a reload
+    # moves the cadence without a broker restart. No `_cfg` on the fake proves it.
+    _prime_refresh_window(monkeypatch, 24)
+    orch._mcp_resolve_refresh_secs = lambda: GatewayOrchestrator._mcp_resolve_refresh_secs(orch)
     with pytest.raises(_Stop):
         await GatewayOrchestrator._mcp_resolve_prefetch_loop(orch, {"A": "b"})  # type: ignore[arg-type]
     # More than once is the whole point; one pass is the bug being fixed.
@@ -114,10 +136,11 @@ async def test_a_zero_refresh_window_does_not_spin_the_pre_resolve_loop(monkeypa
 
     monkeypatch.setattr(_asyncio, "sleep", fake_sleep)
     orch = SimpleNamespace(
-        _cfg=SimpleNamespace(mcp_gateway=SimpleNamespace(resolve_once_refresh_hours=0)),
         _prefetch_mcp_resolutions=fake_pass,
         _MCP_RESOLVE_MIN_SLEEP_SECS=GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS,
     )
+    _prime_refresh_window(monkeypatch, 0)
+    orch._mcp_resolve_refresh_secs = lambda: GatewayOrchestrator._mcp_resolve_refresh_secs(orch)
     with pytest.raises(_Stop):
         await GatewayOrchestrator._mcp_resolve_prefetch_loop(orch, {})  # type: ignore[arg-type]
     assert slept == [GatewayOrchestrator._MCP_RESOLVE_MIN_SLEEP_SECS]

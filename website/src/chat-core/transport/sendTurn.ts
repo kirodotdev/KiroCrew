@@ -21,8 +21,8 @@ export const SEND_ABORT_MS = 10_000
  *
  * - `dispatched`      -- the server took custody of the message as an IMMEDIATE
  *                        turn. This is the delivery receipt for an optimistic
- *                        bubble: no `chat_message` echo is coming for a
- *                        dashboard send, the HTTP response is all there is.
+ *                        bubble. A correlated user echo can also confirm it;
+ *                        the receipt must not append a second user row.
  * - `queued`          -- the slot was busy and the server queued the message.
  *                        The `queue_push` broadcast owns its on-screen card, so
  *                        this is NOT a receipt for an optimistic bubble, and a

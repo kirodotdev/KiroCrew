@@ -158,7 +158,7 @@ describe('PinSurfaceButton at the cap', () => {
     // a title attribute never appears in a screenshot.
     localStorage.setItem(
       NAV_PINNED_KEY,
-      JSON.stringify(['capabilities-crews', 'capabilities-templates', 'capabilities-skills', 'capabilities-mcp', 'capabilities-knowledge']),
+      JSON.stringify(['capabilities-crews', 'capabilities-hooks', 'capabilities-skills', 'capabilities-mcp', 'capabilities-knowledge']),
     )
     renderAt('/capabilities?tab=steering')
 

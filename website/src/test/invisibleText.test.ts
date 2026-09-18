@@ -105,9 +105,17 @@ describe('ChatPage inline chain consults the skip (source contract)', () => {
   })
 
   it('regenerate truncation mirrors the server scan, hidden rows included', () => {
-    // chat_regenerate.py picks the turn by the last assistant row BY ROLE;
-    // the optimistic truncation must scan identically or the UI truncates
-    // after a different user row than the history rewrite persists.
-    expect(src).toMatch(/const aiIdx = messages\.map\(mm => mm\.role\)\.lastIndexOf\('assistant'\)/)
+    // chat_regenerate.py picks the turn by the last assistant row BY ROLE,
+    // skipping only system notices (a skip both sides run); the optimistic
+    // truncation must scan identically or the UI truncates after a different
+    // user row than the history rewrite persists. Hidden invisible-only rows
+    // are NOT skipped here — only the drawn-row scans pass over those.
+    const i = src.indexOf('const handleRegenerate = useCallback(')
+    expect(i).toBeGreaterThan(-1)
+    const body = src.slice(i, src.indexOf('api.regenerateSlot', i))
+    expect(body).toMatch(/if \(messages\[i\]\.role === 'user'\) break/)
+    expect(body).toMatch(/if \(messages\[i\]\.role !== 'assistant'\) continue/)
+    expect(body).toMatch(/if \(isSystemNoticeRow\(messages\[i\]\)\) continue/)
+    expect(body).not.toContain('isHiddenInvisibleAssistantRow')
   })
 })

@@ -35,8 +35,8 @@ class TestTheSwitchIsBeyondTheAgentsReach:
     def test_the_os_layer_fences_it_for_every_verb(self, home: Path) -> None:
         """The layer that binds a SUBPROCESS, which no text matcher can.
 
-        This assertion used to run `is_sensitive_bash_command` over four shell forms
-        (`cat`, `echo >`, `tee`, `rm`). That tested a layer which cannot hold for a
+        Running `is_sensitive_bash_command` over four shell forms
+        (`cat`, `echo >`, `tee`, `rm`) tests a layer which cannot hold for a
         spawned command: a shell reaches a file through an `open()` that never routes
         through the tool gate, so a path fenced only there is readable in any sandbox
         mode whatever the matcher recognises, and the set of spellings is unbounded --

@@ -28,6 +28,7 @@ from kiro_crew.atomic_write import (
     open_access_control_source,
     pinned_parent_replace_supported,
 )
+from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.cron import referenced_skill_names
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
@@ -38,22 +39,31 @@ from kiro_crew.hooks import (
     validate_file_path,
 )
 from kiro_crew.metrics.provider import get_recorder
-from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.platform_compat import (
+    ensure_owner_rwx_dirs,
+    is_link_or_junction,
+    rmtree_force,
+)
 from kiro_crew.project_scope import project_scope_satisfied
 from kiro_crew.security import (
     is_sensitive_path,
+    is_sensitive_resolved_path,
     redact_credentials,
     redact_exfiltration_urls,
 )
 from kiro_crew.sel import sel
 from kiro_crew.skill_usage import SKILL_USAGE_FILENAME, SkillUsageLedger
 from kiro_crew.skills_script_validator import validate_scripts
+from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, trigger_score, words_of
 
 logger = logging.getLogger(__name__)
 
 
 SKILLS_DIR_NAME = "skills"
-_MIN_TRIGGER_OVERLAP = 0.7
+#: Re-exported from ``trigger_match``, which owns the value and the grammar
+#: it belongs to. Kept as a module name because tests and call sites here
+#: reference it.
+_MIN_TRIGGER_OVERLAP = MIN_TRIGGER_OVERLAP
 
 # Whether skill CRUD can address the skill directory and its SKILL.md relative to
 # a pinned parent descriptor. supports_pinned_walk covers the openat capability
@@ -253,7 +263,7 @@ def _emit_pending_consumed(payload: dict) -> None:
 
 
 # Frontmatter field used to mark a skill as auto-generated.  Absence means
-# the skill is hand-authored (or legacy, pre-feature).
+# the skill carries no source field, i.e. is hand-authored.
 AUTO_SKILL_SOURCE_VALUE = "auto"
 
 # Cap synthesized procedure markdown at 10 KB.  Longer outputs indicate
@@ -504,14 +514,14 @@ def _mentions_skill_basename(raw_params: dict | None, command: str | None) -> bo
 
 
 def _decode_skill_text(raw: bytes, *, strict: bool = True) -> str:
-    """Decode SKILL.md bytes the way ``read_text`` used to.
+    """Decode SKILL.md bytes with ``read_text``'s newline handling.
 
-    These reads moved from ``read_text`` to bytes so containment could be checked
+    These reads take bytes rather than ``read_text`` so containment can be checked
     on the descriptor actually opened. ``read_text`` opens in TEXT mode and
     performs universal-newline translation; a bytes read does not. Git checks out
-    CRLF on Windows, so without this every frontmatter key carried a trailing
-    ``\r``, nothing matched ``always`` or ``pinned``, and skill bodies silently
-    stopped being injected there while Linux and macOS looked fine.
+    CRLF on Windows, so without this every frontmatter key would carry a trailing
+    ``\r``, nothing would match ``always`` or ``pinned``, and skill bodies would
+    silently stop being injected there while Linux and macOS looked fine.
 
     *strict* decoding propagates invalid UTF-8, which a WRITER must hear
     (``update_auto_skill`` carries version metadata across a rewrite). Callers
@@ -768,13 +778,23 @@ def _iter_skill_files(
         if not _within_any(real, allowed_roots):
             _dirs.clear()
             continue
-        if is_sensitive_path(real):
+        # ``real`` IS the canonical spelling this walk just computed, so the
+        # fence is asked lexically against it (is_sensitive_resolved_path)
+        # instead of through is_sensitive_path, which would resolve the same
+        # path a second time via the ``mc-pathres`` pool. That pool is sized
+        # for the event loop, and this walk runs on worker threads over every
+        # directory and SKILL.md of every root -- a thousand entries on an
+        # install with a few provider packages -- so each redundant submission
+        # queued ahead of the loop's own resolutions. The decision is
+        # unchanged: same targets, same cache; the anchors are resolved on
+        # this thread rather than through the pool.
+        if is_sensitive_resolved_path(real):
             _dirs.clear()  # never traverse into credential stores
             continue
         if "SKILL.md" in files:
             skill_file = Path(dirpath) / "SKILL.md"
             real_file = os.path.realpath(str(skill_file))
-            if is_sensitive_path(real_file):
+            if is_sensitive_resolved_path(real_file):
                 continue
             # Containment for the FILE, not just its directory. The directory
             # check above cannot cover this: a symlinked SKILL.md sits inside a
@@ -837,7 +857,9 @@ _FINGERPRINT_MAX_BYTES = 32 * 1024 * 1024
 _FINGERPRINT_MAX_ENTRIES = 4096
 
 
-def _tree_entries(root: Path) -> Iterator[tuple[str, str, str]]:
+def _tree_entries(
+    root: Path, *, assume_owner_rwx_dirs: bool = False
+) -> Iterator[tuple[str, str, str]]:
     """Yield ``(relative path, kind, detail)`` for the tree under *root*.
 
     Deterministic order (sorted, top-down), lstat-based, and it never opens or
@@ -881,9 +903,23 @@ def _tree_entries(root: Path) -> Iterator[tuple[str, str, str]]:
                 # Permission bits, like file modes below: a chmod on an
                 # installed builtin's directory is a user customization and
                 # must diverge the tree instead of being silently reset by
-                # the next sync. copytree preserves directory modes, so a
-                # clean install still fingerprints equal to its package.
-                yield rel, "dir", f"{stat.S_IMODE(mode):o}"
+                # the next sync. One deliberate asymmetry: when the caller
+                # sets ``assume_owner_rwx_dirs`` (used ONLY for the
+                # PACKAGED SOURCE side of a comparison), owner rwx is OR-ed
+                # in because the install adds those bits to the fresh
+                # copy's directories (``ensure_owner_rwx_dirs`` -- a
+                # read-only source such as a Nix store ships 0o555 and the
+                # copy must accept marker writes and directory search).
+                # A 0o455-class source needs execute added too. Hashing AS
+                # THE COPY WILL LOOK keeps that install-owned repair from
+                # reading as a user chmod, while the INSTALLED side is always
+                # hashed with its real modes -- so a user chmod on the copy,
+                # including removing an owner-rwx bit, still diverges. Files
+                # are never normalized: the install never rewrites file modes.
+                dir_mode = stat.S_IMODE(mode)
+                if assume_owner_rwx_dirs:
+                    dir_mode |= stat.S_IRWXU
+                yield rel, "dir", f"{dir_mode:o}"
         for fname in sorted(filenames):
             entry = Path(dirpath) / fname
             rel = (rel_dir / fname).as_posix()
@@ -927,12 +963,18 @@ def _trees_stat_equal(a: Path, b: Path) -> bool:
     directory itself is as much a user customization as one on any child.
     """
     try:
-        if stat.S_IMODE(os.lstat(a).st_mode) != stat.S_IMODE(os.lstat(b).st_mode):
+        # ``a`` is the INSTALLED tree (hashed with real modes), ``b`` is the
+        # PACKAGED SOURCE, whose directory modes are compared as the copy
+        # will look after ``ensure_owner_rwx_dirs`` -- the same
+        # asymmetry ``_tree_entries`` applies for child directories. A user
+        # chmod on the installed side (including removing owner rwx)
+        # therefore still diverges.
+        if stat.S_IMODE(os.lstat(a).st_mode) != (stat.S_IMODE(os.lstat(b).st_mode) | stat.S_IRWXU):
             return False
     except OSError:
         return False
     entries = 0
-    for ea, eb in zip_longest(_tree_entries(a), _tree_entries(b)):
+    for ea, eb in zip_longest(_tree_entries(a), _tree_entries(b, assume_owner_rwx_dirs=True)):
         entries += 1
         if entries > _FINGERPRINT_MAX_ENTRIES:
             return False
@@ -941,7 +983,7 @@ def _trees_stat_equal(a: Path, b: Path) -> bool:
     return True
 
 
-def _skill_tree_fingerprint(root: Path) -> str | None:
+def _skill_tree_fingerprint(root: Path, *, assume_owner_rwx_dirs: bool = False) -> str | None:
     """Stable content hash of the whole skill tree under *root*.
 
     Covers every entry ``_tree_entries`` yields — file bytes, symlink targets,
@@ -968,13 +1010,19 @@ def _skill_tree_fingerprint(root: Path) -> str | None:
     # on the skill directory itself must diverge the fingerprint exactly like
     # a chmod on any entry inside it.
     try:
+        # ``assume_owner_rwx_dirs`` (set only when hashing the PACKAGED
+        # SOURCE) ORs owner rwx in, so the recorded fingerprint describes
+        # the copy as it will exist after ``ensure_owner_rwx_dirs``.
+        # The installed side is always hashed with its real modes.
         root_mode = stat.S_IMODE(os.lstat(root).st_mode)
+        if assume_owner_rwx_dirs:
+            root_mode |= stat.S_IRWXU
     except OSError:
         return None
     digest.update(f"root\0{root_mode:o}\0".encode("utf-8"))
     budget = _FINGERPRINT_MAX_BYTES
     entries = 0
-    for rel, kind, detail in _tree_entries(root):
+    for rel, kind, detail in _tree_entries(root, assume_owner_rwx_dirs=assume_owner_rwx_dirs):
         if kind == "unreadable":
             return None
         entries += 1
@@ -1099,7 +1147,7 @@ def _verified_unchanged_fingerprint(dest_dir: Path, src_dir: Path | None) -> str
     dest_fingerprint = _skill_tree_fingerprint(dest_dir)
     if dest_fingerprint is None:
         return None
-    if dest_fingerprint != _skill_tree_fingerprint(src_dir):
+    if dest_fingerprint != _skill_tree_fingerprint(src_dir, assume_owner_rwx_dirs=True):
         return None
     return dest_fingerprint
 
@@ -1420,13 +1468,10 @@ def _dispose_superseded_slot(slot: Path, dest_dir: Path) -> bool:
         if not _remove_ignorable_dir(slot_claim):
             _finalize_user_backup(slot_claim, dest_dir)
     elif _verified_unchanged_fingerprint(slot_claim, None) is not None:
-        try:
-            shutil.rmtree(slot_claim)
-        except OSError:
+        if not rmtree_force(slot_claim):
             logger.warning(
                 "could not remove epoch-old superseded skill copy %s; " "preserving what remains",
                 slot_claim,
-                exc_info=True,
             )
             _finalize_user_backup(slot_claim, dest_dir)
     else:
@@ -1517,10 +1562,10 @@ def _ensure_builtin_skills(base: Path) -> None:
             source_names.add(name)
             # First source root to ship a name owns it for this run. Without
             # this, the second root races the copy the first just made: the
-            # destination is no longer user data but this run's own output, and
+            # destination is this run's own output rather than user data, and
             # which tree ends up installed is decided by comparing mtimes
             # across two unrelated source trees. The project dir is iterated
-            # first, so a project skill is no longer replaced by a packaged
+            # first, so a project skill is not replaced by a packaged
             # one that merely carries a newer file.
             if name in supplied:
                 continue
@@ -1613,7 +1658,7 @@ def _ensure_builtin_skills(base: Path) -> None:
             # during the hash as sync-owned, licensing its later deletion. The
             # copy equals the source (the package ships only regular files and
             # directories), so the source fingerprint is the copy's.
-            src_fingerprint = _skill_tree_fingerprint(src_dir)
+            src_fingerprint = _skill_tree_fingerprint(src_dir, assume_owner_rwx_dirs=True)
             try:
                 shutil.copytree(src_dir, dest_dir)
             except FileExistsError:
@@ -1623,6 +1668,18 @@ def _ensure_builtin_skills(base: Path) -> None:
                 # crash the sync.
                 logger.info("Skill %s installed concurrently elsewhere; keeping it", name)
                 continue
+            # copytree preserves source modes verbatim, so a read-only
+            # install source (0o555 -- a Nix store path, a read-only mount)
+            # yields a copy whose directories reject the provenance-marker
+            # write below. Add owner rwx: file creation needs a writable
+            # and searchable parent (including 0o455-class sources). The
+            # recorded source fingerprint above is computed with
+            # ``assume_owner_rwx_dirs=True``, i.e. it describes the
+            # copy AS IT EXISTS AFTER this repair, so a clean install does
+            # not read as a user customization on the next sync -- while any
+            # later chmod on the installed copy (including removing
+            # any owner-rwx bit) still diverges.
+            ensure_owner_rwx_dirs(dest_dir)
             if src_fingerprint is not None:
                 _write_provenance_marker(dest_dir, src_fingerprint)
             else:
@@ -1722,8 +1779,170 @@ def _ensure_builtin_skills(base: Path) -> None:
                     )
 
 
+#: SHA-256 of the static outputs from the retired conductor skill generator.
+#: Exact identity keeps user-authored or edited files outside cleanup scope.
+RETIRED_CONDUCTOR_SKILL_SHA256 = frozenset(
+    {
+        # select_crew-era text (crew triggers, `spawn_run(crew=...)` guidance)
+        "ee91da7d58b89ddc4cd3ff097a87f520335193d78cb5937d7636e5baa9ee6ca5",
+        # the first select_crew revision, before the crew= vs agent= warning
+        "e967c693613dca258f66992b9788a8e5e8e12c4397147f58f6595ee42ffa21be",
+    }
+)
+_RETIRED_CONDUCTOR_SKILL_MAX_BYTES = 16 * 1024
+
+
+def is_retired_conductor_skill(data: bytes) -> bool:
+    """Return whether *data* is a generated conductor skill revision.
+
+    CRLF output from Windows is normalized to the generator's LF form before
+    hashing. Bare carriage returns stay significant, as the generator emits none.
+    """
+    normalized = data.replace(b"\r\n", b"\n")
+    return hashlib.sha256(normalized).hexdigest() in RETIRED_CONDUCTOR_SKILL_SHA256
+
+
 def skills_dir() -> Path:
     return config_dir() / SKILLS_DIR_NAME
+
+
+def remove_retired_conductor_skill() -> bool:
+    """Remove a byte-exact generated conductor skill through pinned descriptors.
+
+    Return ``True`` only when the skill file is removed. Missing, user-authored,
+    and edited files return ``False``. Read and unlink errors propagate so each
+    caller can report them without blocking setup or gateway startup; an empty-dir
+    prune failure is ignored. A linked conductor directory is refused before any
+    file is read.
+
+    The conductor directory is opened relative to the pinned skills-root
+    descriptor with ``O_NOFOLLOW``, so a link swapped in at that name raises
+    ``OSError`` and propagates to the caller instead of being followed.
+
+    Platforms without descriptor-relative opens keep the no-link final-name and
+    bounded-read checks, but ancestor pinning and atomic identity-checked unlink
+    degrade to by-name checks around the open and unlink.
+    """
+    skill_path = skills_dir() / "conductor" / "SKILL.md"
+    parent = skill_path.parent
+    parent_info = pinned_fs.lstat_by_name(parent)
+    if (
+        parent_info is None
+        or not stat.S_ISDIR(parent_info.st_mode)
+        or pinned_fs.is_reparse_point(parent)
+    ):
+        return False
+
+    if not pinned_fs.supports_pinned_walk():
+        before = pinned_fs.lstat_by_name(skill_path)
+        if (
+            before is None
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_size > _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
+        ):
+            return False
+        fd = os.open(skill_path, os.O_RDONLY | getattr(os, "O_BINARY", 0))
+        try:
+            opened = os.fstat(fd)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_size > _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
+                or (
+                    before.st_ino
+                    and opened.st_ino
+                    and (before.st_dev, before.st_ino) != (opened.st_dev, opened.st_ino)
+                )
+            ):
+                return False
+            data = os.read(fd, _RETIRED_CONDUCTOR_SKILL_MAX_BYTES)
+            if os.fstat(fd).st_size != len(data):
+                return False
+        finally:
+            os.close(fd)
+        if not is_retired_conductor_skill(data):
+            return False
+        current = pinned_fs.lstat_by_name(skill_path)
+        if (
+            current is None
+            or not stat.S_ISREG(current.st_mode)
+            or (
+                opened.st_ino
+                and current.st_ino
+                and (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino)
+            )
+        ):
+            return False
+        skill_path.unlink()
+        try:
+            if not os.listdir(parent):
+                parent.rmdir()
+        except OSError:
+            pass
+        return True
+
+    root_fd = pinned_fs.pin_parent(
+        os.path.realpath(parent.parent),
+        what="retired conductor skill directory",
+        refusal=OSError,
+    )
+    dir_fd: int | None = None
+    try:
+        current_parent = pinned_fs.stat_at(root_fd, parent.name)
+        if (
+            current_parent is None
+            or not stat.S_ISDIR(current_parent.st_mode)
+            or (current_parent.st_dev, current_parent.st_ino)
+            != (parent_info.st_dev, parent_info.st_ino)
+        ):
+            return False
+        dir_fd = os.open(parent.name, pinned_fs.dir_flags(), dir_fd=root_fd)
+        pinned_parent = os.fstat(dir_fd)
+        parent_identity = (pinned_parent.st_dev, pinned_parent.st_ino)
+        if parent_identity != (current_parent.st_dev, current_parent.st_ino):
+            return False
+        before = pinned_fs.stat_at(dir_fd, skill_path.name)
+        if (
+            before is None
+            or not stat.S_ISREG(before.st_mode)
+            or before.st_size > _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
+        ):
+            return False
+        fd = os.open(
+            skill_path.name,
+            os.O_RDONLY | os.O_NOFOLLOW | getattr(os, "O_NONBLOCK", 0),
+            dir_fd=dir_fd,
+        )
+        try:
+            opened = os.fstat(fd)
+            identity = (opened.st_dev, opened.st_ino)
+            if (
+                not stat.S_ISREG(opened.st_mode)
+                or opened.st_size > _RETIRED_CONDUCTOR_SKILL_MAX_BYTES
+            ):
+                return False
+            data = os.read(fd, _RETIRED_CONDUCTOR_SKILL_MAX_BYTES)
+            if os.fstat(fd).st_size != len(data):
+                return False
+        finally:
+            os.close(fd)
+        if not is_retired_conductor_skill(data):
+            return False
+        if not pinned_fs.unlink_verified(dir_fd, skill_path.name, identity):
+            return False
+        try:
+            if not os.listdir(dir_fd):
+                pinned_fs.remove_dir_verified(
+                    root_fd,
+                    parent.name,
+                    expect=parent_identity,
+                )
+        except OSError:
+            pass
+        return True
+    finally:
+        if dir_fd is not None:
+            os.close(dir_fd)
+        os.close(root_fd)
 
 
 class SkillsLoader:
@@ -1783,19 +2002,21 @@ class SkillsLoader:
         self._audited_projects: set[tuple[str, bool]] = set()
         # Extra skill paths from config (config injectable for testing)
         cfg = config or KiroCrewConfig.load()
-        # Snapshot the per-message trigger cap here so get_triggered_skills (the
-        # only caller, run on EVERY message) doesn't re-load + re-validate the
-        # whole config just to read one int. Matches the eventual-consistency of
-        # _extra_paths below — both are resolved once from the construction-time
-        # config and refreshed when the loader is rebuilt (per gateway).
+        # The per-message trigger cap is resolved at USE from the live snapshot
+        # (see _max_triggered_now), so `kirocrew config set skills.max_triggered`
+        # applies to the next message without rebuilding the loader. The
+        # construction-time value stays as the fallback for a loader built from an
+        # explicitly injected config, before any snapshot exists.
         self._max_triggered = cfg.skills.max_triggered
         self._extra_paths: list[Path] = []
+        self._configured_extra_paths: list[Path] = []
         for p in cfg.skills.extra_paths:
             resolved = Path(p).expanduser().resolve()
             if is_sensitive_path(str(resolved)):
                 logger.warning("Skipping sensitive extra skill path: %s", p)
             elif resolved.is_dir():
                 self._extra_paths.append(resolved)
+                self._configured_extra_paths.append(resolved)
             else:
                 logger.debug("Extra skill path does not exist: %s", p)
 
@@ -1814,6 +2035,7 @@ class SkillsLoader:
             fallback_factory=list,
             log_message="extra_skills lookup failed; using none",
         )
+        self._edition_extra_paths: list[Path] = []
         for edition_path in edition_skill_paths:
             resolved = Path(edition_path).expanduser().resolve()
             if resolved in self._extra_paths:
@@ -1822,6 +2044,7 @@ class SkillsLoader:
                 logger.warning("Skipping sensitive edition skill path: %s", edition_path)
             elif resolved.is_dir():
                 self._extra_paths.append(resolved)
+                self._edition_extra_paths.append(resolved)
             else:
                 logger.debug("Edition skill path does not exist: %s", edition_path)
 
@@ -1838,6 +2061,94 @@ class SkillsLoader:
                 exc_info=True,
             )
             self._usage = None
+        # `skills.extra_paths` is a set of source ROOTS, so it is pushed rather than
+        # read at use: re-resolving every root (a realpath plus a sensitivity check
+        # per entry) on every message is exactly the cost the iter-cache exists to
+        # avoid. `max_triggered` is a single int and IS read at use, so it needs no
+        # subscription. Held on self because the watcher keeps a bound method weakly.
+        self._config_sub = live.subscribe(
+            "skills.extra_paths", callback=self._on_config_change, name="SkillsLoader"
+        )
+
+    async def _on_config_change(self, change: "live.ConfigChange") -> None:
+        # The screening stats every configured root (resolve + is_dir), and a root
+        # on a slow or network mount would stall the loop, so it runs off-loop;
+        # only the adoption of the screened list happens here.
+        screened = await asyncio.to_thread(self._screen_extra_paths, change.new)
+        self._adopt_extra_paths(screened)
+
+    def reconfigure(self, cfg: KiroCrewConfig) -> None:
+        """Re-resolve the configured extra skill roots from *cfg* (synchronously).
+
+        The watcher path splits this into :meth:`_screen_extra_paths` off the loop
+        and :meth:`_adopt_extra_paths` on it; this method is the one-call form for
+        a caller that is not on the event loop.
+        """
+        self._adopt_extra_paths(self._screen_extra_paths(cfg))
+
+    @staticmethod
+    def _screen_extra_paths(cfg: KiroCrewConfig) -> list[Path]:
+        """Resolve and screen ``skills.extra_paths`` -- filesystem work, no state.
+
+        Runs the SAME screening as construction -- expanduser, resolve,
+        ``is_sensitive_path`` reject, existence check -- so a root added by hand to
+        ``config.json`` can no more reach a credential directory than one present at
+        boot. Fails closed per entry: a rejected or missing root is dropped with the
+        same log line rather than admitted.
+        """
+        resolved_paths: list[Path] = []
+        # Logged by position, not value: a rejected entry is by definition a path
+        # under a credential home, and a reloaded config is an untrusted document,
+        # so the string itself never reaches the log.
+        for index, p in enumerate(cfg.skills.extra_paths):
+            resolved = Path(p).expanduser().resolve()
+            if is_sensitive_path(str(resolved)):
+                logger.warning("Skipping sensitive skills.extra_paths[%d] on reload", index)
+            elif resolved.is_dir():
+                resolved_paths.append(resolved)
+            else:
+                logger.debug("skills.extra_paths[%d] does not exist; skipped on reload", index)
+        return resolved_paths
+
+    def _adopt_extra_paths(self, resolved_paths: list[Path]) -> None:
+        """Install screened roots.
+
+        Edition-contributed roots are preserved and stay LAST (lowest precedence);
+        they come from the platform context, not config, so a config write must not
+        drop them. The discovery cache is cleared so the next listing walks the new
+        roots instead of serving the old set for the rest of the TTL.
+        """
+        self._configured_extra_paths = resolved_paths
+        merged = list(resolved_paths)
+        for edition_path in self._edition_extra_paths:
+            if edition_path not in merged:
+                merged.append(edition_path)
+        self._extra_paths = merged
+        self._iter_cache.clear()
+
+    def _max_triggered_now(self) -> int:
+        """The per-message trigger cap, read live.
+
+        Read from the watcher's snapshot rather than the boot copy, so
+        ``kirocrew config set skills.max_triggered`` applies to the very next
+        message from any writer. The snapshot is a plain attribute read, which is
+        what keeps this off the disk on a path that runs once per message --
+        loading here would put two stats and a deepcopy in front of every message.
+
+        Falls back to the construction-time value when there is no snapshot: a
+        loader built from an explicitly injected config (tests, and any caller that
+        already holds one) must honour that config rather than resolve a cap the
+        injected document never carried, and the absent-key default is 0, which
+        would suppress every skill.
+        """
+        cfg = live.snapshot()
+        if cfg is None:
+            return self._max_triggered
+        try:
+            return int(cfg.skills.max_triggered)
+        except (AttributeError, TypeError, ValueError):
+            logger.debug("skills.max_triggered read failed; using boot value", exc_info=True)
+            return self._max_triggered
 
     def _trusted_project_key(self, project_dir: str | Path | None) -> str:
         """Canonical key of *project_dir* when its skills may load, else ``""``.
@@ -1872,8 +2183,8 @@ class SkillsLoader:
 
         Deliberately NOT per call. This runs on every message via
         ``get_triggered_skills``, and a per-message governance event would bury the
-        events that matter while adding the hot-path cost an earlier review round
-        was about. Keyed on (canonical key, outcome) so a new directory, or the
+        events that matter while adding hot-path cost to every message.
+        Keyed on (canonical key, outcome) so a new directory, or the
         same directory after the feature switch is flipped, is recorded again --
         a second message about an unchanged decision is not.
 
@@ -2413,7 +2724,7 @@ class SkillsLoader:
         repeat calls (e.g. dashboard refreshes) do not re-walk the skills tree.
 
         This is the public seam for *alias resolution* specifically — the budget
-        endpoint no longer builds the map itself. It still reads other loader
+        endpoint does not build the map itself. It still reads other loader
         internals to assemble its rows, so this is one step out of that coupling,
         not the end of it. It deliberately does NOT live inside ``list_skills()``
         — that method guarantees one stat per skill and runs on the hot path
@@ -2474,7 +2785,7 @@ class SkillsLoader:
         # silently drops every app-skill alias.
         roots = [self._dir, *self._extra_paths]
 
-        # A ledger key that no longer names a served skill: resolve it on disk and
+        # A ledger key that does not name a served skill: resolve it on disk and
         # fold it into whichever served key shares its file.
         for ledger_key in snapshot:
             if ledger_key in realpath_to_served.values():
@@ -4052,7 +4363,7 @@ class SkillsLoader:
         whose ``name`` / ``created_at`` / ``version`` lines are rewritten anyway.
 
         Returns ``None`` when the slug is unsafe, the candidate is missing or is
-        not an update, or its target is no longer a live auto-skill. Read-only:
+        not an update, or its target is not a live auto-skill. Read-only:
         never mutates the candidate or the live skill.
         """
         if not self._is_pending_slug_safe(slug):
@@ -4651,7 +4962,7 @@ class SkillsLoader:
 
         Returns up to ``max_triggered`` skills sorted by best overlap score.
         """
-        text_words = set(re.findall(r"\w+", text.lower()))
+        text_words = words_of(text)
         scored: list[tuple[str, float]] = []
         # Skills a negative trigger actively excluded — a permission DENY that
         # must still be audited (see the audit event below).
@@ -4672,29 +4983,12 @@ class SkillsLoader:
             if scope and not self._repo_scope_satisfied(scope, project_dir):
                 continue
 
-            # Split into positive and negative triggers
-            negated = False
-            best_overlap = 0.0
-            for trigger in triggers.split(","):
-                trigger = trigger.strip().lower()
-                if not trigger:
-                    continue
-                # Negative trigger: "!search" excludes if "search" words match.
-                # Don't break — keep scoring the remaining positive triggers so
-                # best_overlap is correct regardless of trigger order; the DENY
-                # audit below needs it to know the skill would otherwise have
-                # triggered (e.g. "!test, shorten url" must still compute the
-                # "shorten url" overlap).
-                if trigger.startswith("!"):
-                    neg_words = set(re.findall(r"\w+", trigger[1:]))
-                    if neg_words and neg_words <= text_words:
-                        negated = True
-                else:
-                    trigger_words = set(re.findall(r"\w+", trigger))
-                    if not trigger_words:
-                        continue
-                    overlap = len(trigger_words & text_words) / len(trigger_words)
-                    best_overlap = max(best_overlap, overlap)
+            # Scored by the shared primitive, not here: crew routing scores the
+            # same trigger grammar, and two implementations would agree on the
+            # easy cases and diverge on the ones that matter. `negated` stays
+            # separate from the score because the DENY audit below has to tell
+            # "scored nothing" apart from "scored well and was vetoed".
+            best_overlap, negated = trigger_score(triggers, text_words)
 
             # Only record a negation as a DENY when the skill would otherwise
             # have triggered (positive overlap met the threshold) — that's the
@@ -4705,12 +4999,12 @@ class SkillsLoader:
                 scored.append((name, best_overlap))
 
         scored.sort(key=lambda x: x[1], reverse=True)
-        triggered = [name for name, _ in scored[: self._max_triggered]]
+        triggered = [name for name, _ in scored[: self._max_triggered_now()]]
 
         # Emit ONE audit event for the matched + denied sets rather than one per
-        # skill. Previously this wrote a SEL entry for every skill (incl. every
-        # non-match) on every message — N synchronous writes per message that
-        # dominated the per-message cost. The security-relevant signals are which
+        # skill. A SEL entry per skill (incl. every non-match) on every message
+        # would be N synchronous writes that dominate the per-message cost.
+        # The security-relevant signals are which
         # skills were injected (permission grant) and which were excluded by a
         # negative trigger (permission deny); both are captured here. Skipped
         # entirely only when nothing triggered and nothing was denied (the
@@ -4722,7 +5016,7 @@ class SkillsLoader:
                 # Record HOW each match was delivered, not just that it matched.
                 # A pointer is an offer the agent may decline, so an auditor
                 # reconstructing "was this procedure actually in the prompt?"
-                # needs the split — the skill list alone no longer answers it.
+                # needs the split — the skill list alone does not answer it.
                 bodies, pointers = self.split_triggered(triggered, project_dir)
                 metadata["bodies"] = ",".join(bodies)
                 metadata["pointers"] = ",".join(pointers)
@@ -5268,12 +5562,12 @@ class SkillsLoader:
 
         Only a key at column 0 is a field. An indented ``key: value`` belongs to
         the enclosing block scalar — a description that documents a setting, for
-        instance — and reading it as the setting made the writer and the reader
-        disagree: ``set_inject_on_trigger`` deliberately leaves an indented
+        instance — and reading it as the setting would make the writer and the
+        reader disagree: ``set_inject_on_trigger`` deliberately leaves an indented
         occurrence alone (deleting it would rewrite the author's prose), so
-        honoring it here meant the opt-in could never take effect. Ignoring
+        honoring it here would keep the opt-in from ever taking effect. Ignoring
         indented lines also drops the junk keys a prose line like
-        ``  Steps: do x`` used to invent.
+        ``  Steps: do x`` would otherwise invent.
 
         A value that is a YAML block-scalar indicator (``>``, ``|``, with an
         optional chomping ``-``/``+``) is resolved from the indented lines that
@@ -5307,12 +5601,12 @@ class SkillsLoader:
         ``frontmatter._COLUMN0_BLOCK_RE`` — the ``column0_fence`` extraction
         that ``frontmatter.SKILL_LOADER`` binds to the skills surface: the
         closer is the first line after the opener that STARTS with ``---`` —
-        trailing text on the closer line is tolerated and consumed (#6182), and
+        trailing text on the closer line is tolerated and consumed, and
         an optional carriage return before each fence newline is tolerated the
         way the parser tolerates one. Anything
         the display parser reads as frontmatter must also be stripped here:
-        a stricter closer (the old ``---`` must-be-followed-by-newline
-        grammar) let a ``---junk`` or ``--- `` closer parse fields in the UI
+        a stricter closer (a ``---`` must-be-followed-by-newline
+        grammar) would let a ``---junk`` or ``--- `` closer parse fields in the UI
         while the whole block leaked to the model. Editing either grammar
         means revisiting the other.
         """

@@ -35,17 +35,15 @@ _MUTATING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 # Pre-owner exclusions: routes that intentionally only require authentication
 # (not ownership) because they execute during the initial onboarding flow
 # BEFORE an owner is configured.
+#
+# Empty by intent: the onboarding import routes are owner-gated like every
+# other mutating route. The pre-owner shape needs no exemption because
+# ``is_owner_dashboard_request`` accepts the signed local bootstrap subjects
+# (``local-app`` / ``local-startup``) whenever no ``owner_id`` is configured,
+# so the local onboarding flow passes the ordinary gate. A pre-owner route
+# that must skip the gate for a real reason belongs here, with justification.
 # --------------------------------------------------------------------------- #
-_PRE_OWNER_EXCLUSIONS: frozenset[tuple[str, str]] = frozenset(
-    {
-        # Onboarding import routes use ``_caller()`` which checks authentication
-        # but not ownership. These routes run during initial setup when the user
-        # is importing configuration from another installation -- there is no
-        # configured owner yet, so the owner gate cannot apply.
-        ("POST", "/api/onboarding/import/apply"),
-        ("PUT", "/api/onboarding/import/state"),
-    }
-)
+_PRE_OWNER_EXCLUSIONS: frozenset[tuple[str, str]] = frozenset()
 
 # --------------------------------------------------------------------------- #
 # Known ungated routes: mutating routes that predate the owner-gating effort.
@@ -104,7 +102,7 @@ _MAX_KNOWN_UNGATED_ROUTES = 20
 # --------------------------------------------------------------------------- #
 # Coherence floor: the walk must find at least this many GATED mutating routes.
 # This is the count of owner-gated routes the walk enforces, measured live at
-# issue #8505 (registered by handlers.agents, handlers.connections,
+# Registered by handlers.agents, handlers.connections,
 # handlers.files, and handlers.members). Keep it equal to the real count -- a
 # slack floor cannot catch a refactor that silently drops routes out of the
 # walk. Hardcoded deliberately: deriving it from the walk itself would
@@ -114,7 +112,7 @@ _MAX_KNOWN_UNGATED_ROUTES = 20
 # back to the real count is a manual, unenforced step -- do it whenever you
 # touch this file, or the slack this floor exists to prevent regrows.
 # --------------------------------------------------------------------------- #
-_MINIMUM_GATED_ROUTES = 26
+_MINIMUM_GATED_ROUTES = 28
 
 
 class _FakeState:

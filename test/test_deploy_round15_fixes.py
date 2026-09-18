@@ -1,4 +1,4 @@
-"""Tests for deploy Round 15 fixes.
+"""Tests for several deploy-path fixes.
 
 F1: deploy_artifact registered in MCP_CORE_SCHEMAS — invalid input rejected.
 F2: pending-confirm denial paths all emit SEL audit events.
@@ -6,6 +6,7 @@ F3: deploy skills installed as copies (not symlinks) are discoverable by _find_s
 F4: _do_deploy confirm path rejects stale expected_content_digest with 409.
 F5: _handle_teardown has os.name == 'nt' guard; full sweep of engine.run_aws callers.
 """
+
 from __future__ import annotations
 
 import re
@@ -27,6 +28,7 @@ DEPLOY_INIT = (SRC / "deploy" / "__init__.py").read_text(encoding="utf-8")
 class TestDeployArtifactSchemaRegistration:
     def test_schema_registered_in_mcp_core_schemas(self):
         from kiro_crew.validation import MCP_CORE_SCHEMAS
+
         assert "deploy_artifact" in MCP_CORE_SCHEMAS
 
     def test_invalid_input_rejected_with_controlled_error(self):
@@ -43,6 +45,7 @@ class TestDeployArtifactSchemaRegistration:
 
     def test_valid_input_passes_schema(self):
         from kiro_crew.validation import DEPLOY_ARTIFACT_SCHEMA, validate_tool_args
+
         result = validate_tool_args(
             {"site_id": "test-site", "artifact_slug": "my-app"},
             DEPLOY_ARTIFACT_SCHEMA,
@@ -70,7 +73,7 @@ class TestPendingConfirmAuditCoverage:
 
     def test_confinement_error_denial_audited(self):
         # The confinement check error string is passed to audit
-        assert 'error=confinement_error)' in HANDLERS
+        assert "error=confinement_error)" in HANDLERS
 
     def test_size_guard_denial_audited(self):
         assert "size guard exceeded" in HANDLERS
@@ -97,9 +100,16 @@ class TestDeploySkillsCopyNotSymlink:
         assert "symlink_to" not in DEPLOY_INIT
 
     def test_symlink_migration_replaces_with_copy(self):
-        """Existing symlinks are unlinked and replaced with copies."""
-        assert "link.is_symlink()" in DEPLOY_INIT
-        assert "link.unlink()" in DEPLOY_INIT
+        """Existing links are detached and replaced with copies.
+
+        Through the junction-aware pair, not ``is_symlink()`` / ``unlink()``:
+        ``<home>/skills/<name>`` is also published by ``apps/bridges.py`` via
+        ``symlink_or_junction``, a directory JUNCTION on unelevated Windows,
+        which ``is_symlink()`` reports as a plain directory.
+        """
+        assert "is_link_or_junction(link)" in DEPLOY_INIT
+        assert "unlink_link_or_junction(link)" in DEPLOY_INIT
+        assert "link.is_symlink()" not in DEPLOY_INIT
 
     def test_managed_marker_written_on_copy(self):
         assert "_MANAGED_MARKER" in DEPLOY_INIT
@@ -128,7 +138,7 @@ class TestDeploySkillsCopyNotSymlink:
 class TestDigestBoundConfirm:
     def test_backend_checks_expected_content_digest(self):
         """The confirm path in _do_deploy validates expected_content_digest."""
-        assert 'expected_content_digest' in HANDLERS
+        assert "expected_content_digest" in HANDLERS
         assert '"code": "stale_preview"' in HANDLERS
 
     def test_409_stale_preview_on_mismatch(self):

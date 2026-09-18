@@ -205,8 +205,8 @@ def _safe_campaign_dir(campaign_id: str) -> Path | None:
 
 
 # The campaigns DB carries a 30s busy timeout, so one on-loop lock wait can
-# outlast the 25s loop-stall watchdog budget and kill the gateway. #7039
-# offloaded all six call sites and added this guard; it now uses the shared
+# outlast the 25s loop-stall watchdog budget and kill the gateway. All six call
+# sites are offloaded behind this guard, which delegates to the shared
 # implementation in ``kiro_crew.on_loop_db``. Defaults are deliberate: this
 # surface IS fully offloaded, so it stays on the shared
 # ``KIROCREW_STRICT_ON_LOOP_PERSIST`` switch (which the e2e harness exports) and
@@ -1117,7 +1117,7 @@ async def _expire_trust(cid: str, observed_started_at: float | None) -> None:
     Transition FIRST, then write the synthetic question only if it persisted:
     a refused transition (a user Stop committed during the hop) must not leave
     a stale question file behind — it would drag a later Resume straight back
-    into NEEDS_INPUT with an expiry prompt that no longer applies.
+    into NEEDS_INPUT with an expiry prompt that does not apply.
     ``observed_started_at`` fences the write to the run generation whose age
     was actually measured — a Pause→Resume replacement run must not be parked
     by the previous run's expiry verdict.
@@ -1309,9 +1309,9 @@ def _stalled_campaign_verdict(
     The watchdog only marks COMPLETE when a NEW cycle file arrives carrying
     ``verification.passed=true`` (or the cycle cap is hit). A worker that ends
     its run deliberately via ``autonudge_stop`` — goal met, nothing more to
-    write — produces no further findings, so the campaign used to sit silent
-    until the unresponsive deadline and get stamped FAILED ("research stalled")
-    despite a finished report on disk. Distinguish the cases from durable
+    write — produces no further findings, so silence up to the unresponsive
+    deadline is not evidence of a stall: stamping FAILED ("research stalled")
+    would contradict a finished report on disk. Distinguish the cases from durable
     evidence:
 
     - Latest finding has ``verification.passed=true`` → COMPLETE. Also heals a
@@ -2654,7 +2654,7 @@ async def _handle_validate(request: web.Request) -> web.Response:
 #   { id, parent|null, kind: "root"|"clarifier"|"research", text,
 #     recommended (clarifier only), answer (clarifier only),
 #     origin: "grill"|"emergent" (research only), status }
-_MAX_GRILL_DEPTH = 4  # a node at this depth can no longer be expanded
+_MAX_GRILL_DEPTH = 4  # a node at this depth cannot be expanded
 _GRILL_CHILD_CAP = 5  # max children returned per expand
 
 
@@ -2728,8 +2728,8 @@ def _parse_grill_nodes(raw: str) -> list[dict]:
     """Extract child node dicts {kind, text, recommended?} from an LLM reply.
 
     Extraction delegates to the shared ``llm_helpers._extract_json_of_type``
-    scanner, so a stray bracket in surrounding prose no longer corrupts the
-    span the way the old outermost ``find('[') .. rfind(']')`` slice did.
+    scanner, so a stray bracket in surrounding prose cannot corrupt the span
+    the way an outermost ``find('[') .. rfind(']')`` slice would.
     Returns [] on any parse failure, or when two DIFFERENT node-shaped arrays
     make the choice ambiguous (the shared contract refuses to guess)."""
     try:
@@ -2739,8 +2739,6 @@ def _parse_grill_nodes(raw: str) -> list[dict]:
         # the untrusted reply overflows long before any structural bound. This
         # parser's callers are outside any exception envelope (the grill-expand
         # handler would surface it as HTTP 500), so degrade to no-nodes here.
-        # PR #5066 makes the shared scanner fail closed on this centrally;
-        # this guard becomes redundant-but-harmless once that lands.
         return []
     if not isinstance(items, list):
         return []
@@ -3428,9 +3426,9 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
 
     # The store hands out one connection per thread, so all statement work for
     # this request runs off-loop in a single worker: a lock wait on the store's
-    # busy timeout must stall a thread, never the event loop (issue #7020's
-    # loop-stall class). ``add_source`` rides in the same closure because the
-    # status UPDATE needs its ``sid`` on the same per-thread connection.
+    # busy timeout must stall a thread, never the event loop. ``add_source`` rides
+    # in the same closure because the status UPDATE needs its ``sid`` on the same
+    # per-thread connection.
     def _add_source_marked_syncing() -> str:
         new_sid = store.add_source(name=name, source_type="local_file", uri=uri, properties={})
         store.db.execute("UPDATE sources SET sync_status = 'syncing' WHERE id = ?", (new_sid,))
@@ -3470,7 +3468,12 @@ async def _handle_to_knowledge(request: web.Request) -> web.Response:
             await asyncio.to_thread(_mark_error)
 
     task = asyncio.create_task(_bg_ingest())
-    app_tasks = request.app.setdefault("_bg_tasks", set())
+    # Seeded by register_routes; the create branch serves an Application that
+    # skipped registration and is still mutable (a directly driven handler).
+    app_tasks = request.app.get("_bg_tasks")
+    if app_tasks is None:
+        app_tasks = set()
+        request.app["_bg_tasks"] = app_tasks
     app_tasks.add(task)
     task.add_done_callback(app_tasks.discard)
     _audit("campaign_to_knowledge", cid, source_id=sid)
@@ -3621,6 +3624,9 @@ async def _handle_grill_tree(request: web.Request) -> web.Response:
 
 
 def register_routes(app: web.Application) -> None:
+    # Seeded while the app is still mutable; a handler-time ``setdefault`` would
+    # write to the frozen app. Shared with the knowledge routes, so setdefault.
+    app.setdefault("_bg_tasks", set())
     app.router.add_post("/api/apps/auto-research/validate", _handle_validate)
     app.router.add_post("/api/apps/auto-research/grill/expand", _handle_grill_expand)
     app.router.add_post("/api/apps/auto-research/campaigns", _handle_create)

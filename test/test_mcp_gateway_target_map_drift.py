@@ -1,4 +1,4 @@
-"""An adopted daemon's target map goes stale, and nothing used to say so.
+"""An adopted daemon's target map goes stale, and the drift is detected and reported.
 
 The daemon's target map is baked into its process environment at
 ``GatewayManager._spawn_once`` and a frozen ``GatewaySpec`` is never re-applied
@@ -16,7 +16,7 @@ and the adopting side checks.
 
 Two properties are pinned here:
 
-* the drift is DETECTED and reported (it was previously invisible), and
+* the drift is DETECTED and reported, and
 * an unknown target at the pre-flight is fallback-ELIGIBLE, so the stub degrades
   to a per-session exec instead of dying.
 """

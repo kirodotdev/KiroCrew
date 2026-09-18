@@ -182,7 +182,7 @@ async def test_context_preserves_content_and_missing_file_semantics(tmp_path, mo
     assert "stage one body" in ctx
     assert f"Full result: `{result_file}`" in ctx
 
-    # A recorded path that no longer exists degrades to the path-only form.
+    # A recorded path that does not exist degrades to the path-only form.
     tracker.record_stage_result(1, str(tmp_path / "sessions" / "gone" / "stage_1_result.md"))
     ctx_missing = await _context(slot, tracker, 1)
     assert "Full result:" in ctx_missing

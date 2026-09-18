@@ -10,8 +10,10 @@
 #   less playwright-cli.sh
 #   sh playwright-cli.sh --version 0.1.18
 #
-# Installs the `@playwright/cli` npm package into a PRIVATE prefix (no sudo, no
-# writes outside $HOME) and drops a `playwright-cli` wrapper into ~/.local/bin.
+# Installs the `@playwright/cli` npm package into Kiro Crew's PRIVATE tools
+# prefix (no sudo, no writes outside $HOME) and writes the pinned wrapper into
+# that same prefix. The gateway resolves only this sealed copy or a vetted
+# system install; it never executes the legacy ~/.local/bin wrapper.
 # Upstream ships this tool only through the npm registry, so this script does
 # not pretend a portable archive exists; what it removes is the requirement that
 # the user ALREADY have a working Node toolchain and an unblocked default
@@ -49,7 +51,7 @@ Options:
   --download-host <url>   PLAYWRIGHT_DOWNLOAD_HOST for the browser binaries
   --skip-browsers         do not download browser binaries during install
   --prefix <dir>          private install prefix
-  --bin-dir <dir>         where the playwright-cli wrapper is written
+  --bin-dir <dir>         wrapper directory (default <prefix>/managed-bin)
   --force                 reinstall even when the pinned version is present
   --dry-run               print the resolved plan and exit without changes
   -h, --help              this text
@@ -121,7 +123,9 @@ NODE_STAMP_NAME=".kirocrew-playwright-cli-node"
 # reported properly once EX_USAGE exists, a few lines below.
 DATA_HOME="${KIROCREW_HOME:-${HOME:-}/.kiro/crew}"
 PREFIX="${KIROCREW_PLAYWRIGHT_CLI_HOME:-$DATA_HOME/playwright-cli}"
-BIN_DIR="${HOME:-$DATA_HOME}/.local/bin"
+# Derived from the final --prefix after argument parsing unless the operator
+# explicitly names a different wrapper directory.
+BIN_DIR=""
 # Seeded from the ambient value, not left empty, because `npx playwright install`
 # inherits PLAYWRIGHT_DOWNLOAD_HOST from this process whether or not the script
 # exports it. Reading it into the local is what puts an already-exported mirror
@@ -186,6 +190,8 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+[ -n "$BIN_DIR" ] || BIN_DIR="$PREFIX/managed-bin"
+
 # Trailing separators are stripped repeatedly, so "path//" and "///" both reduce
 # fully. A root reduces to the EMPTY string, which the absolutisation below would
 # resolve against $PWD -- silently installing into the working directory instead
@@ -212,10 +218,10 @@ done
 [ -n "$BIN_DIR" ] || die "$EX_USAGE" "--bin-dir may not be the filesystem root"
 
 # A `:` is legal in a directory name but is also PATH's separator, and PATH has no
-# escaping mechanism whatsoever -- so a bootstrapped Node under such a prefix
-# would be prepended to PATH as two nonexistent entries, and npm's own
-# `#!/usr/bin/env node` shim would then fail to find the interpreter that was just
-# installed. There is nothing to fix at the point of use, so it is refused here.
+# escaping mechanism whatsoever. npm is run with the selected Node directory
+# prepended during installation, so a bootstrapped Node under such a prefix would
+# become two nonexistent entries before the package is installed. There is
+# nothing to fix at that point of use, so it is refused here.
 case "$PREFIX" in
   *:*) die "$EX_USAGE" "--prefix may not contain ':', which separates PATH entries" ;;
 esac
@@ -356,7 +362,8 @@ _reject_url_credential() { # label url alternative
 # explicitly is not refused for a variable they had already worked around. Only the
 # defaults need HOME; --prefix and --bin-dir replace every use of it.
 if [ -z "${HOME:-}" ] && [ -z "${KIROCREW_HOME:-}" ] \
-   && { [ "$PREFIX" = "/.kiro/crew/playwright-cli" ] || [ "$BIN_DIR" = "/.local/bin" ]; }; then
+   && { [ "$PREFIX" = "/.kiro/crew/playwright-cli" ] \
+        || [ "$BIN_DIR" = "/.kiro/crew/playwright-cli/managed-bin" ]; }; then
   die "$EX_USAGE" "HOME is not set; pass --prefix and --bin-dir, or set HOME"
 fi
 
@@ -715,11 +722,11 @@ _bootstrap_node() {
 
   # The existing tree is MOVED aside, not deleted, before the new one is promoted.
   # An `rm -rf` followed by `mv` leaves a window in which neither exists, and an
-  # interruption inside it takes out a working install: the wrapper pins this exact
-  # directory, so the user's CLI stops running until they reinstall. That window is
-  # now reachable on an ordinary path -- a stamped, runnable Node with no npm beside
-  # it is re-bootstrapped rather than reused -- so it is closed here. The backup is
-  # restored if promotion fails, and only removed once the new tree is in place.
+  # interruption inside it takes out the private toolchain needed to repair or
+  # upgrade this install. That window is reachable on an ordinary path -- a
+  # stamped, runnable Node with no npm beside it is re-bootstrapped rather than
+  # reused -- so it is closed here. The backup is restored if promotion fails,
+  # and only removed once the new tree is in place.
   _backup=""
   if [ -e "$PREFIX/node" ]; then
     _backup="$_stage/previous"
@@ -1044,25 +1051,43 @@ if [ "$SKIP_INSTALL" != 1 ]; then
   say "installed $SPEC"
 fi
 
-# ── wrapper ──────────────────────────────────────────────────────────
-# A symlink to the npm-generated bin would inherit its `#!/usr/bin/env node`
-# shebang, which resolves against the CALLER's PATH — so a user whose Node this
-# installer had to bootstrap (or whose PATH Node is too old) would get "node:
-# not found" or an engine error from a tool that installed cleanly. The wrapper
-# pins the exact Node that was verified at install time.
-TARGET="$PREFIX/bin/$WRAPPER_NAME"
-[ -x "$TARGET" ] || die "$EX_VERIFY" \
+# ── gateway Node + wrapper ───────────────────────────────────────────
+# A version-manager `node` may itself be a shim. Ask the running process for the
+# native executable it reached, then copy that file into the prefix atomically.
+# Gateway calls and the generated interactive wrapper both use this sealed copy;
+# neither leaves `#!/usr/bin/env node` to resolve against a caller's PATH.
+_gateway_node_source="$("$NODE" -p 'process.execPath' 2>/dev/null || true)"
+case "$_gateway_node_source" in
+  /*) : ;;
+  *) die "$EX_VERIFY" "Node did not report an absolute process.execPath" ;;
+esac
+[ -f "$_gateway_node_source" ] && [ -x "$_gateway_node_source" ] \
+  || die "$EX_VERIFY" "Node process.execPath is not an executable file"
+GATEWAY_NODE="$PREFIX/gateway-node"
+_gateway_node_incoming="$(mktemp "$PREFIX/.gateway-node.XXXXXX")" \
+  || die "$EX_NOT_WRITABLE" "cannot stage Node inside $PREFIX"
+trap 'rm -f -- "$_gateway_node_incoming"' EXIT INT TERM
+cat "$_gateway_node_source" >"$_gateway_node_incoming" \
+  || die "$EX_NOT_WRITABLE" "cannot copy Node into $PREFIX"
+chmod 755 "$_gateway_node_incoming" \
+  || die "$EX_NOT_WRITABLE" "cannot make the staged Node executable"
+mv "$_gateway_node_incoming" "$GATEWAY_NODE" \
+  || die "$EX_NOT_WRITABLE" "cannot publish the staged Node at $GATEWAY_NODE"
+trap - EXIT INT TERM
+
+# npm's generated bin uses an `env node` shebang. Resolve the package entry
+# explicitly so the wrapper and gateway both bypass that interpreter lookup.
+TARGET="$PREFIX/lib/node_modules/$PACKAGE/playwright-cli.js"
+[ -f "$TARGET" ] || die "$EX_VERIFY" \
   "npm reported success but $TARGET does not exist; see $LOG"
 
 WRAPPER="$BIN_DIR/$WRAPPER_NAME"
-# --bin-dir "$PREFIX/bin" makes the wrapper AND its target the same file, so the
-# wrapper would exec itself and the verification below would spin until the
-# process ran out of stack. Compare canonical directories, because the two paths
-# can name one directory by different routes.
+# --bin-dir "$PREFIX/bin" would replace npm's own entrypoint. Keep the wrapper
+# distinct so package attribution and ordinary npm repair both retain one shape.
 _canon_dir() { ( cd "$1" 2>/dev/null && pwd -P ) 2>/dev/null || printf '%s' "$1"; }
 if [ "$(_canon_dir "$BIN_DIR")/$WRAPPER_NAME" = "$(_canon_dir "$PREFIX/bin")/$WRAPPER_NAME" ]; then
   die "$EX_USAGE" \
-    "--bin-dir must not be the installed package's own bin directory ($PREFIX/bin); the wrapper would replace the tool it wraps"
+    "--bin-dir must not be the installed package's own bin directory ($PREFIX/bin)"
 fi
 # Staged under an mktemp name in the DESTINATION directory, not a fixed
 # "$WRAPPER.incoming": that name is predictable, and `cat >` through a symlink
@@ -1073,18 +1098,11 @@ fi
 # rather than writing through it, so the destination itself needs no guard.
 _incoming="$(mktemp "$BIN_DIR/.playwright-cli.XXXXXX")" \
   || die "$EX_NOT_WRITABLE" "cannot create a staging file in $BIN_DIR"
-# Removed if anything below fails. Without this, `set -e` on a full disk aborts
-# between the mktemp and the mv and strands a hidden file in a directory that is
-# on the user's PATH -- and because the name is random, every retry strands
-# another one. No trap is live here: the bootstrap's own handler is installed and
-# cleared entirely inside _bootstrap_node, which has already returned.
 trap 'rm -f -- "$_incoming"' EXIT INT TERM
 cat >"$_incoming" <<EOF
 #!/bin/sh
 # Generated by playwright-cli.sh — re-run that installer to regenerate.
-PATH=$(_shell_quote "$NODE_BIN_DIR"):\$PATH
-export PATH
-exec $(_shell_quote "$TARGET") "\$@"
+exec $(_shell_quote "$GATEWAY_NODE") $(_shell_quote "$TARGET") "\$@"
 EOF
 chmod 755 "$_incoming"
 mv "$_incoming" "$WRAPPER"

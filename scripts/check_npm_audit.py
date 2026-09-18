@@ -64,6 +64,13 @@ MAX_EXCEPTION_DAYS = 30
 # the owner can still renew or remove it before a build breaks.
 EXPIRY_WARNING_DAYS = 7
 EXCEPTIONS_FILENAME = ".vulnerability-exceptions.json"
+#: Recorded count of unexcepted build-chain advisories, per lockfile. The
+#: build-chain pass REPORTS rather than blocks: widening the audit to dev
+#: packages and making those findings block in one step is how a gate ends up
+#: switched off by whoever it stopped. Failing only on an increase makes the
+#: report immediately useful and gives it teeth against new debt, without
+#: holding existing debt against an unrelated PR.
+BUILD_CHAIN_BASELINE_FILENAME = "build-chain-audit-baseline.json"
 AUDITED_LOCKFILES = (
     "website/package-lock.json",
     "website/electron/package-lock.json",
@@ -409,18 +416,34 @@ def parse_audit_report(output: str, *, returncode: int, lockfile: str) -> list[F
     return findings
 
 
-def audit_command(npx: str) -> list[str]:
-    return [
+def audit_command(npx: str, *, include_dev: bool = False) -> list[str]:
+    """Build the pinned `npm audit` argv.
+
+    ``include_dev`` drops ``--omit=dev`` so the report also covers the
+    build-chain: packages npm classifies as development-only still execute on
+    every CI runner and every contributor's machine during build and test, with
+    the same privileges as the build itself, and some of them contribute shipped
+    bytes. ``--omit=dev`` excludes exactly those, so it excludes the half that
+    runs arbitrary code at install and build time.
+
+    The default stays runtime-only so the blocking decision keeps the scope it
+    has always had; the build-chain pass is counted separately.
+    """
+    command = [
         npx,
         "--yes",
         f"npm@{NPM_VERSION}",
         "audit",
-        "--omit=dev",
+    ]
+    if not include_dev:
+        command.append("--omit=dev")
+    command += [
         "--package-lock-only",
         "--ignore-scripts",
         "--audit-level=high",
         "--json",
     ]
+    return command
 
 
 def warm_command(npx: str) -> list[str]:
@@ -581,6 +604,7 @@ def run_audit(
     runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
     deadline: Deadline | None = None,
     sleeper: Callable[[float], None] = time.sleep,
+    include_dev: bool = False,
 ) -> list[Finding]:
     lock_path = repo_root / lockfile
     project_dir = lock_path.parent
@@ -589,7 +613,7 @@ def run_audit(
     if not (project_dir / "package.json").is_file():
         raise GateError(f"audited package manifest is missing beside {lockfile}")
 
-    command = audit_command(npx)
+    command = audit_command(npx, include_dev=include_dev)
     if deadline is None:
         deadline = Deadline(AUDIT_TOTAL_BUDGET_SECONDS)
 
@@ -625,6 +649,116 @@ def unexcepted_findings(
     findings: Sequence[Finding], rules: Sequence[ExceptionRule]
 ) -> list[Finding]:
     return [finding for finding in findings if not any(rule.matches(finding) for rule in rules)]
+
+
+def load_build_chain_baseline(path: Path) -> dict[str, int]:
+    """Read the recorded per-lockfile build-chain counts.
+
+    A missing or unreadable file yields an empty mapping, which reads every
+    lockfile as unmeasured rather than as zero: treating "no baseline" as zero
+    would make the very first run report an increase for debt that predates it.
+    """
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(raw, Mapping):
+        return {}
+    counts = raw.get("lockfiles")
+    if not isinstance(counts, Mapping):
+        return {}
+    return {
+        str(name): value
+        for name, value in counts.items()
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0
+    }
+
+
+def build_chain_regressions(
+    counts: Mapping[str, int], baseline: Mapping[str, int]
+) -> list[tuple[str, int, int]]:
+    """Lockfiles whose unexcepted build-chain count rose above its baseline.
+
+    Only an INCREASE is reported. A lockfile absent from the baseline is not a
+    regression, and a count that fell is not one either -- the baseline is
+    lowered by regenerating it, never raised to make CI pass.
+    """
+    regressions: list[tuple[str, int, int]] = []
+    for lockfile in sorted(counts):
+        recorded = baseline.get(lockfile)
+        if recorded is None:
+            continue
+        found = counts[lockfile]
+        if found > recorded:
+            regressions.append((lockfile, found, recorded))
+    return regressions
+
+
+def write_build_chain_baseline(path: Path, counts: Mapping[str, int]) -> None:
+    """Record *counts* as the new baseline, preserving the file's own comment."""
+    comment = ""
+    try:
+        existing = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+    if isinstance(existing, Mapping):
+        comment = str(existing.get("_comment", ""))
+    document: dict[str, Any] = {}
+    if comment:
+        document["_comment"] = comment
+    document["version"] = 1
+    document["lockfiles"] = {name: counts[name] for name in sorted(counts)}
+    path.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+
+
+def measure_build_chain(
+    npx: str, rules: Sequence[ExceptionRule], *, deadline: Deadline
+) -> dict[str, int]:
+    """Count unexcepted build-chain advisories per lockfile, skipping failures.
+
+    Takes the caller's *deadline* rather than opening its own. The obvious-looking
+    alternative -- a second budget so an advisory count can never eat the time the
+    blocking pass needs -- adds its seconds to the wall clock instead, and the job
+    that gates release allows 900s while the blocking budget alone is 720s. Sharing
+    the deadline bounds BOTH passes by that one number, and costs the blocking pass
+    nothing, because this runs only once its verdict is already decided. What is
+    left over is exactly what the advisory pass may spend.
+    """
+    counts: dict[str, int] = {}
+    for lockfile in AUDITED_LOCKFILES:
+        try:
+            findings = run_audit(lockfile, npx=npx, deadline=deadline, include_dev=True)
+        except GateError as exc:
+            print(f"NOTE: build-chain audit not measured for {lockfile}: {exc}")
+            continue
+        counts[lockfile] = len(unexcepted_findings(findings, rules))
+    return counts
+
+
+def update_baseline() -> int:
+    """Regenerate the build-chain baseline from a live audit."""
+    try:
+        rules = load_exception_rules(_REPO_ROOT / EXCEPTIONS_FILENAME, today=_utc_today())
+        npx = locate_npx()
+        deadline = Deadline(AUDIT_TOTAL_BUDGET_SECONDS)
+        warm_npm(npx, deadline=deadline)
+    except GateError as exc:
+        print(f"ERROR: cannot regenerate the build-chain baseline: {exc}", file=sys.stderr)
+        return 1
+    counts = measure_build_chain(npx, rules, deadline=deadline)
+    if len(counts) != len(AUDITED_LOCKFILES):
+        # A partial measurement would record a low number for an unmeasured
+        # lockfile, which is the one way this file can silently weaken.
+        print(
+            "ERROR: refusing to record a partial baseline "
+            f"({len(counts)} of {len(AUDITED_LOCKFILES)} lockfiles measured)",
+            file=sys.stderr,
+        )
+        return 1
+    path = _REPO_ROOT / BUILD_CHAIN_BASELINE_FILENAME
+    write_build_chain_baseline(path, counts)
+    print(f"Recorded build-chain baseline for {len(counts)} lockfile(s) in {path.name}.")
+    return 0
 
 
 def main() -> int:
@@ -668,8 +802,48 @@ def main() -> int:
         f"Production dependency audit passed: {len(AUDITED_LOCKFILES)} lockfiles, "
         f"{excepted_count} governed exception(s)."
     )
+    report_build_chain(npx, rules, deadline=deadline)
     return 0
 
 
+def report_build_chain(
+    npx: str, rules: Sequence[ExceptionRule], *, deadline: Deadline
+) -> None:
+    """Report build-chain advisories against their baseline. Never fails.
+
+    Reached only after the blocking pass has passed, and it returns None so it
+    has no way to change the exit status. Its own failures are printed and
+    dropped: this pass exists to make the build-chain visible, and a report that
+    can break a build is a block wearing a report's name. It spends what remains
+    of the caller's *deadline*, so it cannot push the job past its own timeout.
+    """
+    counts = measure_build_chain(npx, rules, deadline=deadline)
+
+    if not counts:
+        print("NOTE: build-chain audit produced no measurement; baseline not compared.")
+        return
+
+    baseline = load_build_chain_baseline(_REPO_ROOT / BUILD_CHAIN_BASELINE_FILENAME)
+    for lockfile in sorted(counts):
+        recorded = baseline.get(lockfile)
+        recorded_text = "no baseline" if recorded is None else str(recorded)
+        print(
+            f"Build-chain advisories in {lockfile}: {counts[lockfile]} "
+            f"(baseline {recorded_text})"
+        )
+
+    regressions = build_chain_regressions(counts, baseline)
+    if regressions:
+        print(
+            "NOTE: build-chain advisory count ROSE above its baseline. This pass "
+            "reports only; the count is the worklist, and lowering it is what "
+            "clears the note:"
+        )
+        for lockfile, found, recorded in regressions:
+            print(f"  {lockfile}: {found} advisories, baseline {recorded}")
+
+
 if __name__ == "__main__":
+    if "--update-baseline" in sys.argv[1:]:
+        raise SystemExit(update_baseline())
     raise SystemExit(main())

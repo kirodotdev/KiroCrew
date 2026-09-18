@@ -179,6 +179,216 @@ class TestDecomposeYamlWithAudit:
         assert kwargs["outcome"] == "error"
         assert kwargs["metadata"]["task_id"] == "plan_2"
 
+    def test_provenance_is_recorded_when_supplied(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A sourced denial is attributed to its origin, not to the dashboard."""
+        audit = MagicMock()
+        monkeypatch.setattr(tr, "sel", lambda: audit)
+        with pytest.raises(ValueError):
+            tr._decompose_yaml_with_audit(
+                "not: a workflow\n", "plan_3", source="cron", spec_name="wf.yaml"
+            )
+        kwargs = audit.log_tool_invocation.call_args.kwargs
+        assert kwargs["session_key"] == "cron"
+        assert kwargs["metadata"]["source"] == "cron"
+        assert kwargs["metadata"]["spec_name"] == "wf.yaml"
+
+
+# ── YAML spec routing in run() ──
+
+
+class TestYamlSpecDecomposeRouting:
+    """A ``.yaml``/``.yml`` spec decomposes deterministically for every source."""
+
+    @staticmethod
+    def _write(tmp_path: Path, body: str, name: str = "wf.yaml") -> Path:
+        spec = tmp_path / name
+        spec.write_text(body, encoding="utf-8", newline="\n")
+        return spec
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["cron", "mcp"])
+    async def test_sourced_workflow_spec_bypasses_llm(self, tmp_path: Path, source: str) -> None:
+        spec = self._write(tmp_path, _YAML_SPEC)
+        runner = _runner(tmp_path)
+        with (
+            patch.object(TaskRunner, "_decompose", AsyncMock()) as dec,
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            run = await runner.run(spec, task_id="yaml_1", source=source)
+        dec.assert_not_awaited()
+        assert [t.index for t in run.tasks] == [1, 2]
+        assert run.tasks[1].depends_on == [1]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["cron", "mcp"])
+    async def test_sourced_invalid_spec_denies_llm_fallback(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        spec = self._write(tmp_path, "not: a workflow\n")
+        runner = _runner(tmp_path)
+        with (
+            patch.object(TaskRunner, "_decompose", AsyncMock()) as dec,
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            run = await runner.run(spec, task_id="yaml_2", source=source)
+        dec.assert_not_awaited()
+        assert run.status == "failed"
+        assert run.tasks == []
+
+    @pytest.mark.asyncio
+    async def test_sourced_denial_audit_carries_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        audit = MagicMock()
+        monkeypatch.setattr(tr, "sel", lambda: audit)
+        spec = self._write(tmp_path, "not: a workflow\n")
+        runner = _runner(tmp_path)
+        with (
+            patch.object(TaskRunner, "_decompose", AsyncMock()),
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            run = await runner.run(spec, task_id="yaml_3", source="cron")
+        assert run.status == "failed"
+        denials = [
+            call.kwargs
+            for call in audit.log_tool_invocation.call_args_list
+            if call.kwargs.get("tool_name") == "decompose_yaml"
+            and call.kwargs.get("outcome") == "error"
+        ]
+        assert len(denials) == 1
+        assert denials[0]["session_key"] == "cron"
+        assert denials[0]["metadata"]["source"] == "cron"
+        assert denials[0]["metadata"]["spec_name"] == "wf.yaml"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["chat", "dashboard"])
+    async def test_attended_invalid_spec_still_falls_back_to_llm(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        """Attended surfaces keep the LLM fallback for a non-workflow ``.yaml``.
+
+        ``/task run <file>.yaml`` (``source="chat"``) and the dashboard both always
+        supply a source, so a truthiness gate would have killed a path that worked
+        before the deny-by-default rule — with an operator right there to read the
+        plan the LLM produces.
+        """
+        spec = self._write(tmp_path, "not: a workflow\n")
+        runner = _runner(tmp_path)
+        with (
+            patch.object(
+                TaskRunner,
+                "_decompose",
+                AsyncMock(return_value=[Task(index=1, title="T", description="d")]),
+            ) as dec,
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            run = await runner.run(spec, task_id=f"yaml_att_{source}", source=source)
+        dec.assert_awaited_once()
+        assert [t.title for t in run.tasks] == ["T"]
+
+    #: A spec that YAML itself cannot parse — an unterminated flow sequence, so
+    #: ``safe_load`` raises out of the scanner rather than returning a mapping
+    #: the shape checks then reject. This is the ORDINARY way a hand-written
+    #: spec is wrong, and it takes a different code path from a parseable
+    #: non-workflow document: the shape checks raise ``ValueError``, the parser
+    #: raises ``yaml.YAMLError``, and only one of those two classes is what the
+    #: routing gate below decides on.
+    _UNPARSEABLE = "agents:\n  first: [unterminated\n"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["chat", "dashboard"])
+    async def test_attended_unparseable_spec_still_falls_back_to_llm(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        """A syntax error is a rejected spec, not a broken runtime.
+
+        The attended fallback is selected on the exception class, so a spec that
+        fails in the scanner has to arrive as the same class as one that fails a
+        shape check. Otherwise the most common authoring mistake is the one case
+        the fallback does not cover, and an operator watching a plan get built
+        instead sees the run fail.
+        """
+        spec = self._write(tmp_path, self._UNPARSEABLE)
+        runner = _runner(tmp_path)
+        with (
+            patch.object(
+                TaskRunner,
+                "_decompose",
+                AsyncMock(return_value=[Task(index=1, title="T", description="d")]),
+            ) as dec,
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            run = await runner.run(spec, task_id=f"yaml_unp_{source}", source=source)
+        dec.assert_awaited_once()
+        assert [t.title for t in run.tasks] == ["T"]
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("source", ["cron", "mcp"])
+    async def test_sourced_unparseable_spec_is_still_denied(
+        self, tmp_path: Path, source: str
+    ) -> None:
+        """Normalizing the parser error must not open the unattended path."""
+        spec = self._write(tmp_path, self._UNPARSEABLE)
+        runner = _runner(tmp_path)
+        with (
+            patch.object(TaskRunner, "_decompose", AsyncMock()) as dec,
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            run = await runner.run(spec, task_id=f"yaml_unp_deny_{source}", source=source)
+        dec.assert_not_awaited()
+        assert run.status == "failed"
+        assert run.tasks == []
+
+    @pytest.mark.asyncio
+    async def test_local_invalid_spec_still_falls_back_to_llm(self, tmp_path: Path) -> None:
+        """Unsourced (local) runs keep the pre-existing LLM fallback."""
+        spec = self._write(tmp_path, "not: a workflow\n")
+        runner = _runner(tmp_path)
+        with (
+            patch.object(
+                TaskRunner,
+                "_decompose",
+                AsyncMock(return_value=[Task(index=1, title="T", description="d")]),
+            ) as dec,
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            run = await runner.run(spec, task_id="yaml_4")
+        dec.assert_awaited_once()
+        assert [t.title for t in run.tasks] == ["T"]
+
+    @pytest.mark.asyncio
+    async def test_sourced_markdown_spec_still_uses_llm(self, tmp_path: Path) -> None:
+        """Widening the suffix gate must not divert non-YAML specs."""
+        spec = self._write(tmp_path, _YAML_SPEC, name="TASK.md")
+        runner = _runner(tmp_path)
+        with (
+            patch.object(
+                TaskRunner,
+                "_decompose",
+                AsyncMock(return_value=[Task(index=1, title="T", description="d")]),
+            ) as dec,
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            run = await runner.run(spec, task_id="yaml_5", source="cron")
+        dec.assert_awaited_once()
+        assert [t.title for t in run.tasks] == ["T"]
+
 
 # ── current_run ──
 
@@ -506,6 +716,50 @@ class TestExecutePlan:
         assert run.status == "completed"
 
     @pytest.mark.asyncio
+    async def test_pause_during_execute_preparation_keeps_prior_results(
+        self, tmp_path: Path
+    ) -> None:
+        sessions = _sessions()
+        sessions.admission_closed = False
+        runner = _runner(tmp_path, sessions=sessions)
+        run = _seed_run(
+            runner,
+            tmp_path,
+            status="failed",
+            tasks=[
+                Task(
+                    index=1,
+                    title="kept",
+                    description="d",
+                    status=TaskStatus.PASSED,
+                    result="keep me",
+                ),
+                Task(index=2, title="retry", description="d", status=TaskStatus.FAILED),
+            ],
+        )
+        visible_during_pause: list[bool] = []
+
+        async def persist_and_pause() -> None:
+            if not visible_during_pause:
+                sessions.admission_closed = True
+                visible_during_pause.append(runner.running)
+
+        runner._apersist_runs = persist_and_pause  # type: ignore[method-assign]
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "init_workspace", AsyncMock()),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+
+        assert visible_during_pause == [True]
+        assert run.tasks[0].status == TaskStatus.PASSED
+        assert run.tasks[0].result == "keep me"
+        assert run.status == "completed"
+        assert runner._start_ids_in_flight == set()
+
+    @pytest.mark.asyncio
     async def test_fresh_resets_passed_tasks_too(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
         run = _seed_run(
@@ -552,6 +806,9 @@ class TestExecutePlan:
         with (
             patch.object(TaskRunner, "_execute_tasks", AsyncMock()) as exec_tasks,
             patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            # branch_name is set, so this run resumes through the workspace
+            # guard rather than the first-run init_workspace path.
+            patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=True)),
             patch.object(tr.git_coord, "init_workspace", AsyncMock()) as init_ws,
             patch.object(tr.git_coord, "finalize", finalize),
         ):
@@ -559,7 +816,7 @@ class TestExecutePlan:
             assert safety_override().is_scope_active(scope) is True
             await runner._tasks[task_id]
         exec_tasks.assert_awaited_once()
-        init_ws.assert_awaited_once()
+        init_ws.assert_not_awaited()
         finalize.assert_awaited_once()
         consolidator.maybe_consolidate.assert_called_once_with("taskrunner:run:plan_trust")
         assert run.status == "completed"
@@ -567,6 +824,160 @@ class TestExecutePlan:
         assert task_id not in runner._tasks
         # trust never outlives the run
         assert safety_override().is_scope_active(scope) is False
+
+    @pytest.mark.asyncio
+    async def test_refuses_restart_while_previous_run_is_still_finishing(
+        self, tmp_path: Path
+    ) -> None:
+        """A run's status flips terminal before its finally-block (which
+        removes the worktree) completes. A restart accepted in that window
+        would validate a workspace the prior finalizer is about to delete,
+        so it is refused while the prior task handle is unfinished."""
+        import asyncio as _asyncio
+
+        runner = _runner(tmp_path)
+        _seed_run(runner, tmp_path, status="failed")
+        release = _asyncio.Event()
+
+        async def _still_finalizing() -> None:
+            await release.wait()
+
+        runner._tasks["plan_1"] = _asyncio.create_task(_still_finalizing())
+        try:
+            with pytest.raises(ValueError, match="still finishing"):
+                await runner.execute_plan("plan_1")
+        finally:
+            release.set()
+            await runner._tasks["plan_1"]
+
+    @pytest.mark.asyncio
+    async def test_restart_fails_the_run_when_the_workspace_cannot_be_restored(
+        self, tmp_path: Path
+    ) -> None:
+        """A restarted run whose worktree was deregistered (directory present,
+        not a registered git repo) must not silently dispatch the remaining
+        steps against it. If recovery fails, the run is failed terminally
+        instead of continuing without git isolation."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        run.work_dir = str(tmp_path / "orphaned-worktree")
+        execute_tasks = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", execute_tasks),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=False)),
+            patch.object(tr.git_coord, "reinit_workspace_for_retry", AsyncMock(return_value=False)),
+            patch.object(tr.git_coord, "finalize", AsyncMock()) as finalize,
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        execute_tasks.assert_not_awaited()
+        assert run.status == "failed"
+        assert "workspace" in run.error.lower()
+        # The rejected path was never positively identified as the run's own
+        # worktree, so the finally-block must not force-remove it.
+        finalize.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_restart_validation_does_not_finalize(self, tmp_path: Path) -> None:
+        """A CancelledError raised while the workspace is still being
+        validated unwinds _execute before the guard's verdict lands. The
+        finally-block must treat that workspace as unvalidated and skip
+        finalize(), which would force-remove a path never positively
+        identified as this run's worktree."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        finalize = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(
+                tr.git_coord,
+                "workspace_is_valid",
+                AsyncMock(side_effect=asyncio.CancelledError()),
+            ),
+            patch.object(tr.git_coord, "finalize", finalize),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        finalize.assert_not_awaited()
+        assert run.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_cancel_before_restart_validation_does_not_finalize(self, tmp_path: Path) -> None:
+        """A CancelledError raised before validation begins (during the
+        workflow rebind that precedes it) must also leave the workspace
+        marked unvalidated: the pessimistic flag is assigned before the
+        coroutine's first await, so no cancellation window exists."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        finalize = AsyncMock()
+        valid = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(
+                TaskRunner,
+                "_workflow_rebind",
+                AsyncMock(side_effect=asyncio.CancelledError()),
+            ),
+            patch.object(tr.git_coord, "workspace_is_valid", valid),
+            patch.object(tr.git_coord, "finalize", finalize),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        valid.assert_not_awaited()
+        finalize.assert_not_awaited()
+        assert run.status == "cancelled"
+
+    @pytest.mark.asyncio
+    async def test_restart_skips_reinit_when_the_workspace_is_already_valid(
+        self, tmp_path: Path
+    ) -> None:
+        """The common restart case -- worktree still valid -- must not pay the
+        reinit cost or touch the workspace at all."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="failed")
+        run.branch_name = "feat/x"
+        reinit = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "workspace_is_valid", AsyncMock(return_value=True)),
+            patch.object(tr.git_coord, "reinit_workspace_for_retry", reinit),
+            patch.object(tr.git_coord, "finalize", AsyncMock()),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        reinit.assert_not_awaited()
+        assert run.status == "completed"
+
+    @pytest.mark.asyncio
+    async def test_planned_run_keeps_the_first_run_init_path(self, tmp_path: Path) -> None:
+        """A planned run that never had a worktree (no branch_name) keeps the
+        original best-effort init_workspace call: the resume guard must not
+        run, and first-run git failure stays non-fatal."""
+        runner = _runner(tmp_path)
+        run = _seed_run(runner, tmp_path, status="planned")
+        valid = AsyncMock()
+        reinit = AsyncMock()
+        init_ws = AsyncMock()
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+            patch.object(tr.git_coord, "workspace_is_valid", valid),
+            patch.object(tr.git_coord, "reinit_workspace_for_retry", reinit),
+            patch.object(tr.git_coord, "init_workspace", init_ws),
+        ):
+            task_id = await runner.execute_plan("plan_1")
+            await runner._tasks[task_id]
+        valid.assert_not_awaited()
+        reinit.assert_not_awaited()
+        init_ws.assert_awaited_once()
+        assert run.status == "completed"
 
     @pytest.mark.asyncio
     async def test_git_init_failure_does_not_abort_run(self, tmp_path: Path) -> None:
@@ -911,6 +1322,54 @@ class TestRetryFromTask:
         assert run.tasks[1].attempts == 0
         assert run.status == "completed"
         assert run.finished_at > 123.0
+
+    @pytest.mark.asyncio
+    async def test_pause_during_retry_preparation_keeps_prior_results(self, tmp_path: Path) -> None:
+        sessions = _sessions()
+        sessions.admission_closed = False
+        runner = _runner(tmp_path, sessions=sessions)
+        run = _seed_run(
+            runner,
+            tmp_path,
+            status="failed",
+            tasks=[
+                Task(
+                    index=1,
+                    title="kept",
+                    description="d",
+                    status=TaskStatus.PASSED,
+                    result="keep me",
+                ),
+                Task(
+                    index=2,
+                    title="retry",
+                    description="d",
+                    status=TaskStatus.FAILED,
+                    result="replace me",
+                ),
+            ],
+        )
+        visible_during_pause: list[bool] = []
+
+        async def persist_and_pause() -> None:
+            if not visible_during_pause:
+                sessions.admission_closed = True
+                visible_during_pause.append(runner.running)
+
+        runner._apersist_runs = persist_and_pause  # type: ignore[method-assign]
+        with (
+            patch.object(TaskRunner, "_execute_tasks", AsyncMock()),
+            patch.object(TaskRunner, "_watchdog_loop", AsyncMock()),
+        ):
+            task_id = await runner.retry_from_task("plan_1", 2)
+            await runner._tasks[task_id]
+
+        assert visible_during_pause == [True]
+        assert run.tasks[0].status == TaskStatus.PASSED
+        assert run.tasks[0].result == "keep me"
+        assert run.tasks[1].result == ""
+        assert run.status == "completed"
+        assert runner._start_ids_in_flight == set()
 
     @pytest.mark.asyncio
     async def test_reinits_git_when_work_dir_is_missing(self, tmp_path: Path) -> None:
@@ -1317,9 +1776,11 @@ class TestPersistence:
 
     def test_stale_snapshot_never_clobbers_a_newer_one(self, tmp_path: Path) -> None:
         runner = _runner(tmp_path)
-        runner._commit_snapshot(5, '["new"]')
-        runner._commit_snapshot(2, '["stale"]')
-        assert (tmp_path / "runs.json").read_text(encoding="utf-8") == '["new"]'
+        newest = json.dumps([_registry_item(task_id="snapshot-task", name="new")])
+        stale = json.dumps([_registry_item(task_id="snapshot-task", name="stale")])
+        runner._commit_snapshot(5, newest)
+        runner._commit_snapshot(2, stale)
+        assert (tmp_path / "runs.json").read_text(encoding="utf-8") == newest
         assert runner._persist_written == 5
 
 

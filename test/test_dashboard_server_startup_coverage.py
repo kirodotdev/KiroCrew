@@ -38,7 +38,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from aiohttp import web
-from aiohttp.test_utils import TestClient, TestServer
+from aiohttp.test_utils import BaseTestServer, TestClient, TestServer
 
 from kiro_crew.browser_cli import launch as browser_cli_launch
 from kiro_crew.browser_cli import snapshots as browser_cli_snapshots
@@ -209,6 +209,8 @@ def _neutralise_outside_process_work(monkeypatch) -> dict[str, Any]:
     spies: dict[str, Any] = {
         # Spawns a real backend process per enabled app.
         "start_enabled_app_backends": MagicMock(return_value=[]),
+        # The bound-port wave (Dev Fleet) — spawned after the site is bound.
+        "start_deferred_app_backends": MagicMock(return_value=[]),
         # Writes into the apps dir and re-materialises builtin manifests.
         "register_builtin_apps": MagicMock(),
         # Rewrites the operator's REAL ~/.kiro/settings/mcp.json — the one step
@@ -298,6 +300,32 @@ async def _start_dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     return runner, state, spies
 
 
+class _RunningAppServer(BaseTestServer):
+    """A loopback listener over an AppRunner that ``start_dashboard`` ALREADY set up.
+
+    ``TestServer(runner.app)`` would wrap the app in a second ``AppRunner`` and
+    run every ``on_startup`` hook again on the frozen app: a second proxy
+    ``ClientSession`` and knowledge watcher (the first of each is orphaned),
+    plus aiohttp's deprecation warning on each ``app[...]`` write. Serving the
+    runner's existing protocol factory through a ``ServerRunner`` binds a port
+    without touching the application's lifecycle; the app is torn down once,
+    by ``_dashboard``, through the real cleanup path.
+    """
+
+    def __init__(self, runner: web.AppRunner, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._app_runner = runner
+
+    @property
+    def app(self) -> web.Application:
+        return self._app_runner.app
+
+    async def _make_runner(self, **kwargs: Any) -> web.ServerRunner:
+        server = self._app_runner.server
+        assert server is not None, "the dashboard runner has not been set up"
+        return web.ServerRunner(server, **kwargs)
+
+
 @asynccontextmanager
 async def _dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     """A fully wired dashboard app, torn down through the real cleanup path.
@@ -315,7 +343,9 @@ async def _dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     channel-slot reconciler, the state flush loop and the chat sweeper — have no
     cleanup hook, because in production the process exits at shutdown. In a test
     they would outlive the case and be reported against whichever one runs next,
-    so they are cancelled here.
+    so they are cancelled here. The same reasoning covers the two process-level
+    handles the startup opens and no cleanup hook closes; see
+    :func:`_release_process_handles`.
     """
     runner, state, spies = await _start_dashboard(tmp_path, monkeypatch, **kwargs)
     try:
@@ -323,6 +353,33 @@ async def _dashboard(tmp_path: Path, monkeypatch, **kwargs: Any) -> Any:
     finally:
         await runner.cleanup()
         await _cancel_stray_tasks()
+        _release_process_handles(state)
+
+
+def _release_process_handles(state: Any) -> None:
+    """Close the file descriptors ``start_dashboard`` opens for the process lifetime.
+
+    Two handles outlive ``runner.cleanup()`` by design, because production closes
+    them by exiting: the loop-stall crash-dump file (a raw ``os.open`` fd held by
+    the watchdog, which no garbage collection ever closes and whose own
+    ``close()`` is a deliberate no-op) and the knowledge store's SQLite
+    connection on this thread (``db`` + ``-wal`` + ``-shm``). In a test they
+    accumulate one set per dashboard start on the worker, so the harness closes
+    them once the real shutdown path has run. The dump fd is closed at the OS
+    level, which is safe only after the watchdog has stopped: ``stop()`` cancels
+    the ``faulthandler`` timer that would otherwise write into it. Only the
+    calling thread's knowledge connection can be closed here; connections that
+    pool threads opened are released when the store itself is collected.
+    """
+    watchdog = getattr(state, "_loop_watchdog", None)
+    if watchdog is not None:
+        watchdog.stop()
+        dump_file = getattr(watchdog, "_dump_file", None)
+        if dump_file is not None and not dump_file.closed:
+            os.close(dump_file.fileno())
+    store = getattr(state, "_knowledge_store", None)
+    if store is not None:
+        store.close()
 
 
 async def _cancel_stray_tasks() -> None:
@@ -346,6 +403,62 @@ class TestStartDashboardWiring:
             assert state.ready is True
             assert runner.app["state"] is state
             assert runner.app["port"] == 0
+            assert state.resume_channel_agents is None
+
+    @pytest.mark.asyncio
+    async def test_bound_port_backends_start_only_after_the_export_and_the_rest_before_setup(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """Two waves, one contract each. The main wave runs before ``runner.setup()``
+        so an app's startup hooks find its backend running, and it DEFERS the apps
+        that need the gateway's actually-bound port at spawn. Those start only after
+        ``_export_bound_port`` created ``KIROCREW_BOUND_PORT`` — a Dev Fleet backend
+        spawned earlier would have no port for its whole lifetime (pointer broker
+        unconfigured: "live state unknown", removals refusing) until a restart."""
+        seen: dict[str, bool] = {}
+        real_export = srv._export_bound_port
+
+        def _export(runner, port):
+            seen["main_wave_before_export"] = srv.start_enabled_app_backends.called
+            seen["deferred_wave_before_export"] = srv.start_deferred_app_backends.called
+            return real_export(runner, port)
+
+        monkeypatch.setattr(srv, "_export_bound_port", _export)
+        real_setup = web.AppRunner.setup
+
+        async def _setup(self_runner):
+            seen["main_wave_before_setup"] = srv.start_enabled_app_backends.called
+            return await real_setup(self_runner)
+
+        monkeypatch.setattr(web.AppRunner, "setup", _setup)
+        async with _dashboard(tmp_path, monkeypatch) as (_runner, _state, spies):
+            assert seen == {
+                "main_wave_before_setup": True,
+                "main_wave_before_export": True,
+                "deferred_wave_before_export": False,
+            }
+            import kiro_crew.apps.backend as backend_mod
+
+            assert backend_mod.DEV_FLEET_APP_NAME == "dev-fleet"
+            assert spies["start_deferred_app_backends"].called
+
+    @pytest.mark.asyncio
+    async def test_gateway_launch_can_defer_restored_channel_agents(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        prepared = asyncio.get_running_loop().create_future()
+        prepared.set_result(None)
+        schedule_memory = MagicMock(return_value=prepared)
+        async with _dashboard(
+            tmp_path,
+            monkeypatch,
+            defer_channel_agent_resume=True,
+            schedule_memory_preparation=schedule_memory,
+        ) as (_runner, state, _spies):
+            assert callable(state.resume_channel_agents)
+            assert state.memory_startup_task is prepared
+            assert state.ready is True
+            schedule_memory.assert_called_once_with()
 
     @pytest.mark.asyncio
     async def test_the_mcp_and_dashboard_routes_are_both_mounted(
@@ -402,12 +515,12 @@ class TestStartDashboardWiring:
     ) -> None:
         """DNS-rebinding barrier, through the app's own middleware stack.
 
-        Driven in-process (``TestServer``) rather than against the production
-        listener: the same middlewares are installed on the app, and no host
-        port is bound.
+        Driven over the already-running app's handler rather than against the
+        production listener: the same middlewares are installed on the app, and
+        only an ephemeral loopback port is bound.
         """
         async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
-            async with TestClient(TestServer(runner.app)) as client:
+            async with TestClient(_RunningAppServer(runner)) as client:
                 resp = await client.get("/api/status", headers={"Host": "evil.example.com"})
                 assert resp.status == 403
                 assert "Host header not allowed" in await resp.text()
@@ -423,7 +536,7 @@ class TestStartDashboardWiring:
         calls protects nothing.
         """
         async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
-            async with TestClient(TestServer(runner.app)) as client:
+            async with TestClient(_RunningAppServer(runner)) as client:
                 resp = await client.get("/api/status")
                 csp = resp.headers["Content-Security-Policy"]
                 assert "frame-ancestors 'self'" in csp
@@ -485,7 +598,7 @@ class TestStartDashboardWiring:
         what stands between any local web page and the gateway's own API.
         """
         async with _dashboard(tmp_path, monkeypatch) as (runner, _state, _spies):
-            async with TestClient(TestServer(runner.app)) as client:
+            async with TestClient(_RunningAppServer(runner)) as client:
                 resp = await client.post(
                     "/api/notifications/clear",
                     json={},
@@ -539,6 +652,7 @@ class TestStartDashboardWiring:
         assert state.tunnel_manager is None
         await runner.cleanup()
         await _cancel_stray_tasks()
+        _release_process_handles(state)
 
         provider.stop.assert_awaited()
 
@@ -581,6 +695,7 @@ class TestStartDashboardWiring:
             finally:
                 await runner.cleanup()
                 await _cancel_stray_tasks()
+                _release_process_handles(state)
         finally:
             set_publish_disabled(False)
 
@@ -603,16 +718,17 @@ class TestStartDashboardWiring:
         spy = AsyncMock(return_value=None)
         monkeypatch.setattr(srv, "setup_tunnel", spy)
 
-        runner, _state, _spies = await _start_dashboard(tmp_path, monkeypatch)
+        runner, state, _spies = await _start_dashboard(tmp_path, monkeypatch)
         try:
             spy.assert_awaited_once()
         finally:
             await runner.cleanup()
             await _cancel_stray_tasks()
+            _release_process_handles(state)
 
 
 class TestGatewayShutdownIsGuaranteed:
-    """GPT round-8 [BLOCKING] F4 (server.py:3357): a hung/raising reconciler
+    """A hung/raising reconciler
     stop must not skip on_gateway_shutdown() -- that sweep tears down app
     backends, so skipping it strands spawned processes past gateway exit."""
 
@@ -624,10 +740,11 @@ class TestGatewayShutdownIsGuaranteed:
             raise RuntimeError("reconciler stop blew up")
 
         monkeypatch.setattr(srv, "stop_hook_reconciler", _boom)
-        runner, _state, spies = await _start_dashboard(tmp_path, monkeypatch)
+        runner, state, spies = await _start_dashboard(tmp_path, monkeypatch)
         try:
             # cleanup dispatches _hooks_shutdown; the finally must still sweep.
             await runner.cleanup()
             spies["on_gateway_shutdown"].assert_awaited_once()
         finally:
             await _cancel_stray_tasks()
+            _release_process_handles(state)

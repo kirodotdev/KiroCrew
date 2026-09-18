@@ -1,3 +1,4 @@
+import type { Mock } from 'vitest'
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen } from '@testing-library/react'
 import reducer, { sseSideResult } from '../store/chatSlice'
@@ -5,8 +6,11 @@ import type { RootState } from '../store'
 import { renderWithProviders, createTestStore } from './helpers'
 
 vi.mock('../api/client', () => ({
-  api: new Proxy({}, {
+  api: new Proxy({} as Record<PropertyKey, unknown>, {
     get: (_t, prop) => {
+      // A property already defined (a per-test override) is reused; only an
+      // unknown one gets a fresh resolved mock.
+      if (Object.prototype.hasOwnProperty.call(_t, prop)) return _t[prop]
       const fn = vi.fn().mockResolvedValue(
         prop === 'sideOpen' ? { ok: true, open: true, messages: 0, last_run_id: '', created_at: '' }
           : prop === 'sideTurn' ? { ok: true, run_id: 'r1', messages: 1 }
@@ -48,7 +52,7 @@ describe('Side multi-turn conversation', () => {
       vi.restoreAllMocks()
     })
 
-    it('renders all messages from a multi-turn side conversation', () => {
+    it('renders all messages from a multi-turn side conversation', async () => {
       const store = createTestStore({
         chat: {
           activeSlot: SLOT,
@@ -93,9 +97,52 @@ describe('Side multi-turn conversation', () => {
       renderWithProviders(<SideChat slot={SLOT} />, { store })
       expect(screen.getByText('Turn 1 q')).toBeInTheDocument()
       expect(screen.getByText('Turn 2 a')).toBeInTheDocument()
-      expect(screen.getByRole('note')).toHaveTextContent(
-        'Context only · Tools and MCPs are unavailable here. Use the main chat to take action.',
+      // The footer claims the read-only allowance only once the config has
+      // loaded and named the kiro backend (the mock resolves to kiro's default).
+      expect(await screen.findByRole('note')).toHaveTextContent(
+        "Read-only · Lookups work here, but changes don't. Use the main chat to take action.",
       )
+    })
+
+    it('says so instead of claiming lookups work when the config fails to load', async () => {
+      const { api } = await import('../api/client')
+      ;(api.kirocrewConfig as unknown as Mock).mockRejectedValue(new Error('config unavailable'))
+      const store = createTestStore({
+        chat: {
+          activeSlot: SLOT,
+          messages: [],
+          slotRunning: false,
+          slotStopping: false,
+          slotState: 'idle',
+          slotStatusDetail: {},
+          slotHasMore: false,
+          slotOldestIndex: 0,
+          loadingOlder: false,
+          lastChunkSeq: undefined,
+          _wsChunkedDuringFetch: false,
+          history: [],
+          historyHasMore: false,
+          historyOffset: 0,
+          pendingInput: null,
+          slotContextPct: {},
+          voicePlaying: false,
+          voiceAudio: null,
+          subagents: {},
+          toolLog: [],
+          activityOpen: true,
+          activityTab: 'side',
+          focusToolCallId: null,
+          slotActivity: {},
+          slotSide: { [SLOT]: { messages: [], lastRunId: '' } },
+          slotHistory: [SLOT],
+          stopPressedAt: {},
+        } as unknown as RootState['chat'],
+      })
+      renderWithProviders(<SideChat slot={SLOT} />, { store })
+      expect(await screen.findByTestId('side-chat-config-error')).toHaveTextContent(
+        "Couldn't load the agent configuration, so Side Chat runs without tools. Use the main chat to take action.",
+      )
+      expect(screen.queryByRole('note')).toBeNull()
     })
   })
 })

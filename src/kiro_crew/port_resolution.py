@@ -32,6 +32,7 @@ in a test process it almost always is.
 
 from __future__ import annotations
 
+import functools
 import logging
 import os
 import shlex
@@ -48,7 +49,7 @@ from kiro_crew.config.loader import _DEFAULT_PORT
 from kiro_crew.dashboard.origin import parse_dashboard_url
 from kiro_crew.instances import run_marker
 
-#: Module whose namespace test patches of the chain historically target.
+#: Module whose namespace test patches of the chain target.
 #: Looked up lazily via ``sys.modules`` — importing it here would recreate the
 #: exact heavy import edge this module exists to remove.
 _PATCH_NS = "kiro_crew.cli_server"
@@ -404,6 +405,45 @@ def _basename_stem(tok: str) -> str:
     return base
 
 
+@functools.lru_cache(maxsize=1)
+def _gateway_module_roots() -> frozenset[str]:
+    """Top-level module names a Kiro Crew gateway can be booted from with ``-m``.
+
+    Always ``kiro_crew``. A **composed edition** additionally boots from its
+    companion's own module: the companion registers a ``kirocrew.plugins`` entry
+    point, and its launcher execs ``-m <that module>`` so the composition root is
+    entered instead of the core CLI (execing ``-m kiro_crew`` skips the
+    companion's own ``cli.main``). Hardcoding ``kiro_crew`` therefore made
+    :func:`_args_look_like_kirocrew` reject the gateway of every composed
+    install, so ``kirocrew stop`` / ``restart`` filtered out the one listening
+    pid and reported "No Kiro Crew gateway currently running on port <p>".
+
+    Derived from the installed entry points rather than a hardcoded list of
+    edition names: core must not know any companion's module name, and a new
+    edition must not have to be added here.
+
+    ``plugin_entry_points`` is imported lazily — this module's leanness contract
+    (see the module docstring) forbids pulling the platform package at import
+    time, and only the ``stop`` / ``restart`` path needs this answer. Cached
+    because the caller asks once per candidate pid, and the entry-point set
+    cannot change inside one CLI process.
+    """
+    roots = {"kiro_crew"}
+    try:
+        from kiro_crew.platform.discovery import plugin_entry_points
+
+        for ep in plugin_entry_points():
+            # "kirocrew_amazon.compose:build_x" -> "kirocrew_amazon". Parsed from
+            # ``value`` rather than ``ep.module`` so a malformed entry cannot
+            # raise here: this only ever widens a best-effort match.
+            root = str(getattr(ep, "value", "")).split(":", 1)[0].split(".", 1)[0].strip()
+            if root:
+                roots.add(root)
+    except Exception:  # noqa: BLE001 -- a best-effort widening, never a hard gate
+        logging.getLogger(__name__).debug("composed gateway module discovery failed", exc_info=True)
+    return frozenset(roots)
+
+
 def _args_look_like_kirocrew(args: str) -> bool:
     """Return ``True`` if a process command-line *args* string is a Kiro Crew server.
 
@@ -422,6 +462,8 @@ def _args_look_like_kirocrew(args: str) -> bool:
       a service install and the launchd/systemd service), plus the legacy dotted
       form ``<python> -m kiro_crew.<subcmd>``. A Python interpreter must precede
       ``-m`` so we don't misread some other tool's ``-m`` flag (e.g. ``grep -m``).
+      A composed edition's own module counts too — see
+      :func:`_gateway_module_roots`.
     * **Console script** — ``/path/to/kirocrew <subcmd>`` (used when the
       ``kirocrew`` wrapper resolves on ``PATH``).
 
@@ -465,7 +507,7 @@ def _args_look_like_kirocrew(args: str) -> bool:
                 # "kiro_crew.gateway" -> ("kiro_crew", "gateway"); a bare
                 # "kiro_crew" -> ("kiro_crew", "").
                 package, _, dotted_subcmd = tokens[index + 1].partition(".")
-                if package == "kiro_crew":
+                if package in _gateway_module_roots():
                     # Dotted submodule form: ``-m kiro_crew.gateway``.
                     if dotted_subcmd in _KIROCREW_SERVER_SUBCOMMANDS:
                         return True

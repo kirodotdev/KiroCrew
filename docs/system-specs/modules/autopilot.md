@@ -39,7 +39,6 @@ is Autopilot") so the model recognizes user references to *autopilot* /
 | `config/prompt-orchestrator.md` | System prompt: plan format, stage execution, delegation, escalation |
 | `slack/gateway.py` | `_subagent_done` orchestration guard: per-task failures, per-stage rounds, escalation text |
 | `session_workspace.py` | `~/.kiro/crew/sessions/<id>/` layout for sub-agent result files |
-| `conductor_skill.py` | Always-on delegation skill (`agent.conductor_skill`, default `false`); independent of Autopilot |
 | `website/src/app-sdk/protocol/options.ts` | `parseOptions` — turns `[OPTION: …]` into buttons and sets `isPlan`. `website/src/pages/chat/AssistantMessage.tsx` is its consumer |
 | `website/src/pages/ChatPage.tsx` | Routes a plan-option click to `api.planAction()` |
 
@@ -52,14 +51,10 @@ exactly one of them:
 |---|---|
 | `""` | Ordinary chat. No plan machinery. |
 | `"orchestrator"` | Autopilot — everything in this spec. |
-| `"crew"` | Crew Mode, a separate control plane in `crew_chat.py` (durable ingress queue, single-flight decision agent, continuable per-topic sub-sessions). It is not Autopilot and shares none of the plan state below. Its spec is [crew-mode.md](crew-mode.md). |
 
-`"crew"` carries a capability gate the other two do not: the switch is refused
-with `crew_unsupported_slot` unless `crew_chat.is_crew_capable_slot_key(slot.key)`
-holds, because the slot name is folded into a directory and some names cannot be
-one (dots-only, a trailing dot, a Win32 reserved device basename). That mode is
-owned by [crew-mode.md](crew-mode.md); its design of record is
-[`../../request-for-change/rfc-orchestrator-chat-sessions.md`](../../request-for-change/rfc-orchestrator-chat-sessions.md).
+A third value, `"crew"` (Crew Mode), existed until it retired in favour of the
+Crew Members page; a slot persisted under it is restored as `""`. Its record is
+in [crew-mode.md](crew-mode.md) § "Retired: Crew Mode".
 
 ## Slot State
 
@@ -386,7 +381,6 @@ the wrong trade.
 |-----|---------|---------|
 | `orchestrator.stage_timeout_seconds` | `1800` | Wall-clock budget per stage before auto-run stops. `0` disables the check. |
 | `orchestrator.max_plan_duration_seconds` | `7200` | Wall-clock budget for the WHOLE plan, checked at each stage boundary, with one warning at 75%. `0` disables the check. |
-| `agent.conductor_skill` | `false` | Emits the always-on delegation skill. Independent of Autopilot: it changes routing knowledge, not the prompt. |
 
 Frontend-side, `defaultAutopilot` in the browser-local chat config
 (`localStorage` key `mc-chat-config`, `website/src/pages/chat/ChatSettings.tsx`)
@@ -408,6 +402,20 @@ first message of a session, so
 switching mode takes effect on the next fresh session, and
 `{{MAX_SUBAGENTS}}` in the prompt is substituted with the live resolved
 concurrency cap.
+
+The bundled prompt is self-contained and replaces, rather than appends to, the
+normal prompt. Its planning contract is explicit: a plan request in any language
+wins over complexity heuristics; otherwise dependent phases, multiple files or
+systems, and useful intermediate checkpoints must all be present. A plan has one
+approval footer, ends the planning turn, and is not re-presented during execution.
+Go pauses between stages; Go All continues after checkpoints but stops on failure
+or escalation; Cancel aborts. Stages retain verification, independent fan-out,
+direct-work exceptions, the wall-clock/start gate and three-round limit. Reversible
+in-scope decisions continue without interruption; missing access, unsanctioned
+destructive work, repeated failure and conflicts without a safe default escalate.
+`test/test_prompt_compact_contract.py` validates the worked plan with the real
+parser and guards the prompt's byte budget and operational clauses; it does not
+replace the Python stage and permission gates.
 
 ## Size and Retention Caps
 

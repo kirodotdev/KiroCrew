@@ -11,16 +11,130 @@ that take a target share one guard.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aiohttp import web
 
 from kiro_crew.dashboard import session_control as sc
-from kiro_crew.dashboard.handlers._shared import _read_session_key
+from kiro_crew.dashboard.handlers._shared import (
+    _read_session_key,
+    internal_memory_scope,
+    member_scope_denied_refusal,
+)
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
+
+# Request-scoped mark ``_private_caller_refusal`` sets when it admits the caller
+# AS A CREW MEMBER (either spelling). Read back by :func:`_carried_fence` on every
+# route, never by anything outside this module.
+_MEMBER_ADMITTED = "session_control_member_admitted"
+
+
+def _carried_fence(request: web.Request) -> bool | None:
+    """The ownership-fence verdict this request's admission already settled.
+
+    ``True`` when the gate admitted the caller as a crew member — a member is
+    ALWAYS creator-fenced, and that decision was made on the caller's verified
+    scope, so the route hands it to ``session_control.py`` as
+    ``precomputed_ownership_fenced`` rather than letting the fence re-derive it
+    from the config record after the body read has suspended. ``None`` for every
+    other caller (owner / Global-V1), whose fence is evaluated inline as before.
+    """
+    return True if request.get(_MEMBER_ADMITTED) is True else None
+
+
+async def _private_caller_refusal(request: web.Request) -> web.Response | None:
+    """The private-member gate in front of the session-control routes.
+
+    Runs only on the authenticated strict-internal branch (``internal_auth`` is
+    ``True``). Resolves the caller's private authority ONCE via
+    :func:`internal_memory_scope`:
+
+    * a verification failure returns that refusal verbatim
+      (``member_session_unverified``);
+    * an owner / Global-V1 caller (``scope is None``) falls through to the
+      handler, exactly as the surface behaved before member dispatch existed;
+    * a verified private V2 caller is admitted ONLY when it is a CREW MEMBER AND
+      the surface is reachable for it — the member operating model, gated the
+      rest of the way by ``session_control.py``'s own creator-ownership fence.
+      A crew member is recognised in the two spellings that fence recognises:
+      (a) a ``member-*`` DM slot (its session key), OR (b) an ordinary chat slot
+      whose bound memory store is a crew member's private V2 store — the
+      ``scope`` this function just resolved, confirmed member-owned by the same
+      ``_store_is_member_owned`` config-record predicate the fence uses, so the
+      gate and the fence cannot disagree. Admission never widens to a private V2
+      caller whose store is not a crew member's. Every other private V2 caller
+      gets the ``member_scope_denied`` refusal.
+
+    Reachable means ``member_dispatch_enabled()`` OR ``session_control_enabled()``
+    is true, mirroring ``session_control.py``'s ``_member_bypass`` contract: the
+    ``member_dispatch`` ceiling is a bypass ON TOP of the global switch, not a
+    replacement for it. With ``member_dispatch`` off a member falls back UNDER
+    the global switch (``_member_bypass``'s docstring and session-control.md
+    "Member callers"), so a member is admitted whenever the switch is on even
+    though its own bypass is withdrawn — refusing it there would put a member
+    OUT of the surface the operator left open to everyone, not merely strip its
+    bypass. Both reads run off the loop and fail closed on an unreadable config,
+    so this gate can never open wider than the two switches behind it. The
+    refusal is emitted through :func:`member_scope_denied_refusal` — the same
+    audit and body :func:`private_owner_surface_refusal` produces — rather than
+    by re-resolving the scope a second time.
+    """
+    scope, refusal = await internal_memory_scope(request, "session_control")
+    if refusal is not None:
+        return refusal
+    if scope is None:
+        # Owner / Global-V1 caller: not a private surface, so nothing to refuse.
+        return None
+    # A verified private V2 caller. Admit a CREW MEMBER while the surface is
+    # reachable for it: the member's own ``member_dispatch`` bypass OR the
+    # global ``session_control`` switch it otherwise falls back under, since
+    # ``member_dispatch`` is a bypass ON TOP of the switch, not a replacement.
+    #
+    # "Crew member" here has the two spellings ``session_control.py``'s inner
+    # fence recognises, and it MUST agree with that fence or the gate would admit
+    # a caller the fence then refuses (or vice versa):
+    #
+    # * (a) a ``member-*`` DM SLOT (the existing PR behaviour), and
+    # * (b) an ordinary dashboard chat slot whose bound memory store is a crew
+    #   member's private V2 store — the store ``internal_memory_scope`` already
+    #   resolved as ``scope``. ``scope`` is non-empty only for a V2 store, but
+    #   this asks ``_store_is_member_owned`` the FURTHER question — is that V2
+    #   store ``owner_member``-tagged — so admission never widens to a private V2
+    #   caller whose store is not a crew member's, and the gate and the fence
+    #   read member-ownership from the SAME config-record predicate.
+    #
+    # This is the surface-level, caller-independent reachability; the per-caller
+    # ownership form ``session_control.py`` enforces inside
+    # ``create_session``/``authorize_target`` (``_member_bypass`` /
+    # ``_caller_is_ownership_fenced``, which bound a member to slots it created)
+    # is a different predicate and stays there. All reads run off the loop in one
+    # hop and fail closed on an unreadable config, so this gate never opens wider
+    # than the two switches behind it.
+    from kiro_crew.members import is_member_session_key
+
+    session_key = _read_session_key(request)
+
+    def _caller_is_member_and_reachable() -> bool:
+        is_member = is_member_session_key(session_key) or sc._store_is_member_owned(scope)
+        return is_member and (sc.member_dispatch_enabled() or sc.session_control_enabled())
+
+    if await asyncio.to_thread(_caller_is_member_and_reachable):
+        # Admitted AS A MEMBER. Record that on the request so the route carries it
+        # into ``authorize_target`` (``precomputed_ownership_fenced=True``): the
+        # inner fence would otherwise re-derive member status from the MUTABLE
+        # config record after the body read and the prewarms have suspended, and
+        # an operator's own writer can flip that record in the window — un-assign
+        # the member, drop ``memory_version`` (coerced to ``1`` by the loader), drop
+        # the entry. Any of those would turn an admitted member into an unfenced
+        # caller reaching a foreign same-workspace session. The admission was made
+        # on the VERIFIED scope; it is the decision to keep.
+        request[_MEMBER_ADMITTED] = True
+        return None
+    return await member_scope_denied_refusal("session_control")
 
 
 async def _require_internal(request: web.Request) -> web.Response | None:
@@ -39,9 +153,24 @@ async def _require_internal(request: web.Request) -> web.Response | None:
     requiring it closes the cookie path, the app-token path, and the
     non-loopback reclassification in one check. Returns the refusal, or ``None``
     when the caller is authentic.
+
+    A verified crew member is admitted here rather than refused, in the two
+    spellings ``_private_caller_refusal`` recognises: a ``member-*`` DM slot, OR
+    an ordinary chat slot bound to a crew member's private V2 store. Dispatching
+    work into worker sessions it creates is the member operating model, so the
+    surface lets it through to
+    ``session_control.py``, where the SAME ownership fence every member caller is
+    bound by (``authorize_target``'s ``not_creator``, and ``create_session``'s
+    agent-workspace check) does the real gating. The admission is bounded by the
+    surface being reachable for a member — its own ``agent.member_dispatch``
+    bypass, OR the global ``agent.session_control`` switch it otherwise falls
+    back under. With both off the member is refused here like any other private
+    caller. Every OTHER verified V2 caller (a private member whose store is not
+    its own) keeps the ``member_scope_denied`` refusal, and an owner / Global-V1
+    caller falls through exactly as before.
     """
     if request.get("internal_auth") is True:
-        return None
+        return await _private_caller_refusal(request)
     # Best-effort, the property `_audit_denied` exists to carry for exactly this
     # shape of site: a refusal logged BEFORE the audit middleware has run.
     # `log_api_access` only enqueues — SEL is warmed at gateway startup
@@ -146,6 +275,7 @@ async def api_session_control_stop(request: web.Request) -> web.Response:
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
+            caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
@@ -167,6 +297,7 @@ async def api_session_control_close(request: web.Request) -> web.Response:
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
+            caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
@@ -191,6 +322,7 @@ async def api_session_control_send(request: web.Request) -> web.Response:
             caller_session_key=_read_session_key(request),
             target=_target(body),
             message=message,
+            caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)
@@ -226,6 +358,7 @@ async def api_session_control_read(request: web.Request) -> web.Response:
             target=target,
             limit=limit,
             since=since,
+            caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
         return _refusal(exc)

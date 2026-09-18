@@ -3,7 +3,9 @@
 
 Prints PR state + every CI check + advisory unresolved-thread count and returns
 an exit code that drives the poll loop. The aggregate ``PR Readiness`` status is
-authoritative when present; older PRs fall back to the full check rollup.
+one signal folded with the rows, never an override of them: its FAILURE blocks
+and its PENDING waits, but its green does not clear an observed failing or
+pending row, because its context name is a forgeable display string.
 Stdlib only; portable.
 
 Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
@@ -28,10 +30,12 @@ Usage:  python3 pr_status.py [pr-number] [--readiness-context NAME]
 
 Exit codes:
    0  CLEAN     - open, non-draft, MERGEABLE, no CHANGES_REQUESTED, aggregate
-                  PR Readiness (or the legacy full rollup) passed, every
-                  reviewer stamp matches the current head, no [BLOCK-MERGE]
-                  marker for the current head, and a pull_request-event run
-                  exists for the current head (when the repo uses Actions)
+                  PR Readiness (or the legacy full rollup) passed with no
+                  observed failing row (a passed aggregate does not clear a
+                  failing row), every reviewer stamp matches the current head,
+                  no [BLOCK-MERGE] marker for the current head, and a
+                  pull_request-event run exists for the current head (when the
+                  repo uses Actions)
   10  RUNNING   - a required check is still queued/in-progress, or mergeability
                   has not been computed yet
   20  BLOCKED   - failing readiness, merge conflict, draft, CHANGES_REQUESTED,
@@ -67,20 +71,23 @@ class _NoBytecodeSourceLoader(importlib.machinery.SourceFileLoader):
         return None
 
 
-def _load_review_contract():
-    """Load the sibling contract without cwd, sys.path, or bytecode side effects."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "_review_contract.py")
-    name = "_prepare_pr_review_contract"
+def _load_sibling(filename, name):
+    """Load a sibling script without cwd, sys.path, or bytecode side effects."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
     loader = _NoBytecodeSourceLoader(name, path)
     spec = importlib.util.spec_from_loader(name, loader)
     if spec is None:  # pragma: no cover - defensive
-        raise RuntimeError("cannot import prepare-pr review contract: " + path)
+        raise RuntimeError("cannot import prepare-pr sibling script: " + path)
     module = importlib.util.module_from_spec(spec)
     loader.exec_module(module)
     return module
 
 
-_review_contract = _load_review_contract()
+_review_contract = _load_sibling("_review_contract.py", "_prepare_pr_review_contract")
+# Imported, never shelled out to: a subprocess would give this script a second
+# way to fail (PATH, interpreter, quoting) for information it already has the
+# code for, and the exit-code contract belongs to green_age.py's own CLI.
+_green_age = _load_sibling("green_age.py", "_prepare_pr_green_age")
 REVIEWED_STAMP_RE = _review_contract.REVIEWED_STAMP_RE
 BLOCK_MERGE_RE = _review_contract.BLOCK_MERGE_RE
 DEFAULT_MARKER_AUTHORS = _review_contract.DEFAULT_MARKER_AUTHORS
@@ -178,7 +185,7 @@ _CLOSING_REF = _CLOSING_VERB + r"[ \t]*:?[ \t]+" + _ISSUE_TARGET
 # refused for the same reason (it advances to the four-column stop).
 #
 # What the cap costs: a trailer indented four or more columns that GitHub WOULD
-# resolve as lazy paragraph continuation is no longer credited as a declaration.
+# resolve as lazy paragraph continuation is not credited as a declaration.
 # That is the cheap direction -- it prints an advisory notice on an odd body,
 # where the opposite error credits an EXAMPLE and silently suppresses a real
 # unrelated-closure warning -- and a trailer is written as a whole line of its
@@ -210,7 +217,7 @@ _CLOSING_REF_RE = re.compile(
     r"/issues/(?P<url_number>\d+))",
     re.IGNORECASE,
 )
-# Any issue-ish reference at all, used to tell "forgot the verb" from
+# Any issue-ish reference at all, to tell "forgot the verb" from
 # "genuinely closes nothing". Mirrors the same three targets, so a qualified
 # ref or an issue URL written without a verb is reported as a missing keyword
 # rather than as a body with no issue link at all.
@@ -587,7 +594,7 @@ def closing_link_reason(body, closing_refs, repo=None):
     if _CLOSING_KW_RE.search(visible_body):
         # A visible verb is present but the host resolved nothing: the number,
         # repository target, or issue state does not form a live closure. A code
-        # fence is no longer a candidate explanation -- fenced text is masked
+        # fence is not a candidate explanation -- fenced text is masked
         # before this runs, so it cannot reach here in the first place.
         return (
             "body has a closing keyword but the host resolved no issue "
@@ -861,7 +868,7 @@ def collapse_superseded(rollup):
 
     GitHub keeps superseded attempts (typically CANCELLED) in the rollup next
     to the run that replaced them; counting them inflates the failure count
-    with entries that are no longer live. Identity is the workflow-qualified
+    with entries that are not live. Identity is the workflow-qualified
     check name for CheckRuns and the context name for StatusContexts; newest
     is decided by startedAt (ISO-8601, so string comparison orders correctly).
     Entries that cannot be strictly ordered against the current winner are all
@@ -1086,7 +1093,7 @@ def evaluate_reviewer_markers(comments, head_sha, bindings, only=None):
 
 
 def reviewer_round_settled(marker_eval):
-    """Whether the AI-review round is decided, regardless of the other checks.
+    """Whether AI review for this head is decided, regardless of the other checks.
 
     True only when the fleet was PINNED (``--reviewers`` / the loop's own
     profile names), the comments were readable, every pinned lane carries a
@@ -1155,6 +1162,34 @@ def head_run_exists(repo, head_sha):
     return False
 
 
+def probe_green_age(base, head_sha, pr):
+    """One line on whether this head's green still describes today's base.
+
+    INFORMATION, NEVER A GATE. The verdict is not passed to :func:`decide`, no
+    exit code depends on it, and any failure inside ``green_age`` degrades to an
+    "unavailable" line. A merger who is about to merge a ten-hour-old green needs
+    to know the base moved underneath it; a poll cycle that could not measure
+    that must not therefore call a red PR green, or a green one red.
+
+    The base defaults to ``main`` when the host did not report one, because the
+    line is advisory and a wrong default costs a wrong line, not a wrong verdict.
+    """
+    try:
+        return _green_age.summarize(
+            base=base or "main",
+            head=head_sha or "HEAD",
+            pr=str(pr or ""),
+            runner=run,
+        )
+    except Exception as exc:  # noqa: BLE001 - an advisory line may never raise
+        return {"ok": False, "reason": "probe failed ({})".format(type(exc).__name__)}
+
+
+def green_age_line(summary):
+    """The printed form of :func:`probe_green_age`, indented like its siblings."""
+    return "  " + _green_age.format_line(summary)
+
+
 def build_report(
     *,
     number,
@@ -1167,6 +1202,7 @@ def build_report(
     marker_eval,
     code,
     status,
+    green_age=None,
 ):
     """Build the --json report.
 
@@ -1218,6 +1254,11 @@ def build_report(
             "bot_comments_readable": bool(marker_eval.get("ok")),
             "elided_stamp_reviewers": sorted(marker_eval.get("elided") or []),
             "findings": dict(marker_eval.get("findings") or {}),
+            # Advisory, and deliberately OUTSIDE progress_key: the base moving is
+            # not this PR making progress, and on a repo that merges every couple
+            # of minutes a commit count in the key would reset the stall streak
+            # forever. The babysit trigger reads this field; the tripwire does not.
+            "green_age": dict(green_age or {"ok": False, "reason": "not measured"}),
             "stale_reviewers": sorted(marker_eval.get("stale") or []),
             "unresolved_threads": n_unresolved,
         },
@@ -1347,9 +1388,16 @@ def decide(
     if blocked_now:
         return 20, "STATUS: BLOCKED - " + "; ".join(blocked_now)
 
-    # Once published, the aggregate is authoritative over stale duplicate
-    # checks in the rollup. Legacy PRs without it still use the full rollup.
-    if readiness_kind == "running" or (readiness_kind is None and n_running > 0):
+    # An observed running lane keeps the round open regardless of the
+    # aggregate. The aggregate's context name is a forgeable display string, so
+    # if a passed aggregate could conclude the "still running" gate, a forged
+    # green posted while a real lane is still QUEUED/IN_PROGRESS would skip this
+    # branch and reach CLEAN before the real failure lands -- the same
+    # forged-green-to-CLEAN vector, moved into a timing window. So an observed
+    # running row means RUNNING on its own terms, and a failing aggregate is
+    # reported below. The aggregate subtracts neither a pending nor a failing
+    # row.
+    if readiness_kind == "running" or n_running > 0:
         return 10, "STATUS: RUNNING (round not complete)"
     if mergeable not in ("MERGEABLE", "CONFLICTING"):
         return 10, "STATUS: RUNNING (mergeability not yet computed: {})".format(
@@ -1357,9 +1405,17 @@ def decide(
         )
 
     reasons = []
+    # An observed failing row is authoritative on its own terms: a passed
+    # aggregate does not clear it. The aggregate's context name is a display
+    # string any status publisher on the pull request can set, so letting a
+    # green aggregate erase a failing row would let a forged green flip this
+    # tool to CLEAN over a real failure. So report a failing row whenever one
+    # exists, independent of the aggregate, and report a failing aggregate as
+    # its own reason. The aggregate subtracts no observed row -- neither a
+    # pending one (handled by the running gate above) nor a failing one here.
     if readiness_kind == "fail":
         reasons.append("{} reported action required".format(readiness_context))
-    elif readiness_kind is None and n_fail > 0:
+    if n_fail > 0:
         reasons.append("{} check(s) failed".format(n_fail))
     if n_checks == 0:
         # An empty rollup has two very different causes, and the reason chosen
@@ -1449,7 +1505,7 @@ def _flag_value(argv, name):
 def disposition_gate(argv, environ):
     """Evaluate ONLY the disposition rule and print one JSON object; exit 0.
 
-    This is the server-side entry point (issue #6658): pr-readiness.yml calls
+    This is the server-side entry point: pr-readiness.yml calls
     it so a disposition record violating the one-lane / one-rationale-per-
     finding rule fails the repository's required status for EVERY writer, not
     only for a writer running the prepare-pr loop. It exists as a mode of this
@@ -1463,7 +1519,7 @@ def disposition_gate(argv, environ):
     Prints ``{"ok", "violations", "comments", "records", "unverified",
     "error"}``. ``ok`` is False when the record set could not be established,
     which the caller must treat as UNKNOWN (pending) rather than as a red: a
-    transient API failure red-lighting the required status is the #2753 class
+    transient API failure red-lighting the required status is that class
     of bug. Exit status is 0 for both outcomes -- the JSON carries the verdict,
     so a non-zero exit means only that this script itself failed to run, and
     the caller can tell the two apart. Enforcement scope is deliberately
@@ -1535,7 +1591,7 @@ def main(argv):
 
     fields = (
         "number,title,state,isDraft,mergeable,mergeStateStatus,"
-        "reviewDecision,url,headRefName,headRefOid,"
+        "reviewDecision,url,headRefName,headRefOid,baseRefName,"
         "body,closingIssuesReferences"
     )
     rc, out, _ = run(["gh", "pr", "view", pr, "--json", fields])
@@ -1611,7 +1667,7 @@ def main(argv):
         "  unresolved threads (advisory): " + ("?" if n_unresolved is None else str(n_unresolved))
     )
 
-    # Reviewer-side conditions (issue #2550): the stamp and the comment body
+    # Reviewer-side conditions: the stamp and the comment body
     # are the signal -- never the review workflow's run conclusion, which is
     # unreliable in both directions on this repo.
     marker_authors = resolve_marker_authors(argv, os.environ)
@@ -1670,7 +1726,7 @@ def main(argv):
         for name in marker_eval["stale"]:
             print("  - {}: STALE (stamp names an older head)".format(sanitize(name)))
 
-    # Disposition-rule gate (issue #4187): a repository writer's disposition
+    # Disposition-rule gate: a repository writer's disposition
     # comment must claim exactly one span= finding identity from its own
     # target= lane. Each record is validated against the findings stamped for
     # the head its head= says it judged (in the ordinary fix-then-push round
@@ -1775,6 +1831,11 @@ def main(argv):
         else:
             run_shown = "? (could not confirm)"
         print("  pull_request run for current head: " + run_shown)
+    # Whether that run's verdict still describes today's base. Printed beside the
+    # rollup because it qualifies the rollup: a green measured on a base that has
+    # since moved in this PR's own files is a green about a tree nobody has.
+    green_age = probe_green_age(d.get("baseRefName") or "", head_sha, d.get("number"))
+    print(green_age_line(green_age))
     print("=" * 54)
 
     code, status = decide(
@@ -1812,6 +1873,7 @@ def main(argv):
                     marker_eval=marker_eval,
                     code=code,
                     status=status,
+                    green_age=green_age,
                 ),
                 sort_keys=True,
                 separators=(",", ":"),

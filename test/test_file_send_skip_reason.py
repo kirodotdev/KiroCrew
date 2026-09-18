@@ -3,9 +3,9 @@
 The channel endpoint answers "no destination here" as
 ``{"ok": true, "delivered": false, "skipped": "<reason>"}`` — a closed reason
 vocabulary it computes, audits and serializes
-(:mod:`kiro_crew.dashboard.upload_destination`). The tool used to read only
-``delivered`` and ``error``, so every skip returned a bare ``File sent:`` and the
-caller could not tell a delivery from a dashboard-only copy.
+(:mod:`kiro_crew.dashboard.upload_destination`). Reading only ``delivered`` and
+``error`` returns a bare ``File sent:`` for every skip, so the
+caller cannot tell a delivery from a dashboard-only copy.
 
 These tests pin the reporting contract, not the delivery mechanism: nothing here
 changes where a file goes, only what the caller is told about where it went.

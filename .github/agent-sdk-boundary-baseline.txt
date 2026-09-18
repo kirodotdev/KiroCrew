@@ -35,7 +35,7 @@
 1 src/kiro_crew/connections/mint.py
 1 src/kiro_crew/cron.py
 3 src/kiro_crew/dashboard/chat_handlers.py
-4 src/kiro_crew/dashboard/chat_runner.py
+3 src/kiro_crew/dashboard/chat_runner.py
 1 src/kiro_crew/dashboard/chat_summary.py
 1 src/kiro_crew/dashboard/chat_utils.py
 2 src/kiro_crew/dashboard/handlers/agents.py
@@ -48,7 +48,6 @@
 1 src/kiro_crew/dashboard/handlers/usage.py
 1 src/kiro_crew/dashboard/session_memory.py
 1 src/kiro_crew/dashboard/stall_enrichment.py
-1 src/kiro_crew/dashboard/state.py
 1 src/kiro_crew/dashboard/steer_settle.py
 1 src/kiro_crew/dashboard/turn_dispatch.py
 1 src/kiro_crew/discord/renderer.py

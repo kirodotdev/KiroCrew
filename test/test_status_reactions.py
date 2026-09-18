@@ -894,7 +894,13 @@ class TestSharedLadderClose:
         sink = BlockingSink()
         ladder = _ladder(sink, timings=_timings(close_drain=0.05))
         ladder.set_phase("queued")
-        await sink.started.wait()
+        # Bounded: only the ladder actually reaching ``sink.add`` sets ``started``,
+        # so a queued phase that stops dispatching -- a new guard above the spawn,
+        # or a ``ReactionSink`` protocol change whose AttributeError ``_sink_call``
+        # swallows -- would park here forever instead of failing at the two
+        # assertions below. This runs on the real clock, so the ceiling is generous
+        # against the 0.1s debounce and 1.0s soft-stall timers left armed.
+        await asyncio.wait_for(sink.started.wait(), 5.0)
 
         await ladder.close()
 
@@ -1086,7 +1092,11 @@ class TestConcurrentSwapsAreSerialized:
         sink.live.add("eyes")
 
         working = asyncio.create_task(ladder._swap_emoji("hourglass"))
-        await sink.first_remove.wait()
+        # Bounded for the same reason as the wedged-channel test above: only the
+        # swap's remove leg sets ``first_remove``, and ``_sink_call`` swallows the
+        # exception a protocol change would raise, so a swap that stops removing
+        # would park here rather than fail at the two assertions below.
+        await asyncio.wait_for(sink.first_remove.wait(), 5.0)
         # The turn finishes while the first swap is still mid-flight.
         done = asyncio.create_task(ladder._swap_emoji("white_check_mark"))
         await asyncio.sleep(0)

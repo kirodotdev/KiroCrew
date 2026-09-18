@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { fmtDateFields, fmtList } from '../../i18n/format'
 import { i18nT } from '../../i18n/t'
+import { copyToClipboard } from '../../utils/clipboard'
 
 export function typeBadgeVariant(t: string): 'ok' | 'warn' | 'err' | 'aim' {
   if (['design_doc', 'code_doc'].includes(t)) return 'aim'
@@ -23,10 +24,17 @@ export function formatRelativeDate(iso: string): string {
   return i18nT('pages.knowledge.helpers.months_ago', { n: Math.floor(days / 30) })
 }
 
+/** Copy-with-confirmation for the knowledge views.
+ *
+ *  Routed through the shared helper, not `navigator.clipboard` directly: that
+ *  API needs a secure context, so on a plain-HTTP dashboard it does not exist
+ *  and a bare call throws before anything is copied. The confirmation is gated
+ *  on the helper's boolean — a tick over an unchanged clipboard is worse than
+ *  none, because the user finds out only when they paste. */
 export function useCopy() {
   const [copied, setCopied] = useState(false)
-  const copy = (text: string) => {
-    navigator.clipboard.writeText(text)
+  const copy = async (text: string) => {
+    if (!(await copyToClipboard(text))) return
     setCopied(true)
     setTimeout(() => setCopied(false), 1500)
   }

@@ -1,9 +1,14 @@
 /**
- * The "Open settings" chord: ⌘+, on macOS, Ctrl+, on Windows/Linux, Option/Alt+, alias everywhere (registry entry `open-settings`).
+ * The "Open settings" chord: ⌘+, on macOS, Alt+, on Windows/Linux, Option/Alt+, alias on macOS (registry entry `open-settings`).
  *
  * macOS reserves ⌘+, for Preferences — the desktop app's own "Settings…" menu
  * item already binds `CmdOrCtrl+,` (electron/app-menu.js) — so the in-page
  * binding and the shortcuts reference must advertise ⌘+, there, not Option+,.
+ *
+ * Windows/Linux stays on Alt+, DELIBERATELY (PR #783) and does NOT take the
+ * Ctrl+, conventional default: Ctrl+, is how a Chinese IME types a comma, so a
+ * Ctrl+, binding blocks all comma input for CJK users (#9824), and this chord
+ * fires ahead of the global enable/disable gate so it cannot even be turned off.
  *
  * `isSettingsChord` takes the platform as an injectable argument, so both
  * behaviours are asserted without reloading the module (IS_MAC is fixed at
@@ -70,13 +75,13 @@ describe('isSettingsChord — Windows/Linux', () => {
   it('accepts Alt+,', () => {
     expect(isSettingsChord(chord({ altKey: true }), false)).toBe(true)
   })
-  it('accepts Ctrl+, (the VS Code convention; the shell menu handles it first in the desktop app, same destination)', () => {
-    expect(isSettingsChord(chord({ ctrlKey: true }), false)).toBe(true)
+  it('rejects Ctrl+, — Ctrl+, is a CJK-IME comma; Windows/Linux stays on Alt+, (#783, #9824)', () => {
+    expect(isSettingsChord(chord({ ctrlKey: true }), false)).toBe(false)
   })
-  it('rejects Meta+, and Ctrl+Alt+, misses', () => {
+  it('rejects Meta+, and Alt+combo misses', () => {
     expect(isSettingsChord(chord({ metaKey: true }), false)).toBe(false)
     expect(isSettingsChord(chord({ ctrlKey: true, altKey: true }), false)).toBe(false)
-    expect(isSettingsChord(chord({ ctrlKey: true, shiftKey: true }), false)).toBe(false)
+    expect(isSettingsChord(chord({ altKey: true, shiftKey: true }), false)).toBe(false)
   })
   it('rejects a bare comma', () => {
     expect(isSettingsChord(chord(), false)).toBe(false)
@@ -84,28 +89,33 @@ describe('isSettingsChord — Windows/Linux', () => {
 })
 
 describe('open-settings registry entry', () => {
+  // This file runs in a non-Mac jsdom, so DEFAULT_SHORTCUTS is derived for
+  // Windows/Linux: the primary is Alt+, with NO ⌘/Ctrl chord and no alias.
   const def = DEFAULT_SHORTCUTS.find(s => s.id === 'open-settings')!
 
-  it('binds the platform primary modifier (⌘, / Ctrl+,) with Option/Alt+, as the alias', () => {
+  it('binds Alt+, on Windows/Linux — never Ctrl+, (#783, #9824)', () => {
     expect(def.key).toBe(',')
-    expect(def.meta).toBe(true)
-    expect(def.alt).toBeUndefined()
+    expect(def.alt).toBe(true)
+    expect(def.meta).toBeUndefined()
+    expect(def.ctrl).toBeUndefined()
     expect(def.shift).toBeUndefined()
-    expect(def.aliases).toEqual([{ key: ',', alt: true }])
+    // The Option+, alias is macOS-only; there is nothing to render behind Alt+,.
+    expect(def.aliases).toBeUndefined()
   })
 
-  it('renders as ⌘, on Mac and Ctrl + , elsewhere; the alias as ⌥, / Alt + ,', () => {
+  it('renders as ⌘, on Mac and Alt + , on Windows/Linux; the Mac alias as ⌥,', () => {
     setPlatform('MacIntel')
-    expect(formatShortcut(def)).toBe('\u2318,')
+    // The macOS binding is ⌘, (meta) with an Option+, (⌥,) alias.
+    expect(formatShortcut({ ...def, meta: true, alt: false })).toBe('\u2318,')
     expect(formatShortcut({ ...def, alt: true, meta: false })).toBe('\u2325,')
     setPlatform('Win32')
-    expect(formatShortcut(def)).toBe('Ctrl + ,')
-    expect(formatShortcut({ ...def, alt: true, meta: false })).toBe('Alt + ,')
+    expect(formatShortcut(def)).toBe('Alt + ,')
   })
 
   it('keeps Comma reserved against downstream panel registration', () => {
-    // Still consumed before panel routing on both platforms (Option+, remains
-    // bound on Mac), so a downstream panel on Comma would be unreachable.
+    // Still consumed before panel routing on both platforms (Alt+, on
+    // Windows/Linux, ⌘,/Option+, on Mac), so a downstream panel on Comma would
+    // be unreachable.
     expect(RESERVED_PANEL_CODES.has('Comma')).toBe(true)
   })
 })
@@ -128,7 +138,7 @@ describe('useKeyboardShortcuts — settings navigation', () => {
     navigateSpy.mockClear()
   })
 
-  it('runs in a non-Mac jsdom, so Ctrl+, is the primary and Alt+, the alias here', () => {
+  it('runs in a non-Mac jsdom, so Alt+, is the primary here (Ctrl+, is deliberately not bound)', () => {
     expect(IS_MAC).toBe(false)
   })
 
@@ -145,10 +155,13 @@ describe('useKeyboardShortcuts — settings navigation', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/settings')
   })
 
-  it('Ctrl+, (the primary chord here) navigates to /settings', () => {
+  it('Ctrl+, does NOT navigate on Windows/Linux — it is a CJK-IME comma (#783, #9824)', () => {
+    // The regression this fixes: #9555 bound Ctrl+, here, and because this chord
+    // fires ahead of the global gate a CJK user could not type a comma or turn
+    // it off. Ctrl+, must fall through to the composer as a comma.
     setup()
     fireEvent.keyDown(document, { code: 'Comma', ctrlKey: true })
-    expect(navigateSpy).toHaveBeenCalledWith('/settings')
+    expect(navigateSpy).not.toHaveBeenCalled()
   })
 
   it('Meta+, does not navigate on a non-Mac platform', () => {

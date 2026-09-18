@@ -26,14 +26,12 @@ def _tree_with_nested_link(tmp_path: Path) -> Path:
 class TestARollbackSaveRefusesATreeWithALink:
     """A rollback set must never hold a link — so the SAVE refuses one, up front.
 
-    The premise changed with the descriptor-pinned staging module. The rollback copy
-    used to PRESERVE links (a link the copy dropped was a link recovery deleted). Now
-    the save (`_backup_tree_or_refuse`) reports a skipped entry as FATAL, so a tree
+    The save (`_backup_tree_or_refuse`) reports a skipped entry as FATAL, so a tree
     containing a link is REFUSED before any incomplete rollback set is written — and
     because the save happens in phase one, before any live mutation, the refusal leaves
-    the data home untouched. The consequence is that nothing in a rollback directory can
-    contain a link, so the RESTORE no longer needs a link-preserving copy: it uses
-    `_copytree_safe`, and there is nothing for it to preserve on the way back.
+    the data home untouched. Nothing in a rollback directory can contain a link, so the
+    RESTORE needs no link-preserving copy: it uses `_copytree_safe`, and there is
+    nothing for it to preserve on the way back.
     """
 
     def test_a_nested_link_makes_the_save_refuse(self, tmp_path: Path) -> None:

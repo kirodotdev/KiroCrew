@@ -23,6 +23,7 @@ This file lives in ``test/`` (not ``tests/``) so the ``setup.cfg``
 from __future__ import annotations
 
 import asyncio
+import importlib.machinery
 import importlib.util
 import json
 import os
@@ -71,9 +72,22 @@ _SLEEP_SCRIPT = "import time; time.sleep(60)"
 # A portable child that ignores SIGTERM so the group kill must escalate to
 # SIGKILL to stop it. SIGTERM-ignore + SIGKILL escalation is POSIX signal
 # semantics, so tests using this are guarded with skipif(not IS_POSIX).
+#
+# The self-exit deadline is load-bearing, not decoration: this child is spawned
+# ``start_new_session``, so it leads its own group and a sweep of the pytest
+# worker's group never reaches it, and it is SIGTERM-immune by construction, so
+# the usual polite shutdown cannot end it either. Its ONLY reaper is the
+# escalation under test — so if that escalation regresses (precisely what these
+# tests exist to catch), or the worker is SIGKILLed by ``--timeout``/
+# ``--max-worker-restart`` before the reap, where no ``finally`` would run, an
+# unbounded ``while True`` loop would leave an immortal process pegged to the
+# host until a reboot or a manual hunt. Bounding it matches the three sibling
+# SIG_IGN children in this suite and does not soften any assertion: SIGTERM is
+# ``SIG_IGN``, so it is never delivered to Python and cannot cut the sleep short
+# via EINTR — the child is still alive and still immune across the grace period,
+# and SIGKILL still lands at the same instant.
 _SIGTERM_IGNORE_SCRIPT = (
-    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-    "\nwhile True: time.sleep(0.2)"
+    "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN)\ntime.sleep(60)"
 )
 
 
@@ -190,7 +204,7 @@ async def test_communicate_with_timeout_kills_whole_process_tree(monkeypatch):
     # Whole-tree kill was invoked with the child's pid + SIGKILL ...
     assert killed == [(proc.pid, registry.platform_compat.SIGKILL)]
     # ... the child was reaped by draining pipes via a SECOND communicate(),
-    # never a bare wait() that a full pipe could hang (#5989) ...
+    # never a bare wait() that a full pipe could hang ...
     assert proc.communicate_calls == 2
     assert proc.wait_calls == 0
     # ... and the helper's pid-scoped kill backs up the group signal.
@@ -222,8 +236,8 @@ def unsandboxed_spawn(monkeypatch):
     ``create_subprocess_exec``, so no child process ever actually runs. What they
     must not depend on is whether THIS host can build a namespace sandbox: a CI
     runner with ``kernel.apparmor_restrict_unprivileged_userns=1`` legitimately
-    cannot, and ``wrap_argv`` then fail-closes by design. These tests previously
-    passed only because the capability probe returned a false positive on such
+    cannot, and ``wrap_argv`` then fail-closes by design. Without this fixture the
+    tests pass only when the capability probe returns a false positive on such
     hosts. Autouse because the coupling is a property of the whole module, not of
     individual tests. Sandbox construction is covered by ``test_sandbox_*.py``.
     """
@@ -379,7 +393,7 @@ async def test_kill_process_group_reaps_and_escalates_to_sigkill(monkeypatch):
 async def test_kill_process_group_escalation_reaps_via_communicate_not_wait(monkeypatch):
     """The SIGKILL escalation reaps by draining pipes via communicate(); a
     bare wait() on a killed child blocked writing into a full pipe would
-    hang the app-build timeout path forever (#5989)."""
+    hang the app-build timeout path forever."""
     monkeypatch.setattr(registry, "_KILL_GRACE_PERIOD", 0.01)
     killed: list[tuple[int, int]] = []
 
@@ -2237,10 +2251,10 @@ class TestMinimalEnvHonorsWindowsCaseInsensitivity:
 
 class TestApplyTrustFields:
     """``_apply_trust_fields`` is the API trust boundary of
-    ``GET /api/apps/registry`` (issue #580): ``provenance``/``verified`` are
+    ``GET /api/apps/registry``: ``provenance``/``verified`` are
     computed server-side where the ``_registry`` tag is authoritative, and
     ``featured`` is stripped from external rows. Every branch below mirrors a
-    spoof that used to be blocked only by scattered client-side checks.
+    spoof that must be blocked server-side, not by scattered client-side checks.
     """
 
     def test_external_entry_is_never_verified_despite_spoofed_fields(self):
@@ -3176,7 +3190,29 @@ def _build_cmds_for(tmp_path, monkeypatch, files: dict[str, str]) -> list[list[s
     monkeypatch.setattr(registry, "create_subprocess_limited", _fake_exec)
     monkeypatch.setattr(registry, "wrap_argv", lambda cmd, mode="standard": (list(cmd), None))
     monkeypatch.setattr(registry, "cgroup_scope_argv", lambda cmd: list(cmd))
+    _pin_pip_importable(monkeypatch)
     return captured
+
+
+def _pin_pip_importable(monkeypatch) -> None:
+    """Make the planner see a gateway interpreter that HAS ``pip``.
+
+    ``_run_app_build`` probes ``importlib.util.find_spec("pip")`` on the running
+    interpreter and soft-skips the Python build when it is absent. That probe
+    reads the test host's own packaging: a venv created by ``uv`` (or
+    ``--without-pip``) ships no ``pip`` module, so without this pin every
+    "a pip command is planned" assertion fails on such a host while the same
+    test passes on a stdlib venv. The soft-skip branch has its own test that
+    pins the opposite answer.
+    """
+    real_find_spec = importlib.util.find_spec
+
+    def _with_pip(name, *args, **kwargs):
+        if name == "pip":
+            return importlib.machinery.ModuleSpec("pip", loader=None)
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr(registry.importlib.util, "find_spec", _with_pip)
 
 
 @pytest.mark.asyncio
@@ -3257,8 +3293,8 @@ async def test_python_build_soft_skips_when_the_interpreter_has_no_pip(tmp_path,
 async def test_a_monorepo_subdirectory_is_built_not_the_clone_root(tmp_path, monkeypatch):
     """The build must run where the package IS, not at the clone root.
 
-    A monorepo registry entry declares ``subdirectory``, and that used to be joined
-    only AFTER the build — so the build looked for pyproject.toml at the clone root,
+    A monorepo registry entry declares ``subdirectory``; joining that only AFTER the
+    build would make the build look for pyproject.toml at the clone root,
     found none, logged "No build step detected — using source as-is" and returned
     ok=True having installed nothing.
     """
@@ -3517,7 +3553,7 @@ class TestCatalogFailureNeverBreaksTheStore:
         traceback this would hide our own bugs instead of a bad document.
 
         Patched at `fetch_inventory_entries` because that is the source the listing
-        now uses; the cache-fed loader is no longer on this path at all.
+        now uses; the cache-fed loader is not on this path at all.
         """
 
         def boom():

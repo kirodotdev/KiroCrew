@@ -74,8 +74,8 @@ logger = logging.getLogger(__name__)
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 KIRO_AGENTS_DIR: Path | None = None
 
 
@@ -432,7 +432,7 @@ def _apply_agent_mcp_policy(
             continue
         merged = {**base, **spec}
         merged.pop("neutralized", None)
-        merged.pop("disabled", None)  # a grant un-disables a previously denied server
+        merged.pop("disabled", None)  # a grant un-disables a denied server
         # `mountOnly` (set by a policy for a built-in grant) means: mount the
         # server so the tool is visible, but keep it OFF allowedTools no matter
         # what the ceiling says, so every call routes through the approval gate
@@ -771,6 +771,8 @@ def _preserve_user_agent_edits(
     if kept:
         logger.info("Preserved user edits in %s: %s", name, ", ".join(sorted(kept)))
     return merged
+
+
 #: Placeholder syntax an agent template uses for a path only known at runtime.
 #:
 #: A shipped builtin's agent config is read from the immutable package root
@@ -934,7 +936,7 @@ def _register_agents(
     dispatchable: set[str] = set()
     # Held across the whole materialization, not just the writes: each agent COPIES the
     # ambient server spec, so a read taken before a health scrub and a write landing
-    # after it would leave the agent naming a server that no longer exists. The read and
+    # after it would leave the agent naming a server that does not exist. The read and
     # the write have to be inside the same critical section as the transition they race.
     #
     # Kept INLINE rather than delegated to a helper: the governed-auto-approve strip
@@ -1081,14 +1083,13 @@ def _register_agents(
             # would be answered by the wrong agent.
             publish_materialized_agents(dispatchable)
         # Reconcile the whole directory UNCONDITIONALLY, even when this call wrote
-        # nothing: a re-registration whose manifest no longer declares an agent (or
+        # nothing: a re-registration whose manifest does not declare an agent (or
         # that follows a prune) leaves the removed name in the snapshot, and only a
         # rescan drops it. A name that is dispatchable in memory but gone from disk is
-        # the same invisible mismatch as the bug this change fixes — kiro-cli cannot
-        # load it and falls back to its own default. `_register_agents` runs ON the
-        # loop for the dashboard enable/update handlers (see the prune note in
-        # `register_app`), so the scan goes to an executor rather than walking every
-        # agent file inline.
+        # an invisible mismatch — kiro-cli cannot load it and falls back to its own
+        # default. `_register_agents` runs ON the loop for the dashboard enable/update
+        # handlers (see the prune note in `register_app`), so the scan goes to an
+        # executor rather than walking every agent file inline.
         schedule_materialized_agents_refresh()
 
         return registered
@@ -1232,12 +1233,11 @@ def _deregister_skills(app_name: str) -> int:
     Removes **only what registration created** — the symlinks, and the directory
     itself once it holds nothing else. It must NOT ``rmtree`` unconditionally: when a
     PACKAGED builtin skill shares the app's name, ``skills/<app_name>/`` is that
-    skill's real directory, not an app-owned link farm. Blowing it away deleted a
+    skill's real directory, not an app-owned link farm. Blowing it away deletes a
     shipped skill and every SOP under it, leaving the app's cron prompts pointing at
-    files that no longer existed — silently, since a missing skill file is not an
-    error anywhere. Hit for real by ops-mission-control, whose skill ships under
-    ``builtin_skills/`` because a builtin app's own directory is never copied into
-    the data home.
+    missing files — silently, since a missing skill file is not an error anywhere.
+    Real case: ops-mission-control, whose skill ships under ``builtin_skills/``
+    because a builtin app's own directory is never copied into the data home.
     """
     skills_root = _skills_dir()
     app_skills_dir = skills_root / app_name
@@ -1343,7 +1343,7 @@ def reconcile_app_skills(app_name: str) -> list[str]:
     # _register_skills is already idempotent (overwrites existing symlinks)
     registered = _register_skills(app_name, manifest, app_root)
 
-    # Clean stale links: skills present as symlinks but no longer in manifest
+    # Clean stale links: skills present as symlinks but absent from the manifest
     skills_root = _skills_dir()
     app_skills_dir = skills_root / app_name
     if app_skills_dir.is_dir():
@@ -2097,18 +2097,11 @@ def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
         # like a bare-python launch - refusing it strands the server with
         # ModuleNotFoundError. Verified through the shebang, not the name.
         _abi_shebang_interp = ""
-        if (
-            _carries_path
-            and not _abi_matched_path
-            and _deps_stamp_ok
-            and os.path.isabs(name)
-        ):
+        if _carries_path and not _abi_matched_path and _deps_stamp_ok and os.path.isabs(name):
             _cand_interp = _python_shebang_interpreter(name)
             if _cand_interp and path_command_is_abi_matched(app_root, _cand_interp):
                 _abi_shebang_interp = _cand_interp
-        if _deps_stamp_ok and (
-            not _carries_path or _abi_matched_path or _abi_shebang_interp
-        ):
+        if _deps_stamp_ok and (not _carries_path or _abi_matched_path or _abi_shebang_interp):
             env = dict(cfg.get("env") or {})
             existing = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = f"{deps_dir}{os.pathsep}{existing}" if existing else str(deps_dir)
@@ -2260,11 +2253,7 @@ def resolve_stdio_command(cfg: dict, app_root: Path | None = None) -> dict:
                     _shim_script = ""
             elif not _has_python_shebang(venv_cmd):
                 _shim_script = ""
-            if (
-                deps_dir in Path(venv_cmd).parents
-                and _deps_stamp_ok
-                and _shim_script
-            ):
+            if deps_dir in Path(venv_cmd).parents and _deps_stamp_ok and _shim_script:
                 # A deps-dir console script is pip-generated - a Python
                 # script whose shebang is the gateway interpreter, a Windows
                 # launcher pair, or an embedded-ZIP exe. Run direct, its
@@ -2450,7 +2439,11 @@ def _normalize_attached_m(args: list) -> list:
             # operand does not itself start with a dash - drop the
             # separator so the walker shims the script. An operand that DOES
             # start with a dash needs the `--` and stays unshimmable.
-            if i + 1 < len(args) and isinstance(args[i + 1], str) and not args[i + 1].startswith("-"):
+            if (
+                i + 1 < len(args)
+                and isinstance(args[i + 1], str)
+                and not args[i + 1].startswith("-")
+            ):
                 return [*out, *args[i + 1 :]]
             return [*out, *args[i:]]
         if arg.startswith(("-m", "-c")) and len(arg) > 2:
@@ -2490,9 +2483,7 @@ def _py_target_index(args: list) -> int | None:
             # operand starts with a dash): inserting the shim after `--`
             # would be read as a FILENAME, not an option - unshimmable.
             return None
-        if arg == "-x" or (
-            arg.startswith("-") and not arg.startswith("--") and "x" in arg[1:]
-        ):
+        if arg == "-x" or (arg.startswith("-") and not arg.startswith("--") and "x" in arg[1:]):
             # -x tells CPython to SKIP THE FIRST LINE of the script it
             # launches. Inserting the shim makes deps_boot that script, and
             # its first line opens the module docstring - the interpreter
@@ -2897,7 +2888,8 @@ def scrub_backend_mcp_url(app_name: str, unreconciled: list[str] | None = None) 
                 "could not be read. Its materialized agents are KEPT and may still name "
                 "the removed server until a refresh with a readable manifest rewrites "
                 "them.",
-                removed, app_name,
+                removed,
+                app_name,
             )
         return []
     # `_register_mcp_servers` directly, NOT `reregister_app_mcp_servers`: the latter also
@@ -3210,11 +3202,11 @@ def refresh_app_agents(app_name: str, io_failures: list[str] | None = None) -> l
 def reconcile_enabled_app_resources() -> dict[str, int]:
     """Re-register resources for every ENABLED gateway-managed app.
 
-    Called once at gateway startup.  Registration used to happen ONLY in the
-    enable path, so an app that gained agents/skills in a later version never
-    registered them for a user who had already enabled it — silently, because a
-    missing resource only logs a warning.  Reconciling at boot makes the on-disk
-    state a function of the current manifests instead of of install history.
+    Called once at gateway startup.  Registering ONLY in the enable path would
+    leave an app that gains agents/skills in a later version unregistered for a
+    user who has already enabled it — silently, because a missing resource only
+    logs a warning.  Reconciling at boot makes the on-disk state a function of
+    the current manifests rather than of install history.
 
     Idempotent: agent configs are rewritten from their template, skills/crons/MCP
     registration already overwrite in place.  Apps with ``resources="app"`` are
@@ -3316,5 +3308,10 @@ def deregister_app(app_name: str) -> RegistrationResult:
     except Exception as exc:
         result.errors.append(f"MCP server deregistration failed: {exc}")
 
+    # No worker re-derive here, deliberately. This file is one of SIX writers of
+    # `kirocrew.json` under two different file locks, so a re-derive per writer leaks
+    # one hole per writer nobody named. `agent.require_fresh_derived_spec` refuses a
+    # stale mirror on the SPAWN path instead, which covers every writer including the
+    # ones this module does not own -- and cannot lose the race a post-write hook can.
     logger.info("Deregistered app %s", app_name)
     return result

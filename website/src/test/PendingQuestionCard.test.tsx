@@ -477,6 +477,8 @@ describe('QuestionCard — every question must be answered', () => {
     pick('Carve-out')
     expect(button.disabled).toBe(true)
 
+    // Answering Q1 folds it and opens Q2, so its options are in the DOM without
+    // the user having to go looking for them.
     pick('staging')
     expect(button.disabled).toBe(false)
   })

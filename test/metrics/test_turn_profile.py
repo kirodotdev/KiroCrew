@@ -552,10 +552,10 @@ class TestAggregatorReportsAmountsWithoutMsKeys:
 class TestSpendAttributionByModel:
     """The `model` attribute has to survive the aggregator, not just the emitter.
 
-    The emitters stamp `model` on both spend histograms, but the turn block used to
-    fold every point into one pooled `_Hist`, so the attribute was recorded and
-    then discarded at the one place that reports the amount -- "which model spent
-    this" was unanswerable from the API despite being emitted.
+    The emitters stamp `model` on both spend histograms. A turn block that folds
+    every point into one pooled `_Hist` records the attribute and then discards it
+    at the one place that reports the amount, leaving "which model spent this"
+    unanswerable from the API despite being emitted.
     """
 
     def _aggregate(self, tmp_path: Path, points):

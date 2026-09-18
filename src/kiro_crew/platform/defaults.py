@@ -121,6 +121,13 @@ class DefaultPublishRegistry:
         register_provider(self._PERSONAL_DRIVE_KEY, _build)
 
 
+class DefaultGatewayLifecycleProvider:
+    """Keep the core's interpreter and managed-venv restart resolution."""
+
+    def restart_launcher(self) -> str | None:
+        return None
+
+
 class DefaultAgentRuntime:
     """Today's managed MCP servers + first-run setup."""
 
@@ -484,7 +491,9 @@ class DefaultAppsLoader:
     def default_registries(self) -> List[Dict[str, Any]]:
         # The public edition pins no external registry: the only registries are
         # the ones the operator typed into config.registries. A companion returns
-        # its organisation's official registry.
+        # its organisation's official registry, optionally with the display-only
+        # `label` (a human name shown instead of the `name` id) and `review`
+        # (`""` / `"curated"` / `"community"`, which badge the dashboard shows).
         return []
 
 

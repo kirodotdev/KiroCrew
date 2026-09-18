@@ -1205,3 +1205,63 @@ class TestTitleFallback:
         d = _dispatcher(sessions, client, _Log(_rows("Launch plan")))
 
         assert await d._session_resume._title_of("dashboard:chat-1") == "chat-1"
+
+
+class TestSharedTitleLoader:
+    """One loader serves every channel's resume adapters.
+
+    Three adapters grew the same ``conv_log.get_metadata`` read (Discord, Teams,
+    Telegram), so a fix to the unwrap or the fallback landed in one and missed
+    the others. The shared helper keeps the read off-loop and the fallback
+    identical, and every channel names itself so its debug line stays its own.
+    """
+
+    @staticmethod
+    def _log(metadata: dict[str, dict] | None = None, *, raises: bool = False):
+        class _Log:
+            def get_metadata(self, key: str) -> dict:
+                if raises:
+                    raise OSError("metadata gone")
+                return dict((metadata or {}).get(key, {}))
+
+        return _Log()
+
+    def test_the_stored_title_is_returned(self) -> None:
+        log = self._log({"dashboard:chat-1": {"title": "Launch plan"}})
+        assert core.session_title_of(log, "dashboard:chat-1") == "Launch plan"
+
+    def test_a_blank_title_collapses_to_the_bare_key(self) -> None:
+        """An EMPTY title is falsy, so the fallback names the conversation."""
+        log = self._log({"dashboard:chat-1": {"title": ""}})
+        assert core.session_title_of(log, "dashboard:chat-1") == "chat-1"
+
+    def test_a_whitespace_title_is_passed_through_unchanged(self) -> None:
+        """Preserved, not tidied: the shared read is not where a title is trimmed.
+
+        A whitespace-only title is truthy, so the pre-consolidation copies
+        returned it verbatim. Trimming here would be a behaviour change riding
+        along with a refactor.
+        """
+        log = self._log({"dashboard:chat-1": {"title": "   "}})
+        assert core.session_title_of(log, "dashboard:chat-1") == "   "
+
+    def test_a_key_with_no_dashboard_prefix_survives_the_fallback(self) -> None:
+        assert core.session_title_of(self._log(), "slack:legacy") == "slack:legacy"
+
+    def test_an_absent_conv_log_falls_back_rather_than_raising(self) -> None:
+        assert core.session_title_of(None, "dashboard:chat-1") == "chat-1"
+
+    def test_an_unreadable_log_falls_back_rather_than_raising(self) -> None:
+        assert core.session_title_of(self._log(raises=True), "dashboard:chat-1") == "chat-1"
+
+    def test_a_missing_title_key_falls_back(self) -> None:
+        log = self._log({"dashboard:chat-1": {"agent": "writer"}})
+        assert core.session_title_of(log, "dashboard:chat-1") == "chat-1"
+
+    def test_the_read_is_blocking_so_async_callers_own_the_offload(self) -> None:
+        """Metadata access blocks; the helper must stay sync for ``to_thread``.
+
+        Same contract as ``persisted_session_agent``: a coroutine here would
+        force every caller onto the loop thread.
+        """
+        assert not asyncio.iscoroutinefunction(core.session_title_of)

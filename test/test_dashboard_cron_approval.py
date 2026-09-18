@@ -76,7 +76,7 @@ class TestCronCreateTimezonePersistenceOwner:
     close. The dashboard caller must instead pass ``timezone`` THROUGH the
     create call so it lands in the single first ``_save()``.
 
-    Post-rebase over PR #331: the create path is now the event-loop-safe
+    The create path is the event-loop-safe
     ``add_job_async`` (single locked build+persist, all fields folded in) — so
     the same intent is asserted against ``add_job_async`` and the absence of any
     handler-side ``_save()``.
@@ -148,9 +148,7 @@ class TestCronCreateModel:
 
     @pytest.mark.asyncio
     async def test_valid_model_accepted(self):
-        request = self._make_request(
-            {"name": "t", "message": "m", "every": 300, "model": "sonnet"}
-        )
+        request = self._make_request({"name": "t", "message": "m", "every": 300, "model": "sonnet"})
         resp = await api_crons_create(request)
         assert resp.status == 200
         _, kwargs = request.app["state"].crons.add_job_async.call_args
@@ -158,9 +156,7 @@ class TestCronCreateModel:
 
     @pytest.mark.asyncio
     async def test_empty_model_accepted(self):
-        request = self._make_request(
-            {"name": "t", "message": "m", "every": 300, "model": ""}
-        )
+        request = self._make_request({"name": "t", "message": "m", "every": 300, "model": ""})
         resp = await api_crons_create(request)
         assert resp.status == 200
 
@@ -204,9 +200,7 @@ class TestCronCreateModel:
     async def test_non_string_model_rejected(self):
         # A numeric/bool JSON `model` must be rejected as a clean 400, not raise
         # AttributeError on .strip() and leak an HTTP 500.
-        request = self._make_request(
-            {"name": "t", "message": "m", "every": 300, "model": 123}
-        )
+        request = self._make_request({"name": "t", "message": "m", "every": 300, "model": 123})
         resp = await api_crons_create(request)
         assert resp.status == 400
         body = json.loads(resp.body)
@@ -221,6 +215,12 @@ class TestCronListFields:
         mock_job.name = "test"
         mock_job.message = "msg"
         mock_job.enabled = True
+        # Serialized alongside `enabled`, because the two together are what tell a
+        # user pause apart from an execution auto-pause.
+        mock_job.user_paused = False
+        # Read to derive the owning `app`; a MagicMock here would flow into the
+        # payload as one, which is the failure this stub's comment below describes.
+        mock_job.created_by = ""
         mock_job.last_status = "ok"
         mock_job.agent_id = ""
         mock_job.channel = "C123"
@@ -229,9 +229,16 @@ class TestCronListFields:
         mock_job.strict_schedule = False
         mock_job.hide_in_chat = False
         mock_job.minimal_context = False
+        mock_job.persistent_session = True
         mock_job.schedule = CronSchedule(kind="every", every_secs=300)
         mock_job.last_run_ts = None
         mock_job.last_result = None
+        mock_job.last_retry_count = 0
+        # Set explicitly, like every other field here: an unset attribute on a
+        # MagicMock answers with a MagicMock, which the JSON response cannot
+        # serialize — so a field added to the payload fails this test until the
+        # stub names it.
+        mock_job.last_retry_run_ts = 0.0
         mock_job.created_ts = None
         mock_job.timezone = ""
         mock_job.skip_dates = []
@@ -246,6 +253,8 @@ class TestCronListFields:
         mock_job.session_key = ""
         mock_job.source_preset = ""
         mock_job.source_template_prompt = ""
+        mock_job.member_id = ""
+        mock_job.memory_store = ""
 
         mock_state = MagicMock()
         mock_state.has_slot.return_value = False
@@ -265,6 +274,7 @@ class TestCronListFields:
         assert job_data["silent"] is True
         assert job_data["hide_in_chat"] is False
         assert job_data["minimal_context"] is False
+        assert job_data["persistent_session"] is True
         assert job_data["channel"] == "C123"
         assert job_data["skip_dates"] is None
         # server_tz top-level field exposes the dashboard's local TZ for client rendering

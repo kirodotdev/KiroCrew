@@ -22,11 +22,11 @@ The user-facing surface is ``kirocrew pod <verb>`` (see :mod:`kiro_crew.pod.cli`
     url <wt>       print its base_url
     logs <wt>      tail its journal
     provision <wt> build the worktree's venv + dist so it can be podded
-    install        lay down the systemd template unit (once per machine)
+    install        lay down the systemd template unit (Linux only; a no-op elsewhere)
 
 A friendly worktree *name* is resolved to a checkout path git-natively (see
-:func:`kiro_crew.pod.runtime.resolve_checkout`) and pinned so the systemd-booted
-gateway never re-resolves. Mechanism, per platform:
+:func:`kiro_crew.pod.runtime.resolve_checkout`) and pinned so the service-manager
+booted gateway never re-resolves. Mechanism, per platform:
 
 * **Linux (``systemd --user``)**: one template unit ``kirocrew-pod@<wt>.service``
   whose ``ExecStart`` re-enters ``kirocrew pod _run <wt>`` (boots the worktree's own
@@ -37,8 +37,18 @@ gateway never re-resolves. Mechanism, per platform:
   has no equivalent: there are no cgroups, so **the resource ceiling is not
   enforced** — see :mod:`kiro_crew.pod.launchd` for why a weaker key is
   deliberately not emitted in its place. Logs go to files instead of the journal.
+* **Windows (Task Scheduler)**: one task per pod plus a generated ``.cmd`` wrapper
+  under the pod plane's own directory (a task carries no environment block, so the
+  wrapper is what pins the pod plane), created unelevated with ``schtasks.exe`` —
+  ``sc.exe`` would need administrator rights and a machine-wide LocalSystem
+  service. One capability has no equivalent: there is no restart policy, so a
+  crashed pod stays down and the crash signal is derived from the exit code the
+  wrapper records. The resource ceiling IS enforced, by a Job object attached to
+  the gateway while it is still suspended, though with a looser process bound and
+  no CPU cap. Windows also has no ``exec``, so the gateway is SUPERVISED as the
+  wrapper's child rather than replacing it — see :mod:`kiro_crew.pod.windows`.
 
-Reclaiming a pod's isolated HOME belongs to ``pod down`` on both platforms rather
+Reclaiming a pod's isolated HOME belongs to ``pod down`` on every platform rather
 than to a post-stop service hook, which on systemd ran before the final kill of
 the pod's own cgroup and also fired on the stop half of a ``Restart=``. ``down``
 stops the service, waits for its process tree to drain, deletes, and verifies;

@@ -270,9 +270,9 @@ async def test_upload_corrupted_docx_emits_zipfile_false_diagnostic(
     )
     async with TestClient(TestServer(_make_app())) as client:
         resp = await client.post("/api/upload/file", data=form)
-        # A .docx whose bytes aren't a valid zip is now REJECTED at the upload
+        # A .docx whose bytes aren't a valid zip is REJECTED at the upload
         # boundary by the magic-byte content gate (CWE-434), before any write —
-        # a bogus / masquerading file no longer reaches disk.
+        # a bogus / masquerading file never reaches disk.
         assert resp.status == 400, await resp.text()
         body = await resp.json()
         assert "does not match its type" in body["error"]
@@ -284,7 +284,7 @@ async def test_upload_har_is_accepted_as_plain_text(
     caplog: pytest.LogCaptureFixture,
     mock_sel,
 ) -> None:
-    """A ``.har`` upload is accepted exactly like ``.json`` (#2555).
+    """A ``.har`` upload is accepted exactly like ``.json``.
 
     HAR exports are JSON text, so they ride the text-extension allowlist:
     no magic-byte signature to enforce, and — because HAR files routinely
@@ -327,6 +327,106 @@ async def test_upload_har_is_accepted_as_plain_text(
 
 
 @pytest.mark.asyncio
+async def test_upload_drawio_is_accepted_as_xml_text(
+    upload_dir: Path,
+    caplog: pytest.LogCaptureFixture,
+    mock_sel,
+) -> None:
+    """A ``.drawio`` upload is accepted exactly like ``.xml``.
+
+    A draw.io / diagrams.net file is an XML ``mxfile`` container, so it rides
+    the text-extension allowlist: no magic-byte signature to enforce, and the
+    diagnostic block (DOC/IMAGE only) must not fire for it. This test keeps
+    draw.io diagrams exported from the composer uploadable.
+    """
+    drawio_body = (
+        b'<mxfile host="app.diagrams.net"><diagram name="Page-1">'
+        b'<mxGraphModel><root><mxCell id="0"/></root></mxGraphModel>'
+        b"</diagram></mxfile>"
+    )
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        drawio_body,
+        filename="architecture.drawio",
+        content_type="application/xml",
+    )
+    with caplog.at_level(
+        logging.INFO, logger="kiro_crew.dashboard.handlers.files",
+    ):
+        async with TestClient(TestServer(_make_app())) as client:
+            resp = await client.post("/api/upload/file", data=form)
+            assert resp.status == 200, await resp.text()
+            body = await resp.json()
+    assert body["paths"], body
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith("_architecture.drawio")
+    assert saved.read_bytes() == drawio_body
+    # Text extension: the DOC/IMAGE-only diagnostic block must stay silent.
+    diagnostics = [
+        r for r in caplog.records if "upload.file diagnostic" in r.getMessage()
+    ]
+    assert not diagnostics, (
+        f"Did not expect a diagnostic for .drawio upload; got: "
+        f"{[r.getMessage() for r in diagnostics]}"
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("extension", [".text", ".xwiki"])
+async def test_upload_plain_text_alias_is_accepted(
+    upload_dir: Path,
+    mock_sel,
+    extension: str,
+) -> None:
+    payload = "Plain UTF-8 text\nUnicode: café 日本語\n".encode()
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename=f"notes{extension}",
+        content_type="text/plain",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith(f"_notes{extension}")
+    assert saved.read_bytes() == payload
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("filename", "payload"),
+    [
+        ("table-export.tsv", b"Files\tRecords\tCodec\n51000\t204000\tsnappy\n"),
+        ("events.jsonl", b'{"event": "start"}\n{"event": "stop"}\n'),
+    ],
+)
+async def test_upload_tsv_and_jsonl_are_accepted(
+    upload_dir: Path,
+    mock_sel,
+    filename: str,
+    payload: bytes,
+) -> None:
+    form = aiohttp.FormData()
+    form.add_field(
+        "file",
+        payload,
+        filename=filename,
+        content_type="text/plain",
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    saved = Path(body["paths"][0])
+    assert saved.name.endswith(f"_{filename}")
+    assert saved.read_bytes() == payload
+
+
+@pytest.mark.asyncio
 async def test_upload_unrelated_extension_still_rejected(
     upload_dir: Path,
     mock_sel,
@@ -346,4 +446,89 @@ async def test_upload_unrelated_extension_still_rejected(
         body = await resp.json()
         assert "Unsupported file type" in body["error"]
     # Nothing reached disk.
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+_WEBP_HEAD = b"RIFF\x10\x00\x00\x00WEBPVP8 " + b"\x00" * 8
+_HEIC_HEAD = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 8
+
+
+@pytest.mark.asyncio
+async def test_upload_jpeg_named_webp_body_is_relabelled_not_refused(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """A ``.jpeg`` whose bytes are WebP is stored as ``.webp``.
+
+    Browsers keep the URL's extension on "Save image as" while the body is
+    whatever the server negotiated, so a WebP wearing ``.jpeg`` is an
+    everyday file, not an attack. The bytes pass the same raster allowlist;
+    only the label is corrected, and the returned path carries the true
+    suffix so the ACP image inliner reads the right mime from it.
+    """
+    form = aiohttp.FormData()
+    form.add_field("file", _WEBP_HEAD, filename="photo.jpeg", content_type="image/jpeg")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    (path,) = body["paths"]
+    assert path.endswith("_photo.webp"), path
+    assert Path(path).read_bytes() == _WEBP_HEAD
+    assert [p.name for p in upload_dir.iterdir()] == [Path(path).name]
+
+
+@pytest.mark.asyncio
+async def test_upload_jpeg_with_matching_bytes_keeps_its_name(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """The relabel is a no-op for a truthful filename."""
+    jpeg = b"\xff\xd8\xff\xe0\x00\x10JFIF" + b"\x00" * 8
+    form = aiohttp.FormData()
+    form.add_field("file", jpeg, filename="photo.jpeg", content_type="image/jpeg")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 200, await resp.text()
+        body = await resp.json()
+    assert body["paths"][0].endswith("_photo.jpeg")
+
+
+@pytest.mark.asyncio
+async def test_upload_jpeg_that_is_heic_names_the_conversion_remedy(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """An iPhone HEIC photo wearing ``.jpeg`` is refused with a sentence
+    that says what it is and what to do, plus a machine-readable code."""
+    form = aiohttp.FormData()
+    form.add_field("file", _HEIC_HEAD, filename="IMG_0001.jpeg", content_type="image/jpeg")
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "content_mismatch"
+    assert "HEIC/AVIF" in body["error"]
+    assert ".png" in body["error"] and ".jpg" in body["error"]
+    assert not upload_dir.exists() or not any(upload_dir.iterdir())
+
+
+@pytest.mark.asyncio
+async def test_upload_html_under_an_image_extension_is_still_refused(
+    upload_dir: Path,
+    mock_sel,
+) -> None:
+    """The CWE-434 property survives the relabel: bytes that are no raster
+    at all never reach disk under an image extension."""
+    form = aiohttp.FormData()
+    form.add_field(
+        "file", b"<html><script>1</script></html>", filename="x.png", content_type="image/png"
+    )
+    async with TestClient(TestServer(_make_app())) as client:
+        resp = await client.post("/api/upload/file", data=form)
+        assert resp.status == 400, await resp.text()
+        body = await resp.json()
+    assert body["code"] == "content_mismatch"
+    assert "not really a .png image" in body["error"]
+    assert "re-export" in body["error"]
     assert not upload_dir.exists() or not any(upload_dir.iterdir())

@@ -37,7 +37,9 @@ import ToolCallLine from './ToolCallLine'
 import NudgeCard, { nudgeMatchesLoop } from './NudgeCard'
 import RecoveryCard, { resolveInjectCard } from './RecoveryCard'
 import { SystemNoticeRow, isSystemNoticeRow } from './CompactionCard'
-import { ErrorCard, isModelUnentitled } from './ErrorCard'
+import { ErrorCard, isAuthRequired, isModelUnentitled } from './ErrorCard'
+import NoticeCard from './NoticeCard'
+import { resolveTransientNotice } from './transientNotice'
 import WorkflowRunCard, { extractWorkflowRunId, isWorkflowRunTool } from './WorkflowRunCard'
 import SubagentRunCard, { extractSpawnRunLaunch, isSpawnRunTool } from './SubagentRunCard'
 import WorkflowCompletionCard, { isWorkflowCompletionMessage } from './WorkflowCompletionCard'
@@ -136,6 +138,9 @@ export interface TranscriptRendererOptions {
    *  the very mechanics the surface hides. Off (default) the SDK's `user`
    *  entry is used unchanged. */
   hideSteerBadge?: boolean
+  /** Fix affordance for an `auth_required` row: deep-link to the Kiro sign-in
+   *  card in Settings. Omitted on a surface with no settings route. */
+  onOpenSignIn?: () => void
 }
 
 /** Index of the last `error` row, so only that one offers Continue. Derived
@@ -185,6 +190,7 @@ export function createTranscriptRenderers(
           onSessionOpen={o.onSessionOpen}
           sessions={o.sessions}
           activeSession={o.activeSession}
+          messageTs={m.ts}
           disclosureKey={ctx.key}
           onOpenPanel={o.onOpenSubagentPanel}
         />,
@@ -333,6 +339,7 @@ export function createTranscriptRenderers(
           onSessionOpen={o.onSessionOpen}
           sessions={o.sessions}
           activeSession={o.activeSession}
+          messageTs={m.ts}
           disclosureKey={ctx.key}
         />,
         true,
@@ -344,21 +351,33 @@ export function createTranscriptRenderers(
       id: 'error',
       roles: ['error'],
       render: (m, ctx) => {
+        // A transient-5xx notice the gateway is already retrying against is
+        // routine status, not a failure: localized copy on a soft NoticeCard.
+        // Only its terminal shape ("please try again") stays a red ErrorCard,
+        // with the same localized text.
+        const transient = resolveTransientNotice(m, ctx.messages, ctx.index)
+        if (transient?.card === 'notice') {
+          return ctx.row(<NoticeCard content={transient.text} tone={transient.tone} />)
+        }
         const unentitled = isModelUnentitled(m)
+        const authRequired = isAuthRequired(m)
         return ctx.row(
           <ErrorCard
-            content={m.content}
+            content={transient ? transient.text : m.content}
+            meta={m.meta}
             // A rejection the backend says no retry can fix never offers Continue,
             // even when this row is the newest and the turn was interrupted:
-            // resuming would replay the identical rejection.
+            // resuming would replay the identical rejection (or the same
+            // signed-out wall).
             onContinue={
-              !unentitled && o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
+              !unentitled && !authRequired && o.onContinue && o.continuable && o.interrupted && ctx.index === lastErrorIndex(ctx.messages)
                 ? o.onContinue
                 : undefined
             }
             continuing={o.continuing}
             onPickModel={unentitled ? o.onPickModel : undefined}
             onOpenDefaultModel={unentitled ? o.onOpenDefaultModel : undefined}
+            onOpenSignIn={authRequired ? o.onOpenSignIn : undefined}
             unentitledElsewhere={unentitled}
           />,
         )

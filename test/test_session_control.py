@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import dataclasses
 import re
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -469,6 +470,66 @@ async def test_a_natural_teardown_during_the_steer_reports_requeued(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_a_requeued_steer_records_queued_and_never_steered(tmp_path, monkeypatch):
+    """The append-only log must not claim a steer cut a turn that never got it.
+
+    ``steered`` only means the client accepted the write. If the turn ends during
+    the await, the teardown requeues the text and it runs LATER -- so a steer entry
+    written on the RPC's return is a permanent false statement about a turn, and the
+    body would also be logged twice once the requeue path records it. That is why the
+    vocabulary carries no steer type at all.
+
+    Exactly one entry, and it is ``message/queued``: the requeue moves the text
+    straight into the slot queue without passing the append that records a queued
+    message, so this is the only place that can record it at all.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("KIROCREW_CREW_LOG", "1")
+    import json
+
+    from kiro_crew import crew_log as lg
+    from kiro_crew.crew_log import emit as crew_log_emit
+
+    crew_log_emit.reset_caches()
+    sid = "sess-steer-requeue"
+    crew_log_emit.on_session_opened(sid, agent="kirocrew", slot="chat-1")
+    crew_log_emit.on_turn_started(sid, 1, "user")
+    assert crew_log_emit.flush()
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-1"))
+
+    async def _steer(msg):
+        # The turn's teardown runs while the RPC is in flight and requeues the text.
+        did = slot._steer_delivery_ids.pop(msg, "")
+        slot._pending_steers.remove(msg)
+        slot._queue.append({"id": "q1", "content": msg, "meta": {"steer_delivery_id": did}})
+        return True
+
+    client = MagicMock()
+    client.supports_steer = True
+    client.steer = AsyncMock(side_effect=_steer)
+    client.session_id = sid
+    slot._acp_client = client
+
+    outcome = await cd.steer_into_running_turn(state, slot, "run this instead")
+
+    assert outcome == cd.STEER_REQUEUED
+    assert crew_log_emit.flush()
+    body = [
+        json.loads(line)
+        for line in lg.ledger_path("session", sid).read_text(encoding="utf-8").splitlines()[1:]
+    ]
+    # Every message-domain entry, not one named type: an entry claiming the turn
+    # received the steer would be caught whatever it was called.
+    mine = [e for e in body if e["type"].startswith("message/")]
+    assert len(mine) == 1, f"expected one entry for one message, got {[e['type'] for e in mine]}"
+    assert mine[0]["type"] == "message/queued"
+    assert mine[0]["data"]["source"] == "steer"
+    crew_log_emit.reset_caches()
+
+
+@pytest.mark.asyncio
 async def test_a_second_identical_steer_is_refused_rather_than_registered(tmp_path):
     """Two overlapping identical steers: the second must not register at all.
 
@@ -615,13 +676,11 @@ def test_scheduled_target_is_refused(tmp_path):
 
 
 def test_scheduled_caller_cannot_control_a_session_it_did_not_create(tmp_path):
-    """A cron caller is admitted but fenced to its own children (issue #8332).
+    """A cron caller is admitted but fenced to its own children.
 
-    The refusal it used to get was ``unattended_caller``, keyed on the slot-key
-    prefix. That was replaced by the ``created_by`` fence, which refuses the case
-    the prefix check existed for -- a scheduled job reaching the user's own
-    conversation -- while letting it drive the sessions it dispatched. The
-    positive half, and a cron's other gates, are in
+    The ``created_by`` fence refuses the case that matters -- a scheduled job
+    reaching the user's own conversation -- while letting it drive the sessions
+    it dispatched. The positive half, and a cron's other gates, are in
     ``test_cron_session_control.py``.
     """
     state = _make_state(tmp_path)
@@ -1097,14 +1156,14 @@ def test_a_credential_at_the_truncation_boundary_is_still_redacted(tmp_path):
     """Redaction runs over the whole message, then the slice happens.
 
     Mutation guard: truncating first cuts the secret into a prefix the scanner
-    no longer matches, and that fragment ships to the caller.
+    does not match, and that fragment ships to the caller.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
     target = _peer_target(state, "chat-2", caller)
     secret = "ghp_" + "B" * 36
     # Straddle the boundary: only the first 10 chars of the secret survive a
-    # naive slice, and a 10-char fragment no longer matches the credential
+    # naive slice, and a 10-char fragment does not match the credential
     # scanner — so it is exactly what leaks when the order is wrong.
     filler = "x" * (sc.MAX_READ_CONTENT_CHARS - 10)
     surviving_fragment = secret[:10]
@@ -1244,7 +1303,7 @@ def test_the_read_cursor_is_absolute_across_a_trimmed_window(tmp_path):
     """Window length freezes at the retention cap; `total` and the indexes must not.
 
     Mutation guard: deriving `total` from `len(slot.messages)` makes it freeze at
-    the cap, so a caller can no longer tell how much history exists. Basing it on
+    the cap, so a caller cannot tell how much history exists. Basing it on
     `_disk_older_count` instead of the durable counter shifts every position by
     the transient rows that were trimmed (here: 20), which this pins.
     """
@@ -1621,7 +1680,7 @@ def test_stop_is_refused_for_a_session_out_of_bounds(tmp_path):
         asyncio.run(sc.stop_target(state, caller_session_key=_key(caller), target="chat-hidden"))
 
 
-# ── session_stop is safe to re-send (#5074) ──────────────────────────────────
+# ── session_stop is safe to re-send ──────────────────────────────────
 
 
 def _stoppable(state, slot):
@@ -1727,7 +1786,7 @@ def test_a_stop_after_the_window_still_escalates(tmp_path, monkeypatch):
 
 
 def test_a_withheld_escalation_is_recorded(tmp_path, monkeypatch):
-    """#5074 read from the other side: the absorbed retry must be visible too.
+    """Read from the other side: the absorbed retry must be visible too.
 
     The issue's complaint is that queued messages went "with no record that a
     retry rather than a decision caused it". Suppressing the kill silently would
@@ -2011,7 +2070,7 @@ def test_send_to_a_remote_bound_target_is_refused_not_run_locally(tmp_path, monk
 
     ``send_to_target`` hands ``_run_chat`` to ``enqueue_or_run_prompt``, which has
     no remote/executor branch — so a bound target would run the crew's work here
-    and diverge the local and peer transcripts (GPT #7693). It is refused with a
+    and diverge the local and peer transcripts. It is refused with a
     409 before any dispatch, and nothing is queued.
     """
     state = _make_state(tmp_path)
@@ -2176,6 +2235,338 @@ def test_created_session_inherits_the_callers_workspace(tmp_path, monkeypatch):
     )
 
 
+@pytest.fixture
+def private_dispatch(tmp_path, monkeypatch):
+    from member_memory_helpers import patch_private_memory_supported
+
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.memory_stores import provision_member_memory
+
+    patch_private_memory_supported(monkeypatch)
+    cfg = KiroCrewConfig.load()
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="write")
+    store = provision_member_memory(cfg, "writer")
+    cfg.save()
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-conductor")
+    return state, caller, store
+
+
+@pytest.mark.parametrize("caller_form", ["canonical", "slot", "stem"])
+@pytest.mark.parametrize("target", ["writer", "public-worker"])
+def test_private_creator_cannot_change_memory(private_dispatch, monkeypatch, caller_form, target):
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.history import transcript_stem
+    from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+    from kiro_crew.memory_stores import provision_member_memory
+
+    state, caller, _store = private_dispatch
+    cfg = KiroCrewConfig.load()
+    cfg.agents["reader"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    cfg.agents["public-worker"] = KiroCrewAgentConfig(kiro_agent="kirocrew", memory_store="default")
+    caller.memory_store = provision_member_memory(cfg, "reader")
+    caller.agent = "reader"
+    cfg.save()
+    key = _key(caller)
+    bind_private_session_store(key, caller.memory_store)
+    state.conversation_log.update_metadata(key, {"memory_store": caller.memory_store})
+    child_key = "chat-forbidden-delegation"
+    monkeypatch.setattr("kiro_crew.dashboard.state._mint_slot_key", lambda *args: child_key)
+    identity = {"canonical": key, "slot": caller.key, "stem": transcript_stem(key)}[caller_form]
+    before = set(state._slots)
+
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.create_session(state, caller_session_key=identity, agent=target))
+
+    assert exc.value.code == "memory_delegation_denied"
+    assert exc.value.status == 403
+    assert set(state._slots) == before
+    assert read_private_session_store(f"dashboard:{child_key}") is None
+    assert not state.conversation_log.has_log(f"dashboard:{child_key}")
+
+
+@pytest.mark.parametrize("error_type", [OSError, ValueError])
+def test_create_refuses_unreadable_delegation_identity(private_dispatch, monkeypatch, error_type):
+    from kiro_crew import context
+
+    state, caller, _store = private_dispatch
+    before = set(state._slots)
+
+    def unavailable(*args):
+        raise error_type("/private/identity/path")
+
+    monkeypatch.setattr(context, "require_memory_delegation", unavailable)
+    with pytest.raises(sc.SessionControlError) as exc:
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert exc.value.status == 403
+    assert exc.value.code == "memory_delegation_denied"
+    assert "/private/identity/path" not in str(exc.value)
+    assert set(state._slots) == before
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_private_creator_keeps_its_memory(private_dispatch, explicit):
+    from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+
+    state, caller, store = private_dispatch
+    caller.agent = "writer"
+    caller.memory_store = store
+    bind_private_session_store(_key(caller), store)
+    state.conversation_log.update_metadata(_key(caller), {"memory_store": store})
+    created = asyncio.run(
+        sc.create_session(
+            state, caller_session_key=_key(caller), agent="writer" if explicit else ""
+        )
+    )
+    child = state.get_slot(created["target"])
+    assert child.memory_store == store
+    assert read_private_session_store(_key(child)) == store
+
+
+@pytest.mark.parametrize("changed_field", ["agent", "memory_store", "linked_session_key"])
+def test_create_rechecks_caller_identity_after_delegation(
+    private_dispatch, monkeypatch, changed_field
+):
+    from kiro_crew import context
+
+    state, caller, _store = private_dispatch
+    original = context.require_memory_delegation
+    before = set(state._slots)
+    threads = []
+
+    async def exercise():
+        loop = asyncio.get_running_loop()
+        changed = threading.Event()
+
+        def check(log, key, target):
+            threads.append(threading.get_ident())
+            original(log, key, target)
+
+            def mutate():
+                setattr(caller, changed_field, "changed-selection")
+                changed.set()
+
+            loop.call_soon_threadsafe(mutate)
+            assert changed.wait(5)
+
+        monkeypatch.setattr(context, "require_memory_delegation", check)
+        with pytest.raises(sc.SessionControlError) as exc:
+            await asyncio.wait_for(
+                sc.create_session(state, caller_session_key=_key(caller), agent="writer"), 10
+            )
+        assert exc.value.code == "caller_memory_changed"
+
+    asyncio.run(exercise())
+    assert set(state._slots) == before
+    assert threads and threading.get_ident() not in threads
+
+
+@pytest.mark.parametrize("restored", [False, True])
+def test_created_private_worker_can_start_after_birth_history(private_dispatch, tmp_path, restored):
+    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state, caller, store = private_dispatch
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    child = state.get_slot(created["target"])
+    key = _key(child)
+    log = state.conversation_log
+    assert log.has_log(key), "the test must exercise the persisted-at-birth path"
+    if restored:
+        log = ConversationLog(base_dir=tmp_path)
+    # The first turn confirms the protected assignment written before birth
+    # metadata. Reopening the log must not be what grants that assignment.
+    _bind_private_slot_memory(key, store)
+    assert read_private_session_store(key) == store
+    assert log.get_metadata(key)["memory_store"] == store
+
+
+def test_private_worker_assignment_precedes_birth_history(private_dispatch, monkeypatch):
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    state, caller, store = private_dispatch
+    log = state.conversation_log
+    real_update = log.update_metadata
+    assignments = []
+    loop_threads = []
+
+    def persist(key, metadata):
+        loop_threads.append(threading.get_ident())
+        assignments.append(read_private_session_store(key))
+        return real_update(key, metadata)
+
+    monkeypatch.setattr(log, "update_metadata", persist)
+    asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert assignments == [store]
+    assert loop_threads and threading.get_ident() not in loop_threads
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+def test_created_template_keeps_namespace_after_member_discovery(tmp_path, monkeypatch, explicit):
+    from member_memory_helpers import patch_private_memory_supported
+
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, resolve_agent_bindings
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import provision_member_memory
+    from kiro_crew.session_agent_selection import resolve_session_agent_bindings
+
+    patch_private_memory_supported(monkeypatch)
+    template = "dispatched-template"
+    monkeypatch.setattr(
+        loader,
+        "_materialized_kiro_agent",
+        lambda name, project_dir=None: template if name == template else "",
+    )
+    cfg = KiroCrewConfig.load()
+    assert template not in cfg.agents
+    cfg.save()
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-conductor", agent=template)
+    created = asyncio.run(
+        sc.create_session(
+            state,
+            caller_session_key=_key(caller),
+            agent=template if explicit else "",
+        )
+    )
+    child = state.get_slot(created["target"])
+    key = _key(child)
+    assert state.conversation_log.get_metadata(key)["agent"] == template
+
+    # Discovery imports the same template as a private roster member before
+    # this empty conversation's first turn. The earlier choice must survive.
+    cfg = KiroCrewConfig.load()
+    cfg.agents[template] = KiroCrewAgentConfig(kiro_agent=template)
+    member_store = provision_member_memory(cfg, template)
+    cfg.save()
+    cfg = KiroCrewConfig.load()
+    assert resolve_agent_bindings(cfg, template, child.project).memory_store_name == member_store
+    chosen = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, key, template, child.project
+    )
+    assert chosen.memory_store_name == "default"
+    assert chosen.selection_kind == "template"
+    assert read_private_session_store(key) is None
+
+
+@pytest.mark.parametrize("preexisting", [False, True])
+@pytest.mark.parametrize("started_turn", [False, True])
+def test_failed_private_birth_retains_its_permanent_assignment(
+    private_dispatch, monkeypatch, preexisting, started_turn
+):
+    from kiro_crew.dashboard.chat_runner import _require_session_memory_assignment
+    from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
+    from kiro_crew.session_agent_selection import session_agent_selection_kind
+
+    state, caller, store = private_dispatch
+    before = set(state._slots)
+    child_name = "chat-failed-private-birth"
+    key = f"dashboard:{child_name}"
+    monkeypatch.setattr("kiro_crew.dashboard.state._mint_slot_key", lambda *args: child_name)
+    if preexisting:
+        bind_private_session_store(key, store)
+
+    def fail_history(requested_key, metadata):
+        assert requested_key == key
+        assert read_private_session_store(key) == store
+        if started_turn:
+            _require_session_memory_assignment(key, store)
+            state._slots[child_name].append("user", "work already started", "msg msg-u")
+        raise OSError("birth metadata could not be written")
+
+    monkeypatch.setattr(state.conversation_log, "update_metadata", fail_history)
+    with pytest.raises(OSError, match="birth metadata"):
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert set(state._slots) == (before | {child_name} if started_turn else before)
+    # The birth was authorized and its slot was already addressable. History
+    # failure cannot prove no turn consumed this identity, so the lifetime pin
+    # must remain; neither Global nor another member may adopt the key later.
+    assert read_private_session_store(key) == store
+    assert session_agent_selection_kind(key, "writer") == "member"
+    _require_session_memory_assignment(key, store)
+    for other in ("default", "another-member-store"):
+        with pytest.raises(UnknownMemoryStore, match="retains its private memory assignment"):
+            _require_session_memory_assignment(key, other)
+
+
+def test_cancelled_private_birth_drains_before_returning(private_dispatch, monkeypatch):
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.session_agent_selection import session_agent_selection_kind
+
+    state, caller, store = private_dispatch
+    entered = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    keys = []
+    real_update = state.conversation_log.update_metadata
+
+    def blocked_history(key, metadata):
+        keys.append(key)
+        entered.set()
+        assert release.wait(5), "the test must release the birth writer"
+        try:
+            return real_update(key, metadata)
+        finally:
+            finished.set()
+
+    monkeypatch.setattr(state.conversation_log, "update_metadata", blocked_history)
+
+    async def exercise():
+        task = asyncio.create_task(
+            sc.create_session(state, caller_session_key=_key(caller), agent="writer")
+        )
+        try:
+            assert await asyncio.to_thread(entered.wait, 5)
+            task.cancel()
+            await asyncio.sleep(0)
+            task.cancel()
+            await asyncio.sleep(0)
+            assert not task.done(), "cancellation must not abandon the history writer"
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await asyncio.wait_for(task, 5)
+            assert finished.is_set()
+        finally:
+            release.set()
+            if not task.done():
+                await asyncio.gather(task, return_exceptions=True)
+
+    asyncio.run(exercise())
+    assert len(keys) == 1
+    key = keys[0]
+    child = next(slot for slot in state._slots.values() if _key(slot) == key)
+    assert child._created_by == caller.key
+    assert state.conversation_log.get_metadata(key)["memory_store"] == store
+    assert read_private_session_store(key) == store
+    assert session_agent_selection_kind(key, "writer") == "member"
+
+
+@pytest.mark.parametrize("prior_context", ["history", "native"])
+def test_private_worker_creation_cannot_adopt_an_old_session(
+    private_dispatch, monkeypatch, prior_context
+):
+    from kiro_crew.member_memory_auth import read_private_session_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    state, caller, _store = private_dispatch
+    before = set(state._slots)
+    child_name = "chat-private-worker-collision"
+    key = f"dashboard:{child_name}"
+    monkeypatch.setattr("kiro_crew.dashboard.state._mint_slot_key", lambda *args: child_name)
+    if prior_context == "history":
+        state.conversation_log.append(key, "user", "Existing conversation", agent="default")
+    else:
+        state.sessions.resumable_sid.side_effect = lambda requested: (
+            "old-native-session" if requested == key else None
+        )
+    with pytest.raises(UnknownMemoryStore, match="V1 history"):
+        asyncio.run(sc.create_session(state, caller_session_key=_key(caller), agent="writer"))
+    assert read_private_session_store(key) is None
+    assert set(state._slots) == before
+
+
 def test_create_checks_the_workspace_binding_even_when_no_agent_is_named(tmp_path, monkeypatch):
     """An omitted agent is not an unchecked agent.
 
@@ -2336,7 +2727,7 @@ def test_trust_revoked_mid_create_is_not_inherited(tmp_path, monkeypatch):
     `create_session` suspends several times before the slot exists (project dir,
     config load, folder confirmation), and the operator can pick `normal` in any
     of those windows. Reading the entry-time slot would hand the child a grant
-    that no longer exists. Simulated by revoking inside the project-dir
+    that has been revoked. Simulated by revoking inside the project-dir
     resolution, the same interleaving the folder-delete test uses.
     """
     state = _make_state(tmp_path)
@@ -2382,7 +2773,7 @@ def test_the_create_audit_records_what_the_child_was_born_with(tmp_path):
     assert detail["inherited_trust_reads"] == "false"
 
 
-# ── session_create: filing at birth (#6118) ─────────────────────────────────
+# ── session_create: filing at birth ─────────────────────────────────
 
 
 def test_create_schema_bounds_the_folder_reference():
@@ -2706,6 +3097,15 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
         # test_remote_crew_execution.py::
         # test_the_marker_is_cleared_on_disk_when_a_relay_completes.
         "relay_in_flight",
+        # Written only for a NON-DEFAULT memory store, because absence is what
+        # means "the global store" -- so a newborn on the default store must NOT
+        # carry it, and writing "default" here would make a session that predates
+        # per-agent memory stores read differently from one saved today. The
+        # named-store half is pinned by the next test, which is the direction that
+        # can lose data: the key is slot-owned, so a merge that failed to write it
+        # would drop the binding and silently return that session to the global
+        # store.
+        "memory_store",
     }
     for key in sorted(SLOT_OWNED_META_KEYS - excluded):
         assert key in meta, f"slot-owned field {key!r} missing after an empty-window forced save"
@@ -2714,6 +3114,45 @@ def test_the_empty_window_merge_mirrors_the_full_saves_slot_owned_fields(tmp_pat
     assert meta.get("color_index") == 3
     assert meta.get("title") == "Pinned title"
     assert meta.get("title_origin") == "user"
+    from kiro_crew.context import store_of_session
+
+    assert (
+        store_of_session(state.conversation_log, slot_history_key(child)) == ""
+    ), "a newborn on the default store names no silo"
+
+
+def test_the_empty_window_merge_keeps_a_named_memory_store(tmp_path):
+    """A crew's silo must survive the merge, and the default must stay absent.
+
+    ``memory_store`` is slot-owned, so ``carry_unowned_metadata`` will NOT
+    preserve it from the previous record -- the merge has to write it or the key
+    is gone. Losing it does not fail loudly: the session simply consolidates into
+    the operator's global memory from then on, which is the one outcome per-crew
+    isolation exists to prevent. Asserted in both directions, because the retract
+    path (rebinding a crew back to the default store) depends on absence.
+    """
+    from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+
+    child.memory_store = "coding"
+    asyncio.run(save_slot_off_loop(state, child, force=True))
+    meta = state.conversation_log.get_metadata(slot_history_key(child))
+    assert meta.get("memory_store") == "coding"
+
+    # Rebinding to the default RETRACTS it. The merge cannot delete a key, so the
+    # cleared form is a falsy value; what must hold is that the consolidator
+    # resolves it to the global store again.
+    from kiro_crew.context import store_of_session
+
+    child.memory_store = "default"
+    asyncio.run(save_slot_off_loop(state, child, force=True))
+    meta = state.conversation_log.get_metadata(slot_history_key(child))
+    assert not meta.get("memory_store"), meta.get("memory_store")
+    assert store_of_session(state.conversation_log, slot_history_key(child)) == ""
 
 
 def test_the_empty_window_merge_reads_slot_state_at_write_time(tmp_path):
@@ -2977,6 +3416,51 @@ def test_the_binding_is_resolved_with_the_childs_project_dir(tmp_path, monkeypat
     assert seen["project_dir"] == loader.default_project_dir(caller.workspace)
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["usable", "unavailable", "caller_closed"])
+async def test_agent_binding_resolution_is_off_loop_and_precedes_allocation(
+    tmp_path, monkeypatch, outcome
+):
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    before = set(state._slots)
+    allocate = MagicMock(wraps=state.get_or_create_slot)
+    monkeypatch.setattr(state, "get_or_create_slot", allocate)
+    real_resolve = sc.resolve_agent_bindings
+    loop = asyncio.get_running_loop()
+    loop_thread = threading.get_ident()
+    lookup_threads = []
+
+    def resolve(*args, **kwargs):
+        lookup_threads.append(threading.get_ident())
+        if outcome == "unavailable":
+            raise UnknownMemoryStore("member memory cannot be read")
+        bindings = real_resolve(*args, **kwargs)
+        if outcome == "caller_closed":
+            loop.call_soon_threadsafe(state._slots.pop, caller.key, None)
+        return bindings
+
+    monkeypatch.setattr(sc, "resolve_agent_bindings", resolve)
+
+    if outcome == "usable":
+        created = await sc.create_session(state, caller_session_key=_key(caller))
+        allocate.assert_called_once()
+        child = state.get_slot(created["target"])
+        assert child is not None and child.workspace == caller.workspace
+    else:
+        with pytest.raises(sc.SessionControlError) as error:
+            await sc.create_session(state, caller_session_key=_key(caller))
+        assert error.value.code == (
+            "agent_unverifiable" if outcome == "unavailable" else "caller_not_open"
+        )
+        allocate.assert_not_called()
+        assert not set(state._slots) - before
+    assert len(lookup_threads) == 1
+    assert lookup_threads[0] != loop_thread
+
+
 def test_a_caller_that_closes_during_the_await_cannot_still_create(tmp_path, monkeypatch):
     """A removed slot stays usable as an object, so presence must be re-read.
 
@@ -3010,7 +3494,7 @@ def test_a_caller_that_moves_workspace_during_the_await_is_refused(tmp_path, mon
     """The workspace fed the agent-binding decision, so a move invalidates it.
 
     Mutation guard: carrying the pre-await workspace forward puts the child on a
-    boundary its creator no longer sits behind.
+    boundary its creator does not sit behind.
     """
     state = _make_state(tmp_path)
     caller = _slot(state, "chat-1")
@@ -3112,6 +3596,137 @@ def test_a_created_slot_records_the_caller_that_asked_for_it(tmp_path, monkeypat
     # ceiling silently never binds.
     assert getattr(child, "_created_by", "") == caller.key
     assert state.creator_slot_count(caller.key) == 1
+
+
+def test_the_creator_session_id_is_frozen_at_mint_not_read_live(tmp_path, monkeypatch):
+    """The child's parent lineage must cite the creator that was live AT MINT.
+
+    The creator SID is stamped on the child at ``session_create`` time, from the
+    live caller handle. If instead it were read live at the child's first turn,
+    a creator slot closed and replaced in between (a distinct handle with its own
+    session id) would make the child cite the REPLACEMENT's crew log -- and that id
+    lands in the append-only, immutable ``session/opened`` entry with no recovery.
+
+    Mutation guard: re-read the creator SID live at emit (from the current slot
+    handle) and this test reddens, because the replacement below carries a
+    different session id than the one frozen at mint.
+    """
+    from unittest.mock import MagicMock
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    creator_client = MagicMock()
+    creator_client.session_id = "acp-sess-creator-at-mint"
+    caller._acp_client = creator_client
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+
+    # Frozen at mint from the live caller handle, and witnessed by this process.
+    assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
+    assert getattr(child, "_lineage_minted", False) is True
+
+    # The sid is NOT written into the birth metadata: the transcript is a file an
+    # agent's file tools can edit, so nothing read back from it may become the
+    # gateway-authored crew-log lineage. Only the attribution rides the metadata,
+    # for the ownership boundary.
+    written = state.conversation_log.get_metadata(sc.slot_history_key(child))
+    assert written.get("created_by") == caller.key
+    assert "created_by_sid" not in written
+
+    # Now the creator's handle is replaced with a distinct session id -- the exact
+    # window the finding names. The frozen value on the child must NOT follow it.
+    replacement = MagicMock()
+    replacement.session_id = "acp-sess-replacement"
+    caller._acp_client = replacement
+    assert getattr(child, "_created_by_sid", "") == "acp-sess-creator-at-mint"
+
+
+def test_a_slot_nobody_minted_in_this_process_carries_no_lineage_witness(tmp_path):
+    """A slot that was not created through ``session_create`` in THIS process --
+    a person's own tab, a fork, a restore -- has no lineage witness, whatever its
+    ``_created_by`` says. The crew-log ``session/opened.parent`` write is gated on
+    the witness, so restored or hand-edited attribution never becomes lineage.
+
+    Mutation guard: default the flag to True, or set it on the plain
+    ``get_or_create_slot`` path, and this test reddens.
+    """
+    state = _make_state(tmp_path)
+    plain = _slot(state, "chat-9")
+    plain._created_by = "chat-1"  # what a restore from transcript metadata sets
+    assert getattr(plain, "_lineage_minted", False) is False
+    assert getattr(plain, "_created_by_sid", "") == ""
+
+
+def test_the_opened_entry_cites_lineage_only_from_a_witnessed_mint():
+    """``_ledger_lineage`` is the one seam between the slot and the crew-log
+    ``session/opened.parent`` write. It yields the creator only when this process
+    minted the slot; attribution that arrived any other way -- restored from a
+    transcript an agent's file tools can edit, or set by hand -- yields nothing,
+    so the emitter writes no ``parent`` and no metadata edit can forge lineage.
+
+    Mutation guard: drop the witness check and the second case reddens; read the
+    sid live instead of the frozen field and the first case reddens.
+    """
+    from types import SimpleNamespace
+
+    from kiro_crew.dashboard.chat_runner import _ledger_lineage
+
+    minted = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-sess-creator-at-mint", _lineage_minted=True
+    )
+    assert _ledger_lineage(minted) == ("chat-1", "acp-sess-creator-at-mint")
+
+    restored = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-forged-by-editing-the-transcript"
+    )
+    assert _ledger_lineage(restored) == ("", "")
+    restored_explicit = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="acp-sess-x", _lineage_minted=False
+    )
+    assert _ledger_lineage(restored_explicit) == ("", "")
+
+    minted_without_handle = SimpleNamespace(
+        _created_by="chat-1", _created_by_sid="", _lineage_minted=True
+    )
+    assert _ledger_lineage(minted_without_handle) == ("chat-1", "")
+
+
+def test_an_oversize_creator_session_id_is_dropped_at_mint_not_retained(tmp_path, monkeypatch):
+    """The creator sid is backend-authored, so it is bounded where it is RETAINED.
+
+    An id past ``MAX_ACP_SESSION_ID_LEN`` is not stored on the child -- dropped,
+    never truncated, so it cannot push the child's ``session/opened`` entry over
+    the crew log's size cap and lose the whole entry. The sid is optional: absent
+    is a legal record, a clipped id would be a wrong one. (The sid never reaches
+    the birth metadata in any case; the bound is about the in-memory slot and the
+    entry it feeds.)
+    """
+    from unittest.mock import MagicMock
+
+    from kiro_crew.validation import MAX_ACP_SESSION_ID_LEN
+
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    caller.agent = "researcher"
+    creator_client = MagicMock()
+    creator_client.session_id = "s" * (MAX_ACP_SESSION_ID_LEN + 1)
+    caller._acp_client = creator_client
+    _agent_resolves(monkeypatch, "default")
+
+    created = asyncio.run(sc.create_session(state, caller_session_key=_key(caller)))
+    child = state.get_slot(created["target"])
+    assert child is not None
+    assert getattr(child, "_created_by_sid", "") == ""
+    # Still a witnessed mint: the slot half of the lineage is recorded, sid absent.
+    assert getattr(child, "_lineage_minted", False) is True
+    written = state.conversation_log.get_metadata(sc.slot_history_key(child))
+    assert "created_by_sid" not in written
+    # The attribution itself is unaffected: the slot key is ours, not the backend's.
+    assert getattr(child, "_created_by", "") == caller.key
 
 
 def test_one_caller_cannot_consume_everybody_elses_slots(tmp_path, monkeypatch):
@@ -3255,7 +3870,7 @@ def test_nothing_suspends_while_the_created_slot_is_half_configured():
     )
     # And the filing itself happens inside the synchronous configuration window,
     # so no caller ever observes the published slot unfiled -- the atomicity
-    # #6118 exists for.
+    # this test requires.
     filed = src.index("slot.folder_id = folder_id")
     assert publish < filed < configured, (
         "the folder must be assigned between publishing the slot and the end of "
@@ -3432,6 +4047,144 @@ def test_an_unrelated_identical_queue_item_is_not_read_as_our_requeue(tmp_path):
     ), "an identical queue entry without our delivery id must not read as our requeue"
 
 
+def test_the_delivery_path_never_claims_a_turn_consumed_a_steer(tmp_path, monkeypatch):
+    """The steer RPC proves the bytes left, not that any turn received them.
+
+    A steer reported delivered can still be sitting pending when its turn ends, and
+    that turn's teardown requeues it to a LATER turn. A ledger entry written from
+    here would already be on disk saying the earlier turn received it, and an
+    append-only entry cannot be moved the way the transcript row can. So this path
+    writes no ledger entry at all, which is why the vocabulary carries no steer type.
+
+    Mutation guard: recording the delivered case here -- from a live ordinal or any
+    other guess -- reddens this.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.dashboard import chat_delivery
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-2"))
+    text = "use the other branch"
+    slot._acp_client = _steerable(accepted=True)
+
+    appended: list[str] = []
+    queued_for: list[str] = []
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
+    # Spied on the shared write seam rather than on one entry point, so an entry
+    # written under ANY type is caught rather than only a steer-shaped one.
+    monkeypatch.setattr(
+        crew_log_emit,
+        "_write",
+        lambda _sid, entry_type, *a, **kw: appended.append(entry_type),
+    )
+    monkeypatch.setattr(
+        crew_log_emit, "on_message_queued", lambda sid, **_kw: queued_for.append(sid)
+    )
+    # A turn IS running, so a guess would have had something plausible to record.
+    monkeypatch.setattr(crew_log_emit, "live_turn", lambda _sid: 13)
+
+    def _consume_inside_the_rpc(*_a, **_kw):
+        # The running turn takes the registration, which is what makes the
+        # reconciliation report delivered.
+        slot._pending_steers.clear()
+        slot._steer_confirmed.add(slot._steer_delivery_ids[text])
+        return True
+
+    slot._acp_client.steer = AsyncMock(side_effect=_consume_inside_the_rpc)
+
+    result = asyncio.run(chat_delivery.steer_into_running_turn(state, slot, text))
+
+    assert result == chat_delivery.STEER_STEERED
+    assert appended == [], "the delivery path must not assert consumption"
+    assert queued_for == [], "and it is not a queued message either"
+
+
+def test_a_stop_race_that_only_expects_a_requeue_records_nothing(tmp_path, monkeypatch):
+    """An expected requeue is a prediction, and this log records observation.
+
+    On this path the steer is still pending and a stop has landed, so the teardown
+    is expected to requeue the text. It may not: a second stop can hard-kill and
+    discard the pending steers first, and then a `message/queued` written here
+    permanently claims a queue entry that was never made. The text still reaches
+    the log if it runs, as the `message/received` of the turn that runs it.
+
+    Mutation guard: recording the queued outcome here reddens this.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.dashboard import chat_delivery
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-2"))
+    text = "stop and do this instead"
+    slot._acp_client = _steerable(accepted=True)
+
+    queued: list[str] = []
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(crew_log_emit, "on_message_queued", lambda sid, **_kw: queued.append(sid))
+
+    def _stop_without_requeueing(*_a, **_kw):
+        # A stop lands while the steer is still registered, and nothing has moved
+        # it into the queue: exactly the state where a requeue is only expected.
+        slot._stop_generation = int(getattr(slot, "_stop_generation", 0) or 0) + 1
+        return True
+
+    slot._acp_client.steer = AsyncMock(side_effect=_stop_without_requeueing)
+
+    result = asyncio.run(chat_delivery.steer_into_running_turn(state, slot, text))
+
+    assert result == chat_delivery.STEER_REQUEUED
+    assert queued == [], "an expected requeue is not an observed one"
+
+
+def test_a_requeued_steer_is_recorded_as_a_queued_message(tmp_path, monkeypatch):
+    """The one ledger fact this path CAN prove, named by the right id.
+
+    The requeue moves the text straight into the slot queue without passing the
+    append that records `message/queued`, so nothing else in the system knows it
+    happened. The id recorded is the QUEUE ENTRY's own -- the same quantity
+    `queue_for_next_turn` records, so one reader joins both against the queue. The
+    client's `sendId` is a different namespace minted by a different party and
+    would look like a queue id without being one. No turn rides on it: a queued
+    message belongs to no turn until the one that runs it starts.
+
+    Mutation guard: recording `send_id` reddens this, because the two differ here.
+    """
+    from kiro_crew.crew_log import emit as crew_log_emit
+    from kiro_crew.dashboard import chat_delivery
+
+    state = _make_state(tmp_path)
+    slot = _busy(_slot(state, "chat-2"))
+    text = "run the deploy"
+    slot._acp_client = _steerable(accepted=True)
+
+    queued: list[dict] = []
+    monkeypatch.setattr(crew_log_emit, "session_id_of", lambda _client: "acp-1")
+    monkeypatch.setattr(
+        crew_log_emit, "on_message_queued", lambda sid, **kw: queued.append(dict(kw))
+    )
+    seen: dict[str, str] = {}
+
+    def _requeue_like_the_teardown(*_a, **_kw):
+        did = slot._steer_delivery_ids.get(text, "")
+        slot._pending_steers.clear()
+        seen["qid"] = str(slot.queue_insert(0, text, meta={"steer_delivery_id": did}))
+        return True
+
+    slot._acp_client.steer = AsyncMock(side_effect=_requeue_like_the_teardown)
+
+    result = asyncio.run(
+        chat_delivery.steer_into_running_turn(state, slot, text, send_id="s-client-side")
+    )
+
+    assert result == chat_delivery.STEER_REQUEUED
+    assert len(queued) == 1 and queued[0]["source"] == "steer"
+    assert seen["qid"], "the harness never queued anything -- the test proves nothing"
+    assert (
+        queued[0]["queued_seq"] == seen["qid"]
+    ), "the entry must name the queue entry it became, not the client's send id"
+    assert queued[0]["queued_seq"] != "s-client-side"
+
+
 def test_our_own_requeue_is_still_detected_by_its_delivery_id(tmp_path):
     """The other side: a real requeue carries the id and must report requeued.
 
@@ -3584,8 +4337,9 @@ def test_the_audit_write_does_not_run_on_the_event_loop(tmp_path, monkeypatch):
     """Constructing the SEL must not happen on the loop.
 
     `log_tool_invocation` only enqueues, but the FIRST `sel()` of a process
-    constructs the log -- trust-dir creation, key validation, and on Windows an
-    `icacls` subprocess. This can genuinely be that first call, because
+    constructs the log -- trust-dir creation, key validation, and on Windows a
+    DACL write that can block on a network volume round-trip. This can genuinely
+    be that first call, because
     `sel_audit_middleware` logs AFTER `await handler(...)`: on a fresh gateway the
     first authenticated request constructs the log inside whatever handler runs
     first.
@@ -3730,11 +4484,10 @@ def test_the_denial_audit_does_not_persist_caller_supplied_credentials(tmp_path,
 def test_slot_cap_has_one_owning_constant() -> None:
     """Every slot-creating path reads the SAME owning ceiling constant.
 
-    The live-slot ceiling used to be declared independently as ``= 500`` in
-    three modules (session create, chat fork, session import); raising it then
-    took three edits and the effective limit depended on which door the caller
-    came through. It now has one home -- ``state.MAX_LIVE_SLOTS`` in the module
-    that owns ``live_slot_count()`` -- and each door imports that one name. This
+    The live-slot ceiling has one home -- ``state.MAX_LIVE_SLOTS`` in the module
+    that owns ``live_slot_count()`` -- and each slot-creating door (session
+    create, chat fork, session import) imports that one name, so the effective
+    limit cannot diverge by which door the caller came through. This
     pins that no door has re-introduced its own literal: all three modules must
     expose the identical owning object.
     """
@@ -3909,6 +4662,7 @@ def test_close_slot_pre_pop_abort_rolls_back_and_does_not_pop(tmp_path):
 
     assert exc.value.code == "mirrored_target"
     assert slot.key in state._slots  # not popped
+    assert slot.is_closing is False  # failed close must not fence future monitor admission
     state.sessions.remove.assert_not_awaited()  # teardown never ran
 
 

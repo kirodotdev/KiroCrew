@@ -16,6 +16,7 @@ want pinned:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 from types import SimpleNamespace
@@ -136,7 +137,7 @@ async def test_bundle_untitled_slot_carries_empty_title():
 
 @pytest.mark.asyncio
 async def test_send_handler_sends_each_turn_exactly_once(monkeypatch):
-    """Regression for the duplicate-tail bug, restated as its real contract.
+    """Each turn is sent exactly once.
 
     The original bug was a pre-bundle flush combined with a ``_resumed_count``
     slice: the save wrote the tail to disk but did not touch that counter, so the
@@ -312,16 +313,22 @@ async def test_import_offloads_agent_resolution_and_skips_it_when_unhinted(monke
     monkeypatch.setattr(st.asyncio, "to_thread", _record)
     monkeypatch.setattr(st, "_resolve_agent", lambda n: n)
 
-    created: dict = {}
-    await _run_import(st, monkeypatch, _valid(agent="my-agent"), created=created)
-    assert st._resolve_agent in offloaded or offloaded, "agent resolution must be offloaded"
-    assert created.get("agent") == "my-agent"
+    # The resolved agent now lands on the slot through the shared materialiser
+    # (via the metadata snapshot), not through a ``get_or_create_slot(agent=...)``
+    # kwarg — so assert it on the returned slot, which is what the property is
+    # actually about. ``_resolve_agent`` is offloaded when a hint is present.
+    slot = await _run_import(st, monkeypatch, _valid(agent="my-agent"), return_slot=True)
+    assert st._resolve_agent in offloaded, "agent resolution must be offloaded"
+    assert slot.agent == "my-agent"
 
-    # Unhinted: no offload for agent resolution.
+    # Unhinted: no offload for AGENT RESOLUTION specifically. Redaction always
+    # offloads (``_redact_history_rows`` runs the regex pass off the loop before
+    # construction), so the invariant is that an empty hint adds no _resolve_agent
+    # hop — not that ``to_thread`` is never called at all.
     offloaded.clear()
     created2: dict = {}
     await _run_import(st, monkeypatch, _valid(agent=""), created=created2)
-    assert offloaded == [], "an empty agent hint must not cost a thread hop"
+    assert st._resolve_agent not in offloaded, "an empty agent hint must not resolve an agent"
     assert created2.get("agent") == ""
     monkeypatch.setattr(st.asyncio, "to_thread", real_to_thread)
 
@@ -730,9 +737,7 @@ async def test_snapshot_retries_when_a_turn_lands_during_assembly():
 
     st.asyncio.to_thread = _append_midway  # type: ignore[assignment]
     try:
-        bundle = await st.build_transfer_bundle_async(
-            _state([persisted]), slot, origin="mac"
-        )
+        bundle = await st.build_transfer_bundle_async(_state([persisted]), slot, origin="mac")
     finally:
         st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
 
@@ -829,8 +834,18 @@ async def test_snapshot_retries_on_an_in_place_edit_during_assembly():
 
 @pytest.mark.asyncio
 async def test_import_broadcasts_the_rollback_so_no_phantom_slot_remains(monkeypatch):
-    """``get_or_create_slot`` already told clients the session exists, so a
-    silent pop on failure leaves a tab that resolves to nothing."""
+    """A refused import must leave no tab behind.
+
+    Under the fold the slot is NEVER published before success: the shared
+    materialiser hands it back retracted, and import re-registers + broadcasts
+    only at the very end of a successful import. So on the save-failure path
+    there is nothing a client ever saw — the correct rollback is simply that the
+    slot is absent from ``_slots`` and the construction count is released. A
+    broadcast here would announce the removal of a tab no client was ever told
+    about, so its ABSENCE on this path is correct, not a regression. (Before the
+    fold the slot was published at creation, so a rollback had to broadcast its
+    removal; the fold removed the early publish, and with it the need.)
+    """
     from kiro_crew.dashboard import session_transfer as st
 
     state = _stub_state(st, monkeypatch)
@@ -848,8 +863,12 @@ async def test_import_broadcasts_the_rollback_so_no_phantom_slot_remains(monkeyp
     resp = await st.api_chat_slot_import(_make_request(state, _valid()))
 
     assert resp.status == 503
+    # No phantom tab, and the construction count released — the real invariant.
     assert state._slots == {}
-    assert pushes["n"] >= 1, "the rollback must be broadcast, not silent"
+    assert state._slots_under_construction == set()
+    # The slot was never published, so the failure path broadcasts nothing:
+    # there is no tab to retract from any client's view.
+    assert pushes["n"] == 0, "a never-published slot must not broadcast a removal"
 
 
 @pytest.mark.asyncio
@@ -925,9 +944,7 @@ async def test_retry_reflushes_so_it_cannot_serialize_a_superseded_variant(monke
 
     st.asyncio.to_thread = _switch_variant_once  # type: ignore[assignment]
     try:
-        bundle = await st.build_transfer_bundle_async(
-            _state(disk), slot, origin="mac"
-        )
+        bundle = await st.build_transfer_bundle_async(_state(disk), slot, origin="mac")
     finally:
         st.asyncio.to_thread = real_to_thread  # type: ignore[assignment]
 
@@ -1210,55 +1227,17 @@ def test_importer_never_answers_404_or_405():
 async def test_import_creates_a_new_slot_with_no_project(monkeypatch):
     """The headline decision: an imported session arrives unscoped.
 
-    Driven through the handler with the slot machinery stubbed, so the assertion
-    is about the handler's contract rather than DashboardState internals.
+    Driven through the real shared materialisation path (the fold): the handler
+    lands the transcript in memory and routes construction through
+    ``_materialise_slot_from_history``, which never sets a project. The assertion
+    is that the resulting slot is a fresh, unscoped copy.
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    created = {}
-
-    class _Slot:
-        def __init__(self):
-            self.key = "imported-1"
-            self.title = ""
-            self._titled = False
-            self.agent = ""
-            self.project = "SHOULD-BE-CLEARED"
-            self.messages: list[dict] = []
-            self._resumed_count = 0
-
-        def append(self, role, content, _cls, ts="", broadcast=True):
-            self.messages.append({"role": role, "content": content, "ts": ts})
-
-        def drain(self):
-            pass
-
-    slot = _Slot()
-
-    def _get_or_create(**kwargs):
-        created.update(kwargs)
-        # A freshly created slot has no project; the handler must not set one.
-        slot.project = ""
-        return slot
-
-    state = SimpleNamespace(
-        _slots={},
-        _slots_under_construction=set(),
-        get_or_create_slot=_get_or_create,
-        push_slots_update=lambda: None,
-    )
-    state.live_slot_count = lambda: len(state._slots) + len(state._slots_under_construction)
-    state.begin_slot_construction = state._slots_under_construction.add
-    state.end_slot_construction = state._slots_under_construction.discard
-
-    async def _save(*_a, **_k):
-        return True
-
-    monkeypatch.setattr(st, "save_slot_off_loop", _save)
-    monkeypatch.setattr(st, "_sync_dashboard_slots", lambda _s: None)
-
-    request = _make_request(
-        state,
+    created: dict = {}
+    slot = await _run_import(
+        st,
+        monkeypatch,
         _valid(
             title="Design chat",
             origin="macbook",
@@ -1267,15 +1246,13 @@ async def test_import_creates_a_new_slot_with_no_project(monkeypatch):
                 {"role": "assistant", "content": "it forwards loopback", "ts": ""},
             ],
         ),
+        created=created,
+        return_slot=True,
     )
-    resp = await st.api_chat_slot_import(request)
 
-    assert resp.status == 200
-    payload = json.loads(resp.body)
-    assert payload["ok"] is True
-    assert payload["key"] == "imported-1"
-    assert payload["messages"] == 2
-    # Copy semantics: a brand-new key, and no project inherited.
+    # Copy semantics: a brand-new key, and no project inherited. A fresh
+    # _ChatSlot has an empty project and the shared path never sets one, so an
+    # unscoped arrival is the real behaviour, not a stub artifact.
     assert slot.project == ""
     assert "project" not in created
     # Provenance is visible in the title so a transferred tab is never mistaken
@@ -1369,62 +1346,146 @@ async def test_import_drops_an_agent_the_target_does_not_have(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_import_yields_to_the_event_loop_on_a_large_bundle(monkeypatch):
+async def test_import_redacts_off_the_loop_before_construction(monkeypatch):
     """A big bundle must not hold the loop in one un-yielded pass.
 
-    Redaction is regex-heavy and the content is peer-supplied, so an un-yielded
-    import starves the loop heartbeat until LoopStallWatchdog _exit()s the
-    gateway — the failure chat_persistence.restore_open_slots_async documents on
-    the same read-and-redact work.
-
-    Shrinks the yield BUDGET rather than inflating the payload. An earlier version
-    pushed 2 MB through the real redactors: fine locally, but it blew the 120s
-    per-test timeout under 3.12's coverage instrumentation in CI. Budget-scaling
-    exercises the same branch in kilobytes, with no dependence on how fast
-    redaction happens to be on the runner.
+    Redaction is regex-heavy and the content is peer-supplied. Construction is
+    synchronous, so the redaction cost runs AHEAD of construction and off the
+    event loop: import calls ``_redact_history_rows`` via ``asyncio.to_thread``
+    before any slot exists, so the regex work runs on a worker thread and the loop
+    is free to service other turns. This pins that the redaction pass is
+    dispatched to a thread rather than run inline on the loop.
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    monkeypatch.setattr(st, "_YIELD_AFTER_CHARS", 1_000)
+    offloaded = []
+    real_to_thread = asyncio.to_thread
 
-    yields = 0
-    real_sleep = asyncio.sleep
+    async def _tracking_to_thread(fn, *a, **k):
+        if getattr(fn, "__name__", "") == "_redact_history_rows":
+            offloaded.append(fn)
+        return await real_to_thread(fn, *a, **k)
 
-    async def _counting_sleep(delay, *a, **k):
-        nonlocal yields
-        if delay == 0:
-            yields += 1
-        return await real_sleep(delay, *a, **k)
+    monkeypatch.setattr(st.asyncio, "to_thread", _tracking_to_thread)
 
-    monkeypatch.setattr(st.asyncio, "sleep", _counting_sleep)
-
-    # 20 turns x 500 chars = 10 KB against the 1 KB budget → trips every 2nd turn.
-    # Asserting a lower bound (not an exact count) keeps this robust to a future
-    # budget tweak while still proving the loop yields repeatedly.
     big = [{"role": "assistant", "content": "x" * 500, "ts": ""} for _ in range(20)]
     await _run_import(st, monkeypatch, _valid(messages=big))
 
-    assert yields >= 5, f"expected repeated yields once the budget is exceeded, got {yields}"
+    assert offloaded, "import redaction did not run off the event loop before construction"
 
 
 @pytest.mark.asyncio
-async def test_import_does_not_yield_for_a_small_bundle(monkeypatch):
-    """The yield is budgeted, not per-message — a normal session pays nothing."""
+async def test_import_persists_every_row_of_a_bundle_over_the_resume_window(monkeypatch):
+    """A bundle larger than resume's 500-row window must persist EVERY row.
+
+    The shared materialiser windows resume's rows to the newest 500 because the
+    earlier ones already sit on disk. Import's rows exist only in memory and are
+    all persisted by its own save, so nothing is "older on disk": it passes
+    ``window_limit=None`` and must hydrate every row with ``_disk_older_count``
+    at 0. Applying resume's cap here would silently drop everything past the last
+    500 and claim a frozen prefix of rows that were never written -- a
+    silent-data-loss regression on the exact "lossy copy" the transfer feature's
+    resume_mode plumbing exists to surface. Bundles carry up to _MAX_MESSAGES
+    (5000) rows in-contract, so >500 is an ordinary input, not an edge.
+    """
     from kiro_crew.dashboard import session_transfer as st
 
-    yields = 0
-    real_sleep = asyncio.sleep
+    n = 750  # comfortably past the 500 window, well under _MAX_MESSAGES
+    big = [{"role": "assistant", "content": f"row-{i}", "ts": ""} for i in range(n)]
+    slot = await _run_import(st, monkeypatch, _valid(messages=big), return_slot=True)
 
-    async def _counting_sleep(delay, *a, **k):
-        nonlocal yields
-        if delay == 0:
-            yields += 1
-        return await real_sleep(delay, *a, **k)
+    # Every row is hydrated onto the slot -- none dropped by a resume-shaped cap.
+    assert len(slot.messages) == n, (
+        f"import kept only {len(slot.messages)} of {n} rows; a bundle over the "
+        "resume window was silently truncated"
+    )
+    assert slot.messages[0]["content"] == "row-0", "the oldest rows were dropped"
+    assert slot.messages[-1]["content"] == f"row-{n - 1}"
+    # No phantom frozen prefix: nothing is older-on-disk for an in-memory import.
+    assert slot._disk_older_count == 0, (
+        f"_disk_older_count={slot._disk_older_count}; import claims a frozen prefix "
+        "of on-disk rows that were never written, poisoning the save accounting"
+    )
+    assert slot._disk_older_durable_count == 0
 
-    monkeypatch.setattr(st.asyncio, "sleep", _counting_sleep)
-    await _run_import(st, monkeypatch, _valid())
 
-    assert yields == 0
+@pytest.mark.asyncio
+async def test_import_does_not_arm_the_disk_delete_won_guard(monkeypatch):
+    """Import read no transcript off disk, so the delete-won identity guard must
+    stay dormant.
+
+    ``_disk_meta_observed`` / ``_disk_meta_created_at`` tell a later save that this
+    slot was hydrated from an existing on-disk transcript, arming the guard that
+    refuses to overwrite a file recreated under it. Import synthesises its
+    metadata and has no pre-existing file, so setting the observed bit would arm
+    the guard against a disk read that never happened.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    slot = await _run_import(st, monkeypatch, _valid(), return_slot=True)
+    assert slot._disk_meta_observed is False, (
+        "import armed the delete-won disk-identity guard, but it read no transcript " "off disk"
+    )
+    assert slot._disk_meta_created_at == ""
+
+
+@pytest.mark.asyncio
+async def test_imported_rows_are_replayed_silently_not_broadcast(monkeypatch):
+    """Import is a silent replay onto a RETRACTED slot: no row may broadcast.
+
+    The materialiser keeps the slot out of ``_slots`` during hydration so nothing
+    can interleave. ``_ChatSlot.append`` also broadcasts a live ``chat_message``
+    SSE event when ``broadcast=True`` (its docstring names session_transfer among
+    the replay callers that must pass False), which would push a retracted slot's
+    peer content to every client and retire live question cards. Every appended
+    row must therefore carry ``broadcast=False``.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.chat_handlers import _ChatSlot
+
+    seen_broadcast: list[bool] = []
+    real_append = _ChatSlot.append
+
+    def _spy_append(self, role, content, cls="", ts="", *, broadcast=True, **kw):
+        seen_broadcast.append(broadcast)
+        return real_append(self, role, content, cls, ts, broadcast=broadcast, **kw)
+
+    monkeypatch.setattr(_ChatSlot, "append", _spy_append)
+
+    msgs = [
+        {"role": "user", "content": "q", "ts": ""},
+        {"role": "assistant", "content": "a", "ts": ""},
+    ]
+    await _run_import(st, monkeypatch, _valid(messages=msgs))
+
+    assert seen_broadcast, "no rows were appended; fixture did not engage"
+    assert all(b is False for b in seen_broadcast), (
+        f"an imported row was appended with broadcast=True ({seen_broadcast}); it "
+        "would fan a retracted slot's content out as a live SSE event"
+    )
+
+
+@pytest.mark.asyncio
+async def test_imported_rows_carry_a_minted_mid(monkeypatch):
+    """Bundle rows have no message id, so the materialiser must mint one.
+
+    The old importer left ``mint_mid`` at its default (True) and minted a mid per
+    row; the shared path defaults to False for resume, whose disk rows already
+    carry mids. Import passes ``mint_missing_mids=True`` -- without it, imported
+    rows land permanently id-less and drop out of every mid-keyed feature
+    (row-identity dedup, the non-legacy Fork path).
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    msgs = [
+        {"role": "user", "content": "q", "ts": ""},
+        {"role": "assistant", "content": "a", "ts": ""},
+    ]
+    slot = await _run_import(st, monkeypatch, _valid(messages=msgs), return_slot=True)
+
+    for m in slot.messages:
+        mid = (m.get("meta") or {}).get("mid")
+        assert isinstance(mid, str) and mid, f"an imported row landed without a minted mid: {m!r}"
 
 
 # ── Layer B (kiro-cli context) ──────────────────────────────────────────
@@ -1812,9 +1873,7 @@ def test_layer_b_rewrite_tolerates_a_minimal_envelope():
     assert out["session_state"]["agent_name"] is None
 
 
-def test_write_layer_b_files_writes_a_fresh_sid_and_never_touches_the_map(
-    monkeypatch, tmp_path
-):
+def test_write_layer_b_files_writes_a_fresh_sid_and_never_touches_the_map(monkeypatch, tmp_path):
     """File writes run in a worker thread, so they must NOT touch the session
     map: ``SessionMap.set`` mutates a shared dict and serialises the whole file,
     which races the event loop's own map writes."""
@@ -1915,7 +1974,9 @@ def test_bundle_includes_layer_b_when_present():
 def test_bundle_omits_layer_b_when_the_session_has_none():
     from kiro_crew.dashboard import session_transfer as st
 
-    bundle = st._assemble_bundle([{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", None)
+    bundle = st._assemble_bundle(
+        [{"role": "user", "content": "hi", "ts": ""}], "t", "", "mac", None
+    )
 
     assert "layer_b" not in bundle
 
@@ -2001,9 +2062,7 @@ async def test_import_still_succeeds_when_layer_b_cannot_be_materialised(monkeyp
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert resp.status == 200
     assert json.loads(resp.body)["ok"] is True
@@ -2035,11 +2094,31 @@ async def test_import_reports_session_load_when_layer_b_landed(monkeypatch):
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert json.loads(resp.body)["resume_mode"] == "session_load"
+
+
+@pytest.mark.asyncio
+async def test_a_carried_bundle_resumes_and_its_tab_is_not_marked_transcript_only(monkeypatch):
+    """The import-side invariant the file export now depends on.
+
+    A file export that carries Layer B produces a v2 bundle WITH ``layer_b`` and
+    WITHOUT ``layer_b_skipped``. When that context materialises, the tab resumes
+    through ``session/load`` and must NOT wear the "transcript only" suffix -- the
+    suffix is for a degraded copy, and a carried export is not degraded.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
+    monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
+
+    bundle = _valid(layer_b={"envelope": {}, "events": "e"})
+    assert "layer_b_skipped" not in bundle, "a carried export never sets the skip flag"
+
+    slot = await _run_import(st, monkeypatch, bundle, return_slot=True)
+
+    assert "transcript only" not in slot.title, slot.title
 
 
 @pytest.mark.asyncio
@@ -2048,9 +2127,7 @@ async def test_import_reports_prefix_when_layer_b_failed(monkeypatch):
 
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: None)
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: False)
-    resp = await _run_import(
-        st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"})
-    )
+    resp = await _run_import(st, monkeypatch, _valid(layer_b={"envelope": {}, "events": "e"}))
 
     assert json.loads(resp.body)["resume_mode"] == "prefix"
 
@@ -2219,16 +2296,14 @@ async def test_layer_b_lands_before_the_transcript_is_persisted(monkeypatch):
 @pytest.mark.asyncio
 async def test_failed_save_rolls_back_the_layer_b_join(monkeypatch):
     """Because the join now precedes the save, a rollback has to undo it — else
-    the map keeps an entry for a tab that no longer exists and the
+    the map keeps an entry for a tab that does not exist and the
     ``<sid>.{json,jsonl}`` pair lingers until a prune sweeps it."""
     from kiro_crew.dashboard import session_transfer as st
 
     forgotten: list[str] = []
     monkeypatch.setattr(st, "_write_layer_b_files", lambda *_a, **_k: "new-sid")
     monkeypatch.setattr(st, "_join_layer_b", lambda *_a, **_k: True)
-    monkeypatch.setattr(
-        st, "_forget_layer_b_join", lambda _s, key: (forgotten.append(key), "")[1]
-    )
+    monkeypatch.setattr(st, "_forget_layer_b_join", lambda _s, key: (forgotten.append(key), "")[1])
 
     async def _boom(*_a, **_k):
         raise OSError("disk full")
@@ -2260,9 +2335,7 @@ def test_forget_layer_b_join_returns_the_sid_for_file_cleanup():
     from kiro_crew.dashboard import session_transfer as st
 
     dropped: list[str] = []
-    live = SimpleNamespace(
-        forget_conversation=lambda key: (dropped.append(key), "old-sid")[1]
-    )
+    live = SimpleNamespace(forget_conversation=lambda key: (dropped.append(key), "old-sid")[1])
 
     assert st._forget_layer_b_join(live, "dashboard:imported-1") == "old-sid"
     assert dropped == ["dashboard:imported-1"]
@@ -2276,22 +2349,29 @@ def test_forget_layer_b_join_is_silent_without_a_live_manager():
 
 @pytest.mark.asyncio
 async def test_slot_is_unreachable_until_construction_finishes(monkeypatch):
-    """``get_or_create_slot`` registers the slot in ``state._slots`` AND calls
-    ``push_slots_update()`` before returning, so without retracting it the tab is
-    visible and GET-reachable while its transcript is empty and its Layer B
-    unjoined — a prompt then cold-starts a fresh context the later join can never
-    attach to. The slot must be absent from ``_slots`` for the whole build and
-    present exactly once at the end.
+    """A slot mid-import is retracted from ``_slots`` for its async tail.
+
+    The materialiser returns the slot registered, but the import handler pops it
+    from ``state._slots`` for the async Layer B write/join + durable save, so no
+    raw ``state._slots.get`` acquirer (delete/close, regenerate, rewind) can reach
+    it mid-finalization. It stays under ``begin_slot_construction`` for the count,
+    and is re-registered on the success path once finalization lands. So at the
+    Layer B write the slot must be ABSENT from ``_slots`` and UNDER CONSTRUCTION;
+    after the handler returns it is registered and out of the construction set.
+    Retracting is safe here because import mints its own key (no concurrent
+    same-key request can target it), unlike a client-supplied resume key.
     """
     from kiro_crew.dashboard import session_transfer as st
 
-    seen: list[bool] = []
+    seen_registered: list[bool] = []
+    seen_under_construction: list[bool] = []
     state = _stub_state(st, monkeypatch)
-    slot = state._imported_slot
 
     def _probe(*_a, **_k):
-        # Sampled from inside the build, standing in for a concurrent GET.
-        seen.append(slot.key in state._slots)
+        # Sampled from inside the build, standing in for a concurrent lookup.
+        s = state._imported_slot
+        seen_registered.append(s.key in state._slots)
+        seen_under_construction.append(s.key in state._slots_under_construction)
         return "new-sid"
 
     monkeypatch.setattr(st, "_write_layer_b_files", _probe)
@@ -2302,9 +2382,22 @@ async def test_slot_is_unreachable_until_construction_finishes(monkeypatch):
     )
 
     assert resp.status == 200
-    assert seen == [False], "the slot must be unreachable while it is being built"
-    # ...and reachable once, after everything landed.
+    # RETRACTED (absent from _slots, so no raw acquirer can find it) AND under
+    # construction (the count is still open) during the async tail.
+    assert seen_registered == [False], (
+        "the slot must be retracted from _slots during the async Layer B tail so "
+        "no raw acquirer can close/mutate it mid-finalization"
+    )
+    assert seen_under_construction == [True], (
+        "the slot must stay under construction during the tail (count open, "
+        "released in the finally)"
+    )
+    # ...and re-registered + published once everything landed.
+    slot = state._imported_slot
     assert state._slots.get(slot.key) is slot
+    assert (
+        slot.key not in state._slots_under_construction
+    ), "construction was never ended; the slot would stay hidden forever"
 
 
 @pytest.mark.asyncio
@@ -2372,39 +2465,55 @@ async def test_send_bundle_downgrades_a_v2_bundle_that_has_no_layer_b():
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
-def _make_request(state, body, *, raw: str | None = None):
-    """A minimal aiohttp-request stand-in for the import handler."""
+def _make_request(state, body, *, raw: str | None = None, gz: bytes | None = None):
+    """A minimal aiohttp-request stand-in for the import handler.
 
-    async def _json():
-        if raw is not None:
-            return json.loads(raw)
-        return body
+    Serves BYTES via ``read()``, not a pre-parsed dict, because the handler
+    decides the body format from the first two bytes — a stub that handed back a
+    dict would skip the very branch under test. ``gz`` sends compressed bytes
+    verbatim (what a browser uploads); ``raw`` sends an exact string (malformed
+    JSON); otherwise *body* is serialised the way a real caller would.
+    """
+
+    if gz is not None:
+        payload = gz
+    elif raw is not None:
+        payload = raw.encode("utf-8")
+    else:
+        payload = json.dumps(body).encode("utf-8")
+
+    async def _read():
+        return payload
 
     return SimpleNamespace(
         app={"state": state},
         get=lambda _k, default="": default,
-        json=_json,
+        # A real request always has headers, and the caller-identity rule reads
+        # ``X-Session-Key`` off them when the auth middleware published no app
+        # claim. Empty is the dashboard owner, which is what these tests are.
+        headers={},
+        read=_read,
     )
 
 
 def _stub_state(st, monkeypatch, save=None):
-    class _Slot:
-        def __init__(self):
-            self.key = "imported-1"
-            self.title = ""
-            self._titled = False
-            self.agent = ""
-            self.project = ""
-            self.messages: list[dict] = []
-            self._resumed_count = 0
+    # A REAL _ChatSlot, not a hand-rolled fake: the fold routes import through
+    # the shared materialiser, which sets ~20 slot attributes and re-runs the
+    # title/provenance helpers. A fake that only grows the fields the test
+    # happens to touch would silently diverge from the production slot; a real
+    # one cannot. get_or_create_slot below mints the key the same way the real
+    # one does (name=None -> a fresh key).
+    from kiro_crew.dashboard.chat_handlers import _ChatSlot
 
-        def append(self, role, content, _cls, ts="", broadcast=True):
-            self.messages.append({"role": role, "content": content, "ts": ts})
-
-        def drain(self):
-            pass
-
-    slot = _Slot()
+    def _get_or_create(name=None, *_a, **kwargs):
+        s = _ChatSlot(name or "imported-1", agent=kwargs.get("agent", ""))
+        # Production's get_or_create_slot REGISTERS the slot in _slots (and
+        # broadcasts) before returning; model that, or a test asserting the slot
+        # is hidden-during-construction passes vacuously because the stub never
+        # put it in _slots at all.
+        state._slots[s.key] = s
+        state._imported_slot = s
+        return s
 
     async def _save(*_a, **_k):
         return True
@@ -2418,33 +2527,59 @@ def _stub_state(st, monkeypatch, save=None):
         # cap, so the stub has to model both halves or the handler's cap check
         # and its release would not be exercised at all.
         _slots_under_construction=set(),
-        get_or_create_slot=lambda **_k: slot,
+        # The shared materialiser toggles this per the imported session's
+        # memory_mode; import's bundle carries none, so it stays untouched here,
+        # but the attribute must exist for the discard/add to run.
+        _restricted_keys=set(),
+        _tags=[],
+        _tags_authoritative=True,
+        _folders=[],
+        get_or_create_slot=_get_or_create,
         push_slots_update=lambda: None,
+        # The materialiser wraps creation + begin_slot_construction in this to
+        # defer the creation broadcast; the stub's push is already a no-op, so a
+        # nullcontext models it faithfully enough for the paths these tests
+        # exercise (the deferred-broadcast/filter interaction is covered on a real
+        # DashboardState in test_resume_publishes_hydrated_slot).
+        suspend_slots_push=lambda: contextlib.nullcontext(),
         # The live SessionManager surface the Layer B path threads through.
         sessions=SimpleNamespace(
             seed_conversation=lambda *a, **k: None,
             forget_conversation=lambda _k: "",
             resumable_sid=lambda _k: None,
+            set_autocompact_pct=lambda *a, **k: None,
         ),
     )
     state.live_slot_count = lambda: len(state._slots) + len(state._slots_under_construction)
     state.begin_slot_construction = state._slots_under_construction.add
     state.end_slot_construction = state._slots_under_construction.discard
-    state._imported_slot = slot
+
+    # Seed with the first slot the handler will mint, so tests that read
+    # ``state._imported_slot`` before the call still resolve; _get_or_create
+    # rebinds it to the real minted slot when the handler runs.
+    state._imported_slot = _ChatSlot("imported-1")
     return state
 
 
-async def _run_import(st, monkeypatch, body, *, return_slot=False, created=None, save=None):
-    state = _stub_state(st, monkeypatch, save=save)
+async def _run_import(
+    st, monkeypatch, body, *, return_slot=False, created=None, save=None, gz=None, state=None
+):
+    state = state if state is not None else _stub_state(st, monkeypatch, save=save)
     if created is not None:
-        slot = state._imported_slot
+        from kiro_crew.dashboard.chat_handlers import _ChatSlot
 
-        def _get_or_create(**kwargs):
+        def _get_or_create(name=None, *_a, **kwargs):
+            created.clear()
             created.update(kwargs)
-            return slot
+            if name is not None:
+                created["name"] = name
+            s = _ChatSlot(name or "imported-1", agent=kwargs.get("agent", ""))
+            state._slots[s.key] = s
+            state._imported_slot = s
+            return s
 
         state.get_or_create_slot = _get_or_create
-    resp = await st.api_chat_slot_import(_make_request(state, body))
+    resp = await st.api_chat_slot_import(_make_request(state, body, gz=gz))
     assert isinstance(resp, web.Response)
     if return_slot:
         return state._imported_slot
@@ -2728,7 +2863,7 @@ def test_layer_b_is_discarded_when_owner_lockdown_fails(monkeypatch, tmp_path):
     must go: the pair is useless alone and the ``.json`` carries context too.
 
     The lockdown seam lives inside ``atomic_write`` now (it locks the temp file
-    down BEFORE any content reaches it, issue #5285), so the failure is injected
+    down BEFORE any content reaches it), so the failure is injected
     at ``platform_compat.restrict_to_owner`` -- the module-level function the
     helper calls -- not at a name in this module.
     """
@@ -2757,7 +2892,7 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
     On Windows the POSIX mode bits are a no-op, so the owner-only DACL is the
     only protection; applying it after the rename left Layer B readable under
-    the inherited ACL for the write window (issue #5285). Asserted by measuring
+    the inherited ACL for the write window. Asserted by measuring
     each file's SIZE at the moment its lockdown is applied — zero means no
     payload byte existed yet. A post-write stat passes on the buggy ordering
     too, so it would not be a regression test.
@@ -2781,9 +2916,7 @@ def test_layer_b_lockdown_precedes_content(monkeypatch, tmp_path):
 
     assert got is not None
     assert len(sizes) == 2, f"expected one lockdown per file of the pair: {sizes}"
-    assert sizes == [0, 0], (
-        f"a file already held payload bytes when it was locked down: {sizes}"
-    )
+    assert sizes == [0, 0], f"a file already held payload bytes when it was locked down: {sizes}"
 
 
 def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path):
@@ -2802,9 +2935,9 @@ def test_import_preserves_the_thinking_signature_verbatim(monkeypatch, tmp_path)
     from kiro_crew.dashboard import session_transfer as st
 
     monkeypatch.setattr(st, "kiro_sessions_dir", lambda: tmp_path)
-    sig = _THINKING_ENVELOPE["session_state"]["conversation_metadata"][
-        "user_turn_metadatas"
-    ][0]["result"]["Ok"]["content"][0]["data"]["signature"]
+    sig = _THINKING_ENVELOPE["session_state"]["conversation_metadata"]["user_turn_metadatas"][0][
+        "result"
+    ]["Ok"]["content"][0]["data"]["signature"]
 
     new_sid = st._write_layer_b_files(
         {"envelope": _THINKING_ENVELOPE, "events": '{"kind":"Prompt"}\n'}, "target-agent"
@@ -2918,3 +3051,421 @@ async def test_slot_cap_is_rechecked_after_the_pre_creation_awaits(monkeypatch):
     assert json.loads(resp.body)["code"] == "transfer_slot_cap"
     # Nothing was allocated by the request that lost the race.
     assert "imported-1" not in state._slots
+
+
+# ── install from a FILE: the body format ─────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_import_accepts_the_exact_bytes_the_export_endpoint_writes(monkeypatch):
+    """The acceptance bar: an exported file installs with no step in between.
+
+    Compressed with the EXPORT MODULE'S OWN serialiser, not a local
+    ``gzip.compress`` that happens to look similar — the defect this closes was
+    precisely that the two halves of one product disagreed about a format, so a
+    test that re-implements the sending half could pass while the endpoint still
+    refuses the real file. ``GET .../export`` answers ``application/gzip``; the
+    importer read ``request.json()`` and rejected those bytes as malformed JSON.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.session_export import gzip_bundle
+
+    resp = await _run_import(st, monkeypatch, None, gz=gzip_bundle(_valid()))
+
+    assert resp.status == 200, resp.body
+    assert json.loads(resp.body)["messages"] == 1
+
+
+@pytest.mark.asyncio
+async def test_import_still_accepts_a_plain_json_body(monkeypatch):
+    """The tunnel's server-to-server caller posts uncompressed JSON and must not
+    break: the sender is an independently-updated install, so a receiver that
+    started demanding gzip would refuse every peer that has not shipped this."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    resp = await _run_import(st, monkeypatch, _valid())
+
+    assert resp.status == 200, resp.body
+
+
+@pytest.mark.asyncio
+async def test_import_sniffs_the_magic_and_not_the_content_type(monkeypatch):
+    """A browser uploading a ``.gz`` off disk sends whatever its platform guesses
+    for the type — often ``application/octet-stream``, sometimes nothing. The
+    stub request carries NO content type at all, so a handler that branched on
+    the header could not reach the gzip path this asserts."""
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.session_export import gzip_bundle
+
+    request = _make_request(_stub_state(st, monkeypatch), None, gz=gzip_bundle(_valid()))
+    assert not hasattr(request, "content_type")
+
+    resp = await st.api_chat_slot_import(request)
+
+    assert resp.status == 200, resp.body
+
+
+@pytest.mark.asyncio
+async def test_import_refuses_a_corrupt_gzip_with_its_own_code(monkeypatch):
+    """A truncated upload gets a code of its own, not the bad-JSON one.
+
+    The sender needs to know its FILE did not survive the trip; told
+    ``transfer_invalid_json`` it would go looking for a syntax error in a
+    document it never wrote by hand.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.session_export import gzip_bundle
+
+    truncated = gzip_bundle(_valid())[: len(gzip_bundle(_valid())) // 2]
+    resp = await _run_import(st, monkeypatch, None, gz=truncated)
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "transfer_invalid_gzip"
+
+
+@pytest.mark.asyncio
+async def test_import_still_refuses_plain_garbage_as_bad_json(monkeypatch):
+    """Bytes that are neither gzip nor JSON keep the code they always had."""
+    from kiro_crew.dashboard import session_transfer as st
+
+    state = _stub_state(st, monkeypatch)
+    resp = await st.api_chat_slot_import(_make_request(state, None, raw="{not json"))
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "transfer_invalid_json"
+
+
+def test_gunzip_refuses_a_bomb_while_it_is_still_small(monkeypatch):
+    """The cap bounds the ALLOCATION, not the result.
+
+    A ``gzip.decompress`` followed by a ``len()`` check ALSO refuses an oversized
+    body — after allocating every byte of it, which on a compression bomb is the
+    whole attack. So "it was refused" proves nothing on its own. What is asserted
+    here is the quantity actually held when the refusal fires: at most one chunk
+    past the cap. Replace the incremental loop with decompress-then-measure and
+    this reddens, because the reported size becomes the full expansion.
+    """
+    import gzip
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_MAX_DECOMPRESSED_BYTES", 4096)
+    monkeypatch.setattr(st, "_CHUNK_BYTES", 1024)
+    bomb = gzip.compress(b"\0" * (8 * 1024 * 1024))
+    assert len(bomb) < 64 * 1024, "the point of the fixture is that it is tiny"
+
+    with pytest.raises(st._BundleTooLarge) as caught:
+        st._gunzip_bounded(bomb)
+
+    held = caught.value.args[0]
+    assert held <= 4096 + 1024, f"held {held} bytes before refusing"
+
+
+@pytest.mark.asyncio
+async def test_import_refuses_an_oversized_compressed_body(monkeypatch):
+    """End to end: the bound is wired to a coded refusal, not only to a helper."""
+    import gzip
+
+    from kiro_crew.dashboard import session_transfer as st
+
+    monkeypatch.setattr(st, "_MAX_DECOMPRESSED_BYTES", 4096)
+    resp = await _run_import(st, monkeypatch, None, gz=gzip.compress(b"\0" * (1024 * 1024)))
+
+    assert resp.status == 400
+    assert json.loads(resp.body)["code"] == "transfer_bundle_too_large"
+
+
+def test_the_decompression_cap_never_makes_gzip_stricter_than_plain_json():
+    """The property that makes the cap safe, not the arithmetic behind it.
+
+    ``client_max_size`` (60 MiB) bounds EVERY body, compressed or not, so the
+    plain path can never deliver more than that much JSON. As long as the
+    decompressed ceiling is above it, the gzip path accepts strictly more than the
+    plain path ever could -- which is what makes "a bundle this refuses" a bundle
+    that was already unimportable by the only route that existed before.
+
+    Pinned rather than argued, because the arithmetic reads as though the cap
+    tracks the validator's CHARACTER ceilings, and a character ceiling is not a
+    byte ceiling: ``ensure_ascii`` renders one non-ASCII char as six bytes. The
+    number moving with those ceilings is a convenience; this comparison is the
+    guarantee.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+
+    assert st._MAX_DECOMPRESSED_BYTES > st._GATEWAY_CLIENT_MAX_SIZE
+    # And the magnitude still comes from the validator, so the two move together.
+    assert st._MAX_DECOMPRESSED_BYTES == (
+        st._MAX_TOTAL_CHARS + st._MAX_LAYER_B_CHARS + st._JSON_ENVELOPE_SLACK
+    )
+
+
+def test_the_stated_gateway_body_limit_matches_the_gateway():
+    """The restated constant has to be the real one, or the test above proves
+    nothing. Read out of the server module rather than trusted."""
+    from pathlib import Path
+
+    import kiro_crew.dashboard.server as server_mod
+    from kiro_crew.dashboard import session_transfer as st
+
+    source = Path(server_mod.__file__).read_text(encoding="utf-8")
+    assert "client_max_size=60 * 1024 * 1024" in source
+    assert st._GATEWAY_CLIENT_MAX_SIZE == 60 * 1024 * 1024
+
+
+# ── install from a FILE: the round trip ──────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_concurrent_expansions_are_bounded_and_the_excess_is_refused(monkeypatch):
+    """The per-body cap bounds ONE request; the sum is what exhausts a host.
+
+    Without a concurrency bound, N authenticated requests each hold up to the
+    ceiling at the same time. Asserted on the OBSERVED simultaneity, not on the
+    presence of a semaphore: the gunzip is replaced with one that records how
+    many are inside it at once.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.session_export import gzip_bundle
+
+    monkeypatch.setattr(st, "_expansion_lock", None)
+    monkeypatch.setattr(st, "_expansion_slots", None)
+    monkeypatch.setattr(st, "_expansion_waiting", 0)
+
+    inside = {"now": 0, "peak": 0}
+    release = asyncio.Event()
+
+    async def _slow_to_thread(fn, *args):
+        if fn is st._gunzip_bounded:
+            inside["now"] += 1
+            inside["peak"] = max(inside["peak"], inside["now"])
+            await release.wait()
+            inside["now"] -= 1
+            return fn(*args)
+        return fn(*args)
+
+    monkeypatch.setattr(st.asyncio, "to_thread", _slow_to_thread)
+    gz = gzip_bundle(_valid())
+
+    # More than the queue allows, all in flight together.
+    running = [
+        asyncio.create_task(_run_import(st, monkeypatch, None, gz=gz))
+        for _ in range(st._MAX_CONCURRENT_EXPANSIONS + st._MAX_QUEUED_EXPANSIONS + 2)
+    ]
+    await asyncio.sleep(0.05)
+    refused = [t for t in running if t.done()]
+    release.set()
+    results = await asyncio.gather(*running)
+
+    assert inside["peak"] <= st._MAX_CONCURRENT_EXPANSIONS, inside
+    assert refused, "the excess must be refused immediately, not parked"
+    busy = [r for r in results if r.status == 429]
+    assert busy, [r.status for r in results]
+    assert json.loads(busy[0].body)["code"] == "transfer_expansion_busy"
+
+
+@pytest.mark.asyncio
+async def test_the_expansion_permit_outlives_the_decompression(monkeypatch):
+    """A permit that ends at the gunzip bounds the CPU, not the memory.
+
+    A decompressed bundle stays resident -- first as bytes, then as the parsed
+    document -- through redaction and persistence, so what has to be bounded is
+    how many are resident AT ONCE, not how many are inflating at once. Measured
+    inside the post-decompression pass rather than at the gunzip: with the permit
+    released when the body has been read, every admitted caller frees its slot
+    immediately and they all pile into redaction together, which is precisely the
+    sum the bound exists to prevent.
+    """
+    from kiro_crew.dashboard import chat_handlers as ch
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.session_export import gzip_bundle
+
+    monkeypatch.setattr(st, "_expansion_lock", None)
+    monkeypatch.setattr(st, "_expansion_slots", None)
+    monkeypatch.setattr(st, "_expansion_waiting", 0)
+
+    resident = {"now": 0, "peak": 0}
+    release = asyncio.Event()
+
+    async def _park_in_redaction(fn, *args):
+        if fn is ch._redact_history_rows:
+            resident["now"] += 1
+            resident["peak"] = max(resident["peak"], resident["now"])
+            await release.wait()
+            resident["now"] -= 1
+        return fn(*args)
+
+    monkeypatch.setattr(st.asyncio, "to_thread", _park_in_redaction)
+    gz = gzip_bundle(_valid())
+
+    running = [
+        asyncio.create_task(_run_import(st, monkeypatch, None, gz=gz))
+        for _ in range(st._MAX_CONCURRENT_EXPANSIONS + st._MAX_QUEUED_EXPANSIONS + 2)
+    ]
+    await asyncio.sleep(0.05)
+    peak_while_parked = resident["peak"]
+    release.set()
+    await asyncio.gather(*running)
+
+    assert peak_while_parked, "no caller reached redaction; the harness missed the pass"
+    assert peak_while_parked <= st._MAX_CONCURRENT_EXPANSIONS, resident
+
+
+@pytest.mark.asyncio
+async def test_the_transcript_only_mark_reads_layer_b_skipped_not_absence(monkeypatch):
+    """A file bundle MAY carry Layer B and usually will not — so the mark is
+    driven by the sender's explicit signal, never inferred from absence.
+
+    Three cases, because inferring from absence gets two of them wrong:
+
+    * no Layer B and no signal — a session that never HAD a kiro-cli context.
+      Nothing was lost, so nothing is marked. Inference would mark it.
+    * no Layer B, ``layer_b_skipped`` set — context existed and was withheld
+      (the export's default-off posture, or a mid-turn source). Marked.
+    * Layer B present — full fidelity, not marked.
+    """
+    from kiro_crew.dashboard import session_transfer as st
+    from kiro_crew.dashboard.session_export import gzip_bundle
+
+    never_had = await _run_import(st, monkeypatch, None, gz=gzip_bundle(_valid()), return_slot=True)
+    assert "transcript only" not in never_had.title
+
+    withheld = await _run_import(
+        st,
+        monkeypatch,
+        None,
+        gz=gzip_bundle(_valid(layer_b_skipped=True)),
+        return_slot=True,
+    )
+    assert "transcript only" in withheld.title
+
+
+# ── the round trip, over the real handlers ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_an_exported_file_installs_with_no_step_in_between(tmp_path):
+    """The two halves of the feature, wired to each other over HTTP.
+
+    Every other test here stubs one side. This one stubs NEITHER: a real
+    ``DashboardState``, the real ``api_chat_slot_export``, the real
+    ``api_chat_slot_import``. It is the test whose absence let the defect ship —
+    each half was covered, the PAIR was not, and the pair is where they disagreed
+    about a format.
+
+    Also covers, in one pass, the two exit criteria that are about repetition
+    rather than about a single install: the same file installed twice yields TWO
+    separate sessions, and a plain-JSON body keeps working alongside gzip so the
+    tunnel is unregressed.
+    """
+    import gzip
+
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.session_export import api_chat_slot_export
+    from kiro_crew.dashboard.session_transfer import api_chat_slot_import
+
+    state = _make_state(tmp_path)
+    # Make the SOURCE session auto-approving, so the exported file genuinely
+    # RECORDS `approval_policy: "auto"`. Exit criterion: an installed session
+    # lands interactive regardless of what its source record says — asserted
+    # below, and vacuous unless the file actually carries the dangerous value.
+    state.sessions.has_session.return_value = True
+    state.sessions.get_approval_policy.return_value = "auto"
+    app = web.Application(client_max_size=60 * 1024 * 1024)
+    app["state"] = state
+    app.router.add_post("/api/chat/slots/import", api_chat_slot_import)
+    app.router.add_get("/api/chat/slots/{slot}/export", api_chat_slot_export)
+
+    async with TestClient(TestServer(app)) as client:
+        body = json.dumps(_valid(origin="seedbox", title="round trip")).encode()
+
+        # Seed one session the way the tunnel does: an uncompressed JSON body.
+        seeded = await client.post(
+            "/api/chat/slots/import", data=body, headers={"Content-Type": "application/json"}
+        )
+        assert seeded.status == 200, await seeded.text()
+        seeded_key = (await seeded.json())["key"]
+
+        # Export it. These are the bytes a user is handed.
+        exported = await client.get(f"/api/chat/slots/{seeded_key}/export")
+        assert exported.status == 200, await exported.text()
+        assert exported.headers["Content-Type"] == "application/gzip"
+        gz = await exported.read()
+        assert gz[:2] == b"\x1f\x8b"
+        # The file really does record auto-approval, so the interactive-on-arrival
+        # assertion at the end is measuring something. Without this the mock could
+        # stop reporting a policy and that assertion would still pass.
+        assert json.loads(gzip.decompress(gz))["source"]["approval_policy"] == "auto"
+
+        # Install them UNCHANGED. No gunzip, no re-encode, no manual step. This
+        # is the assertion the whole change exists for.
+        first = await client.post(
+            "/api/chat/slots/import",
+            data=gz,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert first.status == 200, await first.text()
+        first_key = (await first.json())["key"]
+
+        # The same file again: another session, not a refusal and not a merge.
+        second = await client.post(
+            "/api/chat/slots/import",
+            data=gz,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert second.status == 200, await second.text()
+        second_key = (await second.json())["key"]
+        assert second_key != first_key
+
+        # And the tunnel's plain body still lands, next to them.
+        tunnel_again = await client.post(
+            "/api/chat/slots/import", data=body, headers={"Content-Type": "application/json"}
+        )
+        assert tunnel_again.status == 200, await tunnel_again.text()
+
+    # The same file installed twice is TWO sessions, not one replaced: install
+    # only ever adds, so a second install of one file cannot reach the first.
+    assert first_key != second_key, (first_key, second_key)
+    assert first_key in state._slots and second_key in state._slots
+
+    # An installed session lands INTERACTIVE, whatever the source recorded: the
+    # materialiser applies a fixed field set that does not include
+    # approval_policy, so there is no path by which a file can arrive
+    # pre-approved to run tools.
+    for key in (first_key, second_key):
+        assert getattr(state._slots[key], "approval_policy", "") == ""
+
+
+@pytest.mark.asyncio
+async def test_a_body_past_the_server_limit_is_told_it_is_too_large(tmp_path):
+    """A body the server refuses by SIZE gets the size answer, not the generic one.
+
+    ``request.read()`` raises ``HTTPRequestEntityTooLarge`` once the body passes
+    the Application's ``client_max_size``, which is the one read failure whose
+    cause the server KNOWS. Catching it with everything else would answer
+    ``transfer_body_unreadable`` — copy that hedges between "too large" and "the
+    connection dropped" — and send a person whose file is simply too big looking
+    for a network fault. The limit is set small here so the assertion is about
+    the branch and not about moving 60 MiB.
+    """
+    from aiohttp.test_utils import TestClient, TestServer
+    from chat_test_helpers import _make_state
+
+    from kiro_crew.dashboard.session_transfer import api_chat_slot_import
+
+    app = web.Application(client_max_size=1024)
+    app["state"] = _make_state(tmp_path)
+    app.router.add_post("/api/chat/slots/import", api_chat_slot_import)
+
+    async with TestClient(TestServer(app)) as client:
+        oversized = await client.post(
+            "/api/chat/slots/import",
+            data=b"x" * 4096,
+            headers={"Content-Type": "application/octet-stream"},
+        )
+        assert oversized.status == 400, await oversized.text()
+        payload = await oversized.json()
+
+    assert payload["code"] == "transfer_bundle_too_large", payload
+    assert "size limit" in payload["error"], payload

@@ -24,12 +24,15 @@ class TestAutomatic:
     def test_automatic_matches_the_registered_count(self):
         # The whole point: every configured crew keeps its pane, so switching
         # between them never evicts one and never looks like a disconnect.
-        for registered in (1, 2, 3, 4, 7):
+        for registered in (1, 2, 3, 4, 7, 10):
             assert resolve_warm_set_cap(WARM_SET_CAP_AUTO, registered) == registered
 
     def test_automatic_is_bounded_by_the_ceiling(self):
         # A large fleet must not mount an unbounded number of dashboard SPAs in
         # one renderer, so eviction resumes past the ceiling.
+        assert WARM_SET_CAP_AUTO_CEILING == 10
+        assert resolve_warm_set_cap(WARM_SET_CAP_AUTO, 10) == 10
+        assert resolve_warm_set_cap(WARM_SET_CAP_AUTO, 11) == 10
         assert (
             resolve_warm_set_cap(WARM_SET_CAP_AUTO, WARM_SET_CAP_AUTO_CEILING + 5)
             == WARM_SET_CAP_AUTO_CEILING
@@ -47,7 +50,7 @@ class TestAutomatic:
 class TestAdmitsEveryRegisteredCrew:
     """The regression this policy exists to prevent.
 
-    Auto used to resolve from the LIVE CONNECTED count, which made the cap race
+    Auto must not resolve from the LIVE CONNECTED count, which makes the cap race
     tunnel startup. With four crews configured and the fourth still connecting
     when the dashboard polled, the cap came back 3, the viewport evicted a pane
     to honour it, and one crew looked broken -- a different one each restart,

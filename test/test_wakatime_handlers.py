@@ -18,8 +18,6 @@ import kiro_crew.dashboard.handlers.wakatime as wt
 import kiro_crew.wakatime.service as wt_service
 from kiro_crew.dashboard.handlers.wakatime import _csv_safe, _rows_by_project
 
-pytestmark = pytest.mark.asyncio
-
 
 class _StubClient:
     def __init__(
@@ -59,6 +57,7 @@ def _app() -> web.Application:
     return app
 
 
+@pytest.mark.asyncio
 async def test_export_csv_groups_by_project() -> None:
     summaries = [
         {
@@ -85,6 +84,7 @@ async def test_export_csv_groups_by_project() -> None:
     assert stub.closed is True
 
 
+@pytest.mark.asyncio
 async def test_stats_returns_payload_when_configured() -> None:
     stub = _StubClient(stats={"languages": [{"name": "Python", "total_seconds": 3600}]})
     with patch.object(wt_service, "build_client", return_value=stub):
@@ -100,6 +100,7 @@ async def test_stats_returns_payload_when_configured() -> None:
     assert stub.closed is True
 
 
+@pytest.mark.asyncio
 async def test_stats_empty_state_when_unconfigured() -> None:
     with patch.object(wt_service, "build_client", return_value=None):
         async with TestClient(TestServer(_app())) as client:
@@ -108,6 +109,7 @@ async def test_stats_empty_state_when_unconfigured() -> None:
             assert await resp.json() == {"configured": False}
 
 
+@pytest.mark.asyncio
 async def test_stats_rejects_unknown_range() -> None:
     with patch.object(wt_service, "build_client", return_value=_StubClient()):
         async with TestClient(TestServer(_app())) as client:
@@ -116,6 +118,7 @@ async def test_stats_rejects_unknown_range() -> None:
             assert (await resp.json())["code"] == "invalid_range"
 
 
+@pytest.mark.asyncio
 async def test_stats_returns_502_when_upstream_fails() -> None:
     stub = _StubClient(fail=True)
     with patch.object(wt_service, "build_client", return_value=stub):
@@ -125,6 +128,7 @@ async def test_stats_returns_502_when_upstream_fails() -> None:
             assert (await resp.json())["code"] == "upstream_unavailable"
 
 
+@pytest.mark.asyncio
 async def test_export_json_format() -> None:
     summaries = [{"projects": [{"name": "oneka", "total_seconds": 7200}]}]
     with patch.object(wt_service, "build_client", return_value=_StubClient(summaries=summaries)):
@@ -142,6 +146,7 @@ async def test_export_json_format() -> None:
     assert data["projects"] == [{"project": "oneka", "seconds": 7200.0, "hours": 2.0}]
 
 
+@pytest.mark.asyncio
 async def test_export_rejects_bad_format() -> None:
     with patch.object(wt_service, "build_client", return_value=_StubClient()):
         async with TestClient(TestServer(_app())) as client:
@@ -152,6 +157,7 @@ async def test_export_rejects_bad_format() -> None:
             assert (await resp.json())["code"] == "invalid_format"
 
 
+@pytest.mark.asyncio
 async def test_export_rejects_bad_date() -> None:
     with patch.object(wt_service, "build_client", return_value=_StubClient()):
         async with TestClient(TestServer(_app())) as client:
@@ -160,6 +166,7 @@ async def test_export_rejects_bad_date() -> None:
             assert (await resp.json())["code"] == "invalid_date"
 
 
+@pytest.mark.asyncio
 async def test_export_rejects_start_after_end() -> None:
     with patch.object(wt_service, "build_client", return_value=_StubClient()):
         async with TestClient(TestServer(_app())) as client:
@@ -168,6 +175,7 @@ async def test_export_rejects_start_after_end() -> None:
             assert (await resp.json())["code"] == "invalid_range"
 
 
+@pytest.mark.asyncio
 async def test_export_empty_state_when_unconfigured() -> None:
     with patch.object(wt_service, "build_client", return_value=None):
         async with TestClient(TestServer(_app())) as client:
@@ -176,6 +184,7 @@ async def test_export_empty_state_when_unconfigured() -> None:
             assert await resp.json() == {"configured": False}
 
 
+@pytest.mark.asyncio
 async def test_export_returns_502_when_summaries_request_fails() -> None:
     stub = _StubClient(fail=True)
     with patch.object(wt_service, "build_client", return_value=stub):
@@ -185,6 +194,7 @@ async def test_export_returns_502_when_summaries_request_fails() -> None:
             assert (await resp.json())["code"] == "upstream_unavailable"
 
 
+@pytest.mark.asyncio
 async def test_export_empty_range_is_200_csv_header_only() -> None:
     stub = _StubClient(summaries=[])
     with patch.object(wt_service, "build_client", return_value=stub):
@@ -196,6 +206,7 @@ async def test_export_empty_range_is_200_csv_header_only() -> None:
     assert body.strip().splitlines() == ["project,hours,seconds"]
 
 
+@pytest.mark.asyncio
 async def test_export_rejects_invalid_calendar_date() -> None:
     stub = _StubClient(summaries=[{"projects": [{"name": "a", "total_seconds": 60}]}])
     with patch.object(wt_service, "build_client", return_value=stub):
@@ -205,6 +216,7 @@ async def test_export_rejects_invalid_calendar_date() -> None:
             assert (await resp.json())["code"] == "invalid_date"
 
 
+@pytest.mark.asyncio
 async def test_export_rejects_compact_date() -> None:
     stub = _StubClient(summaries=[{"projects": [{"name": "a", "total_seconds": 60}]}])
     with patch.object(wt_service, "build_client", return_value=stub):

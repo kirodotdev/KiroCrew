@@ -115,6 +115,48 @@ declare global {
     title: string
   }
 
+  /** One picked element as the in-page overlay reports it. `ref` is the
+   *  agent-visible element ref (the same `eN` `snapshot` mints). The NOTE is
+   *  not here: it is typed and kept in the panel, never in the page realm. */
+  interface BrowserAnnotationTarget {
+    id: number
+    /** 1-based marker number shown on the page. */
+    n: number
+    ref: string
+    tag: string
+    role: string
+    name: string
+    text: string
+    selector: string
+    /** The element left the document since it was annotated (or the page it
+     *  was on navigated away). */
+    detached: boolean
+  }
+
+  type BrowserAnnotateFailure = { ok: false; code: string; error: string }
+
+  interface BrowserAnnotatePoll {
+    ok: true
+    picking: boolean
+    url: string
+    title: string
+    items: BrowserAnnotationTarget[]
+    /** One-shot: an element was just picked -- open the note editor for it. */
+    picked?: number
+    /** One-shot: a marker on the page was clicked -- edit that note. */
+    edit?: number
+  }
+
+  interface BrowserAnnotateCapture {
+    ok: true
+    /** Base64 PNG of the viewport with the numbered markers rendered in. */
+    png: string
+    url: string
+    title: string
+  }
+
+  type BrowserAnnotateOp = 'start' | 'stop' | 'poll' | 'remove' | 'clear' | 'capture' | 'teardown'
+
   interface BrowserAPI {
     open: (panelId: string, url: string) => Promise<NativeBrowserState | null>
     navigate: (panelId: string, url: string) => Promise<NativeBrowserState | null>
@@ -131,6 +173,19 @@ declare global {
     setControlOwner: (panelId: string, owner: string) => Promise<unknown>
     getControl: (panelId: string) => Promise<unknown>
     control: (panelId: string, operation: string, args: unknown) => Promise<unknown>
+    /** Element annotation on the native page. Optional: absent on a desktop
+     *  shell older than the feature, which is what hides the button. */
+    annotate?: (
+      panelId: string,
+      op: BrowserAnnotateOp,
+      args?: Record<string, unknown>,
+    ) => Promise<
+      | BrowserAnnotateFailure
+      | BrowserAnnotatePoll
+      | BrowserAnnotateCapture
+      | { ok: true; url?: string; title?: string }
+      | null
+    >
     trackSession: (panelId: string, tracked: boolean) => Promise<unknown>
     onAgentOpened: (cb: (event: NativeBrowserEvent) => void) => () => void
     onDidNavigate: (cb: (event: NativeBrowserEvent) => void) => () => void

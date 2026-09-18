@@ -87,11 +87,11 @@ def _manifest_to_builtin_dict(manifest: AppManifest) -> dict[str, Any]:
         d["publishProvider"] = pp_d
 
     # The REMAINING declarative fields, same reasoning as the agents/skills block
-    # above (#1076): this dict is what register_builtin_apps() persists as the
+    # above: this dict is what register_builtin_apps() persists as the
     # app.json snapshot, and register_app() reads that snapshot rather than the
     # packaged manifest — so any typed field not copied here is silently dropped
-    # for every builtin. agents/skills was the instance that shipped; these are
-    # the rest of the same class, and the round-trip guard covers all of them.
+    # for every builtin. agents/skills is one instance of that class; these are
+    # the rest of it, and the round-trip guard covers all of them.
     if manifest.sops:
         d["sops"] = list(manifest.sops)
     if manifest.jobFamilies:

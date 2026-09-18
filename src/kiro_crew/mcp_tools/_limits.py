@@ -12,3 +12,4 @@ from __future__ import annotations
 # A loop that reaches it ran out of rope rather than finishing, so the value
 # is a runaway guard, not a target.
 _MONITOR_DEFAULT_MAX_CYCLES = 24
+_MONITOR_DEFAULT_MAX_RUNTIME_SECS = 14_400

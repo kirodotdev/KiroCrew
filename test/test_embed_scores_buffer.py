@@ -1,4 +1,4 @@
-"""Regression guard for the embedder's eager per-token scores buffer (#6827).
+"""Regression guard for the embedder's eager per-token scores buffer.
 
 Upstream ``llama_cpp.Llama.__init__`` unconditionally allocates
 ``self.scores = np.ndarray((n_batch, n_vocab), dtype=np.single)`` at model load

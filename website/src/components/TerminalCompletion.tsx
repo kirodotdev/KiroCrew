@@ -20,8 +20,8 @@ const ROW_H = 22
 /** Prompt-marker rows retained. Bounded so a long session cannot grow the map
  *  without limit; only the cursor's own row is ever read. */
 const MARKER_LIMIT = 64
-/** Grace window after `compositionend` in which Enter still belongs to the IME.
- *  Browsers disagree on whether the committing Enter is flagged as composing. */
+/** Grace window after `compositionend` in which a choose key still belongs to the IME.
+ *  Browsers disagree on whether the committing Enter or Tab is flagged as composing. */
 const IME_GRACE_MS = 60
 
 interface Entry {
@@ -499,12 +499,38 @@ export default function TerminalCompletion({ term, sessionId, active }: {
     term.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true
       // An IME candidate is committed with a keydown the browser marks as
-      // composing (Chrome reports keyCode 229 for it); swallowing that Enter
-      // would accept a path instead of the text the user just composed. Some
-      // browsers report the committing key as non-composing, hence the grace
-      // window after `compositionend`.
+      // composing (Chrome reports keyCode 229 for it). Leave that native action
+      // alone. Some browsers clear both flags before the committing key arrives,
+      // hence the grace window after `compositionend`: Enter keeps its established
+      // pass-through behavior, while Tab must be consumed so it can neither accept
+      // the menu suggestion nor escape to xterm as shell completion.
       if (e.isComposing || e.keyCode === 229) return true
-      if (e.key === 'Enter' && Date.now() - imeEndAt.current < IME_GRACE_MS) return true
+      if (Date.now() - imeEndAt.current < IME_GRACE_MS) {
+        if (e.key === 'Enter') return true
+        if (e.key === 'Tab') return claim(e)
+      }
+      // Ctrl+Shift+C copies the selection. Nothing in this app answers the
+      // chord: xterm's evaluateKeyboardEvent yields no key for
+      // Ctrl+Shift+letter, and the ctrl pass-through below would drop it
+      // before the switch — so without this branch it is a no-op in the
+      // desktop shell. (A browser-level binding like Chrome's DevTools
+      // shortcut fires outside the page either way; this branch handles what
+      // reaches the page.) Fire the native `copy` event (the same route as
+      // Electron's right-click `role: copy`): xterm's own `copy` listener
+      // serialises the selection, so there is no textarea and no focus move,
+      // and unlike navigator.clipboard.writeText it needs no clipboard
+      // permission — the packaged app denies that permission, which is what
+      // broke the toolbar path in #9740. Matched on e.code so the physical
+      // key works on layouts whose C position types another glyph. With no
+      // selection the chord passes through, leaving shell behaviour
+      // unchanged. This handler is the single owner of the custom-key-handler
+      // slot — a second attachCustomKeyEventHandler elsewhere would shadow
+      // this one.
+      if (e.ctrlKey && e.shiftKey && !e.metaKey && !e.altKey && e.code === 'KeyC') {
+        if (!term.hasSelection()) return true
+        document.execCommand('copy')
+        return claim(e)
+      }
       const s = stateRef.current.sug
       if (!s) return true
       if (e.ctrlKey || e.metaKey || e.altKey) return true

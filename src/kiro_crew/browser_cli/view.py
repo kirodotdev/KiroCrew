@@ -43,7 +43,8 @@ from dataclasses import dataclass
 from typing import Any, Callable
 
 from kiro_crew import platform_compat
-from kiro_crew.browser_cli.install import cli_env, cli_path
+from kiro_crew.browser_cli.install import cli_command, cli_env, cli_path
+from kiro_crew.browser_cli.launch import ui_socket_env
 
 logger = logging.getLogger(__name__)
 
@@ -397,13 +398,13 @@ def _recorded_is_live() -> bool:
     )
 
 
-def _show_argv(cli: str, port: int) -> list[str]:
+def _show_argv(command: list[str], port: int) -> list[str]:
     """Argv for the dashboard server.
 
     ``--host`` is always present and always loopback: omitting it yields an
     IPv6-only listener that ``127.0.0.1`` cannot reach.
     """
-    return [cli, "show", "--port", str(port), "--host", LOOPBACK_HOST]
+    return [*command, "show", "--port", str(port), "--host", LOOPBACK_HOST]
 
 
 def _alive(proc: subprocess.Popen[bytes] | None) -> bool:
@@ -429,7 +430,7 @@ def _reap(proc: subprocess.Popen[bytes]) -> None:
         proc.wait(timeout=_TERMINATE_GRACE_S)
 
 
-def _spawn(cli: str, port: int) -> subprocess.Popen[bytes] | None:
+def _spawn(command: list[str], port: int) -> subprocess.Popen[bytes] | None:
     """Start the dashboard server, or ``None`` if it cannot be spawned.
 
     Output goes to ``DEVNULL`` on purpose. An unread ``PIPE`` fills its buffer
@@ -440,15 +441,22 @@ def _spawn(cli: str, port: int) -> subprocess.Popen[bytes] | None:
     ``start_new_session`` puts the child in its own process group on POSIX so
     the whole tree can be signalled at stop time without touching the gateway's
     own group.
+
+    The child's socket root is the gateway-owned one (:func:`ui_socket_env`):
+    the dashboard claims its singleton socket under it, and the Browser panel's
+    launcher (:mod:`kiro_crew.browser_cli.launcher`) sends its reveal request
+    there, so both must agree on a root the gateway knows.
     """
+    env = cli_env()
+    env.update(ui_socket_env(env))
     try:
         return subprocess.Popen(
-            _show_argv(cli, port),
+            _show_argv(command, port),
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             start_new_session=platform_compat.IS_POSIX,
-            env=cli_env(),
+            env=env,
         )
     except OSError as exc:
         logger.warning("could not start playwright-cli show: %s", exc)
@@ -479,7 +487,7 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
     global _proc, _info, _relay, _last_reason, _child_port
     with _lock:
         # Ownership is re-proved on reuse, not just at startup. A child that is
-        # alive but no longer listening leaves its port free for a squatter, and
+        # alive but not listening leaves its port free for a squatter, and
         # without this the next call would hand that squatter back as the panel.
         if _recorded_is_live():
             return _info
@@ -494,7 +502,8 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
         _last_reason = None
 
         cli = cli_path()
-        if cli is None:
+        command = cli_command(cli) if cli is not None else None
+        if command is None:
             return None
 
         relay: _Relay | None = None
@@ -514,7 +523,7 @@ def ensure_running(port: int | None = None) -> ShowInfo | None:
             relay = _Relay.from_listener(pin_listener, child_port)
         else:
             child_port = _free_port()
-        proc = _spawn(cli, child_port)
+        proc = _spawn(command, child_port)
         if proc is None:
             if relay is not None:
                 relay.close()
@@ -616,7 +625,8 @@ def status() -> dict[str, Any]:
     from a mysteriously dead panel.
     """
     with _lock:
-        if cli_path() is None:
+        cli = cli_path()
+        if cli is None or cli_command(cli) is None:
             return {
                 "status": "unavailable",
                 "url": None,

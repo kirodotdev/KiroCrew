@@ -47,6 +47,7 @@ from pathlib import Path
 
 import pytest
 
+from kiro_crew.agent_sdk.host_auth import home_override_env_vars
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -88,8 +89,8 @@ _FAKE_HEADER = "TIERS = {tiers!r}\n"
 _FAKE_TIER_SOURCE = {
     "sensitive-path": """
 
-def is_sensitive_path(value, base_dir=None):
-    return value in TIERS["sensitive-path"]
+def sensitive_path_refusal(value, base_dir=None):
+    return "Blocked: fake sensitive path" if value in TIERS["sensitive-path"] else None
 """,
     "sensitive-bash": """
 
@@ -311,7 +312,7 @@ def test_the_measured_checks_are_the_checks_the_tool_gate_applies():
         body.append(line)
     applied = set(re.findall(r"\b(\w+)\(target\b", "\n".join(body)))
     assert applied == {
-        "is_sensitive_path",
+        "sensitive_path_refusal",
         "is_sensitive_bash_command",
         "audit_bash_exfiltration",
     }, f"the tool gate's per-target checks changed: {sorted(applied)}"
@@ -442,14 +443,30 @@ def test_unresolvable_ref_exits_two(tmp_path):
 
 def test_child_environment_is_scrubbed_of_crew_variables(tmp_path, monkeypatch):
     """The verdict must not be a function of the caller's environment."""
+    monkeypatch.setenv("HOME", str(tmp_path / "real-os-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "real-windows-home"))
     monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "1")
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "real-home"))
+    for name in deny_diff._INHERITED_HOME_OVERRIDE_ENV_VARS:
+        monkeypatch.setenv(name, str(tmp_path / name.lower()))
 
-    env = deny_diff._child_env(tmp_path / "checkout", tmp_path / "throwaway-home")
+    throwaway = tmp_path / "throwaway-home"
+    env = deny_diff._child_env(tmp_path / "checkout", throwaway)
 
     assert "KIROCREW_SANDBOX_ACTIVE" not in env
-    assert env["KIROCREW_HOME"] == str(tmp_path / "throwaway-home")
+    assert env["HOME"] == str(throwaway)
+    assert env["USERPROFILE"] == str(throwaway)
+    assert env["KIROCREW_HOME"] == str(throwaway)
     assert env["PYTHONPATH"] == str(tmp_path / "checkout" / "src")
+    assert throwaway.is_dir()
+    assert not set(deny_diff._INHERITED_HOME_OVERRIDE_ENV_VARS) & env.keys()
+
+
+def test_child_environment_scrubs_every_declared_home_override():
+    assert set(deny_diff._INHERITED_HOME_OVERRIDE_ENV_VARS) == {
+        "KIRO_HOME",
+        *home_override_env_vars(),
+    }
 
 
 def test_worker_refuses_a_tree_it_was_not_pointed_at(tmp_path):
@@ -527,8 +544,9 @@ def test_corpus_rows_are_all_allowed_by_the_shipped_composite(tmp_path):
     child, which the differential alone would not show.
     """
     rows = deny_diff.load_corpus(GOLDEN_PATHS)
-    shell_rows = [r for r in rows if r.kind == "shell" and r.applies_to("posix")]
-    assert shell_rows, "the corpus has no posix-applicable shell rows"
+    platform = deny_diff.resolve_platform("auto")
+    shell_rows = [r for r in rows if r.kind == "shell" and r.applies_to(platform)]
+    assert shell_rows, f"the corpus has no {platform}-applicable shell rows"
 
     checkout = deny_diff.resolve_checkout(ROOT, "HEAD", tmp_path / "head")
     verdicts, absent = deny_diff.classify(

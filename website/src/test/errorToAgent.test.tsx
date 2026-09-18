@@ -423,6 +423,20 @@ describe('chat hand-off channel', () => {
 })
 
 describe('ErrorNotice', () => {
+  it('leaves click propagation unchanged outside menu hosts', async () => {
+    const onParentClick = vi.fn()
+    render(
+      <div role="presentation" onClick={onParentClick}>
+        <ErrorNotice message="disk is full" askAgent />
+      </div>,
+    )
+
+    await userEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+
+    expect(onParentClick).toHaveBeenCalledOnce()
+    expect(navigated).toEqual(['/chat'])
+  })
+
   it('renders nothing when there is no message', () => {
     const { container } = render(<ErrorNotice message={null} />)
     expect(container.firstChild).toBeNull()

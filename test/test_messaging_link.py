@@ -96,7 +96,7 @@ class TestBuildDmSessionKey:
         )
 
     def test_unified_scopes_only_direct_dms_not_forum(self) -> None:
-        # SECURITY (issue #211, PR #219 Codex HIGH): dm_scope=unified must NOT
+        # SECURITY: dm_scope=unified must NOT
         # collapse a forum Topic into the shared DM bucket — that would leak
         # private DM content into a group Topic (and vice versa). A forum route
         # keeps its FULL bucket regardless of dm_scope.

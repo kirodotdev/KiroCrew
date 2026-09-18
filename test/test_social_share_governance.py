@@ -305,7 +305,7 @@ class TestGovernanceGenerationFrame:
         )
         assert frame["governanceGeneration"] == 7
 
-    # ── #8623: the profile layer has to reach this frame too ─────────────────
+    # ── the profile layer has to reach this frame too ─────────────────
 
     @staticmethod
     def _bind_profiles(tmp_path, monkeypatch):
@@ -336,8 +336,8 @@ class TestGovernanceGenerationFrame:
     def test_a_profile_edit_moves_the_generation_the_frame_carries(
         self, tmp_path, monkeypatch
     ) -> None:
-        """A profile-layer tightening is enforced on the next decision, but used to
-        leave the dashboard's cached answer standing, because the frame's generation
+        """A profile-layer tightening is enforced on the next decision, but would
+        otherwise leave the dashboard's cached answer standing, because the frame's generation
         tracked ceiling installs only. If the value the frame carries does not move,
         ``useWebSocket`` never invalidates ``['dashboardConfig']`` and the UI keeps
         offering an entry policy has withdrawn."""

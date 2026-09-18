@@ -180,10 +180,11 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
   })
 
   it('serializes two rapid picks and ends on the LATEST one', async () => {
-    // The dropdown deliberately stays open after a pick, so two quick picks
-    // race. The registry serializes the wire calls (the second must not START
-    // until the first settles — send order is server processing order), and
-    // the store must end on the latest pick.
+    // A pick closes the menu, so the second pick reopens it from the chip
+    // while the first wire call is still in flight. The registry serializes
+    // the wire calls (the second must not START until the first settles —
+    // send order is server processing order), and the store must end on the
+    // latest pick.
     let releaseFirst: (v: { ok: boolean; model: string }) => void = () => {}
     vi.mocked(api.chatSlotModel)
       .mockImplementationOnce(() => new Promise(res => { releaseFirst = res }))
@@ -194,6 +195,8 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     await act(async () => { fireEvent.click(chip) })
     const first = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
     await act(async () => { fireEvent.click(first) })
+    // The first call has not resolved, so the chip still names the old model.
+    await act(async () => { fireEvent.click(screen.getByTitle('Model: claude-opus-5')) })
     const second = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
     await act(async () => { fireEvent.click(second) })
 
@@ -267,5 +270,104 @@ describe('ChatPage — switch labels update without a slot-list round trip (#452
     await waitFor(() => expect(api.chatSlotAgent).toHaveBeenCalled())
     expect(store.getState().dashboard.slots.find(s => s.key === 'slot-a')?.agent).toBe('kirocrew')
     expect(screen.getByTitle('Agent: kirocrew')).toBeTruthy()
+  })
+})
+
+describe('ChatPage — model picker closes on a row click', { timeout: 15_000 }, () => {
+  // The listbox is the picker's own body; its absence is the closed state.
+  const modelList = () => screen.queryByRole('listbox', { name: 'Model list' })
+
+  it('a click on a model row switches the model and dismisses the picker', async () => {
+    await renderChat()
+    await act(async () => { fireEvent.click(screen.getByTitle('Model: claude-opus-5')) })
+    expect(modelList()).toBeTruthy()
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    await act(async () => { fireEvent.click(option) })
+
+    // Closed on the click itself, not on the wire call's completion: the
+    // menu is gone before the switch resolves, the same as the agent picker.
+    expect(modelList()).toBeNull()
+    await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalledWith('slot-a', 'claude-sonnet-5'))
+    expect(await waitFor(() => screen.getByTitle('Model: claude-sonnet-5'))).toBeTruthy()
+  })
+
+  it('closes on the click even when the switch is rejected', async () => {
+    // Failure is reported by the notice toast, not by a menu left open.
+    vi.mocked(api.chatSlotModel).mockRejectedValueOnce(new Error('boom'))
+    await renderChat()
+    await act(async () => { fireEvent.click(screen.getByTitle('Model: claude-opus-5')) })
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    await act(async () => { fireEvent.click(option) })
+    expect(modelList()).toBeNull()
+    await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalled())
+    expect(screen.getByTitle('Model: claude-opus-5')).toBeTruthy()
+  })
+
+  it('the picker reopens from the chip after a pick', async () => {
+    await renderChat()
+    await act(async () => { fireEvent.click(screen.getByTitle('Model: claude-opus-5')) })
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    await act(async () => { fireEvent.click(option) })
+    const chip = await waitFor(() => screen.getByTitle('Model: claude-sonnet-5'))
+    await act(async () => { fireEvent.click(chip) })
+    expect(modelList()).toBeTruthy()
+  })
+})
+
+describe('ChatPage — a model pick returns focus to the composer only if it had it', { timeout: 15_000 }, () => {
+  const composer = () => document.querySelector<HTMLTextAreaElement>('textarea[data-composer-input]')!
+  // `focusComposer` focuses on the next animation frame.
+  const nextFrame = () => act(() => new Promise<void>(r => requestAnimationFrame(() => r())))
+  // A real pointer press: `mousedown` (where the chip reads focus) moves focus
+  // onto the button as the browser would, then `click` opens the picker.
+  const pressChip = async (chip: HTMLElement) => {
+    await act(async () => {
+      fireEvent.mouseDown(chip)
+      chip.focus()
+      fireEvent.click(chip)
+    })
+  }
+
+  it('composer focused → chip → pick: the composer is focused again', async () => {
+    await renderChat()
+    composer().focus()
+    expect(document.activeElement).toBe(composer())
+    await pressChip(screen.getByTitle('Model: claude-opus-5'))
+    // The press itself moved focus off the composer, as a real click does.
+    expect(document.activeElement).not.toBe(composer())
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    await act(async () => { fireEvent.click(option) })
+    await nextFrame()
+    expect(document.activeElement).toBe(composer())
+    await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalledWith('slot-a', 'claude-sonnet-5'))
+  })
+
+  it('composer NOT focused → chip → pick: the composer is left alone', async () => {
+    await renderChat()
+    ;(document.activeElement as HTMLElement | null)?.blur?.()
+    expect(document.activeElement).not.toBe(composer())
+    await pressChip(screen.getByTitle('Model: claude-opus-5'))
+    const option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    await act(async () => { fireEvent.click(option) })
+    await nextFrame()
+    expect(document.activeElement).not.toBe(composer())
+    await waitFor(() => expect(api.chatSlotModel).toHaveBeenCalledWith('slot-a', 'claude-sonnet-5'))
+  })
+
+  it('the snapshot is per press: a focused first open does not leak into a later unfocused one', async () => {
+    await renderChat()
+    composer().focus()
+    await pressChip(screen.getByTitle('Model: claude-opus-5'))
+    let option = await waitFor(() => screen.getByRole('option', { name: /claude-sonnet-5/ }))
+    await act(async () => { fireEvent.click(option) })
+    await nextFrame()
+    expect(document.activeElement).toBe(composer())
+
+    composer().blur()
+    await pressChip(await waitFor(() => screen.getByTitle('Model: claude-sonnet-5')))
+    option = await waitFor(() => screen.getByRole('option', { name: /auto/ }))
+    await act(async () => { fireEvent.click(option) })
+    await nextFrame()
+    expect(document.activeElement).not.toBe(composer())
   })
 })

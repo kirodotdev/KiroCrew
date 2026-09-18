@@ -337,8 +337,8 @@ class TestDeclaredCapabilityKeys:
 
 
 class TestClassifyAndCleanForUninstall:
-    """The only ledger WRITE path taken on uninstall (``routes.py``), and the one
-    this change edited to add legacy-key resolution — previously untested."""
+    """The only ledger WRITE path taken on uninstall (``routes.py``), including
+    its legacy-key resolution."""
 
     def test_sole_owner_dep_is_pruned(self):
         _write_raw_ledger({

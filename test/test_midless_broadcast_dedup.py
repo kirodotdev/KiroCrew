@@ -1,4 +1,4 @@
-"""One identity-carrying delivery per appended row (#5981).
+"""One identity-carrying delivery per appended row.
 
 The dashboard's redelivery guard keys on ``meta.mid`` and DECLINES mid-less
 frames rather than guessing, so any ``chat_message`` frame that ships without
@@ -114,7 +114,7 @@ class TestAppendAndSurface:
 
 class TestConvertedSites:
     def test_compaction_notice_delivers_exactly_once(self) -> None:
-        """The compaction chokepoint no longer double-delivers (site-level red-before).
+        """The compaction chokepoint does not double-deliver (site-level red-before).
 
         Old code: slot.append (one _on_message delivery) + an unconditional
         hand-built mid-less frame = two renderable copies. New: one delivery,
@@ -132,8 +132,8 @@ class TestConvertedSites:
         assert isinstance(meta, dict) and meta.get("mid"), "delivery must carry meta.mid"
         assert meta.get("kind") == "compaction"
 
-    def test_crew_chat_frame_meta_carries_mid(self) -> None:
-        """crew_chat's deliberate manual frame now ships the appended row's mid."""
+    def test_manual_frame_meta_carries_mid(self) -> None:
+        """A deliberate manual frame ships the appended row's mid (the retired crew dispatcher was the first such site)."""
         # Mirror the site's exact sequence: append(broadcast=False) then a frame
         # built from the APPENDED row's meta (not the pre-append dict).
         state = _StateStub()

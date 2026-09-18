@@ -12,12 +12,14 @@ These pin two properties of the config-loader decoupling refactor:
 
 from __future__ import annotations
 
+import logging
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew.config import paths
 
 
@@ -51,10 +53,39 @@ class TestConfigDir:
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     ) -> None:
         # A system directory must be refused and fall back to ~/.kiro/crew.
-        monkeypatch.setenv("KIROCREW_HOME", "/usr")
+        # The refused location is platform-shaped: ``/usr`` is a POSIX system
+        # tree, but on Windows ``Path("/usr").resolve()`` is ``C:\usr`` -- an
+        # ordinary, non-existent directory the override ACCEPTED, so this test
+        # both failed there and CREATED ``C:\usr`` on the developer's system
+        # drive on every run. The drive root is the location ``_is_unsafe_home``
+        # refuses on Windows (``p == p.parent``); it exists and is never touched.
+        if sys.platform == "win32":
+            system_dir = Path.cwd().anchor  # e.g. ``C:\``
+        else:
+            system_dir = "/usr"
+        monkeypatch.setenv("KIROCREW_HOME", system_dir)
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path))
         result = paths.config_dir()
         assert result == tmp_path / ".kiro" / "crew"
+
+
+class TestLedgerRoot:
+    def test_link_is_refused_without_touching_its_target(
+        self, tmp_path: Path, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        target = tmp_path / "outside"
+        target.mkdir()
+        make_dir_link(home / "crew-log", target)
+        restricted: list[Path] = []
+
+        with caplog.at_level(logging.WARNING, logger=paths.__name__):
+            paths._ensure_ledger_root(home, restricted.append)
+
+        assert restricted == [], "the owner-only callback would chmod the link target"
+        assert list(target.iterdir()) == [], "the linked target was modified"
+        assert any("Refusing crew log root" in record.message for record in caplog.records)
 
 
 class TestConfigPackageDir:

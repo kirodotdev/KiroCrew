@@ -707,10 +707,10 @@ class TestPidInSpawnGrace:
     """Tests for _pid_in_spawn_grace helper."""
 
     def test_macos_young_pid_returns_true(self) -> None:
-        """macOS: grace DOES apply (regression — it was silently Linux-only).
+        """macOS: grace DOES apply — a young off-Linux pid is protected.
 
-        The startup sweep SIGKILLed a live kiro-cli on macOS because this
-        returned False unconditionally off-Linux (2026-07-29 repro).
+        The startup sweep must not SIGKILL a live kiro-cli on macOS; grace
+        applies cross-platform, not only on Linux.
         """
         from kiro_crew.session_pid import _pid_in_spawn_grace
 
@@ -807,9 +807,8 @@ class TestSweepGraceIntegration:
     def test_non_linux_old_orphan_still_killed(self, session_pid_file: Path) -> None:
         """On macOS, an orphan OLDER than the grace window is still killed.
 
-        Grace now applies cross-platform, so the age must be stubbed old —
-        previously non-Linux skipped grace entirely, which is the defect that
-        let the sweep kill freshly-spawned backends.
+        Grace applies cross-platform, so the age must be stubbed old — a young
+        off-Linux orphan is protected by grace and would survive the sweep.
         """
         from kiro_crew.session_pid import _sweep_pid_entries
 

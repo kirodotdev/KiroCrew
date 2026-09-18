@@ -5,13 +5,13 @@ and cancelled on ``app.on_cleanup``. Every :data:`TICK_SEC` seconds it re-reads
 ``settings.json`` and, when the configured interval has elapsed, commits, merges
 and pushes every writable vault exactly as ``POST /api/sync`` does.
 
-WHY IT LIVES HERE rather than in the page. Auto-sync used to be a
-``window.setInterval`` inside the Notes React page, so closing the tab — or
-navigating to another app — stopped syncing entirely, silently and with no
-indication that notes had stopped reaching the remote. A backup that only runs
-while you are looking at it is the one case where the user believes they are
-covered and are not. Living in the app's own backend means the interval is
-honoured while the gateway runs, with no dashboard tab open.
+WHY IT LIVES HERE rather than in the page. A ``window.setInterval`` inside the
+Notes React page stops syncing entirely when the tab closes — or the user
+navigates to another app — silently and with no indication that notes have
+stopped reaching the remote. A backup that only runs while you are looking at it
+is the one case where the user believes they are covered and are not. Living in
+the app's own backend means the interval is honoured while the gateway runs,
+with no dashboard tab open.
 
 It is NOT a cron job: it runs inside this backend process only, and stops when the
 process does.

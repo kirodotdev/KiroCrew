@@ -810,3 +810,31 @@ class TestJudgeFiltering:
         result = await runner.run_scenario(scenario)
         # Both assertions should be in results
         assert result.total_assertions == 2
+
+
+@pytest.mark.asyncio
+async def test_eval_context_explicitly_reads_default_store_off_loop(tmp_path):
+    import threading
+
+    from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
+
+    loop_thread = threading.get_ident()
+    calls = []
+
+    class Context:
+        def build_session_context(self, *, session_key, memory_store):
+            assert threading.get_ident() != loop_thread
+            assert memory_store == DEFAULT_MEMORY_STORE
+            calls.append(session_key)
+            return "scenario context: "
+
+    provider = MockProvider(["answer"])
+    runner = EvalRunner(provider_factory=lambda key, **kwargs: provider)
+    result = await runner._run_session(
+        Session(name="second", turns=[Turn(user="question")]),
+        tmp_path,
+        ctx_builder=Context(),
+    )
+    assert result.passed
+    assert len(calls) == 1 and calls[0].startswith("eval_second_")
+    assert provider.messages == ["scenario context: question"]

@@ -1,7 +1,12 @@
-"""Rewrite kiro agent JSON so MCP servers route through the broker.
+"""Rewrite kiro agent specs so MCP servers route through the broker.
 
-The rewriter reads ``~/.kiro/agents/*.json`` and writes modified copies into
-the overlay directory (``<config_dir>/mcp-gateway/agents/``). The host
+The rewriter reads ``~/.kiro/agents/*.json`` and ``*.md`` (the markdown form,
+see :mod:`kiro_crew.agent_spec_format`) and writes modified JSON copies into
+the overlay directory (``<config_dir>/mcp-gateway/agents/``). The overlay is
+always ``<stem>.json`` whatever the source's form: ``session_servers.py`` looks
+an agent's overlay up by ``<agent>.json``, and a markdown spec's servers must
+be stubbed exactly like a JSON spec's or they would spawn direct, outside the
+tool gate. The host
 filesystem remains untouched — the broker stubs in these specs are injected
 into each kiro-cli session over ACP ``session/new``, which outranks the
 same-named entry in the agent spec (see ``session_servers.py``).
@@ -25,27 +30,66 @@ import contextlib
 import hashlib
 import json
 import logging
+import ntpath
 import os
 import re
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Collection, Mapping
 
 from kiro_crew import __version__, platform_compat
+from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.env import mcp_search_path, spec_path_key
 from kiro_crew.mcp_gateway import STUB_MODULE
-from kiro_crew.mcp_gateway.hashing import hash_command, is_secret_env_key
+from kiro_crew.mcp_gateway.hashing import (
+    STUB_FLAGS_FLAG,
+    decode_target_args,
+    encode_target_args,
+    expand_stub_flags,
+    hash_command,
+    is_secret_env_key,
+)
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.sandbox import scrub_agent_denied_env
+from kiro_crew.security import is_sensitive_path
 
 logger = logging.getLogger(__name__)
+
+# cmd.exe's ceiling is smaller than CreateProcessW's; warn without rejecting
+# launchers that do not pass through cmd.exe.
+_WINDOWS_CMD_LINE_LIMIT = 8191
+
+# Normalized ``KIROCREW_MCP_TARGET_<SERVER>`` keys already warned about as a
+# base-name collision, so the notice fires once per distinct colliding key per
+# process instead of once per rewrite pass. ``_collect_target_env`` runs on
+# every pass (one call per agent spec, plus one per kept overlay), so a
+# genuinely single ambiguous config would otherwise print the same WARNING line
+# on every boot pass -- a wall of identical text an operator cannot count
+# distinct problems from. Guarded by ``_collision_warn_lock`` so two threads
+# rewriting at once cannot both report the same key. Repeats drop to DEBUG.
+_collision_warn_lock = threading.Lock()
+_collision_warned_keys: set[str] = set()
+
+
+def _reset_collision_warnings() -> None:
+    """Clear the per-process env-key collision warning latch.
+
+    A test hook: the module-level ``_collision_warned_keys`` set persists for
+    the life of the process, so a test that asserts on the WARNING record must
+    reset it between cases to see the first-occurrence notice again.
+    """
+    with _collision_warn_lock:
+        _collision_warned_keys.clear()
+
 
 # Fingerprint of the last completed rewrite, stored inside the overlay dir so
 # an unchanged boot can skip re-parsing every agent spec, re-resolving every
@@ -61,6 +105,8 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # of serving overlays produced by older logic. The package version is also in
 # the fingerprint, so a release bump invalidates regardless; this constant is
 # the explicit knob for in-development changes.
+# 5: the stub's flags ride inside one STUB_FLAGS_FLAG envelope, so a kept
+# plain-flag overlay would keep exposing its raw metadata to cmd.exe.
 # Deliberately NOT bumped for the retained legacy settings overlay: the
 # per-agent overlay bytes do not depend on it, the leftover overlay file is
 # retained and ignored (never consumed), and a stored ``settings_overlay``
@@ -68,7 +114,8 @@ _FINGERPRINT_NAME = ".rewrite-fingerprint"
 # relock — so an older fingerprint still validates correctly, and bumping would
 # gratuitously defeat the transient-keep gate (which compares stored vs current
 # inputs) on the first upgraded boot.
-_FINGERPRINT_SCHEMA = 3
+# 6: target commands and recorded probes carry their on-disk Windows casing.
+_FINGERPRINT_SCHEMA = 6
 
 
 @dataclass
@@ -76,7 +123,8 @@ class _RewritePassNotes:
     """Observations from one full rewrite pass that decide cacheability.
 
     ``which_results`` records every ``shutil.which`` probe as
-    ``(bare_command, search_path) -> resolved-or-""``. The resolved path is an
+    ``(bare_command, search_path) -> resolved-or-""``, with Windows on-disk
+    casing restored. The resolved path is an
     OUTPUT of filesystem state the stat-based fingerprint cannot see (a binary
     removed from, added to, or shadowed within an unchanged PATH), so the
     cache-hit path re-runs exactly these probes and compares — a disagreement
@@ -130,11 +178,10 @@ _WRAPPER_MARKER = "_kirocrew_mcp_gateway_wrapped"
 _WRAPPER_MARKER_LEGACY = "_mc_mcp_gateway_wrapped"
 
 
-# Argument separator for the stub's ``--target-args`` flag. `|` is
-# printable, preserved through argv, and not legal in a kiro MCP command
-# path. If a real MCP arg contains `|`, override via stub's
-# ``--target-args-sep`` flag (not used here; not a problem in practice).
+# Read compatibility for overlays carrying delimiter-separated arguments.
 _TARGET_ARGS_SEP = "|"
+_TARGET_ARGS_FLAG = "--target-args-b64"
+_TARGET_ARGS_FLAG_LEGACY = "--target-args"
 
 #: The stub is launched as a module by the interpreter running KiroCrew.
 #: ``sys.executable`` is baked into the overlay rather than resolved at
@@ -145,6 +192,38 @@ _TARGET_ARGS_SEP = "|"
 #: Aliased from the package constant so the launch line and the cmdline
 #: fingerprint the Sessions surface counts stubs by cannot drift apart.
 _STUB_MODULE = STUB_MODULE
+
+
+def _target_command_casing(path: str | None) -> str:
+    """Restore a PATH-resolved Windows basename without resolving aliases.
+
+    ``which`` can synthesize ``.EXE`` from PATHEXT. Looking up the matching
+    parent-directory entry repairs that spelling while retaining the lexical
+    parent route and a file symlink's own name. POSIX paths stay untouched.
+    """
+    if not path:
+        return ""
+    if not platform_compat.IS_WINDOWS:
+        return path
+    parent, name = os.path.split(path)
+    if not name:
+        return path
+    folded = ntpath.normcase(name)
+    matches: list[str] = []
+    try:
+        with os.scandir(parent or os.curdir) as entries:
+            for entry in entries:
+                if entry.name == name:
+                    return path
+                if ntpath.normcase(entry.name) == folded:
+                    matches.append(entry.name)
+    except OSError:
+        return path
+    # A case-sensitive Windows directory may legally contain ambiguous names.
+    # Never turn the requested launcher into a different directory entry.
+    if len(matches) != 1:
+        return path
+    return path[: -len(name)] + matches[0]
 
 
 def _resolve_target_command(
@@ -183,6 +262,10 @@ def _resolve_target_command(
         # session, so failing it in the session (visible) beats a per-session
         # pooled-spawn-then-fallback cycle.
         if os.path.isfile(target_command) and os.access(target_command, os.X_OK):
+            # PATHEXT did not synthesize this spelling: it came from the
+            # operator's spec. Preserve it exactly, including any deliberate
+            # file or directory alias, and keep absolute paths outside the
+            # bare-command probe cache as they were before schema 6.
             return target_command
         return ""
     # spec_path_key, not a literal "PATH" lookup: Windows-authored specs
@@ -195,12 +278,12 @@ def _resolve_target_command(
     # augmented host PATH. It also degrades a non-string PATH and dedups, so one
     # malformed hand-edited spec cannot abort the rewrite pass.
     search_path = mcp_search_path(env_path)
-    resolved = shutil.which(target_command, path=search_path)
+    resolved = _target_command_casing(shutil.which(target_command, path=search_path))
     if notes is not None:
         notes.which_results[
             f"{target_command}{_WHICH_KEY_SEP}{search_path}"
-        ] = resolved or ""
-    return resolved or ""
+        ] = resolved
+    return resolved
 
 
 def _normalized_env(entry: dict[str, Any], *, context: str = "") -> dict[str, Any]:
@@ -390,9 +473,8 @@ def _build_stub_entry(
         "--server", server_name,
         "--agent", agent_name,
         "--target-command", target_command,
-        # Use ``=`` so argparse treats the `|`-joined value as the flag's
-        # value even when it contains `--` (e.g. `--skill-paths|...`).
-        f"--target-args={_TARGET_ARGS_SEP.join(target_args)}",
+        # Keep both argument boundaries and shell metacharacters inside the payload.
+        f"{_TARGET_ARGS_FLAG}={encode_target_args(target_args)}",
         "--sandbox-mode", sandbox_mode,
         "--work-dir", str(work_dir),
         "--approval-mode", approval_mode,
@@ -410,7 +492,8 @@ def _build_stub_entry(
     # rewrite fingerprint's skip path effective.
     entry_identity_keys = sorted(k for k in frozenset(identity_keys) if k in env_pairs)
     if entry_identity_keys:
-        stub_args.extend(["--pool-identity-env", _TARGET_ARGS_SEP.join(entry_identity_keys)])
+        # A names-only list still needs encoding: its delimiter can be a pipe.
+        stub_args.extend(["--pool-identity-env-b64", encode_target_args(entry_identity_keys)])
     if env_pairs:
         # JSON-encode env so values containing ',' or '=' round-trip
         # intact. A prior CSV serialisation ``K=V,K2=V2`` silently
@@ -524,12 +607,27 @@ def _build_stub_entry(
     wrapped.update({
         _WRAPPER_MARKER: True,
         "command": sys.executable,
-        # ``-m kiro_crew.mcp_gateway.stub`` leads; the stub's own flags follow.
+        # ``-m kiro_crew.mcp_gateway.stub`` leads; the stub's own flags follow
+        # as ONE encoded envelope. Every value above is raw operator or
+        # filesystem text -- the executable path, the work dir, the socket, the
+        # sidecar path, the server and agent names, the autoApprove
+        # identifiers -- and a CLI that launches this entry through cmd.exe
+        # expands ``%NAME%`` inside any plain token, quoted or not, with no
+        # escape available on that command line. Only ``--target-args-b64``
+        # was encoded before, so ``python%X%.exe`` reached the stub as
+        # ``pythonexpanded.exe`` and a tool name ``read%X%`` as ``readexpanded``
+        # -- a different executable and a different approval set than the
+        # operator wrote, and a different hash than the daemon registered. The
+        # base64url alphabet has no ``%`` and no other cmd.exe metacharacter, so
+        # the tokens inside arrive byte-for-byte; ``stub._parse_args`` and
+        # ``_collect_target_env`` both splice them back through
+        # ``expand_stub_flags`` before reading, and an older plain-flag overlay
+        # still parses through the same path.
         # channel_id is NOT here: the overlay is written once at startup and is
         # session-agnostic, so it is appended per session by
         # ``session_servers.pooled_session_servers`` at ACP injection time,
         # where the value is in scope.
-        "args": ["-m", _STUB_MODULE, *stub_args],
+        "args": ["-m", _STUB_MODULE, f"{STUB_FLAGS_FLAG}={encode_target_args(stub_args)}"],
         # autoApprove must stay on the wrapper — kiro-cli reads it at the
         # permission-prompt UI layer, separately from the backend.
         "autoApprove": auto_approve,
@@ -537,6 +635,15 @@ def _build_stub_entry(
         # not via kiro-cli's subprocess environment.
         "env": {},
     })
+    if platform_compat.IS_WINDOWS:
+        command_line = subprocess.list2cmdline([wrapped["command"], *wrapped["args"]])
+        command_units = len(command_line.encode("utf-16-le")) // 2
+        if command_units >= _WINDOWS_CMD_LINE_LIMIT:
+            logger.warning(
+                "rewriter: server %r generated command is %d UTF-16 units; "
+                "cmd.exe limit is %d. Shorten server arguments if initialization fails.",
+                server_name, command_units, _WINDOWS_CMD_LINE_LIMIT,
+            )
     return wrapped
 
 
@@ -1058,7 +1165,7 @@ def _kept_artifacts_vouched(
     for key, recorded in which_probes.items():
         bare, _, search_path = key.partition(_WHICH_KEY_SEP)
         try:
-            current = shutil.which(bare, path=search_path) or ""
+            current = _target_command_casing(shutil.which(bare, path=search_path))
         except OSError:
             return False
         if current != recorded:
@@ -1109,13 +1216,44 @@ def _stat_sig(path: Path) -> list[Any] | None:
     ``chmod`` changes neither — so the content digest is what makes a
     signature collision impossible for changed bytes. The files signed here
     are small JSON documents, so hashing them is microseconds against the
-    parse+resolve+write pass the fingerprint exists to skip."""
+    parse+resolve+write pass the fingerprint exists to skip.
+
+    For Crew's OWN files (settings, overlays, sidecars); an agent SOURCE is
+    signed by :func:`_source_sig`, which reads through the hardened gate."""
     try:
         st = path.stat()
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
     except OSError:
         return None
     return [st.st_size, st.st_mtime_ns, digest]
+
+
+def _source_sig(path: Path) -> list[Any] | None:
+    """:func:`_stat_sig` for a file in the user-writable agents directory.
+
+    The resolved target is checked against ``is_sensitive_path`` and the bytes
+    come through ``hooks.safe_read_file_bytes`` (size-capped, no-reparse open):
+    a symlink dropped beside the specs and pointing at a credential file must not
+    be read -- not even to digest it, since the digest of a small secret would be
+    stored in the fingerprint file. Such a source signs as ``None``, the same as
+    one that cannot be read, and the rewrite loop's own hardened read then
+    refuses it deterministically.
+    """
+    # Deferred: hooks reaches config.loader, which imports this module's path
+    # helpers at import time.
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
+
+    try:
+        real = path.resolve(strict=True)
+        if is_sensitive_path(str(real)):
+            return None
+        st = path.stat()
+        raw = safe_read_file_bytes(str(real))
+    except (OSError, RuntimeError, FileTooLargeError):
+        return None
+    if raw is None:
+        return None
+    return [st.st_size, st.st_mtime_ns, hashlib.sha256(raw).hexdigest()]
 
 
 def _rewrite_inputs_fingerprint(
@@ -1166,7 +1304,7 @@ def _rewrite_inputs_fingerprint(
     * ``schema`` / ``package`` — invalidate on rewriter logic changes.
     """
     sources: dict[str, list[Any] | None] = {
-        p.name: _stat_sig(p) for p in sorted(source_dir.glob("*.json"))
+        p.name: _source_sig(p) for p in iter_agent_spec_files(source_dir)
     }
     return {
         "schema": _FINGERPRINT_SCHEMA,
@@ -1281,7 +1419,7 @@ def _cached_rewrite_result(
     for key, recorded in stored["which"].items():
         bare, _, search_path = key.partition(_WHICH_KEY_SEP)
         try:
-            current = shutil.which(bare, path=search_path) or ""
+            current = _target_command_casing(shutil.which(bare, path=search_path))
         except OSError:
             return None
         if current != recorded:
@@ -1476,6 +1614,22 @@ def _relock_legacy_settings_overlay(
         )
 
 
+def _overlay_names_collide(overlay_dir: Path, first: str, second: str) -> bool:
+    """Whether overlay names *first* and *second* are one file in *overlay_dir*.
+
+    The two differ only by case, so they are one entry exactly when that
+    directory folds case. Asked of the directory itself rather than of the
+    platform: a same-file probe on the two spellings answers for the
+    destination filesystem, and answers ``False`` on a case-sensitive one even
+    when a stale overlay under the second spelling is present.
+    """
+    a, b = overlay_dir / first, overlay_dir / second
+    try:
+        return a.exists() and b.exists() and os.path.samefile(a, b)
+    except OSError:
+        return False
+
+
 def rewrite_agents(
     *,
     source_dir: Path,
@@ -1532,6 +1686,10 @@ def rewrite_agents(
           these when a stub registers, to find the real backend command
           to spawn for a new pool key.
     """
+    # Deferred: ``agent_discovery`` reaches ``config.loader`` through ``hooks``,
+    # and ``config.loader`` imports this module's path helpers at import time.
+    from kiro_crew.agent_discovery import read_agent_spec_strict
+
     stub_set = stub_servers or frozenset()
 
     # An install upgraded from an older release can still carry a settings
@@ -1759,23 +1917,56 @@ def rewrite_agents(
             "stay in effect until a later pass succeeds)"
         )
 
-    for path in sorted(source_dir.glob("*.json")):
+    # Overlay destinations this pass has claimed, folded to one case. Two live
+    # sources whose stems differ only by case (``Foo.json`` and ``foo.md`` on a
+    # case-sensitive source directory) take two overlay files there -- but if
+    # the overlay directory is case-insensitive they are ONE file, and the
+    # second write would hand one agent the other's MCP servers. The listing
+    # already sets a twin aside when the SOURCE directory folds case; this
+    # guards the destination, which may sit on a different filesystem. A
+    # destination is claimed only by a source that is kept or parsed: a source
+    # skipped for bad content claims nothing, so it cannot cost its valid twin
+    # the overlay (and the pruning of the twin's stale one) below.
+    overlay_keys_claimed: dict[str, str] = {}
+    for path in iter_agent_spec_files(source_dir):
+        # The overlay is JSON whatever the source: ``session_servers`` resolves
+        # ``<agent>.json``. The fingerprint's ``sources`` stays keyed by the
+        # SOURCE name, so a markdown edit invalidates its overlay.
+        overlay_name = f"{path.stem}.json"
+        overlay_key = overlay_name.casefold()
+        first_claim = overlay_keys_claimed.get(overlay_key)
+        if first_claim is not None and _overlay_names_collide(
+            overlay_dir, first_claim, overlay_name
+        ):
+            logger.warning(
+                "skipping agent %s: its overlay %s is the same file as overlay %s on "
+                "this case-insensitive overlay directory; rename one of the two agents",
+                path.name,
+                overlay_name,
+                first_claim,
+            )
+            continue
         if (
             injection_unknown
-            and (overlay_dir / path.name).is_file()
+            and (overlay_dir / overlay_name).is_file()
             and _overlay_inputs_unchanged(
                 stored, current_inputs, source_name=path.name
             )
-            and _kept_overlay_vouched(stored, overlay_dir=overlay_dir, name=path.name)
+            and _kept_overlay_vouched(stored, overlay_dir=overlay_dir, name=overlay_name)
         ):
             # Keep without classifying: the spec is not read on this path, so a
             # source whose CONTENT is deterministically bad is kept too, unlike
             # the read below which prunes it. The pass is uncacheable, so the
             # next boot reads that source and prunes its overlay then.
-            transient_keep.add(path.name)
+            overlay_keys_claimed.setdefault(overlay_key, overlay_name)
+            transient_keep.add(overlay_name)
             continue
         try:
-            spec = json.loads(path.read_text())
+            # The hardened reader keeps the transient/deterministic split the
+            # two handlers below depend on, and refuses what a bare read would
+            # follow: a symlink in this user-writable directory pointing at a
+            # sensitive file, whose content would otherwise land in an overlay.
+            spec = read_agent_spec_strict(path, operation="mcp_overlay_rewrite", source="unknown")
         except OSError as exc:
             # Transient: the file stat'ed fine for the fingerprint but could
             # not be read. Readability can return without size/mtime changing,
@@ -1783,7 +1974,8 @@ def rewrite_agents(
             # this agent forever. Mark the pass uncacheable, and keep the
             # agent's previous overlay.
             notes.source_read_failed = True
-            transient_keep.add(path.name)
+            overlay_keys_claimed.setdefault(overlay_key, overlay_name)
+            transient_keep.add(overlay_name)
             logger.warning(
                 "skipping agent %s: %s (previous overlay, if any, stays in "
                 "effect until a later pass succeeds)",
@@ -1791,14 +1983,17 @@ def rewrite_agents(
                 exc,
             )
             continue
-        except json.JSONDecodeError as exc:
-            # Deterministic: the CONTENT is bad, and fixing it changes the
-            # file's stat signature, which invalidates the fingerprint — so
-            # this skip is safe to cache.
+        except ValueError as exc:
+            # Deterministic: the CONTENT is bad (JSON, frontmatter, encoding, a
+            # sensitive or oversized target), and fixing it changes the file's
+            # stat signature, which invalidates the fingerprint — so this skip
+            # is safe to cache.
             logger.warning("skipping agent %s: %s", path.name, exc)
             continue
         if not isinstance(spec, dict):
             continue
+        # Parsed: this source owns the destination for the rest of the pass.
+        overlay_keys_claimed.setdefault(overlay_key, overlay_name)
         # Guarantee a non-empty agent identity. The rewriter reads
         # ``~/.kiro/agents/*.json`` directly, and a user- or tool-dropped file
         # may omit ``name``. Without a name, ``_rewrite_single_spec`` derives
@@ -1826,7 +2021,7 @@ def rewrite_agents(
             notes=notes,
         )
         _collect_target_env(new_spec.get("mcpServers", {}), target_env)
-        target = overlay_dir / path.name
+        target = overlay_dir / overlay_name
         try:
             # Atomic + owner-only: temp-file + os.replace (via atomic_write) so a
             # concurrent reader — the per-session stub injection resolves this
@@ -1851,11 +2046,11 @@ def rewrite_agents(
                 exc,
             )
             overlay_write_failed = True
-            transient_keep.add(path.name)
+            transient_keep.add(overlay_name)
             continue
-        written.add(path.name)
+        written.add(overlay_name)
         if wrapped:
-            results[path.name] = wrapped
+            results[overlay_name] = wrapped
 
     # Prune stale overlay entries (user deleted or renamed an agent). The
     # keep-set answers "does this overlay's source still exist and did we
@@ -2042,32 +2237,45 @@ def _collect_target_env(
         ):
             continue
         env_key = "KIROCREW_MCP_TARGET_" + server_name.replace("-", "_").upper()
-        args = entry.get("args", []) or []
+        # Same splice as the stub's parser, so both sides read the flags an
+        # envelope carries -- and a plain-flag overlay -- identically.
+        args = expand_stub_flags(entry.get("args", []) or [])
         target_cmd: str | None = None
-        target_args_str = ""
+        target_args_b64: str | None = None
+        target_args_legacy = ""
+        target_args_sep = _TARGET_ARGS_SEP
         i = 0
         while i < len(args):
-            a = args[i]
-            if a == "--target-command" and i + 1 < len(args):
-                target_cmd = str(args[i + 1])
-                i += 2
-                continue
-            if isinstance(a, str) and a.startswith("--target-args="):
-                target_args_str = a.split("=", 1)[1]
+            token = str(args[i])
+            flag, equals, value = token.partition("=")
+            if flag in {
+                "--target-command", _TARGET_ARGS_FLAG,
+                _TARGET_ARGS_FLAG_LEGACY, "--target-args-sep",
+            }:
+                if not equals:
+                    if i + 1 >= len(args):
+                        break
+                    i += 1
+                    value = str(args[i])
+                if flag == "--target-command":
+                    target_cmd = value
+                elif flag == _TARGET_ARGS_FLAG:
+                    target_args_b64 = value
+                elif flag == _TARGET_ARGS_FLAG_LEGACY:
+                    target_args_legacy = value
+                else:
+                    target_args_sep = value
             i += 1
         if target_cmd:
-            # Target args arrive separated by ``_TARGET_ARGS_SEP`` (the same
-            # constant _build_stub_entry joins them with). Split on it rather
-            # than a hardcoded literal so this reconstruction — which feeds
-            # hash_command — stays in lock-step with the stub's PoolKey hash if
-            # the separator ever changes. Quote each one (incl. the command)
-            # before space-joining so env_target_resolver's shlex.split
-            # round-trips args containing embedded spaces. The old
-            # ``replace("|"," ")`` split such an arg into multiple tokens,
-            # corrupting the backend command line.
-            raw_target_args = (
-                target_args_str.split(_TARGET_ARGS_SEP) if target_args_str else []
-            )
+            # Same precedence and decode as the stub: both sides must hash
+            # identical argv for daemon target lookup to find the backend.
+            if target_args_b64 is not None:
+                raw_target_args = decode_target_args(target_args_b64)
+            else:
+                raw_target_args = (
+                    target_args_legacy.split(target_args_sep) if target_args_legacy else []
+                )
+            # This is a matched quote/split codec, never a shell command.
             spec = " ".join(shlex.quote(p) for p in [target_cmd, *raw_target_args])
             # Bare server-name key: first-wins fallback. Two DISTINCT server
             # names can normalize to the same key ("my-server" vs "my_server",
@@ -2076,12 +2284,24 @@ def _collect_target_env(
             # ambiguous config is visible rather than silently first-wins.
             existing = target_env.get(env_key)
             if existing is not None and existing != spec:
-                logger.warning(
-                    "mcp-gateway rewriter: KIROCREW_MCP_TARGET env-key collision on "
-                    "%s (distinct server names normalize identically); the "
-                    "args-hashed key is used at resolve time, base stays "
-                    "first-wins", env_key,
-                )
+                with _collision_warn_lock:
+                    first = env_key not in _collision_warned_keys
+                    if first:
+                        _collision_warned_keys.add(env_key)
+                if first:
+                    logger.warning(
+                        "mcp-gateway rewriter: KIROCREW_MCP_TARGET env-key collision on "
+                        "%s (distinct server names normalize identically); the "
+                        "args-hashed key is used at resolve time, base stays "
+                        "first-wins",
+                        env_key,
+                    )
+                else:
+                    logger.debug(
+                        "mcp-gateway rewriter: KIROCREW_MCP_TARGET env-key collision on "
+                        "%s again (already reported this pass or a prior one)",
+                        env_key,
+                    )
             target_env.setdefault(env_key, spec)
             # Args-disambiguated key: idempotent per (server, command+args), so
             # divergent same-named servers do not collide on first-wins.

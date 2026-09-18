@@ -21,9 +21,14 @@ import { ThemeProvider } from '../hooks/useTheme'
 
 // Captured lifecycle props from the sidebar's DndContext. Stubbing the context
 // (children pass through) is what lets the real handlers run without a gesture.
+// `active` stands in for dnd-kit's own store: the sidebar reconciles its drag
+// mirror against `useDndContext().active`, so a scripted drag sets it and a
+// scripted end clears it — and leaving it null after `onDragStart` is exactly
+// the "end never delivered" shape the reconciler exists for.
 const dnd = vi.hoisted(() => ({
   handlers: {} as Record<string, ((e: unknown) => void) | undefined>,
   overId: null as string | null,
+  active: null as { id: string } | null,
 }))
 
 vi.mock('@dnd-kit/core', async (importOriginal) => {
@@ -35,6 +40,7 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
       dnd.handlers.onDragEnd = props.onDragEnd
       return props.children as never
     },
+    useDndContext: () => ({ ...actual.useDndContext(), active: dnd.active }),
     useDroppable: (args: Parameters<typeof actual.useDroppable>[0]) => ({
       ...actual.useDroppable(args),
       isOver: dnd.overId === String(args.id),
@@ -156,6 +162,7 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     localStorage.setItem('mc-session-stale-collapse-ms', '0')
     dnd.handlers = {}
     dnd.overId = null
+    dnd.active = null
   })
 
   it('holds order while a drag is live and re-derives once it ends', () => {
@@ -167,6 +174,7 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
 
     expect(renderedOrder()).toEqual([TITLE_A, TITLE_B, TITLE_C])
 
+    dnd.active = { id: 'chat-a' }
     act(() => {
       dnd.handlers.onDragStart!({ active: { id: 'chat-a', data: { current: { type: 'session', key: 'chat-a' } } } })
     })
@@ -176,11 +184,72 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     rerender(SLOTS_REORDERED)
     expect(renderedOrder()).toEqual([TITLE_A, TITLE_B, TITLE_C])
 
+    dnd.active = null
     act(() => {
       dnd.handlers.onDragEnd!({ active: { id: 'chat-a', data: { current: { type: 'session', key: 'chat-a' } } }, over: null })
     })
 
     expect(renderedOrder()).toEqual([TITLE_C, TITLE_A, TITLE_B])
+  })
+
+  it('releases the hold when dnd-kit goes idle without reporting the end', () => {
+    // dnd-kit fires onDragStart synchronously but only fires onDragEnd /
+    // onDragCancel once a layout effect has populated its sensor context. A
+    // release that lands before that commit leaves its store idle and the
+    // sidebar's mirror live. Modelled here as: start reported, store idle,
+    // no end callback.
+    const { rerender } = renderSidebar(SLOTS_INITIAL)
+    expect(renderedOrder()).toEqual([TITLE_A, TITLE_B, TITLE_C])
+
+    dnd.active = { id: 'chat-a' }
+    act(() => {
+      dnd.handlers.onDragStart!({ active: { id: 'chat-a', data: { current: { type: 'session', key: 'chat-a' } } } })
+    })
+    rerender(SLOTS_REORDERED)
+    expect(renderedOrder()).toEqual([TITLE_A, TITLE_B, TITLE_C])
+
+    // The store goes idle; nothing calls onDragEnd. The next commit must
+    // release the hold — without the reconciler the list stays frozen forever.
+    dnd.active = null
+    rerender(SLOTS_REORDERED)
+    expect(renderedOrder()).toEqual([TITLE_C, TITLE_A, TITLE_B])
+  })
+
+  it('a drag stranded during a search does not survive clearing the search', () => {
+    // The user-visible shape of the stranded mirror: rows filtered out before
+    // the gesture never come back after the search is cleared, and the
+    // pinned/unpinned divider is drawn at every pinned→unpinned step of the
+    // stale, search-ordered projection instead of once.
+    localStorage.setItem('mc-session-sort', 'created-desc')
+    const slots = [
+      slot('chat-a', TITLE_A, '2026-04-01T00:00:00Z', true),
+      slot('chat-b', TITLE_B, '2026-03-01T00:00:00Z'),
+      slot('chat-c', TITLE_C, '2026-02-01T00:00:00Z', true),
+      slot('chat-z', 'Zulu session', '2026-01-01T00:00:00Z'),
+    ]
+    const { rerender } = renderSidebar(slots)
+    expect(renderedOrder()).toEqual([TITLE_A, TITLE_C, TITLE_B])
+    expect(screen.getAllByTestId('pinned-session-divider')).toHaveLength(1)
+
+    // A one-character query stays below the backend search threshold, so the
+    // narrowing is the local title match and needs no debounce to settle.
+    const search = screen.getByPlaceholderText('Search sessions…')
+    fireEvent.change(search, { target: { value: 'z' } })
+    expect(screen.queryByText(TITLE_A)).toBeNull()
+    expect(screen.getByText('Zulu session')).toBeTruthy()
+
+    dnd.active = { id: 'chat-z' }
+    act(() => {
+      dnd.handlers.onDragStart!({ active: { id: 'chat-z', data: { current: { type: 'session', key: 'chat-z' } } } })
+    })
+    dnd.active = null
+    rerender(slots)
+
+    fireEvent.click(screen.getByLabelText('Clear search'))
+    // Every row is back, in the automatic pinned-first order, with one divider.
+    expect(renderedOrder()).toEqual([TITLE_A, TITLE_C, TITLE_B])
+    expect(screen.getByText('Zulu session')).toBeTruthy()
+    expect(screen.getAllByTestId('pinned-session-divider')).toHaveLength(1)
   })
 
   it('the fixture actually reorders under date-desc (guards fixture validity)', () => {
@@ -204,9 +273,11 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
     expect(screen.getAllByTestId('pinned-session-divider')).toHaveLength(1)
 
     act(() => {
+      dnd.active = { id: 'session:chat-a' }
       dnd.handlers.onDragStart!({
         active: { id: 'session:chat-a', data: { current: { type: 'session', key: 'chat-a', pinned: true, container: 'root' } } },
       })
+      dnd.active = null
       dnd.handlers.onDragEnd!({
         active: { id: 'session:chat-a', data: { current: { type: 'session', key: 'chat-a', pinned: true, container: 'root' } } },
         over: { id: 'pinned-session:list:chat-b', data: { current: { type: 'pinned-session', key: 'chat-b', container: 'root' } } },
@@ -225,6 +296,7 @@ describe('ChatSidebar – sidebar row order is held during a dnd-kit drag', () =
       slot('chat-c', TITLE_C, '2026-01-01T00:00:00Z'),
     ])
     dnd.overId = 'pinned-session:list:chat-b'
+    dnd.active = { id: 'session:chat-a' }
     act(() => {
       dnd.handlers.onDragStart!({
         active: { id: 'session:chat-a', data: { current: { type: 'session', key: 'chat-a', pinned: true, container: 'root' } } },

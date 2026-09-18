@@ -191,6 +191,24 @@ describe('the refined role rows', () => {
 })
 
 describe('the error row', () => {
+  it('forwards diagnostic metadata without synthesizing a setup action', () => {
+    const m = msg('error', { content: 'owner setup required', meta: {
+      code: 'memory_unavailable', recovery: { kind: 'initialize_member_memory', member: 'reviewer' },
+    } })
+    const { el } = drawn(m, { index: 0, messages: [m] })
+    expect(el!.props.meta).toBe(m.meta)
+    expect(el!.props.recoveryActive).toBeUndefined()
+  })
+
+  it.each(['user', 'assistant'])('keeps diagnostic metadata after a later %s turn', role => {
+    const m = msg('error', { meta: {
+      code: 'memory_unavailable', recovery: { kind: 'initialize_member_memory', member: 'reviewer' },
+    } })
+    const { el } = drawn(m, { index: 0, messages: [m, msg(role, { content: 'a later turn' })] })
+    expect(el!.props.meta).toBe(m.meta)
+    expect(el!.props.recoveryActive).toBeUndefined()
+  })
+
   it('withholds Continue when the transcript holds no error at all', () => {
     // lastErrorIndex returns -1, so no row can be "the last error".
     const m = msg('error', { content: 'zzq boom' })

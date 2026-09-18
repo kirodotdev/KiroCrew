@@ -69,3 +69,95 @@ describe("crash arming order in main.js", () => {
     assert.ok(lock < callOffset(CODE, "armCrashCollector"));
   });
 });
+
+describe("early boot guard in main.js", () => {
+  // Everything between the top of the file and `app.whenReady()` runs
+  // synchronously at module load, before Chromium is ready and before any
+  // window, tray, or (for most of that span) crash reporter exists. An uncaught
+  // throw in that span has no surface to land on: no window, no dialog, and
+  // before the log sink is armed, no log line. early-boot-guard.js is the ONE
+  // mechanism that covers the span; early-boot-guard.test.js proves what it
+  // does. What a unit test cannot see is WHERE main.js installs and releases
+  // it, and the position is the whole behaviour: installed after the first
+  // guarded statement, the guard misses it; released before the post-ready
+  // safety net exists, an exception between the two is fatal again.
+
+  const whenReadyOffset = CODE.search(/app\.whenReady\(\)\.then\(/);
+  const installOffset = callOffset(CODE, "installEarlyBootGuard");
+
+  it("finds app.whenReady().then( at all", () => {
+    assert.notEqual(whenReadyOffset, -1, "main.js must call app.whenReady().then(");
+  });
+
+  it("installs the guard before the first electron call of the boot span", () => {
+    const seedOffset = CODE.search(/\bseedRenamedStore\(/);
+    assert.notEqual(seedOffset, -1, "main.js must call seedRenamedStore");
+    assert.ok(installOffset < seedOffset, "the guard must precede seedRenamedStore(app.getPath(...))");
+  });
+
+  it("installs the guard before armCrashCollector and the single-instance lock", () => {
+    const lock = CODE.search(/if\s*\(!app\.requestSingleInstanceLock\(\)\)/);
+    assert.ok(installOffset < lock, "the guard must precede the single-instance lock");
+    assert.ok(installOffset < callOffset(CODE, "armCrashCollector"), "the guard must precede armCrashCollector");
+  });
+
+  it("hands the guard app, dialog, glog and the log path", () => {
+    const wiring = CODE.slice(installOffset, CODE.indexOf("});", installOffset));
+    for (const dep of [/\bapp,/, /\bdialog,/, /\bglog,/, /logPath:\s*gatewayLogPath/]) {
+      assert.match(wiring, dep, `installEarlyBootGuard must receive ${dep}`);
+    }
+  });
+
+  it("installs the guard exactly once and keeps its release handle", () => {
+    const installs = [...CODE.matchAll(/installEarlyBootGuard\(/g)];
+    assert.equal(installs.length, 1, "expected exactly one installEarlyBootGuard call");
+    assert.match(
+      CODE,
+      /const releaseEarlyBootGuard = installEarlyBootGuard\(\{/,
+      "the release function must be kept for the ready handler",
+    );
+  });
+
+  it("releases the guard as the first statement of the ready handler", () => {
+    const releaseOffset = CODE.indexOf("releaseEarlyBootGuard();");
+    assert.notEqual(releaseOffset, -1, "main.js must release the guard");
+    assert.ok(whenReadyOffset < releaseOffset, "the release must sit inside app.whenReady().then(");
+    const between = CODE.slice(CODE.indexOf("{", whenReadyOffset) + 1, releaseOffset);
+    assert.equal(between.trim(), "", "nothing may run in the ready handler before the release");
+  });
+
+  it("releases only after the keep-alive safety net is registered", () => {
+    // The post-ready net keeps the process alive so recovery can run; the
+    // guard exits. Releasing before the net is registered would leave a window
+    // with neither.
+    const net = CODE.search(/process\.on\("uncaughtException"/);
+    assert.notEqual(net, -1, "main.js must register the post-ready uncaughtException net");
+    assert.ok(net < CODE.indexOf("releaseEarlyBootGuard();"));
+  });
+
+  it("keeps the boot sequence itself unwrapped: one mechanism, no per-block catches", () => {
+    // The guard is a process-level listener, so the statements it covers stay
+    // as module-scope declarations. A `try` around them would demote every
+    // `const` inside to block scope.
+    assert.match(CODE, /^const store = new Store\(/m, "store must be a module-scope const");
+    assert.match(CODE, /^const KIROCREW_HOME = resolveHome\(\);/m);
+    assert.match(CODE, /^const PORT = resolvePort\(\);/m);
+    assert.match(CODE, /^const BACKEND_URL = /m);
+    assert.doesNotMatch(CODE, /failEarlyBoot\(/, "main.js delegates reporting to the guard module");
+  });
+
+  it("keeps the boot calls present and in order", () => {
+    const seedOffset = CODE.search(/\bseedRenamedStore\(/);
+    const order = [
+      installOffset,
+      seedOffset,
+      callOffset(CODE, "armCrashCollector"),
+      callOffset(CODE, "initNativeLogging"),
+      callOffset(CODE, "initGpuPolicy"),
+    ];
+    for (let i = 1; i < order.length; i += 1) {
+      assert.ok(order[i - 1] < order[i], `call at index ${i - 1} must precede call at index ${i}`);
+    }
+    assert.ok(order[order.length - 1] < whenReadyOffset);
+  });
+});

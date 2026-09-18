@@ -13,6 +13,7 @@ from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
     MonitorBudgets,
+    MonitorCreationSurface,
     MonitorDecision,
     MonitorObservationStatus,
     MonitorOutcome,
@@ -126,6 +127,23 @@ def test_structured_monitor_cadence_defaults_without_changing_legacy_loop() -> N
     assert monitor.cadence_secs == DEFAULT_MONITOR_CADENCE_SECS == 300
     assert monitor_state_from_dict(monitor_state_to_dict(monitor)).cadence_secs == 300
     assert NudgeLoop(id="legacy02", slot_key="chat-1-123", message="keep going").idle_secs == 60
+
+
+def test_monitor_creation_surface_is_durable_and_legacy_records_fail_closed() -> None:
+    monitor = MonitorState(
+        kind="bitbucket_pull_request",
+        target="bitbucket.org/acme/widgets#10",
+        objective="review_ready",
+        created_ts=1_000.0,
+        creation_surface=MonitorCreationSurface.CHANNEL,
+    )
+
+    restored = monitor_state_from_dict(monitor_state_to_dict(monitor))
+    assert restored.creation_surface is MonitorCreationSurface.CHANNEL
+
+    legacy = monitor_state_to_dict(monitor)
+    legacy.pop("creation_surface")
+    assert monitor_state_from_dict(legacy).creation_surface is MonitorCreationSurface.UNKNOWN
 
 
 def test_structured_monitor_cadence_must_be_a_positive_integer() -> None:
@@ -309,6 +327,7 @@ def test_public_projection_exposes_only_safe_latest_classification_fields() -> N
     canonical: dict[str, object] = {
         "blocking_review": "none",
         "checks": canonical_checks,
+        "checks_complete": True,
         "draft": False,
         "head_revision": "0123456789abcdef0123456789abcdef01234567",
         "kind": "github_pull_request",
@@ -358,6 +377,34 @@ def test_public_projection_exposes_only_safe_latest_classification_fields() -> N
     assert "mutated public copy" not in repr(state.last_observation)
 
 
+def test_public_projection_backfills_legacy_check_completeness() -> None:
+    """Pre-field terminal observations remain inspectable after an upgrade."""
+    observation: dict[str, object] = {
+        "blocking_review": "none",
+        "checks": {"failed": [], "passed": ["CI"], "pending": [], "unknown": []},
+        "draft": False,
+        "head_revision": "0123456789abcdef0123456789abcdef01234567",
+        "kind": "github_pull_request",
+        "mergeability": "mergeable",
+        "review_decision": "approved",
+        "review_threads_complete": True,
+        "state": "merged",
+        "target": "github.com/owner/repo#123",
+        "unresolved_review_threads": 0,
+    }
+    state = MonitorState(
+        kind="github_pull_request",
+        target="owner/repo#123",
+        objective="review_ready",
+        created_ts=1_000.0,
+        last_observation=observation,
+    )
+
+    public = monitor_state_public_dict(state)["last_observation"]
+
+    assert public == {**observation, "checks_complete": True}
+
+
 def test_monitor_public_projection_includes_lifecycle_timestamps_and_wake_reason() -> None:
     state = MonitorState(
         kind="github_pull_request",
@@ -373,6 +420,100 @@ def test_monitor_public_projection_includes_lifecycle_timestamps_and_wake_reason
     assert public["created_ts"] == 1_000.0
     assert public["last_wake_reason_code"] == "checks_failed"
     assert public["user_stop_reason"] == "Superseded by a newer review."
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [
+        "github_pull_request",
+        "gitlab_merge_request",
+        "azure_devops_pull_request",
+        "bitbucket_pull_request",
+    ],
+)
+def test_public_projection_accepts_the_exact_shared_schema_for_every_provider(
+    kind: str,
+) -> None:
+    """A supported provider keeps safe facts without widening the public payload."""
+    observation = {
+        "blocking_review": "none",
+        "checks": {"failed": [], "passed": ["CI"], "pending": [], "unknown": []},
+        "checks_complete": True,
+        "draft": False,
+        "head_revision": "abc123",
+        "kind": kind,
+        "mergeability": "mergeable",
+        "review_decision": "approved",
+        "review_threads_complete": True,
+        "state": "open",
+        "target": "provider.example/repository#17",
+        "unresolved_review_threads": 0,
+    }
+    state = MonitorState(
+        kind=kind,
+        target="https://provider.example/repository/17",
+        objective="review_ready",
+        created_ts=1_000.0,
+        last_observation={**observation, "raw_provider_payload": {"secret": "no"}},
+    )
+
+    public = monitor_state_public_dict(state)
+
+    assert public["last_observation"] == observation
+    assert "raw_provider_payload" not in repr(public)
+
+
+def test_public_projection_drops_an_observation_for_a_different_provider() -> None:
+    state = MonitorState(
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/17",
+        objective="review_ready",
+        created_ts=1_000.0,
+        last_observation={
+            "blocking_review": "none",
+            "checks": {"failed": [], "passed": [], "pending": [], "unknown": []},
+            "draft": False,
+            "head_revision": "abc123",
+            "kind": "gitlab_merge_request",
+            "mergeability": "mergeable",
+            "review_decision": "approved",
+            "review_threads_complete": True,
+            "state": "open",
+            "target": "gitlab.com/acme/widgets!17",
+            "unresolved_review_threads": 0,
+        },
+    )
+
+    assert monitor_state_public_dict(state)["last_observation"] == {}
+
+
+def test_public_projection_rejects_unbounded_persisted_check_names() -> None:
+    state = MonitorState(
+        kind="github_pull_request",
+        target="https://github.com/acme/widgets/pull/17",
+        objective="review_ready",
+        created_ts=1_000.0,
+        last_observation={
+            "blocking_review": "none",
+            "checks": {
+                "failed": [],
+                "passed": ["x" * 201],
+                "pending": [],
+                "unknown": [],
+            },
+            "draft": False,
+            "head_revision": "abc123",
+            "kind": "github_pull_request",
+            "mergeability": "mergeable",
+            "review_decision": "approved",
+            "review_threads_complete": True,
+            "state": "open",
+            "target": "github.com/acme/widgets#17",
+            "unresolved_review_threads": 0,
+        },
+    )
+
+    assert monitor_state_public_dict(state)["last_observation"] == {}
 
 
 @pytest.mark.parametrize(

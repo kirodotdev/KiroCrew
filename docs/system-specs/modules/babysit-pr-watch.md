@@ -2,37 +2,40 @@
 
 ## Purpose
 
-The babysit feature offers two current monitoring modes.
+The agent-facing babysit flow prefers `monitor_watch`. It creates a durable,
+typed structured monitor through a session-bound directive. The controller probes
+the provider before invoking the model, persists canonical observations and
+budgets, and wakes the owning session only for a new actionable fingerprint.
+Provider-fact-only GitHub review readiness therefore spends no agent turn while
+the pull request is unchanged.
 
-* `monitor_start` creates a same-session AutoNudge loop. Its stateless MCP
-  directive is validated by `mcp_tools.control.monitor_start`, then applied by
-  `dashboard.session_directive_apply._monitor_start` through
-  `autonudge_authz.authorize_and_add_nudge`. `AutoNudgeService` persists and
-  schedules the loop. When the loop's own instruction names exactly one public
-  GitHub pull request, the service attaches a monitor and OBSERVES that pull
-  request on each tick instead of firing: a tick the probe calls quiet spends no
-  agent turn at all. That is the default for `monitor_start`, whose directive asks
-  for the gate; `gate: false` is its opt-out. Every OTHER caller defaults to
-  UNGATED and must ask for the gate explicitly -- the generic REST route included --
-  because gating is the state that can silently STOP work, so an uncertain caller
-  must resolve toward spending rather than toward a watch that deactivates itself.
-* `pr_watch.py:watch` is a script cron for a quiet pull-request waiting phase.
-  `probes.gh_pr.PrWatchProbe` holds the GitHub knowledge and is driven two ways:
-  `builtin_skills/kirocrew-dev/babysit/scripts/pr_watch.py:watch` is a thin cron
-  adapter over it via `irq.run`, and the AutoNudge scheduler drives the same
-  probe in-process via `irq.poll`. The probe lives in the package because a
-  hyphenated skill directory is not importable, so a copy beside each driver
-  would have meant two copies of one classifier.
+How strongly that preference reads is an installation's choice:
+`monitoring.prefer_structured_arming` (default off) decides whether the tool
+descriptions offer the structured path only once the objective is judged fully
+typed-decidable, or name it the default for a supported pull request with the
+prompt loop as the exception. It refuses neither tool, and in both positions
+evidence the typed provider cannot observe stays on the prompt loop. See
+`monitor-architecture.md` for the two costs of defaulting to the structured path.
 
-The modes are not interchangeable, but they no longer overlap for the common
-case. A gated `monitor_start` loop re-injects its instruction only on a cycle
-the probe judged worth a turn, so a manual `pr_watch` cron is now for what the
-gate cannot reach: an enterprise host, detection with no owning loop, or the
-cron's own `known_reds` / `note` / `wake_on_green` knobs. `PrWatchProbe` reports
-only a state that needs judgment. This boundary is load-bearing: repeated quiet
-CI polls do not grow the session transcript, while a wake retains the session
-that owns the work and its tools. The babysit skill documents when to use each
-mode.
+`monitor_start` creates a finite same-session AutoNudge loop for objectives or
+evidence the structured provider cannot decide, including generic comments and
+advisory review text. Its stateless directive is validated by
+`mcp_tools.control.monitor_start`, then applied by
+`dashboard.session_directive_apply._monitor_start` through
+`autonudge_authz.authorize_and_add_nudge`. `AutoNudgeService` persists and
+schedules the loop. Those two `monitor_start` surfaces are the only callers that
+ask for the gate; the chokepoint defaults every other caller UNGATED, the generic
+REST route included. Gating is the state that can silently stop work, so a caller
+that names no value resolves toward spending a turn per interval rather than toward
+a watch that deactivates itself. A loop whose instruction names exactly one public
+GitHub pull request may still attach `PrWatchProbe` as a compatibility gate, but
+that path is the bounded legacy fallback rather than the babysit recipe.
+
+The bundled `pr_watch.py:watch` cron adapter remains a compatibility asset for
+existing registered jobs. New babysit requests do not copy or register it; they
+use `monitor_watch` or a finite `monitor_start` loop owned by the session that can
+inspect and act on a wake. `probes.gh_pr.PrWatchProbe` stays in the package because
+the legacy AutoNudge gate and existing script jobs share its classifier.
 
 ### What a gated loop changes about the numbers
 
@@ -74,10 +77,49 @@ declare about its `rawInput`. The consumer-side failure paths log at `warning`
 (`session-directive NOT APPLIED`, `NO CALL INPUT`, `CLAIM MISS`, `DENIED`), which
 is what makes this class of drop visible in `gateway.log` instead of silent.
 
-`monitor_start` binds one loop to the calling session. `AutoNudgeService._add_unserialized`
-replaces an existing loop on that binding before it persists and arms the new
-one. `test_autonudge_stop_auth.py::test_applier_monitor_start_arms_via_the_session_binding_key`
-pins that the binding comes from the session rather than tool input.
+`monitor_start` binds one loop to the calling session and is create-only. It
+refuses when either automation kind already occupies the binding, preserving the
+existing record and its evidence. `monitor_update` is the only way to revise or
+re-arm the bound legacy loop. The binding-key and collision tests in
+`test_autonudge_stop_auth.py` pin that behavior.
+
+A retained stop is refused at the turn boundary, and the three tools say so
+before the turn ends **whenever the retained record is readable**.
+`mcp_tools.control._retained_stop_refusal` reads the same
+`/api/autonudge/session-monitor` endpoint `monitor_inspect` reads and, when the
+binding holds an inactive record whose outcome is retained evidence, returns a
+refusal naming the retained outcome, its target, and the owner-only clear —
+instead of an ack. This closes a false acknowledgement rather than adding a
+capability: the tool answers the model over its own pipe DURING the turn while
+`apply_session_directive` runs after the turn's result is processed, so the
+authorizer's refusal and the `ARM_REFUSAL_NOTICE_PREFIX` transcript notice both
+arrive after the model has ended its turn believing a monitor exists. The
+preflight is read-only and fails OPEN — an unreachable gateway arms as before,
+because a preflight that failed closed would let one bad read block all arming —
+and the turn-boundary refusal remains the enforcement point. So the preflight is
+an ADVISORY early answer, not a second gate: on an unreadable read, and in the
+TOCTOU window where the record changes after the read, the in-turn answer and the
+enforced outcome can still differ, and the turn boundary is what settles it. It
+never clears or overwrites a record: clearing retained evidence stays the
+owner-only dashboard action. It also runs **only in the MCP server**: a directive
+tool's handler is re-run a second time inside the GATEWAY by
+`mcp_core.derive_directive`, which discards the returned text, and that replay is
+called synchronously on the gateway's own event loop — so the preflight's
+blocking loopback read would ask the gateway for an answer only the loop already
+waiting on it could give, stalling every co-hosted session until the timeout.
+`mcp_core.directive_capture_active` is the seam the guard reads, and the skip
+costs nothing: the preflight exists to reach the MODEL in the arming turn, which
+only the MCP-side run can do.
+`monitoring.models.retained_outcome_blocks_rearm` is
+the single predicate shared with `autonudge._stopped_row_is_replaceable`, so what
+cannot drift is the RULE itself — one outcome classification serves both sites,
+rather than two copies diverging. The replaceable/retained split is pinned as
+explicit data in `test_monitor_retained_stop_false_ack.py`, because a test that
+merely compares the two callers of one predicate is tautological. That file also
+covers all three tools, the fail-open paths, the system-imposed outcomes that
+must still arm, and the endpoint wire contract the refusal depends on — dropping
+`outcome` from `MONITOR_PUBLIC_FIELDS` would make the preflight fail open
+silently.
 
 `NudgeLoop.next_due_ts`, `notify_user_input`, and `notify_turn_complete` make
 dashboard-loop cadence deadline-preserving: user activity cancels a pending
@@ -92,12 +134,11 @@ turn-lifecycle hooks.
 
 The schemas in `validation.MONITOR_START_SCHEMA` and
 `validation.MONITOR_UPDATE_SCHEMA` bound the message, interval, cycle cap, and
-wall-clock budget. `mcp_tools.control.monitor_start` supplies the bounded
-cycle-cap default from `mcp_tools._limits`; its default and explicit unlimited
-form are pinned by `test_autonudge_stop_auth.py::test_monitor_start_defaults_interval_300_and_bounded_cap`
-and `test_monitor_start_explicit_zero_cap_stays_zero`. The cap is a runaway
-backstop, not evidence that the watched work completed: `AutoNudgeService._timer`
-deactivates a capped loop and emits `expired`.
+wall-clock budget. `mcp_tools.control.monitor_start` supplies bounded positive
+defaults from `mcp_tools._limits`; zero and negative cycle or runtime limits are
+rejected. The cap is a runaway backstop, not evidence that the watched work
+completed: `AutoNudgeService._timer` deactivates a capped loop and emits
+`expired`.
 
 `AutoNudgeService.runtime_budget_exceeded` measures a configured wall-clock
 budget from the persisted creation time. `_timer` checks it before a fire and
@@ -139,7 +180,7 @@ it does not make the script crash.
 * A merged PR or a closed unmerged PR is `Severity.TERMINAL`, so `irq.run`
   reports it and removes the cron job. `test_merged_pr_completes_the_watch` and
   `test_closed_unmerged_completes_the_watch` pin both terminal paths.
-* A conflicting or dirty PR is `Severity.NMI`. `irq.run` bypasses coalescing
+* A conflicting or dirty PR is `Severity.IMMEDIATE`. `irq.run` bypasses coalescing
   delay but still deduplicates it, because waiting cannot produce checks on a
   dirty PR and unmasked repetition would wake every tick. The conflict and
   re-alert tests pin this behavior.
@@ -174,9 +215,9 @@ fails while a coalescing window is open, `irq.run` reports immediately with a
 warning rather than delaying an observation into state it cannot recover.
 
 A `Tick.epoch` changes when the PR head changes. `irq.run` clears
-epoch-scoped dedupe and coalescing state on that change, so failures on the new
-head can wake again. Conversation observations set `epoch_scoped=False`, so a
-force-push does not replay an already-seen comment or review. These distinct
+`REVISION` dedupe and coalescing state on that change, so failures on the new
+head can wake again. Conversation observations set `resets_on=ResetsOn.NEVER`, so
+a force-push does not replay an already-seen comment or review. These distinct
 key spaces are load-bearing: treating every signal as head-scoped loses
 conversation dedupe, while treating every signal as sticky hides failures on a
 new head.
@@ -186,7 +227,7 @@ elapsed and the check rollup settles, or until its hard wall elapses. The hard
 wall ensures a permanently pending check delays a wake instead of losing it.
 Sticky conversation observations can fire once the floor elapses even while
 checks remain pending; they do not become more informative by waiting for CI.
-`Severity.NMI` and `Severity.TERMINAL` bypass the ordinary window. The
+`Severity.IMMEDIATE` and `Severity.TERMINAL` bypass the ordinary window. The
 coalescing and sticky-observation tests in `test_irq.py` pin these cases.
 
 Dedupe is time-bounded. The kernel re-alerts a persistent condition after its
@@ -214,17 +255,17 @@ a closed slot from history when possible. If no slot is available, it sends a
 notification instead. This makes the arming session the normal wake target
 without claiming that headless delivery can start a session.
 
-The bundled script is a source asset, not a gateway import. `cron_script.resolve_script_path`
-requires a registered script file under the configured cron directory, so the
-babysit skill's watch recipe copies the bundled `pr_watch.py` there before
-registering it. The cron gateway revalidates and scans the current script body
-at fire time, then executes it through the script sandbox.
+The bundled script is a source asset, not a gateway import. Existing jobs must
+still resolve a registered copy under the configured cron directory through
+`cron_script.resolve_script_path`. The cron gateway revalidates and scans that
+current script body at fire time, then executes it through the script sandbox.
+The babysit skill no longer registers new script jobs.
 
 ## Non-goals
 
-The PR watch does not parse comment bodies or decide whether a review finding
-is valid. It reports a change and leaves judgment, source inspection, and any
-reply to the reactivated babysit session. It also watches one pull request per
-cron job. `monitor_start` remains the appropriate mechanism when each cycle
-requires the agent to make progress or when the watched subject is not a pull
-request.
+The structured GitHub monitor does not parse generic comment bodies or decide
+whether an advisory finding is valid. It reports typed provider facts and leaves
+judgment, source inspection, and any reply to the reactivated babysit session.
+`monitor_start` remains appropriate when each delivered cycle requires the agent
+to make progress, the objective requires untyped evidence, or the watched subject
+is unsupported by a structured provider.

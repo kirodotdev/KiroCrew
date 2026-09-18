@@ -363,6 +363,7 @@ class TestSubagentManagerCleanupIntegration:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -411,6 +412,7 @@ class TestSubagentManagerCleanupIntegration:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -458,6 +460,7 @@ class TestSubagentManagerCleanupIntegration:
         sessions.reset = AsyncMock()
         sessions.record_success = MagicMock()
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_approval_policy = MagicMock(return_value="auto")
 
         ctx = MagicMock()
@@ -627,7 +630,7 @@ class TestStartupSweep:
     async def test_startup_sweep_processes_all_entries(self, tmp_path, agent_root, session_ids):
         """**Validates: Requirements 5.2, 5.4 (amended by retain-by-default)**
 
-        Orphan reconcile no longer deletes session files — an orphaned run's
+        Orphan reconcile does not delete session files — an orphaned run's
         transcript is spawn_continue resume material after a restart. The
         sweep must still tombstone every orphan; file deletion is owned by
         the tombstone pruner.
@@ -671,7 +674,7 @@ class TestStartupSweep:
         """Reconcile processes every orphan; session files are retained.
 
         Validates: Requirements 5.4 (amended by retain-by-default: reconcile
-        no longer deletes session files, so per-entry cleanup failures can't
+        does not delete session files, so per-entry cleanup failures can't
         occur here — the invariant is that every orphan is still tombstoned).
         """
         from kiro_crew.subagent import SubagentManager

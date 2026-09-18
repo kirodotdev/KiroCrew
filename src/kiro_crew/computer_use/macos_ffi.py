@@ -814,7 +814,7 @@ def cf_number_double(ref: Any) -> "float | None":
     components are CGFloats: reading them through the SInt32 path would truncate a
     fractional origin (Retina windows routinely sit on half-pixel boundaries) and
     could place a rect edge a pixel away from where it really is — which matters
-    when the rect is being used to decide whether a click is inside an authorized
+    when the rect decides whether a click is inside an authorized
     application's window.
     """
     if not cf_is(ref, type_ids().number):

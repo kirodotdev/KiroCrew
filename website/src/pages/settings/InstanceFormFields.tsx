@@ -8,7 +8,7 @@
  * mounted further down the same page.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useMutation } from '@tanstack/react-query'
+import { useMutation, useQueryClient } from '@tanstack/react-query'
 import { Pencil } from 'lucide-react'
 import { api, ApiError, type AddInstanceBody, type InstanceView } from '../../api/client'
 import SimpleSelect from '../../components/SimpleSelect'
@@ -310,6 +310,8 @@ export function EditInstanceForm({
   // was restored. A restored draft carries its own, and the rebase below is the ONE
   // place that applies it — deliberately not a second `draft?.baseline ??` here,
   // which would leave each spelling masking a defect in the other.
+  const queryClient = useQueryClient()
+  const [stoppedSave, setStoppedSave] = useState(false)
   const baselineRef = useRef(inst)
   // The baseline is normally fixed for the form's lifetime, but a REBASE replaces it
   // deliberately: the user has been shown that the record moved and chose to apply
@@ -338,37 +340,51 @@ export function EditInstanceForm({
       form.dirty ? { values: form.values, baseline: baselineRef.current } : null,
     )
   }, [form.dirty, form.values])
+  const saveAbortRef = useRef<AbortController | null>(null)
+  useEffect(() => () => {
+    saveAbortRef.current?.abort()
+    saveAbortRef.current = null
+  }, [])
   const saveMutation = useMutation({
-    mutationFn: () =>
-      api.updateInstance(
+    mutationFn: () => {
+      const controller = new AbortController()
+      saveAbortRef.current = controller
+      return api.updateInstance(
         inst.id,
         form.patch(baselineRef.current, { omitIdentity: lockTransport }),
-      ),
-    onSuccess: updated => onSaved(updated),
+        { signal: controller.signal },
+      )
+    },
+    onSuccess: onSaved,
   })
-  // Only meaningful once there is something to lose: a clean form has no typed
-  // values to protect, and re-seeding it silently is correct.
+  const savePending = saveMutation.isPending
   const stale = !!externallyChanged?.length && form.dirty
-  const err = saveMutation.error
+  // An abort is never an API rejection: it is either this form unmounting or the
+  // user choosing Stop waiting on a hung save. The latter keeps the draft open and
+  // reports its outcome separately, so an error banner would misstate the user's click.
+  const err = saveMutation.error && saveMutation.error.name !== 'AbortError'
     ? saveMutation.error instanceof ApiError
       ? saveMutation.error.message
       : i18nT('pages.settings.remoteCrewPanel.failed_to_save_crew')
     : ''
+  const formLabel = i18nT('pages.settings.remoteCrewPanel.edit_crew', { name: inst.name })
   return (
     <div
       className="mt-3 rounded-md border border-border bg-bg-elevated p-3"
       role="group"
-      aria-label={i18nT('pages.settings.remoteCrewPanel.edit_crew', { name: inst.name })}
+      aria-label={formLabel}
     >
       <div className="flex items-center gap-2 mb-3 text-text font-medium text-sm">
         <Pencil className="lucide-inline" />{' '}
-        {i18nT('pages.settings.remoteCrewPanel.edit_crew', { name: inst.name })}
+        {formLabel}
       </div>
-      <InstanceFormFields
-        idPrefix={`edit-instance-${inst.id}`}
-        form={form}
-        lockTransport={lockTransport}
-      />
+      <fieldset disabled={savePending} className="contents min-w-0 border-0 p-0 m-0">
+        <InstanceFormFields
+          idPrefix={`edit-instance-${inst.id}`}
+          form={form}
+          lockTransport={lockTransport}
+        />
+      </fieldset>
       {lockTransport && (
         <p className="mt-2 text-[12px] text-warn">
           {i18nT('pages.settings.remoteCrewPanel.transport_locked_note')}
@@ -397,28 +413,60 @@ export function EditInstanceForm({
           (RemoteCrewPanel) writes that report to redux via setCrewEditForm — the
           hand-off unmounts this form, and coming back re-seeds it from `draft`. */}
       <ErrorNotice message={err} className="mt-3" askAgent />
+      {stoppedSave && (
+        <p
+          role="status"
+          className="mt-3 rounded-lg border border-border bg-bg-hover px-3 py-2 text-[13px] text-text"
+        >
+          {i18nT('pages.settings.remoteCrewPanel.save_stopped_note')}
+        </p>
+      )}
       <div className="mt-3 flex items-center gap-2">
         {/* Save is withheld while the record is stale, rather than the edit being
             discarded: throwing the typing away would punish the far more common
             case (someone edited this same crew from the CLI) to guard the rarer
             one (the crew was replaced under its id). */}
         {stale ? (
-          <Btn primary onClick={onRebase} disabled={saveMutation.isPending}>
+          <Btn primary onClick={onRebase} disabled={savePending}>
             {i18nT('pages.settings.remoteCrewPanel.use_my_edits_anyway')}
           </Btn>
         ) : (
         <Btn
           primary
-          onClick={() => saveMutation.mutate()}
-          disabled={saveMutation.isPending || !form.valid}
+          onClick={() => {
+            setStoppedSave(false)
+            saveMutation.mutate()
+          }}
+          disabled={savePending || !form.valid}
         >
-          {saveMutation.isPending
+          {savePending
             ? i18nT('pages.settings.remoteCrewPanel.saving')
             : i18nT('pages.settings.remoteCrewPanel.save_changes')}
         </Btn>
         )}
-        <Btn onClick={onCancel} disabled={saveMutation.isPending}>
-          {i18nT('pages.settings.remoteCrewPanel.cancel')}
+        {/* Stop waiting stays enabled for a hung save. The abort is client-side
+            only; refreshing the list shows a save the server already applied. The
+            form stays open with its draft so the outcome is visible and editable.
+            A write the server commits AFTER this refetch is not lost either: the
+            shared ['instances'] cache is re-read by InstancesViewport every 60s
+            and by useAutoConnectInstances on window focus, so the list converges
+            on the server's record without a second mechanism here. */}
+        <Btn
+          onClick={() => {
+            if (savePending) {
+              saveAbortRef.current?.abort()
+              saveAbortRef.current = null
+              void queryClient.invalidateQueries({ queryKey: ['instances'] })
+              setStoppedSave(true)
+              return
+            }
+            setStoppedSave(false)
+            onCancel()
+          }}
+        >
+          {savePending
+            ? i18nT('pages.settings.remoteCrewPanel.stop_waiting')
+            : i18nT('pages.settings.remoteCrewPanel.cancel')}
         </Btn>
       </div>
     </div>
@@ -426,7 +474,13 @@ export function EditInstanceForm({
 }
 
 const inputCls =
-  'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-none focus-ring'
+  // `disabled:` variants, not a conditional class: the pending-save freeze is
+  // applied by the ancestor <fieldset disabled>, which the class string never
+  // sees — only the native :disabled pseudo-class observes it. The cue is a
+  // different fill plus a dashed border, not opacity: 60% opacity on
+  // bg-elevated over --bg is nearly invisible in the dark theme, and the
+  // dashed border reads even where the two fills are close.
+  'bg-bg-elevated border border-border rounded-md px-3 py-2 text-text text-sm outline-none focus-ring disabled:bg-bg-hover disabled:text-muted disabled:border-dashed disabled:cursor-not-allowed'
 // A frozen field must LOOK frozen: identical styling invites the user to click in,
 // type, and discover only from the note below the grid that nothing landed.
 const readOnlyCls = `${inputCls} opacity-60 cursor-not-allowed`
@@ -442,6 +496,8 @@ export function InstanceFormFields({
   lockTransport?: boolean
 }) {
   const { values, set, isSsm, portValid, ttlValid } = form
+  // Machine-identity fields freeze when the caller locks the transport.
+  const identityFrozen = lockTransport
   return (
     <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
       <label htmlFor={`${idPrefix}-name`} className="flex flex-col gap-1 text-[13px] text-muted">
@@ -459,7 +515,7 @@ export function InstanceFormFields({
           value={values.method}
           onChange={v => set('method', v as 'ssh' | 'ssm')}
           aria-label={i18nT('pages.settings.instancesPanel.connection_method')}
-          disabled={lockTransport}
+          disabled={identityFrozen}
         />
         <span className="text-[12px] text-muted leading-snug">
           {isSsm
@@ -471,18 +527,18 @@ export function InstanceFormFields({
         <>
           <label htmlFor={`${idPrefix}-ssm-target`} className="flex flex-col gap-1 text-[13px] text-muted">
             {i18nT('pages.settings.instancesPanel.ssm_target_instance_id')}
-            <input id={`${idPrefix}-ssm-target`} aria-label={i18nT('pages.settings.instancesPanel.ssm_target_instance_id')} className={lockTransport ? readOnlyCls : inputCls} aria-readonly={lockTransport || undefined} value={values.ssmTarget} onChange={e => set('ssmTarget', e.target.value)} placeholder="i-0123456789abcdef0" readOnly={lockTransport} />
+            <input id={`${idPrefix}-ssm-target`} aria-label={i18nT('pages.settings.instancesPanel.ssm_target_instance_id')} className={identityFrozen ? readOnlyCls : inputCls} aria-readonly={identityFrozen || undefined} value={values.ssmTarget} onChange={e => set('ssmTarget', e.target.value)} placeholder="i-0123456789abcdef0" readOnly={identityFrozen} />
             <span className="text-[12px] text-muted leading-snug">
               {i18nT('pages.settings.instancesPanel.ec2_instance_id_i_or_ssm_managed_instance_id_mi')}
             </span>
           </label>
           <label htmlFor={`${idPrefix}-aws-profile`} className="flex flex-col gap-1 text-[13px] text-muted">
             {i18nT('pages.settings.instancesPanel.aws_profile')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
-            <input id={`${idPrefix}-aws-profile`} aria-label={i18nT('pages.settings.instancesPanel.aws_profile')} className={lockTransport ? readOnlyCls : inputCls} aria-readonly={lockTransport || undefined} value={values.awsProfile} onChange={e => set('awsProfile', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.default_credential_chain')} readOnly={lockTransport} />
+            <input id={`${idPrefix}-aws-profile`} aria-label={i18nT('pages.settings.instancesPanel.aws_profile')} className={identityFrozen ? readOnlyCls : inputCls} aria-readonly={identityFrozen || undefined} value={values.awsProfile} onChange={e => set('awsProfile', e.target.value)} placeholder={i18nT('pages.settings.instancesPanel.default_credential_chain')} readOnly={identityFrozen} />
           </label>
           <label htmlFor={`${idPrefix}-aws-region`} className="flex flex-col gap-1 text-[13px] text-muted">
             {i18nT('pages.settings.instancesPanel.aws_region')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>
-            <input id={`${idPrefix}-aws-region`} aria-label={i18nT('pages.settings.instancesPanel.aws_region')} className={lockTransport ? readOnlyCls : inputCls} aria-readonly={lockTransport || undefined} value={values.awsRegion} onChange={e => set('awsRegion', e.target.value)} placeholder="us-east-1" readOnly={lockTransport} />
+            <input id={`${idPrefix}-aws-region`} aria-label={i18nT('pages.settings.instancesPanel.aws_region')} className={identityFrozen ? readOnlyCls : inputCls} aria-readonly={identityFrozen || undefined} value={values.awsRegion} onChange={e => set('awsRegion', e.target.value)} placeholder="us-east-1" readOnly={identityFrozen} />
           </label>
           <label htmlFor={`${idPrefix}-ssm-run-as`} className="flex flex-col gap-1 text-[13px] text-muted">
             {i18nT('pages.settings.instancesPanel.remote_user')} <span className="text-muted-strong">{i18nT('pages.settings.instancesPanel.optional')}</span>

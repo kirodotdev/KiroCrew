@@ -1,4 +1,4 @@
-"""Tests for the dashboard.browser_view_port config field (issue #6655).
+"""Tests for the dashboard.browser_view_port config field.
 
 The field pins the browser live-view server (``playwright-cli show``) to a fixed
 loopback port so remote-gateway users can forward it through an SSH tunnel.

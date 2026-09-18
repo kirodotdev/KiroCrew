@@ -337,6 +337,14 @@ _MODES = {
 }
 
 
+def _stdin_is_a_tty() -> bool:
+    """Is stdin a terminal? A closed or detached stdin counts as not one."""
+    try:
+        return bool(sys.stdin is not None and sys.stdin.isatty())
+    except (AttributeError, ValueError, OSError):
+        return False
+
+
 def main() -> int:
     if len(sys.argv) != 2 or sys.argv[1] not in _MODES:
         # stdout, like the malformed-stdin error below and accept_eval.py: the
@@ -345,6 +353,21 @@ def main() -> int:
         print(
             json.dumps(
                 {"error": f"usage: ledger_entry.py {{{'|'.join(sorted(_MODES))}}} < input.json"}
+            )
+        )
+        return 2
+    if _stdin_is_a_tty():
+        # A VALID mode with nothing piped in still blocked on the read below
+        # until the caller's tool timeout: an approval spent, no output, and
+        # nothing saying the input goes on stdin. The argv guard above never saw
+        # it, because the invocation was well-formed. Same exit 2, so no caller
+        # that pipes real input sees a new outcome.
+        print(
+            json.dumps(
+                {
+                    "error": "stdin is a terminal; "
+                    f"usage: ledger_entry.py {{{'|'.join(sorted(_MODES))}}} < input.json"
+                }
             )
         )
         return 2

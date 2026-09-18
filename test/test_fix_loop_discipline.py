@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterator
 
@@ -256,21 +257,78 @@ class TestTheMetricsTokenCanReachWhatItReads:
     REQUIRED_SCOPES = {
         "/actions/": "actions: read",
         "/check-runs": "checks: read",
+        # The harvest denominator: `gh pr list` reads PRs through the
+        # GraphQL search surface, which omits nodes the token cannot read
+        # instead of 403ing -- the one surface where a missing grant is a
+        # false zero rather than a red run, so the grant must be pinned.
+        '"pr",': "pull-requests: read",
     }
 
     def test_every_api_surface_the_script_reads_is_granted(self) -> None:
         script = METRICS_SCRIPT.read_text(encoding="utf-8")
         doc = yaml.safe_load(ANALYSIS.read_text(encoding="utf-8"))
-        granted = doc.get("permissions") or {}
+        # A job-level `permissions:` block REPLACES the workflow-level one,
+        # so every job that declares its own must restate the reads in full.
+        blocks = {"the workflow": doc.get("permissions") or {}}
+        for job_id, job in (doc.get("jobs") or {}).items():
+            if isinstance(job, dict) and "permissions" in job:
+                blocks[f"job `{job_id}`"] = job.get("permissions") or {}
         for fragment, scope in self.REQUIRED_SCOPES.items():
             if fragment not in script:
                 continue
             key, _, value = scope.partition(": ")
-            assert granted.get(key) == value, (
-                f"the metrics script reads {fragment}, which needs `{scope}`; an "
-                f"explicit permissions block grants nothing it does not list, so "
-                f"the scheduled run 403s and files no report at all"
-            )
+            for where, granted in blocks.items():
+                assert granted.get(key) == value, (
+                    f"the metrics script reads {fragment}, which needs `{scope}`, "
+                    f"but {where} does not grant it; an explicit permissions "
+                    f"block grants nothing it does not list, so the scheduled "
+                    f"run publishes a false zero or 403s and files no report"
+                )
+
+
+class TestFalseZeroFailsLoud:
+    """Zero merged PRs must be proven empty, never assumed.
+
+    The search surface omits nodes the token cannot read instead of erroring,
+    so `gh_json` sees a valid empty list and the harvest publishes a
+    clean-looking zero -- the exact silent failure the script's own contract
+    forbids. When the checkout's own history disagrees with an empty window,
+    the script must raise instead of publishing.
+    """
+
+    # Two days back keeps the per-day search loop at three iterations while
+    # still spanning the full day the coarse fallback requires; a fixed date
+    # would grow the loop by one iteration per real day.
+    _SINCE = (datetime.now(timezone.utc) - timedelta(days=2)).strftime("%Y-%m-%dT00:00:00Z")
+
+    def _module(self):
+        return load_skill_script("fix_loop_metrics", METRICS_SCRIPT)
+
+    def test_zero_prs_with_local_merge_evidence_raises(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = self._module()
+        monkeypatch.setattr(mod, "gh_json", lambda *a, **k: [])
+        monkeypatch.setattr(mod, "_local_pr_evidence", lambda since_iso: True)
+        with pytest.raises(RuntimeError, match="pull-requests: read"):
+            mod.merged_prs_since("owner/repo", self._SINCE)
+
+    def test_zero_prs_with_an_actually_empty_history_is_legitimate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = self._module()
+        monkeypatch.setattr(mod, "gh_json", lambda *a, **k: [])
+        monkeypatch.setattr(mod, "_local_pr_evidence", lambda since_iso: False)
+        assert mod.merged_prs_since("owner/repo", self._SINCE) == []
+
+    def test_unanswerable_git_still_raises_on_a_full_day_window(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        mod = self._module()
+        monkeypatch.setattr(mod, "gh_json", lambda *a, **k: [])
+        monkeypatch.setattr(mod, "_local_pr_evidence", lambda since_iso: None)
+        with pytest.raises(RuntimeError, match="pull-requests: read"):
+            mod.merged_prs_since("owner/repo", self._SINCE)
 
 
 class TestHarvestDenominator:
@@ -448,7 +506,7 @@ class TestDeferralDiscipline:
         text = PREPARE_PR.read_text(encoding="utf-8")
         assert LABEL in text
         assert "Due: YYYY-MM-DD" in text
-        # The skill no longer forbids deferral locally; it must still tell the agent
+        # The skill does not forbid deferral locally; it must still tell the agent
         # how the server treats a deferred security-class finding.
         assert "do not accept a deferral as a ruling on a security" in text
 
@@ -460,7 +518,7 @@ class TestDeferralDiscipline:
 class TestDeferralCheckIssueReadFailure:
     """Execute the ACTUAL deferral-validation step with ``gh`` stubbed.
 
-    `2>/dev/null || true` used to collapse a transient API failure onto the
+    `2>/dev/null || true` would collapse a transient API failure onto the
     same empty string as "this number is not an issue here", so a network blip
     made every referenced follow-up look unresolvable and the checker posted a
     refusal blaming the author for an untracked deferral they had in fact

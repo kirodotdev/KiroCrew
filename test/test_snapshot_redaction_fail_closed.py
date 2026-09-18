@@ -373,7 +373,7 @@ class TestADeclaredRowidColumnDoesNotBecomeTheUpdateHandle:
         assert "WHERE rowid = ?" not in body, "the UPDATE hardcodes rowid again"
         assert "SELECT rowid," not in body, "the SELECT hardcodes rowid again"
         # The SELECT now lives in the paging helper, so counting `{handle}` in one function
-        # no longer expresses the property -- and the property itself got STRONGER: the alias
+        # does not express the property -- and the property itself got STRONGER: the alias
         # is computed once in `_redact_database` and PASSED to the helper, so the two
         # statements cannot drift by construction rather than by convention. Asserted as
         # that: the helper takes the handle as a parameter and interpolates it, and the caller
@@ -1112,7 +1112,7 @@ class TestTheUploadPathDoesNotConsultConfigAtAll:
         """Stronger than the import-placement rule this replaces.
 
         That rule pinned WHERE the config import sat, to stop a hoist-back. The upload path
-        no longer reads config at all: the redaction opt-out moved behind the keystone fence
+        does not read config at all: the redaction opt-out moved behind the keystone fence
         on the backup directory, because a switch in agent-writable `config.json` is one the
         agent can flip to publish live credentials through a sanctioned path. So the thing
         worth pinning is that no config read comes back here in any form.

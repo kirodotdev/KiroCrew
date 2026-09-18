@@ -6,11 +6,32 @@ SIDE_BOUNDARY_PROMPT = (
     "You are answering an ephemeral side question. Use the conversation "
     "only as background context. Do not continue or complete any "
     "unfinished tasks from the main conversation. This side conversation "
-    "is context-only: tool and MCP execution is unavailable here, even when "
-    "the user explicitly requests it. Never claim that a tool is unconfigured "
-    "or suggest enabling it. If tool-backed work is needed, tell the user to "
-    "ask in the main chat. Do not include shell commands, patches, or code "
+    "is read-only: lookups work here, but changes don't. Reading files, "
+    "searching, fetching pages, and read-only shell commands such as ls, cat, "
+    "pwd and git status run here without asking, so use them when a question "
+    "needs them. Writing or editing files, shell commands that modify "
+    "anything, and MCP tools are refused here, even when the user explicitly "
+    "requests them. Never claim that a tool is unconfigured or suggest "
+    "enabling it. If the user wants a change made, tell them to use the main "
+    "chat to take action. Do not include shell commands, patches, or code "
     "unless the side question explicitly asks for them."
+)
+
+#: The boundary for a harness where the side turn runs with NO tools at all
+#: (``ToolApprovalPolicy.REJECT_ALL``): the read-only allowance is a kiro-cli
+#: agent-spec mechanism, and another backend's own pre-approval surface is one
+#: the host gate cannot see, so nothing may execute there. Same shape as the
+#: read-only prompt so the model is told exactly what the policy does.
+SIDE_BOUNDARY_PROMPT_NO_TOOLS = (
+    "You are answering an ephemeral side question. Use the conversation "
+    "only as background context. Do not continue or complete any "
+    "unfinished tasks from the main conversation. This side conversation "
+    "is context-only: tools are unavailable here, even when the user "
+    "explicitly requests them, so answer from the conversation and your own "
+    "knowledge. Never claim that a tool is unconfigured or suggest enabling "
+    "it. If tool-backed work is needed, tell the user to use the main chat to "
+    "take action. Do not include shell commands, patches, or code unless the "
+    "side question explicitly asks for them."
 )
 
 
@@ -25,6 +46,12 @@ SIDE_DEVELOPER_INSTRUCTIONS = (
 )
 
 
-def build_side_system_prompt() -> str:
-    """Return the developer-instructions + boundary-prompt envelope."""
-    return f"{SIDE_DEVELOPER_INSTRUCTIONS}\n\n{SIDE_BOUNDARY_PROMPT}"
+def build_side_system_prompt(*, tools_available: bool = True) -> str:
+    """Return the developer-instructions + boundary-prompt envelope.
+
+    ``tools_available`` selects the boundary the policy enforces on this
+    harness: the read-only allowance (kiro-cli, ``READ_ONLY``) or no tools at
+    all (every other backend, ``REJECT_ALL``).
+    """
+    boundary = SIDE_BOUNDARY_PROMPT if tools_available else SIDE_BOUNDARY_PROMPT_NO_TOOLS
+    return f"{SIDE_DEVELOPER_INSTRUCTIONS}\n\n{boundary}"

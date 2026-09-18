@@ -1,7 +1,7 @@
 """``kirocrew bench`` CLI behaviour that a reviewer flagged and a test must pin.
 
-Two of these lock in fixes for GPT-review findings on PR #2123, and the third
-pins the deliberate exception to the ``top-level-imports`` rule so a future
+Two of these pin ``kirocrew bench`` CLI behaviour, and the third pins the
+deliberate exception to the ``top-level-imports`` rule so a future
 "cleanup" cannot silently regress the boot path.
 """
 
@@ -133,8 +133,8 @@ def test_compare_returns_one_on_a_bad_path_and_zero_on_two_good_ones(
             "ingest": {},
             "retrieval": {},
             "search_backend": "sqlite_cosine",
-            # Provenance is required since round 13: absent fields are refused rather
-            # than compared, because two reports both missing one used to compare as
+            # Provenance is required: absent fields are refused rather than compared,
+            # because two reports both missing one would otherwise compare as
             # compatible.
             "embedder": "qwen3-embedding:0.6b@1024",
             "environment": {"python": "3.12.10", "platform": "linux-x86_64"},
@@ -176,7 +176,7 @@ def _report(fingerprint: str, *, backend: str = "sqlite_cosine", recall: float =
             # the point of the guard rather than a fixture wart.
             "session_measurable": {"5": 1977},
             # Same digest on both sides = same eligible query set. Equal counts
-            # alone no longer establish comparability.
+            # alone do not establish comparability.
             "session_population": {"5": "a" * 64},
         },
     }

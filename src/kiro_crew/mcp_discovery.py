@@ -46,8 +46,13 @@ from kiro_crew.mcp_grant import grant_observed
 from kiro_crew.mcp_provenance import ABSENT, resolve_write
 from kiro_crew.mcp_utils import kiro_entry_client_id, kiro_entry_scopes, mcp_server_alias
 from kiro_crew.sandbox import (
+    CANONICAL_TEMP_KEYS,
     SandboxUnavailableError,
+    classify_declared_temp_env,
+    classify_declared_temp_path,
     create_subprocess_limited,
+    declared_temp_refusal_reasons,
+    format_declared_temp_refusals,
     sandboxed_spawn_argv,
     sandboxed_spawn_argv_async,
 )
@@ -439,20 +444,54 @@ def _cache_probe(server: McpServerInfo) -> None:
     built from the CURRENT config, so redacting only at serialization time
     would mask a rotated credential's NEW value while the cached error still
     carries the OLD one.
+
+    A failed probe (``server.status in {"error", "needs_auth"}``) still
+    overwrites ``status``/``error`` — a server that just failed to answer
+    IS currently failing, and ``mcp_gateway.shareability`` correctly reads a
+    fresh "error" as UNKNOWN via ``probe_ok``. What it must NOT overwrite is
+    the server's descriptive shape from its last successful handshake:
+    ``tools``, ``tool_annotations``, ``capabilities``, ``protocol_version``,
+    ``server_info``, and ``probed_at_wall``. Without this, a single transient
+    timeout on an otherwise-healthy server collapses its tool count to zero
+    for the probe that failed, discarding both lists together even though
+    each is only ever populated from that same successful handshake —
+    resetting one without the other would leave a caller reading tool
+    metadata that does not match the tools actually being reported. ``probed_at_wall`` travels with the preserved shape rather
+    than the failed probe's own timestamp, so an "as of" display next to
+    the preserved tools points to when they were actually observed, not to
+    the unrelated timeout that came later. A server that has never had a
+    successful probe has no prior shape to fall back to, so it gets the
+    failure's own (empty) shape — there is nothing stale to protect.
     """
     server.probed_at = time.time()
+    prior = _probe_cache.get(server.name)
+    probe_failed = server.status in ("error", "needs_auth")
+    if probe_failed and prior is not None:
+        tools = list(prior.tools)
+        tool_annotations = [dict(a) for a in prior.tool_annotations]
+        capabilities = dict(prior.capabilities) if isinstance(prior.capabilities, dict) else None
+        protocol_version = prior.protocol_version
+        server_info = dict(prior.server_info)
+        probed_at_wall = prior.probed_at_wall
+    else:
+        tools = list(server.tools)
+        tool_annotations = [dict(a) for a in server.tool_annotations]
+        capabilities = dict(server.capabilities) if isinstance(server.capabilities, dict) else None
+        protocol_version = server.protocol_version
+        server_info = dict(server.server_info)
+        probed_at_wall = server.probed_at
     _probe_cache[server.name] = _ProbeResult(
         status=server.status,
-        tools=list(server.tools),
+        tools=tools,
         error=redact_mcp_error(
             server.error, server.redaction_headers, server.resolved_header_values or ()
         ),
         probed_at=time.monotonic(),
-        capabilities=(dict(server.capabilities) if isinstance(server.capabilities, dict) else None),
-        protocol_version=server.protocol_version,
-        server_info=dict(server.server_info),
-        tool_annotations=[dict(a) for a in server.tool_annotations],
-        probed_at_wall=server.probed_at,
+        capabilities=capabilities,
+        protocol_version=protocol_version,
+        server_info=server_info,
+        tool_annotations=tool_annotations,
+        probed_at_wall=probed_at_wall,
         probe_mode=server.probe_mode,
         auth_challenge=server.auth_challenge,
         auth_grant_present=server.auth_grant_present,
@@ -1024,8 +1063,8 @@ _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
 #: proceeds under ``unresolved:<pid>`` by product decision — and unnamed is the
 #: NORMAL case on macOS, the only platform with a computer-use driver.
 #:
-#: #5322 gave those unnamed callers a per-CONNECTION nonce, so on a CURRENT
-#: gateway they no longer collapse onto one ``SnapshotIndex`` namespace. The
+#: A per-CONNECTION nonce keeps those unnamed callers from collapsing onto one
+#: ``SnapshotIndex`` namespace on a CURRENT gateway. The
 #: entry stays because that is not the whole precondition. This set feeds
 #: ``managed_server_is_session_bound``, which feeds the shareability verdict,
 #: which ``mcp_gateway/seed.py`` turns into a CONFIG WRITE (``recommend_share``
@@ -1036,8 +1075,7 @@ _MANAGED_SERVERS_CALLER_AWARE: frozenset[str] = frozenset(
 #: socket, so a gatewayd that outlived a package upgrade keeps running and
 #: injects no nonce (which is exactly why ``REGISTERED_CAPABILITIES`` exists).
 #: Promotion therefore has to wait until a nonce-blind gateway cannot serve a
-#: POOLED computer backend at all — negotiated, not assumed. Tracked as the
-#: #5322 follow-up.
+#: POOLED computer backend at all — negotiated, not assumed.
 #:
 #: Contrast ``kirocrew-dashboard``, which refuses an unidentified caller and is
 #: therefore safe to classify shareable regardless of the daemon's generation.
@@ -1421,7 +1459,7 @@ def _expand_header_placeholders(
     form (docs/reference/kiro-cli/mcp/configuration.md) that kiro-cli expands
     at session runtime. Sending the reference as literal text gets the server's
     correct rejection reported as a failing row — with advice to delete a
-    header that works in every session (issue #9206).
+    header that works in every session.
 
     Delegates to the mcp_gateway rewriter's declared-env expander — same regex,
     same credential-filtered source view (``is_secret_env_key`` /
@@ -1757,9 +1795,9 @@ async def _read_stdio_jsonrpc_response(
     stdio MCP servers must speak newline-delimited JSON, but some processes —
     or launchers that front them, like ``aim`` while self-updating — print a
     human-readable banner or a blank line to stdout *before* the handshake.
-    The probe used to read the first line and ``json.loads`` it directly, so a
-    single stray line raised ``Expecting value: line 1 column 1 (char 0)`` and
-    a healthy server was reported as errored (cached for up to 30 min).
+    Reading the first line and ``json.loads``-ing it directly would let a
+    single stray line raise ``Expecting value: line 1 column 1 (char 0)`` and
+    report a healthy server as errored (cached for up to 30 min).
 
     This consumes lines within one overall ``timeout`` budget, skipping blank
     lines, non-JSON lines, and JSON-RPC *notifications* (objects without an
@@ -1786,7 +1824,7 @@ async def _read_stdio_jsonrpc_response(
         line = await asyncio.wait_for(stream.readline(), timeout=remaining)
         if not line:
             # EOF — process closed stdout without responding. Preserve the
-            # "non-JSON was on stdout" signal the old json.loads error used to
+            # "non-JSON was on stdout" signal a json.loads error would
             # surface, so a banner-then-EOF probe is still diagnosable.
             if banner_lines:
                 logger.debug(
@@ -1841,11 +1879,11 @@ async def probe_server(
 
     A consent-disabled server is refused HERE, ahead of the local/remote
     dispatch, because probing is the act that runs it: the local branch spawns
-    the command and the remote branch opens the connection. Enforcement used to
-    live in each caller (``probe_all`` filtered disabled rows before building
-    coroutines), which made the guarantee only as good as the newest call
-    site's memory — so a second entry point had to restate the check or become
-    a way around the consent gate. Keeping the rule in the one function every
+    the command and the remote branch opens the connection. Enforcement in each
+    caller (``probe_all`` filtering disabled rows before building
+    coroutines) would make the guarantee only as good as the newest call
+    site's memory — a second entry point would have to restate the check or
+    become a way around the consent gate. Keeping the rule in the one function every
     probe must pass through removes that whole class; callers keep their own
     filters and error surfaces as behaviour and UX, not as the safety property.
     """
@@ -1939,7 +1977,7 @@ async def probe_server(
         # through the sandbox chokepoint: OS-level isolation plus a
         # credential-scrubbed environment (on top of the augmented PATH built
         # above). ``strip_python_env`` keeps KiroCrew's PYTHONPATH/PYTHONHOME out
-        # of a foreign Python MCP server. See the related security-review finding.
+        # of a foreign Python MCP server.
         #
         # ``first_party_fixed_argv`` is True ONLY when command+args+env EQUAL
         # the invocation this package derives for its own managed servers
@@ -1949,7 +1987,7 @@ async def probe_server(
         # start?" probe runs for real instead of fail-closing. Third-party
         # probes (and any customized managed command/args/env) pass False and
         # keep the full fail-close + opt-in behavior.
-        # Probe temp containment (#5064): each probe gets its OWN private dir
+        # Probe temp containment: each probe gets its OWN private dir
         # under the managed root, cleaned in this function's finally -- unlike
         # a backend, a probe knows exactly when its lifecycle ends, so no
         # shared directory and no sweep race exist. Lazily imported
@@ -1957,13 +1995,13 @@ async def probe_server(
         # would cycle), created off-loop, and fail-open: a probe must run even
         # when containment cannot be set up.
         #
-        # Allocated BEFORE the sandbox wrap (#8653): the managed root lives at
+        # Allocated BEFORE the sandbox wrap: the managed root lives at
         # ``<data home>/run/mcp-tmp``, inside the runtime parent the sandbox
         # seals read-only, so the wrap must know the directory to carve its
-        # write access out of that seal. Allocating after the wrap handed the
-        # child a ``TMPDIR`` it could not write -- a Bun-packaged server then
-        # failed the probe with "Cannot find the native Koffi module" because
-        # it could not extract its native module. The allocation failure path
+        # write access out of that seal. Allocating after the wrap hands the
+        # child a ``TMPDIR`` it cannot write -- a Bun-packaged server then
+        # fails the probe with "Cannot find the native Koffi module" because
+        # it cannot extract its native module. The allocation failure path
         # stays fail-open (probe runs with inherited temp, no carve-out), and
         # the outer ``finally`` sweeps the dir even when the wrap itself
         # raises.
@@ -1974,8 +2012,54 @@ async def probe_server(
         # case-insensitively (Windows env keys are case-insensitive and the
         # sanitized spec preserves the author's spelling).
         _declared_temp_upper = {
-            key.upper() for key in (server.env or {}) if key.upper() in ("TMPDIR", "TMP", "TEMP")
+            key.upper() for key in (server.env or {}) if key.upper() in CANONICAL_TEMP_KEYS
         }
+        # The spec's OWN spellings, kept beside the upper-cased set: the rewrite
+        # below has to tell the declaration apart from the ambient key of the
+        # same name, and only the exact spelling does that -- comparing
+        # upper-cased names alone lets BOTH survive.
+        _declared_temp_spelled = {
+            key for key in (server.env or {}) if key.upper() in CANONICAL_TEMP_KEYS
+        }
+        # ...but a declaration that lands inside the sealed runtime parent is
+        # REFUSED rather than honored. Both backends seal
+        # ``<data home>/run`` read-only, so honoring it hands the child a temp
+        # dir it cannot write -- the same Bun/Koffi extraction failure the
+        # managed temp root avoids, and silent because the probe still reports
+        # a green handshake for servers that never touch temp. Carving the
+        # declared path out of the seal is NOT the alternative: spec ``env`` is
+        # untrusted config text and ``extra_writable_dirs`` is validated for
+        # self-derived scratch only. The managed temp takes over instead, which
+        # keeps the operator's storage intent -- their path named the data-home
+        # volume, and so does the managed root. Refused as a WHOLE: ``tempfile``
+        # consults TMPDIR before TMP, so honoring a surviving sibling key would
+        # leave writability depending on which key the spec happened to spell.
+        _sealed_temp: dict[str, tuple[str, str]] = {}
+        failure = ""
+        if _declared_temp_upper:
+            accepted, _sealed_temp, failure = await asyncio.to_thread(
+                classify_declared_temp_env,
+                server.env or {},
+                classifier=classify_declared_temp_path,
+            )
+            _declared_temp_upper = set(accepted)
+            if _sealed_temp:
+                logger.warning(
+                    "MCP probe [%s]: ignoring spec-declared %s — %s; probing with the "
+                    "managed temp instead",
+                    server.name,
+                    format_declared_temp_refusals(
+                        _sealed_temp,
+                        redactor=lambda path: _sanitize_probe_error(ValueError(path)),
+                    ),
+                    "; ".join(
+                        declared_temp_refusal_reasons(
+                            _sealed_temp,
+                            failure,
+                            redactor=lambda text: _sanitize_probe_error(ValueError(text)),
+                        )
+                    ),
+                )
         probe_scratch: "Path | None" = None
         if not _declared_temp_upper:
             try:
@@ -2019,17 +2103,62 @@ async def probe_server(
 
                 # Merged AFTER the wrap so the managed triple lands on the
                 # SCRUBBED env the child actually receives.
+                #
+                # Every OTHER spelling of a temp key is dropped first, not just
+                # the three canonical names: spec env keys are matched
+                # case-insensitively here, so a stray ``tmpdir`` -- from the
+                # ambient env, or a declaration refused above -- would otherwise
+                # sit in the env beside the managed ``TMPDIR``. Where env names
+                # are case-insensitive the two are ONE variable and the survivor
+                # decides what the child reads; where they are distinct the child
+                # sees both. Either way the managed triple must be the only temp
+                # keys left.
+                env = {
+                    key: value
+                    for key, value in env.items()
+                    if key.upper() not in CANONICAL_TEMP_KEYS
+                }
                 env = {**env, **tmp_env(probe_scratch)}
             elif _declared_temp_upper:
                 # Yielding alone is not enough: ambient temp keys are still in
                 # ``env`` and ``tempfile`` consults TMPDIR before TMP, so a
                 # spec declaring only TMP would silently write through the
-                # inherited ambient TMPDIR. Strip the canonical keys the spec
-                # did NOT declare (mirrors the backend chokepoint).
+                # inherited ambient TMPDIR. Strip every canonical key the spec
+                # did NOT itself spell (mirrors the backend chokepoint) --
+                # matched case-insensitively, so an ambient ``TMPDIR`` cannot
+                # outrank a declared ``tmpdir`` in the child's lookup while both
+                # sit in the env.
+                # ...and re-emitted under the CANONICAL uppercase name: on
+                # POSIX ``tempfile`` reads only TMPDIR/TMP/TEMP as spelled, so
+                # a spec declaring ``tmpdir`` would otherwise keep its key, lose
+                # the ambient ones, and get the platform default -- the
+                # declaration silently not governing while no managed temp was
+                # allocated either. The spec spelling is dropped rather than
+                # kept beside the canonical one, since on Windows the two are
+                # ONE variable.
+                declared_values = {
+                    key.upper(): value
+                    for key, value in env.items()
+                    if key in _declared_temp_spelled
+                }
                 env = {
                     key: value
                     for key, value in env.items()
-                    if not (key in ("TMPDIR", "TMP", "TEMP") and key not in _declared_temp_upper)
+                    if key.upper() not in CANONICAL_TEMP_KEYS
+                }
+                env.update(declared_values)
+            elif _sealed_temp:
+                # The refusal above stands even though allocation failed, so
+                # there is no managed dir to point at: strip every temp key,
+                # the ambient ones included, so the child falls back to its
+                # platform default (``/tmp`` on POSIX, the ``tempfile``
+                # candidate list on Windows) instead of the refused path.
+                # Fail-open on containment, never onto a directory already
+                # known to be read-only.
+                env = {
+                    key: value
+                    for key, value in env.items()
+                    if key.upper() not in CANONICAL_TEMP_KEYS
                 }
         except Exception:
             logger.debug("probe temp containment unavailable", exc_info=True)
@@ -2262,7 +2391,7 @@ async def probe_server(
         #     tools then never load"), and short-circuiting on the name alone would
         #     report `ok` for a managed server that cannot run — changing what `ok`
         #     means in the shared `_cache_probe` store, silently, for the one
-        #     surface that used to catch it.
+        #     surface that catches it.
         #   * importing these modules runs package code IN THE GATEWAY PROCESS,
         #     which the gateway does not otherwise do (they are absent from
         #     sys.modules at boot). The package dir is writable by the same uid the
@@ -2534,6 +2663,13 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     /home/user/.local/bin/deep-research) while mcp.json stores the
     short name (deep-research). These refer to the same binary and
     should not trigger a sync.
+
+    That basename comparison is a "same program" guess with no liveness in it,
+    so it holds only while the resolved path still names a runnable file. An
+    agent entry pinned to a version-stamped absolute path keeps its basename
+    after the directory that held it is removed; reporting that pin as unchanged
+    leaves the server to fail at spawn time with no earlier warning. A pin that
+    does not resolve is therefore divergence.
     """
     if source_cmd == agent_cmd:
         return False
@@ -2555,10 +2691,48 @@ def _commands_diverged(source_cmd: str, agent_cmd: str) -> bool:
     # so a resolved-vs-short pair authored on POSIX would spuriously read as
     # diverged and trigger an endless re-sync.
     if _names_a_location(agent_cmd) and _basenames_match(agent_cmd, source_cmd):
-        return False
+        # Only the AGENT side is probed for liveness. mcp.json holds what the
+        # user authored; the agent entry holds what some past resolution pinned,
+        # so only the pin can rot on its own. Probing the source instead would
+        # keep re-proposing a sync that re-resolves the same absent name every
+        # pass, which is the endless re-sync this branch was added to prevent.
+        return _pinned_command_missing(agent_cmd)
     if _names_a_location(source_cmd) and _basenames_match(source_cmd, agent_cmd):
         return False
     return True
+
+
+def _pinned_command_missing(cmd: str) -> bool:
+    """True when *cmd* pins an absolute path that cannot be executed now.
+
+    Probed only when *cmd* is ROOTED IN A NAMED VOLUME on this host, which is
+    narrower than :func:`_names_a_location` in the two ways that matter:
+
+    * A path in the other OS's spelling is not this host's to judge. POSIX
+      rejects ``C:\\tools\\srv`` on its own, since ``posixpath.isabs`` is False
+      for it.
+    * ``ntpath.isabs`` accepts a DRIVELESS root -- ``\\tools\\srv``, and a POSIX
+      ``/usr/bin/srv`` in an ``mcp.json`` carried onto Windows -- which resolves
+      against whichever drive happens to be current, so the filesystem cannot
+      answer for it either. The resolver never writes one (``shutil.which``
+      returns a drive-qualified path there), so a driveless agent command is an
+      authored spelling rather than a pin, and calling it stale would re-sync a
+      portable config on every pass.
+
+    The test is the resolver's own, ``isfile`` plus ``X_OK``, as
+    ``agent._resolve_command`` applies it to an absolute command -- deliberately
+    not ``shutil.which``, which can report a perfectly good file as unresolvable
+    inside a user-namespace sandbox. Asking a different question than the writer
+    would let this report a live pin as gone and re-sync it forever, which is the
+    failure the basename comparison exists to avoid. Nothing here searches
+    ``PATH``, so no unrelated binary of the same name can vouch for a pin that
+    is gone.
+    """
+    if not os.path.isabs(cmd):
+        return False
+    if platform_compat.IS_WINDOWS and not ntpath.splitdrive(cmd)[0]:
+        return False
+    return not (os.path.isfile(cmd) and os.access(cmd, os.X_OK))
 
 
 def _envs_agree(agent_env: dict, source_env: dict) -> bool:
@@ -2730,10 +2904,10 @@ def sync_to_agent_config(servers: list[McpServerInfo]) -> bool:
     ``~/.kiro/settings/mcp.json``), merges them with correct priority, resolves
     commands, normalizes each spec's ``env`` (see ``env.emit_env``), and writes
     the final agent config. There is deliberately no second registration path:
-    a ``kiro-cli mcp add`` subprocess used to run here for cosmetic parity with
-    ``kiro-cli mcp list``, but it was an unsynchronized second writer of the
-    same file with its own (unnormalized) env serialization, and everything it
-    wrote was rewritten by ``install_agent()`` moments later.
+    a ``kiro-cli mcp add`` subprocess here would buy cosmetic parity with
+    ``kiro-cli mcp list`` at the cost of an unsynchronized second writer of the
+    same file with its own (unnormalized) env serialization, whose writes
+    ``install_agent()`` rewrites moments later.
 
     Returns True if any servers were synced.
     """
@@ -2780,7 +2954,7 @@ def sync_discovered_servers() -> list[McpServerInfo]:
     ``asyncio.to_thread`` from a handler.
 
     Returns the servers discovery flagged (new or diverged; empty when none —
-    which, deliberately, no longer implies nothing was written).
+    which, deliberately, does not imply nothing was written).
     """
     with _SYNC_MUTEX:
         to_sync = discover_servers_to_sync()

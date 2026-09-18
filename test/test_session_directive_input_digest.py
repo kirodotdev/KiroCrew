@@ -1,11 +1,11 @@
 """The out-of-band directive is claimed by the tool CALL's input, never by the RESULT.
 
 Background. A directive tool parks its validated payload on the gateway and the
-turn's consumer claims it. The consumer used to learn WHICH record to claim by
+turn's consumer claims it. WHICH record to claim does not come from
 reading the directive marker back out of the tool result text -- and that text is
 whatever the backend chose to put on the wire. KAS reshaped it four ways in as
-many weeks: the envelope re-serialised with every quote escaped (#8182), the
-result copied into both ``response`` and ``message`` (#8841), one of those
+many ways: the envelope re-serialised with every quote escaped, the
+result copied into both ``response`` and ``message``, one of those
 replaced by an offload reference above a threshold, and every string capped at
 30k chars with the tail-anchored marker falling off the end. Each was one more
 repair branch in the shared ACP parser, and the parser is shared by every
@@ -18,7 +18,7 @@ reads the result. These tests drive the REAL consumer (``chat_runner._run_chat``
 with the live KAS frame shapes captured from the gateway log, plus the two shapes
 not yet seen in the wild, and every one of them must arm with the marker
 unreadable or absent -- while the forgery and isolation guarantees the marker
-selector used to carry are re-pinned on the new key.
+selector carries are re-pinned on the new key.
 """
 
 from __future__ import annotations
@@ -75,12 +75,12 @@ def _tool_text() -> str:
 
 
 def _kas_escaped(text: str) -> str:
-    """#8182: the envelope re-serialised, every quote escaped."""
+    """The envelope re-serialised, every quote escaped."""
     return json.dumps({"stdout": text})
 
 
 def _kas_duplicated(text: str) -> str:
-    """#8841: the text copied into ``response`` AND ``message`` (kiro-agent bc5906adf)."""
+    """The text copied into ``response`` AND ``message``."""
     return json.dumps({"response": text, "imageBase64Urls": [], "message": text})
 
 
@@ -172,6 +172,50 @@ async def _drive(state, slot, events, monkeypatch, *, park=True, park_input=None
     if task is not None:
         await task
     return spy
+
+
+def _opencode_events(
+    *,
+    wire_title: str = "kirocrew-core_monitor_start",
+    result_text: str = "Monitor loop requested.",
+    tool_call_id: str = "tc-oc",
+):
+    """An opencode turn, in the shape CAPTURED off 1.18.30
+    (``test/fixtures/acp_frames/opencode/mcp-directive-call-live.jsonl``): no
+    ``_meta.kiro`` identity anywhere, the tool named ONLY by a single-underscore
+    ``<server>_<tool>`` wire title, ``rawInput`` EMPTY on the ``tool_call`` and
+    complete on the following refinement -- so the digest can only be recorded on
+    the refinement -- and a result carrying no marker at all."""
+    return [
+        AcpEvent(
+            kind=EVENT_TOOL_CALL,
+            tool_call_id=tool_call_id,
+            title=wire_title,
+            wire_title=wire_title,
+            tool_kind="other",
+            tool_name="",
+            mcp_server_name="",
+            raw_tool_params={},
+        ),
+        AcpEvent(
+            kind=EVENT_TOOL_CALL_UPDATE,
+            tool_call_id=tool_call_id,
+            title=wire_title,
+            wire_title=wire_title,
+            tool_kind="other",
+            tool_name="",
+            mcp_server_name="",
+            raw_tool_params=CALL_ARGS,
+        ),
+        AcpEvent(
+            kind=EVENT_TOOL_RESULT,
+            tool_call_id=tool_call_id,
+            tool_output=result_text,
+            tool_final=True,
+        ),
+        AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok"),
+        AcpEvent(kind=EVENT_COMPLETE),
+    ]
 
 
 def _kas_events(result_text: str, *, raw_input=FRAME_INPUT, tool_call_id="tc-kas"):
@@ -333,7 +377,9 @@ class TestTheKeyStillGrantsNothing:
         assert directive_queue.depth(effective_session_key(slot)) == 1
 
     @pytest.mark.asyncio
-    async def test_a_record_from_an_earlier_turn_is_not_claimed(self, tmp_path, monkeypatch):
+    async def test_a_record_from_an_earlier_turn_is_not_claimed(
+        self, tmp_path, monkeypatch, caplog
+    ):
         state = _stub_state(tmp_path)
         slot = state.get_or_create_slot("stale")
         slot._titled = True
@@ -352,11 +398,17 @@ class TestTheKeyStillGrantsNothing:
             session_directive.call_input_digest("monitor_start", CALL_ARGS),
         )
         monkeypatch.setattr(directive_queue.time, "monotonic", _real)
-        spy = await _drive(
-            state, slot, _kas_events(_kas_duplicated(_tool_text())), monkeypatch, park=False
-        )
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(
+                state,
+                slot,
+                _kas_events(_kas_duplicated(_tool_text())),
+                monkeypatch,
+                park=False,
+            )
         spy.assert_not_called()
         assert directive_queue.depth(effective_session_key(slot)) == 1
+        assert "UNCLAIMED_AT_TURN_END" not in caplog.text
 
     @pytest.mark.asyncio
     async def test_duplicate_result_frames_apply_once(self, tmp_path, monkeypatch):
@@ -447,7 +499,7 @@ class TestTheToolSideOfTheKey:
 
 class TestEmptyArgumentDirectives:
     """``reset_conversation({})`` and friends: an explicit empty argument set is a
-    real input and must produce a digest. The ACP parser used to collapse ``{}`` to
+    real input and must produce a digest. The ACP parser must not collapse ``{}`` to
     None with an ``or`` chain, so no digest was recorded and the record sat parked."""
 
     def test_parser_preserves_an_explicit_empty_raw_input(self):
@@ -987,7 +1039,7 @@ class TestKasWireTitleCarriesTheBackendPrefix:
 
 
 class TestDisplayStripKeepsAnEnvelopeReadable:
-    """``strip_marker`` is display-only, but it used to cut from the first sentinel
+    """``strip_marker`` is display-only, but cutting from the first sentinel
     to the END of the text. That is right for the tool's own shape (marker on the
     last line) and wrong for a KAS envelope, where the marker sits inside a JSON
     string and the cut left ``{"response":"Monitor loop requested...`` in the
@@ -1267,3 +1319,122 @@ class TestConcurrentDirectivesInOneSession:
         assert all(k != "reset_conversation" for k, _ in applied), "child never reaches parent"
         assert len(applied) == 3
         assert directive_queue.depth(effective_session_key(slot)) == 0, "child record retired"
+
+
+class TestOpenCodeBackendResolvesTheTool:
+    """opencode names an MCP tool ``<server>_<tool>`` -- ONE underscore -- and emits
+    no ``_meta.kiro`` at all, so the wire title is the only channel that names the
+    tool it called. CAPTURED off 1.18.30 with a Crew MCP server (``kirocrew-core``,
+    exposing ``monitor_start``) riding the ``session/new`` ``mcpServers`` array:
+    ``{"sessionUpdate":"tool_call","toolCallId":"call_live_1",``
+    ``"title":"kirocrew-core_monitor_start","kind":"other",...}``
+    (``test/fixtures/acp_frames/opencode/mcp-directive-call-live.jsonl``).
+    Every recogniser returned ``""`` for that spelling, so a session with Crew's
+    control plane mounted would answer every directive tool and apply none of them.
+    """
+
+    @pytest.mark.parametrize("tool", sorted(session_directive.DIRECTIVE_TOOLS))
+    def test_every_directive_tool_resolves_from_the_opencode_title(self, tool):
+        title = f"{session_directive.CORE_MCP_SERVER}_{tool}"
+        assert session_directive.directive_tool_from_call("", "", title) == tool
+
+    @pytest.mark.parametrize(
+        "title",
+        [
+            # The server half is the guard, exactly as in the KAS and Claude
+            # branches: a third-party server's own tool never carries Crew's
+            # server name as its prefix.
+            "evil-mcp_monitor_start",
+            "other_reset_conversation",
+            # ...and a third-party server exposing a tool LITERALLY named
+            # "kirocrew-core_monitor_start" spells its own id with its own name
+            # in front, so it fails the prefix too.
+            "evil-mcp_kirocrew-core_monitor_start",
+            # A single underscore is NOT treated as a separator, which is why
+            # match_tool was left alone: these must all stay unresolved.
+            "do_monitor_start",
+            "evilmonitor_start",
+            # Longer than the tool name: the DIRECTIVE_TOOLS membership check on
+            # the tool half is what refuses it.
+            "kirocrew-core_monitor_start_extra",
+            # A real Crew tool that is not a directive tool.
+            "kirocrew-core_resource_status",
+            "kirocrew-core_spike_marker_tool",
+            # Not a qualified name at all.
+            "kirocrew-core",
+            "kirocrew-core_",
+        ],
+    )
+    def test_a_lookalike_single_underscore_name_resolves_to_nothing(self, title):
+        assert session_directive.directive_tool_from_call("", "", title) == ""
+
+    @pytest.mark.asyncio
+    async def test_the_directive_lands_out_of_band_on_an_opencode_turn(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """End to end through the REAL consumer, on the captured frame shape: the
+        opencode-spelled title is what records the input digest, the REFINEMENT is
+        where the complete arguments arrive (the ``tool_call`` carried ``{}``), and
+        the digest is what claims the parked record. The result text is not
+        consulted -- this turn carries no marker at all."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("opencode-directive")
+        slot._titled = True
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(state, slot, _opencode_events(), monkeypatch)
+        spy.assert_awaited_once()
+        assert spy.call_args.args[3] == "monitor_start"
+        assert spy.call_args.args[4] == VALIDATED_ARGS, "the RECORD's payload is applied"
+        assert directive_queue.depth(effective_session_key(slot)) == 0
+        assert "UNCLAIMED_AT_TURN_END" not in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_a_lookalike_title_logs_the_unclaimed_record_at_turn_end(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Fail-closed and visible: the unknown title records no call digest, so
+        the parked record cannot be claimed. The turn-end warning correlates the
+        record without changing that outcome."""
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("opencode-lookalike")
+        slot._titled = True
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(
+                state,
+                slot,
+                _opencode_events(wire_title="kirocrew-core_monitor_start_extra"),
+                monkeypatch,
+            )
+        spy.assert_not_called()
+        assert directive_queue.depth(effective_session_key(slot)) == 1, "record left parked"
+        warnings = [
+            record.getMessage()
+            for record in caplog.records
+            if "UNCLAIMED_AT_TURN_END" in record.getMessage()
+        ]
+        assert len(warnings) == 1
+        warning = warnings[0]
+        digest = session_directive.call_input_digest("monitor_start", CALL_ARGS)[:12]
+        assert f"session_key={effective_session_key(slot)!r}" in warning
+        assert "count=1" in warning
+        assert f"record_digests=('monitor_start:{digest}',)" in warning
+        assert "tool_identities=('tc-oc:-:-',)" in warning
+
+    @pytest.mark.asyncio
+    async def test_a_turn_with_no_parked_record_logs_no_unclaimed_warning(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        state = _stub_state(tmp_path)
+        slot = state.get_or_create_slot("opencode-no-record")
+        slot._titled = True
+        with caplog.at_level("WARNING", logger="kiro_crew.dashboard.chat_runner"):
+            spy = await _drive(
+                state,
+                slot,
+                _opencode_events(wire_title="kirocrew-core_monitor_start_extra"),
+                monkeypatch,
+                park=False,
+            )
+        spy.assert_not_called()
+        assert directive_queue.depth(effective_session_key(slot)) == 0
+        assert "UNCLAIMED_AT_TURN_END" not in caplog.text

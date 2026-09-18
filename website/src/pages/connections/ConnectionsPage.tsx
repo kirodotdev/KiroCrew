@@ -10,11 +10,16 @@ import {
   KeyRound,
   Link2,
   Loader2,
+  Lock,
   RotateCw,
   Server,
+  Settings2,
   Unplug,
   X,
 } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { settingsPath } from '../../components/settingsPath'
+import { connectionsOAuthClientEntryId } from '../../components/commandPalette/settingsManual'
 import { api, ApiError, type ConnectionMintState, type ConnectionStatus } from '../../api/client'
 import { useAppSelector } from '../../store'
 import type { ChatMessage, McpApplyChange, McpServer } from '../../types'
@@ -45,6 +50,11 @@ export type ConnectionCardState =
   | 'connected'
   | 'not-verified'
   | 'needs-attention'
+  /** A pre-registered provider whose operator has not entered an OAuth client
+   *  yet (`needsClientConfig` on the status row). The card is an instruction
+   *  with a link to Settings → OAuth Apps, not an offer to connect: a mint
+   *  would fail at the vendor with a registration error no user can act on. */
+  | 'needs-configuration'
 
 type ConnectionAction = 'connect' | 'disconnect' | 'relay' | 'test'
 export type Feedback = {
@@ -330,7 +340,16 @@ export function connectionStateFor(
   locallyWaiting = false,
   grantPresent?: boolean,
   awaitingConsent = false,
+  needsClientConfig = false,
 ): ConnectionCardState {
+  // The backend sets `needsClientConfig` only while no grant exists, so this
+  // cannot hide a connected card; it outranks the not-connected fold below
+  // because Connect would only fail at the vendor. A consent already in flight
+  // (an operator configured, clicked, then cleared the record) still renders as
+  // waiting -- the URL is live and the poll will settle it.
+  if (needsClientConfig && !locallyWaiting && !awaitingConsent && !oauth?.oauthUrl) {
+    return 'needs-configuration'
+  }
   if (!server) {
     // `awaitingConsent` is the backend's mint table saying a flow for this
     // provider is in flight RIGHT NOW. It is what survives a refresh: the
@@ -468,15 +487,25 @@ const VALUE_PROP_KEYS = {
 const PREREQUISITE_KEYS = {
   gitlab: 'pages.connectionsPage.prerequisite_gitlab',
   atlassian: 'pages.connectionsPage.prerequisite_atlassian',
+  github: 'pages.connectionsPage.prerequisite_github',
+  asana: 'pages.connectionsPage.prerequisite_asana',
 } as const
 
 /**
- * Amber warning icon beside Connect for a provider with a blocking
- * provider-side prerequisite. Hover or focus previews the message as a small
- * bubble; clicking the icon pins the bubble open; clicking anywhere else (or
- * Escape) dismisses it. Modeled on InfoTip: portal-rendered so card overflow
- * cannot clip it, name/description split so the icon's accessible NAME stays a
- * short phrase while the prose rides as its DESCRIPTION.
+ * Amber warning icon beside a card's action for anything the user should know
+ * BEFORE pressing it: a provider-side prerequisite beside Connect, the
+ * one-time OAuth-app setup beside Configure. Hover or focus previews the
+ * message as a small bubble; clicking the icon pins the bubble open; clicking
+ * anywhere else (or Escape) dismisses it. Modeled on InfoTip: portal-rendered
+ * so card overflow cannot clip it, name/description split so the icon's
+ * accessible NAME stays a short phrase while the prose rides as its DESCRIPTION.
+ *
+ * This is the card's ONE surface for a pre-action caveat. A caveat rendered as
+ * an always-visible band costs every card in the grid a row of chrome for
+ * prose a user reads once, and makes rows ragged; the inline bands that remain
+ * on the card report a live verdict about the CURRENT state (not verified,
+ * needs attention) or carry a form (the remote return-address relay) -- copy
+ * about what an action will do or needs is neither, and goes here.
  */
 function PrerequisiteTip({ label, heading, text }: { label: string; heading: string; text: string }) {
   const [pinned, setPinned] = useState(false)
@@ -873,6 +902,14 @@ function ConnectionCard({
       icon: <AlertTriangle className="w-3.5 h-3.5" aria-hidden="true" />,
       tone: 'bg-danger-subtle text-danger',
     },
+    // Muted, not warn: nothing is wrong with the provider, a step is missing on
+    // OUR side. The lock says "this needs a key" without alarming a user who
+    // cannot act on it (only the owner can configure).
+    'needs-configuration': {
+      label: t('pages.connectionsPage.needs_configuration'),
+      icon: <Lock className="w-3.5 h-3.5" aria-hidden="true" />,
+      tone: 'bg-bg-hover text-muted',
+    },
   }
   const meta = stateMeta[state]
   const runRelay = async () => {
@@ -1028,6 +1065,36 @@ function ConnectionCard({
                   {t('pages.connectionsPage.invalid_return_address')}
                 </p>
               )}
+            </div>
+          </div>
+        )}
+
+        {state === 'needs-configuration' && (
+          <div className="flex items-center justify-between gap-3">
+            <a href={provider.docs_url} target="_blank" rel="noopener noreferrer" className="inline-flex items-center gap-1 text-[12px] text-muted hover:text-text">
+              {t('pages.connectionsPage.documentation')} <ExternalLink className="w-3 h-3" aria-hidden="true" />
+            </a>
+            <div className="flex items-center gap-2">
+              {/* The one-time-setup explanation is a caveat about the action
+                  beside it, so it rides in the same warning tip every other
+                  card state uses for its pre-action caveat -- never as a band
+                  above the action row. The badge already says what state the
+                  card is in; the tip says what pressing the button entails. */}
+              <PrerequisiteTip
+                label={t('pages.connectionsPage.prerequisites_for_provider', { provider: provider.name })}
+                heading={t('pages.connectionsPage.before_you_connect')}
+                text={t('pages.connectionsPage.needs_configuration_help', { provider: provider.name })}
+              />
+              {/* A route, not a Connect button: the missing step lives on the
+                  Settings tab, and only the owner can complete it. The highlight
+                  lands on this provider's card there. */}
+              <Link
+                to={settingsPath({ tab: 'connections', highlight: connectionsOAuthClientEntryId(provider.slug) })}
+                className="inline-flex items-center gap-1.5 rounded-md bg-accent px-2.5 py-1.5 text-[12px] font-medium text-accent-fg hover:opacity-90"
+              >
+                <Settings2 className="w-3.5 h-3.5" aria-hidden="true" />
+                {t('pages.connectionsPage.configure_oauth_app')}
+              </Link>
             </div>
           </div>
         )}
@@ -1820,6 +1887,7 @@ export default function ConnectionsPage({ servicesEnabled = false }: { servicesE
                   // The backend's mint table outlives this tab's local state, so
                   // a refresh mid-consent still renders the waiting card.
                   status?.status === 'awaiting_consent',
+                  status?.needsClientConfig === true,
                 )
                 const cardBusy = busy?.slug === provider.slug ? busy.action : undefined
                 // Named only when a DIFFERENT card owns the running test: this

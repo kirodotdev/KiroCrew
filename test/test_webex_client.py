@@ -356,7 +356,7 @@ class TestLifecycle:
         """``_run_loop`` dying from an uncaught, non-CancelledError exception
         makes ``self._task.cancel()`` a no-op, and re-``await``ing it re-raises
         that exception -- which must not skip the handler-task drain or the
-        session close (issue #4627)."""
+        session close."""
 
         class _FakeSession:
             def __init__(self) -> None:
@@ -572,7 +572,13 @@ class TestRedeliveryHandling:
         await asyncio.gather(*c._handler_tasks)
 
         assert [p["messageId"] for p in sent] == ["act-1"]
-        assert "raw-uuid" not in str(c._seen) or c._seen  # the mark is kept
+        # The retention half is pinned positively, on the key actually stored: the
+        # mark is the base64 Hydra id, so a substring test for the raw uuid can
+        # never be satisfied whatever the client did, and an `_ack_after` that
+        # popped the mark for any exception instead of only `_HydrationFailed`
+        # would let the service redeliver the message into the turn that already
+        # failed — as a steer, answering nothing — with the test still green.
+        assert c._seen == {hydra_id("raw-uuid", "MESSAGE"): None}
 
     @pytest.mark.asyncio
     async def test_a_failed_ack_does_not_raise(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1325,7 +1331,7 @@ class TestReadLoopFrameDispatch:
 
     Mercury delivers activity events as BINARY WebSocket frames whose payload
     is UTF-8 encoded JSON; a TEXT-only dispatch silently drops every inbound
-    message while the channel still shows as connected (issue #6222).
+    message while the channel still shows as connected.
     """
 
     @staticmethod

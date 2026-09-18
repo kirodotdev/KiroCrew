@@ -14,8 +14,8 @@ on whether a human happened to look at it. Registering where the message is
 finalized covers every emitted widget exactly once, and gets the originating
 session key for free.
 
-Identity comes from :func:`kiro_crew.widget_slug.derive_widget_slug` over
-``(message_ts, widget_index)`` — the same function the frontend uses, so a
+Identity comes from :func:`kiro_crew.widget_slug.derive_widget_body_slug` over
+``(message_ts, widget_body)`` — the same function the frontend uses, so a
 ``WidgetFrame`` impression resolves the artifact this module wrote without the
 two sides exchanging an id. See that module's docstring for the parity contract.
 
@@ -44,7 +44,7 @@ from kiro_crew.artifacts import (
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.widget_parse import parse_widgets
-from kiro_crew.widget_slug import derive_widget_slug
+from kiro_crew.widget_slug import derive_widget_body_slug
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +86,7 @@ def register_widgets(text: str, message_ts: str, session_key: str) -> list[str]:
             # An empty widget body has nothing to persist and would fail
             # content validation; skip rather than log a failure per turn.
             continue
-        slug = derive_widget_slug(message_ts, w.index)
+        slug = derive_widget_body_slug(message_ts, w.content)
         try:
             store.create(
                 name=w.title or _DEFAULT_WIDGET_NAME,

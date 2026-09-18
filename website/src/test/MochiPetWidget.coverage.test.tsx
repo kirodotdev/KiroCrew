@@ -683,11 +683,12 @@ describe('PetWidget non-SVG pack formats', () => {
 
     // Lottie art is built into a container, never an <img>.
     expect(document.body.querySelector('img')).toBeNull()
-    // A clip that cannot be parsed used to render as a silent empty box.
+    // A clip that cannot be parsed used to render as a silent empty box. The
+    // breadcrumb is core's: Mochi's renderer is a re-export of the fenced
+    // player in components/appearancePacks (#10249).
     expect(err).toHaveBeenCalledWith(
-      '[mochi] lottie JSON parse failed',
-      expect.objectContaining({ head: 'not-json-at-all' }),
-      expect.anything(),
+      '[appearance-pack] lottie JSON parse failed',
+      expect.objectContaining({ bytes: 'not-json-at-all'.length }),
     )
     err.mockRestore()
   })

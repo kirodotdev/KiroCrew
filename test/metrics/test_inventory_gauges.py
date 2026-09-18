@@ -391,7 +391,7 @@ def test_knowledge_documents_counts_sources(tmp_path):
 
     The fixture goes through ``KnowledgeStore``, so this is where a rename on either
     side of the coupling fails: the store renaming its table, or this module's
-    ``KNOWLEDGE_SOURCES_TABLE`` pointing at one that no longer exists. That matters
+    ``KNOWLEDGE_SOURCES_TABLE`` pointing at a table that does not exist. That matters
     because the probe deliberately never constructs a store (doing so would create
     the database), so nothing else observes the coupling -- and a drifted probe
     returns a CACHED gap indistinguishable from "never ingested".

@@ -105,7 +105,7 @@ class TestOnCycleEndCallback:
 
     @pytest.mark.asyncio
     async def test_failure_log_carries_the_fallback_story(self, heartbeat_file, caplog):
-        """#5447 item 1: the heartbeat's terminal error text (its failure log
+        """The heartbeat's terminal error text (its failure log
         line — heartbeat failures are kept + retried, never delivered) names
         the WHOLE fallback walk carried on the exception, not just the last
         candidate's error."""
@@ -143,7 +143,7 @@ class TestOnCycleEndCallback:
     @pytest.mark.asyncio
     async def test_storyless_failure_log_is_unchanged(self, heartbeat_file, caplog):
         """No story on the exception ⇒ the log line is exactly the task text
-        (byte-for-byte pre-#5447 shape)."""
+        (byte-for-byte)."""
         import logging
 
         async def _on_task(text, deliver):
@@ -237,8 +237,8 @@ class TestRecycleHeartbeat:
     @pytest.mark.asyncio
     async def test_recycles_healthy_session(self):
         """A nearly-empty session is STILL recycled. This is the behavioural
-        change: previously a session under 70% context and under 40 prompts
-        was preserved, which is what let the heartbeat transcript accumulate
+        change: preserving a session under 70% context and under 40 prompts
+        let the heartbeat transcript accumulate
         across cycles while the docs promised fresh context."""
         from kiro_crew.session import FirstTurnState, SessionManager, _Session
 

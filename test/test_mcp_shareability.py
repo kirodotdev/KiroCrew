@@ -59,7 +59,7 @@ class TestDisqualifiers:
     def test_rotating_secret_env_is_reported_even_without_a_probe(self) -> None:
         """A config fact stands whether or not the server could be started.
 
-        It is no longer a disqualification. A secret-prefixed key is never
+        It is not a disqualification. A secret-prefixed key is never
         forwarded into a SHARED backend at all -- ``_declared_non_secret_env``
         drops it because ``ENV_SCRUB_PREFIXES`` makes the pool hash non-injective
         over these keys, so no single value is correct -- which means the pooled
@@ -280,7 +280,7 @@ class TestDisqualifiers:
         read that server as one that does not log at all, so the ``present`` mode
         must keep detecting both shapes.
 
-        NO LONGER TRUE: that this disqualifies. The cost of pooling a logging
+        It is not a disqualification. The cost of pooling a logging
         server is that the last caller's level wins for everyone, and that a log
         notification tied to one caller's in-flight call is dropped rather than
         broadcast. That is log volume and lost log lines. No co-tenant ever
@@ -357,7 +357,7 @@ class TestPositiveDeclaration:
     def test_a_divergence_does_not_beat_the_declaration(self) -> None:
         """The inversion this refactor is about, on its sharpest case.
 
-        This test used to assert the opposite, on the reasoning that a
+        The naive reading is the opposite, on the reasoning that a
         measurement outranks a promise. It does -- when the measurement measured
         something. Two spawns under two different ``clientInfo`` values cannot:
         an answer computed from the caller and an answer that varies for the
@@ -607,7 +607,7 @@ class TestMeasurementCanEarnAVerdict:
     def test_a_degradation_note_does_not_lower_the_tier(self) -> None:
         """A note travels with the verdict; it does not replace it.
 
-        Previously this server was DISQUALIFIED and the clean measurement was
+        A note read as an objection DISQUALIFIES this server and the clean measurement was
         discarded, because the note was modelled as an objection that outranked
         it. Both facts are now reported at once: the measurement earned the tier,
         and the operator still gets told what pooling would cost.
@@ -1315,7 +1315,7 @@ class TestHazardInvalidation:
     The ledger's neighbour — the pre-flight cache — re-measures when a server's
     launch identity changes. Without the same rule here a single observation
     disqualifies a server for ever, so wiring a pooling refusal to this ledger
-    would strand a server on evidence about a version it no longer runs.
+    would strand a server on evidence about a version it has stopped running.
     """
 
     @staticmethod

@@ -19,6 +19,19 @@ _MAX_EPISODIC_PER_CONSOLIDATION = 10
 # lessons array could occupy a worker thread for minutes.
 _MAX_LESSONS_PER_CONSOLIDATION = 10
 
+# Ceiling on episodic rows ONE semantic write may retire, and the reason it needs a
+# ceiling at all. `_retire_stale_episodic` tombstones episodes that reference a value
+# the semantic store just superseded, and consolidation rewrites the same keys every
+# cycle -- so an uncapped rule applies once per key per cycle, forever. Measured on a
+# store hours old: 21 of 101 episodes already retired, 14 of them by this rule.
+#
+# Three is a judgement about what the rule is FOR: a superseded value should retire the
+# few episodes that restate it, not a slice of the store. A candidate beyond the cap is
+# left ALIVE rather than tombstoned, which is the safe direction -- a stale episode is
+# outranked by the newer semantic row it contradicts, while a wrongly retired one is
+# invisible to every reader.
+_MAX_EPISODIC_RETIRED_PER_WRITE = 3
+
 # Prompt-injection detection patterns. Kept in this dependency-free module (not
 # in ``vector_memory``, whose numpy/faiss/snowballstemmer imports are heavy) so
 # prompt-building callers such as ``security.contains_injection`` can screen

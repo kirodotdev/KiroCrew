@@ -63,9 +63,9 @@ def _run(harness: str) -> subprocess.CompletedProcess:
 def test_preclean_sites_route_through_helper():
     """Wiring guard: the two build-output pre-cleans MUST call ``rm_rf_resilient``.
 
-    ``test_retries_after_transient_failure`` proves the helper *works*, but the
-    whole point of this fix is that the pre-clean removals — which previously used
-    a bare ``rm -rf`` — now go through it. Without this assertion, reverting either
+    ``test_retries_after_transient_failure`` proves the helper *works*; this guard
+    pins that the two pre-clean removals go through it rather than a bare ``rm -rf``.
+    Without this assertion, reverting either
     call site back to ``rm -rf`` would leave every behavioral test green while the
     ``.DS_Store`` race again aborts desktop builds *before* electron-builder runs.
     So assert the wiring directly, at both sites.

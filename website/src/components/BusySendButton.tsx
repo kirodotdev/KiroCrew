@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ArrowUpFromLine, Check, ChevronDown, Target } from 'lucide-react'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
+import { useAnchorRemeasure } from '../hooks/useAnchorRemeasure'
 import { safeGetItem, safeSetItem } from '../utils/safeStorage'
 import { platformShortcut } from '../utils/platform'
 
@@ -179,8 +180,16 @@ export default function BusySendButton({
     return () => document.removeEventListener('mousedown', h)
   }, [menuOpen])
 
+  const measureMenu = useCallback(() => {
+    if (splitRef.current) setMenuRect(splitRef.current.getBoundingClientRect())
+  }, [])
+
+  // Keeps the portaled picker anchored while the trigger moves under it --
+  // notably when the mobile keyboard closes (visualViewport-only signal).
+  useAnchorRemeasure(menuOpen, measureMenu)
+
   const toggleMenu = () => {
-    if (!menuOpen && splitRef.current) setMenuRect(splitRef.current.getBoundingClientRect())
+    if (!menuOpen) measureMenu()
     setMenuOpen(o => !o)
   }
   const select = (m: BusySendMode) => {

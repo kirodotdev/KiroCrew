@@ -159,7 +159,7 @@ async def handle_get_meeting(request: web.Request) -> web.Response:
         # snapshot and may change by the next poll, which is exactly what a poll is
         # for.
         live_payload["accepting_dispatches"] = ACTIVE.accepting_dispatches
-        # And whether it would be HELD rather than refused (issue #4610). The
+        # And whether it would be HELD rather than refused. The
         # frontend polls this endpoint to decide when to open the microphone, and
         # "would speech land?" is now these two ORed: during initialization the
         # answer is yes-by-holding. Reported separately rather than folded into the
@@ -299,9 +299,23 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
     # install. Both the metadata IO and the drain below are awaits, so two starts
     # interleaving in that gap would BOTH pass the check and the second would replace
     # the first — whose transcript then fails to dispatch with a confusing 409.
+    #
+    # This lock is also what makes `existing.abandoned` race-free in the guard
+    # below. During a meeting's own init there is a window where it is installed
+    # but has no live slots yet and `became_ready` is still False — i.e. it would
+    # read `abandoned`. Because agent init (set -> suspend -> init_agents ->
+    # resume_dispatches) runs entirely INSIDE this same START_LOCK, a competing
+    # start cannot acquire the lock and observe that window: by the time it reads
+    # `existing.abandoned`, the initializing meeting has either finished init
+    # (`became_ready` True) or genuinely failed. Keep init inside this lock.
     async with START_LOCK:
         existing = ACTIVE.get()
-        if existing is not None and existing.meeting_id != meeting_id and not existing.expired:
+        if (
+            existing is not None
+            and existing.meeting_id != meeting_id
+            and not existing.expired
+            and not existing.abandoned
+        ):
             audit("meetings.start", meeting_id, outcome="denied", error="another meeting is active")
             return web.json_response(
                 {"error": "another meeting is already active", "code": "meeting_already_active"},
@@ -340,7 +354,7 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
             # fan-out closed until every enabled agent knows its output contract —
             # but HOLD what is said meanwhile instead of refusing it.
             #
-            # Refusing was measured at ~46s of a real meeting (issue #4610): the
+            # Refusing costs a measured ~46s of a real meeting: the
             # speaker opens with the agenda, every line 409s, and the notes and
             # tasks begin partway through the first topic with nothing to show a
             # turn was lost. The hold is bounded and drains in arrival order right
@@ -350,24 +364,23 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
         # A replacement of a DIFFERENT meeting is a teardown of that meeting, so its
         # metadata needs the same terminal status every other teardown writes.
         #
-        # Only an EXPIRED one can be here — the guard above 409s otherwise — and it
-        # is gone for good: its session was just dropped, and reopening it would show
-        # `active` with nothing installed, so its transcript dispatches would 409 into
-        # the void. Two meetings persisting as `active` at once also breaks the
-        # single-active-meeting invariant the list view reads.
+        # Only an EXPIRED or ABANDONED one can be here — the guard above 409s
+        # otherwise — and it is gone for good: its session was just dropped, and
+        # reopening it would show `active` with nothing installed, so its transcript
+        # dispatches would 409 into the void. Two meetings persisting as `active` at
+        # once also breaks the single-active-meeting invariant the list view reads.
         if outgoing is not None and outgoing.meeting_id != meeting_id:
             await asyncio.to_thread(sess.end_meeting_meta, outgoing.meeting_id, root)
 
         # ALWAYS initialize, restart or not, THEN send the restart notice.
         #
-        # The restart branch used to skip `init_agents` entirely, on the assumption
-        # that a restarted meeting's agents still remember their instructions. They
-        # may not: the slots are ordinary kiro sessions and can have been reclaimed
-        # (session cleanup, a gateway restart, an idle sweep) between stop and
-        # restart. A fresh session then received only "continue appending to your
-        # output" — an instruction that names no output — so it had no `OUTPUT_FILE`
-        # and the notes and tasks silently stopped updating for the rest of the
-        # meeting.
+        # A restarted meeting's agents cannot be assumed to remember their
+        # instructions: the slots are ordinary kiro sessions and can have been
+        # reclaimed (session cleanup, a gateway restart, an idle sweep) between stop
+        # and restart. Skipping `init_agents` on the restart branch leaves a fresh
+        # session with only "continue appending to your output" — an instruction that
+        # names no output — so it has no `OUTPUT_FILE` and the notes and tasks
+        # silently stop updating for the rest of the meeting.
         #
         # Re-initializing a session that DOES remember is harmless: the init message
         # is idempotent by construction (it re-states the path and says "the file
@@ -376,12 +389,12 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
         # "disregard the previous 'Meeting ended' message" arrives after the
         # instructions it qualifies.
         #
-        # INSIDE `START_LOCK`, which now also covers `handle_stop_meeting`. Agent
-        # initialization is a long sequence of awaited dispatches, and it ran
-        # unlocked: a stale Close in another tab could tear the session down midway,
-        # so the remaining agents were initialized into a session no longer installed
-        # while this request still answered `active` — a meeting the UI showed as
-        # running, with no live session and an `ended` status on disk.
+        # INSIDE `START_LOCK`, which also covers `handle_stop_meeting`. Agent
+        # initialization is a long sequence of awaited dispatches, so unlocked a
+        # stale Close in another tab tears the session down part-way through: the
+        # agents are initialized into a session that is not installed while this
+        # request still answers `active` — a meeting the UI shows as running, with no
+        # live session and an `ended` status on disk.
         #
         # The lock is what makes stop WAIT for a start to finish rather than
         # interleave with it. The cost is that a stop arriving during initialization
@@ -392,7 +405,9 @@ async def handle_start_meeting(request: web.Request) -> web.Response:
         if is_restart:
             await sess.broadcast_system(session, k.SYSTEM_MEETING_RESTARTED)
         async with DISPATCH_LOCK:
-            ACTIVE.resume_dispatches(session)
+            # init_agents completed above — this is the one place a meeting
+            # earns became_ready.
+            ACTIVE.resume_dispatches(session, mark_ready=True)
             # Drain under the SAME acquisition that reopened ingress. A live
             # dispatch needs this lock too, so nothing spoken after the reopen can
             # overtake speech that was held while it was shut — releasing between
@@ -494,7 +509,16 @@ async def handle_meeting_status(request: web.Request) -> web.Response:
                 )
 
             session = ACTIVE.get(meeting_id)
-            if session is not None and status in (k.STATUS_REVIEWING, k.STATUS_ENDED):
+            # Every non-active state closes ingress: paused, reviewing, and ended
+            # all stop accepting dispatches at the server, so a second tab, the
+            # broadcast bar, or a direct API call cannot fan lines out to agents
+            # while the meeting is not live. The `active` branch below is the
+            # unpause path that reopens the gate.
+            if session is not None and status in (
+                k.STATUS_PAUSED,
+                k.STATUS_REVIEWING,
+                k.STATUS_ENDED,
+            ):
                 ACTIVE.suspend_dispatches(session)
             elif session is not None and status == k.STATUS_ACTIVE:
                 ACTIVE.resume_dispatches(session)
@@ -518,9 +542,10 @@ async def handle_stop_meeting(request: web.Request) -> web.Response:
     """End a meeting: flush every agent, send the finalize notice, mark ended.
 
     Takes ``START_LOCK``, so a stop cannot interleave with a start. Without it, a
-    stale Close in one tab tore down a session another tab was still initializing:
-    the remaining agents were initialized into a session no longer installed, and the
-    start still answered `active` for a meeting with `ended` on disk and nothing live.
+    stale Close in one tab tears down a session another tab is still initializing:
+    the remaining agents are initialized into a session that is not installed, and
+    the start still answers `active` for a meeting with `ended` on disk and nothing
+    live.
 
     Both directions matter, which is why the lock is shared rather than a second one:
     a stop landing mid-start waits for the agents to be ready (the finalize notice
@@ -647,12 +672,12 @@ def _save_edit(meeting_id: str, agent_id: str, content: str, root: Any) -> None:
         store.write_agent_edit(meeting_id, _editable_agent(agent_id, root), content, root)
 
 
-def _drop_edit(meeting_id: str, agent_id: str, root: Any) -> bool:
+def _drop_edit(meeting_id: str, agent_id: str, root: Any) -> None:
     """Validate the meeting and agent, then delete its edit sidecar. BLOCKING."""
     with store.meta_transaction():
         if store.read_meeting_meta(meeting_id, root) is None:
             raise BadRequest("meeting not found", status=404, code="meeting_not_found")
-        return store.revert_agent_edit(meeting_id, _editable_agent(agent_id, root), root)
+        store.revert_agent_edit(meeting_id, _editable_agent(agent_id, root), root)
 
 
 async def handle_put_output(request: web.Request) -> web.Response:
@@ -699,17 +724,17 @@ async def handle_put_output(request: web.Request) -> web.Response:
 async def handle_delete_output(request: web.Request) -> web.Response:
     """Revert one agent's output to what the agent itself last wrote.
 
-    ``reverted: false`` for an agent with no edit is a success, not a 404: the
-    request asked for "no edit on this agent" and that is the state afterwards.
+    Reverting an agent with no edit is a success, not a 404: the request asked
+    for "no edit on this agent" and that is the state afterwards.
     """
     meeting_id = _meeting_id(request)
     root = data_root(request)
     body = await json_body(request)
     agent_id = store.safe_agent_id(field_str(body, "agent_id", required=True, max_len=64))
 
-    reverted = await asyncio.to_thread(_drop_edit, meeting_id, agent_id, root)
+    await asyncio.to_thread(_drop_edit, meeting_id, agent_id, root)
     audit("meetings.revert_output", f"{meeting_id} agent:{agent_id}", outcome="ok")
-    return web.json_response({"ok": True, "agent_id": agent_id, "reverted": reverted})
+    return web.json_response({"ok": True, "agent_id": agent_id})
 
 
 def _read_translations_since(meeting_id: str, since: int, root: Any) -> dict[str, Any]:

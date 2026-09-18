@@ -61,6 +61,18 @@ response before it reaches you, including from mapping *keys* and not only
 values — agent output is parsed into these structures, so a credential can arrive
 as a key.
 
+## Private member memory
+
+Start a workflow from the member's chat to keep its workers in that member's
+memory. Saved workflows and restarted steps keep the same memory boundary.
+Changing a worker's role does not switch its memory. Other members cannot read
+or control that run through their tools.
+
+If the member's memory is missing, damaged or archived, the run stops rather
+than switching to Global memory. Restore the member's memory before retrying.
+Private execution needs the supported Linux/WSL namespace sandbox or macOS outer
+Seatbelt sandbox; turning the sandbox off is not a recovery path.
+
 ## Related docs
 
 - [Subagents](subagents.md): parallel fan-out when the work needs no phases or restarts

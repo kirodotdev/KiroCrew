@@ -38,14 +38,17 @@ def default_token_store() -> TokenStore:
 def _usable(token: KasToken) -> bool:
     """Can this stored identity still produce an access token without a sign-in?
 
-    Either the access token is outside the engine's refresh margin, or a refresh
-    token is present to renew it. What this cannot know without a network call is
-    whether the refresh token is still accepted by the issuer; a persistently
-    rejected one surfaces as a failed callback (the engine's sign-in prompt) and
-    ``kirocrew doctor`` shows the same fields so it can be diagnosed before the
-    first spawn.
+    :meth:`KasToken.is_usable` -- the predicate shared with ``kirocrew doctor``
+    and the dashboard's sign-in card. Kept as a module function so the callers
+    below read the same way they always did. What it cannot know without a
+    network call is whether the refresh token is still accepted by the issuer; a
+    rejected one surfaces as a failed callback (the engine's sign-in prompt), is
+    recorded by the refresher (:meth:`TokenStore.refresh_rejected`), and shows in
+    both ``kirocrew doctor`` and the sign-in card so it can be diagnosed before
+    the first spawn. It deliberately does NOT feed this predicate: a lapsed Crew
+    identity is told to the user, never silently swapped for kiro-cli's login.
     """
-    return (not token.is_expired()) or bool(token.refresh_token)
+    return token.is_usable()
 
 
 def vault_holds_identity() -> bool:
@@ -139,7 +142,8 @@ def describe_vault_identity() -> str | None:
     nothing is stored or the vault cannot be read.
     """
     try:
-        token = default_token_store().resolve()
+        store = default_token_store()
+        token = store.resolve()
     except Exception:  # noqa: BLE001 - diagnostics never raise
         return None
     if token is None:
@@ -148,7 +152,16 @@ def describe_vault_identity() -> str | None:
     minutes = int(remaining.total_seconds() // 60)
     expiry = f"expires in {minutes}m" if minutes > 0 else "access token expired"
     renew = "refresh token present" if token.refresh_token else "no refresh token"
-    verdict = "usable" if _usable(token) else "NOT usable -- sign in again or sign out"
+    rejected = store.refresh_rejected(token.identity)
+    if rejected is not None:
+        # The issuer refused the refresh: the entry looks renewable but is not.
+        # Say so (the dashboard card says the same), and name the remedy -- the
+        # spawn still goes to this identity, so a failing callback is what the
+        # user sees until they act.
+        renew += f", refresh REJECTED by issuer at {rejected.isoformat(timespec='minutes')}"
+        verdict = "sign-in expired -- sign in again from the dashboard or sign out"
+    else:
+        verdict = "usable" if _usable(token) else "NOT usable -- sign in again or sign out"
     return f"{token.identity}/{token.provider}, {expiry}, {renew} -> {verdict}"
 
 

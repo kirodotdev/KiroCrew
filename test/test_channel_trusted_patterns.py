@@ -1,4 +1,4 @@
-"""Channel-agent per-command trust grants (issue #5231).
+"""Channel-agent per-command trust grants.
 
 ``trust_command`` / ``trust_base`` record agent-scoped patterns via the
 approve endpoint; ``_stream_task`` must auto-approve a subsequent tool call
@@ -133,7 +133,7 @@ def _stub_name_grant_verdict(monkeypatch, refusal):
 
 @pytest.mark.asyncio
 async def test_name_grant_refusal_falls_through_to_interactive_card(monkeypatch):
-    """A matched grant whose program name can no longer be vouched for (e.g.
+    """A matched grant whose program name cannot be vouched for (e.g.
     the file behind a trusted ./deploy.sh was replaced) must NOT auto-approve
     — and must not reject either: the request takes the interactive card."""
     sel_mock = MagicMock()

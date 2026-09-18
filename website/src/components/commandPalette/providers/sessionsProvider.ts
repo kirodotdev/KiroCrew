@@ -75,7 +75,6 @@ export interface SessionSearchItem {
   /** Folder the session is filed under, when any (maps to a chip in the row). */
   folder_id?: string
   memory_mode?: 'persistent' | 'incognito' | 'temporary'
-  clean_mode?: boolean
   /** Owning remote instance, present only on federated-search rows. */
   instance_id?: string
   /** Display name of the owning remote instance (raw, never translated). */

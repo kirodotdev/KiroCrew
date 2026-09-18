@@ -496,7 +496,7 @@ class TestAgentExecRedaction:
                 FakeEvent(kind="complete", title=""),
             ]
         )
-        fake_sessions.get_or_create = AsyncMock(return_value=(fake_provider,))
+        fake_sessions.get_or_create = AsyncMock(return_value=(fake_provider, True, False))
         fake_sessions.release = MagicMock()
 
         agent_fn = build_agent_fn(fake_sessions, run_id="test-run")
@@ -516,7 +516,7 @@ class TestAgentExecRedaction:
                 FakeEvent(kind="complete", title=""),
             ]
         )
-        fake_sessions.get_or_create = AsyncMock(return_value=(fake_provider,))
+        fake_sessions.get_or_create = AsyncMock(return_value=(fake_provider, True, False))
         fake_sessions.release = MagicMock()
 
         agent_fn = build_agent_fn(fake_sessions, run_id="test-run")

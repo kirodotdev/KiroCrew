@@ -67,8 +67,8 @@ class TestCapabilities:
 
 # The messaging-package import-purity invariant is enforced for EVERY forbidden
 # package (all eight channels plus ``dashboard``) in
-# ``test/test_messaging_import_purity.py``. The teams-only copy that used to live
-# here named one package, so a ``dashboard`` edge added to ``messaging/`` while
+# ``test/test_messaging_import_purity.py``. A teams-only copy living here would
+# name one package, so a ``dashboard`` edge added to ``messaging/`` while
 # hoisting shared channel code went unnoticed. One gate over the whole set is the
 # fix; adding a channel means adding its name there, not writing another test.
 

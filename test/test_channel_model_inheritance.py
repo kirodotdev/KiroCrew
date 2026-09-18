@@ -175,7 +175,7 @@ class TestResolveNamedAgentModel:
 
 class TestAgentSpecReadsAreHardened:
     """Both model resolvers must read agent specs through the discovery
-    module's hardened reader (#4962), not bare ``read_text``: the agents
+    module's hardened reader, not bare ``read_text``: the agents
     directory is user-writable and shared with other tools, so an oversized
     file is refused at the read cap and a link resolving into a sensitive
     path donates nothing."""

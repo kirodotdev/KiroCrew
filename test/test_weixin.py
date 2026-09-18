@@ -156,7 +156,7 @@ def test_account_credentials_lockdown_precedes_content(tmp_path, monkeypatch):
     On Windows the POSIX mode bits are a no-op, so the owner-only DACL from
     ``restrict_to_owner`` is the only protection; applying it after the write
     left the bot credential readable under the parent directory's inherited ACL
-    for the whole write window (issue #5285). Asserted by measuring the file's
+    for the whole write window. Asserted by measuring the file's
     SIZE at the moment the lockdown is applied — zero means no payload byte
     existed yet. A post-write stat passes on the buggy ordering too, so it
     would not be a regression test.
@@ -463,6 +463,62 @@ def test_gateway_home_follows_the_configured_data_home(tmp_path, monkeypatch):
     import kiro_crew.weixin.gateway as gw
 
     assert gw.data_home is paths_mod.data_home
+
+
+def test_gateway_wires_the_transport_into_the_dispatcher_before_connect(tmp_path):
+    """The config applier that pushes a reloaded ``weixin`` roster at the transport
+    resolves it through ``dispatcher.transport`` and treats a missing holder as
+    "not built yet, it will read the fresh section". That is only true while the
+    transport does not exist. Once it is constructed from the boot roster, a
+    revocation dispatched during the ``connect()`` await must find it wired, or
+    the removed user stays authorized until the next edit or a restart.
+    """
+    from types import SimpleNamespace
+
+    import kiro_crew.weixin.gateway as gw
+
+    class _Cfg:
+        class agent:
+            default_agent = "kirocrew"
+            approval_mode = "auto"
+
+        class messaging:
+            idle_reset_minutes = 0
+            daily_reset_hour = -1
+            dm_scope = "user"
+
+    class _CtxBuilder:
+        hooks = None
+
+        def build_message(self, text, is_new, session_key, **kw):
+            return (text, {})
+
+    holder_at_connect: list[object] = []
+
+    async def _connect(self):
+        # ``_dispatch`` is the dispatcher's bound handle_message; its __self__ is
+        # the dispatcher whose ``transport`` attribute the applier will read.
+        holder_at_connect.append(getattr(self._dispatch.__self__, "transport", None))
+
+    orch = SimpleNamespace(
+        _weixin_enabled=True,
+        _weixin_token="tok",
+        _weixin_account_id="acct1",
+        _weixin_home=str(tmp_path),
+        _weixin_allowed_user_ids=["friend"],
+        _approval_mode="auto",
+        _cfg=_Cfg(),
+        sessions=object(),
+        ctx_builder=_CtxBuilder(),
+        dashboard_state=None,
+    )
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(gw.WeixinTransport, "connect", _connect)
+        client = asyncio.run(gw.maybe_start_weixin(orch))
+
+    assert client is not None, "the channel must have started"
+    assert len(holder_at_connect) == 1
+    assert isinstance(holder_at_connect[0], WeixinTransport)
 
 
 def test_rejected_sender_does_not_get_context_persisted(tmp_path, monkeypatch):

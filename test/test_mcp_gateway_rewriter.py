@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from kiro_crew.mcp_gateway import rewriter
-from kiro_crew.mcp_gateway.hashing import is_secret_env_key
+from kiro_crew.mcp_gateway.hashing import expand_stub_flags, is_secret_env_key
 from kiro_crew.mcp_gateway.manager import is_credential_env_key
 from kiro_crew.mcp_gateway.rewriter import (
     _WRAPPER_MARKER,
@@ -41,7 +41,7 @@ class TestSettingsInjection:
     same-named entry kiro-cli merges from the real settings file
     (``session_servers.py``). A server it does NOT return is left entirely to
     that merge — the rewriter never writes a settings overlay and never
-    modifies the real settings file (#8111).
+    modifies the real settings file.
     """
 
     def _spec(self) -> dict:
@@ -90,7 +90,7 @@ class TestSettingsInjection:
 
         The unit tests above pin the producer; this pins the WIRING: the
         stubbed global lands wrapped in the agent overlay, no settings overlay
-        appears anywhere under the overlay tree (#8111), and the real settings
+        appears anywhere under the overlay tree, and the real settings
         file is byte-identical afterwards.
         """
         from kiro_crew.mcp_gateway.rewriter import rewrite_agents
@@ -218,7 +218,7 @@ def test_allowlisted_server_gets_the_poolable_flag(tmp_path: Path) -> None:
     }
     new_spec, _ = _rewrite(spec, tmp_path, stub_servers=frozenset({"shareable"}))
 
-    assert "--poolable" in new_spec["mcpServers"]["shareable"]["args"]
+    assert "--poolable" in expand_stub_flags(new_spec["mcpServers"]["shareable"]["args"])
 
 
 def test_private_server_with_declared_env_is_not_warned_about(tmp_path: Path, caplog) -> None:
@@ -251,7 +251,7 @@ def test_private_server_with_declared_env_is_not_warned_about(tmp_path: Path, ca
         )
 
     assert wrapped == 1  # stubbed
-    assert "--poolable" not in new_spec["mcpServers"]["needs-env"]["args"]
+    assert "--poolable" not in expand_stub_flags(new_spec["mcpServers"]["needs-env"]["args"])
     env_warnings = [r for r in caplog.records if "declares" in r.getMessage()]
     assert env_warnings == [], (
         "a private backend was warned about with pooled-backend advice: "
@@ -278,7 +278,7 @@ def test_shared_server_with_declared_env_is_still_warned_about(tmp_path: Path, c
 
 
 def test_unresolvable_bare_command_is_not_stubbed(tmp_path: Path, caplog) -> None:
-    """Issue #3495 cause A: a bare command that resolves nowhere on the gateway
+    """A bare command that resolves nowhere on the gateway
     search path must NOT get a stub — gatewayd's spawn would ENOENT on every
     session and degrade it through a fallback exec. The entry is left for the
     session to launch directly (its own environment may still resolve it)."""
@@ -306,7 +306,7 @@ def test_unresolvable_bare_command_is_not_stubbed(tmp_path: Path, caplog) -> Non
 
 
 def test_resolvable_bare_command_lands_absolute_in_the_stub(tmp_path: Path) -> None:
-    """Issue #3495 cause A, positive half: a bare command that DOES resolve is
+    """A bare command that DOES resolve is
     baked into the stub as an absolute path, so gatewayd (running under the
     systemd --user PATH) can spawn it."""
     exe_dir, exe_name = str(Path(sys.executable).parent), Path(sys.executable).name
@@ -319,7 +319,7 @@ def test_resolvable_bare_command_lands_absolute_in_the_stub(tmp_path: Path) -> N
     new_spec, wrapped = _rewrite(spec, tmp_path, stub_servers=frozenset({"bare"}), forward_env=True)
 
     assert wrapped == 1
-    args = new_spec["mcpServers"]["bare"]["args"]
+    args = expand_stub_flags(new_spec["mcpServers"]["bare"]["args"])
     resolved = args[args.index("--target-command") + 1]
     assert Path(resolved).is_absolute(), resolved
     assert Path(resolved).name == exe_name
@@ -328,7 +328,7 @@ def test_resolvable_bare_command_lands_absolute_in_the_stub(tmp_path: Path) -> N
 def test_env_declaring_server_is_declassified_when_forwarding_is_off(
     tmp_path: Path, caplog
 ) -> None:
-    """Issue #3495 cause B: with declared-env forwarding OFF, pooling a server
+    """With declared-env forwarding OFF, pooling a server
     that declares env spawns it WITHOUT that env — it dies at prime on every
     session, trips the breaker, and falls back anyway. Pre-classify: leave it
     unwrapped so the session applies the declared env itself."""
@@ -504,7 +504,7 @@ def test_pooling_disabled_still_wraps_but_shares_nothing(tmp_path: Path) -> None
     assert wrapped == 1
     listed = new_spec["mcpServers"]["listed"]
     assert listed.get(_WRAPPER_MARKER) is True, "listed lost its stub"
-    assert "--poolable" not in listed["args"], "listed still marked shareable"
+    assert "--poolable" not in expand_stub_flags(listed["args"]), "listed still marked shareable"
 
     declared = new_spec["mcpServers"]["declared"]
     assert (
@@ -562,8 +562,16 @@ def test_rewriter_calls_restrict_to_owner_on_windows(tmp_path: Path, monkeypatch
     # Simulate Windows: IS_POSIX=False, IS_WINDOWS=True.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_POSIX", False)
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
-    # Forwarding ON or the env-declaring fixture is declassified (issue #3495
-    # cause B) and no sidecar write happens at all.
+    # The spec read and the source fingerprint both go through the hardened
+    # no-reparse open, which under the simulated flag would call the real Win32
+    # API; this test is about the lockdown of what gets WRITTEN, so read the
+    # fixture plainly at both seams.
+    monkeypatch.setattr(
+        "kiro_crew.agent_discovery.safe_read_file_bytes", lambda raw: Path(raw).read_bytes()
+    )
+    monkeypatch.setattr("kiro_crew.hooks.safe_read_file_bytes", lambda raw: Path(raw).read_bytes())
+    # Forwarding ON or the env-declaring fixture is declassified and no sidecar
+    # write happens at all.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.forward_declared_env_enabled", lambda: True)
     with (
         patch(
@@ -665,9 +673,9 @@ def test_overlay_lockdown_precedes_content(tmp_path: Path, monkeypatch) -> None:
     """The per-agent overlay writer locks the temp file down BEFORE content
     reaches it (the settings overlay shares the same atomic_write call shape).
 
-    Overlays carry passed-through env blocks (tokens / API keys); the previous
-    Windows-only post-rename restrict_to_owner left them readable under the
-    inherited DACL for the whole write window (issue #5285). Asserted by
+    Overlays carry passed-through env blocks (tokens / API keys); a Windows-only
+    post-rename restrict_to_owner leaves them readable under the
+    inherited DACL for the whole write window. Asserted by
     measuring the file's SIZE at lockdown time — zero means no payload byte
     existed yet. A post-write stat passes on the buggy ordering too, so it
     would not be a regression test.
@@ -727,7 +735,7 @@ def _spec_with_env(source_dir: Path) -> None:
 
 def _overlay_stub_args(overlay_dir: Path) -> list[str]:
     spec = json.loads((overlay_dir / "test-agent.json").read_text(encoding="utf-8"))
-    return list(spec["mcpServers"]["myserver"].get("args", []))
+    return expand_stub_flags(spec["mcpServers"]["myserver"].get("args", []))
 
 
 def test_env_sidecar_directory_goes_through_make_owner_only_dir(
@@ -743,8 +751,8 @@ def test_env_sidecar_directory_goes_through_make_owner_only_dir(
     from kiro_crew.mcp_gateway.rewriter import rewrite_agents
 
     # Sidecar machinery is under test, not pooling classification: forwarding
-    # must be ON or the env-declaring fixture is declassified (issue #3495
-    # cause B) and no sidecar is ever written.
+    # must be ON or the env-declaring fixture is declassified and no sidecar
+    # is ever written.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.forward_declared_env_enabled", lambda: True)
 
     source_dir = tmp_path / "agents"
@@ -790,8 +798,8 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
     from kiro_crew.mcp_gateway.rewriter import rewrite_agents
 
     # Sidecar machinery is under test, not pooling classification: forwarding
-    # must be ON or the env-declaring fixture is declassified (issue #3495
-    # cause B) and no sidecar is ever written.
+    # must be ON or the env-declaring fixture is declassified and no sidecar
+    # is ever written.
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.forward_declared_env_enabled", lambda: True)
 
     source_dir = tmp_path / "agents"
@@ -812,6 +820,12 @@ def test_failed_sidecar_protection_leaves_no_readable_credentials(
 
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_POSIX", False)
     monkeypatch.setattr("kiro_crew.mcp_gateway.rewriter.platform_compat.IS_WINDOWS", True)
+    # Same as the lockdown test above: keep the hardened spec read and source
+    # fingerprint off the real Win32 open the simulated flag would select.
+    monkeypatch.setattr(
+        "kiro_crew.agent_discovery.safe_read_file_bytes", lambda raw: Path(raw).read_bytes()
+    )
+    monkeypatch.setattr("kiro_crew.hooks.safe_read_file_bytes", lambda raw: Path(raw).read_bytes())
     with (
         patch(
             "kiro_crew.mcp_gateway.rewriter.platform_compat.restrict_to_owner",

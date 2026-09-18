@@ -1,13 +1,13 @@
 """The cold-start model id is translated for the backend that will run it.
 
-``acp_effective_model`` is the factory's own selection. It used to hardcode
-``to_acp_id``, so a concrete ``agent.model`` reached the claude adapter in
+``acp_effective_model`` is the factory's own selection. It must not hardcode
+``to_acp_id``: that sends a concrete ``agent.model`` to the claude adapter in
 kiro's namespace — rejected by ``set_config_option``, and withheld by nothing,
 because the pre-wire availability guard is deliberately kiro-only (the two
 backends advertise in different namespaces). The warm-pool switch path
-(``session_allocation``) already keyed the translation on the backend, so the
-same pinned model behaved differently depending on whether a pooled process
-happened to exist. These pin that the two paths now agree.
+(``session_allocation``) keys the translation on the backend, so both paths
+resolve the same pinned model identically whether or not a pooled process
+exists. These pin that the two paths agree.
 """
 
 from __future__ import annotations

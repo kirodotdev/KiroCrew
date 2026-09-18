@@ -4,7 +4,7 @@
 the READ path (``~/.kiro/skills`` and ``<project>/.kiro/skills`` via
 ``_resolve_skill_root``), while ``skills.create/update/delete_skill`` would join the key
 onto a core root — so the same key names a different file on write than the reader was
-shown (issue #8244). The FEAT-002 guard refuses the mutating verbs (PUT/DELETE -> 405 with
+shown. The FEAT-002 guard refuses the mutating verbs (PUT/DELETE -> 405 with
 ``Allow: GET`` and code ``readonly_skill_prefix``; create -> 400 with code
 ``reserved_skill_prefix``) while leaving reads and non-prefixed writes untouched.
 
@@ -28,6 +28,19 @@ from types import SimpleNamespace
 import pytest
 
 import kiro_crew.dashboard.handlers.prompts as prompts_mod
+
+
+@pytest.fixture(autouse=True)
+def _owner(monkeypatch):
+    """Run as the dashboard owner: this module covers the TERRITORY guard.
+
+    The owner gate that also fronts these handlers has its own dedicated
+    coverage in ``test_skill_write_guard.py``; here it would only stand between
+    the test and the read-only-territory behavior under test.
+    """
+    monkeypatch.setattr(
+        prompts_mod, "is_owner_dashboard_request", lambda _request: True, raising=False
+    )
 
 
 class _FakeRequest:

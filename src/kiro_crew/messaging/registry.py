@@ -80,6 +80,22 @@ class ChannelDescriptor:
     #: operator looking in the wrong place. WeCom/WeChat's ``account_id`` is the
     #: case — its gateway refuses to start without one.
     required_config: tuple[str, ...] = ()
+    #: Config keys of this channel's section that are CONNECTION parameters:
+    #: the enable flag, the token or app identity the transport authenticates
+    #: with, the endpoint it connects to, the store it opens. A live transport
+    #: cannot adopt a new one of these, so a config change touching any of them
+    #: is applied by restarting the channel in-process
+    #: (``GatewayOrchestrator.restart_channel``). Every OTHER key of the section
+    #: (allow-lists, thresholds, render toggles) is pushed onto the running
+    #: transport or read at point of use, so a change there must NOT restart the
+    #: channel -- the restart applier compares the changed paths against this
+    #: set and nothing else. Empty for a host-managed lifecycle (Slack).
+    #: The other half of "what happens when ``<channel>.*`` changes" is that
+    #: channel's ``transport.reconfigure(section)`` (its allow-list and live
+    #: fields), registered from its ``transport_dispatch.py`` via
+    #: ``live.watch_section``; the two are disjoint by construction and
+    #: ``test_channel_boot_keys_contract.py`` pins that.
+    boot_keys: frozenset[str] = frozenset()
     """Credential keys this channel needs ALL of before it can connect.
 
     Data rather than a per-channel branch, so a diagnostic can report every
@@ -100,10 +116,30 @@ def bootable(descriptors: tuple[ChannelDescriptor, ...]) -> tuple[ChannelDescrip
     return tuple(d for d in descriptors if d.start is not None)
 
 
+def changed_boot_keys(
+    desc: ChannelDescriptor, changed_paths: "frozenset[str] | set[str]"
+) -> frozenset[str]:
+    """The ``boot_keys`` of *desc* that *changed_paths* touches.
+
+    *changed_paths* are dotted leaf paths from a config diff
+    (``telegram.bot_token``, ``telegram.accounts.main.token``); a key is
+    matched on the FIRST segment under the section, so a nested boot key
+    (``accounts``) counts however deep the leaf sits. Paths outside the
+    section are ignored, so a caller may hand over the whole change set.
+    Empty means "nothing that needs a restart changed" -- the answer the
+    live-field appliers rely on so their fields never bounce a connection.
+    """
+    prefix = desc.channel_type + "."
+    keys = {p[len(prefix) :].split(".", 1)[0] for p in changed_paths if p.startswith(prefix)}
+    return frozenset(keys & desc.boot_keys)
+
+
 async def start_channels(
     orch: Any,
     descriptors: tuple[ChannelDescriptor, ...],
     permitted: Mapping[str, bool],
+    *,
+    before_start: Callable[[ChannelDescriptor], None] | None = None,
 ) -> dict[str, Any]:
     """Start every bootable, governance-permitted channel; return live handles.
 
@@ -113,10 +149,19 @@ async def start_channels(
     a disabled channel is never evaluated, never starts, and never emits a
     spurious deny audit.
 
+    ``before_start`` runs synchronously immediately ahead of each channel's
+    factory -- the gateway re-hoists that channel from the config watcher's
+    current snapshot there. Channels start one after another and a connect can
+    take seconds, so a hook that ran once for all of them would leave the later
+    channels building from a document the earlier ones' connects had let go
+    stale. It is synchronous so nothing can be dispatched between the read and
+    the factory's own subscription.
+
     Failure isolation is per-channel BY the factories themselves (each
     ``maybe_start_*`` catches, badges the error, and returns ``None``), so a
     raise escaping one factory here is unexpected; it is logged and the
-    remaining channels still start rather than aborting the block.
+    remaining channels still start rather than aborting the block. The hook
+    sits inside the same isolation.
     """
     handles: dict[str, Any] = {}
     for desc in bootable(descriptors):
@@ -124,6 +169,8 @@ async def start_channels(
             continue
         assert desc.start is not None  # bootable() guarantees this
         try:
+            if before_start is not None:
+                before_start(desc)
             client = await desc.start(orch)
         except Exception:
             logger.exception("channel registry: %s failed to start", desc.channel_type)

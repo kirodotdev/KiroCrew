@@ -136,9 +136,10 @@ describe('AppsPage — hybrid Discover', () => {
     expect(screen.getByRole('button', { name: /Developer Tools 1/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /On-call & Ops 1/ })).toBeInTheDocument()
     expect(screen.getByRole('button', { name: /Productivity 1/ })).toBeInTheDocument()
-    // Sources block: external registry row with its app count
-    expect(screen.getByText('kirodotdev-labs')).toBeInTheDocument()
-    expect(screen.getByText('1 app')).toBeInTheDocument()
+    // Source attribution also appears on app cards; assert the rail row itself.
+    const source = screen.getByRole('button', { name: 'kirodotdev-labs 1 app' })
+    expect(within(source).getByText('kirodotdev-labs')).toBeInTheDocument()
+    expect(within(source).getByText('1 app')).toBeInTheDocument()
   })
 
   it('selecting a category filters the list but KEEPS the editorial layer', async () => {

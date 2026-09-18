@@ -18,6 +18,7 @@ denied with a SEL audit record.
 
 from __future__ import annotations
 
+import logging
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
@@ -30,6 +31,8 @@ from kiro_crew.messaging.transport import (
     TransportCapabilities,
 )
 from kiro_crew.sel import sel
+
+logger = logging.getLogger(__name__)
 
 #: Redelivery-dedup window. Crossing ``_SEEN_MAX`` trims back to
 #: ``_SEEN_KEEP`` in one pass rather than evicting one id per arrival.
@@ -59,6 +62,13 @@ FEISHU_CAPABILITIES = TransportCapabilities(
     # failure raises (see ``send_message``). Same contract as WeCom's.
     returns_message_id=False,
 )
+
+# A contextual reply anchor is safe only when paired with the authorized inbound
+# route that produced it. These markers are written exclusively into the
+# protected refused-inbound spool; normal proactive calls carry neither and stay
+# denied by ``may_send_to``.
+SPOOL_DM_ROUTE_PREFIX = "inbound-spool:dm:"
+SPOOL_GROUP_ROUTE_PREFIX = "inbound-spool:group:"
 
 
 class FeishuTransport(MessagingTransport):
@@ -98,6 +108,96 @@ class FeishuTransport(MessagingTransport):
         """The underlying Lark client (held + exposed, not hidden)."""
         return self._client
 
+    # -- Live config --------------------------------------------------------
+
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``feishu`` config section's authorization fields.
+
+        Called by the dispatcher's config applier so an allow-list or group-gate
+        edit from the dashboard, the CLI or ``$EDITOR`` takes effect on the next
+        frame instead of the next restart. Each frozenset is REPLACED wholesale
+        so an in-flight authorisation decision keeps reading one consistent set.
+
+        Fails closed on shape: a list-typed field that is not a list, or an
+        ``allow_group`` that is not a bool, keeps the PREVIOUS value and logs at
+        WARNING. The group gate stays a CONJUNCTION -- both ``allow_group`` and
+        an allow-listed ``chat_id`` -- so widening one half alone still admits no
+        group, and every change is SEL-audited by count rather than by id.
+        """
+        allowed, allowed_delta = self._reload_id_set(
+            section, "allowed_open_ids", self._allowed, "open_id"
+        )
+        groups, groups_delta = self._reload_id_set(
+            section, "allowed_group_ids", self._allowed_group_ids, "group chat_id"
+        )
+        # ADOPT before AUDIT, both sets: the audit is best-effort bookkeeping and
+        # ``sel()`` can raise (its trust root is validated on first use), so an
+        # audit that ran first would leave a revoked id authorized until SEL
+        # recovered -- every retry re-hitting the same failure.
+        self._allowed = allowed
+        self._allowed_group_ids = groups
+        self._audit_roster(allowed_delta, allowed, "allow_list_changed")
+        self._audit_roster(groups_delta, groups, "group_allow_list_changed")
+        allow_group = getattr(section, "allow_group", None)
+        if not isinstance(allow_group, bool):
+            logger.warning(
+                "feishu: allow_group is not a bool in the reloaded config; keeping %r",
+                self._allow_group,
+            )
+        elif allow_group != self._allow_group:
+            self._allow_group = allow_group
+            logger.warning("feishu: allow_group flipped to %r via config reload", allow_group)
+            sel().log_api_access(
+                caller="config",
+                operation="feishu_transport.reconfigure",
+                outcome="allow_group_enabled" if allow_group else "allow_group_disabled",
+                source="feishu",
+            )
+
+    def _reload_id_set(
+        self,
+        section: Any,
+        field_name: str,
+        current: frozenset[str],
+        label: str,
+    ) -> tuple[frozenset[str], tuple[int, int] | None]:
+        """One reloaded id allow-list: rebuilt, or *current* kept on a bad shape.
+
+        Returns the set to adopt and its ``(added, removed)`` delta, or ``None``
+        when nothing changed -- the caller adopts first and audits after.
+        """
+        raw = getattr(section, field_name, None)
+        if not isinstance(raw, (list, tuple)):
+            logger.warning(
+                "feishu: %s is not a list in the reloaded config; keeping the previous "
+                "allow-list (%d %s(s))",
+                field_name,
+                len(current),
+                label,
+            )
+            return current, None
+        updated = frozenset(str(x) for x in raw if x)
+        if updated == current:
+            return current, None
+        added = len(updated - current)
+        removed = len(current - updated)
+        logger.info("feishu: %s reloaded (+%d/-%d %s(s))", field_name, added, removed, label)
+        return updated, (added, removed)
+
+    @staticmethod
+    def _audit_roster(delta: tuple[int, int] | None, adopted: frozenset[str], outcome: str) -> None:
+        """SEL-audit an adopted roster change by count. Runs AFTER adoption."""
+        if delta is None:
+            return
+        added, removed = delta
+        sel().log_api_access(
+            caller="config",
+            operation="feishu_transport.reconfigure",
+            outcome=outcome,
+            source="feishu",
+            resources=f"added={added} removed={removed} size={len(adopted)}",
+        )
+
     # -- Tier-1 core --------------------------------------------------------
 
     async def send_message(
@@ -123,21 +223,22 @@ class FeishuTransport(MessagingTransport):
     def may_send_to(
         self, conversation_id: str, thread_id: str | None = None, *, principal: str = ""
     ) -> bool:
-        """Never. Feishu has no proactive send in this v1 integration.
+        """Re-authorize a contextual reply anchor from the inbound spool.
 
-        Not conservatism -- the address is wrong. ``send_message`` takes an inbound
-        ``message_id`` as its ``conversation_id``, so it is a reply anchor rather
-        than a durable destination, and a proactive send resolves a PERSISTED link
-        whose anchor named a message from some earlier turn. Answering True would
-        reply to whatever that message was, on behalf of a turn nobody connected to
-        it. ``configured_targets`` already reports every target unavailable for the
-        same reason; this is the enforcing half of that claim.
-
-        The override exists rather than inheriting the ABC's permissive default
-        because the default is a decision each transport owes explicitly -- an
-        inherited one is invisible, and this reason is the thing worth being able
-        to grep for when a proactive path is added.
+        ``conversation_id`` remains the original message id used by
+        :meth:`send_message`. The protected spool pairs it with a marker naming
+        the authorized DM sender or group chat. Normal proactive calls carry no
+        marker and remain denied; replay rechecks the embedded identity against
+        the current live roster.
         """
+        if not conversation_id or not thread_id:
+            return False
+        if thread_id.startswith(SPOOL_DM_ROUTE_PREFIX):
+            open_id = thread_id[len(SPOOL_DM_ROUTE_PREFIX) :]
+            return bool(open_id) and open_id in self._allowed
+        if thread_id.startswith(SPOOL_GROUP_ROUTE_PREFIX):
+            chat_id = thread_id[len(SPOOL_GROUP_ROUTE_PREFIX) :]
+            return bool(chat_id) and self._allow_group and chat_id in self._allowed_group_ids
         return False
 
     async def resolve_conversation(self, user_id: str) -> str:

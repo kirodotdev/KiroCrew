@@ -44,6 +44,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
             ("logs", "Show gateway logs"),
             ("token", "Print a dashboard access URL with auth token"),
             ("logout", "Revoke all active dashboard sessions"),
+            ("ledger-sweep", "List finished session/work ledgers; --purge deletes them"),
             ("update", "Update Kiro Crew to the latest version"),
         ),
     ),
@@ -89,6 +90,7 @@ COMMAND_GROUPS: tuple[tuple[str, tuple[tuple[str, str], ...]], ...] = (
         (
             ("secrets", "Migrate .env credentials into the encrypted secret vault"),
             ("security", "Security audit and deny list"),
+            ("file-delivery", "Approve delivery of scanner-flagged files (host step-up)"),
             ("policy", "Inspect the governance security policy + profiles"),
             ("telemetry", "Inspect or disable anonymous usage telemetry"),
         ),

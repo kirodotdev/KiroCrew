@@ -332,7 +332,7 @@ class TestFactoryEffortThreading:
 
 class TestFactoryDropWarning:
     """The factory's effort gate is the single authority that drops a requested
-    effort, so IT names the drop (#6186): one warning at the gate covers every
+    effort, so IT names the drop: one warning at the gate covers every
     surface that funnels through it (spawn, dashboard slot, cron) and cannot
     drift from the decision it reports on. Silence stays the contract when the
     effort is delivered, invalid, or absent."""

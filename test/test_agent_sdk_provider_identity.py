@@ -6,7 +6,7 @@ sweep cannot quietly merge them:
 
 1. **The provider-identity axis** — ``agent.provider``, asked through
    :func:`kiro_crew.agent_sdk.provider_identity.is_claude_code`. The eleven
-   branches that used to spell the literal inline now route through it, and
+   branches that would spell the literal inline route through it instead, and
    :func:`test_no_converted_file_compares_the_literal` keeps them there.
 2. **The session-map provider label** — ``PROVIDER_LABEL_CLAUDE``. Equal in
    value, different in job. Pinned equal by

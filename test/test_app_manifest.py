@@ -84,7 +84,7 @@ class TestValidation:
 
     @pytest.mark.parametrize("name", ["registry", "registries", "blob", "install", "register"])
     def test_literal_route_segment_name_rejected(self, name):
-        """Issue #7111: the literal first-segment routes under /api/apps/ are
+        """The literal first-segment routes under /api/apps/ are
         shared routes registered before the /api/apps/{name} catch-all. Reserving
         these names is the defense-in-depth backstop that keeps NEW apps from
         claiming them (the token_auth carve-out is the primary boundary)."""
@@ -408,6 +408,7 @@ class TestRoundTrip:
                 "network": True,
                 "memory": "shared",
                 "cron": True,
+                "sessionApproval": True,
             },
             "setup": {
                 "onInstall": "setup.py:init",
@@ -420,6 +421,21 @@ class TestRoundTrip:
         serialized = json.loads(m.to_json())
         m2 = AppManifest.from_dict(serialized)
         assert m2.to_dict() == m.to_dict()
+
+    @pytest.mark.parametrize("raw", ["false", "true", "yes", 1, {}, [], None])
+    def test_session_approval_requires_json_true(self, raw):
+        m = AppManifest.from_dict(
+            _valid_manifest(permissions={"sessionApproval": raw})
+        )
+        assert m.permissions.sessionApproval is False
+        assert "sessionApproval" not in m.to_dict().get("permissions", {})
+
+    def test_session_approval_round_trips_when_true(self):
+        m = AppManifest.from_dict(
+            _valid_manifest(permissions={"sessionApproval": True})
+        )
+        assert m.permissions.sessionApproval is True
+        assert m.to_dict()["permissions"]["sessionApproval"] is True
 
     def test_extra_fields_preserved(self):
         data = _valid_manifest(customField="hello", anotherOne=42)
@@ -1683,11 +1699,11 @@ class TestContributedCommands:
         m.validate()
 
     def test_non_dict_entries_in_the_command_list_are_reported(self):
-        # This test previously asserted `validate() == []` -- that the bad entries were
-        # simply filtered out. That WAS the behaviour and it was the fail-open shape this
-        # class keeps producing: three entries vanished and the app installed with one
-        # row, its author told nothing. The parse still skips them (so one typo cannot
-        # take the whole array down), but validation now names the count.
+        # Bad entries must be REPORTED, not silently filtered out: dropping them is the
+        # fail-open shape this class keeps producing, where entries vanish and the app
+        # installs with fewer rows and its author is told nothing. The parse still skips
+        # them (so one typo cannot take the whole array down), but validation names the
+        # count.
         data = self._manifest(self._command())
         data["contributes"]["commands"] = ["approve-all", None, 7, self._command()]
         m = AppManifest.from_dict(data)
@@ -1742,7 +1758,7 @@ class TestContributesPanelTabs:
     def test_paneltabs_only_manifest_is_covered_by_the_signing_payload(self):
         """A tab's ``entry`` is an ESM module the AppHost imports and RUNS.
 
-        The payload guard used to test ``commands or sessionControls``, and the body it
+        The payload guard would test ``commands or sessionControls``, and the body it
         guarded serializes ALL of ``contributes`` — so a manifest contributing only
         panelTabs was left out of the signed bytes entirely, making ``entry`` the one
         part of a signed app an attacker could repoint with the signature still

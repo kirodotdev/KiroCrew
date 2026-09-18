@@ -38,6 +38,7 @@ from urllib.parse import quote, urlencode
 
 from kiro_crew import __version__, platform_compat, release_channel
 from kiro_crew.config.loader import config_dir
+from kiro_crew.kiro_cli import PATH_ONLY_INSTALL_NOTE, pin_kiro_cli
 from kiro_crew.security import (
     is_sensitive_path,
     redact_credentials,
@@ -798,9 +799,30 @@ def _macos_crash_reports() -> list[Path]:
 
 
 def _kiro_cli_version() -> str:
+    """The installed kiro-cli's ``--version`` line for ``versions.txt``.
+
+    Reached from the dashboard's ``POST /api/diagnostics/collect``, so it fires
+    on a click, not only from a TTY. The binary is pinned through
+    :func:`kiro_crew.kiro_cli.pin_kiro_cli` — an absolute path from the known
+    install directories with the inherited ``PATH`` excluded — because a bare
+    argv0 would be re-resolved inside ``exec`` against a ``PATH`` that can lead
+    with an agent-writable directory. No pin means no spawn.
+
+    Three answers, because a maintainer reads this line first: the version, a
+    plain ``unavailable`` when no backend is installed or the probe failed, and
+    a distinct line when kiro-cli exists only through ``PATH`` — that one names
+    the operator's fix rather than misreporting a working install as absent.
+    Everything is contained: diagnostics must work precisely when the rest of
+    the system is broken, so a raising lookup degrades like a failed spawn.
+    """
     try:
+        binary, unpinned_exists = pin_kiro_cli()
+        if binary is None:
+            if unpinned_exists:
+                return f"not pinned ({PATH_ONLY_INSTALL_NOTE})"
+            return "unavailable"
         out = subprocess.run(
-            ["kiro-cli", "--version"],
+            [binary, "--version"],
             capture_output=True,
             text=True,
             timeout=5,

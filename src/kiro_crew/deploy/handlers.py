@@ -226,7 +226,7 @@ _LOCAL_DIR_SPEC = FieldSpec(name="local_dir", type=str, max_len=4096, pattern=_L
 # Both allow empty (clears profile / falls back to default region); the pattern is
 # only enforced on non-empty values by validate_field. The profile charset
 # ('+' admitted for IAM Identity Center derived names, leading '-' excluded,
-# \Z anchor — #6055) is profiles.py's PROFILE_SPEC, aliased like REGION_SPEC
+# \Z anchor) is profiles.py's PROFILE_SPEC, aliased like REGION_SPEC
 # below rather than re-spelled here.
 _PROFILE_SPEC = profiles_mod.PROFILE_SPEC
 _REGION_SPEC = profiles_mod.REGION_SPEC
@@ -1800,7 +1800,7 @@ async def _expire_manifest_best_effort(art: Any) -> str:
         return "skipped"
 
     # Validate the profile through the registry — if the metadata records a
-    # profile that no longer exists (or was never registered), refuse to execute
+    # profile that does not exist (or was never registered), refuse to execute
     # aws CLI with unvalidated input.
     raw_profile = meta.deploy_target.profile
     raw_region = meta.deploy_target.region or engine.DEFAULT_REGION
@@ -2349,7 +2349,7 @@ def _cloud_gated(handler):
     Read endpoints stay open for the same family of reasons — ``/api/deploy/config``
     is what tells the frontend to hide the surface, and ``list`` / ``pricing`` /
     ``iam-policy`` disclose no infrastructure while letting an operator see what a
-    previously-permitted deployment left behind.
+    already-permitted deployment left behind.
 
     Runs the check in a worker thread: the admission path can initialize the SEL
     audit log, which on a fresh gateway does blocking file IO (trust-dir

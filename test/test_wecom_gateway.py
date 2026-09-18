@@ -234,6 +234,35 @@ class TestSkipReasonWarning:
     and complete silence when the channel is disabled or fully credentialed.
     """
 
+    @pytest.mark.parametrize(
+        "bot_id,secret,expected",
+        [
+            ("", "", (False, False)),
+            ("bot-value", "", (True, False)),
+            ("", "secret-value", (False, True)),
+            ("bot-value", "secret-value", (True, True)),
+        ],
+    )
+    def test_diagnostic_receives_presence_only(self, monkeypatch, bot_id, secret, expected) -> None:
+        from kiro_crew.wecom import gateway
+
+        calls = []
+        monkeypatch.setattr(
+            gateway,
+            "warn_if_channel_uncredentialed",
+            lambda *args: calls.append(args),
+        )
+        warn_if_wecom_uncredentialed(True, bot_id, secret)
+        assert calls == [
+            (
+                "wecom",
+                "WeCom",
+                True,
+                (("WECOM_BOT_ID", expected[0]), ("WECOM_SECRET", expected[1])),
+            )
+        ]
+        assert all(type(present) is bool for _, present in calls[0][3])
+
     def test_enabled_without_credentials_warns_once_naming_both(self, caplog) -> None:
         with caplog.at_level(logging.WARNING, logger="kiro_crew.wecom.gateway"):
             warn_if_wecom_uncredentialed(True, "", "")

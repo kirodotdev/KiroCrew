@@ -57,6 +57,20 @@ export function refreshOnce(): Promise<RefreshResult> {
   return _inFlight
 }
 
+/**
+ * The refresh in flight right now, or null when none is running.
+ *
+ * `checkSessionExpired` (api/client) starts a refresh on a 403 and hands the
+ * ORIGINAL response back unchanged, so the request that tripped it still
+ * rejects. Polls come around again on their own; a one-shot boot request (the
+ * installed-theme catalog) has nothing to come around, so it awaits this and
+ * replays once `ok` is true. Null means recovery has already settled or was
+ * never attempted (the embedded hub hand-off reloads the whole document).
+ */
+export function pendingRefresh(): Promise<RefreshResult> | null {
+  return _inFlight
+}
+
 /** Test-only: clear the single-flight slot between cases. */
 export function __resetRefreshOnceForTests(): void {
   _inFlight = null

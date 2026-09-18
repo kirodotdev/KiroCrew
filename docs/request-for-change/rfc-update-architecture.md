@@ -43,8 +43,12 @@ cannot make yet, so superseded trees stay as manual recovery targets.
 `cli.sh` repoints the stable link at the legacy tree after its own installs,
 so the link always names the last-installed version whichever writer ran.
 Gateway restarts resolve their interpreter through the stable link
-(`respawn_executable`), which is the `updates.py` launch path from §3's list;
-the service-unit and macOS-launcher rewrites, the in-app Apply now ships WITH its OQ7 step-up: the SPA's
+(`respawn_executable`), which is the `updates.py` launch path from §3's list.
+Dashboard apply handlers load that resolver before an update can replace the
+running install tree and pass it to the restart helper. A plain restart loads
+the resolver when invoked.
+The service-unit and macOS-launcher rewrites remain separate. The in-app Apply
+now ships WITH its OQ7 step-up: the SPA's
 Update button arms a pending request (`POST /api/update/arm`; single-use
 nonce, TTL 10 min, written owner-only to the data home and never returned to
 the SPA), and `kirocrew update approve` on the gateway host presents the

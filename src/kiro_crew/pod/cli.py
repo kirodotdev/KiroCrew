@@ -55,7 +55,62 @@ def _die(msg: str) -> NoReturn:
     sys.exit(1)
 
 
-def _wait_healthy(cfg: PodConfig, name: str, port: int, tries: int = 45) -> int:
+# Default health-wait budget for `pod up`, in seconds. A first pod boot does
+# real extra work beyond serving /api/health -- config migration, staging CLI
+# files, minting a fresh .local_secret -- and on a loaded host a healthy
+# gateway was measured needing well past the old 45s wall, so the default is
+# twice that. Override per-run with `pod up --wait-secs` or the env var below.
+POD_HEALTH_WAIT_SECS_DEFAULT = 90
+POD_HEALTH_WAIT_SECS_ENV = "KIROCREW_POD_HEALTH_SECS"
+# Floor so a misconfigured tiny value cannot make every boot fail before the
+# gateway has any chance to answer; ceiling so an absurd value cannot wedge
+# `pod up` for hours or overflow float arithmetic on the deadline.
+_POD_HEALTH_WAIT_FLOOR_SECS = 5
+_POD_HEALTH_WAIT_CEIL_SECS = 3600
+
+
+def _health_wait_secs(args: argparse.Namespace) -> int:
+    """Resolve the `pod up` health-wait budget in seconds: flag > env > default.
+
+    The env var must parse as a positive integer; a malformed value warns on
+    stderr and falls back to the default rather than raising, so a typo in a
+    profile cannot make `pod up` unbootable. The result is clamped to a small
+    floor for the same reason in the other direction.
+    """
+    secs = getattr(args, "wait_secs", None)
+    if secs is not None:
+        if secs <= 0:
+            # The warning promises the default, so the default is what applies:
+            # an invalid explicit flag does not fall through to the env var.
+            print(
+                f"pod: ignoring --wait-secs {secs} (not a positive integer); "
+                f"using the default {POD_HEALTH_WAIT_SECS_DEFAULT}s",
+                file=sys.stderr,
+            )
+            secs = POD_HEALTH_WAIT_SECS_DEFAULT
+    else:
+        raw = os.environ.get(POD_HEALTH_WAIT_SECS_ENV, "").strip()
+        if raw:
+            try:
+                secs = int(raw)
+                if secs <= 0:
+                    raise ValueError(raw)
+            except ValueError:
+                print(
+                    f"pod: ignoring {POD_HEALTH_WAIT_SECS_ENV}={raw!r} (not a "
+                    f"positive integer); using the default "
+                    f"{POD_HEALTH_WAIT_SECS_DEFAULT}s",
+                    file=sys.stderr,
+                )
+                secs = POD_HEALTH_WAIT_SECS_DEFAULT
+    if secs is None:
+        secs = POD_HEALTH_WAIT_SECS_DEFAULT
+    return min(max(secs, _POD_HEALTH_WAIT_FLOOR_SECS), _POD_HEALTH_WAIT_CEIL_SECS)
+
+
+def _wait_healthy(
+    cfg: PodConfig, name: str, port: int, tries: int = POD_HEALTH_WAIT_SECS_DEFAULT
+) -> int:
     """Poll until the pod itself serves (200/401/403), or bail fast on failure.
 
     Returns the HTTP code on success, or a negative sentinel on early failure:
@@ -65,7 +120,16 @@ def _wait_healthy(cfg: PodConfig, name: str, port: int, tries: int = 45) -> int:
       ``rt.HEALTH_FOREIGN`` = the port answers, but another process owns it, so
            this pod's gateway cannot have bound it.
     A pod IS the worktree's gateway, so a dead gateway is a real, expected signal —
-    we just want it fast and clearly attributed, not a silent 45s timeout.
+    we just want it fast and clearly attributed, not a silent timeout. ``tries``
+    is the WALL-CLOCK budget in seconds, enforced by a monotonic deadline
+    (default ``POD_HEALTH_WAIT_SECS_DEFAULT``, overridable via `pod up
+    --wait-secs` or ``KIROCREW_POD_HEALTH_SECS``): polls run about once per
+    second when the port answers fast, and a slow probe (a bound-but-silent
+    socket eats the probe's own timeout) shortens the remaining sleeps rather
+    than stretching the budget, so the total overrun is at most one probe.
+    The exhausted-budget return is 0 only when NOTHING ever answered the
+    port: a real HTTP status (the last polled one, or the last one seen
+    before the port went silent) is returned whenever the gateway spoke.
 
     A foreign responder does NOT end the wait on sight. The pod may still be
     starting, and its own gateway may be moments from winning the port back after
@@ -76,21 +140,27 @@ def _wait_healthy(cfg: PodConfig, name: str, port: int, tries: int = 45) -> int:
     journal that only says "address already in use".
     """
     saw_foreign = False
-    for _ in range(tries):
+    last_http = 0
+    deadline = time.monotonic() + max(tries, 1)
+    while True:
         code = rt.health(cfg, name, port)
         if code in (200, 401, 403):
             return code
         if code == rt.HEALTH_FOREIGN:
             saw_foreign = True
+        elif code > 0:
+            # Any real HTTP answer is remembered: a gateway that served an
+            # error and then went silent DID answer, and reporting 0 for it
+            # would misattribute a broken health route as a slow boot.
+            last_http = code
         state, restarts = rt.unit_state(cfg, name)
         # failed = exited non-zero and not restarting; restarts>0 = crash-looping.
         if state == "failed" or restarts > 0:
             return rt.HEALTH_FOREIGN if saw_foreign else -1
-        time.sleep(1)
-    final = rt.health(cfg, name, port)
-    if final in (200, 401, 403):
-        return final
-    return rt.HEALTH_FOREIGN if (saw_foreign or final == rt.HEALTH_FOREIGN) else final
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return rt.HEALTH_FOREIGN if saw_foreign else (code or last_http)
+        time.sleep(min(1.0, remaining))
 
 
 def _resolve_or_die(cfg: PodConfig, name: str) -> Path:
@@ -145,8 +215,25 @@ def _verify_seed_landed(cfg: PodConfig, name: str, scenario: str, home_was_popul
     )
 
 
+def _require_up_user_bus(name: str) -> None:
+    """Diagnose Linux user-bus reachability before pod-up preparation.
+
+    launchd and Task Scheduler keep their established gates at the operations
+    that use them. Running those capability probes here would mutate host
+    service state before pod-up reaches its platform-specific seam.
+    """
+    if not rt.IS_LINUX:
+        return
+    try:
+        rt.require_backend()
+    except rt.PodError as exc:
+        _audit("pod.up", "failure", f"name={name}", error=str(exc)[:120])
+        raise
+
+
 def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
     name = rt.validate_name(args.name)
+    _require_up_user_bus(name)
     checkout = _resolve_or_die(cfg, name)
 
     scenario = ""
@@ -334,7 +421,8 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             resources += " applied=next_boot"
         _audit("pod.up", "allowed", resources)
 
-        code = _wait_healthy(cfg, name, port)
+        wait_secs = _health_wait_secs(args)
+        code = _wait_healthy(cfg, name, port, tries=wait_secs)
         if code not in (200, 401, 403):
             # A pod IS the worktree's own gateway. If it won't boot, that's a broken
             # worktree build (bad import / config / unbuilt dist) — NOT a pod-tooling
@@ -349,6 +437,19 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
             # started.
             tail = rt.recent_journal(cfg, name, 30)
             print(tail, file=sys.stderr)
+            # Attribution must be read BEFORE stop_pod tears the unit down:
+            # after the stop, unit_state cannot tell a slow boot from a dead
+            # gateway. Positive evidence only, on BOTH axes: code == 0 means
+            # nothing ever answered the port (a real HTTP error like 404/5xx
+            # means the gateway IS serving and its health route is broken --
+            # more wait can never fix that, so it keeps the legacy verdict),
+            # and an active/activating unit with zero restarts is the inverse
+            # of the crash signal _wait_healthy returns -1 on;
+            # "unknown"/"inactive" also keeps the legacy verdict.
+            still_starting = False
+            if code == 0:
+                state, restarts = rt.unit_state(cfg, name)
+                still_starting = state in ("active", "activating") and restarts == 0
             rt.stop_pod(cfg, name)
             if code == rt.HEALTH_FOREIGN:
                 # Reported ahead of the crash verdict: the port being taken is
@@ -375,6 +476,23 @@ def _up(cfg: PodConfig, args: argparse.Namespace) -> None:
                 _die(
                     f"{name}: the worktree's gateway failed to start (see journal above). "
                     f"This is the worktree build, not pod — fix it, then `kirocrew pod up {name}` again."
+                )
+            if still_starting:
+                # Slow boot, not a dead gateway: the process is alive and simply
+                # has not answered /api/health inside the budget. Stopping the pod
+                # stays (the caller contract is 'up means healthy'); only the
+                # attribution and the remedy change.
+                _audit(
+                    "pod.up",
+                    "failure",
+                    f"name={name} port={port}",
+                    error="health wait exhausted while gateway alive",
+                )
+                _die(
+                    f"{name}: gateway still starting after {wait_secs}s on :{port} "
+                    f"(process alive, /api/health not yet answering). Raise the wait "
+                    f"with `kirocrew pod up {name} --wait-secs {wait_secs * 2}` or "
+                    f"{POD_HEALTH_WAIT_SECS_ENV}={wait_secs * 2}."
                 )
             _die(
                 f"{name}: gateway never became healthy on :{port} within timeout "
@@ -474,8 +592,10 @@ def _down(cfg: PodConfig, args: argparse.Namespace) -> None:
         # fatal: a reclaim that could not finish must not report success.
         # On macOS it is always fatal, because a loaded-but-dead agent has no pid
         # (was_up False) yet still needs its unload CONFIRMED before anything is
-        # torn down.
-        if cp.returncode != 0 and (was_up or had_home or rt.IS_MACOS):
+        # torn down. Windows is the same shape: a task whose gateway already died
+        # leaves no supervised pid, so `was_up` is False while the task itself is
+        # still registered and must be deleted before the HOME is reclaimed.
+        if cp.returncode != 0 and (was_up or had_home or rt.IS_MACOS or rt.IS_WINDOWS):
             _audit("pod.down", "failure", f"name={name}", error=f"stop rc={cp.returncode}")
             _die(f"stopping pod {name} failed: {(cp.stderr or '').strip()}")
         if rt.RECLAIMED_MARKER in (cp.stdout or ""):
@@ -828,8 +948,11 @@ def _prune_one_decide(cfg: PodConfig, name: str) -> tuple[str, str, str, str]:
                 )
             # macOS: a per-pod plist means "installed" (a name mid-`up`), not
             # orphaned — same predicate orphan_homes applies, re-checked at
-            # delete time for writers that bypass the mutex.
+            # delete time for writers that bypass the mutex. Windows: its
+            # per-pod `.cmd` wrapper carries exactly the same meaning.
             if rt.IS_MACOS and rt.launchd.plist_path(cfg, name).exists():
+                return "skipped", "pod is now installed", "denied", "pod is now installed"
+            if rt.IS_WINDOWS and rt.win_backend.task_script_path(cfg, name).exists():
                 return "skipped", "pod is now installed", "denied", "pod is now installed"
             cp = rt.stop_pod(cfg, name)
             if cp.returncode != 0:
@@ -995,9 +1118,9 @@ def _logs(cfg: PodConfig, args: argparse.Namespace) -> None:
     # Gate before exec'ing the log mechanism — on an unsupported host this would
     # otherwise raise a bare FileNotFoundError instead of the documented refusal.
     rt.require_backend()
-    if rt.IS_MACOS:
-        # launchd has no journal; the plist routes stdout/stderr to files and
-        # recent_journal tails them.
+    if rt.IS_MACOS or rt.IS_WINDOWS:
+        # Neither launchd nor Task Scheduler has a journal; the plist / the .cmd
+        # wrapper route stdout/stderr to files and recent_journal tails them.
         print(rt.recent_journal(cfg, name, args.lines))
         return
     subprocess.run(
@@ -1056,7 +1179,11 @@ def _run_internal(cfg: PodConfig, args: argparse.Namespace) -> None:
     # when the refusal note actually landed, so a refusal that could not be recorded
     # keeps its honest non-zero instead of looking like a clean exit. Do NOT call
     # ``launchd.launchd_exit_code`` directly here; it states the platform semantics
-    # but knows nothing about whether the record exists.
+    # but knows nothing about whether the record exists. Windows needs no
+    # translation at all: Task Scheduler never restarts a non-zero exit, so the
+    # honest code is already the terminal one. The branch below says so, and
+    # `test_the_runtime_wrapper_does_not_translate_on_windows` pins it there --
+    # which is where a change that adds a restart policy would have to look.
     exit_code = rt.terminal_exit_code(cfg, args.name, rc)
     if exit_code != rc:
         print(

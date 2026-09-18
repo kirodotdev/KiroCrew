@@ -529,7 +529,8 @@ class TestApproveEndpoint:
 
         restarted: list[object] = []
 
-        async def fake_restart(state: object) -> bool:
+        async def fake_restart(state: object, *, resolver: object) -> bool:
+            assert resolver is wheel_engine.respawn_executable
             restarted.append(state)
             return True
 
@@ -595,7 +596,7 @@ class TestApproveEndpoint:
 
         restarted: list[object] = []
 
-        async def fake_restart(state: object) -> bool:
+        async def fake_restart(state: object, *, resolver: object) -> bool:
             restarted.append(state)
             return True
 

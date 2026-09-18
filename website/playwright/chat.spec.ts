@@ -7,6 +7,13 @@ const SLOW = '[[SLOW]]'
 const SLOW_NOACK = '[[SLOW_NOACK]]'
 const SLOW_LATEACK = '[[SLOW_LATEACK]]'
 
+// The new-chat control's stable accessible name: the en.json value of
+// pages.chatSidebar.new_chat_session (ChatSidebar.tsx aria-label). A
+// whole-string exact match cannot collide with the per-turn minimap buttons,
+// whose accessible names are prompt-derived (e.g. "What is 2+2?"), or the
+// per-folder "New chat in <name>" buttons. fork.spec.ts uses the same locator.
+const NEW_CHAT_NAME = 'New chat session'
+
 // @needs-agent: these specs drive a live agent turn (send/stream/soft-stop),
 // so they require model/agent credentials the credential-less CI gateway
 // lacks. Tagged so the default gating run (grepInvert /@needs-agent/ in
@@ -74,25 +81,24 @@ test.describe('Chat Page E2E Tests', { tag: '@needs-agent' }, () => {
   })
 
   test('creates new chat slot', async ({ page }) => {
-    // Look for "New Chat" or "+" button
-    const newChatButton = page.getByRole('button', { name: /new chat|\+/i })
-    
-    if (await newChatButton.isVisible()) {
-      await newChatButton.click()
-      
-      // Should see empty message input (confirmed by waiting for it)
-      await expect(page.getByPlaceholder(/message/i)).toBeVisible()
-    }
+    const newChatButton = page.getByRole('button', { name: NEW_CHAT_NAME, exact: true })
+    // Assert rather than guard: an if(isVisible()) skip would report green
+    // without ever exercising new-chat creation, and toBeVisible() auto-waits
+    // where isVisible() races the sidebar paint.
+    await expect(newChatButton).toBeVisible()
+    await newChatButton.click()
+
+    // Should see empty message input (confirmed by waiting for it)
+    await expect(page.getByPlaceholder(/message/i)).toBeVisible()
   })
 
   test('switches between chat slots', async ({ page }) => {
-    // Create a second chat first
-    const newChatButton = page.getByRole('button', { name: /new chat|\+/i })
-    if (await newChatButton.isVisible()) {
-      await newChatButton.click()
-      // Wait for new slot to be created
-      await expect(page.getByPlaceholder(/message/i)).toBeVisible()
-    }
+    // Create a second chat first (same stable accessible name as above)
+    const newChatButton = page.getByRole('button', { name: NEW_CHAT_NAME, exact: true })
+    await expect(newChatButton).toBeVisible()
+    await newChatButton.click()
+    // Wait for new slot to be created
+    await expect(page.getByPlaceholder(/message/i)).toBeVisible()
     
     // Look for chat history/slots in sidebar
     const chatSlots = page.locator('[class*="slot"], [class*="session"]')

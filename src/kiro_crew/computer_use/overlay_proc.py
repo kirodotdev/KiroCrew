@@ -195,7 +195,7 @@ class ObjCRuntime:
     def screen_size(self) -> tuple[float, float]:
         """Main-display size in points, or the fallback constants.
 
-        Only used to clamp a target point into something finite. An approximate
+        Used only to clamp a target point into something finite. An approximate
         clamp on an exotic multi-display setup is strictly better than refusing to
         draw, because the overlay is cosmetic.
         """

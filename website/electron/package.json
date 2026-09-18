@@ -1,6 +1,6 @@
 {
   "name": "kirocrew-desktop",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "Kiro Crew \u2014 AI agent desktop app",
   "homepage": "https://github.com/kirodotdev/KiroCrew",
   "desktopName": "kirocrew-desktop.desktop",
@@ -29,6 +29,9 @@
   "build": {
     "appId": "com.amazon.kiro.crew",
     "productName": "KiroCrew",
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
     "mac": {
       "category": "public.app-category.developer-tools",
       "icon": "icon.icns",
@@ -174,6 +177,7 @@
       "native-logging.js",
       "crash-collector.js",
       "disable-gpu.js",
+      "early-boot-guard.js",
       "memory-watch-log.js",
       "frame-load-log.js",
       "pane-asset-journal.js",
@@ -186,12 +190,14 @@
       "remote-token.js",
       "token-acquire.js",
       "token-retry.js",
+      "capture-trust.js",
       "display-media.js",
       "focus-chrome.js",
       "permission-handler.js",
       "browser-view.js",
       "browser-control.js",
       "browser-ops.js",
+      "browser-annotate.js",
       "browser-agent-channel.js",
       "external-scheme.js",
       "validation.js",

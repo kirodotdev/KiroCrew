@@ -27,12 +27,20 @@ gate's AST pattern cannot match without that literal appearing in the source
 text, so filtering removes files that were always going to be non-matches.
 Exclusions (``_vendor``, ``testing/``) stay in the calling gate, because which
 files a gate polices is that gate's contract, not this module's.
+
+The second half of the module answers the wider question -- *what files does the
+CHECKOUT hold* -- for the gates that police more than the package (shell
+scripts, ``SKILL.md``, the coverage omit list). :func:`repo_files` is the one
+answer, because the obvious one is wrong in a way that stays green: see its
+docstring.
 """
 
 from __future__ import annotations
 
 import ast
 import functools
+import os
+import subprocess
 import unicodedata
 from collections.abc import Iterator, Sequence
 from pathlib import Path
@@ -148,6 +156,109 @@ def parsed_candidates(
                 continue
             raise
         yield path, text, tree
+
+
+def repo_root() -> Path:
+    """The checkout root -- the directory holding ``src/``, ``test/`` and ``.git``."""
+    return Path(__file__).resolve().parent.parent
+
+
+#: Directory names the no-git fallback below never descends. Each is a tree the
+#: repo never commits (``.git`` itself, dependency and virtualenv trees, byte
+#: caches), so pruning them only makes that walk cheaper -- it cannot make it
+#: narrower than the answer git gives.
+_UNTRACKABLE_DIRS = frozenset({".git", "node_modules", ".venv", "__pycache__"})
+
+
+def _fallback_walk() -> list[Path]:
+    """Approximate :func:`repo_files` by walking, for a checkout with no git.
+
+    Prunes any directory that holds a ``.git`` entry of its own -- a nested
+    checkout or worktree is a DIFFERENT repository, and its copy of every shipped
+    file is not ours. That is the general rule, not a skip of one path: git draws
+    the same line by refusing to descend into a nested repository, so this branch
+    and the git branch agree on it. ``.git`` is a FILE in a worktree and a
+    directory in a clone, hence ``exists()``.
+
+    Honest about the rest: with no git there is no way to read the ignore rules,
+    so a gitignored file that survives the prune above is in scope here and would
+    not be under git. Which is why :func:`repo_files` reaches this branch ONLY with
+    no ``.git`` at all (an sdist, where nothing generated those trees to begin
+    with) or no git binary to ask -- never for a checkout whose git call merely
+    failed.
+    """
+    root = repo_root()
+    found: list[Path] = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        here = Path(dirpath)
+        dirnames[:] = [
+            d for d in dirnames if d not in _UNTRACKABLE_DIRS and not (here / d / ".git").exists()
+        ]
+        found += [here / name for name in filenames]
+    return found
+
+
+@functools.lru_cache(maxsize=1)
+def repo_files() -> tuple[Path, ...]:
+    """Every file the checkout CONTAINS, enumerated the way git sees it.
+
+    Not ``rglob``/``os.walk``, which is the answer a repo-wide gate reaches for
+    and the one that fails while staying green. Both descend gitignored trees and
+    nested checkouts, so a worktree under ``.claude/worktrees/`` (the Claude Code
+    harness creates them there), a local ``.kirocrew-dev/`` data home or any
+    scratch clone puts a SECOND copy of every shipped file in front of the gate.
+    Where the gate reports offenders that is a false positive naming a path the
+    author cannot edit; where it asserts ``any(...)`` over the matches it is
+    worse -- a stale copy keeps satisfying the assertion after the real file lost
+    the property. Git excludes both kinds: an ignored path by its ignore rules, a
+    nested repository by not descending into one at all.
+
+    ``--others --exclude-standard`` keeps a file that is not yet ``git add``ed in
+    scope, so a newly written file is policed on the machine that wrote it and
+    not only in CI, where the checkout is fully tracked.
+
+    Scope exclusions (``_vendor``, ``test/``, generated trees) stay in the
+    CALLING gate: this says what the checkout holds, never what a gate polices.
+    """
+    root = repo_root()
+    argv = ["git", "-C", str(root), "ls-files", "-z", "--cached", "--others", "--exclude-standard"]
+    try:
+        out = subprocess.run(argv, capture_output=True, check=True, timeout=60)
+    except OSError:
+        # No git binary to ask. The walk is the only enumeration left.
+        paths = _fallback_walk()
+    except subprocess.SubprocessError as exc:
+        # git ran and refused. With no ``.git`` that is an sdist and the walk is
+        # right; WITH one it is an anomaly -- a leaked ``GIT_DIR``, an unreadable
+        # index, ``safe.directory`` -- and falling back would answer WIDER than git
+        # does, because the walk cannot read the ignore rules. Wider is the failure
+        # this module exists to stop, and no floor can catch it: a second copy of
+        # every shipped file is a surplus, not a shortage. So fail loudly instead.
+        if (root / ".git").exists():
+            stderr = getattr(exc, "stderr", b"") or b""
+            raise RuntimeError(
+                f"git could not enumerate {root}, which has a .git: "
+                f"{stderr.decode('utf-8', 'replace').strip() or exc}. Every repo-wide "
+                "gate reads this; walking instead would silently hand them the "
+                "gitignored trees git excludes."
+            ) from exc
+        paths = _fallback_walk()
+    else:
+        # Bytes and an explicit decode rather than ``text=True``: a filename that
+        # is not valid UTF-8 must not take every gate down with it. ``-z``
+        # because git otherwise QUOTES such a path instead of emitting it.
+        names = out.stdout.decode("utf-8", "surrogateescape").split("\0")
+        paths = [root / name for name in names if name]
+    # ``--cached`` also lists what cannot be read -- a file deleted in the working
+    # tree but not yet staged (the index entry survives, so git still names it),
+    # and a submodule gitlink, which arrives as a DIRECTORY path -- and ``--others``
+    # lists a nested repository as its bare directory. ``is_file`` drops all three.
+    return tuple(sorted(path for path in paths if path.is_file()))
+
+
+def repo_files_named(*suffixes: str) -> tuple[Path, ...]:
+    """The :func:`repo_files` entries whose file name ends with one of *suffixes*."""
+    return tuple(path for path in repo_files() if path.name.endswith(suffixes))
 
 
 def _clear_caches() -> None:

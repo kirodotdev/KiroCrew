@@ -241,15 +241,26 @@ one, and a falsely-settled steer is never requeued, so the question is lost.
 
 Two prompt constants lifted from the upstream protocol:
 
-- `SIDE_BOUNDARY_PROMPT` — establishes ephemeral context, tool prohibition.
+- `SIDE_BOUNDARY_PROMPT` — establishes ephemeral context and the read-only
+  tool boundary the `READ_ONLY` policy enforces, in the footer's words:
+  lookups work here (reading files, searching, fetching pages run without
+  asking), changes don't (file writes, modifying commands and MCP tools are
+  refused), and the user is pointed to the main chat for action. The prompt and
+  the policy say the same thing on purpose — a prompt that forbids every tool
+  makes a compliant model redirect a read-backed question instead of reading;
+  one that permits more than the gate makes it claim a tool is unconfigured.
 - `SIDE_DEVELOPER_INSTRUCTIONS` — marks the main-thread/side-thread boundary.
 - `build_side_system_prompt()` — concatenates both into the first-turn envelope.
 
 ### `dashboard/side_context.py`
 
-- `build_side_message(slot, question, is_first_turn=...)` — first turn
-  includes developer instructions + parent snapshot + boundary prompt +
-  question; subsequent turns return bare question (session retains framing).
+- `build_side_message(slot, question, is_first_turn=...)` — with
+  `is_first_turn` set, the full envelope: developer instructions + parent
+  snapshot + side history + boundary prompt + question; otherwise the bare
+  question (the session retains its framing). `_run_side_turn` sets it for
+  the sidecar's first turn and for any turn whose acquisition cold-started
+  the session (`get_or_create` reported a new, non-resumed session — a rebind
+  or an eviction), so a fresh process is never handed a bare question.
 - `_format_parent_snapshot(slot)` — renders parent user/assistant turns as
   read-only text block (max 32K chars, 500 chars/line truncation).
 - `_format_side_history(slot)` — renders prior side turns for session
@@ -258,10 +269,182 @@ Two prompt constants lifted from the upstream protocol:
 ### `dashboard/handlers/side.py`
 
 Three aiohttp handlers + `_run_side_turn` background driver.
-`_run_side_turn` acquires an isolated session via `state.sessions.get_or_create`,
-streams with `ToolApprovalPolicy.REJECT_ALL` (defense-in-depth against tool
-calls), broadcasts chunks over `broadcast_side_result`, and appends the
-final assembled text to `slot._side.messages`.
+`_run_side_turn` resolves the slot's agent, publishes the derived read-only spec
+for it (below), acquires an isolated session via `state.sessions.get_or_create`
+**bound to that derived agent**, streams with `ToolApprovalPolicy.READ_ONLY`,
+broadcasts chunks over `broadcast_side_result`, and appends the final assembled
+text to `slot._side.messages`.
+
+**The derived read-only spec is what makes the guarantee hold.** kiro-cli
+approves a tool on the agent's `allowedTools` (and an MCP server's
+`autoApprove`, a `toolsSettings` `allowed*` / `trusted*` grant, a KAS
+`permissions` rule, the `mcp.json` servers `includeMcpJson` pulls in) itself
+and raises no permission request, so under the parent agent's own spec the gate
+below would never see the user's main-chat grants — the shipped `kirocrew` spec
+pre-authorizes `@kirocrew-cron/cron_remove_all` and `@kirocrew-core` wholesale.
+So every side session runs as `<agent>--readonly`: the resolved agent's spec
+with every backend-side grant emptied (`allowedTools: []`, no
+`mcpServers.*.autoApprove`, no `toolsSettings.*.allowed*`/`trusted*`/`auto*`
+— `shell.autoAllowReadonly` included — `includeMcpJson: false`,
+`autoAllowReadonly: false`, an empty KAS `permissions`) and the lifecycle
+`hooks` removed (`agentSpawn`/`userPromptSubmit`/`preToolUse`/`postToolUse`/
+`stop` are shell commands the backend runs unprompted, some fed model-controlled
+input; the host's SEL audit records every side-turn decision, so the shipped
+audit hook is not needed here), with everything else kept (`tools`,
+`mcpServers`, `resources`, prompt, model), derived by
+`dashboard/side_readonly_spec.derive_readonly_spec` and published by
+`publish_readonly_spec` into the user-level kiro agent registry
+(`~/.kiro/agents/<agent>--readonly.json` — the only place kiro-cli loads agents
+from besides the user's own checkout; see `config.md` § `kiro_agents_dir`). A
+PROJECT-scope base is named after its source, `<agent>--readonly-<8 hex of the
+project path>`, so two checkouts declaring the same agent never contend for one
+file. Derived from the live base spec on every turn — project scope first, the
+way kiro-cli resolves `--agent` — off the event loop, written atomically and
+only when the content changed; a runtime resource, never hand-edited. The
+file's `description` starts with the owner marker `Kiro Crew derived read-only
+spec`, and the derived name must resolve to that file and nothing else:
+publication refuses a project-scope spec that declares or is named like the
+derived agent (kiro-cli would load it first), a second user-scope spec
+declaring the name, and a file at the derived path without the marker (a
+user's own agent, or a symlink) — none of them is rewritten. Every tool call on
+a side turn that kiro-cli does not trust natively therefore raises a permission
+request, and the gate judges all of them. kiro-cli trusts `fs_read` natively
+(observed on a live pod: an `fs_read` ran with no permission request and no host
+decision row, while `pwd` under `execute_bash` raised one the gate approved); a
+native read runs outside the gate, and the guarantee holds because it is a
+read. FAIL CLOSED: a turn whose spec cannot be derived or published is refused
+with a coded error (`ReadOnlySpecError.code`: `unsafe_name`,
+`base_spec_missing`, `base_spec_unreadable`, `derived_name_shadowed`,
+`derived_path_foreign`, `spec_write_failed`), logged and shown in the panel; it
+never runs under the base agent.
+
+**The allowance is a harness capability, granted by positive membership.**
+Whether a side turn may execute read-only tools at all is
+`ACP_BACKENDS_SIDE_READONLY` (`agent_sdk/backends.py`, harness-parity H6) —
+kiro-cli only, because the derived spec is a kiro-cli agent-spec mechanism and
+another harness has its own pre-approval surface (claude-agent-acp
+`permissions.allow` / `bypassPermissions`, KAS `permissions` rules from its
+own store) that neither the derived spec nor the host gate can see: a call it
+pre-approves would run with no READ_ONLY decision and no SEL row. Off the set,
+or with the harness unknown because the config never loaded, `_run_side_turn`
+keeps the pre-allowance posture — the base agent under `REJECT_ALL`, no
+derived spec — and the prompt (`SIDE_BOUNDARY_PROMPT_NO_TOOLS`), the
+empty-output fallback and the footer
+(`pages.chat.sideChat.context_only_tools_unavailable_backend`, chosen by
+`SideChat.tsx` from `agent.acp_backend`) say tools are unavailable there. Never
+`not is_claude_backend`: a harness joins by demonstrating that every tool call
+it serves reaches `session/request_permission` under the derived spec.
+
+**One session per sidecar generation, rebound not trusted.** The side session
+key is `side:<slot>:<gen>`, `gen` being the sidecar's own generation
+(`SideState.gen`): a close+reopen makes a new sidecar and a new key, so a turn
+still finishing on the old one can only destroy, acquire or release ITS
+session, never the replacement's, and a task that finds the sidecar replaced
+when its off-loop derivation returns drops out before touching any session.
+`sessions.get_or_create` reuses a live session for a key whatever agent or cwd
+the call names, and kiro-cli read the spec at spawn, so `SideState.binding`
+records the `(derived agent, cwd, spec digest)` the live session was created
+under; when a turn's binding differs — the slot's agent or project changed, or
+the base spec changed so the derived content did — or a live session exists
+that no binding vouches for, `_run_side_turn` destroys the session and the
+acquisition cold-starts under the current derived spec, sending that turn the
+full envelope rather than a bare follow-up; a close that lands while the
+destroy is in flight ends the turn before it acquires anything, and one that
+lands while `get_or_create` is in flight has the turn destroy the session it
+was handed, since no sidecar owns it. The turn reads the slot's project and
+agent ONCE, before its first await: the shadow scan, the spawn cwd (where
+kiro-cli resolves `--agent` first) and the recorded binding all name that one
+project, so a project change landing mid-turn cannot have the check run in the
+old project and the spawn happen in the new one; the change is picked up by the
+next turn, whose binding differs. Closing the panel destroys the closing
+generation's session outright.
+
+`READ_ONLY` is the dashboard Reads mode's semantics with reject as the
+fallback, because the side chat has no approval card. The gate is the
+gateway's one live `HookManager` — `state.context_builder.hooks`, the same
+object the main chat consults and the one Settings > Security hot-reloads
+(`handlers/security._reload_live_hooks`), so opt-outs and deny patterns apply
+here too and a deny added mid-turn binds an in-flight side turn. No per-turn
+manager is built (that would re-read the keystone `denied_commands.json` on
+the event loop and freeze the opt-out state at turn start). A host with no
+context builder passes `hooks=None`, and `READ_ONLY` then rejects every tool
+call (`read_only_policy_no_hooks`). The gate runs its deny floor and
+governance first; then only the
+read-only classifier may auto-approve, and its verdict carries
+`ToolHookResult.read_only`. The gate is asked `classifier_only`, so the
+operator's `auto_approve_tools` globs and the app-own-server rule are skipped
+rather than honoured (they vouch for the caller, not for the call's effect),
+and an auto-approve without the tag is rejected. A grant that shadows a read
+therefore still gets the read approved; a grant that shadows a write approves
+nothing. Every other call is rejected before any interactive callback could
+widen the policy, and a missing gate rejects everything.
+
+Because no approver stands behind the verdict, `classifier_only` accepts only
+HOST-TRUSTED proof of read-only. Exactly two sources qualify:
+
+- the shell command recovered from the tool call's cached params, judged by
+  `is_read_only_bash` (the deny-by-default bash classifier);
+- a built-in tool the host knows to be read-only —
+  `hooks._HOST_READ_ONLY_BUILTIN_TOOLS` (`fs_read`, `glob`, `grep`,
+  `web_fetch`, `web_search`), matched on the non-model-authored
+  `_meta.kiro.toolName` identity with no `_meta.kiro.mcpServerName` behind it.
+
+The agent-influenced inputs — the ACP `kind` field (passed through verbatim
+from the agent) and the model-authored title — may narrow but never prove: a
+non-read kind refuses even a host-known read tool, and `kind="read"` on an
+unknown or mutating tool, a read-looking title on a kindless call, and every
+MCP-served tool (the permission event carries no host-trusted read-only marker
+for one) are rejected. The interactive Reads mode (`HOOK_BASED`) is unchanged
+and keeps its `{read, fetch}` ACP-kind allow-list and title fallback, because a
+card stands behind it.
+
+Governance identity: the gate is called with the side session's own key,
+`side:<slot>:<gen>`, which `sel._infer_source` classifies as the `dashboard`
+surface. A profile bound to `surface: dashboard` therefore governs side turns
+exactly as it governs the parent slot, while the key itself keeps the side
+session's SEL rows and ACP session apart from the parent's.
+
+**Residual: a concurrent same-UID writer into `<project>/.kiro/agents`.**
+`publish_readonly_spec` refuses every STATIC shadow spec — a project-scope file
+named or declaring the derived agent, a second user-scope claimant, a foreign
+file at the derived path — before it publishes. What remains is a window
+between that check and kiro-cli's spawn in which a writer running as the same
+user drops a grant-bearing `<agent>--readonly.json` into the project's
+`.kiro/agents`, which kiro-cli searches first. That writer needs write access
+to the checkout as the operator's own UID, and with it the same writer can
+already shadow the BASE agent under kiro-cli's project-agent precedence — the
+main chat has always run with that exposure. It is therefore not a new class
+this surface opens, and it is accepted as a same-UID residual rather than
+closed with a lock the base agent does not have either.
+
+**Residual: `git` under `READ_ONLY` runs repository-configured programs.**
+`is_read_only_bash` approves `git status`, `log`, `diff`, `show`, `branch`,
+`tag`, `remote`, `rev-parse`, `describe`, `ls-files`, `ls-tree`, `cat-file`
+and `blame` (and refuses their output-file, `--ext-diff`/`--textconv` and
+`--filters` spellings). Git itself may run a program named in the repository's
+own `.git/config` — `core.fsmonitor`, a diff or textconv driver — and a hostile
+value there would execute under a "read". A side turn runs git as the same user,
+against the same `.git/config`, that the main chat's Reads mode runs it under;
+`.git/config` is not versioned, so a checkout cannot ship the value — only
+someone already writing as this account can plant it, at which point the
+account is compromised without any help from the side chat. Accepted as a
+same-UID residual, not a gate defect.
+
+**Decision: `web_fetch` and `web_search` stay in the side-chat read-only set.**
+`_HOST_READ_ONLY_BUILTIN_TOOLS` includes both, so a side turn can fetch a page
+or run a search without asking, on a surface with no approver, and injected
+page content could then steer a later fetch (an egress channel). The tradeoff
+is recorded and accepted: the shipped default agent spec
+(`config/defaults.json` `allowedTools`) already auto-approves both in the main
+chat, so the side chat adds no egress surface the main chat lacks. Mitigations
+in force: the `READ_ONLY` gate refuses every write and every MCP tool, so a
+fetched instruction can read and fetch but change nothing; side turns are not
+saved to the conversation; every decision leaves a SEL row keyed to the side
+session; and the derived `<agent>--readonly` spec strips every pre-approval
+channel, so nothing on the surface runs unjudged. An operator who wants no
+egress from the side chat denies the two tools with an `auto_deny_tools` rule
+or a governance profile — both bind on this surface exactly as on the main
+chat.
 
 ### `dashboard/ws.py` — `broadcast_side_result`
 
@@ -284,9 +467,15 @@ answer and a queued one is a card, so both are placed by the server frame.
 While a turn is in flight the composer stays editable and swaps its send button
 for the shared `BusySendButton`; queued entries render as `QueueStack` cards whose
 cancel and edit wait for the server's own frame before changing what the user
-sees. A persistent helper beneath the composer states that Side Chat is
-context-only, tools and MCPs are unavailable, and action-taking belongs in the
-main chat; unlike an empty-state note, it remains visible after messages exist.
+sees. A persistent helper beneath the composer
+(`pages.chat.sideChat.context_only_tools_unavailable`) states that Side Chat is
+read-only: lookups work here, but changes don't, and action belongs in the main
+chat. That is a guarantee, not a description, and the derived `<agent>--readonly`
+spec is what makes it one: with `allowedTools: []` no tool call bypasses the
+`READ_ONLY` gate, and the gate refuses everything it cannot prove read-only.
+The backend's empty-output fallback in `_run_side_turn` and the model-facing
+`SIDE_BOUNDARY_PROMPT` use the same vocabulary. Unlike an empty-state note, the
+helper remains visible after messages exist.
 
 The composer's DRAFT behaviour is not owned here. It comes from the chat SDK's
 `app-sdk/useComposerDraft`, which this surface was the first consumer of
@@ -357,7 +546,8 @@ existing subagent/tool dispatch cases.
 
 | Concern | Mitigation |
 |---------|-----------|
-| Tool execution | System prompt prohibition + REJECT_ALL approval policy |
+| Tool execution | System prompt prohibition + READ_ONLY approval policy: only the read-only classifier's verdict approves, and under `classifier_only` that verdict rests on host-trusted facts alone (`is_read_only_bash` on the recovered shell command, or a `_HOST_READ_ONLY_BUILTIN_TOOLS` name on the non-model-authored `_meta.kiro.toolName` with no MCP server); the agent-influenced ACP `kind` and title may narrow but never prove; operator `auto_approve_tools` globs and app-own-server grants are skipped and an unclassified auto-approve is rejected |
+| Governance identity | The gate runs under the side session's own key `side:<slot>`, which `sel._infer_source` classifies as the `dashboard` surface, so a profile bound to `surface: dashboard` binds side turns exactly as it binds the parent slot (it fell through to the `slack` fallback before) |
 | Memory pollution | No calls to memory/learn/save; sidecar never serialised |
 | Context leak to main | `build_message` byte-frozen; side uses separate module |
 | Slot visibility | No new `_ChatSlot` created; sidebar doesn't show phantom entries |
@@ -375,6 +565,9 @@ Backend invariants are covered by `test/test_side.py`:
 | Non-blocking stream | `test_side_turn_returns_before_run_finishes` |
 | Channel separation | `test_side_run_id_never_leaks_to_main_channels` |
 | Tool-rejection fallback | `test_empty_llm_output_produces_visible_fallback` |
+| READ_ONLY honours the classifier, never a grant | `test_read_only_policy_refuses_a_write_the_config_grant_matches`, `test_read_only_policy_refuses_an_app_own_server_grant`, `test_read_only_policy_classifies_a_read_the_grant_also_matches`, `test_read_only_policy_does_not_trust_a_read_kind_alone` (`test/test_llm_helpers_tool_gate.py`) |
+| READ_ONLY proof is host-trusted only | `test_read_only_policy_rejects_a_read_kind_on_a_mutating_tool`, `test_read_only_policy_rejects_a_read_kind_with_no_host_identity`, `test_read_only_policy_rejects_a_host_known_name_without_trusted_provenance`, `test_read_only_policy_rejects_a_read_looking_title_alone`, `test_read_only_policy_rejects_an_mcp_tool_with_a_read_kind`, `test_read_only_policy_rejects_a_host_known_read_tool_under_a_non_read_kind`, `test_read_only_policy_approves_a_host_known_read_tool`, `test_read_only_policy_approves_a_read_only_shell_command`, `test_hook_based_policy_still_approves_a_read_kind_tool` (`test/test_llm_helpers_tool_gate.py`); `TestClassifierOnlyHostTrustedProof` (`test/test_hooks.py`) |
+| Dashboard-bound profile governs a side turn | `test_dashboard_bound_profile_governs_a_side_turn` (`test/test_side.py`), `test_side_key_binds_the_dashboard_surface` (`test/test_governance_profiles.py`), `TestInferSource` (`test/test_sel.py`) |
 
 Busy-send invariants live in `test/test_side_steer_queue.py`:
 
@@ -422,8 +615,9 @@ exists this file does not claim one.
   upstream wire format for the ``chat.side_result`` event.
 - Memory mode: side conversations are born ephemeral and never write to
   vector store, learn store, KiroCrew session JSONL, or the consolidation
-  pipeline. Tool execution is rejected via `ToolApprovalPolicy.REJECT_ALL`
-  so the side LLM cannot call `learn_add` or any other write tool. The
+  pipeline. Tool calls run under `ToolApprovalPolicy.READ_ONLY`: only a call
+  the hook gate's read-only classifier proves read-only executes, and every
+  other call — `learn_add` and any other write tool included — is rejected.
   `side:` prefix is registered in `session._STATELESS_PREFIXES`, so the
   isolated kiro-cli ACP session is never resumed across gateway restarts;
   its on-disk transcript at `~/.kiro/sessions/cli/<sid>.jsonl` exists

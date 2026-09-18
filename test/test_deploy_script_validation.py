@@ -40,7 +40,7 @@ class TestAttachBackendValidation:
         self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
 
     def test_sso_plus_profile_passes(self):
-        """IAM Identity Center derived names contain '+' (#6055)."""
+        """IAM Identity Center derived names contain '+'."""
         self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
 
     def test_empty_profile_allowed(self):
@@ -87,7 +87,7 @@ class TestDetachBackendValidation:
         self.mod._validate_args("my-profile", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
 
     def test_sso_plus_profile_passes(self):
-        """IAM Identity Center derived names contain '+' (#6055)."""
+        """IAM Identity Center derived names contain '+'."""
         self.mod._validate_args("AdminAccess+dev", "us-west-2", "E1A2B3C4D5E6F7", "my-app")
 
     def test_empty_profile_allowed(self):
@@ -181,7 +181,7 @@ class TestAwsSpawnFlow:
 class TestAwsHelperResolvesAbsolutely:
     """The scripts' aws() spawn helper must resolve the CLI absolutely under a
     GUI-launched gateway's minimal PATH via the deploy engine's shared
-    well-known-dirs resolver (#4770)."""
+    well-known-dirs resolver."""
 
     @pytest.fixture(params=["attach_backend.py", "detach_backend.py"])
     def mod(self, request):

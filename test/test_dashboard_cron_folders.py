@@ -529,9 +529,9 @@ class TestCronFoldersPersistence:
         assert "not-a-dict" in fresh._unparsed_cron_folder_entries
 
     def test_malformed_entry_survives_a_subsequent_save(self, tmp_path, monkeypatch):
-        """Regression: a hand-edited file with a typo'd entry must NOT lose that
-        entry when an unrelated folder operation triggers a save. Previously the
-        malformed entry was dropped in-memory and the next save erased its bytes.
+        """A hand-edited file with a typo'd entry must NOT lose that entry when an
+        unrelated folder operation triggers a save. The malformed entry is
+        preserved in-memory so a later save does not erase its bytes.
         """
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path, raising=False)
         path = tmp_path / "cron_folders.json"

@@ -585,7 +585,7 @@ describe('requestSlotReveal / clearSlotReveal — pending reveal request (issue 
     expect(store.getState().chat.revealRequest).toBeNull()
 
     store.dispatch(requestSlotReveal('k-a'))
-    expect(store.getState().chat.revealRequest).toEqual({ key: 'k-a', nonce: 1 })
+    expect(store.getState().chat.revealRequest).toEqual({ kind: 'session', target: 'k-a', nonce: 1 })
 
     // Consumption clears the request so a later sidebar remount cannot
     // replay a reveal that was already handled.
@@ -596,9 +596,9 @@ describe('requestSlotReveal / clearSlotReveal — pending reveal request (issue 
     // request: the nonce never repeats (fed by a never-reset counter), so a
     // consumer keyed on the request re-fires even for an identical key.
     store.dispatch(requestSlotReveal('k-a'))
-    expect(store.getState().chat.revealRequest).toEqual({ key: 'k-a', nonce: 2 })
+    expect(store.getState().chat.revealRequest).toEqual({ kind: 'session', target: 'k-a', nonce: 2 })
     store.dispatch(requestSlotReveal('k-b'))
-    expect(store.getState().chat.revealRequest).toEqual({ key: 'k-b', nonce: 3 })
+    expect(store.getState().chat.revealRequest).toEqual({ kind: 'session', target: 'k-b', nonce: 3 })
   })
 })
 

@@ -260,13 +260,16 @@ describe('premint on mount', () => {
 })
 
 describe('the provider gallery', () => {
-  it('renders one card per launch-gated provider and withholds the rest', async () => {
+  it('renders one card per visible provider and withholds the rest', async () => {
     mount()
 
     await waitFor(() => expect(cards()).toHaveLength(CONNECTION_PROVIDERS.length))
     expect(screen.getByRole('heading', { name: 'Notion' })).toBeInTheDocument()
-    // GitHub is in the registry but has not passed the launch gate.
-    expect(screen.queryByRole('heading', { name: 'GitHub' })).not.toBeInTheDocument()
+    // GitHub has not passed the launch gate but is PRE-REGISTERED, so its card
+    // ships as the operator's instruction; Superhuman Mail is gated off with
+    // no exception and stays hidden.
+    expect(screen.getByRole('heading', { name: 'GitHub' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Superhuman Mail' })).not.toBeInTheDocument()
     expect(screen.getByText(`${CONNECTION_PROVIDERS.length} available`)).toBeInTheDocument()
   })
 
@@ -299,6 +302,104 @@ describe('the provider gallery', () => {
     expect(within(notion).getByText('Search your Notion workspace and read pages and databases.')).toBeInTheDocument()
     expect(within(notion).getByRole('link', { name: /Documentation/ })).toHaveAttribute('target', '_blank')
     expect(within(notion).getByRole('button', { name: 'Connect' })).toBeEnabled()
+  })
+
+  // A pre-registered provider whose operator has not entered an OAuth client.
+  // The status feed says so (`needsClientConfig`), and the card becomes an
+  // instruction with a route to Settings → OAuth Apps -- there is no Connect
+  // button, because the mint would only fail at the vendor.
+  it('renders a pre-registered provider without a client as needs-configuration, routing to Settings', async () => {
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'not_connected', grantPresent: false, needsClientConfig: true }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'needs-configuration'))
+    expect(document.querySelector('#connection-github[data-state="needs-configuration"]')).toBe(github)
+    expect(within(github).getByText('Needs configuration')).toBeInTheDocument()
+    expect(within(github).queryByRole('button', { name: /Connect/ })).not.toBeInTheDocument()
+    expect(within(github).getByRole('link', { name: /Documentation/ })).toHaveAttribute('target', '_blank')
+
+    const configure = within(github).getByRole('link', { name: 'Configure OAuth app' })
+    const href = configure.getAttribute('href') ?? ''
+    expect(href.startsWith('/settings/connections')).toBe(true)
+    // The registry entry id (settingsManual.ts), which resolves to the card's
+    // data-setting-id and waits for the async panel; encodeURIComponent leaves
+    // '.' and '-' alone, so the literal is what the URL carries.
+    expect(href).toContain('highlight=connections.oauth-client-github')
+  })
+
+  it('keeps the one-time-setup explanation behind the warning tip beside Configure, not in a band', async () => {
+    // The card's ONE surface for a pre-action caveat is the amber triangle
+    // beside the action (the same PrerequisiteTip GitLab and Atlassian carry
+    // beside Connect). Pinned so the explanation cannot render as an
+    // always-visible band above the action row -- a row of chrome every grid
+    // card in this state would pay for prose a user reads once.
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'not_connected', grantPresent: false, needsClientConfig: true }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'needs-configuration'))
+    const setup = /GitHub needs a one-time setup\. Configure OAuth app opens a guided settings page/
+
+    // Nothing but the badge, the value prop, Documentation and the action row
+    // renders inline: the explanation is not in the document until asked for.
+    expect(screen.queryByText(setup)).not.toBeInTheDocument()
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+
+    // The tip sits in the action row, immediately before the Configure link.
+    const icon = within(github).getByRole('button', { name: 'GitHub prerequisites' })
+    const configure = within(github).getByRole('link', { name: 'Configure OAuth app' })
+    expect(icon.parentElement).toBe(configure.parentElement)
+    expect(icon.compareDocumentPosition(configure) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+
+    // Hover previews the bubble with the same heading the Connect-side caveats
+    // use, carrying the full setup explanation; an outside press dismisses it.
+    fireEvent.mouseEnter(icon)
+    const bubble = screen.getByRole('tooltip')
+    expect(within(bubble).getByText('Before you connect')).toBeInTheDocument()
+    expect(within(bubble).getByText(setup)).toBeInTheDocument()
+    expect(bubble).toHaveTextContent('client ID and secret')
+    fireEvent.click(icon)
+    expect(icon).toHaveAttribute('aria-expanded', 'true')
+    fireEvent.mouseDown(document.body)
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument()
+  })
+
+  it('keeps a pre-registered provider on the Connect path once its client is configured', async () => {
+    // No `needsClientConfig` on the row: the operator has configured the app,
+    // so the card offers the ordinary first-connect CTA.
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'not_connected', grantPresent: false }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(connectionsStatus).toHaveBeenCalled())
+    expect(github).toHaveAttribute('data-state', 'not-connected')
+    expect(within(github).getByRole('button', { name: /Connect/ })).toBeEnabled()
+    expect(within(github).queryByRole('link', { name: 'Configure OAuth app' })).not.toBeInTheDocument()
+  })
+
+  it('lets a consent in flight outrank the needs-configuration flag', async () => {
+    // Backend mint table says a GitHub flow is live right now even though the
+    // client record was cleared meanwhile: the approval URL is still valid, so
+    // the card must keep waiting rather than send the user to Settings.
+    connectionsStatus.mockResolvedValue({
+      schema_version: 1,
+      connections: [{ slug: 'github', status: 'awaiting_consent', grantPresent: false, needsClientConfig: true }],
+    })
+    mount()
+
+    const github = await waitFor(() => card('github'))
+    await waitFor(() => expect(github).toHaveAttribute('data-state', 'waiting-for-approval'))
+    expect(within(github).queryByRole('link', { name: 'Configure OAuth app' })).not.toBeInTheDocument()
   })
 
   it('marks only providers with a blocking prerequisite, as an icon beside Connect', async () => {

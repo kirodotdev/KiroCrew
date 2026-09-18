@@ -19,6 +19,7 @@ from kiro_crew.artifacts import (
     ArtifactStore,
     ArtifactValidationError,
     _infer_kind,
+    _validate_slug,
     detect_editor_kind,
     has_unthemed_hardcoded_colors,
     slugify,
@@ -96,10 +97,21 @@ class TestSlugify:
     def test_collapses_punctuation(self) -> None:
         assert slugify("hello! world?? foo!! bar") == "hello-world-foo-bar"
 
-    def test_empty_falls_back(self) -> None:
-        assert slugify("") == "artifact"
-        assert slugify("!!!") == "artifact"
-        assert slugify("---") == "artifact"
+    def test_empty_falls_back_to_distinct_hash_slugs(self) -> None:
+        # No surviving slug-safe characters: fall back to artifact-<hash> so
+        # distinct inputs derive distinct slugs.
+        for name in ("", "!!!", "---"):
+            out = slugify(name)
+            assert out.startswith("artifact-")
+            assert _validate_slug(out) == out
+        assert slugify("!!!") != slugify("---")
+
+    def test_non_ascii_names_derive_distinct_stable_slugs(self) -> None:
+        chinese = slugify("\u4f1a\u8bae\u7eaa\u8981")
+        japanese = slugify("\u8cb7\u3044\u7269\u30ea\u30b9\u30c8")
+        assert chinese != japanese
+        assert chinese == slugify("\u4f1a\u8bae\u7eaa\u8981")
+        assert _validate_slug(chinese) == chinese
 
     def test_truncates_long_input(self) -> None:
         long = "a" * 300
@@ -441,10 +453,10 @@ class TestList:
         assert {a.slug for a in results} == {"ok"}
 
     def test_list_skips_meta_with_bad_int_or_tags(self, store: ArtifactStore) -> None:
-        # Regression: _read_meta_file used to bubble ValueError (int("abc") on
-        # bad version field) and TypeError (list(non_iterable) on bad tags
-        # field) up through list(), crashing the whole library page on a
-        # single corrupted meta.json. Ensure those are now skipped+warned.
+        # _read_meta_file must skip a corrupted meta.json instead of bubbling a
+        # ValueError (int("abc") on a bad version field) or TypeError
+        # (list(non_iterable) on bad tags) up through list() and crashing the
+        # whole library page on a single bad file.
         store.create(name="ok", content="a")
 
         bad_version = store.root / "bad-version"
@@ -537,8 +549,8 @@ class TestSecurity:
     def test_snapshot_version_routes_through_read_gate(
         self, store: ArtifactStore, monkeypatch
     ) -> None:
-        # Regression: _snapshot_version() used to call src.read_text(encoding="utf-8") directly,
-        # bypassing the is_sensitive_path() gate enforced by self._read_text().
+        # _snapshot_version() reads through self._read_text(), not src.read_text()
+        # directly, so the is_sensitive_path() gate always applies.
         # If the gate ever started flagging artifact-internal paths (e.g. a
         # symlink expansion landing on a sensitive path), the snapshot read
         # must refuse rather than silently leak. Verify the gated helper is
@@ -565,11 +577,11 @@ class TestSecurity:
 
 
 class TestSharedLockAcrossInstances:
-    """#2492: two ``ArtifactStore`` instances pointed at the same root must
+    """Two ``ArtifactStore`` instances pointed at the same root must
     serialize against EACH OTHER, not just against themselves.
 
-    ``__init__`` used to hand out a fresh ``threading.Lock()`` per instance —
-    correct for a single long-lived store, but any code constructing its own
+    A fresh ``threading.Lock()`` per instance is correct for a single long-lived
+    store, but any code constructing its own
     ``ArtifactStore()`` against the shared default root (rather than going
     through :func:`get_default_store`) got an unserialized lock: a concurrent
     write from that second instance was never mutually exclusive with the
@@ -837,7 +849,7 @@ class TestSourcePath:
         assert results[0].name == "a"
 
 
-# ── Live-pointer behavior for file-backed artifacts (round 3) ──
+# ── Live-pointer behavior for file-backed artifacts ──
 
 
 class TestLivePointer:
@@ -926,7 +938,7 @@ class TestLivePointer:
 
 
 class TestExplicitSnapshotModel:
-    """round 5: saves don't bump version unless snapshot=True.
+    """Saves don't bump version unless snapshot=True.
 
     Versioning is now deliberate — like git commits. Saves silently update
     the live state. Snapshots create new numbered versions. This makes
@@ -997,7 +1009,7 @@ class TestExplicitSnapshotModel:
 
 
 class TestLiveDirtyAndSnapshotAnytime:
-    """round 6: snapshot button works whenever live differs
+    """The snapshot button works whenever live differs
     from the latest version, not just when there are unsaved edits."""
 
     def test_live_dirty_false_immediately_after_create(self, store: ArtifactStore) -> None:
@@ -1083,7 +1095,7 @@ class TestLiveDirtyAndSnapshotAnytime:
 
 
 class TestSourcePathSecurityHardening:
-    """review-bot round 12 fixes: path traversal + symlink bypass + UTF-8
+    """Source-path hardening: path traversal, symlink bypass, and UTF-8
     truncation arithmetic."""
 
     def test_traversal_path_resolves_before_sensitive_check(
@@ -1154,7 +1166,7 @@ class TestSourcePathSecurityHardening:
         f.write_text("😀" * 30, encoding="utf-8")
         result = store._try_read_source_path(str(f))
         assert result is not None
-        # Round 13: bounded read caps the disk-IO at MAX_CONTENT_BYTES+1
+        # Bounded read caps the disk-IO at MAX_CONTENT_BYTES+1
         # bytes regardless of file size. The decoded string may contain
         # U+FFFD replacement chars at the truncation boundary so its
         # re-encoded byte length CAN exceed MAX_CONTENT_BYTES — that's
@@ -1165,8 +1177,7 @@ class TestSourcePathSecurityHardening:
 
 
 class TestRoundThirteenFixes:
-    """review-bot round 13 fixes: bounded read, event_type pre-validation,
-    live_dirty not persisted."""
+    """Bounded read, event_type pre-validation, and live_dirty not persisted."""
 
     def test_oversized_file_does_not_load_full_content_into_memory(
         self, store: ArtifactStore, tmp_path: Path, monkeypatch
@@ -1199,7 +1210,7 @@ class TestRoundThirteenFixes:
     def test_invalid_event_type_does_not_leave_orphaned_version_file(
         self, store: ArtifactStore
     ) -> None:
-        # Round 13: validation happens BEFORE version bump and snapshot
+        # Validation happens BEFORE version bump and snapshot
         # write. An invalid event_type must not leave a versions/v{N}.html
         # on disk.
         store.create(name="x", content="v1", slug="x")
@@ -1220,7 +1231,7 @@ class TestRoundThirteenFixes:
         assert loaded.version == 1
 
     def test_live_dirty_not_persisted_in_meta_json(self, store: ArtifactStore) -> None:
-        # Round 13: live_dirty is computed at GET time and must not be
+        # live_dirty is computed at GET time and must not be
         # written to meta.json. Persisting would create staleness bugs.
         store.create(name="x", content="v1", slug="x")
         # Trigger a GET that sets live_dirty, then write_meta via update
@@ -1554,7 +1565,7 @@ class TestBlankDocumentKind:
         store.create(name="Untitled", content="", slug="u")
         pinned = store.update("u", content="# prose", kind="text")
         assert (pinned.kind, pinned.kind_auto) == ("text", False)
-        # Now that it's pinned, JSON content no longer re-types it.
+        # Once pinned, JSON content does not re-type it.
         assert store.update("u", content='{"a": 1}').kind == "text"
 
     def test_snapshot_records_the_detected_kind_for_the_version(
@@ -1942,6 +1953,10 @@ class TestSourceRootBarrier:
         monkeypatch.undo()
         assert src.read_text(encoding="utf-8") == "ORIGINAL"
 
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="os.link needs elevated privileges on Windows to make the second name",
+    )
     def test_rejected_writes_do_not_leak_descriptors(
         self, home_store, project_file
     ) -> None:
@@ -1951,27 +1966,56 @@ class TestSourceRootBarrier:
         through it), so it cannot be closed in a blanket ``finally``. That made
         each rejected update leak one descriptor, which would eventually exhaust
         the gateway's limit.
+
+        The subject therefore has to be a path the write gate refuses AFTER that
+        open: a second hardlink on the file, which ``_pinned_replace``'s
+        ``fstat`` check rejects (``st_nlink > 1``). A path OUTSIDE the approved
+        root -- what this test drove before -- never gets that far:
+        ``allowed_source_roots`` refuses it in ``_try_write_source_path`` itself,
+        so no descriptor is opened and the leak this test names could not have
+        been observed either way.
+
+        Pairing is read off the descriptors the writer itself opened and closed,
+        never a ``/proc/<pid>/fd`` census: this worker's other threads (executor
+        pools, the SEL writer) open and close descriptors of their own, so a
+        census moves for reasons that have nothing to do with this write.
         """
         import os as _os
 
         proj, src = project_file
-        # A path outside the approved root is rejected during validation.
-        outside = proj.parent / "outside.md"
-        outside.write_text("x", encoding="utf-8")
+        target = str(src.resolve())
+        # A second name on the same inode makes st_nlink == 2, which the pinned
+        # writer refuses -- but only once it already holds the descriptor.
+        _os.link(target, str(src.with_name("second-name.md")))
 
-        def open_fds() -> int:
-            try:
-                return len(_os.listdir(f"/proc/{_os.getpid()}/fd"))
-            except OSError:  # pragma: no cover -- non-Linux
-                pytest.skip("no /proc to count descriptors")
+        opened: list[int] = []
+        closed: list[int] = []
+        real_open, real_close = _os.open, _os.close
 
-        before = open_fds()
-        for _ in range(40):
-            assert (
-                home_store._try_write_source_path(str(outside), "nope", str(proj)) is False
-            )
-        # A leak would add ~40 descriptors; allow a little slack for unrelated I/O.
-        assert open_fds() - before < 10
+        def tracking_open(path, *args, **kwargs):
+            fd = real_open(path, *args, **kwargs)
+            if str(path) == target:
+                opened.append(fd)
+            return fd
+
+        def tracking_close(fd: int, /) -> None:
+            closed.append(fd)
+            real_close(fd)
+
+        # Wrapped, never stubbed -- the real syscalls still run, so what the
+        # assertions below see is the writer's own cleanup. Scoped to a context
+        # rather than the shared ``monkeypatch``, whose ``undo()`` would also
+        # unpin the fake ``Path.home`` the ``home_store`` fixture installed.
+        with pytest.MonkeyPatch.context() as patched:
+            patched.setattr(_os, "open", tracking_open)
+            patched.setattr(_os, "close", tracking_close)
+            for _ in range(5):
+                assert home_store._try_write_source_path(target, "nope", str(proj)) is False
+
+        assert len(opened) == 5, "the refusal never reached the descriptor-pinned open"
+        leaked = [fd for fd in opened if fd not in closed]
+        assert leaked == [], f"a rejected update leaked its descriptor: {leaked}"
+        assert src.read_text(encoding="utf-8") == "# live from the project"
 
     def test_write_refuses_when_an_acl_attribute_cannot_be_carried(
         self, home_store, project_file, monkeypatch
@@ -2420,7 +2464,7 @@ class TestSourceRootBarrier:
         home_dst = Path.home() / "moved.md"
         home_dst.write_text("# moved", encoding="utf-8")
         art = home_store.relocate("spec", str(home_dst))
-        # The old project root no longer authorizes anything about the new path.
+        # The old project root does not authorize anything about the new path.
         assert art.source_path == str(home_dst)
         assert art.source_root == ""
 
@@ -2567,7 +2611,7 @@ class TestAllowedRootsSingleProducer:
         assert verifiable.resolve() in home_store.allowed_source_roots(str(verifiable))
 
     def test_data_home_path_accepted_by_read_and_write(self, home_store) -> None:
-        # The root the relocate handler used to omit. Read and write must agree.
+        # The data-home root the relocate handler must include. Read and write must agree.
         data_home = home_store._root.resolve().parent
         target = data_home / "note.md"
         target.write_text("in the data home", encoding="utf-8")

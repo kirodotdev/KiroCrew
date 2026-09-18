@@ -44,7 +44,7 @@ def test_a_write_through_a_hardlink_is_refused(tmp_path: Path) -> None:
 
     A test that only checked for the exception would pass even if O_TRUNC had already
     destroyed the file -- which is exactly what happened before the fix, because
-    truncation used to occur at open time.
+    truncation would occur at open time.
     """
     victim = tmp_path / "important.txt"
     victim.write_text("ORIGINAL CONTENTS\n", encoding="utf-8")
@@ -65,7 +65,7 @@ def test_an_existing_name_is_refused_instead_of_truncated(tmp_path: Path) -> Non
     Truncating an existing name is what made the no-O_NOFOLLOW fallback exploitable:
     the name must be opened for writing before anything about it can be judged, so a
     link planted after the check gets followed. Exclusive creation has no such moment.
-    The price is that this primitive can no longer replace a file -- callers that mean
+    The price is that this primitive cannot replace a file -- callers that mean
     to do that publish by rename (`write_text_atomic_nofollow`).
     """
     target = tmp_path / "report.json"

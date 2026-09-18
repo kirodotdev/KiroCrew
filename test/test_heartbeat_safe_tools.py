@@ -423,7 +423,7 @@ class TestHeartbeatApproval:
     async def test_approve_fails_closed_with_real_async_sel_unwritable(
         self, orchestrator, monkeypatch, tmp_path
     ) -> None:
-        """End-to-end regression for the pentest gap: with the REAL async SEL
+        """End-to-end guard for the pentest gap: with the REAL async SEL
         (not a mock), an unwritable log file must make the approve path deny.
 
         Before the fix, ``log_tool_invocation`` enqueued to the async writer

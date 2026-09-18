@@ -98,8 +98,8 @@ def _refuses(command):
     return MARKER is not None and MARKER in command
 
 
-def is_sensitive_path(command, *args, **kwargs):
-    return TIER == "is_sensitive_path" and _refuses(command)
+def sensitive_path_refusal(command, *args, **kwargs):
+    return "stub sensitive path" if TIER == "sensitive_path_refusal" and _refuses(command) else None
 
 
 def is_sensitive_bash_command(command, *args, **kwargs):
@@ -460,7 +460,7 @@ class TestABrokenGoldenPathRejectsTheFix:
     @pytest.mark.parametrize(
         "tier, tag",
         [
-            ("is_sensitive_path", "sensitive-path"),
+            ("sensitive_path_refusal", "sensitive-path"),
             ("is_sensitive_bash_command", "sensitive-bash"),
             ("audit_bash_exfiltration", "exfil"),
             ("is_denied", "deny-rules"),

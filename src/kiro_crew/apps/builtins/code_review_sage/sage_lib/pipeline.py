@@ -22,7 +22,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-# Optional KiroCrew redaction — used to scrub LLM-generated text before it is
+# Optional Kiro Crew redaction — scrubs LLM-generated text before it is
 # posted to an external surface. Imported at module top (absent only when run
 # fully standalone outside the KiroCrew runtime).
 try:
@@ -428,13 +428,13 @@ def review_payload_units(payload: dict) -> int:
     """How many deliverable units a GitHub review payload actually contains.
 
     The poster is instructed to write ``posted_comments = len(comments) + 1 when
-    body is non-empty``, so delivery evidence is counted in PAYLOAD UNITS. Callers
-    used to compare that against the number of FINDINGS instead, which is a
-    different quantity: a finding with no usable ``{path, line}`` anchor is folded
-    into the review body rather than becoming its own inline comment (see
-    ``build_github_review_payload``). One unanchored finding therefore made a
-    complete delivery look short, and the caller then re-posted comments already on
-    the pull request.
+    body is non-empty``, so delivery evidence is counted in PAYLOAD UNITS. The
+    number of FINDINGS is a different quantity and must not be compared against
+    it: a finding with no usable ``{path, line}`` anchor is folded into the review
+    body rather than becoming its own inline comment (see
+    ``build_github_review_payload``). One unanchored finding would make a complete
+    delivery look short, and the caller would re-post comments already on the pull
+    request.
 
     This is the single place that number is derived, so the comparison in
     ``post_recorded`` and the durable ``posting_expected`` cannot drift apart.

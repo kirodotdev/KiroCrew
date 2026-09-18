@@ -43,13 +43,13 @@ from kiro_crew.embeddings import make_sync_embed_fn
 from kiro_crew.frontmatter import ONBOARDING_IMPORT, parse_block_scalar_header, split_frontmatter
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes_nolink
 from kiro_crew.learn import _MAX_LESSONS_TOTAL, Lesson, LessonStore
+from kiro_crew.lesson_validation import contains_volatile_lesson_fact
 from kiro_crew.mcp_utils import mcp_server_alias
 from kiro_crew.platform.context import current_context, safe_context_call
 from kiro_crew.security import (
     contains_injection,
     is_sensitive_path,
-    redact_credentials,
-    redact_exfiltration_urls,
+    redact_with_findings,
 )
 from kiro_crew.vector_memory import VectorMemoryStore
 
@@ -893,10 +893,8 @@ def _read_text(
 
 def _sanitize_text(text: str, scan: _Scan) -> str:
     bounded = text[:_MAX_TEXT_CHARS]
-    cleaned, warnings = redact_credentials(bounded)
-    scan.secret_count += len(warnings)
-    cleaned, url_warnings = redact_exfiltration_urls(cleaned)
-    scan.secret_count += len(url_warnings)
+    cleaned, credential_warnings, url_warnings = redact_with_findings(bounded)
+    scan.secret_count += len(credential_warnings) + len(url_warnings)
     return cleaned.strip()
 
 
@@ -1338,8 +1336,7 @@ def _skill_package(
         except UnicodeDecodeError:
             scan.diagnostic("skills", "binary_skill_asset_excluded", unsupported=True)
             return None
-        screened, credential_warnings = redact_credentials(text)
-        screened, url_warnings = redact_exfiltration_urls(screened)
+        screened, credential_warnings, url_warnings = redact_with_findings(text)
         scan.secret_count += len(credential_warnings) + len(url_warnings)
         if credential_warnings or url_warnings or screened != text:
             scan.diagnostic("skills", "credential_bearing_skill")
@@ -2077,11 +2074,16 @@ def _column0_activation_declared(text: str) -> bool:
             return True
         if key != "always":
             continue
-        # Strip whitespace AFTER removing the quotes as well as before. The loader
-        # unquotes with ``str.strip("\"'")`` and its consumers then compare
-        # ``.strip().lower() == "true"``, so ``always: " true "`` activates a skill --
-        # while stripping only on the outside leaves ``" true "`` -> `` true ``, which
-        # matches no truthy word here and let that spelling through the screen.
+        # Strip whitespace AFTER removing the quotes as well as before: the
+        # loader's consumers compare ``.strip().lower() == "true"``, so
+        # ``always: " true "`` activates a skill -- while stripping only on the
+        # outside leaves ``" true "`` -> `` true ``, which matches no truthy
+        # word here and let that spelling through the screen. This run-strip is
+        # deliberately WIDER than the loader's unquote (one matched wrapping
+        # level; see ``frontmatter.FrontmatterDialect.strip_quotes``): every
+        # spelling the loader reads as truthy is run-strip truthy too, so the
+        # divergence only ever detects MORE spellings as activating -- the
+        # fail-closed direction this gate must err on.
         value = raw.strip().strip("\"'").strip().casefold()
         if value in {"1", "true", "yes"} or parse_block_scalar_header(value) is not None:
             return True
@@ -3888,9 +3890,8 @@ def _source_summary(scan: _Scan, *, display_name: str) -> dict[str, Any]:
         "id": scan.source_id,
         # `display_name` is REQUIRED, and deliberately: the caller already holds
         # the resolved registry, so a fallback that looked the name up again would
-        # be a SECOND read of a snapshot that may have changed — the exact
-        # split-read defect three earlier review rounds were about. The plan is
-        # the authority; this function is handed the answer.
+        # be a SECOND read of a snapshot that may have changed — a split-read.
+        # The plan is the authority; this function is handed the answer.
         "name": display_name,
         "root": str(scan.root),
         "user_home": str(scan.user_home),
@@ -4220,9 +4221,16 @@ def _preserve_replaced_json(payload: Any, destination: Path) -> str:
 def _lessons_overlap(incoming: str, existing: str) -> bool:
     """Whether two lesson rules are close enough to treat as the same lesson.
 
-    Mirrors ``VectorMemoryStore.write_lesson``'s own dedupe (substring, then
-    >50% significant-word overlap) so import RECOGNIZES the same collisions --
-    but reports them instead of replacing, which is what that writer would do.
+    Tracks ``VectorMemoryStore.write_lesson``'s own dedupe (substring, then
+    significant-word overlap) so import RECOGNIZES the same collisions -- but
+    reports them instead of replacing, which is what that writer would do.
+
+    The overlap divisor is deliberately the SMALLER word set here, which is
+    stricter than the writer's (that one divides by the larger set, because a
+    false positive there DELETES the stored lesson). Import is merge-only, so a
+    false positive costs at most a skipped foreign directive that the user can
+    still teach by hand -- the conservative direction for a boundary that
+    ingests another agent's instructions.
     """
 
     left = incoming.lower().strip()
@@ -4254,6 +4262,8 @@ def _write_instruction(
 
     rule = str(item.payload.get("rule", "")).strip()
     if not rule:
+        return _WriteOutcome("rejected")
+    if contains_volatile_lesson_fact(rule):
         return _WriteOutcome("rejected")
 
     # ContextBuilder reads lesson.* from the VECTOR store when it holds any, and
@@ -4306,14 +4316,14 @@ def _write_instruction(
         # so an import can never delete a lesson the user taught the agent.
         if len(existing_lessons) >= _MAX_LESSONS_TOTAL:
             return _WriteOutcome("rejected")
-    lesson_store.save(
+    outcome = lesson_store.save(
         Lesson(
             ts=datetime.now(timezone.utc).isoformat(),
             rule=rule,
             category="preference",
         )
     )
-    return _WriteOutcome("imported")
+    return _WriteOutcome("rejected" if outcome == "refused" else "imported")
 
 
 def _write_memory(
@@ -4396,10 +4406,10 @@ def _write_workspace(
         return _WriteOutcome("rejected")
 
     path = data_home / "config.json"
-    # ONE locked read-modify-write (#4767): the raw _load_json_dict +
-    # _write_json pair this replaces took no advisory lock, so a concurrent
-    # locked writer (CLI, dashboard) landing between the read and the atomic
-    # write was silently reverted by this import's whole-document publish.
+    # ONE locked read-modify-write: a raw _load_json_dict + _write_json pair
+    # takes no advisory lock, so a concurrent locked writer (CLI, dashboard)
+    # landing between the read and the atomic write is silently reverted by this
+    # import's whole-document publish.
     outcome: _WriteOutcome | None = None
 
     def _mutate(data: dict) -> dict | None:
@@ -4860,8 +4870,8 @@ def _write_schedule(item: _Item, cron_service: Any) -> _WriteOutcome:
 
 def _write_settings(item: _Item, data_home: Path) -> _WriteOutcome:
     path = data_home / "config.json"
-    # ONE locked read-modify-write (#4767) -- see the workspace importer above
-    # for why the raw read+write pair this replaces lost concurrent updates.
+    # ONE locked read-modify-write -- see the workspace importer above for why a
+    # raw read+write pair loses concurrent updates.
     changed = False
 
     def _mutate(data: dict) -> dict | None:

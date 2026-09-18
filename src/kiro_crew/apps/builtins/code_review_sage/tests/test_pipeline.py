@@ -29,8 +29,8 @@ class TestBatchParse(unittest.TestCase):
 
     def test_a_malformed_link_does_not_sink_the_batch(self):
         # "https://[::1" makes urlparse raise ValueError. The user-facing failure
-        # this guards: one malformed entry in a pasted batch used to crash the
-        # whole request (HTTP 500), discarding every valid link with it.
+        # this guards: one malformed entry in a pasted batch crashing the whole
+        # request (HTTP 500) and discarding every valid link with it.
         out = P.parse_batch("https://github.com/o/r/pull/3\n"
                             "https://[::1\n"
                             "https://github.com/o/r/pull/4")
@@ -52,9 +52,9 @@ class TestBatchParse(unittest.TestCase):
 
     def test_prefixed_tokens_yield_their_embedded_url(self):
         # Bulleted/markdown lists are the normal clipboard shape from Slack or
-        # an issue. The user-facing failure this guards: every prefixed link
-        # used to be dropped silently, so the batch under-reviewed with no
-        # error. Each shape must yield its embedded PR URL.
+        # an issue. The user-facing failure this guards: a prefixed link dropped
+        # silently, so the batch under-reviews with no error. Each shape must yield
+        # its embedded PR URL.
         text = ("- https://github.com/o/r/pull/1\n"
                 "* https://github.com/o/r/pull/2\n"
                 "[PR](https://github.com/o/r/pull/3)\n"

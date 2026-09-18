@@ -33,13 +33,27 @@ import { SlackPanel } from '../pages/settings/SlackPanel'
 // off the wall clock and `clearAllTimers` drops the pending ones at teardown;
 // `shouldAdvanceTime` keeps the clock moving so `findBy*` behaves as it does
 // with real timers.
+/** What GET /api/config/schema answers: slack.command is the one boot-only field. */
+const SCHEMA_ENTRIES = [
+  { path: 'slack.command', type: 'string', requiresRestart: true },
+  { path: 'slack.show_thinking', type: 'boolean' },
+]
+
 beforeEach(() => {
   vi.useFakeTimers({ shouldAdvanceTime: true })
+  // The panel's restart badge fetches the schema; without a server that fetch
+  // fails and the badge honestly renders an error notice (role="alert"), which
+  // would collide with the save-error assertions below.
+  vi.stubGlobal('fetch', vi.fn(async () => ({
+    ok: true,
+    json: async () => ({ entries: SCHEMA_ENTRIES }),
+  })) as unknown as typeof fetch)
 })
 afterEach(() => {
   vi.clearAllTimers()
   vi.useRealTimers()
   vi.restoreAllMocks()
+  vi.unstubAllGlobals()
 })
 
 /* ── fixtures ─────────────────────────────────────────────────────────────── */
@@ -409,6 +423,39 @@ describe('SlackPanel save payload', () => {
         timeout: 5_000,
       }),
     ).toBeInTheDocument()
+  })
+
+  it('wears the schema restart badge on the slash command and nowhere else', async () => {
+    // The badge is schema-driven: GET /api/config/schema marks slack.command
+    // boot-only and nothing else in the panel, so exactly one pill renders and
+    // it sits in the slash-command row, before any save happens.
+    seed()
+    await hydrated()
+    const badge = await screen.findByTestId('restart-required-badge')
+    expect(screen.getAllByTestId('restart-required-badge')).toHaveLength(1)
+    const card = badge.closest('[data-stagger-index]') ?? badge.parentElement!.parentElement!
+    expect(within(card as HTMLElement).getByLabelText('Slash command')).toBeInTheDocument()
+  })
+
+  it('omits the restart hint when a verified save applied live', async () => {
+    // restart_required=false is the hot-reload path: the tokens verified AND
+    // the channel is already running them, so a restart claim would be a lie.
+    const { save } = seed({}, { save: { ok: true, restart_required: false, verify_warning: '' } })
+    await hydrated()
+
+    fireEvent.change(screen.getByLabelText('Slack bot token'), { target: { value: 'xoxb-not-a-real-value' } })
+    fireEvent.change(screen.getByLabelText('Slack app token'), { target: { value: 'xapp-not-a-real-value' } })
+    fireEvent.click(saveBtn())
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(
+      await screen.findByText('Verified with Slack and saved.', undefined, { timeout: 5_000 }),
+    ).toBeInTheDocument()
+    // the restart-flavoured verified text must not also render (a separate
+    // channel-not-running banner may legitimately mention a restart)
+    expect(
+      screen.queryByText('Verified with Slack and saved. Restart the gateway to connect.'),
+    ).not.toBeInTheDocument()
   })
 
   it('reports a restart-only save when nothing was verified', async () => {

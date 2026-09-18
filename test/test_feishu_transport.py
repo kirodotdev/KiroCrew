@@ -11,6 +11,8 @@ from kiro_crew.feishu.transport import (
     _SEEN_KEEP,
     _SEEN_MAX,
     FEISHU_CAPABILITIES,
+    SPOOL_DM_ROUTE_PREFIX,
+    SPOOL_GROUP_ROUTE_PREFIX,
     FeishuTransport,
 )
 from kiro_crew.messaging.transport import InboundMessage
@@ -74,6 +76,31 @@ class TestConfiguredTargets:
     def test_empty_allowed_gives_no_targets(self) -> None:
         transport = FeishuTransport(FakeClient(), allowed_open_ids=[])
         assert transport.configured_targets() == []
+
+
+class TestSpoolRouteAuthorization:
+    def test_dm_marker_rechecks_current_sender_allowlist(self) -> None:
+        transport = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
+        marker = f"{SPOOL_DM_ROUTE_PREFIX}ou_abc"
+
+        assert transport.may_send_to("msg1", marker) is True
+        assert transport.may_send_to("msg1", f"{SPOOL_DM_ROUTE_PREFIX}ou_other") is False
+
+    def test_group_marker_rechecks_current_group_allowlist(self) -> None:
+        transport = FeishuTransport(
+            FakeClient(),
+            allow_group=True,
+            allowed_group_ids=["oc_group"],
+        )
+        marker = f"{SPOOL_GROUP_ROUTE_PREFIX}oc_group"
+
+        assert transport.may_send_to("msg1", marker) is True
+        assert transport.may_send_to("msg1", f"{SPOOL_GROUP_ROUTE_PREFIX}other") is False
+
+    def test_normal_proactive_route_remains_denied(self) -> None:
+        transport = FeishuTransport(FakeClient(), allowed_open_ids=["ou_abc"])
+
+        assert transport.may_send_to("msg1", principal="ou_abc") is False
 
 
 class TestAuthorize:

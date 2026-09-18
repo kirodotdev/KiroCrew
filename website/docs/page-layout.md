@@ -348,3 +348,31 @@ are Tailwind utilities defined in `tailwind.config.js`, and both use
 - Use raw status text. Use `Badge` or `SourceBadge`.
 - Use `text-xs`. Use `text-[13px]`.
 - Add a new CSS `@keyframes`. Use Framer Motion, or an existing utility.
+
+
+### Split view: leading edge and focus
+
+The surface's top-left is the sessions-sidebar toggle's. In single chat the
+title row carries it (mobile) or clears the shell's stationary button with a
+60px inset and a hairline at 52px (desktop, sidebar collapsed). Split view does
+not render that row, so `SessionGridLayout` hands `ownsTopLeft` to the one
+geometric top-left leaf and `SessionGridView` gives that pane `leading`:
+`inset` reserves the toggle's column on the pane's own row (`ChatPane`:
+`pl-[49px]`, hairline at 41px; the picker card: `pl-[44px]`, hairline at 36px —
+both are container x 52 and 44, the single-chat row's columns, measured from
+where each pane's content starts), `control` renders the toggle inline ahead
+of the title. The shell's toggle keeps its normal rect (`TOGGLE_RECT`) in split
+view: the pane title row is the same height as the single-chat row, so it
+already centres on it.
+
+Split view marks focus by dimming every other pane as well as by the pane's
+accent border: `PaneDim` lays a background-coloured rectangle over the pane at
+`--pane-dim-opacity` (0.4), the way Ghostty fades an unfocused split, so
+message text, code highlighting and status colours keep their own values
+underneath and only the whole pane reads as "not the one with focus". The
+overlay is always mounted while the pane knows its focus state (opacity 0 when
+focused, so the cue fades both ways), sits at `z-20` above the message chrome
+and below the drop overlay and every shell layer, and takes no pointer events,
+so the click that claims focus lands on the pane. A pane outside split view
+(`focused` undefined) never mounts it. The placeholder pane keeps its accent
+dot as well.

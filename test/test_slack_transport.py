@@ -27,6 +27,10 @@ class FakeClient:
         self.posted: list[tuple] = []
         self.dms: list[str] = []
         self.replies: list[dict] = []
+        self.ensured: list[str] = []
+
+    async def ensure_channel_team(self, channel):
+        self.ensured.append(channel)
 
     async def post_message(self, channel, text, thread_ts=None, **kw):
         self.posted.append((channel, text, thread_ts))
@@ -103,12 +107,26 @@ class TestAuthorize:
         assert t.authorize(InboundMessage("slack", "U_INTRUDER", "C1", "x")) is False
 
 
+class TestSpoolEgress:
+    def test_current_owner_authorizes_original_thread_route(self):
+        t = _t(allowed_users={"U_OWNER"})
+
+        assert t.may_send_to("C1", "1700.0", principal="U_OWNER") is True
+
+    @pytest.mark.parametrize("principal", ["", "U_REVOKED"])
+    def test_missing_or_revoked_sender_fails_closed(self, principal):
+        t = _t(allowed_users={"U_OWNER"})
+
+        assert t.may_send_to("C1", "1700.0", principal=principal) is False
+
+
 class TestTier1:
     @pytest.mark.asyncio
     async def test_send_message_delegates(self):
         c = FakeClient()
         ts = await SlackTransport(c).send_message("C1", "hello", "1700.0")
         assert ts == "1700.0001"
+        assert c.ensured == ["C1"]
         assert c.posted == [("C1", "hello", "1700.0")]
 
     @pytest.mark.asyncio

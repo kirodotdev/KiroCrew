@@ -118,7 +118,7 @@ def test_an_over_long_owner_or_repo_is_refused():
 def test_a_competing_shorthand_refuses_the_url_rather_than_gating_on_it():
     """A shorthand cannot SELECT a subject, but it can show there is more than one.
 
-    Round 23 deleted the shorthand pattern outright, which went too far. With only
+    Deleting the shorthand pattern outright goes too far. With only
     URLs scanned, the common shape "drive owner/name#42; blocked on <URL for #7>"
     gated on the BLOCKER -- so #7 merging retired a loop whose own work was #42. The
     URL is only authoritative when nothing else in the text names a different pull
@@ -194,7 +194,7 @@ def test_text_with_no_pull_request_returns_none():
 
 
 def test_a_bare_issue_number_is_not_a_target():
-    """``#7527`` alone names no repository, so it cannot be observed."""
+    """A bare issue number alone names no repository, so it cannot be observed."""
     assert infer("gh-autofix issue #7527, keep an eye on it") is None
 
 

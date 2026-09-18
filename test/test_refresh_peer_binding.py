@@ -1,7 +1,7 @@
-"""Refresh chains are bound to the tailnet peer that opened them (issue #2417).
+"""Refresh chains are bound to the tailnet peer that opened them.
 
-Phase 3 pins ACCESS sessions to a daemon-verified tailnet peer, and PR #2411 made
-rotation carry that pin forward onto the replacement access token. What it did NOT
+Phase 3 pins ACCESS sessions to a daemon-verified tailnet peer, and rotation
+carries that pin forward onto the replacement access token. What it does NOT
 do was bind the refresh CHAIN itself for ordinary sessions: the peer-bound
 rotation mechanism (``require_peer`` / ``peer_key``) was armed for exactly one
 producer, the persistent QR phone session. Every other Phase-3 session minted an
@@ -370,8 +370,8 @@ async def test_a_rotated_access_token_is_refused_for_another_node_after_restart(
     """The signed claim beats an empty pin map — no first-arrival takeover.
 
     A restart clears the in-memory bindings, which is precisely when a stolen
-    access cookie used to be re-pinned to whoever presented it. The claim the
-    rotation now signs is what makes the ORIGINAL device the only answer, and it
+    access cookie could be re-pinned to whoever presented it. The claim the
+    rotation signs is what makes the ORIGINAL device the only answer, and it
     must not cost that device its own session.
     """
     from kiro_crew.dashboard.token_auth import _state as token_state
@@ -556,14 +556,14 @@ def test_a_wrong_shaped_state_file_neither_crashes_nor_reads_as_empty(
 ) -> None:
     """Both halves of the review argument on this span, in one assertion pair.
 
-    Round 1 (GPT, BLOCKING): iterating a present-but-null key raised inside the
-    constructor, which runs from ``_get_state()``, so one malformed byte-range
-    500'd EVERY ``/api/auth/refresh``. A ``.get(key, [])`` default does not cover
-    it -- the key exists, so the default is never consulted.
+    Iterating a present-but-null key raises inside the constructor, which runs
+    from ``_get_state()``, so one malformed byte-range would 500 EVERY
+    ``/api/auth/refresh``. A ``.get(key, [])`` default does not cover it -- the
+    key exists, so the default is never consulted.
 
-    Round 3 (GPT + Opus adjudication, UPHOLD-FENCED): reading it as EMPTY is the
-    opposite defect. These lists are security controls, so empty means "nothing
-    revoked, nothing consumed, nothing bound" -- i.e. every control satisfied.
+    Reading it as EMPTY is the opposite defect. These lists are security
+    controls, so empty means "nothing revoked, nothing consumed, nothing bound"
+    -- i.e. every control satisfied.
 
     So the store must do neither: construct without raising, and report itself
     degraded rather than clean.
@@ -640,7 +640,7 @@ def test_a_corrupt_revoked_chains_list_cannot_revive_a_revoked_chain(
 async def test_a_wrong_shaped_state_file_refuses_rotation_without_a_500(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """At the endpoint: 401, not 500 (round 1) and not 200 (round 3)."""
+    """At the endpoint: 401 -- not 500 (crash on a null key) and not 200 (empty read)."""
     path = tmp_path / "refresh_chains.json"
     path.write_text(json.dumps({"chain_peers": None, "consumed_jtis": None}))
 

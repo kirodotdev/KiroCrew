@@ -299,13 +299,13 @@ class TestApplySecurityHeaders:
         assert "X-Frame-Options" not in resp.headers
 
     def test_frame_ancestors_reads_embed_parent_from_session_cookie(self, monkeypatch) -> None:
-        """PR #118 follow-up: the framed document authenticates via the
+        """The framed document authenticates via the
         ``mc_token_<port>`` session cookie, NOT a ``?token=`` query param
         (token_auth_middleware exchanges the connect link token for that cookie).
         The reader MUST consult the cookie — otherwise every steady-state framed
         load falls back to bare frame-ancestors 'self' and the embedded pane
         never renders (the exact blank-pane bug). Reproduced live: a cookie
-        carrying the claim previously yielded 'self'."""
+        carrying the claim must not yield 'self'."""
         from kiro_crew.dashboard.state import _DEFAULT_PORT
 
         # Stub the (separately unit-tested) signed-claim reader; the point of
@@ -333,7 +333,7 @@ class TestApplySecurityHeaders:
         assert "X-Frame-Options" not in resp.headers
 
     def test_frame_ancestors_prefers_request_stashed_claim(self, monkeypatch) -> None:
-        """PR #129 follow-up: on the FIRST ``?token=`` framed document the
+        """On the FIRST ``?token=`` framed document the
         link→session exchange revokes the link nonce, so re-validating the query
         token here returns None and the header would fall back to bare 'self'
         (the browser enforces THIS response's frame-ancestors → blank pane).

@@ -120,14 +120,59 @@ class TestMcpEntries:
         assert allowed_tools_to_permissions([bad]) is None
 
 
-class TestTranslationNeverWidensAGrant:
-    """A glob in the source list must not become a glob in the projected policy.
+class TestToolGlobsTravelAsWritten:
+    """A tool-part glob means the same thing on both backends, so it is relayed.
 
-    Crew's own auto-approve check compares ``allowedTools`` entries literally, so
-    ``@*`` there grants a server named ``*`` — nothing at all. Translated naively
-    it becomes the pattern ``*/*``, which KAS resolves as every tool on every
-    server: one line of text meaning "no grant" on one backend and "grant
-    everything" on the other. The widening is what is under test, not the syntax.
+    kiro-cli documents ``@server/read_*`` in ``allowedTools`` (``*`` and ``?``
+    over the tool name) and KAS's resource matcher reads ``server/read_*`` the
+    same way. Dropping it made one line of text a grant on kiro-cli and a prompt
+    on KAS — a user who had auto-approved ``@srv/query_*`` on the CLI got asked
+    for every ``query_`` call the moment they switched backend. That asymmetry is
+    the defect; the translation is the one that is faithful.
+    """
+
+    @pytest.mark.parametrize(
+        ("entry", "pattern"),
+        [
+            ("@ent-a2rm/a2rm___query_*", "ent-a2rm/a2rm___query_*"),
+            ("@srv/*_get", "srv/*_get"),
+            ("@srv/get_*_info", "srv/get_*_info"),
+            ("@srv/cron_?", "srv/cron_?"),
+        ],
+    )
+    def test_a_tool_part_glob_becomes_the_same_kas_pattern(self, entry, pattern):
+        policy = allowed_tools_to_permissions([entry])
+        assert _rule(policy, "mcp")["match"] == [pattern]
+
+    def test_an_explicit_every_tool_glob_reads_as_the_bare_server(self):
+        """``@srv/*`` and ``@srv`` are the same grant on kiro-cli; one pattern."""
+        policy = allowed_tools_to_permissions(["@srv/*", "@srv"])
+        assert _rule(policy, "mcp")["match"] == ["srv/*"]
+
+    def test_the_server_wildcard_still_absorbs_a_tool_glob_beside_it(self):
+        policy = allowed_tools_to_permissions(["@srv/query_*", "@srv"])
+        assert _rule(policy, "mcp")["match"] == ["srv/*"]
+
+    def test_it_lands_on_the_wire(self):
+        """The projection is where the user actually felt the drop."""
+        spec = {"prompt": "p", "tools": ["@ent-a2rm"], "allowedTools": ["@ent-a2rm/a2rm___query_*"]}
+        agent = to_client_custom_agent("kirocrew", spec, "p")
+        assert agent["permissions"] == {
+            "rules": [
+                {"capability": "mcp", "match": ["ent-a2rm/a2rm___query_*"], "effect": "allow"}
+            ]
+        }
+
+
+class TestTranslationNeverWidensAGrant:
+    """A glob over the SERVER must not become a glob in the projected policy.
+
+    ``@*`` translated naively becomes the pattern ``*/*``, which KAS resolves as
+    every tool on every server, and a server-part glob is the one shape whose
+    kiro-cli reading this module cannot vouch for. Bracket, brace and negation
+    syntax in the tool part is refused on the same grounds: KAS honours it and
+    kiro-cli does not document it, so the same text could mean two widths. The
+    widening is what is under test, not the syntax.
     """
 
     @pytest.mark.parametrize(
@@ -136,14 +181,16 @@ class TestTranslationNeverWidensAGrant:
             "@*",
             "@*/*",
             "@kirocrew-*",
-            "@kirocrew-core/*",
-            "@kirocrew-core/cron_?",
+            "@kirocrew-*/*",
+            "@*/status",
             "@kirocrew-core/[abc]",
+            "@kirocrew-core/{a,b}",
+            "@kirocrew-core/!x",
             "@{a,b}",
             "@!kirocrew-core",
         ],
     )
-    def test_a_glob_reference_yields_no_rule(self, entry):
+    def test_a_server_glob_or_unshared_syntax_yields_no_rule(self, entry):
         assert allowed_tools_to_permissions([entry]) is None
 
     def test_a_glob_does_not_suppress_the_literal_entries_beside_it(self):

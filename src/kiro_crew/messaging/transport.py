@@ -347,7 +347,7 @@ class MessagingTransport(ABC):
         requires every transport under ``src/kiro_crew/<channel>/`` to override
         this and make its own decision explicit, so a channel cannot inherit
         permission silently. Override it and return False for a conversation
-        whose principal is no longer on the roster.
+        whose principal is not on the roster.
         """
         return True
 

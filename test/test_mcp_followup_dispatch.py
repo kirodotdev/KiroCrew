@@ -1,7 +1,7 @@
-"""Direct coverage for the stateless ``suggest_followup`` MCP path (#755).
+"""Direct coverage for the stateless ``suggest_followup`` MCP path.
 
-The dispatch branch in ``_call_tool_inner`` no longer resolves session
-identity, no longer refuses non-dashboard sessions, and no longer POSTs to the
+The dispatch branch in ``_call_tool_inner`` does not resolve session
+identity, does not refuse non-dashboard sessions, and does not POST to the
 gateway. It VALIDATES its items and returns a session DIRECTIVE (see
 ``kiro_crew.session_directive``). The session-aware consumer renders the card
 against ITS OWN slot via

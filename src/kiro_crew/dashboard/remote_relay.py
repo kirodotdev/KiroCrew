@@ -63,7 +63,7 @@ from aiohttp import web
 import kiro_crew
 from kiro_crew.apps.version import parse_version
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
-from kiro_crew.dashboard.chat_utils import _redact_deep
+from kiro_crew.dashboard.chat_utils import _redact_deep, chunk_generation
 from kiro_crew.dashboard.remote_mirror import MIRROR_CLS_PREFIX
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -337,19 +337,22 @@ def _replay_mirrored_frame(
 
 
 class _ChunkSequencer:
-    """Local ``seq`` numbers for relayed chunks.
+    """Local ``seq`` numbers for relayed chunks, drawn from the slot's counter.
 
     The peer's own sequence is not reusable: it counts that peer's turn, while
-    the local frontend orders chunks within the LOCAL slot and a second relayed
-    turn would restart the peer's count mid-conversation.
+    the local frontend orders chunks within the LOCAL slot. The numbers come
+    from ``_ChatSlot._chunk_seq`` -- the same counter a local turn continues --
+    so a relayed turn is numbered above every earlier turn of this slot, local
+    or relayed, and a client's replay floor orders it without seeing the
+    boundary.
     """
 
-    def __init__(self) -> None:
-        self._seq = 0
+    def __init__(self, slot: Any) -> None:
+        self._slot = slot
 
     def next(self) -> int:
-        self._seq += 1
-        return self._seq
+        self._slot._chunk_seq += 1
+        return int(self._slot._chunk_seq)
 
 
 def _apply_row(
@@ -393,9 +396,16 @@ def _apply_row(
         meta = None
 
     if role == "chunk":
-        slot.append("chunk", content, "chunk")
+        seq = sequencer.next()
+        # Same seq and generation on the window row as on the wire frame, so a
+        # mid-stream slot snapshot tells the client how far the stream it holds
+        # has advanced and which process numbered it (chunk_generation).
+        row = slot.append("chunk", content, "chunk")
+        row["seq"] = seq
+        row["gen"] = chunk_generation()
         state.broadcast_ws(
-            "chat_chunk", {"slot": slot.key, "content": content, "seq": sequencer.next()}
+            "chat_chunk",
+            {"slot": slot.key, "content": content, "seq": seq, "gen": chunk_generation()},
         )
         return
     if role == "thinking":
@@ -484,6 +494,13 @@ def remote_bound_refusal(slot: "_ChatSlot") -> "web.Response | None":
     Keyed on ``executor == "remote"`` (the binding intent), not ``is_remote`` (the
     fully-populated triple): a half-open binding must be refused here too, exactly
     as the send path refuses it — never silently run locally.
+
+    ``selectContinuable`` (``website/src/store/chatSlice.ts``) carries the same
+    guard so the control is never OFFERED on a bound slot. That mirror is load
+    bearing rather than cosmetic: :func:`relay_remote_turn`'s failure path appends
+    a trailing ``error`` row, which is the exact shape ``selectTurnInterrupted``
+    reads as an interruption, so without it such a relay failure ends with a Resume
+    button whose only possible answer is this 409.
     """
     if slot.executor == "remote":
         return web.json_response(
@@ -740,7 +757,7 @@ async def relay_remote_turn(
     rather than half-built. Until then, run peer-bound sessions on a crew whose
     approval policy does not stop for the tools you expect to use.
     """
-    sequencer = _ChunkSequencer()
+    sequencer = _ChunkSequencer(slot)
     # Mark the turn in-flight and persist that BEFORE any streaming, so a gateway
     # crash mid-turn is detectable on reload. The relay task dies with the
     # gateway while the peer keeps running, and its tail is never mirrored here —

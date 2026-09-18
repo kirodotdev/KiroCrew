@@ -405,7 +405,7 @@ describe('useSceneInteraction — thread popover lifecycle', () => {
     fireEvent.click(
       screen.getByRole('button', { name: i18nT('hooks.useSceneInteraction.open_chat') }),
     )
-    expect(dispatchSpy).toHaveBeenCalledWith({ type: 'chat/switchSlot', payload: 'a' })
+    expect(dispatchSpy).toHaveBeenCalledWith({ type: 'chat/switchSlot', payload: { key: 'a', announceOnMissing: true } })
     expect(navigateSpy).toHaveBeenCalledWith('/chat')
   })
 

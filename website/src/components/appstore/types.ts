@@ -66,6 +66,10 @@ export type RegistryApp = {
     // Set when the app's UI needs the Electron shell (native windows,
     // global shortcuts, tray). A UX gate only — the marker is client-side.
     requiresDesktopApp?: boolean }
+  manifest?: {
+    permissions?: { sessionApproval?: boolean }
+    platform?: { requiresDesktopApp?: boolean }
+  }
 }
 
 /** Installed app shape from ``GET /api/apps`` (mirrors app manager records). */
@@ -74,6 +78,7 @@ export type InstalledApp = {
   version: string
   displayName: string
   enabled: boolean
+  sessionApprovalConsentPending?: boolean
   installedAt: string
   source?: string
   origin?: string     // "builtin" | "registry" | "local" | "external"
@@ -127,7 +132,15 @@ export type InstalledApp = {
       commands?: unknown
       panelTabs?: unknown
     }
-    permissions?: { api?: string[]; events?: string[]; mcpTools?: string[]; storage?: boolean; cron?: boolean; network?: boolean }
+    permissions?: {
+      api?: string[]
+      events?: string[]
+      mcpTools?: string[]
+      storage?: boolean
+      cron?: boolean
+      network?: boolean
+      sessionApproval?: boolean
+    }
     setup?: { onInstall?: string; onUpdate?: string; onUninstall?: string; onEnable?: string; onDisable?: string }
     minKiroCrewVersion?: string
     iconPath?: string
@@ -152,6 +165,18 @@ export type InstalledApp = {
     openCommand?: string
     hidden?: boolean
   }
+}
+
+/** Filter identity, not a display name: external ids cannot alias host buckets. */
+export function sourceKey(app: Pick<RegistryApp, 'origin' | '_registry'>): string {
+  if (app._registry) return `registry:${app._registry}`
+  if (app.origin === 'builtin') return '__builtin__'
+  return '__core__'
+}
+
+/** The row keeps its raw name for display and metadata lookups. */
+export function sourceRowKey(row: { name: string; builtin: boolean }): string {
+  return row.builtin ? row.name : sourceKey({ _registry: row.name })
 }
 
 /**

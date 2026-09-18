@@ -296,6 +296,59 @@ class TestProjectTree:
             data = await resp.json()
         assert data["truncated"] is True
         assert len(data["paths"]) == 2
+        assert data["directories"] == []
+        assert data["truncatedDirectories"] == [""]
+
+    @pytest.mark.asyncio
+    async def test_walk_keeps_the_full_directory_skeleton_and_samples_files_fairly(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 4)
+        plain = tmp_path / "plain"
+        for directory in ("alpha", "beta", "late/nested"):
+            target = plain / directory
+            target.mkdir(parents=True)
+            for index in range(3):
+                (target / f"{index}.txt").write_text("x")
+        (plain / "empty").mkdir()
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["truncated"] is True
+        assert len(data["paths"]) == 4
+        assert {path.rsplit("/", 1)[0] for path in data["paths"]} == {
+            "alpha",
+            "beta",
+            "late/nested",
+        }
+        assert data["directories"] == ["alpha", "beta", "empty", "late", "late/nested"]
+        assert data["truncatedDirectories"] == ["alpha", "beta", "late/nested"]
+
+    @pytest.mark.asyncio
+    async def test_walk_under_cap_keeps_all_files_and_directory_rows(
+        self, tmp_path, mock_sel, monkeypatch
+    ):
+        from kiro_crew.dashboard.handlers import files as files_mod
+
+        monkeypatch.setattr(files_mod, "_PROJECT_TREE_MAX_ENTRIES", 4)
+        plain = tmp_path / "plain"
+        (plain / "docs").mkdir(parents=True)
+        (plain / "docs" / "readme.md").write_text("docs")
+        (plain / "empty").mkdir()
+        (plain / "top.txt").write_text("top")
+
+        async with TestClient(TestServer(_make_app(str(plain)))) as client:
+            resp = await client.get(f"/api/project/tree?path={plain}")
+            data = await resp.json()
+
+        assert data["paths"] == ["top.txt", "docs/readme.md"]
+        assert data["directories"] == ["docs", "empty"]
+        assert data["truncated"] is False
+        assert data["truncatedDirectories"] == []
 
     @pytest.mark.asyncio
     async def test_cap_does_not_drop_the_whole_tracked_block(self, tmp_path, mock_sel, monkeypatch):

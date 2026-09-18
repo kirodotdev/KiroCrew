@@ -7,6 +7,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -24,6 +25,52 @@ from kiro_crew.apps.backend import (
     stop_app_backend,
 )
 from kiro_crew.apps.manager import APP_MANIFEST_FILENAME, install_app
+
+
+def _own_probe_sel(probe_home: str):
+    """Give ``_sandbox_can_spawn`` a synchronous SEL bound under *probe_home*, or None.
+
+    Returns the instance the probe now owns, or ``None`` when the process already
+    held a singleton -- one the operator's code constructed (a ``base_dir``
+    instance from a sibling module, say) is not the probe's to replace or retire,
+    and ``wrap_argv()`` will simply append to it. If construction fails, the
+    probe clears the partially published singleton before propagating the error.
+
+    ``sync=True`` is the whole point: the probe's denial audit is then written
+    INLINE on this thread and NO writer thread is ever started, so nothing can
+    outlive the ``with TemporaryDirectory()`` holding a reference to the
+    directory it is about to remove. The earlier shape retired an async instance
+    after the fact with ``flush()`` + shutdown sentinel + ``join(timeout=5)``,
+    and a join that times out leaves a daemon thread whose next ``_flush_batch``
+    re-creates the deleted home -- the leak this exists to close, one race away.
+    """
+    from kiro_crew.sel import SecurityEventLog
+
+    if SecurityEventLog._instance is not None:
+        return None
+    try:
+        return SecurityEventLog(Path(probe_home), sync=True)
+    except BaseException:
+        # ``__new__`` publishes the singleton before ``_init_locked`` finishes,
+        # so failed initialization can leave this probe's half-built instance.
+        SecurityEventLog._instance = None
+        SecurityEventLog._initialized = False
+        raise
+
+
+def _retire_probe_sel(owned) -> None:
+    """Clear the class slots for the instance ``_own_probe_sel`` returned.
+
+    Nothing to flush or join: a ``sync=True`` instance has no queue and no
+    thread. Clearing the slots lets the first test's ``sel()`` rebuild under
+    the session floor's redirected default dir (``_isolate_sel_default_dir``).
+    """
+    from kiro_crew.sel import SecurityEventLog
+
+    if owned is None or SecurityEventLog._instance is not owned:
+        return
+    SecurityEventLog._instance = None
+    SecurityEventLog._initialized = False
 
 
 def _sandbox_can_spawn() -> bool:
@@ -49,6 +96,21 @@ def _sandbox_can_spawn() -> bool:
     backend at all, and every test it gates then failed closed under the
     fixture's default config, while CI (no operator config) skipped them. The
     gate must observe what the tests will observe: the default config.
+
+    The probe also OWNS the Security Event Log ``wrap_argv()`` writes to. On a
+    host with no sandbox backend the call fail-closes and records a ``denied``
+    audit through ``sel()`` -- a process SINGLETON whose ``_dir`` is bound once,
+    here from ``empty_home``. Left to construct itself that instance would be
+    ASYNC, and (a) its writer thread keeps the chain lock / log open long enough
+    on Windows that ``TemporaryDirectory`` cannot remove ``empty_home`` -- the
+    failure lands in the bare ``except`` below and the directory leaks at the
+    TEMP root, one per xdist worker, holding a ``security_events.jsonl`` and a
+    ``trust/sel_hmac.key`` -- and (b) it outlives the probe: the rootdir
+    ``_isolate_sel_default_dir`` floor only resets the singleton at the first
+    test's setup, and any write on the lingering thread ``mkdir``s the deleted
+    home back into existence. MEASURED: five full runs each left ten such
+    directories. So the probe constructs the singleton itself, ``sync=True``
+    (inline writes, no thread), and clears it before the directory goes.
     """
     try:
         from kiro_crew import sandbox as _sb
@@ -56,13 +118,16 @@ def _sandbox_can_spawn() -> bool:
         with tempfile.TemporaryDirectory() as empty_home:
             saved = os.environ.get("KIROCREW_HOME")
             os.environ["KIROCREW_HOME"] = empty_home
+            owned = None
             try:
+                owned = _own_probe_sel(empty_home)
                 argv, cleanup = _sb.wrap_argv([sys.executable, "-c", "pass"], mode="standard")
             finally:
                 if saved is None:
                     os.environ.pop("KIROCREW_HOME", None)
                 else:
                     os.environ["KIROCREW_HOME"] = saved
+                _retire_probe_sel(owned)
     except Exception:  # noqa: BLE001 — any probe failure => treat as "can't spawn"
         return False
     try:
@@ -305,7 +370,7 @@ class TestFixedAndAutoPortIsolation:
     def test_a_fixed_port_app_claims_it_before_binding(self, tmp_path, app_env, monkeypatch):
         """The SPAWN PATH must claim a fixed manifest port, not just record it later.
 
-        Boot spawns concurrently, and a fixed-port app used to record its port only
+        Boot spawns concurrently, and a fixed-port app that records its port only
         AFTER binding. An auto-port app selecting inside that window could be handed
         the same number, so one of the two children would die of EADDRINUSE and its
         backend would stay unavailable. Asserted at the real seam: the port must
@@ -469,7 +534,7 @@ class TestBootSpawnLatency:
     def test_survival_check_exits_early_for_a_healthy_child(self, monkeypatch):
         """A living child must not cost the full survival window.
 
-        The poll used to sleep its whole ~1.6s budget on the happy path and only
+        The poll would sleep its whole ~1.6s budget on the happy path and only
         break when the child DIED, so every app added ~1.6s of dead time to boot.
         It must return as soon as the child is confirmed alive.
         """
@@ -685,7 +750,7 @@ class TestBootSpawnLatency:
     def test_boot_starts_app_backends_concurrently(self, monkeypatch):
         """Boot must not serialize per-app spawn latency.
 
-        N apps used to cost N x the survival window because each spawn ran to
+        N apps would cost N x the survival window because each spawn ran to
         completion before the next began. With 4 apps that is ~6.4s of pure boot
         latency on the happy path.
         """
@@ -1388,9 +1453,85 @@ class TestBootAdmissionRevet:
             "manifest": {"backend": {"entryPoint": "server.py"}},
         }]
         monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        monkeypatch.setattr(
+            bmod,
+            "_read_installed",
+            lambda _name: SimpleNamespace(origin="builtin"),
+        )
         bmod.start_enabled_app_backends()
         # Builtin is exempt from the gate — start_app_backend was invoked for it.
         assert "core-builtin" in started
+
+    def test_deferred_backends_are_admitted_now_and_spawned_later(self, tmp_path, app_env, monkeypatch):
+        """``defer`` holds a name back from the main spawn wave without skipping its
+        vetting; ``start_deferred_app_backends`` then spawns exactly that set, once.
+        Dev Fleet is deferred so it is handed the gateway's actually-bound port."""
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [
+            {"name": "dev-fleet", "enabled": True, "origin": "builtin",
+             "manifest": {"backend": {"entryPoint": "server.py"}}},
+            {"name": "md-notebook", "enabled": True, "origin": "builtin",
+             "manifest": {"backend": {"entryPoint": "server.py"}}},
+        ]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        assert started == ["md-notebook"]
+        bmod.start_deferred_app_backends()
+        assert started == ["md-notebook", "dev-fleet"]
+        # A second call spawns nothing: the deferred set was consumed.
+        bmod.start_deferred_app_backends()
+        assert started == ["md-notebook", "dev-fleet"]
+
+    def test_a_deferred_app_that_is_disabled_is_not_spawned_later(self, tmp_path, app_env, monkeypatch):
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": False, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_a_deferred_app_disabled_between_the_waves_is_not_spawned(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        """The deferral leaves a window (the rest of start_dashboard) in which the
+        operator can run `kirocrew app disable dev-fleet`. The cached admission
+        must not outlive that: enablement is re-read at spawn time, and an
+        unreadable state (None) is treated as not enabled."""
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": True, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        assert started == []
+        # Operator disables the app while the gateway is still booting.
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: False)
+        bmod.start_deferred_app_backends()
+        assert started == []
+        # And an unreadable state is not a licence to spawn either.
+        bmod.start_enabled_app_backends()
+        monkeypatch.setattr(bmod, "_app_enabled_state", lambda name: None)
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_a_deferred_app_denied_by_governance_between_the_waves_is_not_spawned(
+        self, tmp_path, app_env, monkeypatch
+    ):
+        import kiro_crew.apps.manager as manager
+
+        bmod, started = self._boot_env(monkeypatch)
+        apps = [{"name": "dev-fleet", "enabled": True, "origin": "builtin",
+                 "manifest": {"backend": {"entryPoint": "server.py"}}}]
+        monkeypatch.setattr(bmod, "list_apps", lambda: apps)
+        bmod.start_enabled_app_backends()
+        monkeypatch.setattr(manager, "_app_activation_denied", lambda name: "policy tightened")
+        bmod.start_deferred_app_backends()
+        assert started == []
+
+    def test_dev_fleet_is_the_bound_port_deferred_backend(self):
+        import kiro_crew.apps.backend as bmod
+
+        assert bmod.DEV_FLEET_APP_NAME == "dev-fleet"
 
     def test_spawn_exception_isolated_and_boot_continues(self, tmp_path, app_env, monkeypatch):
         """A per-app spawn failure (e.g. sandbox.wrap_argv fail-closing on macOS 26
@@ -1888,7 +2029,7 @@ class TestTheMdNotebookBackendCanSeeItsOwnStateFiles:
 
 
 # =============================================================================
-# Post-startup liveness watch (#5726)
+# Post-startup liveness watch
 # =============================================================================
 
 
@@ -1903,7 +2044,7 @@ class _FakeProc:
 
 
 class TestBackendLivenessWatch:
-    """``healthy`` must be able to go back to False (#5726).
+    """``healthy`` must be able to go back to False.
 
     Before the watch, the startup poll wrote ``healthy = True`` once and nothing ever
     unwrote it, so a backend that died later kept the reverse proxy routing to its dead
@@ -2042,7 +2183,7 @@ class TestBackendLivenessWatch:
 
 
 class TestBackendRunningReflectsTheProcess:
-    """``/api/apps`` must not report an exited backend as running (#5726)."""
+    """``/api/apps`` must not report an exited backend as running."""
 
     def test_running_is_false_once_the_process_exits(self):
         ap = AppProcess(app_name="gone", port=9162, pid=7, proc=_FakeProc(returncode=0))
@@ -2128,7 +2269,7 @@ class TestHealthTransitionsRefuseAStaleRecord:
         bmod._demote(ap, reason="test")
 
         assert ap.healthy is True  # untouched
-        assert calls == []  # no scrub of a name this record no longer owns
+        assert calls == []  # no scrub of a name this record does not own
 
     def test_promote_refuses_an_untracked_record(self, gate_calls):
         bmod, calls = gate_calls
@@ -3200,7 +3341,7 @@ class TestRegistrationReportsAgentIoFailuresToo:
 
 
 class TestPromotionRequiresAConfirmedEnabledApp:
-    """A disabled app must not be resurrected by a health recovery (#5726 review).
+    """A disabled app must not be resurrected by a health recovery.
 
     `kirocrew app disable` runs in its OWN process: it deregisters the app's resources
     and never touches this process's tracking table. The record survives, so a later
@@ -3262,7 +3403,7 @@ class TestPromotionRequiresAConfirmedEnabledApp:
 
 
 class TestPromotionIsVerifiedAfterTheWrite:
-    """The enabled check cannot be atomic with the write (#5726 review).
+    """The enabled check cannot be atomic with the write.
 
     `kirocrew app disable` runs in another process, so there is no lock to share. Ordering
     closes the interleave where the flag is read after the resources come down; this
@@ -3331,7 +3472,7 @@ class TestPromotionIsVerifiedAfterTheWrite:
 
 
 class TestUndoIsRetriedUntilItCompletes:
-    """`deregister_app` reports softly, so a failed undo must not look clean (#5726 review).
+    """`deregister_app` reports softly, so a failed undo must not look clean.
 
     It returns problems in `RegistrationResult.errors` rather than raising, so recording
     the removal without reading that list leaves a disabled app's resources registered
@@ -3415,7 +3556,7 @@ class TestUndoIsRetriedUntilItCompletes:
 
 
 class TestDemotionRefreshIsGatedOnEnablement:
-    """The demotion's agent refresh must not restore a disabled app (#5726 review).
+    """The demotion's agent refresh must not restore a disabled app.
 
     A demotion does two things: it scrubs the MCP entry — always safe, and deliberately
     ungated — and it re-materializes the agent configs. The second is a WRITE, so for an
@@ -3475,7 +3616,7 @@ class TestDemotionRefreshIsGatedOnEnablement:
 
 
 class TestDisabledCleanupResultIsTheReconcileResult:
-    """A failed disabled-app cleanup is not a completed reconcile (#5726 review)."""
+    """A failed disabled-app cleanup is not a completed reconcile."""
 
     def test_a_failed_cleanup_reports_unlanded(self, monkeypatch):
         import kiro_crew.apps.backend as bmod
@@ -3503,9 +3644,9 @@ class TestDisabledCleanupResultIsTheReconcileResult:
 
 
 class TestTheUndoNeverTouchesASuccessor:
-    """Identity is checked BEFORE enablement (#5726 review).
+    """Identity is checked BEFORE enablement.
 
-    The undo deregisters by app NAME, so running it for a record that is no longer the
+    The undo deregisters by app NAME, so running it for a record that is not the
     tracked one deletes the SUCCESSOR's resources — and an unreadable enabled state is
     precisely what would send a retired watcher down that path.
     """
@@ -3535,7 +3676,7 @@ class TestTheUndoNeverTouchesASuccessor:
 
 
 class TestUnreadableManifestKeepsTheScrubUnlanded:
-    """Keeping the agents is right, but it leaves them stale (#5726 review).
+    """Keeping the agents is right, but it leaves them stale.
 
     `refresh_app_agents` gives up on the same unreadable manifest, so nothing else
     revisits those files. Recording the scrub as done would strand an agent config
@@ -3569,7 +3710,7 @@ class TestUnreadableManifestKeepsTheScrubUnlanded:
 
 
 class TestUnknownEnablementNeverDeletes:
-    """Fail-closed is right for ADDING and wrong for DELETING (#5726 review).
+    """Fail-closed is right for ADDING and wrong for DELETING.
 
     `installed.json` can fail to read transiently. Refusing to register when enablement
     is unknown is safe — the app stays as it is. Deregistering when it is unknown unlinks
@@ -3632,7 +3773,7 @@ class TestUnknownEnablementNeverDeletes:
 
 
 class TestATransitionAlwaysReconciles:
-    """`mcp_healthy` can be stale in the other direction (#5726 review).
+    """`mcp_healthy` can be stale in the other direction.
 
     An MCP write that landed followed by an agent write that did not leaves `mcp_healthy`
     unmoved while the entry IS on disk. If the verdict then flips, matching that stale
@@ -3680,7 +3821,7 @@ class TestATransitionAlwaysReconciles:
 
 
 class TestTheUndoPathsAlsoRefuseAnUnknownState:
-    """The tri-state rule applies to ALL THREE deletion sites (#5726 review).
+    """The tri-state rule applies to ALL THREE deletion sites.
 
     The demotion path was fixed first; the two undo calls inside `_set_backend_health`
     were not, and they reach the same `deregister_app` → `_deregister_agents` → unlink.
@@ -3745,7 +3886,7 @@ class TestTheUndoPathsAlsoRefuseAnUnknownState:
 
 
 class TestEnabledStateDistinguishesUnreadableFromDisabled:
-    """The tri-state has to be real, not nominal (#5726 review).
+    """The tri-state has to be real, not nominal.
 
     `is_app_enabled` returns False for BOTH a deliberate disable and an unreadable
     metadata file, because `_read_installed` answers None to both and never raises. Built

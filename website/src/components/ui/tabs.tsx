@@ -130,13 +130,15 @@ const TabsTrigger = React.forwardRef<
       )}
       {...props}
     >
-      {isActive && (
-        <motion.span
-          layoutId={ctx?.layoutId}
-          aria-hidden="true"
-          className={TABS_INDICATOR_CLASS}
-          transition={reduceMotion ? { duration: 0 } : TABS_INDICATOR_SPRING}
-        />
+      {/* Reduced motion also excludes shared-layout projection, not only its duration. */}
+      {isActive && (reduceMotion
+        ? <span aria-hidden="true" className={TABS_INDICATOR_CLASS} />
+        : <motion.span
+            layoutId={ctx?.layoutId}
+            aria-hidden="true"
+            className={TABS_INDICATOR_CLASS}
+            transition={TABS_INDICATOR_SPRING}
+          />
       )}
       {children}
     </TabsPrimitive.Trigger>

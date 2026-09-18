@@ -329,7 +329,7 @@ async def handle_dispatch_text(request: web.Request) -> web.Response:
     # and the expiry side effects) is shared with the audio-import producer — see
     # `_common.dispatch_line`. Only THIS producer opts into the initialization
     # hold: a line of live speech arriving while the agents are still starting is
-    # wanted and is buffered (issue #4610), whereas a file import has no business
+    # wanted and is buffered, whereas a file import has no business
     # trickling into a hold buffer — it is refused whole and retried.
     source = k.TRANSCRIPT_SOURCE_TYPED if is_chat else k.TRANSCRIPT_SOURCE_SPEECH
     segment, accepted, line = await dispatch_line(

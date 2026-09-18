@@ -76,7 +76,7 @@ class _State:
 def _effective_stubs(section: dict[str, Any]) -> list[str]:
     """The stub set IN EFFECT for a saved ``mcp_gateway`` section.
 
-    The toggle handler no longer rewrites ``stub_servers``: that key is the roster
+    The toggle handler does not rewrite ``stub_servers``: that key is the roster
     a distribution ships and keeps growing, and a click is recorded as a decision
     in ``stub_overrides`` over it. What the operator sees stubbed is the two
     resolved together, so that -- not either key alone -- is what a test about
@@ -1118,7 +1118,7 @@ class TestFreezeStubServersOrdering:
         mcp_mod._freeze_stub_servers(section)
         assert section["stub_servers"] == ["x-mcp"]
 
-        # After the freeze, `enabled` no longer speaks for the stub set at all.
+        # After the freeze, `enabled` does not speak for the stub set at all.
         section["enabled"] = False
         mcp_mod._freeze_stub_servers(section)
         assert section["stub_servers"] == ["x-mcp"]

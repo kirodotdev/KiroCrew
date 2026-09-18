@@ -60,6 +60,7 @@ _MARKERS: Final[tuple[tuple[str, str], ...]] = (
     ("user_display", r"\[CURRENT USER\]"),
     ("user_profile", r"\[USER PROFILE\]"),
     ("ui_language", r"\[UI LANGUAGE\]"),
+    ("response_preferences", r"\[RESPONSE PREFERENCES"),
     ("channel_persona", r"\[CHANNEL\]"),
     ("incognito", r"\[INCOGNITO SESSION\]"),
     ("temporary_session", r"\[TEMPORARY SESSION\]"),
@@ -121,6 +122,7 @@ _CLOSERS: Final[dict[str, re.Pattern[str]]] = {
         ("theme_persona", r"\[END THEME PERSONA\]"),
         ("user_profile", r"\[End of user profile\]"),
         ("ui_language", r"\[End of UI language\]"),
+        ("response_preferences", r"\[END RESPONSE PREFERENCES\]"),
         ("cancelled_turn", r"\[END PREVIOUS TURN\]"),
     )
 }
@@ -308,9 +310,9 @@ def split_blocks(
         if seg > 0:
             out[label] = out.get(label, 0) + seg
         # The characters after this block's closer and before the next block
-        # started. Naming them ``unclassified`` is the whole point: they used to be
-        # billed to whichever block happened to precede them, which reads as a
-        # confident measurement of something nobody measured.
+        # started. Naming them ``unclassified`` is the whole point: billing them to
+        # whichever block happens to precede them would read as a confident
+        # measurement of something nobody measured.
         if end < next_start:
             gap = next_start - end
             if user_start >= 0:

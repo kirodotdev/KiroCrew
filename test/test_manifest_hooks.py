@@ -237,7 +237,7 @@ class TestManifestRoundTrip:
 
         Degrading is required (the register path must not 500), but degrading
         SILENTLY is its own bug: an author who wrote
-        ``"skip_dates": "2026-12-25"`` -- a bare string, not an array -- asked
+        ``skip_dates`` as a bare string, not an array, asked
         for a skip, and dropping it without a word lets the job fire on the
         excluded date. So the violation is recorded on the entry and surfaces as
         a validation error, the same shape as ``enabled_type_invalid``. (Before

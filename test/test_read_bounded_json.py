@@ -1,20 +1,20 @@
 """Unit tests for the shared ``read_bounded_json`` body guard.
 
 It owns the parse-and-shape contract for the endpoints routed through it
-(issue #5587), and the 64 KB pre-decode byte cap the two notification
-endpoints need (issue #490). It is not yet the dashboard's only such guard --
-four siblings survive and are tracked on #5587; the helper's docstring names
+and the 64 KB pre-decode byte cap the two notification
+endpoints need. It is not yet the dashboard's only such guard --
+four siblings survive and are tracked separately; the helper's docstring names
 them.
 
 The cap half: ``messaging.api_notification_agent_push`` and
-``notifications_push.api_push_notification`` previously each inlined a
+``notifications_push.api_push_notification`` each inlined a
 byte-identical Content-Length precheck + incremental read + 413/400 block, with
 the cap as a function-local. Extracting the helper means the cap and the
 413/400 contract live in exactly one place and cannot drift.
 
 The shape half: ``await request.json()`` returns a list, string, or number for a
 body that is valid JSON but not an object, and a handler that then calls
-``.get()`` on it turns a client mistake into a 500. ``knowledge`` used to carry
+``.get()`` on it turns a client mistake into a 500. ``knowledge`` once carried
 a second helper for this with a different cap, message, absent-body rule, and
 exception breadth; these tests pin the one surviving contract.
 """

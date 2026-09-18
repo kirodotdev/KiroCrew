@@ -82,7 +82,7 @@ class CronPort(Protocol):
         """Register a recurring workflow run (interval or cron)."""
 
     def remove(self, name: str) -> None:
-        """Remove a previously registered job (owner-scoped)."""
+        """Remove an already-registered job (owner-scoped)."""
 
 
 @runtime_checkable

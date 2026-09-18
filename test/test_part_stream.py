@@ -1,9 +1,9 @@
 """Invariants of the shared part-to-disk path.
 
-Every test here pins a property that a blocking review finding was filed
-against. `kiro_crew.dashboard.part_stream`'s docstring carries the ledger; this
-file is the executable half of it, so a future refactor that reintroduces any of
-the seven defects fails here rather than in a review round.
+Every test here pins a property of the shared part-to-disk path.
+`kiro_crew.dashboard.part_stream`'s docstring carries the details; this file is
+the executable half of it, so a refactor that reintroduces any of the seven
+defects fails here.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 Covers what this channel gained: the commands a user can now reach from chat, the
 outbound image upload, the reasoning post, the stall marks on the live bubble, the
 reaction allow-list, the durable getUpdates cursor — and, first, the credential
-that Telegram's own markdown→HTML conversion used to REASSEMBLE after the
+that Telegram's own markdown→HTML conversion can REASSEMBLE after the
 byte-level redactor had already looked at it.
 
 The doubles come from ``test_telegram`` so there is one FakeClient, not two that
@@ -21,9 +21,10 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from test_telegram import FakeClient, _dispatcher, _dm
+from test_telegram import FakeClient, FakeProvider, _dispatcher, _dm, _Ev, _prime_live
 
 from conftest import host_abs
+from kiro_crew.acp.types import EVENT_COMPLETE
 from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.telegram.client import (
     REACTION_EMOJI,
@@ -50,6 +51,20 @@ _AWS_KEY = "AKIA" + "IOSFODNN7EXAMPLE"
 #: ``ntpath.isabs("/tmp")`` is False, so the POSIX literal left uploads disabled
 #: on Windows and every "the picture must be uploaded" assertion failed there.
 _UPLOAD_ROOT = host_abs("tmp")
+
+
+@pytest.fixture(autouse=True)
+def _drop_live_config_snapshot():
+    """Leave no primed config snapshot behind for the next test.
+
+    ``_prime_live`` (and ``_dispatcher``, which calls it) publishes into the
+    process-global config watcher, so without this the last test to prime would
+    set the live config for every test after it in the same worker.
+    """
+    yield
+    from kiro_crew.config import live
+
+    live.reset_for_tests()
 
 
 def _msg(text: str, *, user: int = 1, chat: int = 1) -> TelegramInboundMessage:
@@ -308,7 +323,7 @@ class TestOutboundImages:
 
     @pytest.mark.asyncio
     async def test_recovery_of_many_failed_uploads_drops_no_reference(self) -> None:
-        # One truncated bubble used to keep only what fit under the cap: with
+        # A truncated bubble must not keep only what fits under the cap: with
         # enough failed images, every reference past it vanished silently.
         renderer, client = _renderer()
         renderer.authorize_upload_root(_UPLOAD_ROOT)
@@ -2569,7 +2584,7 @@ class TestForumActivation:
 
 
 class TestSplitterConvergence:
-    """Telegram's splitter no longer fabricates fence delimiters.
+    """Telegram's splitter does not fabricate fence delimiters.
 
     The channel-local predecessor rebalanced by counting backticks
     (``ch.count("```") % 2``), which is not the fence grammar. On a
@@ -2694,11 +2709,13 @@ class TestVoiceOut:
         # every conversation the operator has not overridden.
         d, _, _ = _dispatcher({1})
         d.cfg.telegram.voice_replies = True
+        _prime_live(d.cfg)
         assert d._voice_enabled(("direct", "1")) is True
 
     def test_an_explicit_off_beats_a_configured_on(self) -> None:
         d, _, _ = _dispatcher({1})
         d.cfg.telegram.voice_replies = True
+        _prime_live(d.cfg)
         d._voice_pref[("direct", "1")] = False
         assert d._voice_enabled(("direct", "1")) is False
 
@@ -3059,7 +3076,7 @@ class TestARestrictedSessionUploadsNothing:
     async def test_a_channel_without_privacy_modes_is_unaffected(self) -> None:
         """Discord has no `/temporary`, so nothing can mark its keys.
 
-        Pinned because this rung used to answer False unconditionally: the change
+        This rung must not answer False unconditionally: the change
         must be invisible to a channel that offers no modes, or it would read as a
         behaviour change to every other channel's uploads.
         """
@@ -3127,6 +3144,7 @@ class TestAMidTurnModifierSurvivesTheQueue:
     async def test_a_queued_modifier_rides_along_and_applies_on_drain(self) -> None:
         d, client, sessions = _dispatcher({7})
         d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
         self._busy(d)
 
         await d.handle_message(_dm("/temporary summarise this"))
@@ -3214,6 +3232,7 @@ class TestAMidTurnModifierSurvivesTheQueue:
 
         d, _, sessions = _dispatcher({7})
         d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
         key = d._session_key(("direct", "7"))
         self._busy(d)
         steered: list[str] = []
@@ -3237,6 +3256,7 @@ class TestAMidTurnModifierSurvivesTheQueue:
 
         d, _, sessions = _dispatcher({7})
         d.cfg.messaging.queue_mode = "steer"
+        _prime_live(d.cfg)
         key = d._session_key(("direct", "7"))
         self._busy(d)
         sessions._gp = SimpleNamespace(
@@ -3335,6 +3355,104 @@ class TestAutoTitle:
 async def _done(value: str) -> str:
     """An already-resolved coroutine, for a monkeypatched async call site."""
     return value
+
+
+def _arm_reinjection(sessions: Any) -> dict[str, Any]:
+    """Give the session stand-in the real manager's one-shot flag surface.
+
+    Returns the ledger the test reads: which keys were consumed, how often the
+    flag was re-armed, and whether it is armed now.
+    """
+    ledger: dict[str, Any] = {"consumed": [], "marks": 0, "armed": True}
+
+    def _consume(key: str) -> bool:
+        ledger["consumed"].append(key)
+        was = ledger["armed"]
+        ledger["armed"] = False
+        return was
+
+    def _mark(key: str) -> None:
+        ledger["marks"] += 1
+        ledger["armed"] = True
+
+    sessions.consume_needs_reinjection = _consume
+    sessions.mark_needs_reinjection = _mark
+    return ledger
+
+
+class _DyingProvider(FakeProvider):
+    """A provider whose very next turn fails before any text lands."""
+
+    async def stream(self, message: str) -> Any:
+        raise RuntimeError("provider fell over")
+        yield  # pragma: no cover -- makes this an async generator
+
+
+class TestCompactionReinjection:
+    """The Telegram turn loop is its own copy, so it must consume the flag itself.
+
+    ``session_compaction`` marks ``needs_reinjection`` after an in-place compaction
+    dropped the session-start context. A turn loop that does not read it runs
+    every turn after ``/compact`` without the skills index or the response-preferences
+    block.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_compacted_session_forwards_the_flag_to_build_message(self) -> None:
+        d, _, sess = _dispatcher({7})
+        ledger = _arm_reinjection(sess)
+        await d.handle_message(_dm("hi"))
+        call = d.ctx_builder.build_calls[-1]
+        assert ledger["consumed"] == [call["key"]], "consumed under the key the turn runs as"
+        assert call["needs_reinjection"] is True
+        # Landed: consumed exactly once, and NOT put back.
+        assert ledger["marks"] == 0 and ledger["armed"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_session_stand_in_without_the_flag_gets_the_false_default(self) -> None:
+        d, _, sess = _dispatcher({7})
+        assert not hasattr(sess, "consume_needs_reinjection")
+        await d.handle_message(_dm("hi"))
+        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is False
+        assert sess.successes, "the turn still ran"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_consuming_turn_puts_the_flag_back(self) -> None:
+        # A /stop completes the turn normally with stop_reason "cancelled", and
+        # the backend drops that turn from its transcript -- the re-injected
+        # context goes with it, so the flag must come back like a raised turn.
+        d, _, sess = _dispatcher({7})
+        ledger = _arm_reinjection(sess)
+
+        class _Cancelled(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                yield _Ev(EVENT_COMPLETE, stop_reason="cancelled")
+
+        async def _cancelled(key: str, **kw: Any) -> Any:
+            return _Cancelled(), True, False
+
+        sess.get_or_create = _cancelled  # type: ignore[method-assign]
+        await d.handle_message(_dm("hi"))
+        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_consuming_turn_puts_the_flag_back(self) -> None:
+        # The flag is cleared BEFORE build_message; a provider error on that very
+        # turn discards the prompt carrying the re-injected context. Without the
+        # re-arm the session runs without it until the NEXT compaction -- the
+        # contract the dashboard runner keeps in its finally, applied here.
+        d, _, sess = _dispatcher({7})
+        ledger = _arm_reinjection(sess)
+
+        async def _dying(key: str, **kw: Any) -> Any:
+            return _DyingProvider(), True, False
+
+        sess.get_or_create = _dying  # type: ignore[method-assign]
+        await d.handle_message(_dm("hi"))
+        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
+        assert sess.failures and not sess.successes
+        assert ledger["marks"] == 1 and ledger["armed"] is True
 
 
 class TestPrivacyModeEnforcement:
@@ -3801,6 +3919,7 @@ class TestRotationChokepoint:
 
         d, _, _ = _dispatcher({7})
         d.cfg.messaging.idle_reset_minutes = 1
+        _prime_live(d.cfg)
         route = ("direct", "7")
         d._conv.maybe_rotate(route, time.time() - 3600, idle_minutes=1, daily_reset_hour=-1)
         logged: list[Any] = []
@@ -3832,6 +3951,7 @@ class TestRotationChokepoint:
         # has to be safe to call more than once for one inbound message.
         d, _, _ = _dispatcher({7})
         d.cfg.messaging.idle_reset_minutes = 1
+        _prime_live(d.cfg)
         route = ("direct", "7")
         first = d._rotated_session_key(route)
         assert d._rotated_session_key(route) == first
@@ -3842,7 +3962,7 @@ class TestAlbumMergePreservesIdentity:
 
     An album is the head message with more photos and a joined caption, so those two
     are the only things the merge decides. Everything else is identity and has to
-    survive verbatim. The merge used to enumerate fields, which meant any field added
+    survive verbatim. The merge must not enumerate fields, or any field added
     to ``TelegramInbound`` was silently dropped: ``reply_to_user_id`` went missing
     that way, and a reply-to-the-bot album in a mention-mode forum Topic was then
     discarded by the activation gate with no trace.
@@ -4255,6 +4375,7 @@ class TestDurableWritesUseTheRotatedKey:
             "handle_message",
             "_notify_mode",
             "_callback_session_key",
+            "_refused_turn_restricted",
         }
         missing = consumers - set(self._CLASSIFIED) - exempt
         assert not missing, f"unclassified session-key consumers: {sorted(missing)}"
@@ -4263,6 +4384,7 @@ class TestDurableWritesUseTheRotatedKey:
     async def test_title_renames_the_session_the_next_message_will_use(self) -> None:
         d, _, _ = _dispatcher({7})
         d.cfg.messaging.idle_reset_minutes = 1
+        _prime_live(d.cfg)
         route = ("direct", "7")
         d._conv.maybe_rotate(route, time.time() - 3600, idle_minutes=1, daily_reset_hour=-1)
         titled: list[tuple[str, str]] = []

@@ -3,22 +3,32 @@ import { render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 
 import FolderSuggestionCard from '../pages/chat/FolderSuggestionCard'
+import type { ChatFolder } from '../types'
 import reducer, { setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, startLocalTurn, confirmOptimisticSend, FOLDER_SUGGESTION_MAX_TURNS } from '../store/chatSlice'
 
 vi.mock('../i18n/t', () => ({
-  i18nT: (key: string, vars?: Record<string, unknown>) =>
-    key === 'components.folderSuggestionCard.move_to_folder_question'
-      ? `Move this session into folder \u201c${vars?.folder}\u201d?`
+  i18nT: (key: string) =>
+    key === 'components.folderSuggestionCard.move_to_folder_prompt'
+      ? 'Move this session to this folder?'
       : key.split('.').pop() ?? key,
 }))
+
+/** A small tree — two roots plus a nested child — so option labeling exercises
+ *  both the bare-name (root) and full-ancestry-path (nested) forms. */
+const FOLDERS: ChatFolder[] = [
+  { id: 'f-errands', name: 'errands', order: 0 },
+  { id: 'f-projects', name: 'projects', order: 1 },
+  { id: 'f-feature', name: 'feature', order: 0, parent_id: 'f-projects' },
+]
 
 function renderCard(over: Partial<React.ComponentProps<typeof FolderSuggestionCard>> = {}) {
   const onAccept = vi.fn()
   const onDecline = vi.fn()
   render(
     <FolderSuggestionCard
-      folderName="feature"
-      breadcrumb="Kiro Crew › feature"
+      suggestedFolderId="f-feature"
+      suggestedFolderName="feature"
+      folders={FOLDERS}
       onAccept={onAccept}
       onDecline={onDecline}
       {...over}
@@ -27,38 +37,74 @@ function renderCard(over: Partial<React.ComponentProps<typeof FolderSuggestionCa
   return { onAccept, onDecline }
 }
 
+const select = () => screen.getByTestId('folder-suggestion-select') as HTMLSelectElement
+
 describe('FolderSuggestionCard', () => {
-  it('asks about the suggested folder with the name interpolated, not concatenated', () => {
+  it('prefills the dropdown with the suggested folder, named by the visible prompt', () => {
     renderCard()
-    expect(screen.getByText('Move this session into folder \u201cfeature\u201d?')).toBeInTheDocument()
+    // The sentence is a real <label htmlFor>, so it is the select's accessible
+    // name — getByLabelText failing here means the control lost its label.
+    const el = screen.getByLabelText('Move this session to this folder?') as HTMLSelectElement
+    expect(el.value).toBe('f-feature')
   })
 
-  it('shows the breadcrumb as ancestry context when the folder is nested', () => {
+  it('labels a nested folder option with its full ancestry path, a root with its bare name', () => {
     renderCard()
-    expect(screen.getByText('Kiro Crew › feature')).toBeInTheDocument()
+    // The closed control shows ONLY the chosen option's text, so the path is
+    // what keeps same-named subfolders under different parents unambiguous —
+    // it replaces the old card's separate breadcrumb line.
+    expect(screen.getByRole('option', { name: 'projects › feature' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: 'errands' })).toBeInTheDocument()
   })
 
-  it('hides the breadcrumb for a root folder, where it only repeats the name', () => {
-    renderCard({ folderName: 'Errands', breadcrumb: 'Errands' })
-    // The question still renders the name; the redundant second line does not.
-    expect(screen.getByText('Move this session into folder \u201cErrands\u201d?')).toBeInTheDocument()
-    expect(screen.queryByTitle('Errands')).not.toBeInTheDocument()
+  it('offers every folder in pre-order tree sequence, with no "no folder" entry', () => {
+    renderCard()
+    // Staying at root IS the decline button, so a root entry would be a second
+    // spelling of "Not now" inside the accept control.
+    expect(Array.from(select().options).map(o => o.value)).toEqual(['f-errands', 'f-projects', 'f-feature'])
   })
 
-  it('keeps the whole question reachable on hover, since the line truncates', () => {
-    // The question line is single-line `truncate`, and for a ROOT folder the
-    // breadcrumb is suppressed — so this tooltip is the only way to recover a
-    // folder name that got clipped.
-    renderCard({ folderName: 'Errands', breadcrumb: 'Errands' })
-    const question = screen.getByText('Move this session into folder \u201cErrands\u201d?')
-    expect(question.getAttribute('title')).toBe('Move this session into folder \u201cErrands\u201d?')
-  })
-
-  it('calls onAccept once for the move button', async () => {
+  it('accepts the untouched suggestion: one click still moves to the suggested folder', async () => {
     const { onAccept, onDecline } = renderCard()
     await userEvent.click(screen.getByTestId('folder-suggestion-accept'))
     expect(onAccept).toHaveBeenCalledTimes(1)
+    expect(onAccept).toHaveBeenCalledWith('f-feature')
     expect(onDecline).not.toHaveBeenCalled()
+  })
+
+  it('accepts the folder the user picked instead of the suggestion', async () => {
+    const { onAccept } = renderCard()
+    await userEvent.selectOptions(select(), 'f-errands')
+    await userEvent.click(screen.getByTestId('folder-suggestion-accept'))
+    expect(onAccept).toHaveBeenCalledWith('f-errands')
+  })
+
+  it('still offers the suggestion when the folder list does not carry it', async () => {
+    // Loading, failed (ChatPage normalizes that to []), or deleted-since — the
+    // card must degrade to exactly the pre-dropdown behavior, not go blank.
+    // The synthetic option is labeled by the suggestion's own breadcrumb, so a
+    // nested destination keeps its ancestry exactly as the real options do.
+    const { onAccept } = renderCard({ folders: [], suggestedFolderBreadcrumb: 'projects › feature' })
+    const el = select()
+    expect(Array.from(el.options).map(o => o.textContent)).toEqual(['projects › feature'])
+    expect(el.value).toBe('f-feature')
+    await userEvent.click(screen.getByTestId('folder-suggestion-accept'))
+    expect(onAccept).toHaveBeenCalledWith('f-feature')
+  })
+
+  it('falls back to the bare name when no breadcrumb accompanies the suggestion', () => {
+    renderCard({ folders: [], suggestedFolderBreadcrumb: undefined })
+    expect(Array.from(select().options).map(o => o.textContent)).toEqual(['feature'])
+  })
+
+  it('keeps the full destination reachable on hover, since the control truncates', async () => {
+    renderCard()
+    // The path label is the only place a nested destination is spelled out,
+    // and the closed select truncates — the title recovers a clipped choice,
+    // as the old question line's tooltip did.
+    expect(select().title).toBe('projects › feature')
+    await userEvent.selectOptions(select(), 'f-errands')
+    expect(select().title).toBe('errands')
   })
 
   it('calls onDecline once for the dismiss button', async () => {
@@ -72,7 +118,7 @@ describe('FolderSuggestionCard', () => {
     // The card takes no icon prop: an emoji is font-dependent (tofu box wherever
     // the platform has no emoji font) and would not inherit --accent.
     const { container } = render(
-      <FolderSuggestionCard folderName="i18n" breadcrumb="Kiro Crew › i18n" onAccept={vi.fn()} onDecline={vi.fn()} />,
+      <FolderSuggestionCard suggestedFolderId="f-feature" suggestedFolderName="feature" folders={FOLDERS} onAccept={vi.fn()} onDecline={vi.fn()} />,
     )
     const svg = container.querySelector('svg')
     expect(svg).toBeTruthy()

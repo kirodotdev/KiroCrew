@@ -35,6 +35,15 @@ export const NAV_PINNED_KEY = 'mc-nav-pinned'
 export const NAV_PINNED_CHANGED_EVENT = 'mc:nav-pinned-changed'
 
 /**
+ * navIds of formerly-pinnable surfaces that were retired from the registry.
+ * A pin recorded before its surface was retired renders no rail row yet would
+ * still hold one of the NAV_PINNED_LIMIT slots forever — with the surface gone
+ * there is no pin control left to release it. Reads drop these ids BEFORE the
+ * cap applies, and the next write persists the pruned set.
+ */
+const RETIRED_NAV_PINS = new Set(['capabilities-templates'])
+
+/**
  * How many sub-items may be promoted at once.
  *
  * The rail's Main group lives in a `shrink-0` block that does not scroll, so
@@ -63,7 +72,9 @@ export function readNavPinned(): Set<string> {
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return new Set()
     return new Set(
-      parsed.filter((id): id is string => typeof id === 'string').slice(0, NAV_PINNED_LIMIT),
+      parsed
+        .filter((id): id is string => typeof id === 'string' && !RETIRED_NAV_PINS.has(id))
+        .slice(0, NAV_PINNED_LIMIT),
     )
   } catch {
     return new Set()

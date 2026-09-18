@@ -36,6 +36,7 @@ import aiohttp
 from aiohttp import web
 
 from kiro_crew import link_unfurl
+from kiro_crew.messaging.split import truncate_utf8
 from kiro_crew.sel import sel
 from kiro_crew.teams.attachments import quoted_reply_text
 from kiro_crew.teams.commands import STOP_ALIASES
@@ -60,7 +61,9 @@ except Exception:  # pragma: no cover - exercised only when PyJWT absent
 #: figure is the Incoming-Webhook / message-extension-card limit, not a bot
 #: message. The recommended value, not the hard one: a rejected activity is a lost
 #: answer, and the gap absorbs the rest of the JSON envelope (ids, serviceUrl,
-#: recipient) that shares the body with the text.
+#: recipient) that shares the body with the text. Enforced at the wire by
+#: ``_fit_activity`` in ``_post_activity``: an over-budget text-carrying activity
+#: is tail-truncated to fit rather than sent to a certain 413.
 TEAMS_MAX_ACTIVITY_TEXT_BYTES = 80 * 1024
 
 #: Worst-case UTF-8 cost of ONE character on the wire: an astral codepoint (emoji,
@@ -76,7 +79,9 @@ _MAX_UTF8_BYTES_PER_CHAR = 4
 # optimistic: the dashboard mirror leg chunks on it and swallows the send error,
 # and a renderer chunk the Connector refuses as 413 takes that slice of the answer
 # with it. Pinned by test_capability_ledger.py alongside Webex, the other
-# byte-capped channel.
+# byte-capped channel. This character budget sizes only the TEXT reservation;
+# the whole serialized activity is measured against
+# TEAMS_MAX_ACTIVITY_TEXT_BYTES by the wire guard in _post_activity.
 TEAMS_MAX_TEXT = 16000
 
 #: Key under which the dashboard route stashes the size-capped, parsed inbound
@@ -339,7 +344,7 @@ class TeamsSendError(Exception):
         """Whether the Connector says this conversation can never be delivered to.
 
         403 is what Teams answers once the user blocked the bot or removed the app;
-        404 is a conversation id that no longer resolves. Both are permanent, and a
+        404 is a conversation id that does not resolve. Both are permanent, and a
         route kept after either one turns every later cron result and mirror leg into
         a red badge with nothing to clear it. Deliberately NOT 401 (our credential)
         or 429/5xx (transient).
@@ -1044,7 +1049,7 @@ class TeamsClient:
     async def update_message(
         self, conversation_id: str, activity_id: str, content: str, service_url: str
     ) -> bool:
-        """Rewrite a previously-sent bot activity in place.
+        """Rewrite an already-sent bot activity in place.
 
         Teams supports ``PUT .../activities/{activityId}`` for the bot's OWN
         activities only (a user's message can never be updated), which is what
@@ -1100,7 +1105,7 @@ class TeamsClient:
     async def update_card(
         self, conversation_id: str, activity_id: str, card: dict[str, Any], service_url: str
     ) -> bool:
-        """Replace a previously-posted card in place. False when not applied."""
+        """Replace an already-posted card in place. False when not applied."""
         if not activity_id:
             return False
         try:
@@ -1129,7 +1134,7 @@ class TeamsClient:
         No ``text`` rides along, for the same reason ``send_card`` sends none:
         Teams SPLITS an activity carrying both text and an attachment and withholds
         the resulting id, so a combined send would land as two messages the caller
-        can no longer address. Raises :class:`TeamsSendError` on failure -- the
+        cannot address. Raises :class:`TeamsSendError` on failure -- the
         caller must be able to tell the user the picture did not arrive.
         """
         result = await self._post_activity(
@@ -1211,14 +1216,14 @@ class TeamsClient:
         except OSError as exc:
             raise ValueError("refusing unresolvable Teams attachment host") from exc
         for resolved in resolved_addresses:
-            # `link_unfurl`'s vet, not a local flag list. The category flags this
-            # used to enumerate approved two ranges that are plainly not public:
+            # `link_unfurl`'s vet, not a local flag list. A local flag list
+            # misses two ranges that are plainly not public:
             # `100.64.0.0/10` (RFC 6598 shared space -- what a Tailscale tailnet
             # and most carrier NAT hand out, which CPython's `is_private` table
             # omits and only `is_global` rejects) and `fec0::/10` (deprecated IPv6
-            # site-local, which reports `is_global=True`). It also evaluated the
-            # ipv4-mapped and 6to4 encodings as written, so `::ffff:127.0.0.1`
-            # passed a check whose whole purpose was to refuse loopback. That
+            # site-local, which reports `is_global=True`). It also has to handle the
+            # ipv4-mapped and 6to4 encodings, or `::ffff:127.0.0.1`
+            # passes a check whose whole purpose is to refuse loopback. That
             # module already owns this decision for link unfurling and for the
             # meetings calendar fetch, and its
             # `test_vet_rejects_every_special_purpose_range` pins the refusal set
@@ -1330,6 +1335,65 @@ class TeamsClient:
         """Build a message activity carrying Teams-flavored markdown text."""
         return {"type": "message", "text": content or "…", "textFormat": "markdown"}
 
+    @staticmethod
+    def _fit_activity(activity: dict[str, Any]) -> dict[str, Any]:
+        """Tail-truncate an over-budget activity's text so the Connector accepts it.
+
+        The Connector sizes the WHOLE activity -- text plus the JSON envelope
+        (ids, serviceUrl, recipient) -- so the measurement happens here at the
+        wire, on the same ``ensure_ascii=False`` serialization the outbound
+        session uses, rather than at the character-counting splitter upstream.
+        An over-budget activity would come back HTTP 413 and that slice of the
+        answer would be lost (the dashboard mirror leg swallows the send error,
+        so silently); delivering the head with the tail cut is strictly better,
+        and the cut never splits a code point (``truncate_utf8``).
+
+        Pure: the caller's dict is never mutated -- a trimmed activity is a
+        shallow copy. An over-budget activity WITHOUT a text field (a card, an
+        inline image) is returned unchanged so the Connector's own refusal
+        stays visible; shrinking an attachment is not this guard's call. Only
+        byte counts are logged, never the text itself.
+        """
+        encoded = json.dumps(activity, ensure_ascii=False).encode("utf-8")
+        if len(encoded) <= TEAMS_MAX_ACTIVITY_TEXT_BYTES:
+            return activity
+        text = activity.get("text")
+        if not isinstance(text, str) or not text:
+            logger.warning(
+                "Teams: activity without truncatable text is %d bytes"
+                " (budget %d); sending unchanged",
+                len(encoded),
+                TEAMS_MAX_ACTIVITY_TEXT_BYTES,
+            )
+            return activity
+        text_bytes = len(text.encode("utf-8"))
+        overage = len(encoded) - TEAMS_MAX_ACTIVITY_TEXT_BYTES
+        # Cutting N raw text bytes removes at least N serialized bytes (JSON
+        # escaping only expands), so one cut is enough; the placeholder for a
+        # text that collapses to empty mirrors _message_activity.
+        fitted = dict(activity)
+        fitted["text"] = truncate_utf8(text, max(text_bytes - overage, 1)) or "…"
+        refit = len(json.dumps(fitted, ensure_ascii=False).encode("utf-8"))
+        if refit > TEAMS_MAX_ACTIVITY_TEXT_BYTES:
+            # The envelope alone consumes the budget: no text can fit. Send
+            # anyway -- the Connector's refusal raises through the normal
+            # TeamsSendError path -- but say so instead of claiming a fit.
+            logger.warning(
+                "Teams: activity still %d bytes after text truncation"
+                " (budget %d); the envelope alone exceeds the budget",
+                refit,
+                TEAMS_MAX_ACTIVITY_TEXT_BYTES,
+            )
+        else:
+            logger.warning(
+                "Teams: activity of %d bytes exceeded the %d-byte budget;"
+                " text tail-truncated, now %d bytes",
+                len(encoded),
+                TEAMS_MAX_ACTIVITY_TEXT_BYTES,
+                refit,
+            )
+        return fitted
+
     async def _post_activity(
         self,
         conversation_id: str,
@@ -1372,6 +1436,11 @@ class TeamsClient:
             url = f"{url}/{activity_id}"
         last_detail = ""
         try:
+            # Inside the try so a serialization failure on a pathological
+            # activity (a lone surrogate, a non-JSON-native value) surfaces as
+            # TeamsSendError with the failure badge recorded, exactly like the
+            # request's own serialization of the same object would.
+            activity = self._fit_activity(activity)
             session = await self._ensure_session()
             for attempt in range(_SEND_ATTEMPTS):
                 # Re-read the token each attempt: a retry may cross the refresh

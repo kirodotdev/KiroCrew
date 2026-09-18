@@ -67,9 +67,27 @@ def store_dir(tmp_path, monkeypatch):
     # into another module's tests.
     webhooks._reset_signature_replay()
     webhooks._reset_auth_throttle()
+    # The hook CAPACITY globals are the same shape and were not floored here.
+    # `api_hooks_agent` acquires `_hook_semaphore` and claims the session key in
+    # `_hook_inflight_sessions`, and BOTH are given back only by
+    # `_run_hook_agent`'s finally -- which the green-path tests below patch away
+    # with a no-op runner. Without the restore below, every run of this file
+    # drops the worker's permits 6 -> 5 for good and strands `hook:x`, and the
+    # victim is whatever later test on that worker asserts on capacity: a 429
+    # `capacity_reached` test passes for the wrong reason, and
+    # `test_webhooks_api.py`'s gather-all-permits test HANGS to the 120s timeout,
+    # which takes the xdist worker with it.
+    #
+    # Restored to what this test INHERITED rather than to a pristine 6, so a leak
+    # from an earlier test is not re-reported against every test after it.
+    inherited_permits = hooks_handlers._hook_semaphore._value
+    hooks_handlers._reset_hook_inflight()
     yield tmp_path
     webhooks._reset_signature_replay()
     webhooks._reset_auth_throttle()
+    hooks_handlers._reset_hook_inflight()
+    while hooks_handlers._hook_semaphore._value < inherited_permits:
+        hooks_handlers._hook_semaphore.release()
 
 
 def _request(headers=None, body=b"{}", remote="10.1.2.3"):

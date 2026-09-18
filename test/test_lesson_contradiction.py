@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -11,7 +12,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from body_stream_helpers import attach_body
+from member_memory_helpers import declare_v2_store
 
+from kiro_crew.history import ConversationLog
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -129,8 +132,8 @@ class TestFindContradictionCandidates:
         assert len(result) == 5
 
     def test_mismatched_dimension_row_is_never_a_candidate(self, tmp_path):
-        """Regression for #3466: a row embedded at a different dimensionality
-        (e.g. a leftover from a previous embedding-model generation) must score
+        """A row embedded at a different dimensionality
+        (e.g. one left by another embedding-model generation) must score
         0.0 -- not a plausible-looking partial-overlap value computed by
         truncating against the shorter vector -- so it can never land inside
         the contradiction band."""
@@ -302,6 +305,48 @@ class TestResolveContradictions:
 class TestResolveAndSupersede:
     """Tests for the backgrounded _resolve_and_supersede helper."""
 
+    @pytest.mark.parametrize("private_memory", [False, True], ids=["v1", "v2"])
+    async def test_private_rules_survive_without_requesting_a_model(
+        self, tmp_path, monkeypatch, private_memory
+    ):
+        """Only V1 may remove a persisted rule on an inferred contradiction."""
+        from kiro_crew import memory_stores
+        from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
+
+        root = tmp_path / "memory_stores"
+        monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
+        directory = declare_v2_store(tmp_path, "member-alice") if private_memory else tmp_path
+        vs = VectorMemoryStore(db_path=directory / "memory.db")
+        await asyncio.to_thread(vs.init)
+        try:
+            assert vs.algorithm_version == ("v2" if private_memory else "v1")
+            old_rule = {"rule": "Use X format", "category": "tool"}
+            new_rule = {"rule": "Do NOT use X format", "category": "tool"}
+            for key, value in (("lesson.old", old_rule), ("lesson.new", new_rule)):
+                await asyncio.to_thread(vs.set_semantic, key, value, 1.0, "user_explicit")
+            state = MagicMock()
+            session = _FakeBgSession("CONTRADICTORY")
+            state.sessions.get_bg_session = AsyncMock(return_value=session)
+            candidates = [{"key": "lesson.old", "rule": old_rule["rule"], "similarity": 0.6}]
+
+            with patch("kiro_crew.dashboard.handlers.cron._sel"):
+                await _resolve_and_supersede(
+                    state, "dashboard:ui", new_rule["rule"], candidates, vs
+                )
+
+            old_record = await asyncio.to_thread(vs.get_semantic, "lesson.old")
+            assert (old_record is not None) is private_memory
+            assert await asyncio.to_thread(vs.get_semantic, "lesson.new") is not None
+            if private_memory:
+                state.sessions.get_bg_session.assert_not_awaited()
+                session.set_model.assert_not_awaited()
+            else:
+                state.sessions.get_bg_session.assert_awaited_once()
+                session.set_model.assert_awaited_once_with("auto")
+                session.destroy.assert_awaited_once()
+        finally:
+            await asyncio.to_thread(vs.close)
+
     async def test_deletes_contradicted_keys(self):
         from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
 
@@ -350,9 +395,10 @@ class TestResolveAndSupersede:
 @pytest.mark.asyncio
 class TestApiLessonsCreateSchedulesSweep:
     """The handler seam: api_lessons_create registers a background task iff
-    the contradiction scan finds candidates (locks the fire-and-forget wiring)."""
+    a V1 write lands and its contradiction scan finds candidates."""
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -360,12 +406,13 @@ class TestApiLessonsCreateSchedulesSweep:
         attach_body(request, body)
         return request
 
-    async def _run(self, candidates, wrote=True):
+    async def _run(self, candidates, wrote=True, algorithm_version="v1"):
         from kiro_crew.dashboard.handlers import cron
 
         state = MagicMock()
         state._background_tasks = set()
         vs = MagicMock()
+        vs.algorithm_version = algorithm_version
         vs.embed_lesson.return_value = [0.1] * 384
         vs.find_contradiction_candidates.return_value = candidates
         # A real result object, not a bare bool: the route reads the outcome to decide
@@ -398,18 +445,26 @@ class TestApiLessonsCreateSchedulesSweep:
         tasks = await self._run([])
         assert tasks == []
 
+    async def test_private_write_does_not_scan_or_schedule_a_model_sweep(self):
+        tasks = await self._run(
+            [{"key": "lesson.old", "rule": "r", "similarity": 0.6}],
+            algorithm_version="v2",
+        )
+        assert tasks == []
+        self._vs.find_contradiction_candidates.assert_not_called()
+        self._vs.write_lesson.assert_called_once()
+
     async def test_refused_write_does_not_sweep(self):
         """A write that did not land must not supersede anything.
 
-        ``_resolve_and_supersede`` calls ``delete_semantic``. The route used to
-        DISCARD ``write_lesson``'s return value, so a refused write -- its preflight
-        rejecting the composed value, or its dedup declining -- still ran the sweep
-        and deleted an older contradicted lesson whose replacement was never stored.
+        ``_resolve_and_supersede`` calls ``delete_semantic``. Discarding
+        ``write_lesson``'s return value lets a refused write -- its preflight
+        rejecting the composed value, or its dedup declining -- still run the sweep
+        and delete an older contradicted lesson whose replacement was never stored.
         That destroys a lesson on a request that persisted nothing, under HTTP 200.
 
-        Reachable only because this PR forwards ``negative`` to this call site at all
-        (it passed a literal ``None`` before), which is what makes a preflight
-        rejection possible here.
+        Reachable because ``negative`` is forwarded to this call site, which is what
+        makes a preflight rejection possible here.
         """
         tasks = await self._run(
             [{"key": "lesson.old", "rule": "r", "similarity": 0.6}], wrote=False
@@ -434,6 +489,7 @@ class TestApiLessonsCreateForwardsNegative:
     _NEGATIVE = "Do not use unittest directly"
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -513,12 +569,13 @@ class TestApiLessonsDeleteOffloadsRemove:
         seen: dict[str, int] = {}
 
         class _RecordingStore:
-            def remove(self, rule_sub):  # noqa: ANN001 - test double
+            def remove(self, rule_sub, repo_scope=None, *, exact=False):  # noqa: ANN001 - test double
                 seen["remove"] = threading.get_ident()
                 return True
 
         state = MagicMock()
         state.lessons = _RecordingStore()
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -820,9 +877,10 @@ class TestWriteLessonAttachesNegativeToStoredRule:
             store.close()
 
     def test_a_sharp_s_case_variant_inserts_rather_than_enriching(self, tmp_path):
-        """The deliberate cost of lower(): a ß case-variant no longer enriches. A missed
-        enrichment is the acceptable side of the trade; conflating distinct rules is not.
-        Discriminating embed_fn for the same reason as the test above."""
+        """The deliberate cost of lower(): a ß case-variant inserts instead of
+        enriching. A missed enrichment is the acceptable side of the trade;
+        conflating distinct rules is not. Discriminating embed_fn for the same
+        reason as the test above."""
         store = self._store(tmp_path)
         try:
             store.embed_fn = _discriminating_embed
@@ -1042,6 +1100,7 @@ class TestApiLessonsSanitizesStoredFields:
     and the rule prose is redacted like every other agent-derived string."""
 
     def _request(self, state):
+        state.conversation_log = ConversationLog()
         request = MagicMock()
         request.app = {"state": state}
         request.headers = {"X-Session-Key": "dashboard:ui"}
@@ -1054,6 +1113,9 @@ class TestApiLessonsSanitizesStoredFields:
         state = MagicMock()
         vs = MagicMock()
         vs.get_lessons.return_value = rows
+        # The route sizes the body from the store's count; a MagicMock here would
+        # not be a number.
+        vs.count_lessons.return_value = len(rows)
         with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
              patch.object(cron, "_blocks_reads_session", return_value=False):
             resp = await cron.api_lessons(self._request(state))
@@ -1133,6 +1195,145 @@ class TestApiLessonsSanitizesStoredFields:
         assert lessons[0]["rule"] == "12345"
 
 
+@pytest.mark.asyncio
+class TestApiLessonsReturnsTheNewest:
+    """The endpoint caps its answer, so the cap must select the NEWEST lessons.
+
+    Its two tiers read stores with OPPOSITE orderings -- the vector store answers
+    ``updated_at DESC`` (newest first) while the JSONL store answers file append
+    order (oldest first) -- so one shared slice idiom cannot serve both. Taking the
+    tail of the vector tier returned the OLDEST rows and hid every recent lesson,
+    which made a just-saved lesson absent from the very next read and so looked
+    like a write that had silently failed.
+    """
+
+    def _request(self, state):
+        state.conversation_log = ConversationLog()
+        request = MagicMock()
+        request.app = {"state": state}
+        request.headers = {"X-Session-Key": "dashboard:ui"}
+        request.query = {}
+        return request
+
+    def _rows(self, n):
+        """``n`` vector rows, ``lesson-1`` oldest through ``lesson-n`` newest."""
+        return [
+            {
+                "key": f"lesson.{i}",
+                "value_json": json.dumps(
+                    {"rule": f"lesson-{i}", "category": "tool", "negative": None}
+                ),
+                "updated_at": f"2026-01-01T00:00:00.{i:04d}Z",
+            }
+            for i in range(1, n + 1)
+        ]
+
+    def _vector_store(self, rows):
+        """A store with the real one's contract: newest first, the window
+        (``limit`` rows after skipping ``offset``) applied in SQL, and the
+        population counted without materializing it."""
+        newest_first = sorted(rows, key=lambda r: r["updated_at"], reverse=True)
+
+        def get_lessons(limit=None, offset=0):
+            if limit:
+                return newest_first[offset : offset + limit]
+            return list(newest_first)
+
+        vs = MagicMock()
+        vs.get_lessons.side_effect = get_lessons
+        vs.count_lessons.return_value = len(rows)
+        return vs
+
+    async def _get_vector(self, rows):
+        from kiro_crew.dashboard.handlers import cron
+
+        state = MagicMock()
+        vs = self._vector_store(rows)
+        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vs)), \
+             patch.object(cron, "_blocks_reads_session", return_value=False):
+            resp = await cron.api_lessons(self._request(state))
+        assert resp.status == 200
+        return json.loads(resp.text)["lessons"], vs
+
+    async def _get_jsonl(self, rules):
+        from kiro_crew.dashboard.handlers import cron
+
+        state = MagicMock()
+        state.lessons.load_all.return_value = [
+            # The double carries every field the handler reads off a Lesson row,
+            # repo_scope included: the list emits it as the row's delete selector.
+            SimpleNamespace(rule=r, category="tool", ts=f"t{i}", negative=None, repo_scope=None)
+            for i, r in enumerate(rules)
+        ]
+        with patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)), \
+             patch.object(cron, "_get_active_workspace", return_value="default"), \
+             patch.object(cron, "_blocks_reads_session", return_value=False):
+            resp = await cron.api_lessons(self._request(state))
+        assert resp.status == 200
+        return json.loads(resp.text)["lessons"]
+
+    async def test_vector_tier_answers_the_newest_lessons_not_the_oldest(self):
+        from kiro_crew.dashboard.handlers import cron
+
+        cap = cron.LESSON_LIST_LIMIT
+        lessons, _ = await self._get_vector(self._rows(cap + 20))
+        rules = [le["rule"] for le in lessons]
+        assert len(rules) == cap
+        assert f"lesson-{cap + 20}" in rules, f"the newest lesson is missing: {rules}"
+        assert "lesson-1" not in rules, f"the oldest lesson was returned instead: {rules}"
+
+    async def test_vector_tier_answers_oldest_first_like_the_jsonl_tier(self):
+        """Both tiers must agree on direction, because consumers depend on it: the
+        dashboard Memory tab takes its recent rows from the TAIL of this list, so a
+        newest-first response would show it the oldest end of the capped window."""
+        from kiro_crew.dashboard.handlers import cron
+
+        cap = cron.LESSON_LIST_LIMIT
+        total = cap + 20
+        lessons, _ = await self._get_vector(self._rows(total))
+        assert [le["rule"] for le in lessons] == [
+            f"lesson-{i}" for i in range(total - cap + 1, total + 1)
+        ]
+
+    async def test_a_lesson_saved_now_is_in_the_very_next_list(self):
+        """The reported symptom, stated as the user meets it."""
+        from kiro_crew.dashboard.handlers import cron
+
+        rows = self._rows(cron.LESSON_LIST_LIMIT)
+        rows.append(
+            {
+                "key": "lesson.just-added",
+                "value_json": json.dumps(
+                    {"rule": "just added", "category": "tool", "negative": None}
+                ),
+                "updated_at": "2026-01-02T00:00:00.0000Z",
+            }
+        )
+        lessons, _ = await self._get_vector(rows)
+        assert "just added" in [le["rule"] for le in lessons]
+
+    async def test_the_vector_read_is_bounded_by_the_store_not_after_the_fact(self):
+        """Lesson rows carry embedding blobs, so the cap goes to the store rather
+        than materializing the whole population to discard all but the newest few."""
+        from kiro_crew.dashboard.handlers import cron
+
+        _, vs = await self._get_vector(self._rows(cron.LESSON_LIST_LIMIT + 20))
+        vs.get_lessons.assert_called_once_with(cron.LESSON_LIST_LIMIT, 0)
+
+    async def test_jsonl_tier_answers_the_newest_lessons(self):
+        """The append-ordered tier keeps its tail slice -- pinned here so a later
+        edit cannot invert this one while fixing the other."""
+        from kiro_crew.dashboard.handlers import cron
+
+        cap = cron.LESSON_LIST_LIMIT
+        total = cap + 20
+        lessons = await self._get_jsonl([f"lesson-{i}" for i in range(1, total + 1)])
+        rules = [le["rule"] for le in lessons]
+        assert len(rules) == cap
+        assert rules[-1] == f"lesson-{total}", f"the newest lesson is not last: {rules}"
+        assert "lesson-1" not in rules, f"the oldest lesson was returned instead: {rules}"
+
+
 class TestLessonStorageShape:
     """The NOT-clause is stored as its own field, not concatenated in-band.
 
@@ -1166,11 +1367,11 @@ class TestLessonStorageShape:
             store.close()
 
     def test_the_envelope_does_not_shrink_accepted_rule_capacity(self, tmp_path):
-        """A rule that fit as a bare string still fits as a mapping: the size
+        """A rule that fits as a bare string still fits as a mapping: the size
         gate measures the legacy-equivalent content, so the JSON envelope's key
-        overhead cannot turn a previously-accepted lesson into a silent refusal
-        (the CLI's JSONL fallback would print Saved while vector readers never
-        see it)."""
+        overhead cannot turn an acceptable lesson into a silent refusal (the
+        CLI's JSONL fallback would print Saved while vector readers never see
+        it)."""
         from kiro_crew.vector_memory import _MAX_VALUE_BYTES
 
         store = self._store(tmp_path)

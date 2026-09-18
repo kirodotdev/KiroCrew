@@ -159,10 +159,8 @@ def _write_runs(payload: str) -> None:
     """
     f = _runs_file()
     f.parent.mkdir(parents=True, exist_ok=True)
-    # The shared helper already does everything this write needs, and does one
-    # thing the hand-rolled version did not: it replaces through
-    # ``replace_with_retry``, so a transient Windows sharing violation does not
-    # silently lose the save (the defect class tracked in #4701 / #4898). It also
+    # The shared helper replaces through ``replace_with_retry``, so a transient
+    # Windows sharing violation does not silently lose the save. It also
     # picks a random mkstemp name, applies the owner-only lockdown to the temp
     # BEFORE the payload lands, and refuses to follow a planted parent link --
     # the three properties the review worker's writable tree requires, since it
@@ -513,14 +511,14 @@ async def _run_review_bg(run: dict, changes: list[str]) -> None:
                 run["status"] = "error"
             elif attempted > 0 and (recorded == 0 or deep == 0):
                 # run_review returns ok=True for any run with >=1 change, so a run
-                # whose every change failed used to report "done" with an empty
-                # report. Nothing was reviewed; say so rather than letting the UI
-                # claim success and then show an empty report.
+                # whose every change failed would otherwise report "done" with an
+                # empty report. Nothing was reviewed; say so rather than letting the
+                # UI claim success and then show an empty report.
                 #
                 # `deep == 0` is checked as well as `recorded == 0`: a change can
-                # persist a record and still never be deep-reviewed, which cleared the
-                # record count while leaving the report with no findings in it. Both
-                # are the same "claimed success, delivered nothing" failure.
+                # persist a record and still never be deep-reviewed, which leaves a
+                # non-zero record count with no findings in the report. Both are the
+                # same "claimed success, delivered nothing" failure.
                 run["status"] = "error"
                 run["error"] = _first_change_error(summary) or (
                     "the reviewer produced no result record")
@@ -1556,8 +1554,8 @@ async def _handle_repos(request: web.Request) -> web.Response:
         repos = await asyncio.to_thread(discovery.remove_repo, owner, name)
     out: dict[str, Any] = {"ok": True, "repos": repos}
     if request.method == "POST":
-        # Which repo was just added. The caller previously guessed at repos[0],
-        # which is only right if the store happens to prepend.
+        # Name the added repo explicitly: repos[0] is only it if the store
+        # happens to prepend.
         out["added"] = {"owner": owner, "repo": name}
     if request.method == "POST" and pr is not None:
         # The caller uses this to open the pasted pull request instead of leaving

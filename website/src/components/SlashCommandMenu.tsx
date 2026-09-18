@@ -45,6 +45,9 @@ interface SlashCommand {
  */
 const COMMAND_DESC_KEY: Record<string, string> = {
   '/agent': 'components.slashCommandMenu.desc_agent',
+  // Alias of /side, so it shares the description key deliberately: the two
+  // rows must never drift apart, and the locale catalogs stay untouched.
+  '/btw': 'components.slashCommandMenu.desc_side',
   '/changelog': 'components.slashCommandMenu.desc_changelog',
   '/chat': 'components.slashCommandMenu.desc_chat',
   '/clear': 'components.slashCommandMenu.desc_clear',
@@ -129,9 +132,10 @@ interface Props {
  * the menu still offers them. Two different kinds live here, and the difference
  * matters when adding a row:
  *
- * - CLIENT-INTERCEPTED (`/kb`, `/onboarding`): the composer recognises the text
- *   and acts on it locally; the message is never sent. Those also need a branch
- *   in `interceptSlashCommand`.
+ * - CLIENT-INTERCEPTED (`/btw`, `/kb`, `/onboarding`): the composer recognises
+ *   the text and acts on it locally; the message is never sent. Those also need
+ *   a branch in `interceptSlashCommand` (`/btw` rides `/side`'s — it is a pure
+ *   alias, matched by the same SIDE_RE).
  * - QUICK PROMPT (`/plain`): a backend MACRO. The message IS sent, unchanged, and
  *   `ContextBuilder.build_message` swaps the token for the instruction it stands
  *   for (`src/kiro_crew/quick_prompts.py`). It must therefore stay OUT of
@@ -139,7 +143,7 @@ interface Props {
  *   expansion — and out of the kiro-cli passthrough set, which would forward it
  *   to a harness that has no such command.
  */
-const FRONTEND_COMMAND_NAMES = ['/kb', '/onboarding', '/plain'] as const
+const FRONTEND_COMMAND_NAMES = ['/btw', '/kb', '/onboarding', '/plain'] as const
 
 const FRONTEND_COMMANDS: SlashCommand[] = FRONTEND_COMMAND_NAMES.map(name => ({ name }))
 

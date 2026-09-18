@@ -288,7 +288,7 @@ class TestExpandedInputAttribution:
 class TestEmittedMarkersAreRecognized:
     """Every marker the context assembly emits must be in _MARKERS, or its bytes
     fold into the PRECEDING block and mislabel (e.g. [UI LANGUAGE] / [USER
-    PROFILE] counted as runtime). Regression for the identity/session banners.
+    PROFILE] counted as runtime).
     """
 
     def test_identity_banners_are_their_own_blocks_not_runtime(self):
@@ -305,6 +305,23 @@ class TestEmittedMarkersAreRecognized:
         assert "ui_language" in out
         # Their bytes did NOT leak into the runtime/surface block.
         assert out["surface"] == len(runtime)
+        assert out[USER_LABEL] == len("hello")
+        assert sum(out.values()) == len(prompt)
+
+    def test_response_preferences_block_is_its_own_block_with_its_closer(self):
+        """The reply-style block is session-context chrome next to [UI LANGUAGE];
+        its bytes must not fold into the banner before it, and the tail after
+        its closer is nobody's."""
+        lang = "[UI LANGUAGE] zh-CN\n[End of UI language]\n\n"
+        prefs = (
+            "[RESPONSE PREFERENCES -- MANDATORY]\n"
+            "## Reply style: Concise\n\nLead with the answer.\n"
+            "[END RESPONSE PREFERENCES]\n\n"
+        )
+        prompt = f"{lang}{prefs}[CURRENT USER REQUEST -- respond to this]\nhello"
+        out = split_blocks(prompt, user_chars=len("hello"))
+        assert out["ui_language"] == len(lang)
+        assert out["response_preferences"] == len(prefs)
         assert out[USER_LABEL] == len("hello")
         assert sum(out.values()) == len(prompt)
 
@@ -353,7 +370,7 @@ class TestPostAssemblyOpenersAreRecognized:
         # The block runs from its marker; the separator newline before it stays
         # with the preceding block.
         assert out["theme_persona"] == len(persona) - 1
-        # The persona's own bytes are NO LONGER credited to the request header.
+        # The persona's own bytes are not credited to the request header.
         assert out["request_header"] == len(header) + 1
         assert out[USER_LABEL] == len(typed)
         assert sum(out.values()) == len(prompt)
@@ -408,7 +425,7 @@ class TestUserTypedMarkerNeutralizedBeforeSizing:
     """chat_runner sizes the user span from the NEUTRALIZED message (the same
     _neutralize_structural_markers build_message applies), so a user who types a
     primary boundary marker does not over-credit the span into the trailing
-    reply-format contract. Regression for pre-neutralization length.
+    reply-format contract.
     """
 
     def test_typed_request_header_marker_does_not_bleed_into_contract(self):
@@ -439,9 +456,9 @@ class TestUserTypedMarkerNeutralizedBeforeSizing:
 class TestAppendedSuffixDoesNotShiftUserOffset:
     """An APPENDED suffix after the user text (theme persona, inline $skill body)
     must NOT be folded into user_offset — the offset counts only what was
-    PREPENDED between the request header and the user text. Regression for the
-    persona-append shift: chat_runner measures the message length BEFORE the
-    persona append, so the offset here stays prepend-only. This exercises the
+    PREPENDED between the request header and the user text. chat_runner measures
+    the message length BEFORE the persona append, so the offset here stays
+    prepend-only. This exercises the
     split_blocks contract that fix relies on, at a block boundary where the
     difference is observable.
     """

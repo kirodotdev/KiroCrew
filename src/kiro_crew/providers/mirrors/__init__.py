@@ -11,15 +11,31 @@ from kiro_crew.providers.mirrors.base import (
     Concern,
     Disposition,
     Ruling,
+    SessionProjection,
 )
-from kiro_crew.providers.mirrors.registry import MIRRORS, NO_MIRROR, mirror_for
+from kiro_crew.providers.mirrors.registry import (
+    MIRRORS,
+    PROJECTIONS,
+    McpProjection,
+    PerToolDeny,
+    ProjectionKind,
+    has_mirror,
+    mirror_for,
+    projection_for,
+)
 
 __all__ = [
     "MIRRORS",
-    "NO_MIRROR",
+    "PROJECTIONS",
     "AgentConfigMirror",
     "Concern",
     "Disposition",
+    "McpProjection",
+    "PerToolDeny",
+    "ProjectionKind",
     "Ruling",
+    "SessionProjection",
+    "has_mirror",
     "mirror_for",
+    "projection_for",
 ]

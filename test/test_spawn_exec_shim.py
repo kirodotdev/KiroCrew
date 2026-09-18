@@ -1,6 +1,6 @@
 """Post-exec spawn shim: resource limits without forking the threaded gateway.
 
-The defect these guard against (issue #935): passing ``preexec_fn`` makes CPython
+The defect these guard against: passing ``preexec_fn`` makes CPython
 ``fork()`` the multi-GB, ~118-thread gateway and run Python bytecode in the child
 before ``exec``. A lock another thread held at fork time is unreleasable there, so
 the child can wedge before exec -- and then
@@ -790,9 +790,9 @@ class TestDescriptorPinnedWorkingDirectory:
     async def test_child_still_starts_when_the_name_is_gone_after_the_bind(self, tmp_path):
         """The pinned descriptor must be the ONLY thing that decides the cwd.
 
-        Popen chdirs to ``cwd`` before exec'ing the shim, so a pathname that stopped
-        naming a directory after the bind used to fail the spawn outright -- the
-        descriptor was never reached.
+        Popen chdirs to ``cwd`` before exec'ing the shim, so a pathname that stops
+        naming a directory after the bind would fail the spawn outright -- the
+        descriptor never reached.
         """
         real = tmp_path / "real"
         real.mkdir()

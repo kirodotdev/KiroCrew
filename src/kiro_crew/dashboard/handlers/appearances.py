@@ -279,6 +279,38 @@ async def api_appearance_slot(request: web.Request) -> web.Response:
     return _media_response(request, body[0], body[1], **{"X-Resolved-Slot": candidate})
 
 
+async def api_appearance_sound(request: web.Request) -> web.Response:
+    """GET /api/appearances/{id}/sound/{state} — one state's audio cue.
+
+    The pack tier's own reaction sound, the counterpart of the slot route: a pack
+    supplies the per-state art AND the per-state audio, which is why a crew
+    wearing one stores no cue of its own. ``pack_detail``'s ``sounds`` map already
+    says which states exist, so a client only reaches this route for a cue it
+    knows is there — and an absent state is a plain 404 rather than an error,
+    because "this pack has no cue for that state" is the ordinary case.
+
+    Served through ``_media_response`` like the art, so the cue gets the same
+    ETag, the same short private cache window and ``nosniff``. The bytes are what
+    the store sniffed, never what the manifest named the file.
+    """
+    denied = await _require_owner(request, "appearances.sound")
+    if denied is not None:
+        return denied
+    pack_id = request.match_info["id"]
+    if pack_id == DEFAULT_PACK:
+        # Same answer as the slot route: the built-in ships inside the frontend
+        # bundle and has no directory on disk, so it has nowhere to keep a cue.
+        return _not_found("the built-in pack carries no sounds", "builtin_no_content")
+    try:
+        store = await asyncio.to_thread(get_appearance_store)
+        found = await asyncio.to_thread(store.pack_sound, pack_id, request.match_info["state"])
+    except OSError:
+        return _library_unavailable()
+    if found is None:
+        return _not_found("no sound for that state", "sound_not_found")
+    return _media_response(request, found[0], found[1])
+
+
 # ── writes ──────────────────────────────────────────────────────────────────
 
 

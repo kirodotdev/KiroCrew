@@ -6,8 +6,6 @@ import os
 from pathlib import Path
 
 from kiro_crew.dashboard.chat_persistence import _prefetch_recent_session
-from kiro_crew.events.backfill import backfill_transcripts
-from kiro_crew.events.kinds import SessionMessage
 from kiro_crew.history import ConversationLog
 from kiro_crew.testing.fixtures import seeded_home
 
@@ -41,7 +39,7 @@ def test_sessions_a_few_reaches_each_session_bucket() -> None:
         cutoff = 2_000_000_000.0 - 60.0
         for key, session in listed.items():
             metadata = log.get_metadata(key)
-            prefetched_metadata, messages, _ = _prefetch_recent_session(
+            prefetched_metadata, messages, _, _agent = _prefetch_recent_session(
                 log,
                 key,
                 session,
@@ -63,17 +61,14 @@ def test_sessions_a_few_reaches_each_session_bucket() -> None:
                 assert messages
                 buckets["open"].add(key)
 
-        report = backfill_transcripts(home)
-        archived_events = [
-            event
-            for event in report.events
-            if isinstance(event, SessionMessage) and event.key == "archived-thread"
-        ]
-        assert [(event.role, event.content_chars) for event in archived_events] == [
+        # The archived slice has no live transcript of its own, so it is reachable
+        # only through the rotated-chain reader the slot-detail handler uses.
+        archived = log.read_rotated_messages_chained("archived-thread")
+        assert [(row["role"], len(row["content"])) for row in archived] == [
             ("user", len("Earlier turn, archived.")),
             ("assistant", len("An archive slice, used by retention paths.")),
         ]
-        buckets["archived"] = {event.key for event in archived_events}
+        buckets["archived"] = {"archived-thread"} if archived else set()
 
         assert buckets == {
             "pinned": {"dashboard_pinned-work"},

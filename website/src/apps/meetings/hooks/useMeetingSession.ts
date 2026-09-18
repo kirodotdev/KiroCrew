@@ -291,6 +291,16 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
   // wedge capture in either direction.
   const [startInFlight, setStartInFlight] = useState(false)
 
+  // Synchronous latch for status changes: two status controls clicked in the
+  // same pending window would otherwise start overlapping mutations, and
+  // whichever settles first would re-enable the controls while the other is
+  // still in flight. The ref flips before the mutation starts, immune to
+  // closure staleness, so the second click is a no-op instead. The DISPLAY
+  // half of the pending state is not tracked here — it derives from the
+  // mutation itself (`statusMutation.isPending ? variables : null`), the same
+  // spelling `filing` uses below.
+  const statusInFlightRef = useRef(false)
+
   const metaQuery = useQuery({
     queryKey: [...scope, 'meta'],
     queryFn: () => meetingsApi.meeting(meetingId),
@@ -642,9 +652,39 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
 
   const statusMutation = useMutation({
     mutationFn: (next: MeetingStatus) => meetingsApi.setStatus(meetingId, next),
-    onSuccess: () => invalidate(),
+    // Reconciliation lives in `onSettled`, so it runs on EVERY outcome — the
+    // returned promise is awaited before the mutation settles, meaning the
+    // pending state spans the refetch. Success needs it because the controls
+    // would otherwise re-enable against CACHED meta that still read active
+    // while the server had already closed ingress (a broadcast sent in that
+    // one-round-trip tail lost its text to a 409). Failure needs it just as
+    // much: a pause the server APPLIED whose response was lost surfaces as an
+    // error here, and only a refetch can reveal which state the meeting is
+    // actually in. The click latch is released only after the refetch lands,
+    // so no status control acts on stale meta in between.
+    onSettled: async () => {
+      try {
+        await Promise.all([
+          queryClient.invalidateQueries({ queryKey: [...scope, 'meta'] }),
+          queryClient.invalidateQueries({ queryKey: [...scope, 'outputs'] }),
+          queryClient.invalidateQueries({ queryKey: [...scope, 'transcript'] }),
+        ])
+      } finally {
+        statusInFlightRef.current = false
+      }
+    },
     onError: error => failureNotice(error, i18nT('apps.meetings.session.statusFailed')),
   })
+
+  // Every status control routes through this gate, so a click that lands while
+  // another status change is pending is dropped rather than queued: the server
+  // serializes them anyway, and replaying a stale intent after the first change
+  // settles would move the meeting somewhere the user no longer means.
+  const requestStatus = (next: MeetingStatus) => {
+    if (statusInFlightRef.current) return
+    statusInFlightRef.current = true
+    statusMutation.mutate(next)
+  }
 
   const stopMutation = useMutation({
     mutationFn: () => meetingsApi.stop(meetingId),
@@ -801,10 +841,10 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     refresh: invalidate,
     actions: {
       start: () => startMutation.mutate({ restart: status === 'ended' }),
-      pause: () => statusMutation.mutate('paused'),
-      resume: () => statusMutation.mutate('active'),
-      review: () => statusMutation.mutate('reviewing'),
-      backToMeeting: () => statusMutation.mutate('paused'),
+      pause: () => requestStatus('paused'),
+      resume: () => requestStatus('active'),
+      review: () => requestStatus('reviewing'),
+      backToMeeting: () => requestStatus('paused'),
       stop: () => stopMutation.mutate(),
       mute: (agentId: string, muted: boolean) => muteMutation.mutate({ agentId, muted }),
       toggleAgent: (agentId: string, enable: boolean) =>
@@ -830,6 +870,8 @@ export function useMeetingSession({ eventId, fallbackTitle, config, notify }: Op
     pending: {
       starting: startMutation.isPending,
       stopping: stopMutation.isPending,
+      /** The target status of an in-flight pause/resume/review change, or null. */
+      settingStatus: statusMutation.isPending ? statusMutation.variables ?? null : null,
       filing: fileTaskMutation.isPending ? fileTaskMutation.variables : null,
     },
   }

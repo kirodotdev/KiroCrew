@@ -3,6 +3,7 @@ import Clickable from './Clickable'
 import InfoTip from './InfoTip'
 import SearchableSelect, { type SearchableSelectOption } from './SearchableSelect'
 import SimpleSelect from './SimpleSelect'
+import MultiSelect, { type MultiSelectOption } from './MultiSelect'
 import { Input, Toggle } from './ui'
 
 import { i18nT } from '../i18n/t'
@@ -68,7 +69,7 @@ export function SettingsToggle({ label, description, checked, onChange, disabled
  * `<span>` — a `<label>` with a dangling `htmlFor`, or one wrapping a group of
  * buttons (SettingsStepper / SettingsButtonGroup), would be wrong. Optional so
  * the wrappers without a single labelable control keep compiling unchanged. */
-function SettingsField({ label, description, hint, configKey, settingId, controlId, children }: { label: string; description?: string; hint?: string; configKey?: string; settingId?: string; controlId?: string; children: React.ReactNode }) {
+export function SettingsField({ label, description, hint, configKey, settingId, controlId, children }: { label: string; description?: string; hint?: string; configKey?: string; settingId?: string; controlId?: string; children: React.ReactNode }) {
   return (
     <div data-setting-label={label} {...(configKey ? { 'data-setting-key': configKey } : {})} {...(settingId ? { 'data-setting-id': settingId } : {})} className="flex flex-col gap-1.5 py-1.5">
       <div className="flex items-center gap-1.5">
@@ -165,6 +166,40 @@ export function SettingsCombobox({ label, description, value, options, onChange,
         action={action}
         actionStatus={actionStatus}
         aria-label={label}
+      />
+    </SettingsField>
+  )
+}
+
+interface SettingsMultiSelectProps {
+  label: string
+  description?: string
+  hint?: string
+  options: MultiSelectOption[]
+  selected: ReadonlySet<string>
+  onToggle: (value: string, selected: boolean) => void
+  bulkActions?: ReadonlyArray<{ label: string; onSelect: () => void }>
+  summary: string
+  searchPlaceholder?: string
+  disabled?: boolean
+  configKey?: string
+  settingId?: string
+}
+
+export function SettingsMultiSelect({ label, description, hint, options, selected, onToggle, bulkActions, summary, searchPlaceholder, disabled, configKey, settingId }: SettingsMultiSelectProps) {
+  const controlId = React.useId()
+  return (
+    <SettingsField label={label} description={description} hint={hint} configKey={configKey} settingId={settingId} controlId={controlId}>
+      <MultiSelect
+        id={controlId}
+        label={label}
+        options={options}
+        selected={selected}
+        onToggle={onToggle}
+        bulkActions={bulkActions}
+        summary={summary}
+        searchPlaceholder={searchPlaceholder}
+        disabled={disabled}
       />
     </SettingsField>
   )

@@ -155,7 +155,7 @@ async def record_loaded_hook_signature(app_name: str, app_info: dict[str, Any]) 
 
     Also retains the loaded app's ``manifest`` (the hooks half is what matters):
     if the app is later UNINSTALLED between reconciler ticks, its files are gone
-    and its ``on_shutdown`` can no longer be resolved from disk -- yet a
+    and its ``on_shutdown`` cannot be resolved from disk -- yet a
     background task its ``on_startup`` spawned is still live in the gateway after
     uninstall removed execution trust. The reconciler uses this retained manifest
     to run ``on_shutdown`` against the code that was ACTUALLY loaded, so that
@@ -640,7 +640,7 @@ async def on_app_disable(
 
     # A startup hook may have been detached after its readiness deadline. It is
     # still third-party code with a live AppContext, so disable/revocation must
-    # stop it even if the current manifest no longer declares hooks. A resistant
+    # stop it even if the current manifest does not declare hooks. A resistant
     # task becomes a hard teardown failure; callers keep trust in place rather
     # than falsely claiming all app code stopped.
     if startup_stopped is None:
@@ -677,7 +677,7 @@ async def on_app_disable(
         _route_registry.deregister_app_routes(app_name)
 
     # A disabled app has no live hooks, so a recorded failure would linger as a
-    # stale claim about an app that is no longer wired up at all.
+    # stale claim about an app that is not wired up at all.
     clear_hook_health(app_name)
 
     # Shared source of truth: the app's hooks are now torn down, so drop its

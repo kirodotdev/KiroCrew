@@ -104,7 +104,7 @@ async def test_stale_kirocrew_gateway_is_reclaimed() -> None:
 
 @pytest.mark.asyncio
 async def test_pid_reuse_recheck_drops_stranger() -> None:
-    """A holder that no longer passes identity at the pre-kill re-check is dropped."""
+    """A holder that fails identity at the pre-kill re-check is dropped."""
     calls = {"n": 0}
 
     def _checker(_pid: int) -> bool:

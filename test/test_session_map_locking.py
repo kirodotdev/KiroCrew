@@ -1,10 +1,9 @@
 """SessionMap's threading contract: the lock, the batch, and the ratchets.
 
-Issue #2989. Every mutation rewrites the WHOLE map from ``_data``, so a
+Every mutation rewrites the WHOLE map from ``_data``, so a
 read-modify-write is atomic only while nothing else touches the structure.
 Before ``_MAP_LOCK`` the event loop was the only thing providing that, which is
-why offloading a single write made the map racy instead of non-blocking (a
-``to_thread`` wrapper reverted on #2976 for exactly that reason).
+why offloading a single write made the map racy instead of non-blocking.
 
 Four properties are pinned here:
 

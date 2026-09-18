@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import os
+import sys
 import threading
 import time
 from collections.abc import MutableMapping
@@ -89,12 +90,12 @@ def _read_load_per_cpu(cpu_count: int) -> float | None:
 class ResourceStatus:
     """A single advisory snapshot of host resource headroom."""
 
-    available_gb: float          # -1.0 when the memory probe is unavailable
+    available_gb: float  # -1.0 when the memory probe is unavailable
     cpu_count: int
-    load_per_cpu: float | None   # 1-min loadavg / cpu_count, None if unavailable
-    posture: str                 # one of the POSTURE_* constants
-    pressure_gb: float           # tight threshold in effect
-    critical_gb: float           # critical threshold in effect
+    load_per_cpu: float | None  # 1-min loadavg / cpu_count, None if unavailable
+    posture: str  # one of the POSTURE_* constants
+    pressure_gb: float  # tight threshold in effect
+    critical_gb: float  # critical threshold in effect
 
     @property
     def under_pressure(self) -> bool:
@@ -148,7 +149,77 @@ class ResourceStatus:
         load = f"{self.load_per_cpu}/core" if self.load_per_cpu is not None else "unknown"
         lines.append(f"  CPU cores: {self.cpu_count}   1-min load: {load}")
         lines.append(f"  Posture: {self.posture.upper()}")
+        lines.extend(adaptive_summary_lines())
         return lines
+
+
+def adaptive_state() -> dict | None:
+    """The adaptive concurrency controller's structured state, or ``None``.
+
+    Read from the gateway-process registry in ``kiro_crew.adaptive.controller``
+    (one controller per gateway). ``None`` means no controller is running in
+    this process -- the CLI, a subagent process, a test -- and the caller
+    omits the section. Never raises.
+    """
+    try:
+        from kiro_crew.adaptive.controller import current_state
+
+        return current_state()
+    except Exception:  # pragma: no cover - defensive; the probe must never raise
+        logger.debug("adaptive controller state unavailable", exc_info=True)
+        return None
+
+
+def adaptive_summary_lines(state: dict | None = None) -> list[str]:
+    """Effective caps and controller state, for the ``resource_status`` tool.
+
+    Empty when no controller runs here. Otherwise: the live execution cap
+    against the user's ceiling, the spawn-gate capacity, whether dispatch is
+    paused or probing, and the last decision's action and reason -- what the
+    dashboard's resources popover and ``kirocrew doctor`` show as "effective
+    concurrency vs user max and the current pressure reason".
+    """
+    if state is None:
+        state = adaptive_state()
+    if not state:
+        return []
+    lines = ["Adaptive concurrency (enforced beneath the user cap):"]
+    if not state.get("enabled", True):
+        lines.append(
+            f"  Disabled (agent.adaptive_concurrency=false); execution cap = user max "
+            f"{state.get('exec_ceiling')}"
+        )
+        return lines
+    mode = state.get("mode", "aimd")
+    exec_cap = state.get("effective_exec_cap")
+    ceiling = state.get("exec_ceiling")
+    gate_cap = state.get("spawn_gate_capacity")
+    gate_ceiling = state.get("gate_ceiling")
+    status = "paused" if state.get("paused") else "active"
+    if state.get("probing"):
+        status = "probing"
+    lines.append(
+        f"  Mode: {mode}   Execution cap: {exec_cap}/{ceiling}   "
+        f"MCP spawn gate: {gate_cap}/{gate_ceiling}   Dispatch: {status}"
+    )
+    last = state.get("last") or {}
+    if last:
+        signals = ",".join(last.get("signals") or []) or "none"
+        lines.append(
+            f"  Last decision: {last.get('action')} ({last.get('reason')}); signals: {signals}"
+        )
+        throttled = last.get("throttled_providers") or []
+        if throttled:
+            lines.append(
+                f"  Provider throttling (scoped, not a host signal): {', '.join(throttled)}"
+            )
+    counts = state.get("counts") or {}
+    if counts:
+        lines.append(
+            "  Decisions: "
+            + ", ".join(f"{k}={v}" for k, v in sorted(counts.items()))
+        )
+    return lines
 
 
 def _resolve_thresholds(cfg: object | None) -> tuple[float, float]:
@@ -188,6 +259,18 @@ def _classify(available_gb: float, pressure_gb: float, critical_gb: float) -> st
     return POSTURE_AMPLE
 
 
+def _load_config() -> object | None:
+    """The ``KiroCrewConfig`` every threshold reader here resolves against.
+
+    Fingerprint-cached by the loader, so calling it per probe is cheap. Returns
+    ``None`` on any failure so the caller falls back to the shipped defaults.
+    """
+    try:
+        return KiroCrewConfig.load()
+    except Exception:  # pragma: no cover - defensive
+        return None
+
+
 def probe(cfg: object | None = None) -> ResourceStatus:
     """Take an advisory resource snapshot.
 
@@ -196,12 +279,7 @@ def probe(cfg: object | None = None) -> ResourceStatus:
     on any failure it returns an ``unknown`` posture so callers stay silent.
     """
     if cfg is None:
-        try:
-            from kiro_crew.config.loader import KiroCrewConfig
-
-            cfg = KiroCrewConfig.load()
-        except Exception:  # pragma: no cover - defensive
-            cfg = None
+        cfg = _load_config()
     pressure_gb, critical_gb = _resolve_thresholds(cfg)
     available_gb = _read_available_gb()
     cpu_count = os.cpu_count() or 1
@@ -232,9 +310,26 @@ def probe(cfg: object | None = None) -> ResourceStatus:
 #: Env var pytest-xdist consults when resolving ``-n auto`` / ``-n logical``.
 XDIST_AUTO_ENV = "PYTEST_XDIST_AUTO_NUM_WORKERS"
 
-#: Assumed steady-state memory of one xdist worker (GB). Deliberately a
-#: constant, not a config key — ``xdist_auto_cap`` is the single operator knob.
-_XDIST_PER_WORKER_GB = 1.0
+#: Platform-aware assumed steady-state memory of one xdist worker (GB). A
+#: full-suite worker holds ~1.5 GB on Linux but 14.9-16.1 GB on macOS, so no
+#: single fixed number is correct for every host. macOS is sized to that
+#: footprint; Linux/Windows to the collection floor plus headroom. Deliberately
+#: a constant, not a config key -- ``xdist_auto_cap`` is the single operator
+#: knob. Sized identically to the local ``-n auto`` budget (``xdist_budget``)
+#: so the two never disagree.
+_MACOS_XDIST_PER_WORKER_GB = 16.0
+_DEFAULT_XDIST_PER_WORKER_GB = 3.0
+
+
+def _resolve_xdist_per_worker_gb() -> float:
+    """Per-worker reservation (GB): the platform-aware built-in.
+
+    Sized identically to :func:`xdist_budget._gib_per_worker`
+    so the local ``-n auto`` hook and this agent-spawn cap size a worker
+    identically.
+    """
+    return _MACOS_XDIST_PER_WORKER_GB if sys.platform == "darwin" else _DEFAULT_XDIST_PER_WORKER_GB
+
 
 #: Fraction of *currently available* memory one test run may claim. Half, so
 #: two concurrent agent sessions sizing themselves at the same instant cannot
@@ -246,16 +341,20 @@ def compute_xdist_auto_workers(
     available_gb: float,
     cpu_count: int,
     *,
-    per_worker_gb: float = _XDIST_PER_WORKER_GB,
+    per_worker_gb: float | None = None,
     share: float = _XDIST_MEMORY_SHARE,
 ) -> int:
     """Memory-aware worker count for ``-n auto``: never more than the CPUs,
     never more than ``available_gb * share / per_worker_gb``, never below 1.
 
-    The floor of 1 keeps a low-memory host running the suite serially rather
-    than failing the run; the CPU ceiling means this can only tighten xdist's
-    own default, never exceed it.
+    ``per_worker_gb`` defaults to the platform-aware, config-overridable
+    reservation (see :func:`_resolve_xdist_per_worker_gb`); pass an explicit
+    value only in tests. The floor of 1 keeps a low-memory host running the
+    suite serially rather than failing the run; the CPU ceiling means this can
+    only tighten xdist's own default, never exceed it.
     """
+    if per_worker_gb is None or per_worker_gb <= 0:
+        per_worker_gb = _resolve_xdist_per_worker_gb()
     cpus = max(1, cpu_count)
     by_memory = int(max(0.0, available_gb) * share / per_worker_gb)
     return max(1, min(cpus, by_memory))
@@ -316,7 +415,7 @@ class AdmissionDecision:
     """
 
     admitted: bool
-    posture: str        # POSTURE_* observed at decision time
+    posture: str  # POSTURE_* observed at decision time
     available_gb: float  # -1.0 when the memory probe is unavailable
     reason: str = ""
 
@@ -353,9 +452,7 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
                 # (and the gate's default-on) could DEFER work because the
                 # config was unreadable — the documented contract is that
                 # only a genuine critical posture refuses.
-                return AdmissionDecision(
-                    admitted=True, posture=POSTURE_UNKNOWN, available_gb=-1.0
-                )
+                return AdmissionDecision(admitted=True, posture=POSTURE_UNKNOWN, available_gb=-1.0)
         status = probe(cfg)
         if not _gate_enabled(cfg):
             return AdmissionDecision(
@@ -377,6 +474,54 @@ def admission_check(cfg: object | None = None) -> AdmissionDecision:
     except Exception:
         logger.debug("admission check failed — admitting (fail-open)", exc_info=True)
         return AdmissionDecision(admitted=True, posture=POSTURE_UNKNOWN, available_gb=-1.0)
+
+
+# Pre-warmed (eager spawn) session population, derived from host memory.
+#
+# Each speculative session is one full kiro-cli process plus its own MCP
+# servers, held live and unclaimed until a real turn arrives or the idle
+# sweep / prefetch TTL fires. The allowance is the per-host answer to "how
+# many of those may sit idle": none when the host is already in the critical
+# band, one in the tight band, and the historical fixed cap of three above
+# it. The bands ARE the advisory posture: the allowance is keyed by the
+# bucket ``_classify`` returns for the same reading and the same
+# ``_resolve_thresholds(cfg)`` result the ``[RESOURCES]`` line uses, so a
+# host tuned via ``agent.resource_pressure_gb`` / ``agent.resource_critical_gb``
+# gets a matching allowance, and the pre-warm population shrinks in step with
+# the posture rather than on a second, disagreeing scale. ``unknown`` (an
+# unreadable probe) keeps the fixed cap: a host the probe cannot measure is
+# never made worse by it.
+PREWARM_MAX_LIVE = 3
+_PREWARM_BY_POSTURE: dict[str, int] = {
+    POSTURE_CRITICAL: 0,
+    POSTURE_TIGHT: 1,
+    POSTURE_AMPLE: PREWARM_MAX_LIVE,
+    POSTURE_UNKNOWN: PREWARM_MAX_LIVE,
+}
+
+
+def prewarm_allowance(available_gb: float | None = None, cfg: object | None = None) -> int:
+    """How many pre-warmed agent sessions the host can afford to hold idle.
+
+    *available_gb* is the cgroup-clamped available memory; when omitted it is
+    read via the same probe every other surface here uses. *cfg* is an
+    optional pre-loaded ``KiroCrewConfig``; when omitted it is loaded the way
+    :func:`probe` loads it, so the bands follow the configured thresholds. An
+    unreadable probe (``< 0``) returns :data:`PREWARM_MAX_LIVE` — the pre-fix
+    behaviour, so a host the probe cannot measure is never made worse by it.
+    Never raises.
+    """
+    try:
+        if available_gb is None:
+            available_gb = _read_available_gb()
+        if cfg is None:
+            cfg = _load_config()
+        pressure_gb, critical_gb = _resolve_thresholds(cfg)
+        posture = _classify(available_gb, pressure_gb, critical_gb)
+        return _PREWARM_BY_POSTURE.get(posture, PREWARM_MAX_LIVE)
+    except Exception:  # pragma: no cover - defensive; must never raise
+        logger.debug("prewarm allowance probe failed — using the fixed cap", exc_info=True)
+        return PREWARM_MAX_LIVE
 
 
 # Cached-verdict layer for callers that must never block: the sync spawn path

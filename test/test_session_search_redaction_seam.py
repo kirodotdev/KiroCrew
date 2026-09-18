@@ -3,7 +3,7 @@
 ``/api/sessions/search`` and ``/api/instances/search-sessions`` both return
 search rows carrying LLM-authored titles and peer-supplied snippets, and each
 hand-composed ``redact_exfiltration_urls`` -> ``redact_credentials``: THREE
-copies across TWO modules (#3940, Design review). ``security.redact`` already
+copies across TWO modules. ``security.redact`` already
 owned that composition, so the fix is that all three passes call IT, over the
 one shared ``SESSION_SEARCH_TEXT_FIELDS`` tuple -- which gives the field list an
 owner too, so a caller cannot redact ``title`` and forget ``snippet``.

@@ -37,7 +37,7 @@ import secrets
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.constants import split_trailing_protocol_suffix
+from kiro_crew.constants import split_trailing_protocol_suffix, strip_control_comments
 from kiro_crew.messaging.approval import APPROVAL_TIMEOUT_S
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.outbound_files import (
@@ -194,7 +194,7 @@ def _utf16_len(text: str) -> int:
     astral character (emoji, most notably) costs 2 against Telegram's 4096
     while costing 1 against ``len``. The entity machinery in
     ``telegram/client.py`` already measures in these units; message budgets
-    here historically did not.
+    here measure the same way.
     """
     return len(text) + sum(1 for ch in text if ord(ch) > 0xFFFF)
 
@@ -849,7 +849,7 @@ class TelegramApprovalDecider:
         finally:
             TelegramApprovalDecider._REGISTRY.pop(k, None)
             # Retire the nonce with the prompt, so a button for a request id the
-            # provider later reuses cannot match a nonce that is no longer live.
+            # provider later reuses cannot match a nonce that is not live.
             TelegramApprovalDecider._NONCES.pop(k, None)
 
     @classmethod
@@ -880,7 +880,7 @@ class TelegramApprovalDecider:
         Asked BEFORE a side effect that a press should only be able to cause
         while its prompt is still live. The registry is empty after a gateway
         restart, so every approval button still sitting in a chat's scrollback
-        would otherwise take effect against a session that no longer exists.
+        would otherwise take effect against a session that does not exist.
 
         *nonce* is checked when supplied, so a caller asking "may this PRESS act"
         gets the prompt-identity answer rather than the weaker key-identity one.
@@ -1103,10 +1103,13 @@ class TelegramRenderer(Renderer):
         await self._rotate_on_length()
         # A trailing [OPTIONS:] block belongs to the visible PRE-STEER answer,
         # but the steering marker sits after it in the raw buffer, so the
-        # end-of-buffer anchor no longer sees it. Extract it here -- BEFORE the
+        # end-of-buffer anchor cannot see it. Extract it here -- BEFORE the
         # seal -- so the choices ship as a keyboard on the sealed message instead of
         # being frozen as literal protocol text the user cannot act on.
-        body_raw, opts = _extract_options("".join(self._buf))
+        body_raw, opts = _extract_options(strip_control_comments("".join(self._buf)))
+        # Trailing control-tag lines are protocol on either side of the trailer;
+        # complete tags only -- a partial tail at the seal is prose.
+        body_raw = strip_control_comments(body_raw)
         body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
         # apply_options_cap may EXPAND the body (numbered overflow lines), and
@@ -1322,6 +1325,8 @@ class TelegramRenderer(Renderer):
         # partial) from live frames — it is an internal directive, extracted
         # into the inline keyboard at finalization.
         seg, _ = _extract_options(self._segment_text())
+        # A control-tag line still arriving is held off the frame the same way.
+        seg = strip_control_comments(seg, hide_partial=True)
         body = await self._safe_body(seg)
         stall = self._stall_mark()
         # The tool footer wins: it names what is happening, which is strictly
@@ -1521,11 +1526,11 @@ class TelegramRenderer(Renderer):
         restored = _display_safe(
             "\n".join(f"![{item.alt or 'image'}]({item.path})" for item in files)
         )
-        # One truncated bubble used to keep only what fit under the cap — with
-        # several failed images the LATER references vanished silently. And the
-        # cap itself was measured in code points while Telegram counts UTF-16
-        # units, so emoji-dense alt text passed the slice and bounced at the
-        # API. Chunk the redacted whole by UTF-16 budget instead (redaction
+        # A single truncated bubble keeps only what fits under the cap, so with
+        # several failed images the LATER references vanish silently. Measuring
+        # the cap in code points also mismatches Telegram's UTF-16 count, so
+        # emoji-dense alt text passes the slice and then bounces at the API.
+        # Chunk the redacted whole by UTF-16 budget instead (redaction
         # first, so the scanner saw the contiguous text; a chunk is a pure
         # substring of it). Header rides the first bubble only.
         header = "⚠️ Couldn't upload:\n"
@@ -1934,7 +1939,10 @@ class TelegramRenderer(Renderer):
         # Extract the trailing [OPTIONS:] BEFORE length rotation: if the body
         # overflows, rotation would otherwise seal the options text into an
         # earlier message and the keyboard would never attach.
-        body_raw, opts = _extract_options("".join(self._buf))
+        body_raw, opts = _extract_options(strip_control_comments("".join(self._buf)))
+        # Trailing control-tag lines are protocol on either side of the trailer;
+        # complete tags only -- a partial tail at the seal is prose.
+        body_raw = strip_control_comments(body_raw)
         body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
         self._buf = [body_raw]
         keyboard = build_inline_keyboard(opts, self._session_key) if opts else None

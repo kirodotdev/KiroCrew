@@ -19,8 +19,6 @@ from aiohttp.test_utils import make_mocked_request
 from kiro_crew.cloud import launch_job as lj
 from kiro_crew.dashboard import handlers_cloud as hc
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 def _posix_host(monkeypatch):
@@ -99,6 +97,7 @@ def _body(resp):
     return json.loads(resp.body.decode("utf-8"))
 
 
+@pytest.mark.asyncio
 class TestGuards:
     async def test_slack_origin_rejected(self, tmp_path):
         resp = await hc.api_cloud_iam_policy(
@@ -183,6 +182,7 @@ class TestGuards:
         assert _body(resp)["code"] == "cloud_owner_only"
 
 
+@pytest.mark.asyncio
 class TestReadEndpoints:
     async def test_iam_policy_returns_document(self, tmp_path):
         resp = await hc.api_cloud_iam_policy(
@@ -276,6 +276,7 @@ class TestPluginInstallCommand:
         assert self._cmd(monkeypatch, "Windows", "x86_64", set()) == ""
 
 
+@pytest.mark.asyncio
 class TestLaunch:
     async def test_create_runs_job_to_done(self, tmp_path):
         state = _state(tmp_path)
@@ -413,6 +414,7 @@ class TestLaunch:
         assert stored.step(lj.STEP_PROVISION).state == lj.STEP_FAILED
 
 
+@pytest.mark.asyncio
 class TestLaunchConcurrency:
     async def test_a_second_launch_while_one_runs_is_refused(self, tmp_path):
         """Two jobs means two tags and two CloudFormation stacks — two billed
@@ -481,6 +483,7 @@ class TestLaunchConcurrency:
         assert len(state.cloud_launch_store.list()) == 2
 
 
+@pytest.mark.asyncio
 class TestSignin:
     async def test_signin_pending_returns_prompt(self, tmp_path):
         state = _state(tmp_path)
@@ -512,6 +515,7 @@ class TestSignin:
         assert resp.status == 409
 
 
+@pytest.mark.asyncio
 class TestInstanceMutations:
     async def test_stop_start_destroy_dispatch(self, tmp_path, monkeypatch):
         seen = {}
@@ -593,7 +597,7 @@ class TestInstanceMutations:
     ):
         """DELETE_FAILED means the crew is still there. Dropping its registration
         and source archive then would strand a live, billing instance the user can
-        no longer see in the dashboard — so both must survive."""
+        not see in the dashboard — so both must survive."""
         calls = {}
         monkeypatch.setattr(hc.ec2, "describe", lambda tag, p, r: {"instance_id": "i-0abc"})
         monkeypatch.setattr(hc.ec2, "destroy", lambda tag, p, r, **kw: {"destroyed": False})
@@ -712,7 +716,7 @@ class TestInstanceMutations:
         self, tmp_path, monkeypatch
     ):
         """A restart kills the teardown watcher mid-wait, so the stack goes but the
-        registry row stays. On the retry `describe` can no longer answer — the stack is
+        registry row stays. On the retry `describe` cannot answer — the stack is
         gone — so without the launch-job fallback the retry would delete nothing, resolve
         no id, skip the unregister again, and the row could never be cleared here."""
         calls = {}
@@ -799,6 +803,7 @@ def _compose(monkeypatch, provider):
     )
 
 
+@pytest.mark.asyncio
 class TestProvisionerSeam:
     async def test_stock_listing_is_the_builtin_lane(self, tmp_path):
         """No composition: exactly the EC2 descriptor, drawn by the core's own form."""

@@ -145,8 +145,8 @@ async def test_full_scan_lifecycle_takes_no_connection_on_the_loop(strict_store,
 async def test_failed_ingest_records_its_reason_off_the_loop(strict_store, tmp_path):
     """The 'failed' branch reads the recorded reason back and re-writes the row.
 
-    Both used to run on the loop, and the read feeds the write across what is
-    now a single worker hop -- the reason must survive that move intact.
+    The read feeds the write across a single worker hop, so the reason must
+    survive that move intact.
     """
     folder = tmp_path / "folder"
     folder.mkdir()

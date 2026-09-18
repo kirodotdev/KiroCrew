@@ -100,6 +100,34 @@ class TestBoundedFetchDuringAnInFlightSegment:
         assert data["total"] == SETTLED + 1
 
     @pytest.mark.asyncio
+    async def test_the_in_flight_row_carries_the_newest_chunk_seq(self, state: Any) -> None:
+        """The snapshot tells the client how far the stream it holds has got.
+
+        The runner stamps each window ``chunk`` row with the same ``seq`` as its
+        wire frame; the fold carries the newest one out as ``seq`` on the
+        ``streaming`` row. The client seeds its replay guard from it, so a live
+        chunk that raced this snapshot (seq at or below it) is dropped instead
+        of being appended a second time -- the duplicated leading fragment seen
+        after a reconnect.
+        """
+        slot = _slot_mid_stream(state)
+        for i, row in enumerate(m for m in slot.messages if m["role"] == "chunk"):
+            row["seq"] = i + 1
+        data = await _get(state, f"?limit={LIMIT}")
+        streaming = [m for m in data["messages"] if m["role"] == "streaming"]
+        assert streaming[0]["seq"] == DELTAS
+
+    @pytest.mark.asyncio
+    async def test_the_in_flight_row_has_no_seq_when_the_window_carries_none(
+        self, state: Any
+    ) -> None:
+        """A window without seqs keeps the previous wire shape (no key at all)."""
+        _slot_mid_stream(state)
+        data = await _get(state, f"?limit={LIMIT}")
+        streaming = [m for m in data["messages"] if m["role"] == "streaming"]
+        assert "seq" not in streaming[0]
+
+    @pytest.mark.asyncio
     async def test_the_cursor_points_behind_the_returned_page(self, state: Any) -> None:
         """Paging older still works from a page taken during a stream."""
         _slot_mid_stream(state)

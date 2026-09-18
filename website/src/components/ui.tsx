@@ -176,19 +176,28 @@ export function Badge({ variant, children, className, ...rest }: { variant: 'ok'
     : variant === 'muted' ? 'bg-[var(--bg-hover)] text-[var(--muted)]'
     : 'bg-warn-subtle text-warn'
   return (
-    <span className={twMerge(`inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono whitespace-nowrap hover:scale-105 transition-transform ${cls}`, className)} {...rest}>
+    // No hover transform: a Badge is a non-interactive status label, so growing
+    // it under the cursor announced an affordance that isn't there.
+    <span className={twMerge(`inline-flex items-center gap-1 px-2 py-[2px] rounded-full text-[13px] font-medium font-mono whitespace-nowrap ${cls}`, className)} {...rest}>
       {children}
     </span>
   )
 }
 
-export function SourceBadge({ source }: { source: string }) {
+/** `source` picks the colour; pass `children` to show a translated label instead
+ *  of the raw field value, which is an internal identifier in every language.
+ *  `tone="neutral"` forces the grey style for every source — used where several
+ *  of these sit together (the template list) and one coloured chip among grey
+ *  peers reads as "why is this one different?" rather than as a category. */
+export function SourceBadge({ source, children, tone = 'auto' }: { source: string; children?: React.ReactNode; tone?: 'auto' | 'neutral' }) {
+  const neutral = 'bg-bg-elevated text-muted border-border'
   const cls =
-    source === 'package' ? 'bg-aim-subtle text-aim border-aim/30'
-    : source === 'kirocrew' ? 'bg-bg-elevated text-muted border-border'
+    tone === 'neutral' ? neutral
+    : source === 'package' ? 'bg-aim-subtle text-aim border-aim/30'
+    : source === 'kirocrew' ? neutral
     : source === 'project' ? 'text-ok border-ok/30'
-    : 'bg-bg-elevated text-muted border-border'
-  return <span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border shrink-0 ${cls}`}>{source}</span>
+    : neutral
+  return <span className={`px-1.5 py-[2px] rounded-full text-[11px] font-bold border shrink-0 ${cls}`}>{children ?? source}</span>
 }
 
 export function StatCard({ label, value, accent, colorClass, delay, onClick, active, title, className, ...rest }: { label: string; value?: string | number | null; accent?: boolean; colorClass?: string; delay?: number; onClick?: () => void; active?: boolean; title?: string } & Omit<React.ComponentPropsWithoutRef<'div'>, 'title' | 'onClick' | 'dangerouslySetInnerHTML'>) {
@@ -199,7 +208,7 @@ export function StatCard({ label, value, accent, colorClass, delay, onClick, act
     // the conditional role, hence the scoped disables.
     /* eslint-disable-next-line jsx-a11y/no-static-element-interactions */
     <div
-      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise hover:border-border-strong hover:-translate-y-0.5 hover:shadow-md transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer' : ''}`, className)}
+      className={twMerge(`stat-accent relative overflow-hidden bg-card rounded-md px-4 py-3.5 border shadow-[inset_0_1px_0_var(--card-hl)] animate-rise hover:border-border-strong hover:shadow-md transition-all ${active ? 'border-accent ring-1 ring-accent/40' : 'border-border'} ${onClick ? 'cursor-pointer' : ''}`, className)}
       style={delay ? { animationDelay: `${delay}ms` } : undefined}
       onClick={onClick}
       role={onClick ? 'button' : undefined}
@@ -460,6 +469,10 @@ export interface SliderProps {
   ticks?: boolean
   /** When true, the knob pulses an accent halo while parked at the max notch. */
   emphasizeMax?: boolean
+  /** Independent reference marker on the same axis, such as a configured default. */
+  markerValue?: number
+  /** Visible and accessible label for markerValue. */
+  markerLabel?: string
   className?: string
   'aria-label'?: string
 }
@@ -470,7 +483,7 @@ export interface SliderProps {
  *  (arrows = step, Shift+arrow / PageUp-Down = ×10, Home/End = min/max). */
 export function Slider({
   value, onChange, min = 0, max = 100, step = 1, disabled,
-  label, showValue, formatValue, ticks, emphasizeMax, className = '', 'aria-label': ariaLabel,
+  label, showValue, formatValue, ticks, emphasizeMax, markerValue, markerLabel, className = '', 'aria-label': ariaLabel,
 }: SliderProps) {
   const trackRef = React.useRef<HTMLDivElement>(null)
   const [dragging, setDragging] = React.useState(false)
@@ -490,6 +503,13 @@ export function Slider({
   const pct = ((current - min) / range) * 100
   const display = formatValue ? formatValue(current) : String(current)
   const atMax = emphasizeMax && current >= max
+  const markerCurrent = markerValue === undefined ? null : clamp(markerValue)
+  const markerFrac = markerCurrent === null ? null : (markerCurrent - min) / range
+  const markerTransform = markerCurrent === min
+    ? 'translateX(0)'
+    : markerCurrent === max
+      ? 'translateX(-100%)'
+      : 'translateX(-50%)'
 
   // Discrete-stepper detection: a small, even number of steps. Discrete sliders
   // render tick marks AND spring to each notch even while dragging; continuous
@@ -638,6 +658,17 @@ export function Slider({
             style={{ left: center(f) }}
           />
         ))}
+        {markerFrac !== null && markerLabel && markerValue === markerCurrent && (
+          <span
+            role="img"
+            aria-label={markerLabel}
+            data-slider-marker
+            className="absolute bottom-[calc(100%+4px)] z-10 whitespace-nowrap text-[10px] font-medium text-accent"
+            style={{ left: center(markerFrac), transform: markerTransform }}
+          >
+            {markerLabel}
+          </span>
+        )}
         {/* hover/drag tooltip — value of the step under the cursor */}
         {hoverVal !== null && (
           <div
@@ -654,9 +685,15 @@ export function Slider({
             the value; the inner circle owns press/drag scale + focus ring. */}
         <motion.div aria-hidden className="absolute top-1/2 -translate-x-1/2 -translate-y-1/2" style={{ left: motionPos }}>
           <motion.div
-            className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
+            className="relative w-[18px] h-[18px] rounded-full bg-white border border-black/10 group-hover:border-black/30 shadow-[0_1px_3px_rgba(0,0,0,.3),0_0.5px_1px_rgba(0,0,0,.2)] group-focus-visible:ring-2 group-focus-visible:ring-[var(--ring)] group-focus-visible:ring-offset-1 group-focus-visible:ring-offset-[var(--bg)]"
             animate={{ scale: reduceMotion ? 1 : (dragging ? 1.15 : 1), boxShadow: dragging ? '0 2px 7px rgba(0,0,0,.4)' : atMax ? '0 0 10px var(--accent)' : '0 1px 3px rgba(0,0,0,.3)' }}
-            whileHover={disabled || reduceMotion ? undefined : { scale: 1.12 }}
+            // The knob is the visual grab target, so pointing at the slider has to
+            // say so — the removed `whileHover` scale was its only cue. It darkens
+            // its BORDER via `group-hover` rather than deepening its shadow, because
+            // `animate` above owns `boxShadow` as an INLINE style and an inline style
+            // beats any class, so a shadow cue would simply never paint. Nothing
+            // animates borderColor, so the two cannot fight, and no geometry changes.
+            // `group` is the same one the focus ring already keys on.
             whileTap={disabled || reduceMotion ? undefined : { scale: 1.2 }}
             transition={reduceMotion ? { duration: 0 } : { type: 'spring', stiffness: 500, damping: 26 }}
           />

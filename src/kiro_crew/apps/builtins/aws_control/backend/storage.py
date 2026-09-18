@@ -49,6 +49,7 @@ from kiro_crew.config.paths import data_home
 from kiro_crew.deploy import engine
 from kiro_crew.deploy.engine import AWSError, _checked, _harden_bucket
 from kiro_crew.platform_compat import is_link_or_junction
+from kiro_crew.sandbox import crew_home_visible_spellings
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
@@ -698,7 +699,14 @@ def get_object_head_bytes(
     and the shared file-tool gate refuses. That mask would hide the directory
     from the sandboxed CLI as well, so the per-call directory is named in
     ``extra_visible_dirs`` — lifting the mask for this one fixed-argv spawn,
-    never for the agent.
+    never for the agent. It is named in EVERY spelling the masks use for the
+    crew data home (:func:`sandbox.crew_home_visible_spellings`): the mask list
+    carries both ``$HOME``-joined crew-home prefixes as well as the resolved
+    ``config_dir()`` path, the lift is decided lexically, and under a symlinked
+    ``$HOME`` those are different strings for one directory — so naming only the
+    resolved one leaves a surviving mask to bind an empty directory straight back
+    over the staged file, and the CLI reports ``ENOENT`` on a path the gateway
+    just created.
 
     The mask is a Linux/macOS mechanism; Windows has no sandbox, so there the
     destination is pinned by IDENTITY instead of by hiding, and the pin covers
@@ -723,7 +731,7 @@ def get_object_head_bytes(
     # tree -- a pinned directory can be neither renamed nor deleted, and
     # neither can anything above it. So by the time the destination is created
     # below, every component of the path the CLI will write through is held
-    # in place: a watcher can no longer rename the directory away and plant a
+    # in place: a watcher cannot rename the directory away and plant a
     # junction at its name between our create and the CLI's open.
     root_fd = platform_compat.pin_directory(staging_parent)
     dir_fd = -1
@@ -773,7 +781,7 @@ def get_object_head_bytes(
                 profile,
                 action="s3:GetObject",
                 timeout=60,
-                extra_visible_dirs=(tmp_dir,),
+                extra_visible_dirs=crew_home_visible_spellings(tmp_dir),
             )
         except AWSError as exc:
             # A byte range is unsatisfiable against a 0-byte object, and S3
@@ -1011,7 +1019,7 @@ def create_folder(
     shape the listing filters on cannot be spoofed into some other form.
 
     Owner-pinned like every other write: ``--expected-bucket-owner`` makes S3
-    itself reject the put if the globally-unique bucket name is no longer this
+    itself reject the put if the globally-unique bucket name is not this
     account's, the same reason :func:`put_file` cannot use ``s3 cp``. A body is
     deliberately omitted so the object is zero bytes.
     """

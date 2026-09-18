@@ -20,7 +20,7 @@ alias-VALUE rename is unreachable by construction: every alias is pinned to
 any other spelling.
 
 Outcomes: ``ALIAS`` = rename the colliding exposed tools; ``NONE`` = emit nothing
-for this provider; ``STRIP`` = a previously generated ref is removed. STRIP is
+for this provider; ``STRIP`` = an already-generated ref is removed. STRIP is
 orthogonal to ALIAS/NONE and applies on every row, because the generated domain
 is recomputed from the registry rather than read back off the spec. WHICH pairs
 STRIP may touch is not decided here: it is decided by the persisted record of

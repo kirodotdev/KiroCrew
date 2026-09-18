@@ -210,7 +210,7 @@ def test_build_and_discovery_tiers_keep_their_own_policies(isolated_home):
     root; ``node_all_bin_dirs`` (MCP binary discovery) must return every
     version's bin dir — including ones without ``node`` — because a global npm
     binary can live under any installed version. Collapsing these into one
-    policy is exactly the regression #1605 warns against.
+    policy is exactly the regression this rule warns against.
     """
     root = isolated_home / ".local/share/mise/installs/node"
     best = _fake_node_bin(root / "24.16.0" / "bin")
@@ -277,6 +277,7 @@ def test_each_version_manager_layout_is_found(isolated_home, layout):
     ".local/share/mise/shims",
     ".volta/bin",
     "n/bin",
+    ".n/bin",
 ])
 def test_shim_dirs_are_found(isolated_home, layout):
     d = _fake_node_bin(isolated_home / layout)

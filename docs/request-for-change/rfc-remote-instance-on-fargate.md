@@ -1,13 +1,13 @@
 ---
 title: Remote Instance on Fargate
-status: draft
+status: in-progress
 kind: framework
 author: Raymond Chen (chenmingwei23)
 created: 2026-09-07
-last-audited: 2026-09-07
-audited-at: 424efa423
+last-audited: 2026-09-12
+audited-at: bf09e50e5
 doc-pr:
-implementation-prs: []
+implementation-prs: [9223]
 tracking-issues: []
 supersedes: []
 superseded-by: []
@@ -82,7 +82,8 @@ long-lived instance that overhead amortises. For fan-out it does not.
 - Let the owner ask for CPU and memory rather than choose from three instance
   shapes.
 - Keep a Fargate-backed remote crew visible and usable everywhere an EC2-backed
-  one is.
+  one is. This is the end state, not phase 1: section 5 explains why the registry
+  cannot hold a task today and section 6 records what is deferred with it.
 
 ## 3. Non-goals
 
@@ -94,7 +95,7 @@ long-lived instance that overhead amortises. For fan-out it does not.
   section 4.
 - **Changing how a remote crew is reached, addressed, or relayed.** Those surfaces
   stay as they are.
-- **Crew as a service.** Section 10 says what carries over and what does not.
+- **Crew as a service.** Section 12 says what carries over and what does not.
 
 ## 4. The case this exists for: fan-out
 
@@ -137,14 +138,48 @@ tools a crew needs are baked at build time. The image is versioned and reference
 by digest, so what a launch runs is exactly what was published.
 
 **A task definition per crew shape.** It names the image digest, the CPU and
-memory the owner asked for, the task role, and the log configuration. Registering
-one is an API call, not a deployment.
+memory the owner asked for, the task role, the log configuration, and the
+container's secret-valued environment. Registering one is an API call, not a
+deployment.
+
+The secret-valued half is load-bearing, and the two secrets are load-bearing
+differently. `KIRO_API_KEY` is the model credential and the container refuses to
+boot without it: `require_api_key` in
+`src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/supervisor/backend.py`
+checks it for presence at startup. `SMC_CONTROL_SECRET` separates the owner's
+control surface from a customer turn and is NOT a boot requirement -- a task
+started without it boots and then refuses every control route, because the check
+fails closed on an unset secret. Neither is baked into the image. Both arrive as
+container secrets whose `valueFrom` names a Secrets Manager secret or a Parameter
+Store parameter, which is also what the execution role needs read permission on.
+Presence is all the startup check proves: an invalid `KIRO_API_KEY` produces a
+task that answers its port and fails every turn, so only a real turn establishes
+that the credential works.
 
 **A task per remote crew.** `RunTask` starts it, `StopTask` ends it, and nothing
 persists between the two except what the crew was told to write elsewhere.
 
 **No service, no load balancer.** Nothing needs to be reconciled to a desired
-count, and nothing needs a listener.
+count, and no traffic is distributed across tasks. The task is addressed
+directly.
+
+**The channel into the task is a front process in the task.** Decided, not open.
+The image runs a small HTTP front on port 8080 that receives a turn and forwards
+it to the crew's own gateway over loopback; reaching that port is an authorised
+call in the owner's own account, and the task is not published to the internet and
+has no external DNS name. Two routes answer without the control secret, a turn
+endpoint and a liveness check; every other path requires `SMC_CONTROL_SECRET`. The
+front layer's contract is
+[aws-control](../system-specs/modules/aws-control.md).
+
+The option not taken was a port-forward into the task with no listener at all,
+which is what EC2 remote instances use. It was rejected for this phase because the
+product this backend exists to deliver is "deploy a crew and chat with it": an
+endpoint delivers that now, and the front process is where further endpoints are
+added, while the port-forward path needs a Fargate target format and task-role
+messaging permissions established first. It stays available as a second phase; the
+cost of the choice is stated in section 6 under "the registry, the tunnel, and the
+relay", and in section 7.
 
 ### What it plugs into
 
@@ -166,8 +201,19 @@ The EC2 implementation is `RealLaunchEngine` in `src/kiro_crew/cloud/launch_engi
 field named `cloud_launch_engine` in `src/kiro_crew/dashboard/state.py`, today set
 only by tests. A Fargate backend is a second
 implementation of these five methods. Everything above the seam, which is the
-launch job machinery, the registry, the tunnel manager and the relay surfaces,
-does not learn that a second backend exists.
+launch job machinery, the tunnel manager and the relay surfaces, does not learn
+that a second backend exists.
+
+The registry is the exception, and the reason is a hard one rather than a
+preference. `src/kiro_crew/instances/registry.py` closes its transport set:
+`CONNECTION_METHODS` is `("ssh", "ssm")` and a record naming anything else is
+refused with `InvalidInstanceError`. The identity fields are equally closed --
+`ssm_target` is validated against `^(i|mi)-[a-f0-9]{8,17}$`, an EC2 instance id or
+an SSM managed-instance id -- and a task identity is neither. So a Fargate-backed
+crew cannot be registered without changing registry code, which is why section 6
+defers registry visibility with the tunnel and the relay rather than only those
+two. Whether phase 1 should spend a third transport to close that is open; see
+section 11.
 
 Per method, what changes and what does not:
 
@@ -175,8 +221,8 @@ Per method, what changes and what does not:
 | --- | --- | --- |
 | `preflight` | Credentials, region, image availability | Same shape |
 | `provision` | Register a task definition, `RunTask`, return the task identity | Minutes of bootstrap become an image pull |
-| `begin_signin` | Sign in inside the task | Same flow, different channel into the container |
-| `register` | Into the existing instances registry | Unchanged |
+| `begin_signin` | Nothing to drive: the task is handed a model credential and refuses to boot without one | The device-code scrape has no counterpart |
+| `register` | Deferred: no transport in `CONNECTION_METHODS` names a task | The one method of the five phase 1 does not deliver |
 | `teardown` | `StopTask` | Stack deletion becomes an API call |
 
 ### Sizing
@@ -192,7 +238,11 @@ Naming these explicitly, because a new compute backend is a good opportunity to
 change things that should not change.
 
 **Authorisation is IAM.** Reaching a remote crew is an authorised call in the
-owner's own account. There is no second principal and no new authentication path.
+owner's own account. There is no second principal. There is one new
+authentication path, and it is small and inward-facing: the task's front process
+requires `SMC_CONTROL_SECRET` on every route except the two customer ones, so the
+owner's control plane can be told apart from a turn. It authorises nothing about
+who the caller is; IAM still decides that, before the call reaches the task.
 
 **Credentials live in the CLI's own store on the remote compute.** This is the
 property EC2 remote instances already have, and a session that expires is what
@@ -203,9 +253,25 @@ introduces a long-lived credential.
 makes a remote crew reachable by anyone else, and no design here should assume a
 second caller might appear later.
 
-**The registry, the tunnel, and the relay.** A Fargate-backed remote crew appears
-where an EC2-backed one appears. If it does not, this RFC has failed at its main
-purpose, which is adding a backend rather than a parallel feature.
+**The registry, the tunnel, and the relay.** These are unchanged in themselves,
+and a Fargate-backed crew does not appear in them in this phase. That is a change
+of purpose from an earlier draft of this section, which said a Fargate-backed
+crew appears wherever an EC2-backed one appears and called anything less a
+failure of the RFC's main purpose. It is stated as a change rather than softened,
+because it is one.
+
+A Fargate-backed crew is reached through its own front process in the task (see
+section 5), not through the relay surfaces an EC2-backed crew uses. The trade:
+the product this backend exists to deliver is "deploy a crew and chat with it",
+one endpoint satisfies that, and the front process is where further endpoints are
+added. Reusing the relay surfaces instead would mean making them work against a
+target format they do not have today, on a task whose role does not carry
+messaging permissions, before anything is chattable at all. Parity with those
+surfaces stays a goal and becomes later work; it is no longer this phase's
+success criterion. What would make this the parallel feature the earlier wording
+feared is a SECOND way to reach a crew that never converges -- so the front
+process is the one channel for a Fargate-backed crew, and the relay work, when it
+happens, reaches it rather than going around it.
 
 ## 7. Security considerations
 
@@ -230,30 +296,31 @@ need to be answered.
 ### What does not change
 
 Still one principal, still IAM, still the owner's own account, still credentials
-in the CLI's store on remote compute with the same lifetime rules. No inbound
-path is added and no data is shared between two parties, because there is only
-one party.
+in the CLI's store on remote compute with the same lifetime rules. One inbound
+path is added, and its shape is the point: a listener in the task on port 8080
+serving exactly two routes without the control secret, a turn endpoint and a
+liveness check, with everything else refused unless the caller holds
+`SMC_CONTROL_SECRET`. No data is shared between two parties, because there is
+still only one party.
 
 ## 8. Migration plan
 
 Each phase is independently shippable and independently abandonable. Exit criteria
 are written as assertions someone else can check.
 
-### Phase 0: establish the channel into a task
+### Phase 0: establish the channel into a task -- answered
 
-**Blocked on:** the first open question in section 9. Phase 1 cannot commit to a
-transport before this is answered, so this phase exists to answer it and nothing
-else. No product code.
+**Not a gate on phase 1.** Section 5 records the verdict: the channel is a front
+process in the task, listening on port 8080 and forwarding a turn to the crew's
+own gateway over loopback. That decision is made, so this phase no longer holds
+anything back and carries no exit criteria.
 
-Exit criteria:
-
-- A Fargate task in a private subnet is reachable from a developer machine, and the
-  method is written down with the exact target format and the task-role permissions
-  it required.
-- If it is not reachable, the verdict says so and names what was tried. A negative
-  result ends this phase successfully and redirects phase 1 to an IAM-authorised
-  endpoint.
-- The verdict is recorded in this document, not only in a pull request.
+What was originally asked here was whether a task in a private subnet can be
+reached by port-forward with no listener at all, the way an EC2 remote instance
+is. That question is still open and is no longer on this path: it needs a Fargate
+target format and task-role messaging permissions established first, and section
+5 keeps it available as a second channel rather than a prerequisite. Phase 1
+commits to the front process.
 
 ### Phase 1: the backend
 
@@ -262,14 +329,20 @@ image publication to ECR.
 
 Exit criteria:
 
-- `provision` returns an identity that `register` accepts, and the launched crew
-  appears in the instances registry with no change to registry code.
-- One remote crew launches on Fargate and serves a turn, reached the same way an
-  EC2-backed one is.
+- `provision` returns a task identity, and `teardown` stops that task from the
+  launch tag alone -- the protocol's `teardown(tag, profile, region)` never sees
+  what `provision` returned, and `run_launch` passes `job.tag`. Registration is
+  NOT part of this phase: the registry refuses a transport outside
+  `CONNECTION_METHODS`, so there is no record to assert (section 5). Which means
+  the Fargate engine has to be able to find its own task from the tag.
+- One remote crew launches on Fargate and serves a turn, reached through the
+  task's own front process. Not through the tunnel or the relay: section 6 defers
+  those, so a criterion demanding parity of reach would contradict it.
 - `teardown` leaves no task, no task definition revision in use, and no ECR
   reference held by a stopped task.
 - Nothing above `LaunchEngine` branches on backend. Asserted by a test that runs
-  the launch job against both engines and compares the resulting registry state.
+  the launch job against both engines and compares what each one returns from
+  `provision` and `teardown`, since only the EC2 engine produces a registry record.
 - A crew with no Fargate configuration still launches on EC2 with byte-identical
   behaviour.
 
@@ -307,9 +380,11 @@ Existing size keys keep working. `size_key` is the protocol's parameter and the
 Fargate backend maps the same three keys to CPU and memory pairs, so a launch that
 does not name a backend behaves as it does today.
 
-No stored state changes shape. A Fargate-backed remote crew registers through the
-same call with the same fields, so a registry written before this work is readable
-after it and the reverse holds too.
+No stored state changes shape, and in this phase no new state is written at all. A
+Fargate-backed crew is not registered, so nothing is added to the registry file and
+no existing record is reinterpreted: a registry written before this work is readable
+after it and the reverse holds too. Registry parity would need a third transport,
+and adding one is where that compatibility question would actually be decided.
 
 ## 10. Alternatives considered
 
@@ -317,8 +392,10 @@ after it and the reverse holds too.
 repository are already present. This removes most of the launch cost without a new
 backend. It does not address sizing granularity, it does not make a host the right
 unit for a container, and it adds an AMI build and its per-region distribution to
-the release process. Worth revisiting if phase 0 finds no workable channel into a
-task, because it is the cheapest way to improve the current backend in place.
+the release process. It is the cheapest way to improve the current backend in
+place, and it stays worth revisiting on that basis rather than as a fallback: the
+channel into a task is settled, so nothing about this backend now depends on the
+port-forward question.
 
 **A warm pool of EC2 instances.** Keep N started and hand them out. This makes
 acquisition fast at the cost of paying for idle capacity and of a pool to operate.
@@ -338,17 +415,15 @@ the thing this RFC is trying to remove.
 
 ## 11. Open questions
 
-**How the channel into the task works.** A task can be reached through an
-IAM-authorised endpoint, or through a port-forward into the task with no listener
-at all. The second is what EC2 remote instances already do, and reusing it is what
-would let a Fargate-backed crew appear in the existing relay surfaces without new
-plumbing. It needs verifying on Fargate before phase 1 commits to it: the target
-format differs from an instance id, and the task role needs messaging permissions
-it does not receive by default.
-
-**Sign-in inside a task.** The EC2 flow runs an interactive login on the host and
-scrapes the device-code prompt. The equivalent inside a task needs to be
-established, and it is the one method of the five with no direct translation.
+**Whether phase 1 buys registry parity.** A Fargate-backed crew cannot be
+registered as things stand: `CONNECTION_METHODS` is closed to `ssh` and `ssm` and
+the identity fields accept only an instance id (section 5). Closing that means a
+third transport in `src/kiro_crew/instances/registry.py` and a tunnel manager that
+knows what to do with a task, which is the largest single piece of work this RFC
+could add and is not needed for "deploy a crew and chat with it". Deferring it is
+what section 6 records. The question is whether the deferral holds through phase 2,
+because ten unregistered fan-out workers are ten things the owner cannot see in the
+one place they look.
 
 **Session lifetime against task lifetime.** A disposable task that lives minutes
 is a good fit for a short session. A fan-out worker that runs for hours is less

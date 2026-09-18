@@ -66,9 +66,16 @@ jobs:
 
       - name: Measure test durations
         # Full suite, no coverage (tracing would skew timings), no splits.
-        # --store-durations writes/updates .test_durations. `|| true` keeps a
-        # flaky failure from aborting the refresh -- durations for tests that
-        # ran are still recorded.
+        # --store-durations --clean-durations replaces .test_durations with
+        # exactly the node ids that produced reports in this session.
+        #
+        # Exit 0 or 1 allows a refresh to continue, but neither proves every
+        # test ran. When xdist reaches its worker-restart ceiling it shuts down
+        # without an Interrupted error and can exit 1 with items never scheduled.
+        # A serial collect-only pass is the independent completion marker: the
+        # "N tests collected" tally it prints must equal the clean duration-file
+        # key count before the file can be published. Other exits -- 2 interrupted, 3 INTERNALERROR,
+        # 4 usage, 5 nothing collected -- refuse the refresh immediately.
         #
         # Nothing is deselected. Two sandbox suites used to be, which meant the file
         # this job produces carried no durations for them -- so pytest-split gave them
@@ -81,8 +88,42 @@ jobs:
           # including one printed inside a pytest warning, and never matches a
           # pytest failure. conftest.py emits the real annotations instead.
           echo "::remove-matcher owner=python::"
-          pytest -q -n auto --timeout=120 --no-cov --store-durations || true
+          rc=0
+          pytest -q -n auto --timeout=120 --no-cov --store-durations --clean-durations || rc=$?
+          case "$rc" in
+            0|1) ;;
+            *) echo "::error::pytest exited $rc before the session completed; not publishing a partial .test_durations"; exit 1 ;;
+          esac
           test -f .test_durations || { echo "::error::no .test_durations produced"; exit 1; }
+          # `-q`, not `-qq`: only the "N tests collected" tally is parsed below,
+          # and pytest prints it at any verbosity >= -1. `-qq` would drop it
+          # unless addopts happened to carry `--verbose`.
+          collected_file="$RUNNER_TEMP/test-durations-collected.txt"
+          if ! pytest --collect-only -q --no-cov > "$collected_file"; then
+            echo "::error::serial test collection failed; not publishing .test_durations"
+            exit 1
+          fi
+          python3 - "$collected_file" <<'PY'
+          import json
+          import pathlib
+          import re
+          import sys
+
+          # pytest's own tally line ("N tests collected in Xs"), not a per-line
+          # heuristic: a warning printed during collection can quote a node id.
+          collected_text = pathlib.Path(sys.argv[1]).read_text(encoding="utf-8")
+          tally = re.search(r"(\d+) tests? collected", collected_text)
+          if tally is None:
+              print("::error::could not find pytest's 'N tests collected' tally; not publishing .test_durations")
+              raise SystemExit(1)
+          collected_count = int(tally.group(1))
+          with open(".test_durations", encoding="utf-8") as durations_file:
+              recorded_count = len(json.load(durations_file))
+          if collected_count != recorded_count:
+              print(f"::error::collected {collected_count} test ids but recorded {recorded_count} durations; not publishing a partial .test_durations")
+              raise SystemExit(1)
+          print(f"Verified {recorded_count} recorded durations against collection.")
+          PY
 
       - name: Open PR if durations changed
         env:

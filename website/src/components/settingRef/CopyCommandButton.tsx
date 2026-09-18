@@ -22,12 +22,7 @@ export function CopyCommandButton({ text }: { text: string }) {
   )
 
   const handleCopy = useCallback(async () => {
-    try {
-      await copyCode(text)
-      setState('copied')
-    } catch {
-      setState('failed')
-    }
+    setState(await copyCode(text) ? 'copied' : 'failed')
     if (resetTimer.current) clearTimeout(resetTimer.current)
     resetTimer.current = setTimeout(() => setState('idle'), 1500)
   }, [text])

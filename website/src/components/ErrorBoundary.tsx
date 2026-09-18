@@ -20,6 +20,13 @@ interface Props {
   root?: boolean
   /** Optional label to attribute logged errors to a region of the app. */
   scope?: string
+  /**
+   * When true, the fallback offers Try Again only — no "Ask the agent"
+   * hand-off. Use inside editors holding unsaved state: the hand-off is a
+   * hard navigation to /chat, which unmounts the editor and discards the
+   * draft, turning a contained render crash into data loss.
+   */
+  retryOnly?: boolean
 }
 
 export default class ErrorBoundary extends Component<Props, State> {
@@ -114,12 +121,16 @@ export default class ErrorBoundary extends Component<Props, State> {
         <div className="text-sm text-muted max-w-md break-words">{this.state.error.message}</div>
         <div className="flex items-center gap-2">
           {/* "Ask the agent" is the primary here on purpose: this is an agent app,
-              and after a crash the agent is likelier to resolve it than a retry. */}
-          <AskAgentButton
-            message={this.state.error.message}
-            variant="solid"
-            hard
-          />
+              and after a crash the agent is likelier to resolve it than a retry.
+              Suppressed under retryOnly — the hand-off is a hard navigation that
+              would discard a surrounding editor's unsaved state. */}
+          {!this.props.retryOnly && (
+            <AskAgentButton
+              message={this.state.error.message}
+              variant="solid"
+              hard
+            />
+          )}
           <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-transparent text-muted border border-border hover:text-text hover:border-text-strong transition-colors"
             onClick={() => this.setState({ error: null })}>{i18nT('components.errorBoundary.try_again')}</button>
         </div>

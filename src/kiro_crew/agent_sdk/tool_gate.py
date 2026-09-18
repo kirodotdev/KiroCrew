@@ -22,10 +22,13 @@ capability mechanism inside the boundary. That top-level path survives as a pure
 re-export shim, so ``acp/client.py`` still calls through it by attribute and the
 tests that patch it still reach what the client calls.
 
-**Enforcement scope.** Only :data:`~kiro_crew.agent_sdk.backends.Routing.SESSION_CONFIG`
-is ENFORCED here today, because it is the only mechanism this core implements end
-to end. ``AGENT_SPEC`` needs no enforcement (it holds by construction), and
-``SEEDED_SETTINGS`` is declared-but-unenforced, and the reason is a read-back
+**Enforcement scope.** Three mechanisms are ENFORCED here --
+:data:`~kiro_crew.agent_sdk.backends.Routing.SESSION_CONFIG`,
+:data:`~kiro_crew.agent_sdk.backends.Routing.VERIFIED_SEEDED_SETTINGS` and
+:data:`~kiro_crew.agent_sdk.backends.Routing.VERIFIED_GATE_EXTENSION` -- because
+they are the three this core implements end to end. ``AGENT_SPEC`` needs no
+enforcement (it holds by construction), and ``SEEDED_SETTINGS`` is
+declared-but-unenforced, and the reason is a read-back
 gap rather than a missing writer. ``AcpClient._write_claude_local_settings`` does
 seed ``permissions.defaultMode`` into ``<work_dir>/.claude/settings.local.json``,
 but it writes only the file it OWNS -- created this session and still carrying the
@@ -36,6 +39,16 @@ stripped, so the precondition this mechanism would need is not established.
 ``routing_verdict`` reports that honestly as INDETERMINATE -- what is scoped is
 whether a non-ROUTED verdict REFUSES, not whether it is told truthfully. Widening the scope
 means implementing a mechanism, not editing an allowlist.
+
+``VERIFIED_SEEDED_SETTINGS`` is what closes that read-back gap for one harness
+rather than in general: the client supplies the required setting as the session
+starts, READS THE HARNESS'S OWN RESOLVED CONFIGURATION BACK, and hands the observed
+value to :func:`seeded_setting_issue` before the first prompt. So the two members
+are not the same mechanism at different confidence levels -- one has an observation
+and the other does not, which is exactly why enforcement follows the member and not
+the harness id. Reading the harness's resolution rather than the bytes Crew supplied
+is also what makes a PRECEDENCE change visible: the answer is what the session will
+use, not what the seed hoped it would.
 """
 
 from __future__ import annotations
@@ -48,8 +61,12 @@ from pathlib import PurePosixPath
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backends import (
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_LAUNCH,
+    ACP_BACKEND_PI,
     Routing,
+    gate_probe_command_for,
     permission_config_for,
+    permission_setting_for,
     routing_for,
 )
 
@@ -61,7 +78,28 @@ logger = logging.getLogger(__name__)
 #: harness declaring an implemented mechanism is enforced automatically, and
 #: adding a mechanism here without implementing it would assert a guarantee
 #: nothing performs.
-ENFORCED_ROUTINGS: frozenset = frozenset({Routing.SESSION_CONFIG})
+#:
+#: KNOWN SEAM GAP, recorded here because this is where a reader meets it.
+#: :func:`is_enforced` reads this set to answer TWO different questions: "does a
+#: non-ROUTED verdict refuse this session?" and, through
+#: :func:`adapter_hidden_credential_dirs`, "does this harness get the OS credential
+#: mask?". Those are not the same question. The mask compensates for a harness whose
+#: passive READS bypass the gate, which is a property of the harness, not of whether
+#: its routing verdict is capable of refusing. They agree for every harness carried
+#: today, so nothing is wrong now and nothing here is a workaround -- but a harness
+#: that needs the mask while declaring a mechanism that cannot refuse would get
+#: neither, and one that refuses without doing passive reads would carry a mask it
+#: does not need. Splitting them is a change to a security control and belongs in its
+#: own change; tracked at
+#: docs/system-specs/modules/harness-onboarding.md#worked-example-the-deepseek-harness,
+#: which records the run that surfaced it.
+ENFORCED_ROUTINGS: frozenset = frozenset(
+    {
+        Routing.SESSION_CONFIG,
+        Routing.VERIFIED_SEEDED_SETTINGS,
+        Routing.VERIFIED_GATE_EXTENSION,
+    }
+)
 
 #: What is NOT consulted when a harness's tool calls bypass the gate. Named in
 #: full in the refusal, because "bypasses the security gate" does not tell an
@@ -70,11 +108,20 @@ UNENFORCED_CONTROLS = (
     "the bundled denied-command rules, the sensitive-path block and the governance ceiling"
 )
 
-#: Operator-facing harness labels. Local rather than imported: the refusal text is
-#: the only consumer, and a Codex host must never be told to run ``kiro-cli
-#: login``-style advice aimed at a different harness.
+#: Operator-facing harness labels. The refusal text is the only consumer, and a
+#: Codex host must never be told to run ``kiro-cli login``-style advice aimed at a
+#: different harness.
+#:
+#: Rows for the harnesses that serve ACP from their own binary come from their
+#: ``ACP_BACKEND_LAUNCH`` records, which already carry the display name for the
+#: install panel -- so a harness of that shape has one name, in one place, rather
+#: than one here and one there that can disagree. The two Node adapters keep rows of
+#: their own: neither has a launch record, and the name an operator knows the harness
+#: by is not its adapter's package name.
 _LABELS: dict = {
     ACP_BACKEND_CODEX: "OpenAI Codex",
+    ACP_BACKEND_PI: "Pi",
+    **{backend: record.label for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
 }
 
 #: The credential store each enforced harness must still be able to read.
@@ -397,6 +444,50 @@ def routing_verdict(backend: str) -> tuple:
             f"the client enforces {option_id}={value} before the first prompt",
         )
 
+    if routing is Routing.VERIFIED_SEEDED_SETTINGS:
+        setting_key, value = permission_setting_for(backend)
+        if not setting_key or not value:
+            # Same registration bug as the branch above, and it must not read as
+            # routed: there would be nothing to write and nothing to read back.
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares verified seeded-settings routing but names no setting",
+            )
+        # ROUTED on a PROMISE, like the branch above, because the session it would be
+        # read out of does not exist yet. What makes this member different from
+        # SEEDED_SETTINGS is that the promise is CHECKED: the other half is
+        # ``seeded_setting_issue`` fed the value the harness ITSELF resolved, which
+        # MUST run after the seed and before the first prompt. Port this verdict
+        # without that caller and the harness reports routed while running its own
+        # permissive default.
+        return (
+            Verdict.ROUTED,
+            f"the client supplies {setting_key}={value} to the session and reads the "
+            "harness's own resolved configuration back before the first prompt",
+        )
+
+    if routing is Routing.VERIFIED_GATE_EXTENSION:
+        probe = gate_probe_command_for(backend)
+        if not probe:
+            # Registration bug, same class as the two above: nothing to look for in
+            # the read-back means nothing that could fail it.
+            return (
+                Verdict.INDETERMINATE,
+                "the harness declares gate-extension routing but names no probe command",
+            )
+        # ROUTED on a PROMISE, like its two siblings: the harness process the
+        # extension would load into does not exist yet. The CHECK is
+        # ``gate_extension_issue`` fed the harness's own command registry, which
+        # MUST run after the harness is told the extension path and before the
+        # first prompt. Port this verdict without that caller and the harness
+        # reports routed while running every tool call unasked.
+        return (
+            Verdict.ROUTED,
+            "the client loads Kiro Crew's gate extension into the harness and reads "
+            f"the harness's own command registry back for {probe!r} before the "
+            "first prompt",
+        )
+
     if routing is Routing.SEEDED_SETTINGS:
         # Declared, not enforced here -- and the gap is the READ-BACK, not a missing
         # writer. ``_write_claude_local_settings`` does seed the mode, but only into
@@ -426,12 +517,41 @@ def is_enforced(backend: str) -> bool:
 def remediation_for(backend: str) -> str:
     """The concrete change an operator can make, or ``""`` when there is none."""
     routing = routing_for(backend)
+    if routing is Routing.VERIFIED_SEEDED_SETTINGS:
+        setting_key, value = permission_setting_for(backend)
+        if setting_key and value:
+            # Names a config source that OUTRANKS Crew's own seed, because that is the
+            # only kind an operator can act on: the seed already carries the required
+            # value, so a refusal means something above it resolved to something else.
+            # Telling them to edit the project file would be advice that cannot clear
+            # the refusal, since the seed already outranks that file.
+            return (
+                f"{label_for(backend)} resolved {setting_key} to something other than "
+                f"{value!r} even with Kiro Crew's own setting supplied, so a "
+                f"higher-precedence config source is overriding it. Remove that "
+                f"override to select this harness."
+            )
+        return ""
     if routing is Routing.SESSION_CONFIG:
         option_id, value = permission_config_for(backend)
         if option_id and value:
             return (
                 f"Install a {label_for(backend)} adapter that advertises ACP session "
                 f"config option {option_id!r} with value {value!r}."
+            )
+    if routing is Routing.VERIFIED_GATE_EXTENSION:
+        probe = gate_probe_command_for(backend)
+        if probe:
+            # The only thing an operator can act on: the harness either did not
+            # start with the extension flag Kiro Crew passed, or loaded the
+            # command from somewhere other than Kiro Crew's own file. Both point
+            # at the harness install or at an extension of the operator's that
+            # shadows the probe name.
+            return (
+                f"{label_for(backend)} did not report Kiro Crew's gate extension as "
+                f"loaded from Kiro Crew's own file. Make sure the harness accepts an "
+                f"extension on its command line, and that no extension of your own "
+                f"registers a command named {probe!r}."
             )
     return ""
 
@@ -467,6 +587,88 @@ def session_config_issue(backend: str, config_options: object) -> str:
             return ""
         return f"config option {option_id!r} does not advertise required value {required!r}"
     return f"session/new did not advertise config option {option_id!r}"
+
+
+def seeded_setting_issue(backend: str, observed: object) -> str:
+    """Why *backend*'s seeded permission setting is not in force, from what was read back.
+
+    ``""`` means the value read off disk after the seed is the required one.
+
+    *observed* is what the harness's OWN RESOLVED configuration carried when it was
+    read back -- ``None`` when the setting was absent from it. Taking it as an argument rather than reading the file
+    here is what keeps this module a leaf: the driver owns the disk, and this owns
+    the decision, so the refusal text and the doctor row cannot disagree about what
+    counts as routed.
+
+    A value the operator chose themselves is an ISSUE, not an override to honour.
+    A harness on this mechanism asks per tool call only while the setting holds the
+    required value, so a permissive one means the PreToolUse gate never runs. Note
+    what is NOT done about it: no config of theirs is rewritten. Crew's setting is
+    supplied alongside, and the harness's own precedence decides -- so a refusal here
+    means something outranked that setting, not that Crew declined to edit a file.
+    """
+    if routing_for(backend) is not Routing.VERIFIED_SEEDED_SETTINGS:
+        return ""
+    setting_key, required = permission_setting_for(backend)
+    if not setting_key or not required:
+        return "the harness declares verified seeded-settings routing but names no setting"
+    if observed is None:
+        return (
+            f"the harness's own resolved configuration does not carry {setting_key!r} "
+            "after the seed"
+        )
+    if observed != required:
+        return (
+            f"{setting_key!r} reads {observed!r} rather than the required {required!r}, "
+            "so privileged tools would not ask"
+        )
+    return ""
+
+
+def gate_extension_issue(backend: str, observed_commands: object, extension_path: str) -> str:
+    """Why *backend*'s gate extension is not loaded, from the harness's own command list.
+
+    ``""`` means the harness reported Kiro Crew's probe command, sourced from
+    *extension_path* -- the file Kiro Crew shipped and named on the command line.
+
+    *observed_commands* is what the harness's OWN command registry returned when
+    asked: a list of entries, each carrying a ``name`` and, for an extension
+    command, a ``sourceInfo`` whose ``path`` is the file it loaded from. Taken as
+    an argument rather than fetched here for the same reason
+    :func:`seeded_setting_issue` takes its observation: the driver owns the
+    process, this owns the decision, so the refusal and the doctor row agree.
+
+    Matching the NAME alone is not enough and the reason is not hypothetical: the
+    harness loads extensions from the operator's own directories too, and an
+    operator extension that happens to register the probe name would make an
+    absent gate read as present. So the source path is required to be Kiro
+    Crew's file. Anything short of that -- name absent, name present from another
+    file, an unparseable registry -- refuses.
+    """
+    if routing_for(backend) is not Routing.VERIFIED_GATE_EXTENSION:
+        return ""
+    probe = gate_probe_command_for(backend)
+    if not probe:
+        return "the harness declares gate-extension routing but names no probe command"
+    if not isinstance(observed_commands, list):
+        return "the harness's command registry could not be read"
+    sources: list = []
+    for entry in observed_commands:
+        if not isinstance(entry, dict) or entry.get("name") != probe:
+            continue
+        info = entry.get("sourceInfo")
+        sources.append(info.get("path") if isinstance(info, dict) else None)
+    if not sources:
+        return (
+            f"the harness's command registry does not list {probe!r}, so Kiro Crew's "
+            "gate extension did not load and tools would run unasked"
+        )
+    if extension_path not in sources:
+        return (
+            f"the harness lists {probe!r} but from a file that is not Kiro Crew's "
+            "gate extension, so the gate that would ask is not the one shipped here"
+        )
+    return ""
 
 
 def enforce_runtime_routing(
@@ -524,9 +726,11 @@ __all__ = [
     "adapter_hidden_credential_dirs",
     "enforce_runtime_routing",
     "enforce_sandbox_floor",
+    "gate_extension_issue",
     "is_enforced",
     "label_for",
     "remediation_for",
     "routing_verdict",
+    "seeded_setting_issue",
     "session_config_issue",
 ]

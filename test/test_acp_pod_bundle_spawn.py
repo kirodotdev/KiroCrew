@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from conftest import requires_symlinks
 from kiro_crew.acp.client import (
     _kiro_cli_bundle_binary,
     apply_pod_bundle_spawn,
@@ -40,6 +41,25 @@ def _bundle_layout(tmp_path: Path) -> tuple[str, str]:
         path.write_text("#!/bin/sh\nexit 0\n")
         path.chmod(0o755)
     return str(shim), str(bundle)
+
+
+def _app_bundle_layout(tmp_path: Path, *, sibling: str | None = "kiro-cli-chat") -> Path:
+    macos_dir = tmp_path / "Applications" / "Kiro CLI.app" / "Contents" / "MacOS"
+    macos_dir.mkdir(parents=True)
+    names = ["kiro-cli"] + ([sibling] if sibling else [])
+    for name in names:
+        path = macos_dir / name
+        path.write_text("#!/bin/sh\nexit 0\n")
+        path.chmod(0o755)
+    return macos_dir / "kiro-cli"
+
+
+def _symlink_in_local_bin(tmp_path: Path, target: Path) -> Path:
+    local_bin = tmp_path / ".local" / "bin"
+    local_bin.mkdir(parents=True)
+    link = local_bin / "kiro-cli"
+    link.symlink_to(target)
+    return link
 
 
 def _pod_env(os_home: Path) -> dict[str, str]:
@@ -101,6 +121,91 @@ def test_pod_spawn_degrades_to_status_quo_when_no_bundle_binary_exists(
         environ=_pod_env(tmp_path / "os-home"),
     )
     assert argv == [str(lone), "acp"]
+    assert delegate is (ACP_BACKEND_KIRO in ACP_BACKENDS_INTERNAL_SANDBOX)
+
+
+@requires_symlinks
+def test_pod_spawn_resolves_a_macos_app_bundle_symlink_and_takes_crew_sandbox(
+    tmp_path: Path,
+) -> None:
+    bundle = _app_bundle_layout(tmp_path)
+    link = _symlink_in_local_bin(tmp_path, bundle)
+
+    assert _kiro_cli_bundle_binary(str(link), environ={}) is None
+
+    argv, delegate = apply_pod_bundle_spawn(
+        [str(link), "acp"],
+        backend=ACP_BACKEND_KIRO,
+        environ=_pod_env(tmp_path / "os-home"),
+    )
+
+    assert argv == [str(bundle), "acp"]
+    assert delegate is False
+
+
+@requires_symlinks
+def test_pod_spawn_leaves_a_same_named_symlink_outside_an_app_bundle_unresolved(
+    tmp_path: Path,
+) -> None:
+    vendor = tmp_path / "opt" / "vendor"
+    vendor.mkdir(parents=True)
+    target = vendor / "kiro-cli"
+    target.write_text("#!/bin/sh\nexit 0\n")
+    target.chmod(0o755)
+    link = _symlink_in_local_bin(tmp_path, target)
+
+    assert _kiro_cli_bundle_binary(str(link), environ={}) is None
+
+    argv, delegate = apply_pod_bundle_spawn(
+        [str(link), "acp"],
+        backend=ACP_BACKEND_KIRO,
+        environ=_pod_env(tmp_path / "os-home"),
+    )
+
+    assert argv == [str(link), "acp"]
+    assert delegate is (ACP_BACKEND_KIRO in ACP_BACKENDS_INTERNAL_SANDBOX)
+
+
+@requires_symlinks
+def test_pod_spawn_leaves_a_bundle_shaped_target_with_no_sibling_unresolved(
+    tmp_path: Path,
+) -> None:
+    bundle = _app_bundle_layout(tmp_path, sibling=None)
+    link = _symlink_in_local_bin(tmp_path, bundle)
+
+    assert _kiro_cli_bundle_binary(str(link), environ={}) is None
+
+    argv, delegate = apply_pod_bundle_spawn(
+        [str(link), "acp"],
+        backend=ACP_BACKEND_KIRO,
+        environ=_pod_env(tmp_path / "os-home"),
+    )
+
+    assert argv == [str(link), "acp"]
+    assert delegate is (ACP_BACKEND_KIRO in ACP_BACKENDS_INTERNAL_SANDBOX)
+
+
+@requires_symlinks
+def test_pod_spawn_leaves_an_argv0_dispatching_multiplexer_symlink_unresolved(
+    tmp_path: Path,
+) -> None:
+    bin_dir = tmp_path / ".toolbox" / "bin"
+    bin_dir.mkdir(parents=True)
+    multiplexer = bin_dir / "toolbox-exec"
+    multiplexer.write_text("#!/bin/sh\nexit 0\n")
+    multiplexer.chmod(0o755)
+    link = bin_dir / "kiro-cli"
+    link.symlink_to(multiplexer)
+
+    assert _kiro_cli_bundle_binary(str(link), environ={}) is None
+
+    argv, delegate = apply_pod_bundle_spawn(
+        [str(link), "acp"],
+        backend=ACP_BACKEND_KIRO,
+        environ=_pod_env(tmp_path / "os-home"),
+    )
+
+    assert argv == [str(link), "acp"]
     assert delegate is (ACP_BACKEND_KIRO in ACP_BACKENDS_INTERNAL_SANDBOX)
 
 

@@ -322,3 +322,37 @@ describe('scanDocument — an opaque child is skipped, not joined', () => {
     expect(pseudoScan().filter(f => f.signature === 'multi-unit')).toHaveLength(1)
   })
 })
+
+describe('scanDocument control groups remain independently checked', () => {
+  const mount = (html: string) => {
+    document.body.replaceChildren(document.createRange().createContextualFragment(html))
+  }
+  const pseudoScan = () => scanDocument({ mode: 'pseudo' })
+
+  it.each(['group', 'tablist', 'radiogroup', 'toolbar'])('separates sibling controls in an inline %s', role => {
+    mount(`<div><div role="${role}" style="display:inline-flex"><button style="display:flex">[Àĺĺ ···]</button><button style="display:flex">[Ƒàçţş ···]</button></div></div>`)
+    expect(pseudoScan().filter(f => f.kind === 'fragment' || f.kind === 'latin-leak')).toEqual([])
+  })
+
+  it('still refuses two catalog units inside one grouped button', () => {
+    mount('<div><div role="group" style="display:inline-flex"><button style="display:flex"><span>[Ûñìţ øñè·]</span><span>[Ûñìţ ţŵø·]</span></button></div></div>')
+    expect(pseudoScan().filter(f => f.signature === 'multi-unit')).toHaveLength(1)
+  })
+
+  it('still refuses split prose directly inside a group', () => {
+    mount('<div><div role="group" style="display:inline-flex"><span>[Ûñìţ øñè·]</span><span>[Ûñìţ ţŵø·]</span></div></div>')
+    expect(pseudoScan().filter(f => f.signature === 'multi-unit')).toHaveLength(1)
+  })
+
+  it('still checks grouped control text and attributes for untranslated words', () => {
+    mount('<div><div role="group" style="display:inline-flex"><button style="display:flex" title="Untranslated tooltip">Untranslated label</button></div></div>')
+    const findings = pseudoScan()
+    expect(findings.some(f => f.signature === 'untranslated-text' && f.detail === 'label')).toBe(true)
+    expect(findings.some(f => f.signature === 'untranslated-attribute' && f.detail === 'tooltip')).toBe(true)
+  })
+
+  it('does not exempt ungrouped inline-flex content', () => {
+    mount('<div><div style="display:inline-flex"><button style="display:flex">[Ûñìţ øñè·]</button><button style="display:flex">[Ûñìţ ţŵø·]</button></div></div>')
+    expect(pseudoScan().filter(f => f.signature === 'multi-unit')).toHaveLength(1)
+  })
+})

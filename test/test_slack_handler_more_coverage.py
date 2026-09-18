@@ -608,8 +608,7 @@ class TestAutoTitleToolRejection:
         assert not [a for a in slack.actions if a[0] == "set_thread_title"]
 
     def test_lock_is_rebound_when_the_event_loop_changes(self):
-        """Regression for #4789 (mechanism now shared via #4800's LoopBoundLock):
-        the module-global auto-title lock must keep working when the running
+        """The module-global auto-title lock must keep working when the running
         event loop changes.
 
         ``pytest-asyncio`` gives every async test a fresh loop, and on
@@ -649,8 +648,7 @@ class TestAutoTitleToolRejection:
         lock2, inner2, provider2, slack2 = _run_once("slack:loop2")
 
         # One shared chokepoint object, but each loop must get its OWN inner
-        # lock — this is the rebinding invariant that #4789's fix introduced
-        # and #4800's LoopBoundLock now carries.
+        # lock — the rebinding invariant that LoopBoundLock enforces.
         assert lock2 is lock1
         assert inner2 is not inner1
         # …and the real path must still work there: the rejection is recorded
@@ -969,6 +967,120 @@ class _Hooks:
         return self._tool_result
 
 
+class _RecordingBuilder(_Builder):
+    """``_Builder`` that also keeps every ``build_message`` kwarg."""
+
+    def __init__(self):
+        super().__init__(ToolHookResult(action=TOOL_ALLOW))
+        self.build_calls: list[dict] = []
+
+    def build_message(self, text, is_new, session_key, **kw):
+        self.build_calls.append({"key": session_key, **kw})
+        return text, None
+
+
+def _arm_reinjection(sessions) -> dict:
+    """Give the session stand-in the real manager's one-shot flag surface."""
+    ledger: dict = {"consumed": [], "marks": 0, "armed": True}
+
+    def _consume(key):
+        ledger["consumed"].append(key)
+        was = ledger["armed"]
+        ledger["armed"] = False
+        return was
+
+    def _mark(key):
+        ledger["marks"] += 1
+        ledger["armed"] = True
+
+    sessions.consume_needs_reinjection = _consume
+    sessions.mark_needs_reinjection = _mark
+    return ledger
+
+
+class TestCompactionReinjection:
+    """The native Slack turn loop is its own copy, so it must consume the flag itself.
+
+    ``session_compaction`` marks ``needs_reinjection`` after an in-place compaction
+    dropped the session-start context. A turn loop that does not read it runs
+    every turn after ``/compact`` without the skills index or the response-preferences
+    block.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_compacted_session_forwards_the_flag_to_build_message(self):
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]))
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        call = builder.build_calls[-1]
+        assert ledger["consumed"] == [call["key"]], "consumed under the key the turn runs as"
+        assert call["needs_reinjection"] is True
+        # Landed: consumed exactly once, and NOT put back.
+        assert ledger["marks"] == 0 and ledger["armed"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_session_stand_in_without_the_flag_gets_the_false_default(self):
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider([AcpEvent(kind=EVENT_TEXT_CHUNK, text="ok")]))
+        assert not hasattr(sessions, "consume_needs_reinjection")
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is False
+        assert sessions.failures == [], "the turn still ran"
+
+    @pytest.mark.asyncio
+    async def test_a_synthetic_completion_for_a_wedged_turn_puts_the_flag_back(self):
+        # stale_recover is the backend's synthetic completion for a wedged turn:
+        # the stream ends normally, but the prompt never landed.
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(
+            FakeProvider([AcpEvent(kind=EVENT_COMPLETE, stop_reason="stale_recover")])
+        )
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is True
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_stream_that_ends_without_a_completion_puts_the_flag_back(self):
+        # The stream exhausted with no EVENT_COMPLETE: nothing proves the prompt
+        # landed, so the finally re-arms.
+        class _Exhausted(FakeProvider):
+            async def stream(self, message, timeout=120.0):
+                yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="partial")
+
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(_Exhausted())
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is True
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_failed_consuming_turn_puts_the_flag_back(self):
+        # The flag is cleared BEFORE build_message; a provider error on that very
+        # turn discards the prompt carrying the re-injected context. Without the
+        # re-arm the session runs without it until the NEXT compaction -- the
+        # contract the dashboard runner keeps in its finally, applied here.
+        builder = _RecordingBuilder()
+        sessions = FakeSessions(FakeProvider(raises=AcpProcessDied("agent died")))
+        ledger = _arm_reinjection(sessions)
+        await handle_message(
+            MockSlackClient(), sessions, "C1", "go", None, "m1", "U1", context_builder=builder
+        )
+        assert builder.build_calls[-1]["needs_reinjection"] is True
+        assert sessions.failures, "the turn was recorded a failure"
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+
 class TestToolHookVerdicts:
     @pytest.mark.asyncio
     async def test_tool_call_deny_is_surfaced_as_unenforceable_warning(self):
@@ -1247,10 +1359,18 @@ class _Slot:
             "meta": {**(meta or {}), "mid": f"m-slot-{len(self.appended)}"},
         }
 
-    def queue_append(self, text, *, meta=None, directive_user_origin):
+    def queue_append(
+        self,
+        text,
+        *,
+        meta=None,
+        directive_user_origin,
+        directive_channel_origin,
+    ):
         assert directive_user_origin is True
+        assert directive_channel_origin is True
         # The linked-thread enqueue stamps the admission-time containment
-        # snapshot (#5911) so the drain can re-assert it at delivery.
+        # snapshot so the drain can re-assert it at delivery.
         assert isinstance(meta, dict)
         self.queued.append(text)
 
@@ -1279,8 +1399,16 @@ class TestLinkedThreadRouting:
 
         ran: list[str] = []
 
-        async def _fake_run_chat(state, slot, text, *, _directive_user_origin):
+        async def _fake_run_chat(
+            state,
+            slot,
+            text,
+            *,
+            _directive_user_origin,
+            _directive_channel_origin,
+        ):
             assert _directive_user_origin is True
+            assert _directive_channel_origin is True
             ran.append(text)
 
         monkeypatch.setattr(chat_mod, "_run_chat", _fake_run_chat)

@@ -1,5 +1,5 @@
 import { useRef, useEffect } from 'react'
-import { Check } from 'lucide-react'
+import { Check, LoaderCircle } from 'lucide-react'
 
 import { isPricedMultiplier } from '../providers/modelList'
 import type { ModelInfo } from '../providers/types'
@@ -104,8 +104,21 @@ const TIER_BORDER: Record<ReturnType<typeof costTier>, string> = {
 }
 
 /** Shared model list used in dropdown portals across AgentsPage and ChatPage */
-export default function ModelDropdownList({ models, activeModel, onSelect }: {
+export default function ModelDropdownList({ models, activeModel, onSelect, loading = false, failed = false }: {
   models: ModelItem[]; activeModel: string; onSelect: (name: string) => void
+  /** True while the list's SOURCE is still being fetched — a remote-bound
+   *  session whose peer capability read is in flight or being re-polled. An
+   *  empty list then renders as a loading row rather than "No matches": empty
+   *  claims the peer offers no models, which is not what a still-pending read
+   *  says, and the misread is sticky — the user closes the picker and stops
+   *  trying. Filter no-match on a POPULATED list is unaffected. */
+  loading?: boolean
+  /** True when the list's SOURCE read errored. The wrapper renders its own
+   *  ErrorNotice + Retry, so an empty failed list renders NOTHING here:
+   *  "No matches" beside "couldn't load" is two contradictory messages for
+   *  one state. `failed` wins over `loading`; a POPULATED list still renders
+   *  its rows. */
+  failed?: boolean
 }) {
   const activeRef = useRef<HTMLButtonElement>(null)
   useEffect(() => {
@@ -161,7 +174,23 @@ export default function ModelDropdownList({ models, activeModel, onSelect }: {
           </button>
         )
       })}
-      {models.length === 0 && <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.modelDropdownList.no_matches')}</div>}
+      {models.length === 0 && !failed && (
+        loading
+          ? (
+            /* aria-busy marks the region as still populating, and the polite
+               live region announces the wait once instead of leaving a screen
+               reader with a silent empty listbox. */
+            <div
+              aria-busy="true"
+              aria-live="polite"
+              className="flex items-center gap-2 px-3 py-2 text-[13px] text-muted italic"
+            >
+              <LoaderCircle className="lucide-inline shrink-0 animate-spin" aria-hidden />
+              {i18nT('components.modelDropdownList.loading_models')}
+            </div>
+          )
+          : <div className="px-3 py-2 text-[13px] text-muted italic">{i18nT('components.modelDropdownList.no_matches')}</div>
+      )}
     </div>
   )
 }

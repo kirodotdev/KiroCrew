@@ -306,7 +306,7 @@ def test_status_ready_before_the_first_sync(omc):
 
 
 def test_status_reports_the_refusal_push_actually_makes(omc):
-    """A conflicted schedule is the one state that used to LIE on this card.
+    """A conflicted schedule must not LIE on this card.
 
     ``push`` refuses outright while ``rotation.yaml`` holds markers, and that refusal
     reached only the log and a SEL line -- so the card kept claiming "Syncing".

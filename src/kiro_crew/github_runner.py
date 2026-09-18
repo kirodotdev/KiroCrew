@@ -5,9 +5,9 @@ and the child-environment key set — for every ``gh``-spawning surface: the
 dashboard's PR sidebar (``dashboard/handlers/source_providers.py``), Issue
 Radar (``apps/builtins/issue_radar/backend/github_client.py``), and Code
 Review Sage (``apps/builtins/code_review_sage/sage_lib/discovery.py`` /
-``pipeline.py``). Each previously carried its own copy of the hardened-runner
-pattern, so a hardening fix had to land in three places and a missed copy
-silently kept the weaker guard.
+``pipeline.py``). Without one home each carries its own copy of the
+hardened-runner pattern, so a hardening fix has to land in three places and a
+missed copy silently keeps the weaker guard.
 
 Spawning is shared for the sync app-side callers only: Issue Radar and Sage
 route every spawn through :func:`run_gh` below, while the sidebar keeps its
@@ -93,11 +93,20 @@ PROVIDER_EXECUTABLE_DIRS = (
     "/home/linuxbrew/.linuxbrew/bin",
 )
 PROVIDER_EXECUTABLE_CANDIDATES = {
-    executable: tuple(
-        f"{directory}/{executable}" for directory in PROVIDER_EXECUTABLE_DIRS
-    )
+    executable: tuple(f"{directory}/{executable}" for directory in PROVIDER_EXECUTABLE_DIRS)
     for executable in ("gh", "glab", "az")
 }
+
+
+def gitlab_ambient_token_allowed(host: str) -> bool:
+    """Whether the unscoped ambient GitLab token may reach *host*.
+
+    ``GITLAB_TOKEN`` has no host binding. Self-managed instances authenticate
+    through glab's per-host config instead, so a gitlab.com token cannot be
+    presented to a different server.
+    """
+    return host.casefold() == "gitlab.com"
+
 
 # Windows equivalents of the well-known dirs above, as the *subdirectory* each
 # installer creates under a Program Files root. Expanded at call time rather
@@ -108,12 +117,18 @@ PROVIDER_EXECUTABLE_CANDIDATES = {
 WINDOWS_PROVIDER_EXECUTABLE_SUBDIRS = {
     "gh": ("GitHub CLI",),
     "glab": ("GitLab CLI", "glab"),
+    "az": (os.path.join("Microsoft SDKs", "Azure", "CLI2", "wbin"),),
 }
 WINDOWS_PROGRAM_ROOT_VARS = ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)")
 
 # Generic operator override for the gh binary, honored by every caller after
 # its own caller-specific override (KIROCREW_ISSUE_RADAR_GH / KIROCREW_SAGE_GH).
 GH_BIN_ENV = "KIROCREW_GH_BIN"
+PROVIDER_CLI_OVERRIDE_ENV = {
+    "gh": GH_BIN_ENV,
+    "glab": "KIROCREW_GLAB_BIN",
+    "az": "KIROCREW_AZ_BIN",
+}
 
 # Parent-prevalidated gh channel for sandboxed children. A Linux script-cron
 # sandbox maps only the gateway's own uid into its user namespace, so every
@@ -136,11 +151,24 @@ GH_PREVALIDATED_ENV = "_KIROCREW_GH_PREVALIDATED"
 # gh-scoped auth/network/TLS config, so the union adds no new secret class to
 # the child.
 GH_ENV_PASSTHROUGH = (
-    "GH_TOKEN", "GITHUB_TOKEN", "GH_ENTERPRISE_TOKEN", "GITHUB_ENTERPRISE_TOKEN",
-    "GH_HOST", "GH_CONFIG_DIR",
-    "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
-    "http_proxy", "https_proxy", "no_proxy", "all_proxy",
-    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GH_HOST",
+    "GH_CONFIG_DIR",
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "NO_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "no_proxy",
+    "all_proxy",
+    "SSL_CERT_FILE",
+    "SSL_CERT_DIR",
+    "REQUESTS_CA_BUNDLE",
+    "CURL_CA_BUNDLE",
 )
 
 # Ambient identity a gh child must never inherit: `gh api` authenticates with
@@ -292,7 +320,7 @@ def check_provider_path_component_windows(
         raise ValueError(f"{label} can be replaced by {joined}")
 
 
-def validate_provider_executable(candidate: str) -> str:
+def validate_provider_executable(candidate: str, *, require_protected: bool = False) -> str:
     """Return the canonical path of a provider CLI we will run, or raise.
 
     Default policy — *if `gh` works in your terminal, it works here*. Any
@@ -312,18 +340,33 @@ def validate_provider_executable(candidate: str) -> str:
     AWS/Slack/gateway secrets), and every spawn is SEL-audited — containment
     and audit carry the trust boundary instead of binary provenance.
 
-    A gateway running as **root** is refused outright, in both modes: every
-    process it spawns (including the agent's own shell) would be root too, which
-    makes the ownership and agent-tree checks vacuous.
-
-    Set ``KIROCREW_PROVIDER_BIN_STRICT=1`` on shared or multi-tenant hosts to
-    restore the previous rule: canonical, symlink-free, root-owned and
-    unwritable by the gateway user through every parent.
+    A gateway running as **root** on POSIX is refused outright, in both modes.
+    The reason is the sandbox boundary, not root itself: the agent's children
+    run under :mod:`kiro_crew.sandbox`, which bind-masks the credential homes
+    (``~/.config/gh`` among them) but leaves the rest of the filesystem
+    writable, while a provider child runs UNSANDBOXED with those credentials.
+    A root agent can therefore overwrite a root-owned ``/usr/bin/gh`` and have
+    the next Issue Radar call execute it with the credentials the sandbox hid
+    from it — and this walk cannot tell that write from the operator's install,
+    because both are root. Refusing the root gateway is what keeps the mask a
+    boundary. Where there is no such boundary the refusal protects nothing:
 
     On **Windows** the same two questions are answered from the object's ACL
     rather than from ``st_uid`` and the mode bits, which carry no information
-    there (see :mod:`kiro_crew.windows_acl`). An **elevated** gateway is refused
-    for the same reason a root one is: its children would be elevated too.
+    there (see :mod:`kiro_crew.windows_acl`). An **elevated** token (the
+    built-in ``Administrator`` account, which is always elevated, or any "Run as
+    administrator" launch) is NOT a refusal reason: Windows has no OS sandbox in
+    this codebase, so the agent's shell already holds the gateway's full token
+    and the provider's credentials with it — refusing the gateway there would
+    remove the feature without removing any exposure. Which account runs the
+    gateway is Windows' decision; the ACL walk runs unchanged, keyed on the
+    gateway user's SID, which an elevated token still carries.
+
+    Set ``KIROCREW_PROVIDER_BIN_STRICT=1`` on shared or multi-tenant hosts to
+    restore the previous rule: canonical, symlink-free, root-owned and
+    unwritable by the gateway user through every parent. Callers that expose
+    provider credentials to the child set ``require_protected`` to apply that
+    rule regardless of the operator's global mode.
     """
     if not os.path.isabs(candidate):
         raise ValueError("path must be absolute")
@@ -332,18 +375,14 @@ def validate_provider_executable(candidate: str) -> str:
     uid = -1
     me_sid = ""
     if windows:
-        # Both of these live in platform_compat because it already owns "read
-        # this process's own access token" for the codebase. Both are tri-state
-        # and BOTH non-True answers refuse: an unreadable token is not a
-        # not-elevated token, and an unverifiable SID is not a trusted one.
-        elevated = platform_compat.is_token_elevated()
-        if elevated is None:
-            raise ValueError("provider execution is disabled: the gateway token is unreadable")
-        if elevated:
-            raise ValueError("provider execution is disabled for an elevated gateway")
+        # Lives in platform_compat because it already owns "read this process's
+        # own access token" for the codebase. Tri-state, and the non-True
+        # answer refuses: an unverifiable SID is not a trusted one.
         me_sid = platform_compat.current_user_sid() or ""
         if not me_sid:
-            raise ValueError("provider execution is disabled: the gateway user's SID is unverifiable")
+            raise ValueError(
+                "provider execution is disabled: the gateway user's SID is unverifiable"
+            )
     else:
         getuid = getattr(os, "getuid", None)
         geteuid = getattr(os, "geteuid", getuid)
@@ -352,7 +391,7 @@ def validate_provider_executable(candidate: str) -> str:
         if geteuid() == 0:
             raise ValueError("provider execution is disabled for a root gateway")
         uid = geteuid()
-    strict = strict_provider_bins()
+    strict = require_protected or strict_provider_bins()
 
     def _check(target: Path, *, label: str) -> None:
         """Dispatch one component to the platform's ownership policy."""
@@ -441,8 +480,8 @@ def provider_executable_candidates(executable: str) -> tuple[str, ...]:
     Resolution inside a directory is delegated to :func:`shutil.which`, which
     applies whatever the platform defines as "runnable there": ``PATHEXT`` on
     Windows, so a bare ``gh`` matches ``gh.exe``, and ``X_OK`` on POSIX. Joining
-    the bare name by hand is why this scan previously found nothing at all on
-    Windows.
+    the bare name by hand is why this scan must not do so: on Windows it would
+    find nothing at all.
 
     A hit is then required to actually LIE INSIDE the directory that was asked
     for, because on Windows ``which`` does not only search ``path``::
@@ -710,8 +749,8 @@ def run_gh(
     keeps its own error taxonomy, and a non-zero exit is returned as-is for
     the caller to classify.
 
-    NOT sandbox-routed today: these sync callers historically spawned bare and
-    this refactor is behavior-preserving. Strict-mode sandboxing would hide
+    NOT sandbox-routed today: these sync callers spawn bare.
+    Strict-mode sandboxing would hide
     ``~/.config/gh`` + the keychain and break auth, though the sidebar's async
     path shows standard-mode routing is compatible — adopting it here is a
     follow-up, not a constraint. The trusted-binary requirement, minimal env,
@@ -729,9 +768,7 @@ def run_gh(
     try:
         _audit_run(audit_caller, operation, "invoked", critical=True)
     except Exception as exc:
-        raise SetupError(
-            "gh spawn audit unavailable — refusing to run gh unaudited"
-        ) from exc
+        raise SetupError("gh spawn audit unavailable — refusing to run gh unaudited") from exc
     try:
         # Deliberately BYTES here (no `text=True`), then decoded below.
         #
@@ -817,8 +854,10 @@ def parse_github_repo_url(link: str) -> tuple[str, str]:
     if len(parts) < 2:
         raise RepoUrlError(f"not a full repo URL: {link!r} (expected .../<owner>/<repo>)")
     owner, repo = parts[0], re.sub(r"\.git$", "", parts[1])
-    if owner in (".", "..") or repo in (".", "..") or not (
-        _SEGMENT_RE.match(owner) and _SEGMENT_RE.match(repo)
+    if (
+        owner in (".", "..")
+        or repo in (".", "..")
+        or not (_SEGMENT_RE.match(owner) and _SEGMENT_RE.match(repo))
     ):
         raise RepoUrlError(f"invalid owner/repo segment in {link!r}")
     return owner, repo

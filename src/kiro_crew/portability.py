@@ -32,16 +32,23 @@ except ImportError:
 from kiro_crew import pinned_fs, platform_compat
 from kiro_crew.config.paths import config_dir
 from kiro_crew.mcp_cron import _log_cron_denial, _vet_shell_command
+from kiro_crew.member_memory_backup import hold_stores_for_read
+from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME, is_host_local_store_state
 from kiro_crew.security import is_sensitive_path
 from kiro_crew.snapshot import (
+    _DB_SIDECAR_GLOBS,
+    EXPORT_MANIFEST_VERSION,
     NotificationCopyUnsupported,
     _copy_notifications,
     _copy_tree_no_overwrite,
     _do_replace,
     _merge_crons,
     _merge_memory,
+    _merge_named_stores,
     _merge_notifications,
+    _refuse_corrupt_source_databases,
     _staging_is_pinned,
+    is_product_tree_database,
 )
 from kiro_crew.zip_vet import ZipInventoryRejected, vet_zip_inventory
 
@@ -104,7 +111,7 @@ def _wal_checkpoint(db_path: Path) -> None:
 
 def _backup_sqlite(src: Path, dst_buffer: io.BytesIO) -> None:
     """Use SQLite backup API for a consistent copy."""
-    src_conn = sqlite3.connect(str(src))
+    src_conn = sqlite3.connect(src.absolute().as_uri() + "?mode=ro", uri=True)
     mem_conn = sqlite3.connect(":memory:")
     try:
         src_conn.backup(mem_conn)
@@ -195,10 +202,30 @@ def _keep_for_export(rel: PurePath) -> bool:
     return not (rel.parts[0] == "skills" and "auto" in rel.parts)
 
 
+def _keep_store_for_export(rel: PurePath) -> bool:
+    """`_keep_for_export` for the ``memory_stores/`` tree, plus that tree's own two rules.
+
+    Host-local state -- the member signing key, execution logs, local backup directories --
+    stays on this host (`memory_stores.is_host_local_store_state`, the same predicate the
+    snapshot applies). SQLite sidecars stay too: a store's databases are copied through the
+    backup API below, which yields a self-contained file, and a ``-wal`` archived next to
+    that copy would be replayed into a database it never belonged to. Lexical only, like
+    the filter it extends.
+    """
+    if not _keep_for_export(rel):
+        return False
+    posix = PurePosixPath(*rel.parts)
+    if is_host_local_store_state(posix.parts):
+        return False
+    return not any(posix.match(glob) for glob in _DB_SIDECAR_GLOBS)
+
+
 def _walk_contained(
     root_real: str,
     rel_dir: PurePath,
     keep: Callable[[PurePath], bool],
+    *,
+    fenced_ok: bool = False,
 ) -> Iterator[tuple[PurePath, int]]:
     """Yield ``(rel, fd)`` for every regular file under ``root_real / rel_dir``.
 
@@ -247,7 +274,7 @@ def _walk_contained(
     Containment on POSIX rests where it always did, on ``_open_verified``
     checking the descriptor's real path.
     """
-    yield from _walk_pinned(root_real, PurePath(), rel_dir.parts, keep)
+    yield from _walk_pinned(root_real, PurePath(), rel_dir.parts, keep, fenced_ok=fenced_ok)
 
 
 def _walk_pinned(
@@ -255,6 +282,8 @@ def _walk_pinned(
     rel_dir: PurePath,
     descend: tuple[str, ...],
     keep: Callable[[PurePath], bool],
+    *,
+    fenced_ok: bool = False,
 ) -> Iterator[tuple[PurePath, int]]:
     """Pin ``root_real / rel_dir``, then walk it -- or step into *descend*'s first name.
 
@@ -278,7 +307,9 @@ def _walk_pinned(
         return  # not a real directory, or a reparse point: refused, not followed
     try:
         if descend:
-            yield from _walk_pinned(root_real, rel_dir / descend[0], descend[1:], keep)
+            yield from _walk_pinned(
+                root_real, rel_dir / descend[0], descend[1:], keep, fenced_ok=fenced_ok
+            )
             return
         try:
             with os.scandir(here) as scan:
@@ -290,9 +321,11 @@ def _walk_pinned(
                 continue
             rel = rel_dir / entry.name
             if entry.is_dir(follow_symlinks=False):
-                yield from _walk_pinned(root_real, rel, (), keep)
+                yield from _walk_pinned(root_real, rel, (), keep, fenced_ok=fenced_ok)
             elif entry.is_file(follow_symlinks=False) and keep(rel):
-                fd = _open_verified(os.path.join(root_real, *rel.parts), root_real)
+                fd = _open_verified(
+                    os.path.join(root_real, *rel.parts), root_real, fenced_ok=fenced_ok
+                )
                 if fd is not None:
                     yield rel, fd
     finally:
@@ -300,15 +333,24 @@ def _walk_pinned(
             os.close(pin)
 
 
-def _open_verified(target: str, root_real: str) -> int | None:
+def _open_verified(target: str, root_real: str, *, fenced_ok: bool = False) -> int | None:
     """Open *target* without following a link at its name, and vet the descriptor.
 
     Split out so :func:`_open_inside` can hold the ancestor pins across the whole
     of it: the descriptor checks below are only worth anything while the path they
     were reached through is still the path that was verified.
+
+    *fenced_ok* admits a file the agent fence (`is_sensitive_path`) covers, and is set
+    for exactly one walk: ``memory_stores/``. That whole tree is fenced so a crew's agent
+    cannot read another crew's memory; the export is the OPERATOR downloading their own
+    install, and a private store is their memory as much as the default one is. The
+    fence is not the only screen, so lifting it lifts nothing else: containment in the
+    data home, the regular-file and single-link checks and the tree's own lexical filter
+    all still apply, and the filter is what keeps the one credential that lives under
+    the tree (the member signing key) out of the archive.
     """
     try:
-        fd = platform_compat.open_file_no_reparse(target)
+        fd = platform_compat.open_file_no_reparse(target, nonblocking=True)
     except OSError:
         return None
     try:
@@ -339,7 +381,7 @@ def _open_verified(target: str, root_real: str) -> int | None:
                 return None
         except ValueError:  # different drives on Windows
             return None
-        if is_sensitive_path(real):
+        if not fenced_ok and is_sensitive_path(real):
             return None
     except OSError:
         return None
@@ -358,7 +400,7 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     ``ZipFile.write`` takes a NAME and opens it itself, which is the re-open
     :func:`_open_inside` exists to remove, so the entry is built by hand instead.
     Streaming rather than reading the file whole is deliberate: a workspace file
-    has no size bound here, and the export used to copy one of any size.
+    has no size bound here, and the export copies one of any size.
 
     The entry's timestamp and mode come from the same descriptor, so the metadata
     describes the bytes actually archived — not whatever the name pointed at when
@@ -369,8 +411,8 @@ def _add_from_fd(zf: zipfile.ZipFile, fd: int, arcname: str) -> None:
     its size when the header is written, so without this a file over
     ``zipfile.ZIP64_LIMIT`` raises ``RuntimeError`` part-way through and the export
     endpoint answers 500. A multi-GiB file under ``workspace/`` is ordinary — a
-    dataset, a model artifact — and it used to export fine, so leaving this off
-    would trade one defect for a regression.
+    dataset, a model artifact — and must export, so leaving this off would trade
+    one defect for another.
     """
     st = os.fstat(fd)
     info = zipfile.ZipInfo(arcname, date_time=time.localtime(st.st_mtime)[:6])
@@ -446,9 +488,35 @@ def create_export_zip() -> tuple[bytes, dict]:
         contents_summary["plan_memory_files"] = dir_counts.get("plan_memory", 0)
         contents_summary["skill_count"] = dir_counts.get("skills", 0)
 
+        # Named memory stores: the same pinned walk, with the tree's own filter and the
+        # fence lifted (see `_open_verified`). A store's databases go through the backup
+        # API like the root ones -- the gateway holds every store open under WAL while
+        # this runs -- and the filter has already dropped their sidecars.
+        stores: set[str] = set()
+        with hold_stores_for_read(Path(mc_real) / MEMORY_STORES_DIR_NAME):
+            for rel, fd in _walk_contained(
+                mc_real, PurePath(MEMORY_STORES_DIR_NAME), _keep_store_for_export, fenced_ok=True
+            ):
+                try:
+                    arcname = f"{prefix}/{rel.as_posix()}"
+                    if is_product_tree_database(rel.as_posix()):
+                        real = pinned_fs.fd_real_path(fd)
+                        if real is None:
+                            continue
+                        db_buf = io.BytesIO()
+                        _backup_sqlite(Path(real), db_buf)
+                        zf.writestr(arcname, db_buf.getvalue())
+                    else:
+                        _add_from_fd(zf, fd, arcname)
+                finally:
+                    os.close(fd)
+                if len(rel.parts) > 1:
+                    stores.add(rel.parts[1])
+        contents_summary["memory_store_count"] = len(stores)
+
         # Manifest
         manifest = {
-            "version": 2,
+            "version": EXPORT_MANIFEST_VERSION,
             "format": "zip",
             "created_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
             "hostname": socket.gethostname(),
@@ -533,7 +601,7 @@ def validate_import_zip(zip_path: Path) -> tuple[bool, str, dict]:
 
             manifest_data = json.loads(zf.read(manifest_entries[0]))
             version = manifest_data.get("version")
-            if version not in (1, 2):
+            if not isinstance(version, int) or not 1 <= version <= EXPORT_MANIFEST_VERSION:
                 return False, f"Unsupported manifest version: {version}", {}
 
             return True, "", manifest_data
@@ -673,6 +741,30 @@ def _sanitize_imported_crons(crons_path: Path) -> tuple[list[str], list[str]]:
     return dropped, paused
 
 
+def _strip_host_local_store_state(snap: Path) -> None:
+    """Remove from the extracted archive what no export ever writes under ``memory_stores/``.
+
+    The export's own filter (`_keep_store_for_export`) keeps these out on the way out; this
+    is the same predicate applied on the way in, so an import is not the one direction in
+    which a hand-built archive can plant them. Walked top-down and pruned at the first
+    matching component, so a whole ``.execution-logs/`` or ``<store>/backups/`` goes as
+    one removal.
+    """
+    root = snap / MEMORY_STORES_DIR_NAME
+    if not root.is_dir():
+        return
+    for path in sorted(root.rglob("*"), key=lambda p: len(p.parts)):
+        if not path.exists() and not path.is_symlink():
+            continue  # inside a subtree an earlier iteration already removed
+        rel = (MEMORY_STORES_DIR_NAME, *path.relative_to(root).parts)
+        if not is_host_local_store_state(rel):
+            continue
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(str(path))
+        else:
+            path.unlink()
+
+
 def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
     """Extract and apply an import zip.
 
@@ -717,15 +809,15 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
     # ancestor-swap resistance, not link resistance.
     staging_pinned = _staging_is_pinned(allow_unpinned=True, what=f"{mode} import")
 
-    # What this field may honestly say depends on the MODE, not only the platform. Review
-    # caught it reporting "pinned" for a merge whose core files and skills are still copied
-    # by name with `shutil` -- true of the platform, false of the operation, and this field
-    # exists to tell a reader what actually happened.
+    # What this field may honestly say depends on the MODE, not only the platform.
+    # Reporting "pinned" for a merge whose core files and skills are still copied by
+    # name with `shutil` is true of the platform, false of the operation, and this
+    # field exists to tell a reader what actually happened.
     #
     # replace delegates the whole apply to `_do_replace`, which is pinned throughout. merge
     # routes only its tree copy through the primitive; its core files (including the
-    # databases, deliberately out of scope -- see #5451) and its skills copy are by name. So
-    # merge on a pinnable platform is MIXED, and saying so is the point.
+    # databases, deliberately out of scope) and its skills copy are by name. So merge
+    # on a pinnable platform is MIXED, and saying so is the point.
     if not staging_pinned:
         staging_mode = "unpinned"
     elif mode == "replace":
@@ -747,6 +839,7 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
 
     with tempfile.TemporaryDirectory() as work_str:
         work = Path(work_str)
+        platform_compat.restrict_dir_to_owner(work)
 
         with zipfile.ZipFile(str(zip_path), "r") as zf:
             infos = zf.infolist()
@@ -794,6 +887,23 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
         if paused_crons:
             summary["paused_crons"] = paused_crons
 
+        # Before EITHER branch, for the same reason the cron re-vet is: both branches copy
+        # the tree below. No export writes these entries, so an archive carrying one was
+        # built by hand -- and the member signing key is the one that matters, because
+        # installing it would let the archive's author sign as this host's members.
+        _strip_host_local_store_state(snap)
+
+        # The memory component's incoming databases are validated before EITHER branch
+        # moves anything, with the restore's own validator: replace installs everything
+        # the archive carries, merge only what the destination lacks, and a named store
+        # the destination lacks is exactly the merge case -- a whole-store copy
+        # would otherwise install a torn `memory_stores/<name>/memory.db` verbatim, and
+        # the member fails at its next open with the archive long gone. Refused here,
+        # nothing has been written; the exception reaches the handler as a refusal.
+        _refuse_corrupt_source_databases(
+            snap, ["memory"], mc_for_merge=None if mode == "replace" else mc
+        )
+
         if mode == "replace":
             # Strip sensitive files and skills/auto/ from snapshot before replace
             for excluded_name in EXPORT_EXCLUDE:
@@ -833,9 +943,9 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                         summary["items"].append("crons (merged)")
                     else:
                         # A refused merge imported zero jobs. Appending
-                        # "crons (merged)" here regardless was issue #8217: the
-                        # dashboard rendered a success over a restore that
-                        # brought no job back. The refusal is named in the
+                        # "crons (merged)" here regardless would render a
+                        # success over a restore that brought no job back.
+                        # The refusal is named in the
                         # items and flagged machine-readably so the handler can
                         # log the import as partial rather than a flat ok.
                         summary["items"].append("crons (skipped: unreadable or invalid cron store)")
@@ -887,6 +997,19 @@ def apply_import_zip(zip_path: Path, mode: str = "merge") -> dict:
                     # longer route.
                     _copy_tree_no_overwrite(sd, dd, allow_unpinned=not staging_pinned)
                     summary["items"].append(f"{dirname} (merged)")
+
+            stores_src = snap / MEMORY_STORES_DIR_NAME
+            if stores_src.is_dir():
+                stores_dst = mc / MEMORY_STORES_DIR_NAME
+                kept = _merge_named_stores(
+                    stores_src, stores_dst, allow_unpinned=not staging_pinned
+                )
+                summary["items"].append(f"{MEMORY_STORES_DIR_NAME} (merged)")
+                for store in kept:
+                    summary["items"].append(
+                        f"{MEMORY_STORES_DIR_NAME}/{store} (kept the existing store; "
+                        "the archive's copy was not merged into it)"
+                    )
 
             if (snap / "skills").is_dir():
                 (mc / "skills").mkdir(parents=True, exist_ok=True)

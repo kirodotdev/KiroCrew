@@ -1,6 +1,6 @@
-"""Stable command-args and effective-env hashing shared across the MCP gateway.
+"""Stable argv encoding and command/env hashing shared across the MCP gateway.
 
-Kept in its own dependency-free leaf module (only ``hashlib``) so every caller
+Kept in its own dependency-free leaf module (standard library only) so every caller
 imports it at module top level. The lightweight ``rewriter`` sits on
 ``config.loader``'s import path, while ``pool`` and ``stub`` are asyncio/socket
 -heavy submodules that must stay unloaded until the gateway is actually enabled
@@ -11,8 +11,75 @@ those heavy submodules into CLI/test/MCP startup.
 
 from __future__ import annotations
 
+import base64
 import hashlib
-from typing import Collection, Mapping
+import json
+from typing import Any, Collection, Mapping, Sequence
+
+#: One base64url JSON list carrying the stub's own flag tokens. Every raw value
+#: the rewriter emits -- executable path, work dir, socket, env sidecar, server
+#: and agent names, autoApprove identifiers -- rides inside it, because a CLI
+#: that launches the stub through cmd.exe expands ``%NAME%`` in any plain token,
+#: quoted or not, and there is no escape for it on that command line. The
+#: tokens keep their plain flag spelling inside the envelope, so the stub's
+#: parser and the daemon's reader see the same argv an older overlay spelled out
+#: directly, and hash it identically.
+STUB_FLAGS_FLAG = "--stub-flags-b64"
+
+
+def encode_target_args(args: list[str]) -> str:
+    """Carry argv boundaries in JSON, with a shell-inert base64url alphabet.
+
+    Arguments may contain delimiters or be empty. Encoding also keeps their
+    metacharacters out of cmd.exe's parse when a CLI launches the stub through
+    a shell. This is serialization, not encryption; arguments remain visible.
+    """
+    payload = json.dumps(args, ensure_ascii=False, separators=(",", ":"))
+    return base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
+
+
+def decode_target_args(raw: str) -> list[str]:
+    """Reject malformed payloads without echoing potentially sensitive arguments."""
+    try:
+        payload = base64.b64decode(raw.encode("ascii"), altchars=b"-_", validate=True)
+        decoded = json.loads(payload.decode("utf-8"))
+    except ValueError:
+        raise ValueError("malformed target-args payload") from None
+    if not isinstance(decoded, list) or not all(isinstance(a, str) for a in decoded):
+        raise ValueError("target-args payload is not a JSON array of strings")
+    return decoded
+
+
+def expand_stub_flags(argv: Sequence[Any]) -> list[Any]:
+    """Splice every :data:`STUB_FLAGS_FLAG` envelope in ``argv`` back into its
+    plain flag tokens, in place; every other token passes through unchanged.
+
+    Both ``--stub-flags-b64=PAYLOAD`` and ``--stub-flags-b64 PAYLOAD`` are
+    read. A malformed or missing payload raises ``ValueError`` rather than
+    falling back to whatever plain tokens surround it: the envelope is the only
+    carrier of the values it holds, so a partial read would launch a stub
+    against different metadata than the rewriter hashed. One level only -- an
+    envelope inside an envelope is left as a plain token.
+    """
+    out: list[Any] = []
+    i = 0
+    while i < len(argv):
+        token = argv[i]
+        if isinstance(token, str) and (
+            token == STUB_FLAGS_FLAG or token.startswith(STUB_FLAGS_FLAG + "=")
+        ):
+            if "=" in token:
+                payload = token.partition("=")[2]
+            else:
+                i += 1
+                if i >= len(argv) or not isinstance(argv[i], str):
+                    raise ValueError("stub-flags envelope has no payload")
+                payload = argv[i]
+            out.extend(decode_target_args(payload))
+        else:
+            out.append(token)
+        i += 1
+    return out
 
 
 def hash_command(command: str, args: list[str]) -> str:

@@ -82,9 +82,10 @@ Precedence, in evaluation order:
 5. a rule that could not be interpreted;
 6. otherwise in scope.
 
-Reads one SQLite file (SELECT only) or one JSON file. No network, no subprocess,
-and no write anywhere -- including no creation of an absent database, so asking
-a scope question never leaves a ledger behind.
+Reads one SQLite file (SELECT only, over a ``mode=ro`` connection so that not
+even a pragma can touch it) or one JSON file. No network, no subprocess, and no
+write anywhere -- including no creation of an absent database, so asking a scope
+question never leaves a ledger behind.
 """
 
 from __future__ import annotations
@@ -96,6 +97,7 @@ import json
 import os
 import posixpath
 import re
+import sqlite3
 import sys
 from collections.abc import Buffer
 from pathlib import Path
@@ -329,7 +331,23 @@ def unknown_kind(kind: str | None) -> bool:
     return kind is not None and kind not in KNOWN_KINDS
 
 
-def rules_from_db(db_path: Path, module: Any) -> tuple[list[Rule], int]:
+def connect_read_only(db_path: Path) -> sqlite3.Connection:
+    """Open the ledger so that this script CANNOT write to it.
+
+    Deliberately not ``ledger.connect``: that is the writer's connection, and it
+    switches the journal to WAL, which rewrites the header of a database not
+    already in WAL mode -- so the first scope question against such a ledger
+    mutated the file it promised only to read. ``mode=ro`` makes SQLite refuse
+    every write, including a pragma's, at the layer below this script's SQL.
+    The path travels as a ``file:`` URI, built by ``pathlib`` so a ``?`` or ``#``
+    in a directory name is percent-encoded rather than read as a query string.
+    """
+    conn = sqlite3.connect(f"{db_path.absolute().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def rules_from_db(db_path: Path) -> tuple[list[Rule], int]:
     """``(active rules, total rule rows)``. Raises on an unreadable database.
 
     The TOTAL count is returned because the two zero cases are opposite
@@ -339,7 +357,7 @@ def rules_from_db(db_path: Path, module: Any) -> tuple[list[Rule], int]:
     reading that as "no rules" and consulting the export restored exactly the
     scope the revert removed.
     """
-    conn = module.connect(db_path)
+    conn = connect_read_only(db_path)
     try:
         rows = conn.execute(
             "SELECT id, field, value FROM roe_rules WHERE active = 1 ORDER BY field ASC, id ASC"
@@ -585,11 +603,11 @@ def evaluate(rules: Sequence[Rule], question: Question) -> Verdict:
     return Verdict(IN_SCOPE, matched, reasons)
 
 
-def load_rules(db_path: Path, roe_json: Path, module: Any) -> tuple[list[Rule], Verdict | None]:
+def load_rules(db_path: Path, roe_json: Path) -> tuple[list[Rule], Verdict | None]:
     """Rules to evaluate, or the ``UNKNOWN`` verdict that replaces them."""
     if db_path.exists():
         try:
-            rules, total = rules_from_db(db_path, module)
+            rules, total = rules_from_db(db_path)
         except Exception as exc:  # sqlite3.Error, OSError, a missing table
             return [], Verdict(UNKNOWN, [], [f"cannot read rules from {db_path}: {exc}"])
         if rules:
@@ -645,7 +663,7 @@ def main(argv: list[str] | None = None) -> int:
     db_path = Path(args.db) if args.db else module.default_db_path()
     roe_json = Path(args.roe_json) if args.roe_json else default_roe_json()
 
-    rules, failure = load_rules(db_path, roe_json, module)
+    rules, failure = load_rules(db_path, roe_json)
     if failure is not None:
         verdict = failure
     else:

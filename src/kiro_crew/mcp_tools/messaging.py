@@ -28,7 +28,7 @@ from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES
 from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.security import BINARY_MIME_ALLOWLIST, redact_credentials, redact_exfiltration_urls
-from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE
+from kiro_crew.validation import _SLACK_TS_RE, CHANNEL_ID_RE, CHANNEL_MAX_LEN
 
 #: ``session`` values that name a chat channel rather than a delivery mode. Each
 #: one delivers a DM to that channel's own configured owner: the gateway resolves
@@ -709,7 +709,7 @@ def send_notification(name: str, args: dict[str, Any]) -> str:
 def delete_message(name: str, args: dict[str, Any]) -> str:
     channel = args.get("channel", "")
     msg_ts = args.get("ts", "")
-    if not CHANNEL_ID_RE.match(channel):
+    if len(channel) > CHANNEL_MAX_LEN or not CHANNEL_ID_RE.match(channel):
         mcp_core.sel().log_tool_invocation(
             session_key=mcp_core._resolve_session_key(),
             source="mcp",
@@ -986,9 +986,12 @@ def file_send(name: str, args: dict[str, Any]) -> str:
             return (
                 "Error: file content contains sensitive data; send aborted. The owner "
                 "can allow delivery to this machine's outbox and their own dashboard "
-                "by recording consent at POST /api/file-delivery/consent"
-                "?destination_class=owner_dashboard (owner-gated; no agent can write "
-                "it). The Slack and channel upload legs can never be granted."
+                "in Settings > Security > Flagged-file delivery (owner-gated; no agent "
+                "can write it). That panel ARMS the request via POST "
+                "/api/file-delivery/consent?destination_class=owner_dashboard; the grant "
+                "is then RECORDED only by running `kirocrew file-delivery approve` on the "
+                "host, so arming alone leaves delivery blocked. The Slack and channel "
+                "upload legs can never be granted."
             )
         delivered_under_consent = True
         mcp_core.sel().log_tool_invocation(

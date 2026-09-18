@@ -152,11 +152,11 @@ def test_provider_empty_string_falls_back_to_local(tmp_path, monkeypatch):
 
 
 def test_provider_omitted_defaults_to_local(tmp_path, monkeypatch):
-    """The regression this flip closes: voice ON, provider unnamed.
+    """Voice ON with the provider unnamed defaults to local, not a paid cloud.
 
-    This previously resolved to Amazon Polly, so a config that only said
-    ``enabled: true`` reached a paid AWS service under whatever the ambient
-    credential chain resolved to -- with no operator decision behind it.
+    Without this, a config that only says ``enabled: true`` would reach Amazon
+    Polly under whatever the ambient credential chain resolves to -- with no
+    operator decision behind it.
     """
     _cfg_file(tmp_path, monkeypatch, {})
     set_orch_cfg(SimpleNamespace())
@@ -170,8 +170,8 @@ def test_non_string_path_and_voice_values_normalise_to_unset(tmp_path, monkeypat
     """A wrong TYPE in config.json must not reach the dashboard's config GET.
 
     `config.json` is hand-editable and JSON permits any shape, so `system_voice:
-    {}` used to be stored verbatim, served by the config endpoint, and crash the
-    React panel that renders it. Normalising to `""` (unset) rather than
+    {}` would otherwise be stored verbatim, served by the config endpoint, and
+    crash the React panel that renders it. Normalising to `""` (unset) rather than
     `str(value)` matters: stringifying would persist `"{}"` as a voice name and
     move the failure into synthesis instead of removing it.
 

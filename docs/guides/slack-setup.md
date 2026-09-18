@@ -424,7 +424,10 @@ quiet.
 Type `sessions` in any Slack DM to list recent sessions. Each entry shows a
 status dot, the session title, the agent name, a bulleted preview of recent
 messages, and a **Resume** button. The same content backs the
-`/<command> sessions` slash command and the App Home tab.
+`/<command> sessions` slash command and the App Home tab. The keyword also
+works in a DM linked to a dashboard session: it falls through link routing
+(after the unauthorized-user deny), so the picker renders instead of the
+message being forwarded to the linked session.
 
 ---
 

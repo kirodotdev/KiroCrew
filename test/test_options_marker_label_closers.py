@@ -42,12 +42,12 @@ Under an unconditional closer, every case in
 
 from __future__ import annotations
 
-import time
-
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
     MARKER_CLOSERS,
     OPTIONS_RE_LINE,
     OPTIONS_RE_TRAILER,
+    _marker_labels_have_unmatched_opener,
 )
 from kiro_crew.messaging.renderer import split_options_trailer
 
@@ -135,13 +135,23 @@ class TestACloserMustBeMatchedOrContinueTheList:
             assert match is not None, text
             assert match.group("labels").startswith(" Fix "), text
 
-    def test_an_unmatched_opener_in_a_label_still_parses(self):
-        # The pair alternative must not become a REQUIREMENT: a stray ``[`` with no
-        # closer of its own is still just a character in the label, as it was
-        # before this rule.
-        match = OPTIONS_RE_LINE.search("[OPTIONS: Fix [x logging | Skip]")
-        assert match is not None
-        assert match.group("labels") == " Fix [x logging | Skip"
+    def test_an_unmatched_opener_in_a_label_is_refused(self):
+        """The one shape the balanced-labels rule costs.
+
+        A stray ``[`` with no closer of its own cannot be treated as ordinary label
+        text, because that shape is indistinguishable from a marker the model never
+        closed: in ``[OPTIONS: A | B then check arr[0]`` the only closer belongs to
+        ``arr[0]``, and the body would run through the prose to reach it. Both hold
+        one unmatched opener and a closer at the end anchor, so accepting either
+        accepts both -- and accepting the second deletes a line of prose.
+
+        So the marker now renders as visible text. Nothing is removed, which is the
+        direction every cost in this grammar fails in, and the full argument lives at
+        :func:`kiro_crew.constants._marker_labels_have_unmatched_opener`.
+        """
+        text = "[OPTIONS: Fix [x logging | Skip]"
+        assert OPTIONS_RE_LINE.search(text) is None
+        assert OPTIONS_RE_LINE.sub("", text) == text
 
 
 class TestAcceptedCosts:
@@ -176,11 +186,34 @@ class TestAcceptedCosts:
         assert match is not None
         assert match.group("labels") == " Fix list[dict[str, Any]] | Skip"
 
-    def test_a_lookalike_PAIR_is_a_cost_because_only_ascii_opens(self):
-        # ``MARKER_CLOSERS`` widened the CLOSER set; there is no matching OPENER
-        # set, so ``【`` is an ordinary character and the ``】`` after it reads as
-        # unmatched. Common in Chinese output, hence stated explicitly.
-        assert OPTIONS_RE_LINE.search("[OPTIONS: 【重要】修复 | 跳过】") is None
+    def test_a_matched_lookalike_pair_parses_like_ascii(self):
+        # ``MARKER_OPENERS`` pairs each lookalike opener with its closer, so a
+        # matched lookalike pair inside a label parses exactly as ``[x]`` does.
+        # Common in Chinese output, hence stated explicitly for each pair.
+        for open_c, close_c in (("【", "】"), ("［", "］"), ("〔", "〕")):
+            text = f"[OPTIONS: Fix {open_c}x{close_c} logging | Skip]"
+            match = OPTIONS_RE_LINE.search(text)
+            assert match is not None, text
+            assert [s.strip() for s in match.group("labels").split("|")] == [
+                f"Fix {open_c}x{close_c} logging",
+                "Skip",
+            ], text
+        # The label may be entirely a lookalike pair, too.
+        match = OPTIONS_RE_LINE.search("[OPTIONS: 【重要】修复 | 跳过】")
+        assert match is not None
+        assert match.group("labels") == " 【重要】修复 | 跳过"
+
+    def test_a_mismatched_lookalike_pair_is_a_cost(self):
+        # A lookalike opener closes ONLY on its paired closer. ``【`` pairs with
+        # ``】``, never with ``]``, so ``【 ... ]`` has no pair parse and the ``]``
+        # reads as unmatched -- the marker declines rather than deleting prose.
+        for text in (
+            "[OPTIONS: 见【表1] 说明 | 跳过]",
+            "[OPTIONS: Fix [x】 logging | Skip]",
+            "[OPTIONS: Fix ［x〕 logging | Skip]",
+        ):
+            assert OPTIONS_RE_LINE.search(text) is None, text
+            assert OPTIONS_RE_LINE.sub("", text) == text, text
 
     def test_a_pair_spanning_a_newline_is_a_trailer_only_cost(self):
         # The pair interior excludes ``\n`` on BOTH grammars, so under TRAILER
@@ -202,7 +235,7 @@ class TestAcceptedCosts:
         load-bearing, so the two are pinned together.
         """
         for text in (
-            "请选择：\n[OPTIONS: 【重要】修复 | 跳过】",
+            "请选择：\n[OPTIONS: 见【表1] 说明 | 跳过]",
             "Pick one:\n[OPTIONS: Fix ]x logging | Skip]",
             "Pick one:\n[OPTIONS: Fix list[dict[str, Any]] now | Skip]",
         ):
@@ -228,17 +261,104 @@ class TestAcceptedCosts:
         # here, and neither does this one.
         assert OPTIONS_RE_LINE.search("Note [OPTIONS: see [OPTIONS: x] below | Skip]") is None
 
-    def test_the_separator_tail_form_is_out_of_scope_and_unchanged(self):
-        # NOT reachable by this rule, and pinned so it is not read as a regression
-        # introduced here: ``], `` DOES continue the label list, by the very rule
-        # that makes ``[OPTIONS: Alpha ], Bravo]`` legal, so no guard applied at the
-        # internal closer can tell the two apart. Resolving it means deciding which
-        # shape loses -- a separate call with its own cost. Behaviour here is
-        # byte-for-byte what origin/main does.
+    def test_the_separator_tail_form_is_declined_rather_than_truncated(self):
+        # Not reachable by the matched-or-continues rule: ``], `` DOES continue the
+        # label list, by the very rule that makes ``[OPTIONS: Alpha ], Bravo]``
+        # legal, so no guard applied at the INTERNAL closer can tell the two apart.
+        # The terminator gate reaches it from the other end -- the ``[`` of
+        # ``CHANGELOG[1]`` is the opener whose partner would end the marker, so the
+        # bare form is refused and the line stays whole.
+        #
+        # Declining is the affordable outcome: truncating deleted ``, details in
+        # CHANGELOG[1]`` from the message and handed it back as the pill label
+        # ``Wait], details in CHANGELOG[1``.
         text = "Done. [OPTIONS: Merge | Wait], details in CHANGELOG[1]"
-        match = OPTIONS_RE_LINE.search(text)
-        assert match is not None
-        assert OPTIONS_RE_LINE.sub("", text) == "Done. "
+        assert OPTIONS_RE_LINE.search(text) is None
+        assert OPTIONS_RE_LINE.sub("", text) == text
+        assert split_options_trailer(text) == (text, [])
+
+
+class TestLookalikeBracketPairsParse:
+    """A lookalike bracket PAIR parses like an ASCII ``[...]`` pair.
+
+    :data:`MARKER_OPENERS` pairs each opener with its closer positionally, so a
+    matched ``【...】`` / ``［...］`` / ``〔...〕`` inside a label renders buttons
+    exactly as ``[...]`` does -- WITHOUT reopening the greedy-body / prose-deletion
+    defect the disjointness invariant prevents: a MISMATCHED pair still declines,
+    and the trailing-prose and bare-opener-terminator declines are preserved.
+    """
+
+    def test_each_cjk_pair_parses_on_both_grammars(self):
+        for open_c, close_c in (("【", "】"), ("［", "］"), ("〔", "〕")):
+            line = f"Pick one.\n[OPTIONS: Fix {open_c}x{close_c} now | Skip]"
+            trailer = f"Pick one.\n\n[OPTIONS: Use {open_c}note{close_c} | Skip]"
+            m = OPTIONS_RE_LINE.search(line)
+            assert m is not None, line
+            assert m.group("labels") == f" Fix {open_c}x{close_c} now | Skip", line
+            mt = OPTIONS_RE_TRAILER.search(trailer)
+            assert mt is not None, trailer
+            assert mt.group("labels") == f" Use {open_c}note{close_c} | Skip", trailer
+
+    def test_a_mismatched_pair_declines_and_deletes_no_prose(self):
+        # ``【`` never pairs with ``]``; the mismatched marker declines non-destructively.
+        text = "[OPTIONS: 见【表1] 说明 | 跳过]"
+        assert OPTIONS_RE_LINE.search(text) is None
+        assert OPTIONS_RE_LINE.sub("", text) == text
+
+    def test_a_mismatched_pair_declines_even_when_the_closer_ends_the_label(self):
+        # The balance check pairs openers by TYPE. On the previous head every
+        # closer decremented one shared count, so ``【x]`` read as closed, this
+        # candidate parsed, and a label with a half-open lookalike pair rendered
+        # as options. The ``【`` (or ``[``) is still open at the terminator here --
+        # the bare-opener shape -- so the candidate declines and no prose moves.
+        for text in (
+            "[OPTIONS: A 【x] | B]",
+            "[OPTIONS: A [x】 | B]",
+            "[OPTIONS: A ［x〕 | B]",
+            "[OPTIONS: A 【x] | B】",
+        ):
+            assert not _marker_labels_have_unmatched_opener(" A [x] | B")
+            assert _marker_labels_have_unmatched_opener(text[len("[OPTIONS:") : -1]), text
+            for matcher in (OPTIONS_RE_LINE, OPTIONS_RE_TRAILER):
+                assert matcher.search(text) is None, text
+                assert matcher.sub("", text) == text, text
+        # Typed pairing still accepts nesting across kinds and the unmatched closer.
+        for text in ("[OPTIONS: A [x【y】] | B]", "[OPTIONS: Alpha ] | Bravo ]]"):
+            assert OPTIONS_RE_LINE.search(text) is not None, text
+
+    def test_a_citation_in_a_label_still_parses(self):
+        # A single-closer citation is admitted by the continuation half, unaffected
+        # by the new opener set.
+        m = OPTIONS_RE_LINE.search("[OPTIONS: see ref[1] | Skip]")
+        assert m is not None
+        assert [s.strip() for s in m.group("labels").split("|")] == ["see ref[1]", "Skip"]
+
+    def test_trailing_prose_after_a_marker_still_declines(self):
+        assert OPTIONS_RE_LINE.search("Use [OPTIONS: A | B] then check arr[0]") is None
+        assert OPTIONS_RE_LINE.sub("", "Use [OPTIONS: A | B] then check arr[0]") == (
+            "Use [OPTIONS: A | B] then check arr[0]"
+        )
+
+    def test_bare_opener_terminator_still_declines(self):
+        # The opener whose partner closer would end the marker is refused, so the
+        # line stays whole rather than losing its tail to a pill label.
+        text = "[OPTIONS: A | B then check arr[0]"
+        assert OPTIONS_RE_LINE.search(text) is None
+        assert OPTIONS_RE_LINE.sub("", text) == text
+
+    def test_a_bare_lookalike_opener_before_the_terminator_declines_too(self):
+        # The same shape through a lookalike: a matched ``【重要】`` pair earlier in
+        # the label is fine, but the bare ``【`` before the final ``】`` is the opener
+        # whose partner would end the marker. The balance gate counts every opener
+        # the grammar knows, so this declines exactly as the ASCII spelling does
+        # and the trailing prose is not cut into a pill.
+        for opener, closer in zip("\u3010\uff3b\u3014", "\u3011\uff3d\u3015"):
+            text = f"[OPTIONS: {opener}重要{closer}修复 | B 详见{opener}0{closer}"
+            assert OPTIONS_RE_LINE.search(text) is None, text
+            assert OPTIONS_RE_LINE.sub("", text) == text
+
+    def test_a_nested_head_is_still_refused(self):
+        assert OPTIONS_RE_LINE.search("Note [OPTIONS: see [OPTIONS: x] below | Skip]") is None
 
 
 class TestTheWideningIsNotOverlyNarrow:
@@ -299,40 +419,65 @@ class TestLinearity:
     directly -- a quadratic implementation wedges rather than failing an
     assertion, so the bound is generous and the shapes are the adversarial ones."""
 
+    # Every guard in this class goes through ``assert_rejected_without_backtracking``:
+    # thread CPU instead of ``time.monotonic()`` (which ticks every 15.6 ms on
+    # Windows and charges a descheduled worker's wait to the regex), and a
+    # 24-unit pump FIRST so an exponential regression FAILS inside ``--timeout``
+    # instead of hanging the worker on the long input (class 6). The ``reject``
+    # callback asserts whatever outcome the shape has; the helper only bounds
+    # the cost of reaching it.
+
     def test_a_long_trailing_whitespace_run_is_linear(self):
-        # The marker's OWN closer followed by a 100k-tab run: a legitimate match
+        # The marker's OWN closer followed by a run of tabs: a legitimate match
         # (the tabs are the trailing ``[ \t]*``), and the scan is single-pass.
-        text = "[OPTIONS: A ]" + "\t" * 100_000
-        start = time.monotonic()
-        match = OPTIONS_RE_LINE.search(text)
-        assert match is not None
-        assert match.group("labels") == " A "
-        assert time.monotonic() - start < 5.0
+        def matches(text: str) -> None:
+            match = OPTIONS_RE_LINE.search(text)
+            assert match is not None
+            assert match.group("labels") == " A "
+
+        assert_rejected_without_backtracking(matches, lambda n: "[OPTIONS: A ]" + "\t" * n)
 
     def test_a_long_FAILING_continuation_scan_is_linear(self):
         # The adversarial direction: the closer is INSIDE the body, so it enters the
-        # lookahead, whose whitespace scan runs to the end of a 100k-tab run and then
+        # lookahead, whose whitespace scan runs to the end of the tab run and then
         # FAILS on ``x``. The body cannot cross the closer either, so the whole match
         # fails -- after the longest scan the lookahead can be made to do.
-        text = "[OPTIONS: A ]" + "\t" * 100_000 + "x]"
-        start = time.monotonic()
-        assert OPTIONS_RE_LINE.search(text) is None
-        assert time.monotonic() - start < 5.0
+        def reject(text: str) -> None:
+            assert OPTIONS_RE_LINE.search(text) is None
+
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS: A ]" + "\t" * n + "x]")
 
     def test_many_failing_closers_are_linear(self):
-        # 5,000 closers, each entering the lookahead and each failing it.
-        text = "[OPTIONS: " + "] x " * 5_000
-        start = time.monotonic()
-        OPTIONS_RE_LINE.search(text)
-        assert time.monotonic() - start < 5.0
+        # N closers, each entering the lookahead and each failing it.
+        assert_rejected_without_backtracking(
+            OPTIONS_RE_LINE.search, lambda n: "[OPTIONS: " + "] x " * n
+        )
 
     def test_many_continuing_closers_then_a_long_tail_are_linear(self):
-        # The other direction: 30,000 closers that all SUCCEED in the lookahead,
-        # followed by a 30,000-tab tail that fails the end anchor.
-        text = "[OPTIONS: " + "] | " * 30_000 + "\t" * 30_000
-        start = time.monotonic()
-        OPTIONS_RE_LINE.search(text)
-        assert time.monotonic() - start < 5.0
+        # The other direction: N closers that all SUCCEED in the lookahead,
+        # followed by an N-tab tail that fails the end anchor.
+        assert_rejected_without_backtracking(
+            OPTIONS_RE_LINE.search, lambda n: "[OPTIONS: " + "] | " * n + "\t" * n
+        )
+
+    def test_a_run_of_any_opener_costs_the_same_as_a_run_of_ascii_openers(self):
+        # A repeated-token degeneration after a head: a run of one opener with no
+        # partner. Each opener begins a pair attempt whose interior excludes EVERY
+        # bracket, so the attempt fails on the very next character and the
+        # bare-opener alternative takes it -- one step per character for every
+        # opener kind. An interior that admitted the lookalikes would scan the
+        # whole remaining run at each position instead -- measured: EXPONENTIAL,
+        # 3.2 s at 24 lookalike openers, doubling per character. The earlier shape
+        # divided two ``time.monotonic()`` readings and read a 16x "ratio" from
+        # timer granularity alone (0.0 floored to 1 ms against a single 16 ms tick).
+        def reject(text: str) -> None:
+            assert OPTIONS_RE_LINE.search(text) is None
+            assert OPTIONS_RE_TRAILER.search(text) is None
+
+        for opener in ("[", "\u3010", "\uff3b", "\u3014"):
+            assert_rejected_without_backtracking(
+                reject, lambda n, opener=opener: "[OPTIONS: A | B " + opener * n
+            )
 
     def test_the_two_bracket_alternatives_cannot_blow_up_together(self):
         # THE shape that would be exponential if the matched-pair and
@@ -340,9 +485,11 @@ class TestLinearity:
         # each look like both, followed by a tail that fails the whole match, so
         # the engine is forced to exhaust every combination it believes exists.
         # They are disjoint by what follows the closer, so there is only one.
-        for block in ("[x] ", "[x] | ", "[a[b] ", "[a] ]a ", "[x", "[] "):
-            text = "[OPTIONS: " + block * 20_000 + "z"
-            start = time.monotonic()
+        def both(text: str) -> None:
             OPTIONS_RE_LINE.search(text)
             OPTIONS_RE_TRAILER.search(text)
-            assert time.monotonic() - start < 5.0, block
+
+        for block in ("[x] ", "[x] | ", "[a[b] ", "[a] ]a ", "[x", "[] "):
+            assert_rejected_without_backtracking(
+                both, lambda n, block=block: "[OPTIONS: " + block * n + "z"
+            )

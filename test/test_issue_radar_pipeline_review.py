@@ -83,8 +83,8 @@ def test_reader_size_refusal_becomes_a_fold_error(
 ) -> None:
     """The reader enforces its own, lower cap; its refusal must not escape.
 
-    This module's ceiling used to be higher than the reader's, so a file between the
-    two passed the local size check and then raised out of the route as an unhandled
+    If this module's ceiling were higher than the reader's, a file between the two
+    would pass the local size check and then raise out of the route as an unhandled
     HTTP 500. Both halves are covered: the effective limit is the smaller of the
     two, AND the reader's exception is translated.
     """

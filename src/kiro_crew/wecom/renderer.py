@@ -31,7 +31,6 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.messaging.renderer import Renderer, format_overflow, split_options_trailer
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS, new_stream_id
 
 if TYPE_CHECKING:
@@ -275,6 +274,16 @@ class WeComRenderer(Renderer):
         # delivery would disagree about what the user was told. Splitting is
         # fence-safe because WeCom renders markdown: a blind cut can sever a code
         # fence and leave the rest of the answer rendered as prose.
+        #
+        # Redact the WHOLE remainder BEFORE splitting it. ``on_done`` is terminal --
+        # ``_carried`` was read once above and no later frame indexes the answer --
+        # so redacting here leaves the offset coordinate space untouched, unlike the
+        # streaming path. Doing it before the split closes the one gap
+        # ``split_markdown_safe`` can open: a logical line longer than the cap is
+        # hard-cut mid-line, which could sever a credential across two chunks that
+        # are then each scrubbed alone. Redacted first, the credential is one marker
+        # before any cut can reach it.
+        remainder = self.redact_for_target(remainder)
         chunks = await asyncio.to_thread(
             split_markdown_safe, remainder, WECOM_SAFE_REPLY_CHARS
         ) or [remainder]
@@ -511,15 +520,29 @@ class WeComRenderer(Renderer):
         unconverted table, and ``safe_raw_table_fallback`` is the display-safe way
         to say so. Its ``None`` means "no safe raw candidate", which is why the
         unconverted ``body`` is the last resort rather than the converted overflow.
+
+        The slice is scrubbed render-aware at this one return before it ships.
+        WeCom renders the slice as markdown, and the channel-neutral stream pass
+        upstream is a literal byte scan, so a credential split by emphasis
+        (``AKIA**REST``) or a link survives it and is reassembled on screen -- the
+        same hazard the ``<think>`` block is guarded against, on the same renderer.
+        Redacting here is offset-safe: the slice was already cut in raw
+        coordinates, and ``_push`` records progress from that raw slice, so the
+        substitution cannot shift ``_carried`` / ``_sent_abs``.
+
+        This closes a credential that lies WITHIN one slice. A credential the cap
+        severs ACROSS two slices is not closed here: each half is scrubbed alone,
+        neither matches, and the reader's client rejoins them. That is unchanged
+        from the pre-existing behaviour -- the cap has always cut in raw
+        coordinates while the reader sees the canonical form -- and closing it
+        needs the cut itself chosen in canonical space, which is its own change.
         """
         converted = self.render_tables_for_target(body, final=final)
         cap = self.capabilities.max_message_chars
-        if cap <= 0 or len(converted) <= cap:
-            return converted
-        safe_raw = self.safe_raw_table_fallback(body, final=final)
-        if safe_raw is not None and len(safe_raw) <= cap:
-            return safe_raw
-        return body
+        if cap > 0 and len(converted) > cap:
+            safe_raw = self.safe_raw_table_fallback(body, final=final)
+            converted = safe_raw if safe_raw is not None and len(safe_raw) <= cap else body
+        return self.redact_for_target(converted)
 
     def _roll_if_sealed(self) -> None:
         """Move to a fresh bubble when WeCom has sealed the current one.
@@ -604,9 +627,14 @@ class WeComRenderer(Renderer):
             # at the send boundary closes that, and also covers a credential that
             # was never split. Same placement, and the same reason, as Slack's
             # ``_maybe_post_thinking``.
+            #
+            # The scrub is render-aware (``redact_for_target``), not the literal
+            # byte pair: WeCom renders this ``<think>`` block as markdown, so a key
+            # split by emphasis (``AKIA**REST**``) or a link would pass a literal
+            # scan and be reassembled on screen — the same hazard the answer body
+            # is guarded against, on the same renderer.
             reasoning = "".join(self._reasoning)
-            reasoning, _ = redact_exfiltration_urls(reasoning)
-            reasoning, _ = redact_credentials(reasoning)
+            reasoning = self.redact_for_target(reasoning)
             reasoning = f"<think>{reasoning}</think>"
             self._stream_ok = await self._client.send_stream(
                 self._req_id, self._stream_id, reasoning, finish=False

@@ -141,10 +141,10 @@ class TestUnresolvableScopeRefuses:
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo import profile as gp
 
         clone = self._repo(tmp_path / "clone")
-        # Matches on the CONSEQUENCE, not the cause: the guard deliberately no longer
-        # distinguishes "does not resolve" from "resolves but cannot be diffed" (both widen
-        # the fence identically), so asserting the old cause-specific wording would pin a
-        # distinction the code dropped on purpose.
+        # Matches on the CONSEQUENCE, not the cause: the guard deliberately does not
+        # distinguish "does not resolve" from "resolves but cannot be diffed" (both widen
+        # the fence identically), so asserting cause-specific wording would pin a
+        # distinction the code does not make.
         with pytest.raises(ValueError, match="could not be resolved to a file set"):
             gp.GitHubRepoProfile(
                 clone_path=clone,

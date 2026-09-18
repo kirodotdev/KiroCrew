@@ -49,6 +49,7 @@ _FAST_GATE = _REPO_ROOT / ".github" / "workflows" / "fast-gate.yml"
 _GATE_JOBS = (
     "vendor-manifest",
     "brand-lint",
+    "comment-history-lint",
     "focus-cue-lint",
     "feature-map-lint",
     "changelog-history",

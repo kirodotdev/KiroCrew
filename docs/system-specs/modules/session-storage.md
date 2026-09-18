@@ -34,7 +34,19 @@ pins the absence.
 
 Restore is all-or-nothing per session for the same reason. A file whose original
 path is occupied again blocks its whole session from being restored — the occupant
-is newer, and undoing a deletion must not cause one.
+is newer, and undoing a deletion must not cause one. Restoring a main transcript
+also holds `ConversationLog._locked(stem)` across the under-lock occupied recheck
+and publication. Replay logs and archive segments restore first and roll back
+outside this lock, so cross-filesystem copies cannot starve live transcript
+writers. The live transcript is the final fallible phase. Slack transcripts take
+both the canonical `slack_<ts>` and bare `<ts>` locks in sorted order, whether
+the manifest restores the canonical or pre-migration bare filename. While those
+locks are held, restore rejects occupancy of either physical alias before
+publication. Every normal transcript writer takes the same lock set and resolves
+its target only afterward, so a canonical append already queued when bare restore
+wins appends to the restored bare file rather than publishing a split canonical
+file. Permanent history deletion takes that same stable stem set, so restore and
+delete cannot bypass one another through different alias sidecars.
 
 **Inside a per-file loop, every error path is a session-level failure.** A file
 that cannot be sized, moved, or read from the manifest is a file the operation

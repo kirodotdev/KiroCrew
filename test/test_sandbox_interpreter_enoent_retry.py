@@ -3,7 +3,7 @@
 ``sys.executable`` is often a symlink into a managed install tree, and rebuilding
 that tree deletes and re-creates its entries, including the interpreter
 ``wrap_argv`` prepends to every sandboxed argv. A spawn landing in that ~1s
-window used to die with a bare ENOENT that the caller could not distinguish from
+window can die with a bare ENOENT that the caller could not distinguish from
 a broken install.
 
 These tests pin BOTH directions: the transient shape is retried, and every
@@ -56,6 +56,32 @@ def _prepared(cmd: list[str] | None = None):
     )
 
 
+def _isolated_cron_registries(monkeypatch):
+    """Give one test its own copies of cron_script's three process registries.
+
+    The spawn/cancel tests below drive ``cron_script``'s PRODUCTION module globals
+    -- ``_SPAWNING_JOBS``, ``_CANCELLED_PROC_JOBS`` and ``_RUNNING_PROCS`` -- and
+    nothing in the suite resets them between files, so anything left behind lives
+    for the whole xdist worker. A leaked ``_RUNNING_PROCS`` MagicMock fails
+    ``test_cron_cancel.py``'s ``assert not _RUNNING_PROCS`` (it from-imports the
+    original dict), and a leaked ``_SPAWNING_JOBS`` id makes ``_begin_spawn``
+    refuse that job forever, so ``run_command_sandboxed`` returns ``skipped``
+    instead of ``cancelled`` in ``test_cron_script_more_coverage.py`` -- failures
+    in unrelated files with no pointer back to here.
+
+    Rebinding via ``monkeypatch`` rather than clearing in place is what makes that
+    impossible: the fresh containers are torn down even when an assertion fails
+    mid-test, and whatever the test inherited is restored rather than wiped. The
+    registry reads inside ``cron_script`` resolve these names at call time, so the
+    functions under test see the rebound containers.
+    """
+    cron = importlib.import_module("kiro_crew.cron_script")
+    monkeypatch.setattr(cron, "_SPAWNING_JOBS", set())
+    monkeypatch.setattr(cron, "_CANCELLED_PROC_JOBS", set())
+    monkeypatch.setattr(cron, "_RUNNING_PROCS", {})
+    yield cron
+
+
 class TestIsTransientInterpreterEnoent:
     def test_enoent_naming_our_own_interpreter_is_transient(self):
         assert _is_transient_interpreter_enoent(_enoent(sys.executable), _LAUNCHER_CMD)
@@ -84,7 +110,7 @@ class TestIsTransientInterpreterEnoent:
 
 
 class TestPopenLimitedToleratesAnAbsentInterpreter:
-    def test_retries_until_the_farm_comes_back(self):
+    def test_retries_until_the_farm_comes_back(self, caplog):
         sentinel = MagicMock(name="Popen")
         # Absent for the first two attempts, then the farm is whole again.
         attempts = [_enoent(sys.executable), _enoent(sys.executable), sentinel]
@@ -97,7 +123,7 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
 
         slept: list[float] = []
         with (
-            _prepared(),
+            _prepared([*_LAUNCHER_CMD, "--token", "sensitive-argv-value"]),
             patch.object(sandbox_mod.subprocess, "Popen", side_effect=fake_popen),
             patch.object(sandbox_mod.time, "sleep", side_effect=slept.append),
         ):
@@ -108,6 +134,10 @@ class TestPopenLimitedToleratesAnAbsentInterpreter:
         assert slept == list(_INTERPRETER_ENOENT_DELAYS[:2])
         # The caller still sees its OWN argv, not the launcher's.
         assert got.args == ["/bin/echo", "hi"]
+        warnings = [r for r in caplog.records if r.name == sandbox_mod.logger.name]
+        assert len(warnings) == 2
+        assert all(repr(sys.executable) in r.getMessage() for r in warnings)
+        assert "sensitive-argv-value" not in caplog.text
 
     def test_a_permanently_absent_interpreter_still_raises(self):
         """Negative control: exhausting the budget re-raises, unchanged."""
@@ -259,27 +289,20 @@ class TestSpawnToRegisteredIsAtomic:
     two-call shape (clear the spawning mark, then register) left that gap.
     """
 
-    def _clear(self, cron):
-        with cron._PROCS_LOCK:
-            cron._SPAWNING_JOBS.clear()
-            cron._CANCELLED_PROC_JOBS.clear()
-            cron._RUNNING_PROCS.clear()
+    @pytest.fixture(autouse=True)
+    def cron(self, monkeypatch):
+        yield from _isolated_cron_registries(monkeypatch)
 
-    def test_finish_spawn_registers_and_clears_the_spawning_mark(self):
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._clear(cron)
+    def test_finish_spawn_registers_and_clears_the_spawning_mark(self, cron):
         proc = MagicMock(name="Popen")
         cron._begin_spawn("job-a")
         assert cron._finish_spawn("job-a", proc) is False
         with cron._PROCS_LOCK:
             assert "job-a" not in cron._SPAWNING_JOBS
             assert cron._RUNNING_PROCS["job-a"] is proc
-        self._clear(cron)
 
-    def test_a_cancel_during_the_spawn_is_reported_and_the_child_not_registered(self):
+    def test_a_cancel_during_the_spawn_is_reported_and_the_child_not_registered(self, cron):
         """The raced-cancel case: caller must kill, so we must NOT register."""
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._clear(cron)
         proc = MagicMock(name="Popen")
         cron._begin_spawn("job-b")
         with cron._PROCS_LOCK:
@@ -290,28 +313,19 @@ class TestSpawnToRegisteredIsAtomic:
             # Consumed, so a later run of the same job is not told it was cancelled.
             assert "job-b" not in cron._CANCELLED_PROC_JOBS
             assert "job-b" not in cron._SPAWNING_JOBS
-        self._clear(cron)
 
-    def test_kill_during_the_spawn_window_records_the_cancel(self):
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._clear(cron)
+    def test_kill_during_the_spawn_window_records_the_cancel(self, cron):
         cron._begin_spawn("job-c")
         # No registered child, but a spawn is in flight: the cancel must stick.
         assert cron.kill_running_process("job-c") is True
         assert cron._spawn_cancelled("job-c") is True
-        self._clear(cron)
 
-    def test_kill_with_no_spawn_and_no_child_still_records_nothing(self):
+    def test_kill_with_no_spawn_and_no_child_still_records_nothing(self, cron):
         """Negative control: the window is what makes it recordable."""
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._clear(cron)
         assert cron.kill_running_process("job-d") is False
         assert cron._spawn_cancelled("job-d") is False
-        self._clear(cron)
 
-    def test_abandon_spawn_clears_the_flag_so_it_cannot_leak(self):
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._clear(cron)
+    def test_abandon_spawn_clears_the_flag_so_it_cannot_leak(self, cron):
         cron._begin_spawn("job-e")
         with cron._PROCS_LOCK:
             cron._CANCELLED_PROC_JOBS.add("job-e")
@@ -321,7 +335,6 @@ class TestSpawnToRegisteredIsAtomic:
             assert "job-e" not in cron._SPAWNING_JOBS
         # Second call sees nothing left to report.
         assert cron._abandon_spawn("job-e") is False
-        self._clear(cron)
 
 
 class TestCommandCronSpawnFailureIsCancellable:
@@ -395,33 +408,23 @@ class TestOverlappingRunCannotEatTheCancel:
     the overlap.
     """
 
-    def _reset(self, cron):
-        with cron._PROCS_LOCK:
-            cron._SPAWNING_JOBS.clear()
-            cron._CANCELLED_PROC_JOBS.clear()
-            cron._RUNNING_PROCS.clear()
+    @pytest.fixture(autouse=True)
+    def cron(self, monkeypatch):
+        yield from _isolated_cron_registries(monkeypatch)
 
-    def test_a_second_run_is_refused_while_the_first_is_spawning(self):
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._reset(cron)
+    def test_a_second_run_is_refused_while_the_first_is_spawning(self, cron):
         assert cron._begin_spawn("job-a") is True
         # Run B for the SAME job, while A is still in its ENOENT backoff.
         assert cron._begin_spawn("job-a") is False
-        self._reset(cron)
 
-    def test_a_second_run_is_refused_while_the_first_is_registered(self):
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._reset(cron)
+    def test_a_second_run_is_refused_while_the_first_is_registered(self, cron):
         assert cron._begin_spawn("job-b") is True
         assert cron._finish_spawn("job-b", MagicMock(name="Popen")) is False
         # Now registered rather than spawning -- still an overlap.
         assert cron._begin_spawn("job-b") is False
-        self._reset(cron)
 
-    def test_the_refused_rerun_cannot_consume_the_pending_cancel(self):
+    def test_the_refused_rerun_cannot_consume_the_pending_cancel(self, cron):
         """The race itself: the flag must still be there for the cancelled run."""
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._reset(cron)
         # Run A claims the slot and is cancelled mid-backoff.
         assert cron._begin_spawn("job-c") is True
         assert cron.kill_running_process("job-c") is True
@@ -431,33 +434,23 @@ class TestOverlappingRunCannotEatTheCancel:
         # A's abort_retry peek then returned False, letting A run the cancelled work.
         assert cron._begin_spawn("job-c") is False
         assert cron._spawn_cancelled("job-c") is True
-        self._reset(cron)
 
-    def test_a_distinct_job_is_not_refused(self):
+    def test_a_distinct_job_is_not_refused(self, cron):
         """Negative control: the refusal is per job, not a global lock."""
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._reset(cron)
         assert cron._begin_spawn("job-d") is True
         assert cron._begin_spawn("job-e") is True
-        self._reset(cron)
 
-    def test_an_unidentified_run_is_always_allowed_and_claims_nothing(self):
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._reset(cron)
+    def test_an_unidentified_run_is_always_allowed_and_claims_nothing(self, cron):
         assert cron._begin_spawn(None) is True
         assert cron._begin_spawn(None) is True
         with cron._PROCS_LOCK:
             assert cron._SPAWNING_JOBS == set()
-        self._reset(cron)
 
-    def test_the_slot_is_reusable_once_the_run_ends(self):
-        cron = importlib.import_module("kiro_crew.cron_script")
-        self._reset(cron)
+    def test_the_slot_is_reusable_once_the_run_ends(self, cron):
         assert cron._begin_spawn("job-f") is True
         assert cron._abandon_spawn("job-f") is False
         # Slot released, so the next run may claim it.
         assert cron._begin_spawn("job-f") is True
-        self._reset(cron)
 
 
 class TestCommandOutputUsesLocaleDecoding:
@@ -1011,7 +1004,7 @@ class TestTheStrictShellProbeNoLongerLatchesOnABlip:
 
         Emptying the delay budget makes the loop body never run, so the
         unguarded final attempt raises immediately -- which is exactly the
-        pre-fix shape. The wrong answer is cached, as it used to be.
+        pre-fix shape. The wrong answer is cached, which the retry budget prevents.
         """
         cron = importlib.import_module("kiro_crew.cron_script")
         shell = "/bin/dash"

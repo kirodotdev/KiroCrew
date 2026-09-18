@@ -33,13 +33,14 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.appearance_packs.ids import DEFAULT_PACK, safe_pack_id
+from kiro_crew.appearance_packs.sounds import SOUND_STATES, SOUND_SUFFIXES, sound_body
 from kiro_crew.constants import WINDOWS_DEVICE_STEMS
 from kiro_crew.platform_compat import chmod_safe, is_link_or_junction
 
 logger = logging.getLogger(__name__)
 
-#: The built-in ghost's id lives in ``kiro_crew.appearance_packs.ids``
-#: (re-exported above) so the config can name it without reading the filesystem.
+# The built-in ghost's id lives in ``kiro_crew.appearance_packs.ids``
+# (re-exported above) so the config can name it without reading the filesystem.
 
 #: Custom packs live one directory each, named by id, under this subdirectory.
 PACKS_DIRNAME = "appearances"
@@ -141,9 +142,7 @@ class AppearanceStore:
             if self._colour_path.exists():
                 raw = json.loads(self._colour_path.read_text("utf-8"))
                 if isinstance(raw, dict):
-                    self._colour_maps = {
-                        k: v for k, v in raw.items() if isinstance(v, dict)
-                    }
+                    self._colour_maps = {k: v for k, v in raw.items() if isinstance(v, dict)}
         except (OSError, ValueError) as exc:
             # A corrupt colour file costs the user their recolouring, not their art,
             # so carrying on with defaults beats refusing to start.
@@ -223,6 +222,10 @@ class AppearanceStore:
                 # The built-in ghost's art is bundled with the frontend, so the
                 # renderer already has it and needs no content here.
                 "animations": {},
+                # Present and empty, not absent: the client branches on this map
+                # to decide whether to play anything, and a missing key would
+                # make the built-in read as "not yet known" rather than "silent".
+                "sounds": {},
                 "colorMap": self.colour_map(DEFAULT_PACK),
             }
 
@@ -233,12 +236,12 @@ class AppearanceStore:
 
         animations: dict[str, Any] = {}
         # `meta` may be present but the WRONG TYPE (a hand-edited or legacy
-        # on-disk manifest with `"meta": []`): `.get("meta", {})` only
-        # defaults when the key is absent, so `[].get(...)` raised
-        # AttributeError and the detail endpoint 500ed — for the ACTIVE pack
-        # that meant the avatar could not load at all. The save path and the
-        # listing path both already require a dict; the detail read must
-        # tolerate what older writers left on disk.
+        # on-disk manifest with `"meta": []`), so the type is checked rather
+        # than defaulted: `.get("meta", {})` defaults only when the key is
+        # absent, and `[].get(...)` raises AttributeError, which 500s the
+        # detail endpoint — for the ACTIVE pack that means the avatar cannot
+        # load at all. The save path and the listing path both require a dict;
+        # the detail read tolerates what older writers left on disk.
         meta_section = manifest.get("meta")
         fmt = meta_section.get("format", "svg") if isinstance(meta_section, dict) else "svg"
 
@@ -260,13 +263,12 @@ class AppearanceStore:
         # content actually loaded, mirroring the skip-on-missing-content above.
         #
         # `categories` is the AUTHORITATIVE taxonomy: which slot belongs to which
-        # of the three category maps. This is the FOURTH place the flattening bug
-        # appeared (detail read, editor load, editor save, bundle export) — each
-        # consumer was re-deriving the taxonomy from the flat map and each got it
-        # wrong the same way. One source of truth here ends that class of bug:
-        # every consumer that must rebuild a categorized manifest reads this
-        # instead of guessing. `randomNames` stays for the editor's existing
-        # contract; it equals categories["random"].
+        # of the three category maps. A consumer that re-derives it from the flat
+        # map gets it wrong, because states, moods and random clips are
+        # indistinguishable once folded together — so the bundle export, which
+        # rebuilds a categorized manifest from this payload, reads this one
+        # source instead of guessing. `randomNames` stays for the editor's
+        # existing contract; it equals categories["random"].
         random_names: list[str] = []
         categories: dict[str, list[str]] = {"states": [], "moods": [], "random": []}
         for category in ("states", "moods", "random"):
@@ -300,6 +302,11 @@ class AppearanceStore:
             "animations": animations,
             "randomNames": random_names,
             "categories": categories,
+            # PRESENCE only. The client needs to know what exists in order to
+            # decide whether to play anything at all; inlining the audio would
+            # put hundreds of KB into the payload the roster fetches to draw a
+            # face, per crew, per state change.
+            "sounds": self.pack_sounds(ident),
             "sprite": sprite,
             "colorMap": self.colour_map(ident),
         }
@@ -351,9 +358,7 @@ class AppearanceStore:
         # Only string→string pairs; anything else would break the SVG rewrite that
         # consumes this on the renderer side.
         clean = {
-            str(k): str(v)
-            for k, v in colours.items()
-            if isinstance(k, str) and isinstance(v, str)
+            str(k): str(v) for k, v in colours.items() if isinstance(k, str) and isinstance(v, str)
         }
         prev = self._colour_maps.get(ident)
         self._colour_maps[ident] = clean
@@ -428,6 +433,36 @@ class AppearanceStore:
             logger.warning("appearance-packs: pack manifest has no meta: %s", ident)
             return False
 
+        # An OVERWRITE that names no sounds keeps the ones already on disk.
+        # The gallery editor works by reading `pack_detail` and saving the whole
+        # pack back, and `pack_detail` reports cues as PRESENCE only (the audio
+        # is fetched per state, never inlined) -- so the editor's save carries no
+        # sound files and no `sounds` map, and re-saving a pack would silently
+        # delete its cues. A caller that wants to REMOVE a cue must say so with
+        # an explicit `"sounds": {}` (or a map that omits the state); an absent
+        # key means "leave them as they are".
+        if "sounds" not in manifest:
+            carried = self.pack_sound_payload(ident)
+            if carried is None:
+                # The on-disk manifest names a cue this read could not load (a
+                # locked file, a transient IO error). Carrying only the readable
+                # ones forward would make that moment permanent: the overwrite
+                # replaces the pack, and the cue it could not read is gone for
+                # good. Refuse the whole save instead -- the same all-or-nothing
+                # rule the art files below follow -- so a retry after the
+                # condition clears loses nothing. One read decides both the
+                # carry and the refusal, so they cannot disagree.
+                logger.warning(
+                    "appearance-packs: refusing to overwrite %s while a declared "
+                    "sound cue cannot be read",
+                    ident,
+                )
+                return False
+            kept_states, kept_files = carried
+            if kept_states:
+                manifest = {**manifest, "sounds": kept_states}
+                files = {**{n: c for n, c in kept_files.items() if n not in files}, **files}
+
         staging = self._root / f".tmp-{ident}-{os.getpid()}"
         target = self._root / ident
         # Serialize and size-check the manifest BEFORE creating staging or
@@ -467,9 +502,7 @@ class AppearanceStore:
                     # write silently replaced the first while the import
                     # reported success. Same all-or-nothing rule as above: a
                     # save that would lose one file's art refuses entirely.
-                    logger.warning(
-                        "appearance-packs: case-colliding pack filename: %r", name
-                    )
+                    logger.warning("appearance-packs: case-colliding pack filename: %r", name)
                     shutil.rmtree(staging, ignore_errors=True)
                     return False
                 seen_casefolded.add(safe.casefold())
@@ -503,7 +536,7 @@ class AppearanceStore:
             try:
                 os.replace(staging, target)
             except OSError:
-                if backup is not None:      # put the original back, then report
+                if backup is not None:  # put the original back, then report
                     os.replace(backup, target)
                 raise
             if backup is not None:
@@ -517,6 +550,174 @@ class AppearanceStore:
             except OSError:
                 pass
             return False
+
+    # ── sounds ──────────────────────────────────────────────────────────────
+
+    def _pack_sound_entries(self, pack_id: str) -> dict[str, tuple[bytes, str]]:
+        """Every USABLE cue in a pack: state -> (bytes, mime).
+
+        One reader behind both public shapes, so presence can never disagree
+        with what the byte route serves. Every rejection is a warning and a skip,
+        never an exception: a pack is third-party content, and one hand-edited
+        sound entry must not cost the pack its art.
+        """
+        ident = _safe_id(pack_id)
+        if ident is None or ident == DEFAULT_PACK:
+            # The built-in ships inside the frontend and has no pack directory,
+            # so it has nowhere to keep a sound file.
+            return {}
+        pack_dir = self._root / ident
+        manifest = self._read_manifest(pack_dir)
+        if manifest is None:
+            return {}
+        section = manifest.get("sounds")
+        if not isinstance(section, dict):
+            return {}
+        out: dict[str, tuple[bytes, str]] = {}
+        for state in SOUND_STATES:
+            filename = section.get(state)
+            if filename is None:
+                continue
+            safe = _safe_filename(filename)
+            if safe is None or not safe.lower().endswith(SOUND_SUFFIXES):
+                logger.warning(
+                    "appearance-packs: dropping unusable %s sound in pack %s", state, ident
+                )
+                continue
+            # Through the ordinary pack-file read, so a cue gets the same link
+            # refusal, containment re-check and size ceiling every other pack
+            # file gets.
+            text = self._read_pack_file(pack_dir, safe)
+            body = sound_body(text)
+            if body is None:
+                logger.warning(
+                    "appearance-packs: %s sound in pack %s is unreadable, too large, "
+                    "or not audio",
+                    state,
+                    ident,
+                )
+                continue
+            out[state] = body
+        return out
+
+    def pack_sounds(self, pack_id: str) -> dict[str, bool]:
+        """Which states this pack has a usable cue for. Presence only."""
+        return {state: True for state in self._pack_sound_entries(pack_id)}
+
+    def pack_sound(self, pack_id: str, state: Any) -> tuple[bytes, str] | None:
+        """One state's audio as raw bytes plus the type to serve it as."""
+        if not isinstance(state, str):
+            return None
+        return self._pack_sound_entries(pack_id).get(state)
+
+    def pack_sound_payload(self, pack_id: str) -> tuple[dict[str, str], dict[str, str]] | None:
+        """Every declared cue that READS, in STORE shape -- or ``None`` when one that
+        is on disk cannot be read.
+
+        ``(state -> name, name -> text)`` is what ``save_pack`` carries forward when
+        an overwrite names no ``sounds`` and what ``export_bundle`` puts in a bundle.
+        ``None`` is the refusal both of them honour: a cue the manifest names, whose
+        file is present, and whose read still failed -- a lock, an IO error, a
+        refused link. Carrying only the readable ones forward would make that
+        moment permanent (the overwrite replaces the pack; the export is what a
+        later import restores from), and a retry after the condition clears loses
+        nothing, so the whole operation waits.
+
+        ONE traversal decides both answers. Two passes over the same files -- one
+        for the refuse set, one for the carry payload -- can disagree when a read
+        fails on the second only: the carry comes back with a cue missing while
+        the refuse set does not mention it, so the save goes through and the cue
+        is gone. Reading each file exactly once cannot disagree with itself.
+
+        Keyed on READABILITY, not on playability, and the difference is data loss:
+        the reader DROPS a cue whose bytes are not audio, so a carry keyed on what
+        plays would omit that file and an ordinary art edit would delete it -- a
+        cue the user was never told was wrong, gone with a save that reported
+        success. A file that is there is the user's; whether it plays is the
+        reader's business at read time and the importer's at the boundary, never
+        the overwrite's.
+
+        The four things that can go wrong with a declared cue, and what each gets:
+
+        * **an unusable name** (``../evil.wav``, ``cue.exe``) -- junk the read path
+          drops; dropped here too, because refusing would lock the user out of a
+          pack they cannot edit from any surface.
+        * **no such file** -- same: dropped on read, so refusing here is permanent.
+        * **bad content** (not audio, or over the cue cap) -- CARRIED verbatim; see
+          the readability rule above.
+        * **present, and the read itself failed** -- the only branch a retry can
+          clear, and the only one where a save would erase a cue that is really
+          still there. This is the ``None``. An ``OSError`` from the stat counts as
+          present, which is the conservative half of an ambiguous case.
+        """
+        ident = _safe_id(pack_id)
+        if ident is None or ident == DEFAULT_PACK:
+            return {}, {}
+        pack_dir = self._root / ident
+        manifest = self._read_manifest(pack_dir)
+        section = manifest.get("sounds") if isinstance(manifest, dict) else None
+        if not isinstance(section, dict):
+            return {}, {}
+        states: dict[str, str] = {}
+        files: dict[str, str] = {}
+        for state in SOUND_STATES:
+            safe = _safe_filename(section.get(state))
+            if safe is None or not safe.lower().endswith(SOUND_SUFFIXES):
+                continue
+            try:
+                present = (pack_dir / safe).is_file()
+            except OSError:
+                return None
+            if not present:
+                continue
+            text = self._read_pack_file(pack_dir, safe)
+            if text is None:
+                return None
+            states[state] = safe
+            files[safe] = text
+        return states, files
+
+    def pack_revision(self, pack_id: str) -> tuple[int, ...] | None:
+        """Identity of the pack directory currently answering ``pack_id``.
+
+        Every mutation of a pack is a whole-directory swap (``save_pack`` stages
+        beside the target and ``os.replace``s it in; ``delete_pack`` removes it),
+        so the directory a reader is looking at is a REVISION, and two reads see
+        the same revision exactly when the directory is the same one. That is
+        what this reports: the device and inode of the pack directory and of its
+        manifest, plus their mtimes -- a fresh staging directory is a fresh inode,
+        so a swap between two calls changes the answer even when the new revision
+        carries byte-identical files.
+
+        The reason it exists is that the store holds no lock across a read.
+        ``pack_detail`` and ``pack_sound_payload`` each open the manifest for
+        themselves, so a caller composing art from one and cues from the other --
+        ``export_bundle`` -- can be handed two revisions in one bundle when a
+        save lands between them. A caller that records this before its first
+        read and compares after its last one knows whether it read one revision
+        or two, without the store growing a lock around every read for the sake
+        of one multi-read caller.
+
+        ``None`` when the pack is not on disk (absent, mid-swap, built-in, or a
+        malformed id), which callers treat as "nothing to read".
+        """
+        ident = _safe_id(pack_id)
+        if ident is None or ident == DEFAULT_PACK:
+            return None
+        pack_dir = self._root / ident
+        try:
+            dir_stat = os.stat(pack_dir)
+            manifest_stat = os.stat(pack_dir / "manifest.json")
+        except OSError:
+            return None
+        return (
+            dir_stat.st_dev,
+            dir_stat.st_ino,
+            dir_stat.st_mtime_ns,
+            manifest_stat.st_ino,
+            manifest_stat.st_mtime_ns,
+            manifest_stat.st_size,
+        )
 
     # ── internals ───────────────────────────────────────────────────────────
 
@@ -538,9 +739,7 @@ class AppearanceStore:
             # manifest.json would read ANY JSON file on disk and surface its
             # fields (names, paths) through the gallery listing.
             if is_link_or_junction(path):
-                logger.warning(
-                    "appearance-packs: refusing linked manifest in %s", pack_dir.name
-                )
+                logger.warning("appearance-packs: refusing linked manifest in %s", pack_dir.name)
                 return None
             if not path.is_file() or path.stat().st_size > MAX_FILE_BYTES:
                 return None
@@ -558,11 +757,11 @@ class AppearanceStore:
             return None
         # The DIRECTORY is the identity, never the manifest's self-declared id.
         # Every write path validates and uses the directory name (save targets
-        # _root/<ident>, detail resolves by it) — but listing trusted the inner
-        # `meta.id`, so a hand-edited or legacy-imported pack could list itself
-        # under ANOTHER pack's id, and deleting/selecting that entry hit the
-        # victim's directory. Same identity-spoof class as the import fix; this
-        # closes the local half.
+        # _root/<ident>, detail resolves by it). Trusting the inner `meta.id`
+        # here would let a hand-edited or legacy-imported pack list itself under
+        # ANOTHER pack's id, so deleting or selecting that entry would hit the
+        # victim's directory. `transfer.import_bundle` normalizes that inner id
+        # against the same invariant; this is the reader's half of it.
         ident = pack_dir.name
         fmt = meta.get("format")
         return PackMeta(
@@ -603,12 +802,12 @@ class AppearanceStore:
     def _save_colours(self) -> None:
         """Persist the colour maps. Raises OSError on write failure.
 
-        This used to catch-and-log, which meant a disk-full or read-only
-        write was acknowledged as success: the route returned 200, the UI
-        showed the new colour, and a restart silently reloaded the old map.
-        Callers that can roll back do so; the route wrapper maps the raised
-        OSError to 503 store_write_failed (same contract as the reminder
-        store).
+        Raises rather than catch-and-log: swallowing the error would
+        acknowledge a disk-full or read-only write as success -- the route
+        returns 200, the UI shows the new colour, and a restart silently
+        reloads the old map. Callers that can roll back do so; the route
+        wrapper maps the raised OSError to 503 store_write_failed (same
+        contract as the reminder store).
         """
         tmp = self._colour_path.with_suffix(f".json.tmp.{os.getpid()}")
         tmp.write_text(json.dumps(self._colour_maps, indent=2), "utf-8")

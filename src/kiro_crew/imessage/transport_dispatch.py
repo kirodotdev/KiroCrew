@@ -27,6 +27,8 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING, Any
 
+from kiro_crew.config import live
+from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.imessage.client import redact_handle
 from kiro_crew.imessage.commands import HELP_TEXT, ConversationState, parse_command
@@ -37,11 +39,13 @@ from kiro_crew.messaging.commands import compact_unsupported_backend
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
+    admit_inbound_callback,
     build_directive_consumer,
     drive_turn,
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import build_dm_session_key, seed_generation
 from kiro_crew.messaging.pre_turn import resolve_pre_turn
 from kiro_crew.safety_override import safety_override
@@ -51,6 +55,7 @@ if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
     from kiro_crew.history import ConversationLog
     from kiro_crew.imessage.client import IMessageClient, IMessageInbound
+    from kiro_crew.imessage.transport import IMessageTransport
     from kiro_crew.session import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -88,7 +93,44 @@ class IMessageDispatcher:
         self.conv_log = conv_log
         self.approval_mode = approval_mode
         self.client: "IMessageClient | None" = None
+        # Set by maybe_start_imessage after construction (the client<->transport
+        # construction cycle forbids doing it here); the config applier pushes
+        # the reloaded allow-list at it.
+        self.transport: "IMessageTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # Held on self: the watcher holds the owner WEAKLY, so a subscription
+        # dropped here would be collected and the applier would silently stop
+        # firing.
+        self._config_sub = live.watch_section(
+            self, "imessage", "messaging", target="transport", name="IMessageDispatcher"
+        )
+
+    # -- Live config ---------------------------------------------------------
+
+    def _live_cfg(self) -> "KiroCrewConfig":
+        """The config in force NOW, for a per-turn read.
+
+        The watcher's snapshot when it is armed, else a fingerprint-cached
+        ``load()`` (two stats on a hit), else the boot copy. Falling back to
+        ``self.cfg`` rather than raising keeps a turn running when the config
+        file is momentarily unreadable -- a threshold or a rotation window is
+        not an authorization decision, and the boot value is the one the
+        operator last had in force.
+        """
+        return live.current(self.cfg, log_prefix="imessage")
+
+    def _thresholds(self) -> tuple[int, int]:
+        """``(soft, hard)`` context thresholds from the live config.
+
+        Re-runs the loader's own pair normalization, because reading the two
+        fields live without it can leave ``soft > hard`` and make the soft nudge
+        unreachable -- ``_maybe_notice`` tests ``pct >= hard`` first.
+        """
+        section = self._live_cfg().imessage
+        return _normalize_threshold_pair(
+            int(getattr(section, "soft_threshold_pct", 80)),
+            int(getattr(section, "hard_threshold_pct", 95)),
+        )
 
     # -- Advisory delivery ---------------------------------------------------
 
@@ -98,7 +140,7 @@ class IMessageDispatcher:
         Command acknowledgements, help text and compaction notices are status
         chatter, not the answer, so a bridge failure while sending one must not
         abort the dispatch that produced it. ``client.send`` raises on a real
-        delivery failure (it no longer collapses failure into an empty guid), so
+        delivery failure (it does not collapse failure into an empty guid), so
         the tolerance lives here, at the call sites that genuinely want it,
         rather than inside the client where it would also hide a lost reply.
         """
@@ -124,6 +166,18 @@ class IMessageDispatcher:
             return
         handle = inbound.handle
         text = inbound.text
+        inbound_route = InboundRoute(
+            conversation_id=handle,
+            text=inbound.text,
+            user_id=handle,
+            message_id=inbound.guid,
+        )
+        if not await admit_inbound_callback(
+            self.sessions,
+            channel_type="imessage",
+            route=inbound_route,
+        ):
+            return
         logger.info("iMessage inbound from %s: %d chars", redact_handle(handle), len(text or ""))
 
         # -- Command intercept (no LLM session needed) --
@@ -155,8 +209,8 @@ class IMessageDispatcher:
             sessions=self.sessions,
             key=handle,
             session_key_for=self._session_key,
-            idle_minutes=self.cfg.messaging.idle_reset_minutes,
-            daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            idle_minutes=self._live_cfg().messaging.idle_reset_minutes,
+            daily_reset_hour=self._live_cfg().messaging.daily_reset_hour,
             on_busy=lambda sk: self._handle_busy(inbound, sk),
         )
         if session_key is None:
@@ -187,6 +241,7 @@ class IMessageDispatcher:
             ChannelTurn(
                 channel_type="imessage",
                 session_key=session_key,
+                inbound_route=inbound_route,
                 # Session-directive consumer: monitor_start / autonudge_stop /
                 # ... return a marker TurnDriver decodes; apply it against THIS
                 # turn's session key (dashboard-only directives stay refused
@@ -270,7 +325,7 @@ class IMessageDispatcher:
             self._resolve_agent(),
             handle,
             gen=gen,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self.cfg.messaging.dm_scope),
         )
 
     def _seed_gen(self, handle: str) -> int:
@@ -279,7 +334,7 @@ class IMessageDispatcher:
             channel="imessage",
             agent=self._resolve_agent(),
             user_id=handle,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self.cfg.messaging.dm_scope),
         )
 
     def _persist_turn(
@@ -320,15 +375,16 @@ class IMessageDispatcher:
         assert self.client is not None
         handle = inbound.handle
         pct = self.sessions.check_context_usage(session_key, provider)
-        if pct >= self.cfg.imessage.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+        soft, hard = self._thresholds()
+        if pct >= soft:
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
             if unsupported:
                 logger.debug("imessage: context notice skipped — %s compacts itself", unsupported)
                 return
-        if pct >= self.cfg.imessage.hard_threshold_pct:
+        if pct >= hard:
             self._conv.clear_awaiting(handle)
             try:
                 await provider.compact()
@@ -339,7 +395,7 @@ class IMessageDispatcher:
                 )
             except Exception:
                 logger.debug("imessage hard-threshold compaction failed", exc_info=True)
-        elif pct >= self.cfg.imessage.soft_threshold_pct and not self._conv.is_awaiting(handle):
+        elif pct >= soft and not self._conv.is_awaiting(handle):
             self._conv.set_awaiting(handle)
             await self._notify(
                 handle,
@@ -370,7 +426,7 @@ class IMessageDispatcher:
             if provider is None:
                 await self._notify(handle, "ℹ️ There's no conversation to compact yet.")
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # unbounded wait below. Informational, never an error — and plain

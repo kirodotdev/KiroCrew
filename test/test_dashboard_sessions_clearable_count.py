@@ -1,6 +1,6 @@
 """Tests for ``GET /api/sessions/clearable/count`` and its shared selector.
 
-Ask 4 of #8872 needs the confirmation for a bulk delete to state how many
+A bulk delete's confirmation needs to state how many
 sessions it will remove. ``DELETE /api/sessions`` offered no way to learn that
 before committing, so this endpoint answers it and nothing else.
 
@@ -18,6 +18,7 @@ Two properties carry the feature and each has tests here:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import json
 from typing import Iterator
@@ -27,7 +28,7 @@ import pytest
 from aiohttp import web
 
 from kiro_crew.dashboard.handlers import api_sessions_clear, api_sessions_clearable_count
-from kiro_crew.dashboard.handlers.sessions import _clearable_history_keys
+from kiro_crew.dashboard.handlers.sessions import _clearable_history_keys, api_session_delete
 from kiro_crew.history import ConversationLog
 
 CLOSED_AT = 1_700_000_000.0
@@ -101,6 +102,7 @@ def _fake_state(
     state = MagicMock()
     state.conversation_log = conv_log
     state._slots = slots or {}
+    state.crons = None
     state.push_slots_update = MagicMock()
     state.push_refresh = MagicMock()
     return state, deleted_keys
@@ -154,7 +156,7 @@ def test_open_tab_is_excluded_and_reported_as_skipped() -> None:
     k1, k2 = _history_key_for("chat-1"), _history_key_for("chat-2")
     state, _ = _fake_state([{"key": k1}, {"key": k2}], slots={"chat-1": _FakeSlot("chat-1")})
 
-    clearable, skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == [k2]
     assert skipped == 1
@@ -163,7 +165,7 @@ def test_open_tab_is_excluded_and_reported_as_skipped() -> None:
 def test_pinned_session_is_excluded() -> None:
     state, _ = _fake_state([{"key": "a"}, {"key": "b"}], metadata={"a": {"pinned": True}})
 
-    clearable, skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == ["b"]
     assert skipped == 1
@@ -173,10 +175,10 @@ def test_unreadable_metadata_is_excluded() -> None:
     """A transient read failure must not read as permission to delete."""
     state, _ = _fake_state([{"key": "a"}, {"key": "b"}], unreadable_keys={"a"})
 
-    clearable, skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, skipped, unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == ["b"]
-    assert skipped == 1
+    assert (skipped, unreadable) == (0, ["a"])
 
 
 def test_unexpected_metadata_failure_is_excluded() -> None:
@@ -184,43 +186,36 @@ def test_unexpected_metadata_failure_is_excluded() -> None:
     genuinely unexpected failure must still not read as permission to delete."""
     state, _ = _fake_state([{"key": "a"}, {"key": "b"}], raising_keys={"a"})
 
-    clearable, skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, skipped, unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == ["b"]
-    assert skipped == 1
+    assert (skipped, unreadable) == (0, ["a"])
 
 
 def test_rows_without_a_key_are_ignored() -> None:
     state, _ = _fake_state([{"key": ""}, {}, {"key": "b"}])
 
-    clearable, _skipped = _clearable_history_keys(state, state.conversation_log)
+    clearable, _skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     assert clearable == ["b"]
 
 
 @pytest.mark.asyncio
-async def test_unparseable_metadata_is_counted_because_the_delete_takes_it(
+async def test_unparseable_metadata_is_excluded_from_count_and_bulk_delete(
     tmp_path,
 ) -> None:
-    """Present-but-unparseable metadata is NOT an exclusion, and must not be
-    described as one.
-
-    ``get_metadata_status`` reports a malformed first line as
-    readable-with-no-metadata (``({}, True)``) rather than raising or reporting
-    unreadable, so the session reads as unpinned. ``delete_session`` resolves it
-    the same way and deletes it, so counting it is the honest answer — the count
-    tracks the delete, including where the delete is arguably wrong.
-    """
+    """Unreadable identity cannot authorize deletion or inflate its preview."""
     log = ConversationLog(base_dir=tmp_path)
-    log.append("malformed", "user", "hello")
+    await asyncio.to_thread(log.append, "malformed", "user", "hello")
     path = tmp_path / "malformed.jsonl"
     lines = path.read_text(encoding="utf-8").splitlines()
     lines[0] = "{this is not json"
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    before = path.read_bytes()
 
-    # The premise: readable, with no metadata, so nothing marks it pinned.
+    # Broken JSON is unreadable even though the display projection is empty.
     meta, readable = log.get_metadata_status("malformed")
-    assert readable is True
+    assert readable is False
     assert meta == {}
 
     state = MagicMock()
@@ -230,7 +225,55 @@ async def test_unparseable_metadata_is_counted_because_the_delete_takes_it(
     status, body = await _call_count(state)
 
     assert status == 200
-    assert body == {"sessions": 1}
+    assert body == {"sessions": 0}
+    with patch("kiro_crew.dashboard.handlers.sel"):
+        resp = await api_sessions_clear(_request(state))
+    assert resp.status == 200
+    clear_body = json.loads(resp.body)
+    assert clear_body["cleared"] == 0
+    assert clear_body["undeletable"] == [{"id": "malformed", "code": "cron_ownership_unknown"}]
+    assert await asyncio.to_thread(log.delete_session, "malformed", skip_pinned=True) is None
+    assert path.read_bytes() == before
+
+
+@pytest.mark.asyncio
+async def test_an_individual_delete_excludes_and_reports_unparseable_metadata(
+    tmp_path,
+) -> None:
+    """A corrupt session stays intact when its owner metadata cannot be read."""
+    log = ConversationLog(base_dir=tmp_path)
+    await asyncio.to_thread(log.append, "malformed", "user", "hello")
+    await asyncio.to_thread(log.append, "keep", "user", "keep this conversation")
+    path = tmp_path / "malformed.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    lines[0] = "{this is not json"
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    before = path.read_bytes()
+    survivor = tmp_path / "keep.jsonl"
+    survivor_before = survivor.read_bytes()
+    assert await asyncio.to_thread(log.get_metadata_status, "malformed") == ({}, False)
+
+    state = MagicMock()
+    state.conversation_log = log
+    request = _request(state)
+    request.match_info = {"key": "malformed"}
+    # Slot/provider teardown has its own coverage. Keep the HTTP handler and the
+    # locked transcript deletion real, including the metadata readability check.
+    with patch(
+        "kiro_crew.dashboard.handlers.sessions._remove_slot_for_history_key",
+        new_callable=AsyncMock,
+    ) as remove_slot:
+        response = await api_session_delete(request)
+
+    body = json.loads(response.body)
+    assert response.status == 409
+    assert body["ok"] is False
+    assert body["code"] == "cron_ownership_unknown"
+    assert path.read_bytes() == before
+    assert survivor.read_bytes() == survivor_before
+    remove_slot.assert_not_awaited()
+    state.push_slots_update.assert_not_called()
+    state.push_refresh.assert_not_called()
 
 
 # ── one selector: the count and the delete agree ──
@@ -252,14 +295,20 @@ async def test_count_and_bulk_delete_resolve_the_same_set() -> None:
     metadata = {k_pinned: {"pinned": True}}
 
     state, _ = _fake_state(sessions, slots=slots, metadata=metadata)
-    counted, _skipped = _clearable_history_keys(state, state.conversation_log)
+    counted, _skipped, _unreadable = _clearable_history_keys(state, state.conversation_log)
 
     delete_state, deleted = _fake_state(sessions, slots=slots, metadata=metadata)
+    # Patch the DEFINING module, not the package re-export: ``api_sessions_clear``
+    # resolves this name from ``sessions``'s own globals, so
+    # ``handlers._remove_slot_for_history_key`` rebinds an alias nobody reads and the
+    # production teardown runs against the MagicMock state instead — invisibly, since
+    # the call site gathers with ``return_exceptions=True``. Awaiting the stub for both
+    # cleared keys is what keeps that mistake from coming back silently.
     with (
         patch(
-            "kiro_crew.dashboard.handlers._remove_slot_for_history_key",
-            new=AsyncMock(return_value=None),
-        ),
+            "kiro_crew.dashboard.handlers.sessions._remove_slot_for_history_key",
+            new_callable=AsyncMock,
+        ) as remove_slot,
         patch("kiro_crew.dashboard.handlers.sel"),
     ):
         resp = await api_sessions_clear(_request(delete_state))
@@ -268,6 +317,7 @@ async def test_count_and_bulk_delete_resolve_the_same_set() -> None:
     assert set(counted) == {"plain-a", "plain-b"}
     assert set(deleted) == {"plain-a", "plain-b"}
     assert set(counted) == set(deleted)
+    assert {call.args[1] for call in remove_slot.await_args_list} == {"plain-a", "plain-b"}
 
 
 # ── the endpoint is read-only, proven by naming the survivors ──

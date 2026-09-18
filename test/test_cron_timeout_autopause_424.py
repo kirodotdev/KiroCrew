@@ -1,4 +1,4 @@
-"""Regression: cron timeouts must count toward auto-pause (#424).
+"""Cron timeouts must count toward auto-pause.
 
 The ``asyncio.TimeoutError`` handler in ``_execute_with_timeout`` reset
 ``consecutive_failures`` to 0 on every timeout, so a job that timed out on

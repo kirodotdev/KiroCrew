@@ -93,8 +93,8 @@ class TestTriggers:
     def test_a_swapped_route_still_demands_a_map_edit(self):
         """One destination replacing another is a structural change, not a wash.
 
-        The counts used to be a single signed delta, so a swap arrived as zero and
-        the gate read it as "nothing happened" — while the retired destination's
+        A single signed count delta would let a swap net to zero and read as
+        "nothing happened" — while the retired destination's
         row still claimed it existed and the new destination had no row at all.
         Netting is only safe if a route entry is fungible, and it is not: the map
         keys on which destination, never on how many.
@@ -276,7 +276,7 @@ class TestAgainstRealGit:
         This overturns an earlier reading that exempted renames because "a rename
         is the same destination under a new filename". True of the feature, false
         of the map: its page column cites the FILENAME, so after a rename that row
-        points at a file which no longer exists, and the row for the file that does
+        points at a file that does not exist, and the row for the file that does
         exist is missing. That is exactly the staleness the gate exists to catch,
         and the fix is a one-cell edit. The refactor exemption still holds for pure
         edits, which change no cited cell.
@@ -336,8 +336,8 @@ class TestAgainstRealGit:
 
         ``router_delta`` counts the ``+``/``-`` lines of the router's own diff
         rather than differencing two file totals, and that is what makes this
-        fail. A total-count difference is zero here, so the gate used to pass a
-        change that left the map's rows for BOTH destinations wrong — the retired
+        fail. A total-count difference is zero here, so differencing file totals
+        would pass a change leaving the map's rows for BOTH destinations wrong — the retired
         one still listed, the new one absent. A ``classify`` test cannot catch a
         regression here, because the netting lived on this side of the seam too.
         """
@@ -359,8 +359,8 @@ class TestAgainstRealGit:
     def test_deleted_router_without_map_fails(self, tmp_path):
         """Deleting the router retires every destination it registered.
 
-        This used to fail OPEN, but only as an artifact of counting routes through
-        ``open()``: an absent file raised, and the gate waved the change through.
+        Counting routes through ``open()`` would fail OPEN here: an absent file
+        raised, and the gate waved the change through.
         ``git diff`` reads a deletion perfectly well, and a diff that removes every
         route in the app is the largest structural change there is. The genuine
         fail-open case is git being unable to answer at all — a shallow clone or a

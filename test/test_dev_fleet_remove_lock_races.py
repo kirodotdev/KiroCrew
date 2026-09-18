@@ -1,11 +1,11 @@
 """Regression tests for two concurrency races in Dev Fleet worktree removal.
 
-Issue #5288 — Race: removal during rebase
+Race: removal during rebase
   ``_worktree_remove`` must refuse immediately when ``_wt_lock(name)`` is
   already held by a running rebase, rather than letting the deletion proceed
   and corrupt the rebase's working directory.
 
-Issue #5289 — Race: make-live staging between protection check and deletion
+Race: make-live staging between protection check and deletion
   The direct worktree-removal path must hold ``_MAKE_LIVE_LOCK`` from the
   live/staged protection re-check through ``git worktree remove``, so a
   concurrent ``/make-live`` cannot stage the target in that window.
@@ -92,7 +92,7 @@ def _stub_successful_remove(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Issue #5288: removal must refuse while _wt_lock(name) is held (rebase lock)
+# Removal must refuse while _wt_lock(name) is held (rebase lock)
 # ---------------------------------------------------------------------------
 
 
@@ -101,7 +101,7 @@ async def test_remove_refuses_while_rebase_lock_held(monkeypatch, tmp_path):
     """FIX PRESENT: _worktree_remove returns an error immediately when
     _wt_lock('feat-x') is already locked (rebase in progress).
 
-    This is the production-guard check for issue #5288.
+    This is the production-guard check.
     """
     rebase_lock = asyncio.Lock()
     await rebase_lock.acquire()  # simulate rebase holding the lock
@@ -171,7 +171,7 @@ async def test_remove_proceeds_after_rebase_lock_released(monkeypatch, tmp_path)
 
 
 # ---------------------------------------------------------------------------
-# Issue #5289: direct removal must hold _MAKE_LIVE_LOCK across protection check
+# Direct removal must hold _MAKE_LIVE_LOCK across protection check
 # ---------------------------------------------------------------------------
 
 
@@ -379,3 +379,59 @@ async def test_forced_prune_delegates_lock_ownership_to_remove(monkeypatch, tmp_
 
     assert worktree_ops._PRUNE_STATE["running"] is False
     assert calls == [(True, False)]
+
+
+@pytest.mark.asyncio
+async def test_remove_hands_the_lease_gate_to_the_git_spawn(monkeypatch, tmp_path):
+    """The git mutation is spawned through ``_run_cmd`` WITH the pre-spawn lease gate,
+    and a removal under a healthy lease proceeds (the gate answers None)."""
+    seen: dict = {}
+
+    async def _capturing_run_cmd(cmd, **kw):
+        if cmd[:4] == ["git", "-C", str(worktree_ops.repository._repo()), "worktree"]:
+            seen["gate"] = kw.get("pre_spawn")
+            seen["gate_answer"] = await kw["pre_spawn"]() if kw.get("pre_spawn") else "absent"
+        return (0, "", "")
+
+    monkeypatch.setattr(runtime, "_run_cmd", _capturing_run_cmd)
+    result = await worktree_ops._worktree_remove("feature-wt")
+    assert result.get("ok") is True, result
+    assert seen.get("gate") is not None, "git worktree remove ran without the lease gate"
+    assert seen["gate_answer"] is None, "a healthy lease must let the mutation proceed"
+
+
+@pytest.mark.asyncio
+async def test_remove_refuses_when_the_gateway_will_not_renew_the_lease(monkeypatch, tmp_path):
+    """The gateway forgot the lease (restarted) right before the mutation: the gate's
+    renewal is refused, git NEVER runs, and the refusal is reported as a lease refusal
+    rather than as a git failure."""
+    git_ran = []
+
+    async def _gating_run_cmd(cmd, **kw):
+        gate = kw.get("pre_spawn")
+        if gate is not None:
+            refusal = await gate()
+            if refusal is not None:
+                return (-1, "", refusal)
+        if cmd[:1] == ["git"] and "remove" in cmd:
+            git_ran.append(cmd)
+        return (0, "", "")
+
+    async def acquire(path: str):
+        return "cap-forgotten"
+
+    async def renew(token: str) -> bool:
+        return False  # the gateway does not know this lease
+
+    async def release(token: str) -> None:
+        pass
+
+    monkeypatch.setattr(runtime, "_run_cmd", _gating_run_cmd)
+    live.install_removal_lease_client((acquire, renew, release))
+    try:
+        result = await worktree_ops._worktree_remove("feature-wt")
+    finally:
+        live.install_removal_lease_client(None)
+    assert result.get("ok") is False
+    assert "could not confirm that no cutover overlaps this removal" in result["error"]
+    assert git_ran == [], "git worktree remove must not run after a refused lease gate"

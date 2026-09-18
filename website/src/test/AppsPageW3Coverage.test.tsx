@@ -487,7 +487,7 @@ describe('AppsPage — Library actions', () => {
     // Discover's Updates sub-tab, whose page owns the error notice surface.
     renderUpdates()
     fireEvent.click(await screen.findByRole('button', { name: 'Update All' }))
-    expect(await screen.findByText('Failed to update: secretary')).toBeInTheDocument()
+    expect(await screen.findByText('Failed to update: Secretary')).toBeInTheDocument()
   })
 
   it('reports success after Update All and shows no error', async () => {
@@ -627,6 +627,41 @@ describe('AppsPage — uninstall dialog', () => {
     fireEvent.click(second)
     await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Confirm uninstall' })).toBeNull())
     expect(uninstallApp).not.toHaveBeenCalled()
+  })
+
+  it('fetches the preview over the real client URL and renders the panel from it', async () => {
+    // Every other test here stubs `uninstallPreview` at the module boundary,
+    // which is exactly how the never-registered route (#10880) stayed
+    // invisible to this suite. This one routes through the REAL
+    // `api.uninstallPreview` and stubs only `fetch`, so it exercises the URL
+    // in `client.ts` and the `j()` non-OK throw: if the client ever fetches a
+    // path the backend does not register, the 404 body below turns into a
+    // rejection and the panel assertion fails.
+    const actual = await vi.importActual<typeof import('../api/client')>('../api/client')
+    const fetchSpy = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input) !== '/api/apps/secretary/uninstall/preview') {
+        return new Response(JSON.stringify({ error: 'not found' }), { status: 404 })
+      }
+      return new Response(JSON.stringify({
+        app: 'secretary',
+        resources: { agents: [], skills: [], crons: [] },
+        dependencies: {
+          removable: [{ id: 'skills/mochi-slack', type: 'skill', reason: 'installed with this app' }],
+          shared: [],
+          userInstalled: [],
+        },
+      }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+    })
+    vi.stubGlobal('fetch', fetchSpy)
+    try {
+      uninstallPreview.mockImplementation((...a: unknown[]) => actual.api.uninstallPreview(a[0] as string))
+      const dialog = await openDialog()
+      expect(fetchSpy).toHaveBeenCalledWith('/api/apps/secretary/uninstall/preview')
+      expect(await within(dialog).findByText('Dependencies:')).toBeInTheDocument()
+      expect(within(dialog).getByText('installed with this app')).toBeInTheDocument()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
 

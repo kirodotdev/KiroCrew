@@ -2,30 +2,31 @@
  * The single-chat composer's optimistic bubble is confirmed by the send's OWN
  * HTTP response (#4131).
  *
- * `meta.optimistic` marks a bubble as awaiting confirmation, and the only other
- * thing that clears it is `reconcileOptimisticEcho`, driven by a `chat_message`
- * user echo. That echo is never broadcast for a dashboard send:
- * `DashboardState.append` defaults `broadcast_user=False` precisely BECAUSE the
- * composer already rendered the bubble, and the composer's persistence point
- * does not override it (only a row replayed from a CHANNEL transcript opts in).
- * So without a response-driven confirmation every message the user types stays
- * pending forever — which is why this reducer exists, and why the 30s wall-clock
- * indicator that once read that state flagged every message rather than lost
- * ones, and was removed.
+ * `meta.optimistic` marks a bubble as awaiting confirmation. A `chat_message`
+ * user echo can also clear it through `reconcileOptimisticEcho`.
+ * Dashboard sends now emit that echo before starting the reply, but the HTTP
+ * response still confirms delivery if the echo is missed.
+ *
+ * Before dashboard sends emitted user echoes, response-driven confirmation
+ * was the only way to retire the pending state during a turn. The 30s wall-clock
+ * indicator once flagged every dashboard send, including delivered ones,
+ * which is why it was removed.
  *
  * These tests pin both directions: an accepted response retires the pending
  * state, a refused one leaves it alone.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import type { RootState } from '../store'
+import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { sseChatMessage } from '../store/chatSlice'
+import * as transport from '../chat-core/transport/sendTurn'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -107,6 +108,7 @@ function makeStore() {
 }
 
 async function renderPage(store: ReturnType<typeof makeStore>) {
+  vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
     render(
@@ -137,8 +139,35 @@ beforeEach(() => {
   localStorage.clear()
   sendChat.mockReset()
 })
+afterEach(() => vi.restoreAllMocks())
 
 describe('send() confirms its own optimistic bubble from the response', { timeout: 20_000 }, () => {
+  it('keeps a confirmed send when the HTTP connection resets after its user echo', async () => {
+    let rejectSend!: (error: unknown) => void
+    sendChat.mockReturnValue(new Promise((_resolve, reject) => { rejectSend = reject }))
+    const sendTurn = vi.spyOn(transport, 'sendTurn')
+    try {
+      const store = makeStore()
+      await renderPage(store)
+      await sendText('already delivered')
+      await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+      const [content, slot, , , meta] = sendChat.mock.calls[0]
+      await act(async () => {
+        store.dispatch(sseChatMessage({ slot, role: 'user', content, ts: '2026-09-10T00:00:00Z', meta: { ...meta, mid: 'm-delivered' } }))
+        store.dispatch(sseChatMessage({ slot, role: 'chunk', content: 'reply in progress' }))
+        rejectSend(new TypeError('connection reset after acceptance'))
+        await sendTurn.mock.results[0].value
+      })
+      expect(store.getState().chat.messages.filter(m => m.role === 'user')).toHaveLength(1)
+      expect(userRow(store)?.meta?.optimistic).toBeUndefined()
+      expect(screen.getByLabelText('Message input')).toHaveValue('')
+      expect(store.getState().chat.messages.some(m => m.role === 'error')).toBe(false)
+      expect(store.getState().chat.slotRunning).toBe(true)
+    } finally {
+      sendTurn.mockRestore()
+    }
+  })
+
   it('retires the pending state on an accepted send', async () => {
     sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
     const store = makeStore()

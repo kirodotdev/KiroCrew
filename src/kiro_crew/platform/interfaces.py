@@ -101,6 +101,16 @@ class ProviderRegistry(Protocol):
         allowlist and the config load path all derive from that registry, so an
         unregistered id is not offered in the dashboard at all and is coerced back
         to the default on load.
+
+        That call REFUSES a harness whose ``ACP_BACKEND_ROUTING`` entry is
+        ``Routing.UNVERIFIED``, and there is no way to override it. Being in
+        ``ACP_BACKENDS_KNOWN`` is not enough, and that is deliberate: known means a
+        build can spell the id, which is what lets a governance rule deny it, while
+        selectable means sessions start — and for an unverified harness nothing
+        establishes that its tool calls reach the host permission gate, its routing
+        verdict refuses no session, and its spawn path applies no compensating
+        credential mask. An edition offering a new harness therefore establishes how
+        it routes first, and declares that in ``ACP_BACKEND_ROUTING``.
         """
         ...
 
@@ -129,6 +139,23 @@ class PublishRegistry(Protocol):
 
         Consumed at boot by ``bootstrap_context`` after the context installs,
         alongside ``ProviderRegistry.register_acp_backends``.
+        """
+        ...
+
+
+class GatewayLifecycleProvider(Protocol):
+    """Edition-owned gateway launch selection, independent of update policy."""
+
+    def restart_launcher(self) -> str | None:
+        """Return an absolute stable launcher, or None for the core Python path.
+
+        The launcher receives the original CLI arguments without Python's ``-m``
+        prefix. It owns selecting the installed version and rebuilding its import
+        environment. Preserve its pathname: a symlink basename may select the app.
+        Return a native executable on Windows, not a shell command or batch file.
+        Implementations must be cheap and have their dependencies loaded at boot:
+        an update can remove the running package tree before this method is called.
+        Errors refuse restart; they must not silently select the old interpreter.
         """
         ...
 
@@ -909,12 +936,11 @@ class CapabilityManager(Protocol):
         discovery search (``mcp_providers.capability``); the browse endpoint
         ``GET /api/capability/mcp/registry`` omits it and still gets the full
         listing. A manager MAY use it to filter server-side, and SHOULD when its
-        registry is large enough that it truncates: the caller consumes at most
-        ``_LIST_LIMIT_GUARD`` rows, so on a big registry every row past that cap
-        is unsearchable unless the filter runs manager-side. Ignoring the hint
-        stays CORRECT — the caller filters again — it only costs reach. Because
-        the hint is feature-detected on the signature, an older zero-arg
-        implementation keeps working unchanged.
+        registry is large: filtering at the source spares it materializing and
+        returning the whole catalog on every search. Ignoring the hint stays
+        CORRECT — the caller filters again. Because the hint is feature-detected
+        on the signature, an older zero-arg implementation keeps working
+        unchanged.
         """
         ...
 
@@ -1108,9 +1134,24 @@ class AppsLoader(Protocol):
         never be shadowed by a stale copy that a past save persisted.
 
         Each row is the field shape of ``config.loader.ExternalRegistryConfig``
-        (``{"name", "repo", "branch", "trust"}``); dicts, not dataclass instances,
-        so a companion need not import the config module. Missing keys take the
-        dataclass default.
+        (``{"name", "repo", "branch", "label", "review", "trust"}``); dicts, not
+        dataclass instances, so a companion need not import the config module.
+        Missing keys take the dataclass default.
+
+        ``label`` and ``review`` are DISPLAY metadata the dashboard reads, and
+        neither changes any security posture — ``trust`` alone selects the
+        credential posture for cloning. ``label`` is a human name shown instead of
+        the ``name`` id (empty shows the id); it never replaces the id, because
+        cache paths and every installed app's ``_registry`` tag are keyed by it, so
+        renaming would orphan installed apps. ``review`` is one of ``""`` /
+        ``"curated"`` / ``"community"`` and says how thoroughly the registry's
+        listings were reviewed before publication: ``"curated"`` renders a
+        "Team reviewed" badge, ``"community"`` a "Not vetted" badge, and ``""``
+        renders exactly as it did before the field existed. An unrecognised value
+        DEGRADES to ``""`` (no claim) and is logged at error level; it never drops
+        the row, because this list also feeds index fetch, the trusted-host
+        allowlist and install, so a typo in a display field must not be able to
+        take a registry offline.
 
         An edition default WINS on a ``name`` collision with an operator entry.
         That direction is the fail-closed one: a registry the edition pins carries

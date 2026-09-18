@@ -516,9 +516,10 @@ class TestWriteContainment:
 class TestResolveForWrite:
     """The containment guard, exercised DIRECTLY.
 
-    It used to be reached only through ``scaffold_app``, and the name validation
-    at scaffold entry now refuses the traversal and absolute-component shapes
-    before the guard sees them. Those scaffold-level tests still assert the
+    The name validation at scaffold entry refuses the traversal and
+    absolute-component shapes before the guard sees them, so this reaches
+    the guard directly, not only through ``scaffold_app``. Those scaffold-level
+    tests still assert the
     outcome that matters (nothing outside --dir), but the guard is
     defense-in-depth for every OTHER caller and for a future one that skips the
     name check, so its own branches are pinned here rather than depending on
@@ -598,8 +599,8 @@ class TestAppNameValidation:
         ],
     )
     def test_a_non_kebab_name_is_refused_before_anything_is_written(self, bad, tmp_path):
-        # The CLASS, not just the reported instance: each of these previously
-        # scaffolded a complete app whose manifest install would reject.
+        # The CLASS, not just the reported instance: without validation each of
+        # these would scaffold a complete app whose manifest install rejects it.
         out = tmp_path / "out"
         out.mkdir()
 
@@ -623,7 +624,7 @@ class TestAppNameValidation:
     def test_a_valid_kebab_name_still_scaffolds_an_installable_manifest(self, tmp_path):
         # The permit case: the validation must not have narrowed the names that
         # legitimately work, and the manifest it writes must satisfy the very
-        # contract that used to reject it at install time.
+        # contract that rejects an invalid name at install time.
         from kiro_crew.apps.manifest import app_name_error
 
         app_dir = scaffold_app(tmp_path, "my-good-app")

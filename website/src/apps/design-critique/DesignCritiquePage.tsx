@@ -11,7 +11,7 @@ import { Spinner } from './Motion'
 import { S } from './styles'
 import { designCritiqueApi, fileUrl } from './api'
 import {
-  detectKind, jsonFromMessages, looksLikeReport, lastAssistant, shortLabel, relTime, readableOn, normalizeReport, normalizeScope,
+  detectKind, jsonFromMessages, looksLikeReport, lastAssistant, shortLabel, relTime, readableOn, normalizeReport, normalizeScope, resolveScreens,
   loadHistory, saveHistory, beginPendingCritique, dropPendingCritique, loadJobs, saveJob, clearJob, loadSlots, saveSlots, trackSlot, untrackSlot,
   loadLive, markLive, unmarkLive,
 } from './utils'
@@ -245,15 +245,6 @@ export default function DesignCritiquePage() {
     setOpenAskId(null); setSel(null); setAskDraft('')
     if (askSlotRef.current) { dropSlot(askSlotRef.current); askSlotRef.current = '' }
     setOpen(new Set([0])); setActive(null); setZoom(false); setScreenIdx(0); setPhase('report')
-  }
-
-  // Prefer the critic's own rendered screens; fall back to whatever we uploaded.
-  const resolveScreens = (rep: Report, uploaded: Screen[]): Screen[] => {
-    const fromRep = Array.isArray(rep && rep.screens) ? rep.screens!.filter(s => s && s.path) : []
-    if (fromRep.length) {
-      return fromRep.map((s, i) => ({ step: s.step || i + 1, label: s.label || 'Screen ' + (i + 1), url: fileUrl(s.path!) }))
-    }
-    return (uploaded || []).map((u, i) => ({ step: i + 1, label: (rep && rep.screens && rep.screens[i] && rep.screens[i].label) || 'Screen ' + (i + 1), url: u.url }))
   }
 
   /**

@@ -410,7 +410,7 @@ class TestApprovalPresence:
 @pytest.mark.asyncio
 class TestApprovalTimeoutIsSpoken:
     """Deny-on-silence is otherwise INVISIBLE: the tool is refused, the turn moves
-    on, and a live-looking prompt sits in the chat that a later "1" can no longer
+    on, and a live-looking prompt sits in the chat that a later "1" cannot
     answer.
     """
 

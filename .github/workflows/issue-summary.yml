@@ -120,6 +120,14 @@ concurrency:
 jobs:
   summarize:
     name: Summarize issue
+    # NOT routed to the CodeBuild fleet. This job fires on `issues: opened`
+    # -- any GitHub user can open an issue regardless of push access, so the
+    # fork-vs-same-repo boolean the fleet-routing expression checks is always
+    # "same-repo" here (there is no PR head repository to compare on an
+    # issues event) and every run would request the CodeBuild label. The
+    # AWS-side webhook's actor allowlist then rejects the dispatch for a
+    # non-collaborator issue author, leaving the job queued instead of
+    # running on ubuntu-latest.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Job-level permissions REPLACE the workflow default: no `contents` here,

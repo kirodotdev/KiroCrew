@@ -26,5 +26,12 @@
   "label": "Warm Set Cap",
   "help": "Max number of remote instances kept warm at once.",
   "tags": []
+ },
+ {
+  "path": "dashboard.browser_view_port",
+  "type": "integer",
+  "label": "Browser Live-View Port",
+  "help": "Pin the browser live-view server (playwright-cli show) to this loopback port.",
+  "tags": []
  }
 ]

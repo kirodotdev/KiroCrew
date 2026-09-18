@@ -90,7 +90,7 @@ class TestIsDueSkipDates:
 
     def test_skip_dates_uses_now_parameter_not_wall_clock(self) -> None:
         """skip_dates check should use the now parameter, not datetime.now()."""
-        # Synthetic now: 2026-04-06 12:00 UTC
+        # Synthetic now, fixed by the timegm tuple below.
         synthetic_now = timegm((2026, 4, 6, 12, 0, 0, 0, 0, 0))
         job = self._make_cron_job(
             skip_dates=["2026-04-06"], timezone="UTC",
@@ -228,7 +228,7 @@ class TestComputeNextRunTsSkipDates:
 
     def test_skip_dates_advances_past_skipped_friday(self) -> None:
 
-        # Fix "now" to Thursday 2026-05-28 12:00 UTC so next Friday = 2026-05-29
+        # Fix "now" to a Thursday so the immediate next Friday is the skipped one.
         synthetic_now = timegm((2026, 5, 28, 12, 0, 0, 0, 0, 0))
         job = self._make_cron_job(
             skip_dates=["2026-05-29"],  # skip the immediate next Friday

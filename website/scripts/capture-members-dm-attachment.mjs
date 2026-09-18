@@ -28,18 +28,17 @@
  */
 import { chromium } from 'playwright'
 import { mkdirSync, readFileSync } from 'node:fs'
-import { fileURLToPath } from 'node:url'
-import { dirname, resolve } from 'node:path'
+import { mockShot } from './lib/mock-shot.mjs'
 
 const BASE = process.argv[2] || 'http://127.0.0.1:6835'
 const OUT = process.argv[3] || '../temp-screenshots/members-dm-attachment'
 const MODE = process.env.MODE === 'before' ? 'before' : 'after'
 mkdirSync(OUT, { recursive: true })
 
-const here = dirname(fileURLToPath(import.meta.url))
-// A real screenshot as the "attached picture": a committed frame from the
-// members-page capture, so the rendered thumbnail reads as one.
-const PNG = readFileSync(resolve(here, '../../temp-screenshots/crew-members/03-mobile-390.png'))
+// The "attached picture": a mock phone-sized app screenshot rendered by the
+// browser below (390 x 844, the members-page mobile frame), so the rendered
+// thumbnail reads as a real capture without this harness depending on any
+// other feature's screenshots.
 const IMG_PATH = '/home/user/.kiro/crew/uploads/roster-mobile.png'
 const CAPTION = 'Why is the roster row taller on mobile?'
 // A non-image attachment in the PERSISTED shape (marker in the text, the
@@ -78,6 +77,7 @@ const MEMBERS = [
 ]
 
 const browser = await chromium.launch()
+const PNG = await mockShot(browser, 390, 844)
 let failed = false
 function check(name, ok, detail) {
   console.log(`${name}: ${ok ? 'OK' : 'MISMATCH'} ${detail}`)

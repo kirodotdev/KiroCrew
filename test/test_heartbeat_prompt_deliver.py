@@ -448,7 +448,7 @@ class TestSlotPrefixMatch:
         """When multiple slots share the prefix, return the one with the largest
         trailing <timestamp> (newest) — NOT dict-insertion order. A gateway
         restart can leave a stale slot alongside the live one; iteration-order
-        tie-break used to route chat-N to the stale slot.
+        tie-break would route chat-N to the stale slot.
         """
         from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 

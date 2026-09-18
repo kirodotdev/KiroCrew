@@ -30,6 +30,7 @@ import chatReducer, {
   appendQueuedMessage,
   clearFocusToolCallId,
   clearPendingPermissions,
+  clearUndeletableHistory,
   createSlot,
   deleteHistorySession,
   deleteSlot,
@@ -68,6 +69,7 @@ import instancesReducer from '../store/instancesSlice'
 import { SPAWN_LAUNCH_MARKER } from '../pages/chat/types'
 import type { ChatMessage, ChatSlot } from '../types'
 import type { RootState } from '../store'
+import { __resetErrorJournalForTests, recordError } from '../utils/errorReport'
 
 const apiMock = vi.hoisted(() => ({
   chatSlotDetail: vi.fn(),
@@ -663,7 +665,7 @@ describe('chatSlice slot-detail refresh merges', () => {
 
   it('a PLAIN optimistic send is never id-resolved into a boundary (#6075)', () => {
     // For a NON-steer send, "a persisted row with this id exists" does not
-    // prove "the turn above this bubble is over": crew mode persists the user
+    // prove "the turn above this bubble is over": a durable-queue ingress (the retired Crew Mode) persisted the user
     // row as a durable queue entry and starts no turn at all. Recording a
     // boundary there would re-open the over-drop class the retired text
     // heuristics were rejected for — id resolution is licensed for STEER
@@ -965,7 +967,7 @@ describe('chatSlice slot-detail refresh merges', () => {
 })
 
 describe('chatSlice background-slot reconcile', () => {
-  it('caps the background pane tool log when reasoning lands on a full log', () => {
+  it('a streamed chunk on a background pane leaves its full tool log untouched', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('front'))
     for (let i = 0; i < 100; i++) {
@@ -976,10 +978,12 @@ describe('chatSlice background-slot reconcile', () => {
     expect(chat(store).slotActivity.bg.toolLog).toHaveLength(100)
     store.dispatch(sseChatMessage({ slot: 'bg', role: 'chunk', content: 'thinking out loud' }))
     const log = chat(store).slotActivity.bg.toolLog
+    // Answer text goes to the pane's transcript only; the tool log holds
+    // tools, so no entry is added and none is evicted to make room.
     expect(log).toHaveLength(100)
-    expect(log[log.length - 1].type).toBe('reasoning')
-    // The oldest tool entry is the one that was evicted.
-    expect(log[0].text).toBe('t1')
+    expect(log.every(e => e.type === 'tool')).toBe(true)
+    expect(log[0].text).toBe('t0')
+    expect(chat(store).slotMessages.bg.at(-1)).toMatchObject({ role: 'streaming', content: 'thinking out loud' })
   })
 
   it('rejects a background pane\u2019s unanswered approvals when a new turn starts', () => {
@@ -1099,7 +1103,7 @@ describe('chatSlice active-slot frame branches', () => {
     store.dispatch(replaceMessages([
       msg({ role: 'permission', content: 'first ask', meta: { approval_id: 'ap-1', tool_call_id: 'tc-9' } }),
     ]))
-    store.dispatch(resolveByApprovalId({ id: 'ap-1', decision: 'rejected' }))
+    store.dispatch(resolveByApprovalId({ slot: 'A', id: 'ap-1', decision: 'rejected' }))
     // A re-broadcast of the same tool's permission must not reopen the bar.
     store.dispatch(sseChatMessage({
       slot: 'A', role: 'permission', content: 'second ask',
@@ -1256,22 +1260,22 @@ describe('chatSlice approval and permission reducers', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('A'))
     store.dispatch(sseToolActivity({
-      slot: 'A', tool: 'bash', kind: 'shell', purpose: '', input_preview: '', tool_call_id: 'tc-5',
+      slot: 'B', tool: 'bash', kind: 'shell', purpose: '', input_preview: '', tool_call_id: 'tc-5',
     }))
     store.dispatch(hydrateSlotMessages({
       slot: 'B',
       messages: [msg({ role: 'permission', content: 'run?', meta: { approval_id: 'ap-5', tool_call_id: 'tc-5' } })],
     }))
-    store.dispatch(resolveByApprovalId({ id: 'ap-5', decision: 'rejected' }))
+    store.dispatch(resolveByApprovalId({ id: 'ap-5', slot: 'B', decision: 'rejected' }))
     expect(chat(store).slotMessages.B[0].meta?.resolved).toBe('rejected')
-    expect(chat(store).toolLog[0].rejected).toBe(true)
+    expect(chat(store).slotActivity.B.toolLog[0].rejected).toBe(true)
   })
 
   it('defaults an unspecified decision to approved', () => {
     const store = makeStore()
     store.dispatch(setActiveSlot('A'))
     store.dispatch(replaceMessages([msg({ role: 'permission', content: 'run?', meta: { approval_id: 'ap-1' } })]))
-    store.dispatch(resolveByApprovalId({ id: 'ap-1' }))
+    store.dispatch(resolveByApprovalId({ slot: 'A', id: 'ap-1' }))
     expect(chat(store).messages[0].meta?.resolved).toBe('approved')
   })
 
@@ -1555,6 +1559,72 @@ describe('chatSlice thunks', () => {
     await store.dispatch(deleteHistorySession('h1'))
     expect(apiMock.deleteSession).toHaveBeenCalledWith('h1')
     expect(chat(store).history.map(h => h.key)).toEqual(['h2'])
+  })
+
+  // A refused delete: the gateway answers 409 with a machine-readable `code`
+  // (cron ownership could not be determined), `api.deleteSession` throws an
+  // ApiError-shaped rejection, and the thunk must carry the facts across the
+  // boundary via rejectWithValue -- a rethrow would serialize the status and
+  // body away. The row stays: nothing was deleted, so the sidebar must not
+  // pretend otherwise.
+  it('keeps a refused row in history and records the refusal by code', async () => {
+    apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1', title: 'Nightly digest' }, { key: 'h2' }], has_more: false })
+    apiMock.deleteSession.mockRejectedValue(Object.assign(new Error('conflict'), {
+      status: 409,
+      body: JSON.stringify({ ok: false, error: 'owned by nobody', code: 'cron_ownership_unknown' }),
+    }))
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+    await store.dispatch(deleteHistorySession('h1'))
+    expect(chat(store).history.map(h => h.key)).toEqual(['h1', 'h2'])
+    expect(chat(store).undeletableHistory).toEqual({ key: 'h1', title: 'Nightly digest', code: 'cron_ownership_unknown' })
+    store.dispatch(clearUndeletableHistory())
+    expect(chat(store).undeletableHistory).toBeNull()
+  })
+
+  it('carries the journaled API report into the localized refusal notice', async () => {
+    __resetErrorJournalForTests()
+    const report = recordError({
+      source: 'api',
+      message: 'owned by nobody',
+      status: 409,
+      code: 'cron_ownership_unknown',
+      endpoint: '/api/sessions/h1',
+      detail: JSON.stringify({ code: 'cron_ownership_unknown' }),
+    })
+    apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1', title: 'Nightly digest' }], has_more: false })
+    apiMock.deleteSession.mockRejectedValue(Object.assign(new Error(report.message), {
+      status: 409,
+      body: JSON.stringify({ ok: false, error: report.message, code: report.code }),
+    }))
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+
+    await store.dispatch(deleteHistorySession('h1'))
+
+    expect(chat(store).undeletableHistory).toEqual({
+      key: 'h1',
+      title: 'Nightly digest',
+      code: 'cron_ownership_unknown',
+      report,
+    })
+    __resetErrorJournalForTests()
+  })
+
+  // No parsable body (a dropped connection, a 5xx with prose) still narrates:
+  // the code is empty and the render site falls back to the generic sentence.
+  // A following successful attempt clears the stale notice on `pending`.
+  it('records an empty code for a bodyless rejection and clears it on the next attempt', async () => {
+    apiMock.sessions.mockResolvedValue({ sessions: [{ key: 'h1' }], has_more: false })
+    apiMock.deleteSession.mockRejectedValueOnce(new Error('network down'))
+    const store = makeStore()
+    await store.dispatch(fetchHistory(false))
+    await store.dispatch(deleteHistorySession('h1'))
+    expect(chat(store).undeletableHistory).toEqual({ key: 'h1', title: '', code: '' })
+    apiMock.deleteSession.mockResolvedValueOnce({})
+    await store.dispatch(deleteHistorySession('h1'))
+    expect(chat(store).undeletableHistory).toBeNull()
+    expect(chat(store).history).toEqual([])
   })
 
   // The older-page REQUEST is exercised at the reducer boundary rather than

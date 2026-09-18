@@ -226,7 +226,7 @@ class TestPluginPrerequisite:
         assert ssm.require_session_manager_plugin() is None
 
     def test_installed_probe_goes_through_the_shared_resolver(self, monkeypatch) -> None:
-        """#5392: the probe resolves through the deploy engine's shared resolver,
+        """The probe resolves through the deploy engine's shared resolver,
         so it searches the well-known install dirs too.
 
         A bare PATH lookup reported "not installed" for a plugin that WAS

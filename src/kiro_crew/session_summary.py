@@ -12,9 +12,9 @@ directly:
 Why the input is shaped the way it is: a session transcript is dominated by
 assistant records and their tool payloads, while intent lives almost entirely in
 the (small) user messages. Reading ``role``/``content`` only, keeping user text
-whole and excerpting assistant text, reproduces the shape that worked when the
-prompt was prototyped against real sessions -- around 1% of a transcript's bytes
--- and drops tool output entirely, which added nothing.
+whole and excerpting assistant text, holds the input to around 1% of a
+transcript's bytes and drops tool output entirely, which carries nothing about
+intent.
 """
 
 from __future__ import annotations

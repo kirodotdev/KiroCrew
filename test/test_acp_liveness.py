@@ -205,7 +205,7 @@ def test_no_matching_child_is_unknown(tmp_path):
     assert "no matching" in evidence
 
 
-# ── The never-matched fork: absent child vs unrecognized live child (#4840) ──
+# ── The never-matched fork: absent child vs unrecognized live child ──
 
 # Dating a process against its dispatch needs the platform tick rate, which does
 # not exist off Linux (Windows has no os.sysconf, and no /proc for the oracle to
@@ -265,7 +265,7 @@ def test_tick_rate_lookup_survives_a_platform_without_sysconf(monkeypatch):
 
 @_needs_tick_rate
 def test_absent_shell_child_is_tagged_when_every_descendant_predates_dispatch(tmp_path):
-    """#4840: the sub-second command whose result frame was lost.
+    """The sub-second command whose result frame was lost.
 
     The oracle's first look happens at check_after_secs, by which time an ``ls |
     grep | wc`` child is long gone — it is never observed alive, so the
@@ -784,7 +784,7 @@ def test_model_wait_flat_with_established_socket_is_unknown_tagged(tmp_path):
     assert evidence.startswith(EVIDENCE_ESTABLISHED_FLAT)
 
 
-# ── Portable model-wait fallback (no procfs) — issue #8520 ───────────────────
+# ── Portable model-wait fallback (no procfs) ───────────────────
 #
 # macOS and Windows have no ``/proc``, so the tree walk reads NO counter at all
 # and the verdict was "unknown: no readable counters" — which the AcpClient's
@@ -1027,3 +1027,96 @@ async def test_consult_offloaded_consumes_a_failed_priors_exception():
         assert prior.exception() is not None
     finally:
         pool.shutdown(wait=True)
+
+
+# ── Platform degradation: no procfs and no tree backend (Windows) ────────────
+
+
+def _no_backend_oracle(tmp_path, clock: _Clock, monkeypatch) -> LivenessOracle:
+    """An oracle on a host with neither ``/proc`` nor libproc.
+
+    ``select_darwin_backend`` reads ``sys.platform`` at call time, so pinning it
+    to ``win32`` with an absent proc_root yields the Windows shape on any host.
+    """
+    monkeypatch.setattr(liveness.sys, "platform", "win32")
+    return LivenessOracle(str(tmp_path / "no-proc"), now=clock, sample_min_secs=1.0)
+
+
+def test_shell_tool_without_a_tree_backend_is_unknown_tagged_platform_limited(
+    tmp_path, monkeypatch
+):
+    """No tree at all: the shell verdict is UNKNOWN and SAYS why, so the caller's
+    budget — not "alive, therefore forever" and not a guessed DEAD — bounds it."""
+    clock = _Clock()
+    oracle = _no_backend_oracle(tmp_path, clock, monkeypatch)
+    tool = _shell_tool("long-build release", clock)
+
+    verdict, evidence = oracle.check_tool(4242, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence.startswith(liveness.EVIDENCE_PLATFORM_LIMITED)
+    assert "no process-tree backend" in evidence
+    # Stable across ticks: nothing can ever be matched or dated here.
+    clock.advance(600.0)
+    verdict, evidence = oracle.check_tool(4242, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence.startswith(liveness.EVIDENCE_PLATFORM_LIMITED)
+
+
+def test_mcp_tool_without_a_tree_backend_is_unknown_tagged_platform_limited(
+    tmp_path, monkeypatch
+):
+    clock = _Clock()
+    oracle = _no_backend_oracle(tmp_path, clock, monkeypatch)
+    tool = ToolCallState(
+        title="kirocrew-core___spawn_run",
+        command='{"task": "x"}',
+        dispatch_ts=clock.t,
+        dispatch_boot_ts=clock.t,
+        is_shell=False,
+        tool_name="spawn_run",
+    )
+
+    verdict, evidence = oracle.check_tool(4242, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert evidence.startswith(liveness.EVIDENCE_PLATFORM_LIMITED)
+    assert "mcp subtree unobservable" in evidence
+
+
+def test_wait_tool_contract_holds_without_a_tree_backend(tmp_path, monkeypatch):
+    """The declared-duration contract needs no process evidence, so the wait
+    tool is WORKING on every platform for its declared span."""
+    clock = _Clock()
+    oracle = _no_backend_oracle(tmp_path, clock, monkeypatch)
+    tool = ToolCallState(
+        title="kirocrew-core___wait",
+        command='{"seconds": 300}',
+        dispatch_ts=clock.t,
+        is_shell=False,
+    )
+    assert oracle.check_tool(4242, tool)[0] == VERDICT_WORKING
+
+
+def test_model_wait_without_a_tree_backend_never_reads_dead(tmp_path, monkeypatch):
+    """The portable probe can only forgive silence: no counter is never proof of
+    death, and the caller reaps on UNKNOWN anyway."""
+    clock = _Clock()
+    oracle = _no_backend_oracle(tmp_path, clock, monkeypatch)
+    monkeypatch.setattr(liveness.platform_compat, "proc_cpu_nanos_for_pid", lambda pid: None)
+    verdict, _ = oracle.check_model_wait(4242)
+    assert verdict == VERDICT_UNKNOWN
+    clock.advance(30.0)
+    verdict, _ = oracle.check_model_wait(4242)
+    assert verdict == VERDICT_UNKNOWN
+
+
+def test_a_readable_proc_tree_is_never_platform_limited(tmp_path):
+    """The tag is exclusively for hosts with no tree: on ``/proc`` an unmatched
+    shell keeps its existing evidence strings."""
+    clock = _Clock()
+    fake = FakeProc(tmp_path / "proc")
+    fake.add_pid(100, children=[])
+    oracle = _oracle(fake, clock)
+    tool = _shell_tool("long-build release", clock)
+    verdict, evidence = oracle.check_tool(100, tool)
+    assert verdict == VERDICT_UNKNOWN
+    assert not evidence.startswith(liveness.EVIDENCE_PLATFORM_LIMITED)

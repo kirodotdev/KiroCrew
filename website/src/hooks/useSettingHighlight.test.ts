@@ -3,7 +3,7 @@ import { renderHook, act } from '@testing-library/react'
 import { MemoryRouter, useLocation, useNavigate } from 'react-router-dom'
 import type { ReactNode } from 'react'
 import { createElement } from 'react'
-import { useSettingHighlight } from './useSettingHighlight'
+import { KIRO_SIGN_IN_HIGHLIGHT_ANCHOR, useSettingHighlight } from './useSettingHighlight'
 
 // Mock scrollIntoView (not available in jsdom)
 beforeEach(() => {
@@ -31,6 +31,30 @@ describe('useSettingHighlight', () => {
       wrapper: wrapper(['/settings?tab=display']),
     })
     expect(result.current).toBeUndefined()
+  })
+
+  it('leaves a highlight it does not own untouched, even with the anchor present', () => {
+    // A page that redirects legacy links elsewhere (DeveloperPage) is still the
+    // rendered element for the tick the URL already names the other page. It
+    // must neither ring anything nor strip the param that page will consume.
+    vi.useFakeTimers()
+    const el = document.createElement('div')
+    el.dataset.settingKey = KIRO_SIGN_IN_HIGHLIGHT_ANCHOR
+    el.scrollIntoView = vi.fn()
+    document.body.appendChild(el)
+    const view = renderHook(() => {
+      useSettingHighlight(false)
+      return useLocation().search
+    }, { wrapper: wrapper([`/settings/developer?highlight=key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`]) })
+    try {
+      act(() => { vi.advanceTimersByTime(500) })
+      expect(el.scrollIntoView).not.toHaveBeenCalled()
+      expect(view.result.current).toContain('highlight=')
+    } finally {
+      view.unmount()
+      el.remove()
+      vi.clearAllTimers()
+    }
   })
 
   it('strips unknown highlight ids from the URL', async () => {
@@ -129,6 +153,13 @@ describe('useSettingHighlight against the real registry and catalogs', () => {
     { name: 'TTS with keyed STT', highlight: 'voice.provider-2', target: { settingId: 'voice.provider-2' }, sibling: { configKey: 'stt.provider' } },
     { name: 'TTS with unkeyed legacy row', highlight: 'voice.provider-2', target: { settingId: 'voice.provider-2' }, sibling: {} },
     { name: 'STT with explicit TTS', highlight: 'key:stt.provider', target: { configKey: 'stt.provider' }, sibling: { settingId: 'voice.provider-2' } },
+    // The one `key:` anchor that names NO registry entry and still waits: the
+    // Kiro sign-in card, rendered only after its tab's config query. It is
+    // authoritative before it mounts, exactly like
+    // a declared UI identity; stripping it on the first tick would land every
+    // deep link at the top of the pane with no ring. (An UNDECLARED unknown
+    // key still strips at once: useSettingHighlightKeyPrefix.test.ts.)
+    { name: 'the late-mounting sign-in anchor with no registry entry', highlight: `key:${KIRO_SIGN_IN_HIGHLIGHT_ANCHOR}`, target: { configKey: KIRO_SIGN_IN_HIGHLIGHT_ANCHOR }, sibling: { configKey: 'stt.provider' } },
   ])('waits for the exact cold provider during $name', async ({ highlight, target, sibling }) => {
     vi.useFakeTimers()
     const otherProvider = settingControl('Provider', sibling)

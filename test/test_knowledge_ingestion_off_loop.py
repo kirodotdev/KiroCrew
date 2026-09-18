@@ -1,7 +1,7 @@
-"""``IngestionPipeline`` must take no knowledge-store connection on the loop (#7019).
+"""``IngestionPipeline`` must take no knowledge-store connection on the loop.
 
 The store's ``db`` accessor is the one chokepoint every query funnels through, and
-since #7640 it reports an on-loop take. ``knowledge/ingestion.py`` was the second
+it reports an on-loop take. ``knowledge/ingestion.py`` was the second
 largest holder of those takes: 15 recorded in
 ``.github/sync-io-in-async-baseline.txt`` plus the interprocedural ones no
 name-based AST scan can see (``add_item``, ``add_source_location``,
@@ -9,7 +9,7 @@ name-based AST scan can see (``add_item``, ``add_source_location``,
 one frame down). ``add_item`` opens a ``BEGIN`` write transaction, so on the loop it
 blocked every other session's turn for the connection's whole 10s busy timeout, and
 a stall past ``dashboard.loop_stall_exit_after_secs`` (25s) makes the watchdog kill
-the gateway (#1572).
+the gateway.
 
 Why this shape of test. Asserting "no exception escaped" would be VACUOUS here: the
 per-chunk body catches ``Exception`` and logs it, so a strict-mode
@@ -46,8 +46,7 @@ class _RecordingGuard:
     caught by the pipeline's per-chunk ``except Exception`` and the violation
     would vanish. Off-loop takes are the sanctioned path and are ignored, exactly
     as the real guard ignores them -- and so is a take inside an
-    ``allow_on_loop()`` block (the store constructor's vetted schema init,
-    #8231), mirroring the real guard so construction noise cannot masquerade
+    ``allow_on_loop()`` block (the store constructor's vetted schema init), mirroring the real guard so construction noise cannot masquerade
     as a pipeline violation.
     """
 
@@ -220,7 +219,7 @@ class TestIngestFile:
     @pytest.mark.asyncio
     async def test_failure_path_marks_the_job_off_loop(self, pipeline, kstore, guard, tmp_path):
         # The 'failed' stamp is what stops the folder watcher retrying the file
-        # every scan, and it used to run two blocking statements on the loop.
+        # every scan, and its two blocking statements must run off the loop.
         async def _boom(**kw):
             raise RuntimeError("boom")
 

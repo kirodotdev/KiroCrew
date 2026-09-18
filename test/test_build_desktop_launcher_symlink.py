@@ -11,10 +11,10 @@ exec the interpreter sitting next to it (``$DIR/python3.12``).  The naive form::
 is wrong whenever the launcher is reached through a symlink, because
 ``${BASH_SOURCE[0]}`` is the *symlink* path, not its target.  The gateway plants
 exactly such a symlink at ``~/.local/bin/kirocrew`` on every start
-(``agent.ensure_kirocrew_on_path``), so on a packaged install ``$DIR`` became
-``~/.local/bin`` and the launcher exec'd a non-existent
+(``agent.ensure_kirocrew_on_path``), so on a packaged install a naive ``$DIR``
+becomes ``~/.local/bin`` and the launcher execs a non-existent
 ``~/.local/bin/python3.12`` — every ``kirocrew ...`` invocation from a shell
-failed (issue #845).  The fix (#188) walks the symlink chain first.
+fails.  The launcher walks the symlink chain first to prevent that.
 
 Why this test exists
 --------------------
@@ -109,7 +109,7 @@ def test_resolves_when_invoked_directly(tmp_path):
 
 
 def test_resolves_through_absolute_symlink(tmp_path):
-    """The issue #845 case: reached via the PATH symlink the gateway plants.
+    """The PATH-symlink case: reached via the symlink the gateway plants.
 
     This is the assertion that goes red on a revert to the naive
     ``dirname "${BASH_SOURCE[0]}"`` form, which would resolve ``$DIR`` to the

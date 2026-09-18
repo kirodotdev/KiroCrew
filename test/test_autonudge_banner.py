@@ -122,7 +122,7 @@ async def _fire_full(loop: NudgeLoop, *, ledger: str = "") -> tuple[str, str, di
     spawned: list[asyncio.Task] = []
 
     def _spawn(_state, _slot, coro, **_kwargs):
-        # #5184 dispatches ``_run_chat`` inside a coroutine handed to
+        # The chat fire dispatches ``_run_chat`` inside a coroutine handed to
         # ``spawn_guarded_turn``; RUN it (mirroring the dashboard-fire tests)
         # so the prompt reaches the patched ``_run_chat`` rather than closing
         # the coroutine unrun.
@@ -248,7 +248,7 @@ class TestBannerDivergesTheRowFromThePrompt:
 
 
 class TestNonStringBannerCannotWedgeTheLoop:
-    """A truthy NON-STRING ``banner`` used to crash every dashboard fire.
+    """A truthy NON-STRING ``banner`` must not crash a dashboard fire.
 
     ``banner: str`` is a plain dataclass annotation, unenforced at runtime, and
     ``_load`` constructs a loop straight from parsed JSON with no coercion. So a
@@ -1075,8 +1075,8 @@ class TestMonitorToolsCanSetTheBanner:
 
         ``test_autonudge_stop_auth.py`` pins the monitor_start payload with EXACT
         dict equality, so emitting ``banner`` unconditionally would break a
-        contract test belonging to another file. A caller that sets no banner must
-        see the payload it saw before.
+        contract test belonging to another file. This assertion follows the
+        finite-runtime default while keeping the banner absent.
         """
         result = _call_tool_inner("monitor_start", {"message": "watch CI", "max_cycles": 5})
         args = session_directive.decode(result, "monitor_start")
@@ -1084,7 +1084,7 @@ class TestMonitorToolsCanSetTheBanner:
             "message": "watch CI",
             "idle_secs": 300,
             "max_cycles": 5,
-            "max_runtime_secs": 0,
+            "max_runtime_secs": 14400,
             "gate": True,
         }, "the no-banner payload shape changed (banner must stay absent; gate is the tool default)"
 
@@ -1107,7 +1107,10 @@ class TestMonitorToolsCanSetTheBanner:
             patch("kiro_crew.autonudge_authz.authorize_and_add_nudge", authz),
         ):
             await sda._monitor_start(
-                MagicMock(), "chat-9-1", {"message": "go", "banner": "watching CI"}
+                MagicMock(),
+                "chat-9-1",
+                {"message": "go", "banner": "watching CI"},
+                producer_is_channel=False,
             )
         assert authz.await_args.kwargs["banner"] == "watching CI"
 

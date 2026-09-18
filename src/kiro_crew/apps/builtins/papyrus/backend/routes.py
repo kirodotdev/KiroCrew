@@ -379,8 +379,8 @@ async def _handle_create_project(request: web.Request) -> web.StreamResponse:
             # authoritative answer to "did someone else take this name", and it is the
             # only one free of a check/use window. `_project_for_create`'s `exists()`
             # probe above narrows the window but cannot close it — two worker threads
-            # can both pass it — so the loser used to raise an unhandled
-            # FileExistsError and the request 500'd on what is really a 409.
+            # can both pass it — so the loser's FileExistsError is caught here rather
+            # than 500ing the request on what is really a 409.
             #
             # Same conflict, same status, as the probe reports; the user sees "project
             # already exists" either way rather than a server error for a name clash

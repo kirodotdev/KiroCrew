@@ -116,8 +116,8 @@ def _pack_dir(data_dir: Path, pack_id: str) -> Path:
     if target != root and root not in target.parents:
         raise PackError(f"pack id escapes the appearances directory: {pack_id!r}")
     # Return the CHECKED path, not a second join of the same parts. Re-joining
-    # produced a path expression that no longer carried the barrier, so every
-    # caller that appended a filename to it was flagged again — the guard has to
+    # produces a path expression that does not carry the barrier, so every
+    # caller that appends a filename to it is flagged again — the guard has to
     # be on the value that actually escapes this function.
     return target
 
@@ -186,9 +186,9 @@ def save_sprite_pack(data_dir: Path, payload: dict[str, Any]) -> str:
     pack_id = str(overwrite_id) if overwrite_id else str(uuid.uuid4())
     pack_dir = _pack_dir(data_dir, pack_id)
 
-    # Decode EVERYTHING before touching the existing pack. An overwrite used to
-    # rmtree first and decode after, so one malformed data URI destroyed the
-    # pack it was replacing — validation failed, but the deletion had already
+    # Decode EVERYTHING before touching the existing pack. An overwrite that
+    # rmtrees first and decodes after lets one malformed data URI destroy the
+    # pack it is replacing — validation fails, but the deletion has already
     # happened. Decode errors must leave the existing pack untouched.
     decoded_slots: dict[str, bytes] = {}
     for slot, data_uri in assignments.items():
@@ -455,9 +455,10 @@ def import_bundle(data_dir: Path, blob: bytes) -> dict[str, Any]:
                 + ", ".join(missing_files)
             )
 
-        # Staged like every other pack write: a CRC-corrupt entry partway through
-        # the archive used to leave the pack it was replacing half-overwritten,
-        # with a manifest naming files that were never extracted.
+        # Staged like every other pack write: extracting in place lets a
+        # CRC-corrupt entry partway through the archive leave the pack it is
+        # replacing half-overwritten, with a manifest naming files that were
+        # never extracted.
         with _staged_pack(target) as staging:
             for entry in entries:
                 if entry.filename == MANIFEST_FILE:
@@ -555,8 +556,8 @@ def save_pack(
     }
     manifest = {"meta": full_meta, "states": state_map, "moods": mood_map}
 
-    # One staged swap, like the other two writers. It also subsumes the prune step
-    # upstream did by hand (deleting files the new manifest no longer references):
+    # One staged swap, like the other two writers. It also subsumes a by-hand
+    # prune step upstream (deleting files the new manifest does not reference):
     # the staging directory only ever contains the files just written, so a re-save
     # that drops a slot leaves nothing behind to prune.
     with _staged_pack(pack_dir) as staging:

@@ -87,11 +87,16 @@ class TestSave:
         assert section["db_path"] == "/tmp/chat.db"
         assert section["service"] == "auto"
 
-    def test_boot_read_fields_report_restart_required(
-        self, monkeypatch: Any, tmp_path: Path
-    ) -> None:
+    def test_boot_read_fields_report_no_restart(self, monkeypatch: Any, tmp_path: Path) -> None:
+        """The connection fields are applied by restarting the CHANNEL in process.
+
+        ``enabled``, ``db_path`` and ``service`` are all bound when the bridge
+        client is constructed, so none of them can be pushed at a live object --
+        but the channel registry closes and re-creates the channel on a write to
+        one, which is not a gateway restart and must not be reported as one.
+        """
         resp, _ = _save(monkeypatch, tmp_path, {"enabled": True})
-        assert _body(resp)["restart_required"] is True
+        assert _body(resp)["restart_required"] is False
 
     def test_the_session_folder_alone_reloads_live(self, monkeypatch: Any, tmp_path: Path) -> None:
         resp, _ = _save(monkeypatch, tmp_path, {"session_folder": "iMessage"})

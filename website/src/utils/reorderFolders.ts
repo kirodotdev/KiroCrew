@@ -1,5 +1,6 @@
 import { arrayMove } from '@dnd-kit/sortable'
 import type { ChatFolder } from '../types'
+import { bySidebarOrder } from './folderTree'
 
 /**
  * Compute new order values after a drag-and-drop reorder.
@@ -11,7 +12,10 @@ export function computeReorderedFolders(
   overId: string,
 ): { id: string; order: number }[] {
   if (activeId === overId) return []
-  const sorted = [...folders].sort((a, b) => a.order - b.order)
+  // The same comparator the sidebar draws with, not an order-only sort: this
+  // baseline decides which index each folder moves FROM, so a sort that differs
+  // from the rendered sequence computes the move the person did not make.
+  const sorted = [...folders].sort(bySidebarOrder)
   const oldIndex = sorted.findIndex(f => f.id === activeId)
   const newIndex = sorted.findIndex(f => f.id === overId)
   if (oldIndex === -1 || newIndex === -1) return []

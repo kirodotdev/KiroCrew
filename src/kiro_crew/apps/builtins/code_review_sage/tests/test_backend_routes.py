@@ -177,7 +177,7 @@ class TestRunsPersistence(unittest.TestCase):
 
 
 class TestRecordReviewedDelivery(unittest.TestCase):
-    """Regression for the reviewed-index write path:
+    """The reviewed-index write path:
       * a PR is indexed as reviewed ONLY when the poster
         actually delivered (posted_comments >= posting_expected), not merely when
         the poster turn completed (post_ok). A failed gh post must not strand it.
@@ -230,7 +230,7 @@ class TestRecordReviewedDelivery(unittest.TestCase):
 
 
 class TestUnderLockRededup(unittest.TestCase):
-    """Regression for the TOCTOU + double-review guards: a run re-checks the
+    """The TOCTOU + double-review guards: a run re-checks the
     reviewed index AND the in-flight claim registry before it owns a change, so a
     PR another run just recorded (or is reviewing right now) is not re-reviewed."""
 
@@ -640,8 +640,8 @@ if __name__ == "__main__":
 
 
 # ---------------------------------------------------------------------------
-# Round 11: worker-authored merge content reached learned-patterns.md unredacted,
-# and a half-failed auto-post still deleted the records the retry needs.
+# Worker-authored merge content must reach learned-patterns.md redacted, and a
+# half-failed auto-post must keep the records the retry needs.
 # ---------------------------------------------------------------------------
 
 
@@ -756,8 +756,8 @@ class TestAdoptionRefusesAPlantedLink:
     """The reviewer worker owns the shared dir and has file tools.
 
     ``is_file()`` follows symlinks, and ``os.replace`` moves the LINK, so a link
-    planted where a record belongs used to land in the run dir intact — and
-    ``read_result`` dereferences it with a plain read. Adoption must never carry a
+    planted where a record belongs lands in the run dir intact unless refused —
+    and ``read_result`` dereferences it with a plain read. Adoption must never carry a
     link across, and must not leave one behind to retry.
     """
 
@@ -883,10 +883,10 @@ class TestRetentionKeepsActiveRuns(unittest.IsolatedAsyncioTestCase):
 class TestAdoptionValidatesBeforeItWrites:
     """Adoption must be all-or-nothing.
 
-    Round 13 traded ``os.replace`` for an ``O_TRUNC`` write to close a symlink
-    hole, and that gave up atomicity: a malformed payload truncated whatever valid
-    record was already filed, and ``read_result`` then raised on the wreckage, so
-    no retry could recover it. Validate first, write via rename.
+    The ``O_TRUNC`` write that closes the symlink hole is not atomic: a malformed
+    payload truncates whatever valid record is already filed, and ``read_result``
+    then raises on the wreckage, so no retry can recover it. Validate first, write
+    via rename.
     """
 
     def _stage(self, tmp_path, change_id, body):
@@ -1069,7 +1069,7 @@ class TestRestartClearsAStrandedPostingFlag(unittest.TestCase):
         self.assertIn("restart", (run.get("post_error") or "").lower())
         # Delivery evidence survives, so re-posting sends only the remainder.
         self.assertEqual(run["posted_keys"], {"c1": ["k1"]})
-        # And the run is no longer considered live, so retention can reclaim it.
+        # And the run does not count as live, so retention can reclaim it.
         self.assertFalse(self.routes._is_live(run))
 
     def test_a_run_that_was_not_posting_is_untouched(self):
@@ -1093,11 +1093,11 @@ class TestGroupedPostAppliesKeysPerChange(unittest.TestCase):
     """A multi-change selection is one request, and each group keeps its own keys.
 
     `posting` is a per-run flag that only the poster clears, while the POST handler
-    returns as soon as it dispatches the poster -- so one request per change had
+    returns as soon as it dispatches the poster -- so one request per change gets
     every change after the first refused with `already_posting`. The grouped form
     is what makes the deliberate multi-select actually publish; the per-change key
-    scoping (round 8) has to survive inside it, or a selection made on one pull
-    request would be applied to another.
+    scoping has to survive inside it, or a selection made on one pull request would
+    be applied to another.
     """
 
     def setUp(self):
@@ -1455,10 +1455,10 @@ class TestCountValuesMustBeNumeric:
 
 
 class TestReportsDirReadsDoNotFollowAPlant:
-    """Round 21 made the reports-dir WRITES not follow a plant; the READS did.
+    """The reports-dir READS must not follow a plant, just as the WRITES do not.
 
-    The dir is reachable by the review worker, so a symlink at `index.json` or
-    `focus-report.html` was followed on read and its contents flowed onward —
+    The dir is reachable by the review worker, so an unguarded read of a symlink at
+    `index.json` or `focus-report.html` follows it and its contents flow onward —
     into a rendered report, or into a shareable dashboard artifact.
     """
 
@@ -1772,7 +1772,7 @@ class TestNoFindingFieldIsExemptFromRedaction:
 
 
 class TestFindingLineMustBeANumber:
-    """The boundary enforces what the redactor used to assume."""
+    """The boundary enforces `line` as a number, so no exemption rests on it."""
 
     def _record(self, line):
         return {
@@ -1912,11 +1912,11 @@ class TestNestedStringFieldsMustBeScalars:
 class TestRetryRepairsTheReviewedIndex(unittest.TestCase):
     """A retry that succeeds after a failed post must leave the PR indexed.
 
-    `_record_reviewed` reads ONLY `summary.per_change`. The explicit-retry path
-    used to write just the run-level counters, so a record still showing the
-    original failure kept the PR out of the dedup index -- and the next repo
-    review reviewed and posted it a second time. Both the first attempt and the
-    retry now write those fields through `review_driver.apply_post_outcome`.
+    `_record_reviewed` reads ONLY `summary.per_change`. A retry writing just the
+    run-level counters leaves a record still showing the original failure, which
+    keeps the PR out of the dedup index -- and the next repo review reviews and
+    posts it a second time. Both the first attempt and the retry write those fields
+    through `review_driver.apply_post_outcome`.
     """
 
     def setUp(self):
@@ -2242,11 +2242,11 @@ class TestPhase1ValuesMustBeStrings(unittest.TestCase):
         self.assertTrue(any("must be a string" in e for e in errs), errs)
 
     def test_numeric_gate_verdict_is_refused(self):
-        """This used to validate cleanly.
+        """A numeric gate_verdict must not validate cleanly.
 
-        The vocabulary check sat behind an isinstance() guard, so a numeric
-        gate_verdict was neither rejected as a shape nor checked against
-        VALID_VERDICTS — it reached `html.escape()` in the renderer, which raises.
+        Behind an isinstance() guard alone, a numeric gate_verdict is neither
+        rejected as a shape nor checked against VALID_VERDICTS — it reaches
+        `html.escape()` in the renderer, which raises.
         """
         from sage_lib import results
 
@@ -2345,12 +2345,12 @@ class TestPersistedReportIsRedactedOnRead(unittest.TestCase):
 class TestPlantedReportMetadataCannotBreakTheEndpoint(unittest.TestCase):
     """The remaining worker-writable fields in the read_report payload.
 
-    Round 40 redacted the rows and coerced the tallies but left two gaps in its
-    own hardening: `bands` was screened for truthiness rather than for being a
-    MAPPING, and `report_slug` was passed through untouched.
+    Redacting the rows and coercing the tallies is not enough on its own: `bands`
+    screened for truthiness rather than for being a MAPPING, and `report_slug`
+    passed through untouched, are two gaps.
 
-    `[] or {}` yields `{}`, so an empty list looked handled -- but a truthy
-    non-dict (a non-empty list, a string, a number) reached `.get` and raised
+    `[] or {}` yields `{}`, so an empty list looks handled -- but a truthy
+    non-dict (a non-empty list, a string, a number) reaches `.get` and raises
     AttributeError, turning a planted file into an HTTP 500 on the report
     endpoint. The slug names an artifact the dashboard turns into a share link, so
     it is screened against the artifact store's own grammar rather than redacted:

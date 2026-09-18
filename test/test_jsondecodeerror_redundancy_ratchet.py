@@ -2,7 +2,7 @@
 
 ``json.JSONDecodeError`` subclasses ``ValueError``, so a handler naming both
 catches exactly what ``ValueError`` alone catches -- the extra member is dead
-weight that invites cargo-cult copies. Issue #5287 removed 94 such sites; this
+weight that invites cargo-cult copies. This
 ratchet keeps the count at zero. flake8 here carries no bugbear plugin, so
 B014 does not enforce this and the pattern re-accumulates without a guard.
 

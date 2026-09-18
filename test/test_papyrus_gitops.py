@@ -163,8 +163,8 @@ class TestClone:
         """The destructive race, and the reason for the staging dir.
 
         Two concurrent clones of the same project name both proceed; the loser gets
-        git's "destination path already exists" error, and its cleanup used to delete
-        the WINNER's freshly-cloned checkout — turning a duplicate-request 500 into
+        git's "destination path already exists" error, and its cleanup must not delete
+        the WINNER's freshly-cloned checkout — which would turn a duplicate-request 500 into
         data loss for the request that succeeded.
         """
         dest = tmp_path / "dest"
@@ -733,7 +733,6 @@ class TestFsmonitorAndOtherHooksAreNeutralized:
             assert key in source, f"{key} is not pinned — repo config can still run it"
 
 
-@pytest.mark.asyncio
 class TestPackProgramsArePinnedForEveryRemote:
     """`remote.<name>.uploadpack` / `.receivepack` name a COMMAND, and the subsection is
     ATTACKER-CHOSEN — the same defect as `filter.<name>.clean`.
@@ -769,6 +768,7 @@ class TestPackProgramsArePinnedForEveryRemote:
         turn every local call into an error."""
         assert gitops._pack_program_args([subcommand, "-x"]) == [subcommand, "-x"]
 
+    @pytest.mark.asyncio
     async def test_the_pin_reaches_the_built_argv(self) -> None:
         captured: list[list[str]] = []
 
@@ -789,6 +789,7 @@ class TestPackProgramsArePinnedForEveryRemote:
         # Directly after the subcommand, which is where a subcommand's own flag belongs.
         assert argv[argv.index("push") + 1] == "--receive-pack=git-receive-pack"
 
+    @pytest.mark.asyncio
     async def test_against_real_git_a_selected_remote_cannot_run_its_receivepack(
         self, tmp_path: Path
     ) -> None:
@@ -831,6 +832,7 @@ class TestPackProgramsArePinnedForEveryRemote:
              *gitops._pack_program_args(["push"]))
         assert not marker.exists(), "a selected remote's receivepack executed"
 
+    @pytest.mark.asyncio
     async def test_against_real_git_a_selected_remote_cannot_run_its_uploadpack(
         self, tmp_path: Path
     ) -> None:

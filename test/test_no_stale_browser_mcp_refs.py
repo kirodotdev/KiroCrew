@@ -5,7 +5,7 @@ The Playwright MCP proxy is gone: the ``browser_*`` tools, ``browse_outline`` /
 Mode toggle were all removed when browsing moved to ``playwright-cli`` shell
 commands. Prose and agent specs did not move with it, and a stale reference here
 fails in the one way nothing else catches: the agent is *told* to call a tool
-that no longer exists, so it either does nothing or relays a remedy pointing at
+that does not exist, so it either does nothing or relays a remedy pointing at
 a setting the user cannot find. Neither shows up as an error.
 
 So this file scans every surface an agent actually reads -- skills, app agent
@@ -24,7 +24,7 @@ SRC = ROOT / "src" / "kiro_crew"
 # Names the migration deleted. ``browser_[a-z]`` covers the whole 22-tool
 # surface (browser_navigate, browser_snapshot, browser_take_screenshot, ...)
 # without pinning a list that would rot, and the ``*`` alternative catches the
-# ``browser_*`` glob that prose used to refer to the set as a whole -- the exact
+# ``browser_*`` glob that names the set as a whole -- the exact
 # spelling two of the stale files used. ``browser_cli`` is ours and is the one
 # spelling that must stay legal.
 REMOVED = re.compile(

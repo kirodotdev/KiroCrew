@@ -33,7 +33,7 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
-import { ArrowLeft, ChevronRight, Circle, Clock, ExternalLink, Goal, Pencil, Route, Star, UserPlus, Users, Webhook } from 'lucide-react'
+import { ArrowLeft, Check, ChevronRight, Circle, Clock, ExternalLink, Goal, MessageCircleQuestionMark, Pencil, Plus, Route, Square, Star, UserPlus, Users, Webhook, Zap } from 'lucide-react'
 import { PanelRightSolid } from '../../components/icons/panels'
 import { useTranslation } from 'react-i18next'
 import { api, type MemberRosterRow, type WebhookTokenEntry } from '../../api/client'
@@ -55,20 +55,35 @@ import {
 } from '../../components/autoNudgeLoop'
 import { skipToken, useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { timeAgo } from '../../utils/timeAgo'
-import { fmtDateTimeNumeric, fmtTime } from '../../i18n/format'
+import { fmtDateTimeNumeric, fmtList, fmtTime } from '../../i18n/format'
 import { usePersistedBool } from '../../hooks/usePersistedBool'
 import { usePersistedString } from '../../hooks/usePersistedString'
 import { findReport, type ErrorReport } from '../../utils/errorReport'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { markSlotRead } from '../../store/dashboardSlice'
+import { emitSlotRead, flushSlotRead } from '../../lib/slotReadRelay'
+import { setViewedThreadSlot, clearViewedThreadSlot } from '../../lib/viewedThread'
 import CrewAvatar from '../../components/CrewAvatar'
 import CrewStateAvatar from '../../components/CrewStateAvatar'
 import ChatPane from '../../components/ChatPane'
 import ErrorBoundary from '../../components/ErrorBoundary'
 import ErrorNotice from '../../components/ErrorNotice'
+import { useGuardedLeave, useRegisterNavigationLeaveGuard, usePublishNavigationStake } from '../../components/NavigationLeaveGuard'
 import { useIsMobile } from '../../hooks/useIsMobile'
 import { useConnected } from '../../hooks/useConnected'
-import { SearchInput } from '../../components/ui'
+import { SearchFilterBar, FilterMenuButton, FilterChip, FILTER_CHIP_ROW_CLS, FILTER_MENU_LABEL_CLS, FILTER_MENU_CONTENT_CLS } from '../../components/SearchFilterBar'
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '../../components/ui/dropdown-menu'
+import {
+  countByFilter, narrowRoster, parseSort, parseSourceFilter, parseStatusFilters, queryNarrows, sortRoster,
+  SORT_OPTIONS, SOURCE_FILTERS, STATUS_FILTERS,
+  type MemberSignals, type MemberSort, type MemberSourceFilter, type MemberStatusFilter, type RosterQuery,
+} from './rosterFilter'
+import { Btn, SendBtn } from '../../components/ui'
+import {
+  Dialog, DialogContent, DialogHeader, DialogBody, DialogFooter, DialogTitle,
+} from '../../components/ui/dialog'
+import JobForm from '../../components/JobForm'
+import { SaveCreateLabel } from '../../utils/cronUtils'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { isSidePanelHidden, shouldMountSidePanel, sidePanelDockMotion } from '../chat/sidePanelMount'
 import SidePanel, { SIDE_PANEL_MIN_W, SIDE_PANEL_RESERVED_W, type SidePanelLeadingTab, type SidePanelWithholdable } from '../chat/SidePanel'
@@ -76,9 +91,10 @@ import { CHAT_TRANSCRIPT_VIEWS, VIEW_DATA_SOURCE, useAnyLiveAppTab, usePanelTabs
 import { usePanelTabDescriptors } from '../../hooks/panelTabRegistry'
 import { usePanelDocumentActions } from '../../hooks/usePanelDocumentActions'
 import ResizeHandle from '../../components/ResizeHandle'
+import { cn } from '../../lib/utils'
+import { LIST_SHELL_CLS, LIST_HEADER_CLS, LIST_TITLE_CLS, LIST_BODY_CLS, ROW_BOX_CLS, ROW_IDLE_CLS, ROW_ACTIVE_CLS, ROW_TITLE_CLS, ROW_STATUS_CLS } from '../../components/listShell'
 import { useColumnResize } from '../../hooks/useColumnResize'
 import { loadColumnWidth } from '../../lib/columnWidth'
-import { compareText } from '../../i18n/format'
 import { tabStatus, type TabStatus } from '../../lib/sessionTabs'
 import { lastActivityEpoch } from '../chat/sessionOrder'
 import { activityDayLabel, floorCountText, groupActivityDays, projectLabel } from './activityDays'
@@ -135,6 +151,16 @@ export function resolveDefaultMember(
     if (hit) return hit
   }
   return ordered[0]
+}
+
+type MemberMemoryDisplay = 'global' | 'legacy' | 'private' | 'ownership_mismatch' | 'unavailable'
+
+export function memberMemoryDisplay(row: MemberRosterRow): MemberMemoryDisplay {
+  if (row.name === 'default') return row.memory_store === 'default' ? 'global' : 'unavailable'
+  if (row.memory_owner && row.memory_owner !== row.name) return 'ownership_mismatch'
+  if (row.memory_version === 2) return row.memory_owner === row.name ? 'private' : 'unavailable'
+  if (row.memory_version === 1 && !row.memory_owner) return 'legacy'
+  return 'unavailable'
 }
 
 /** Roster width bounds, persisted like the chat sidebar's (mc-sidebar-width). */
@@ -206,38 +232,51 @@ const ACTIVITY_DAYS_VISIBLE = 3
  *  field on the server. */
 const STARRED_ONLY_KEY = 'mc-members-starred-only'
 const SOURCE_FILTER_KEY = 'mc-members-source'
-/** Source chips. `mine` = crews created in the crew manager (source
- *  'kirocrew'); `builtin` = shipped with Kiro Crew; `package` = written by the
- *  agent sync from installed capability packages — on a busy host the large
- *  majority of the roster, and the reason the filter exists. */
-export type MemberSourceFilter = 'all' | 'mine' | 'builtin' | 'package'
-const SOURCE_CHIPS: readonly Exclude<MemberSourceFilter, 'all'>[] = ['mine', 'builtin', 'package']
-/** Static key per chip — a map, not a template, so `check-i18n-keys` can
+const STATUS_FILTER_KEY = 'mc-members-status'
+const SORT_KEY = 'mc-members-sort'
+/** Static key per menu row — a map, not a template, so `check-i18n-keys` can
  *  resolve every reference (assembled keys are a counted blind spot there). */
-const SOURCE_CHIP_LABEL_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
+const SOURCE_LABEL_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
   mine: 'pages.membersPage.filter_source_mine',
   builtin: 'pages.membersPage.filter_source_builtin',
   package: 'pages.membersPage.filter_source_package',
 }
-/** Hover tooltip per chip: the one-word labels ("From packages") are not
+/** Hover tooltip per origin row: the one-word labels ("From packages") are not
  *  self-explaining to a reader who has never installed a capability package. */
-const SOURCE_CHIP_TITLE_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
+const SOURCE_TITLE_KEY: Record<Exclude<MemberSourceFilter, 'all'>, string> = {
   mine: 'pages.membersPage.filter_source_mine_description',
   builtin: 'pages.membersPage.filter_source_builtin_description',
   package: 'pages.membersPage.filter_source_package_description',
 }
-export function parseSourceFilter(raw: string | null): MemberSourceFilter {
-  return raw === 'mine' || raw === 'builtin' || raw === 'package' ? raw : 'all'
+/** The two states the sessions menu also filters on reuse ITS labels, so the
+ *  same slot state never reads as two different words across the two menus. */
+const STATUS_LABEL_KEY: Record<MemberStatusFilter, string> = {
+  working: 'pages.chatSidebar.filter_running',
+  needs_you: 'pages.membersPage.filter_status_needs_you',
+  unread: 'pages.chatSidebar.filter_unread',
+  patrolling: 'pages.membersPage.filter_status_patrolling',
 }
-/** The server normalizes `source` to kirocrew | builtin | package before it
- *  reaches the wire; the fallback-to-package here only covers a row from an
- *  older gateway that omits the field. */
-export function matchesSource(m: { source?: unknown }, f: MemberSourceFilter): boolean {
-  if (f === 'all') return true
-  const src = typeof m.source === 'string' ? m.source : ''
-  if (f === 'mine') return src === 'kirocrew'
-  if (f === 'builtin') return src === 'builtin'
-  return src !== 'kirocrew' && src !== 'builtin'
+const STATUS_TITLE_KEY: Record<MemberStatusFilter, string> = {
+  working: 'pages.membersPage.filter_status_working_description',
+  needs_you: 'pages.membersPage.filter_status_needs_you_description',
+  unread: 'pages.membersPage.filter_status_unread_description',
+  patrolling: 'pages.membersPage.filter_status_patrolling_description',
+}
+/** Each status row's marker — the same glyph the roster row and the sidebar's
+ *  session filters use for that state, lit in the state's colour when active. */
+const STATUS_ICON: Record<MemberStatusFilter, (active: boolean) => React.ReactNode> = {
+  working: (active) => <Zap size={12} className={active ? 'text-[var(--warn)]' : 'text-muted'} {...(active ? { fill: 'var(--warn)', stroke: 'none' } : {})} />,
+  needs_you: (active) => <MessageCircleQuestionMark size={12} className={active ? 'text-[var(--info)]' : 'text-muted'} />,
+  unread: (active) => <Circle size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--accent)' } : {})} />,
+  patrolling: (active) => <Goal size={12} className={active ? 'text-accent' : 'text-muted'} />,
+}
+/** The A–Z row reuses the sidebar menu's label. The activity row does NOT
+ *  reuse the sidebar's "Newest": on a list of people that reads as "newest
+ *  member", while the order is last activity — so it keeps a member-specific
+ *  word for what it actually sorts by. */
+const SORT_LABEL_KEY: Record<MemberSort, string> = {
+  recent: 'pages.membersPage.sort_recent',
+  name: 'pages.chatSidebar.sort_name_asc',
 }
 /** How each shared tab status renders on a driving row. The ORDER lives in
  *  `tabStatus` (lib/sessionTabs.ts) — this only maps its verdict to a dot
@@ -280,9 +319,117 @@ const PATROL_TICK_MS = 15_000
  *  `members` do not recompute on every render while the first fetch is out. */
 const EMPTY_ROSTER: readonly MemberRosterRow[] = []
 
+/**
+ * "New schedule" for the member whose Crew summary is open.
+ *
+ * A DIALOG rather than the crew editor's inline form (`CrewWakeSection`), for
+ * one reason: a dialog owns its own cancel and confirm, so the typed draft
+ * never becomes the host's problem. The inline form makes its host carry draft
+ * accounting — `onDraftChange` / `onSavingChange` / `onRequestCancel`, feeding a
+ * dirty dot, Save gating and a discard confirm — and this page has no such
+ * model: it is read-only observation whose only writes are starring a member
+ * and opening a thread. Growing one here to host a form would be a second
+ * spelling of the crew editor's, not a smaller change.
+ *
+ * The crew field is LOCKED to the open member: this surface exists because the
+ * member is already the subject, so offering a picker would only be a way to
+ * file the schedule against somebody else. `memberId` is the separate,
+ * load-bearing half — it is what binds the job to that member's PRIVATE memory
+ * rather than Global V1.
+ */
+function MemberScheduleDialog({ member, agentTemplate, saving, onSavingChange, onDirtyChange, onSubmitError, onClose, onSaved }: {
+  member: string
+  /** The member's provider template, so the form can offer that agent's models. */
+  agentTemplate?: string
+  /** Whether the create is in flight. Drives the footer's honesty — the label
+   *  and the caveat — and nothing else: dismissal is never refused, because a
+   *  POST cannot be un-sent and refusing only moved the harm elsewhere. */
+  saving: boolean
+  onSavingChange: (saving: boolean) => void
+  /** Typed-work signal, so the host can guard a dismissal gesture. */
+  onDirtyChange: (dirty: boolean) => void
+  /** A failed submit, for the host to surface when this dialog is already gone.
+   *  `confirmed` distinguishes a server verdict from a request that got no
+   *  answer, because only the first proves the schedule was not created. `job`
+   *  is the name the user typed, so the report can say which schedule it was. */
+  onSubmitError: (message: string, confirmed: boolean, job?: string) => void
+  onClose: () => void
+  onSaved: () => void
+}) {
+  const { t } = useTranslation()
+  const submitRef = useRef<(() => void) | null>(null)
+  return (
+    <DialogContent maxWidth={720} className="max-h-[86vh]">
+      <DialogHeader>
+        <DialogTitle className="truncate">
+          {t('pages.membersPage.new_schedule_for', { name: member })}
+        </DialogTitle>
+      </DialogHeader>
+      <DialogBody className="flex flex-col gap-4">
+        {/* `agents=[]` / `defaultAgent=""` are unread under `lockedAgent`, which
+            renders the crew as a fixed value instead of a selector — the same
+            call shape the crew editor's wake pane uses. */}
+        <JobForm
+          layout="vertical"
+          agents={[]}
+          defaultAgent=""
+          lockedAgent={member}
+          /* Unconditional: JobForm withholds `member_id` for the default
+             crew itself, since the backend refuses `"default"` as a V1
+             identity — so that crew's schedules run on Global V1 memory. */
+          memberId={member}
+          /* This drawer says "member" throughout, so the pinned-value hint
+             does too. A host flag, not derived from `memberId`: the crew
+             editor binds identity the same way and keeps its own noun. */
+          memberNoun
+          providerAgent={agentTemplate}
+          onSaved={onSaved}
+          externalSubmit
+          submitRef={submitRef}
+          onSavingChange={onSavingChange}
+          onSubmitError={onSubmitError}
+          onDirtyChange={onDirtyChange}
+        />
+      </DialogBody>
+      {/* Between the scrollable body and the footer, so it is ALWAYS visible and
+          the button row never moves. Inside the body it scrolled out of view on a
+          long form; beside the buttons it reflowed the row on the very click that
+          starts the save, moving both controls under the pointer mid-gesture.
+          This strip is the only placement with neither fault.
+
+          Deliberately not muted: this is the single consequence a reader has to
+          weigh before dismissing, so it takes the warning colour rather than the
+          quietest text in the dialog. */}
+      {saving && (
+        <div className="shrink-0 border-t border-border bg-warn-subtle px-5 py-2">
+          <span className="text-[11.5px] text-warn-fg" data-testid="member-schedule-inflight">
+            {t('pages.membersPage.schedule_close_wont_cancel')}
+          </span>
+        </div>
+      )}
+      {/* While the create is in flight the exit is still offered, but it stops
+          claiming to cancel: the button says Close, and the strip above says the
+          schedule may still be created. Saying so is what the earlier lock was
+          reaching for — a user who is told cannot be misled — and it costs none
+          of the harm that refusing the exit did. */}
+      <DialogFooter>
+        <div className="flex items-center gap-2">
+          <Btn onClick={onClose} data-testid="member-schedule-dismiss">
+            {saving ? t('pages.membersPage.close') : t('pages.membersPage.cancel')}
+          </Btn>
+          <SendBtn onClick={() => submitRef.current?.()} disabled={saving} data-testid="member-schedule-submit">
+            <SaveCreateLabel isEdit={false} saving={saving} />
+          </SendBtn>
+        </div>
+      </DialogFooter>
+    </DialogContent>
+  )
+}
+
 export default function MembersPage() {
   const { t } = useTranslation()
   const navigate = useNavigate()
+  const leave = useGuardedLeave()
   const location = useLocation()
   const queryClient = useQueryClient()
   // The roster is a React Query read (issue #9418), not page state: a return
@@ -379,6 +526,16 @@ export default function MembersPage() {
     return () => window.removeEventListener('resize', onResize)
   }, [])
   const beside = panelSitsBeside({ winW, rosterW: roster.width, isMobile })
+  // On a phone the overlay must FILL its scrim. SidePanel's own mobile
+  // fallback is `width: 100%`, which cannot resolve here: the overlay's inner
+  // wrapper is a shrink-to-fit flex item, so a percentage child falls back to
+  // the panel's max-content width and the panel lands at SIDE_PANEL_MIN_W
+  // with a dimmed sliver of the thread showing beside it (issue #9979). The
+  // chat page hands its panel an explicit px width for exactly this reason
+  // (sidePanelFillWidth's mobile branch); this is that branch. `undefined` off
+  // the phone, where the panel keeps its own resizable width in both
+  // placements — the docked/overlay split is panelSitsBeside's, not this.
+  const panelFillWidth = isMobile ? Math.max(SIDE_PANEL_MIN_W, winW) : undefined
   const [overlayOpen, setOverlayOpen] = useState(false)
   // `overlayOpen` is overlay-mode state only. Reset it whenever the panel docks
   // (a widening window, a narrower roster), so an open overlay does not lie in
@@ -396,7 +553,9 @@ export default function MembersPage() {
   const slotsLoaded = useAppSelector((s) => s.dashboard.slotsLoaded)
   const liveRunning = useMemo(() => {
     const byKey: Record<string, boolean> = {}
-    for (const s of liveSlots) if (s.mode === 'member') byKey[s.key] = !!s.running
+    for (const s of liveSlots) {
+      if (s.mode === 'member') byKey[s.key] = !!(s.running || s.subagents_running)
+    }
     return byKey
   }, [liveSlots])
   const isRunning = useCallback(
@@ -406,17 +565,30 @@ export default function MembersPage() {
     },
     [slotKeyOf, liveRunning],
   )
+  // A member turn parked on the user — an approval or a question — read off
+  // the same slot frames; `tabStatus` is the shared ranking of those two.
+  const liveNeedsYou = useMemo(() => {
+    const byKey: Record<string, boolean> = {}
+    for (const sl of liveSlots) {
+      if (sl.mode !== 'member') continue
+      const st = tabStatus(sl, [], sl.key)
+      byKey[sl.key] = st === 'permission' || st === 'question'
+    }
+    return byKey
+  }, [liveSlots])
 
   const active = useMemo(
     () => members.find((m) => m.name === activeName),
     [members, activeName],
   )
+  const activeMemory = active ? memberMemoryDisplay(active) : 'unavailable'
   // Most-recently-active first (like any IM member list); never-talked
   // members fall to the bottom alphabetically. Sorted from the cached roster,
   // which changes only when the cache does — a return to the page, a focus
   // after the stale window, a registry write elsewhere — never on a live
   // message, so rows do not move under the cursor mid-conversation.
   const [filter, setFilter] = useState('')
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false)
   // Persistent roster filters. The agent sync writes every package-installed
   // agent spec into the roster, so a host with a few dozen installed packages
   // shows dozens of crews the user never drives. Both toggles survive a page
@@ -430,12 +602,34 @@ export default function MembersPage() {
   const toggleStarredOnly = useCallback(() => setStarredOnly((prev) => !prev), [setStarredOnly])
   const pickSource = useCallback(
     (next: MemberSourceFilter) => {
-      // Clicking the active chip clears it back to "all" — one chip row,
-      // no separate reset control.
+      // Choosing the active origin clears it back to "all" — one radio-like
+      // group, no separate reset row.
       setRawSourceFilter((prev) => (parseSourceFilter(prev) === next ? 'all' : next))
     },
     [setRawSourceFilter],
   )
+  // Live-state filters (working / needs you / unread / patrolling) and the
+  // sort, persisted like the sidebar's session filters. Stored as strings so
+  // the parse is the single place junk from storage is rejected.
+  const [rawStatusFilter, setRawStatusFilter] = usePersistedString(STATUS_FILTER_KEY, '[]')
+  const statusFilter = useMemo(() => parseStatusFilters(rawStatusFilter), [rawStatusFilter])
+  const toggleStatus = useCallback(
+    (key: MemberStatusFilter) =>
+      setRawStatusFilter((prev) => {
+        const next = parseStatusFilters(prev)
+        if (next.has(key)) next.delete(key)
+        else next.add(key)
+        return JSON.stringify([...next])
+      }),
+    [setRawStatusFilter],
+  )
+  const [rawSort, setRawSort] = usePersistedString(SORT_KEY, 'recent')
+  const sort = parseSort(rawSort)
+  const clearFilters = useCallback(() => {
+    setStarredOnly(false)
+    setRawSourceFilter('all')
+    setRawStatusFilter('[]')
+  }, [setStarredOnly, setRawSourceFilter, setRawStatusFilter])
   // Star toggle: optimistic flip, reverted if the PUT fails. The star lives
   // on the crew record, not the DM thread, so it goes through the crew
   // update endpoint rather than a members route. A failed write (403 for a
@@ -520,55 +714,32 @@ export default function MembersPage() {
     },
     [mutateStar],
   )
-  const starredCount = useMemo(() => members.filter((m) => !!m.starred).length, [members])
-  // Per-bucket counts on the origin chips: the one-word labels do not explain
-  // themselves and their tooltips never fire on touch, so each chip shows what
-  // it holds instead.
-  const sourceCounts = useMemo(() => {
-    const out: Record<Exclude<MemberSourceFilter, 'all'>, number> = { mine: 0, builtin: 0, package: 0 }
-    for (const m of members) {
-      for (const chip of SOURCE_CHIPS) if (matchesSource(m, chip)) out[chip] += 1
-    }
-    return out
-  }, [members])
   // Display order before the search filter — this is what "the first member"
   // means for the default-open below, so a typed filter never changes which
-  // member a fresh visit lands on. The ORDER is committed per MEMBERSHIP, not
-  // per refetch: the roster query refetches on every server refresh frame, on
-  // window focus and on staleness, and re-sorting when a last_active_ts
-  // advances would move rows under the cursor mid-click — opening a different
-  // member's durable pinned thread. Row CONTENT (star, last-message preview,
-  // presence) still updates live from every refetch; only the ordering is held
-  // until a member is added, removed or renamed, which re-sorts from scratch.
-  const committedOrderRef = useRef<string[]>([])
+  // member a fresh visit lands on. The ORDER is committed per MEMBERSHIP and
+  // per chosen SORT, not per refetch: the roster query refetches on every
+  // server refresh frame, on window focus and on staleness, and re-sorting
+  // when a last_active_ts advances would move rows under the cursor mid-click
+  // — opening a different member's durable pinned thread. Row CONTENT (star,
+  // last-message preview, presence) still updates live from every refetch;
+  // only the ordering is held until a member is added, removed or renamed, or
+  // the user picks the other sort, which re-sorts from scratch.
+  const committedOrderRef = useRef<{ sort: MemberSort; names: string[] }>({ sort, names: [] })
   const orderedMembers = useMemo(() => {
     const byName = new Map(members.map((m) => [m.name, m]))
     const prev = committedOrderRef.current
-    const sameMembership = prev.length === byName.size && prev.every((n) => byName.has(n))
-    const names = sameMembership
-      ? prev
-      : [...members]
-          .sort(
-            (a, b) =>
-              (b.last_active_ts ?? 0) - (a.last_active_ts ?? 0) || compareText(a.name, b.name),
-          )
-          .map((m) => m.name)
-    committedOrderRef.current = names
+    const sameMembership =
+      prev.sort === sort && prev.names.length === byName.size && prev.names.every((n) => byName.has(n))
+    const names = sameMembership ? prev.names : sortRoster(members, sort).map((m) => m.name)
+    committedOrderRef.current = { sort, names }
     return names.map((n) => byName.get(n)).filter((m): m is MemberRosterRow => !!m)
-  }, [members])
-  const sortedMembers = useMemo(() => {
-    const q = filter.trim().toLowerCase()
-    return orderedMembers.filter(
-      (m) =>
-        (!starredOnly || !!m.starred) &&
-        matchesSource(m, sourceFilter) &&
-        (!q || m.name.toLowerCase().includes(q)),
-    )
-  }, [orderedMembers, filter, starredOnly, sourceFilter])
-  // True when the filters (not the search) hid everything — the empty-roster
-  // copy would be wrong then, since the roster is not empty.
-  const filteredOut =
-    loaded && !loadError && members.length > 0 && sortedMembers.length === 0 && !filter.trim()
+  }, [members, sort])
+  // Named apart from `rosterQuery` above: that one is the React Query READ of
+  // the roster, this one is the user's filter/sort question asked of it.
+  const rosterFilterQuery = useMemo<RosterQuery>(
+    () => ({ search: filter, starredOnly, source: sourceFilter, status: statusFilter, sort }),
+    [filter, starredOnly, sourceFilter, statusFilter, sort],
+  )
   const activeSlot = active ? threadOutcome?.slot_key ?? '' : ''
   // Two distinct verdicts with two different sentences: a collision is a
   // fact about the roster (the slug's thread belongs to another crew), a
@@ -627,9 +798,13 @@ export default function MembersPage() {
         )
       }
     },
-    onError: (_err, m, seq) => {
+    onError: (error, m, seq) => {
       if (seq !== threadReqSeq.current[m.name]) return
-      setThreadOutcome(m.name, (prev) => ({ slot_key: prev?.slot_key ?? '', failed: true }))
+      setThreadOutcome(m.name, (prev) => ({
+        slot_key: prev?.slot_key ?? '',
+        failed: true,
+        errorReport: findReport(error instanceof Error ? error.message : undefined),
+      }))
     },
   })
   const { mutate: postThread } = openThread
@@ -907,6 +1082,131 @@ export default function MembersPage() {
         : [],
     [active, wakeTokens],
   )
+  // Create-a-schedule dialog. Holds the member NAME it was opened for, not a
+  // bare flag: the dialog binds the job to one member, so it must keep naming
+  // the member it was opened for even if the roster moves underneath it —
+  // re-pointing it at whoever is open now would file the schedule against
+  // somebody the form never claimed. It deliberately does NOT close when the
+  // open member changes: with the name latched that close prevents nothing and
+  // would discard whatever had been typed, with no confirm.
+  //
+  // Dismissal is NEVER refused, and that is a deliberate reversal of two earlier
+  // revisions. A POST cannot be un-sent, so no amount of locking makes "cancel"
+  // true; each attempt to enforce it bought a fresh defect instead — a window
+  // with no exit while a request hung, a silent Escape that read as frozen, and
+  // an escaped request whose late callback closed a NEWER dialog and took its
+  // draft. What the user actually needs is not to be misled, so the dialog says
+  // in words that closing will not cancel the create, and a late completion is
+  // made HARMLESS rather than impossible: see `schedGen`.
+  const [schedFor, setSchedFor] = useState('')
+  const [schedSaving, setSchedSaving] = useState(false)
+  const schedMember = useMemo(
+    () => members.find((m) => m.name === schedFor),
+    [members, schedFor],
+  )
+  // One generation per OPEN, so a callback captured by an abandoned dialog can
+  // be told from the live one. An in-flight create outlives its dialog, and its
+  // `onSaved` still points here; without this, that late success closed whatever
+  // dialog happened to be open and discarded its draft. A stale generation may
+  // still refresh the job list — that is only ever correct, the schedule really
+  // was created — but it may not touch dialog state.
+  const schedGen = useRef(0)
+  // Bumped on open AND on close, so "is this callback from the dialog currently
+  // on screen?" is one comparison and never a second flag that can disagree. A
+  // dismissed dialog is stale by construction — which is what lets a late
+  // failure be recognised as belonging to a form the user can no longer see.
+  const closeSchedNow = useCallback(() => {
+    schedGen.current += 1
+    setSchedDirty(false)
+    setSchedFor('')
+  }, [])
+  // Opening does NOT touch `schedErrors`. An earlier revision cleared the
+  // member's retained failure reports here, on the theory that a new attempt
+  // supersedes the old verdicts — but each report is a past event with its own
+  // dismiss control (see the list below), and a fresh dialog is not an
+  // acknowledgement of any of them. Wiping the lot on open silently took the
+  // reports the user had not yet read; the only exit a report has is its own
+  // dismiss.
+  const openSchedFor = useCallback((member: string) => {
+    schedGen.current += 1
+    setSchedSaving(false)
+    setSchedDirty(false)
+    setSchedFor(member)
+  }, [])
+  // Whether the form holds typed work, so a dismissal GESTURE (Escape, a click
+  // on the overlay) can ask before destroying it — the crew editor's discard
+  // confirm, which this surface otherwise diverged from. Keyed on dirtiness and
+  // not on open-ness: a confirm over an untouched form trains people to click
+  // through the one that guards real work.
+  const [schedDirty, setSchedDirty] = useState(false)
+  const [schedConfirmDiscard, setSchedConfirmDiscard] = useState(false)
+  // Browser Back is the one exit this page cannot intercept with a component:
+  // it arrives with no gesture to guard, so the shell has to be armed BEFORE the
+  // press. `usePublishNavigationStake` does that, and the registered guard is
+  // what the shell asks on every wired in-app exit. Both read the same
+  // dirtiness, so the two can never disagree about whether there is anything to
+  // lose. A native confirm is deliberate: the answer must be synchronous, which
+  // a rendered dialog cannot be.
+  //
+  // Two surfaces therefore guard one stake — the rendered dialog for gestures
+  // this page owns, this native prompt for Back. They read the SAME two catalog
+  // keys, concatenated in the same order the dialog stacks them, so the words a
+  // user sees are identical either way; only the chrome differs, and that
+  // difference is the browser's, not a choice. Keep them on these keys: two
+  // spellings of one stake is what would erode the guard.
+  const schedLeaveGuard = useCallback(
+    () => !schedDirty || window.confirm(
+      `${t('pages.membersPage.discard_schedule')} ${t('pages.membersPage.discard_schedule_body')}`,
+    ),
+    [schedDirty, t],
+  )
+  useRegisterNavigationLeaveGuard(schedLeaveGuard)
+  usePublishNavigationStake(schedDirty)
+  // The two above cover every exit the SHELL owns — wired in-app navigation and
+  // browser Back. A reload, a tab close, or navigating the browser off the
+  // dashboard entirely destroys the same draft, and none of that passes through
+  // the shell: `beforeunload` is the only thing the platform offers there. Same
+  // idiom, for the same reason, as PromptsTab, MemoryTab and ArtifactDetailPage.
+  // Keyed on dirtiness, not open-ness, like the guards above: a warning over an
+  // untouched form would nag on every reload of a clean page.
+  useEffect(() => {
+    if (!schedDirty) return
+    const warn = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [schedDirty])
+  // A create that failed AFTER its dialog was dismissed. The form's own inline
+  // error cannot be seen once it is unmounted, and this is precisely the case
+  // that must be reported: the footer told the user the schedule might still be
+  // created, so silence would leave them believing a schedule exists that does
+  // not.
+  //
+  // Keyed BY MEMBER, for two reasons that a single slot got wrong in turn. This
+  // block is drawn for whichever member is open, so a bare message followed the
+  // reader to the next member and read as that member's failure. And nothing
+  // serialises these: two dismissed creates can be in flight at once, so a
+  // single slot let the second failure overwrite the first and lose it.
+  // The value carries `confirmed` alongside the message: a server that ANSWERED
+  // decided, so the schedule was not created, but a request that never got an
+  // answer proves nothing — the POST may have been applied. Reporting the second
+  // as the first states a fact the page cannot know.
+  //
+  // A LIST per member, not one slot: nothing serialises dismissed creates, so
+  // two can fail for the same member and both verdicts are owed. Each entry
+  // carries its own id so one notice can be dismissed without taking its
+  // sibling — a past event is reported once, and reported individually — and
+  // the job name the user typed, so two notices under one member read as two
+  // schedules rather than one failure said twice.
+  const schedErrSeq = useRef(0)
+  const [schedErrors, setSchedErrors] = useState<Record<string, Array<{ id: number; message: string; confirmed: boolean; job?: string }>>>({})
+  const schedErrorList = schedErrors[activeMemberName]
+  // One rule for every way out, so the gesture paths and the footer button
+  // cannot disagree. Mid-flight the exit is immediate — the footer already says
+  // what closing does — and a dirty form asks first.
+  const closeSchedDialog = useCallback(() => {
+    if (schedDirty && !schedSaving) { setSchedConfirmDiscard(true); return }
+    closeSchedNow()
+  }, [schedDirty, schedSaving, closeSchedNow])
   const { todayCount, weekCount, todayFloorTs, weekFloorTs } = useMemo(() => {
     const midnight = new Date()
     midnight.setHours(0, 0, 0, 0)
@@ -954,19 +1254,71 @@ export default function MembersPage() {
 
   // Mounting a member thread IS reading it, but nothing on this page moves
   // `chat.activeSlot` (that transition belongs to the Sessions page's
-  // switchSlot, the only other markSlotRead caller), so the websocket
-  // unread-marker keeps flagging this slot even while the user is looking at
-  // it. Drain it here instead: once when the thread opens, and again every
-  // time a live message re-flags the mounted thread. Without this the rail
-  // badge is permanent — no code path clears a live member slot's unread
-  // until the slot itself is deleted.
+  // switchSlot, the only other markSlotRead caller). Two things follow:
+  //
+  // 1. The websocket unread-marker must learn about the open thread another
+  //    way, or it flags every message that lands in it. It reads
+  //    `viewedThread` beside `chat.activeSlot`; the visible-view effect below
+  //    registers the mounted thread there. Before this, each arrival was
+  //    flagged and drained a render later, and both writes relayed to the
+  //    parent dashboard's crew tab -- a badge that lit and vanished on every
+  //    message.
+  // 2. A flag that was set while the thread was NOT on screen (closed, or
+  //    this window hidden) still has to be drained when it opens or is
+  //    revealed. Without this the rail badge is permanent -- no code path
+  //    clears a live member slot's unread until the slot itself is deleted.
   const dispatch = useAppDispatch()
   const activeSlotUnread = useAppSelector(
     (s) => !!activeSlot && s.dashboard.unreadSlots.includes(activeSlot),
   )
+  const activeSlotLastTs = useAppSelector(
+    (s) => (activeSlot ? s.dashboard.slots.find(sl => sl.key === activeSlot)?.last_ts : undefined),
+  )
+  // Reactive document visibility AND focus, so the read effect below re-runs
+  // when the user returns to a hidden tab or focuses the window — a plain
+  // document.hidden read would leave the effect settled and the reveal
+  // unnoticed, and Page Visibility alone calls occluded/unfocused windows
+  // "visible", which would let a parked window mark threads read.
+  const [pageVisible, setPageVisible] = useState(() => !document.hidden && document.hasFocus())
   useEffect(() => {
-    if (activeSlot && activeSlotUnread) dispatch(markSlotRead(activeSlot))
-  }, [activeSlot, activeSlotUnread, dispatch])
+    const onVis = () => setPageVisible(!document.hidden && document.hasFocus())
+    document.addEventListener('visibilitychange', onVis)
+    window.addEventListener('focus', onVis)
+    window.addEventListener('blur', onVis)
+    return () => {
+      document.removeEventListener('visibilitychange', onVis)
+      window.removeEventListener('focus', onVis)
+      window.removeEventListener('blur', onVis)
+    }
+  }, [])
+  useEffect(() => {
+    // Viewing the thread is the read — but only a VISIBLE view is a view. A
+    // hidden member tab neither clears its own badge nor relays one; on
+    // reveal this effect re-runs via pageVisible and does both. The relay is
+    // NOT gated on this window's own badge: this window may have read the
+    // thread earlier (locally clean) while another window's badge is still
+    // lit, and a visible view here retires that too. Throttled per slot by
+    // the relay module; watermarked at the slot's newest known message ts.
+    if (activeSlot && pageVisible) {
+      if (activeSlotUnread) dispatch(markSlotRead(activeSlot))
+      emitSlotRead(activeSlot, activeSlotLastTs)
+    }
+  }, [activeSlot, activeSlotUnread, pageVisible, activeSlotLastTs, dispatch])
+  // Tell the unread-marker which thread is on screen, for exactly as long as
+  // it is: registered while the thread is mounted AND this window is visible
+  // and focused, retired on switch, hide, blur and unmount. A hidden window's
+  // open thread therefore badges like any other slot, and the read effect
+  // above drains it on reveal -- same visibility bar for both directions.
+  useEffect(() => {
+    if (!activeSlot || !pageVisible) return
+    setViewedThreadSlot(activeSlot)
+    return () => {
+      // Like switchSlot, flush before retiring the view so its trailing read
+      // timer cannot outlive it and clear a later, unseen message's badge.
+      flushSlotRead(activeSlot)
+      clearViewedThreadSlot(activeSlot)
+    }
+  }, [activeSlot, pageVisible])
 
   // Per-row unread marker: the rail badge says "1", this says WHICH member.
   // Keyed the same way isRunning resolves a member's slot (thread-endpoint
@@ -1040,6 +1392,52 @@ export default function MembersPage() {
     [patrolLoopOf],
   )
   const activePatrol = activeMemberKey ? patrol.loops[activeMemberKey] : undefined
+  // The live facts the status filters read, resolved per row the same way the
+  // row's own markers are (isRunning / isUnread / activePatrolOf), so a filter
+  // can never disagree with the dot it filters on.
+  const signalsOf = useCallback(
+    (m: MemberRosterRow): MemberSignals => {
+      const key = slotKeyOf(m)
+      return {
+        running: !!isRunning(m),
+        needsYou: !!key && !!liveNeedsYou[key],
+        unread: isUnread(m),
+        patrolling: !!activePatrolOf(m),
+      }
+    },
+    [slotKeyOf, isRunning, liveNeedsYou, isUnread, activePatrolOf],
+  )
+  // Narrow the COMMITTED order (never re-sort here): a refetch that advances
+  // a last_active_ts must not move rows under the cursor — see orderedMembers.
+  const sortedMembers = useMemo(
+    () => narrowRoster(orderedMembers, rosterFilterQuery, signalsOf),
+    [orderedMembers, rosterFilterQuery, signalsOf],
+  )
+  // Per-row counts in the filter menu: the one-word labels do not explain
+  // themselves and a zero-count row is exactly the one that blanks the list.
+  const filterCounts = useMemo(() => countByFilter(members, signalsOf), [members, signalsOf])
+  const narrowed = queryNarrows(rosterFilterQuery)
+  // What the aggregate chip says: each active filter's menu label with its
+  // count (Starred (2), In progress (1), Mine (6)) — and the bare names for
+  // the chip's accessible "Clear … filter" name.
+  const activeFilterNames = useMemo(() => {
+    const out: string[] = []
+    if (starredOnly) out.push(t('pages.membersPage.filter_starred'))
+    for (const key of STATUS_FILTERS) if (statusFilter.has(key)) out.push(t(STATUS_LABEL_KEY[key]))
+    if (sourceFilter !== 'all') out.push(t(SOURCE_LABEL_KEY[sourceFilter]))
+    return out
+  }, [t, starredOnly, statusFilter, sourceFilter])
+  const activeFilterLabels = useMemo(() => {
+    const out: string[] = []
+    if (starredOnly) out.push(`${t('pages.membersPage.filter_starred')} (${filterCounts.starred})`)
+    for (const key of STATUS_FILTERS) if (statusFilter.has(key)) out.push(`${t(STATUS_LABEL_KEY[key])} (${filterCounts.status[key]})`)
+    if (sourceFilter !== 'all') out.push(`${t(SOURCE_LABEL_KEY[sourceFilter])} (${filterCounts.source[sourceFilter]})`)
+    return out
+  }, [t, starredOnly, statusFilter, sourceFilter, filterCounts])
+  // True when the filters (not the search) hid everything — the empty-roster
+  // copy would be wrong then, since the roster is not empty.
+  const filteredOut =
+    loaded && !loadError && members.length > 0 && sortedMembers.length === 0 && !filter.trim()
   // Which of the block's three verdicts to render. An active loop wins; a
   // stopped loop keeps its reason visible rather than collapsing into
   // "nothing scheduled" — that collapse is exactly how a dead patrol goes
@@ -1200,21 +1598,28 @@ export default function MembersPage() {
           page until a member is picked, then the thread takes over and the
           header's back button returns here. Two fixed rails (264+300px)
           otherwise crush the flex-1 thread to zero at narrow widths.
-          Carded like the Sessions page's chat list (ChatSidebar) so the two
-          conversation surfaces read as one family. */}
+          The card, header line, list body and rows are the Sessions sidebar's
+          own recipes (components/listShell) so the two conversation lists read
+          as one surface — including the kiro-light shell hook that steps the
+          card back from the white canvas. */}
       <aside
         className={`${
           activeName ? 'hidden md:flex' : 'flex'
-        } relative w-full md:w-[var(--roster-w)] shrink-0 bg-bg-elevated border border-border rounded-xl shadow-sm flex-col min-h-0`}
+        } ${LIST_SHELL_CLS} relative w-full md:w-[var(--roster-w)] shrink-0 flex-col min-h-0`}
         // CSS owns the breakpoint: the var is set unconditionally and only the
         // md: class consumes it, so resizing the window across 768px reacts
         // without any JS media-query snapshot going stale.
         style={{ '--roster-w': `${roster.width}px` } as React.CSSProperties}
         data-testid="member-roster"
       >
-        <div className="px-4 pt-4 pb-1 flex items-center gap-2">
-          <Users size={15} className="lucide-inline text-muted" />
-          <h1 className="text-sm font-semibold flex-1">{t('pages.membersPage.title')}</h1>
+        <div className={LIST_HEADER_CLS}>
+          {/* pl-1.5 is the sidebar's title inset when no rail toggle sits
+              before it; the page icon leads the title where the sidebar's
+              reads bare, because this header names a page, not a pane. */}
+          <div className="flex items-center gap-1.5 min-w-0 flex-1 pl-1.5">
+            <Users size={15} className="lucide-inline text-muted shrink-0" />
+            <h1 className={LIST_TITLE_CLS}>{t('pages.membersPage.title')}</h1>
+          </div>
           {/* Adding a member IS creating a crew, and the crew manager is the
               only write path — so this is a navigation, not an inline form.
               It lands ON the create form, not on the crew list (#9513). */}
@@ -1228,7 +1633,7 @@ export default function MembersPage() {
             <UserPlus size={15} />
           </button>
         </div>
-        <div className="px-4 pb-2 text-[11px] text-muted" data-testid="member-count">
+        <div className={`px-4 pb-2 ${ROW_STATUS_CLS} text-muted`} data-testid="member-count">
           {/* "N of M" while any filter (not the search) narrows the list, so
               the header never contradicts a 1-row or empty view below it.
               With no roster to count (the read failed) the line is a dash:
@@ -1236,7 +1641,7 @@ export default function MembersPage() {
               state as fact what is only unknown. */}
           {loadError
             ? '\u2014'
-            : starredOnly || sourceFilter !== 'all'
+            : narrowed
               ? t('pages.membersPage.member_count_filtered', {
                   shown: sortedMembers.length,
                   count: members.length,
@@ -1259,58 +1664,129 @@ export default function MembersPage() {
             />
           </div>
         )}
-        {/* Same search idiom as the Sessions sidebar. */}
-        <div className="px-2 pb-1">
-          <SearchInput
-            className="w-full"
-            placeholder={t('pages.membersPage.search_members')}
-            value={filter}
-            onChange={(e) => setFilter(e.target.value)}
-            data-testid="member-search"
-          />
-        </div>
-        {/* Filter chips: star toggle first, then origin. Pressed state is
-            aria-pressed so the filter reads to AT as a toggle, not a link. */}
-        <div className="px-2 pb-2 flex flex-wrap items-center gap-1" data-testid="member-filters">
-          <button
-            type="button"
-            onClick={toggleStarredOnly}
-            aria-pressed={starredOnly}
-            className={`inline-flex items-center gap-1 h-6 px-2 rounded-full text-[11px] border transition-colors ${
-              starredOnly
-                ? 'border-accent text-accent bg-accent-subtle'
-                : 'border-border text-muted hover:text-text hover:bg-bg-hover'
-            }`}
-            title={t('pages.membersPage.filter_starred_description')}
-            data-testid="member-filter-starred"
-          >
-            <Star
-              size={11}
-              className="lucide-inline"
-              {...(starredOnly ? { fill: 'var(--accent)', stroke: 'none' } : {})}
+        {/* The Sessions sidebar's search row (components/SearchFilterBar): the
+            same field, clear button and inline sort/filter menu. The menu holds
+            what the sidebar's holds for sessions, in the roster's terms — a
+            star toggle, the member's live state, its origin, and the sort.
+            Menu rows keep the menu open (preventDefault) so several can be
+            toggled in one visit, as the sidebar's do. */}
+        <SearchFilterBar
+          className="px-2 pb-1"
+          placeholder={t('pages.membersPage.search_members')}
+          clearLabel={t('pages.chatSidebar.clear_search')}
+          value={filter}
+          onChange={setFilter}
+          inputTestId="member-search"
+          trailing={(
+            <DropdownMenu open={filterMenuOpen} onOpenChange={setFilterMenuOpen}>
+              <DropdownMenuTrigger asChild>
+                {/* Badge = unread count, the same meaning the sidebar's
+                    trigger badge carries, so one learned reading serves both. */}
+                <FilterMenuButton
+                  title={t('pages.membersPage.sort_filter_members')}
+                  badge={filterCounts.status.unread}
+                  testId="member-filter-menu"
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className={FILTER_MENU_CONTENT_CLS} data-testid="member-filters">
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{t('pages.chatSidebar.filter')}</DropdownMenuLabel>
+                <DropdownMenuItem
+                  onSelect={(e) => { e.preventDefault(); toggleStarredOnly() }}
+                  role="menuitemcheckbox"
+                  aria-checked={starredOnly}
+                  title={t('pages.membersPage.filter_starred_description')}
+                  data-testid="member-filter-starred"
+                >
+                  <Star size={12} className={starredOnly ? 'text-accent' : 'text-muted'} {...(starredOnly ? { fill: 'var(--accent)', stroke: 'none' } : {})} />
+                  <span className="flex-1 truncate">{t('pages.membersPage.filter_starred')}</span>
+                  {/* Every filter row shows its count the same way, 0 included:
+                      a zero-count row is exactly the one that blanks the list
+                      when chosen, whichever section it sits in. */}
+                  <span className="text-muted text-[11px] shrink-0">{filterCounts.starred}</span>
+                  {starredOnly && <Check size={14} className="text-accent shrink-0" />}
+                </DropdownMenuItem>
+                {STATUS_FILTERS.map((key) => {
+                  const active = statusFilter.has(key)
+                  return (
+                    <DropdownMenuItem
+                      key={key}
+                      onSelect={(e) => { e.preventDefault(); toggleStatus(key) }}
+                      role="menuitemcheckbox"
+                      aria-checked={active}
+                      title={t(STATUS_TITLE_KEY[key])}
+                      data-testid={`member-filter-status-${key}`}
+                    >
+                      {STATUS_ICON[key](active)}
+                      <span className="flex-1 truncate">{t(STATUS_LABEL_KEY[key])}</span>
+                      <span className="text-muted text-[11px] shrink-0">{filterCounts.status[key]}</span>
+                      {active && <Check size={14} className="text-accent shrink-0" />}
+                    </DropdownMenuItem>
+                  )
+                })}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{t('pages.membersPage.filter_origin')}</DropdownMenuLabel>
+                {SOURCE_FILTERS.map((key) => {
+                  const active = sourceFilter === key
+                  return (
+                    <DropdownMenuItem
+                      key={key}
+                      onSelect={(e) => { e.preventDefault(); pickSource(key) }}
+                      role="menuitemradio"
+                      aria-checked={active}
+                      title={t(SOURCE_TITLE_KEY[key])}
+                      data-testid={`member-filter-source-${key}`}
+                    >
+                      <span className="flex-1 truncate">{t(SOURCE_LABEL_KEY[key])}</span>
+                      {/* 0 is rendered, not omitted: a zero-count origin is
+                          exactly the one that blanks the list when chosen. */}
+                      <span className="text-muted text-[11px] shrink-0">{filterCounts.source[key]}</span>
+                      {active && <Check size={14} className="text-accent shrink-0" />}
+                    </DropdownMenuItem>
+                  )
+                })}
+                <DropdownMenuSeparator />
+                <DropdownMenuLabel className={FILTER_MENU_LABEL_CLS}>{t('pages.chatSidebar.sort_by')}</DropdownMenuLabel>
+                {SORT_OPTIONS.map((key) => (
+                  <DropdownMenuItem
+                    key={key}
+                    onSelect={() => setRawSort(key)}
+                    role="menuitemradio"
+                    aria-checked={sort === key}
+                    data-testid={`member-sort-${key}`}
+                  >
+                    <span className="flex-1">{t(SORT_LABEL_KEY[key])}</span>
+                    {sort === key && <Check size={14} className="text-accent shrink-0" />}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+        />
+        {/* The at-rest marker that the list is narrowed: ONE aggregate chip in
+            the sidebar's chip recipe (components/SearchFilterBar), naming every
+            active filter, so a returning user sees WHY the roster is short and
+            clears the lot with one click instead of reopening the menu. One
+            control, not one per filter — up to six sibling buttons would break
+            AUTOSDE max-two-buttons-per-row — and in the NEUTRAL aggregate shape
+            the sidebar's tag filter uses for "clears several": a coloured pill
+            means "clears this one filter" on both lists, a neutral pill means
+            "clears them all". The search text is not in it: it is visible in
+            the field, with its own clear button. */}
+        {narrowed && (
+          <div className={FILTER_CHIP_ROW_CLS} data-testid="member-filter-chips">
+            {/* The visible text IS the outcome of the click — "Clear Starred (2),
+                Mine (6) filter" — the same sentence the accessible name carries,
+                so a reader never has to guess whether the one ✕ drops one filter
+                or all of them. One existing key, one {{var}}: no glued strings. */}
+            <FilterChip
+              aggregate
+              label={t('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeFilterLabels, { type: 'unit', style: 'short' }) })}
+              clearLabel={t('pages.chatSidebar.clear_named_filter', { filter: fmtList(activeFilterNames) })}
+              onClear={clearFilters}
+              testId="member-filter-chip"
             />
-            {t('pages.membersPage.filter_starred')}
-            {starredCount > 0 && <span className="opacity-70">{starredCount}</span>}
-          </button>
-          {SOURCE_CHIPS.map((chip) => (
-            <button
-              key={chip}
-              type="button"
-              onClick={() => pickSource(chip)}
-              aria-pressed={sourceFilter === chip}
-              className={`inline-flex items-center gap-1 h-6 px-2 rounded-full text-[11px] border transition-colors ${
-                sourceFilter === chip
-                  ? 'border-accent text-accent bg-accent-subtle'
-                  : 'border-border text-muted hover:text-text hover:bg-bg-hover'
-              }`}
-              title={t(SOURCE_CHIP_TITLE_KEY[chip])}
-              data-testid={`member-filter-source-${chip}`}
-            >
-              {t(SOURCE_CHIP_LABEL_KEY[chip])}
-              <span className="opacity-70">{sourceCounts[chip]}</span>
-            </button>
-          ))}
-        </div>
+          </div>
+        )}
         {/* Star-write failure. Falsy message renders nothing. askAgent is ON:
             the roster holds no unsaved draft, so the hand-off's navigation
             destroys nothing (AUTOSDE errors-use-error-notice). */}
@@ -1333,7 +1809,7 @@ export default function MembersPage() {
           </div>
         )}
         <ul
-          className="flex-1 overflow-y-auto scrollbar-none list-none m-0 px-2 pb-2"
+          className={`${LIST_BODY_CLS} list-none m-0`}
           style={{ scrollbarWidth: 'none' }}
           aria-label={t('pages.membersPage.title')}
         >
@@ -1370,10 +1846,7 @@ export default function MembersPage() {
               <p>{t('pages.membersPage.filters_hide_all')}</p>
               <button
                 type="button"
-                onClick={() => {
-                  if (starredOnly) toggleStarredOnly()
-                  if (sourceFilter !== 'all') pickSource(sourceFilter)
-                }}
+                onClick={clearFilters}
                 className="mt-2 inline-flex items-center gap-1 text-[11.5px] px-2 py-1 rounded border border-border hover:bg-accent/40"
                 data-testid="member-filters-clear"
               >
@@ -1383,12 +1856,14 @@ export default function MembersPage() {
           )}
           {sortedMembers.map((m) => (
             <li key={m.name} className="group/row relative">
-              {/* Same rounded-row idiom as ChatSidebar's session rows, so the
-                  two conversation lists read as one family. The star is a
-                  SIBLING of the row button, not a child: a button inside a
-                  button is invalid HTML and breaks keyboard activation. It is
-                  absolutely placed over the row's right padding so the row
-                  keeps its single click target and the label its width. */}
+              {/* ChatSidebar's own row recipe (components/listShell), so the
+                  two conversation lists read as one family; pr-8 widens the
+                  right padding over ROW_BOX_CLS's pr-3 to hold the star. The
+                  star is a SIBLING of the row button, not a child: a button
+                  inside a button is invalid HTML and breaks keyboard
+                  activation. It is absolutely placed over the row's right
+                  padding so the row keeps its single click target and the
+                  label its width. */}
               <button
                 onClick={() => openMember(m)}
                 // The open row keeps itself in view: a member opened by URL
@@ -1396,11 +1871,11 @@ export default function MembersPage() {
                 // below the fold of a long roster, and a thread with no visible
                 // row looks like a member that was never added (#9513).
                 ref={m.name === activeName ? scrollActiveRowIntoView : undefined}
-                className={`w-full flex items-center gap-2.5 pl-2.5 pr-8 py-2 rounded-md text-left transition-all select-none ${
-                  m.name === activeName
-                    ? 'text-text-strong bg-accent-subtle'
-                    : 'text-muted hover:text-text hover:bg-bg-hover'
-                }`}
+                className={cn(
+                  'w-full flex items-center gap-2.5 text-sm text-left transition-all select-none',
+                  ROW_BOX_CLS, 'pr-8',
+                  m.name === activeName ? ROW_ACTIVE_CLS : ROW_IDLE_CLS,
+                )}
                 aria-current={m.name === activeName ? 'true' : undefined}
               >
                 <span className="relative shrink-0">
@@ -1477,12 +1952,31 @@ export default function MembersPage() {
                   </AnimatePresence>
                 </span>
                 <span className="min-w-0 flex-1">
-                  <span className="block text-[13px] font-medium truncate">{m.name}</span>
+                  <span className={`block ${ROW_TITLE_CLS} font-semibold text-text truncate`}>{m.name}</span>
                   {/* Last-message preview, like a session row — presence
                       already rides the avatar dot, so a textual Idle/Working
-                      label said nothing the dot did not. */}
-                  <span className="block text-[11px] text-muted truncate">
-                    {m.last_message || '\u00a0'}
+                      label says nothing the dot does not. A "Stopped" chip
+                      leads the preview when the thread's NEWEST event is a
+                      Stop press: the server skips the stop card's JSON, so the
+                      preview is the last conversational line, which reads as
+                      ongoing work on a thread the user has stopped — the chip
+                      is the honest marker over it. It is localized HERE, not
+                      sent as a word from the server, whose preview is computed
+                      without the client's locale. The chip is `shrink-0` so
+                      the preview, not the label, is what truncates. The server
+                      flag is false once a newer real message lands, so the chip
+                      cannot outlive the stop. */}
+                  <span className={`flex items-center gap-1 ${ROW_STATUS_CLS} text-muted min-w-0`}>
+                    {m.last_message_stopped && (
+                      <span
+                        className="inline-flex items-center gap-0.5 shrink-0 font-medium text-danger"
+                        data-testid="member-stopped-indicator"
+                      >
+                        <Square size={9} fill="currentColor" className="lucide-inline" aria-hidden="true" />
+                        {t('pages.membersPage.stopped_indicator')}
+                      </span>
+                    )}
+                    <span className="block truncate min-w-0">{m.last_message || '\u00a0'}</span>
                   </span>
                 </span>
                 {/* Unread marker on the row's right edge — the IM convention
@@ -1533,20 +2027,24 @@ export default function MembersPage() {
             </li>
           ))}
         </ul>
+        {/* Window-splitter between roster and thread: the same component as the
+            Sessions sidebar's grip, sitting on the card's right border the same
+            way (absolute, 12px rounded-xl corner inset), so the two pages' edges
+            read as one control. md+ only — below md the page is single-pane and
+            there is nothing to resize. */}
+        <div className="hidden md:block" data-testid="member-roster-resize">
+          <ResizeHandle
+            handleProps={roster.handleProps}
+            label={t('pages.membersPage.resize_roster')}
+            onNudge={roster.nudge}
+            value={roster.width}
+            min={ROSTER_MIN}
+            max={ROSTER_MAX}
+            inset={12}
+            className="absolute top-0 -right-[3px] h-full z-10"
+          />
+        </div>
       </aside>
-
-      {/* Shared window-splitter between roster and thread: keyboard-operable,
-          md+ only (below md the page is single-pane, nothing to resize). */}
-      <div className="hidden md:flex" data-testid="member-roster-resize">
-        <ResizeHandle
-          handleProps={roster.handleProps}
-          label={t('pages.membersPage.title')}
-          onNudge={roster.nudge}
-          value={roster.width}
-          min={ROSTER_MIN}
-          max={ROSTER_MAX}
-        />
-      </div>
 
       {/* DM thread */}
       <section
@@ -1696,10 +2194,26 @@ export default function MembersPage() {
                       ? 'pages.membersPage.thread_repair_failed'
                       : 'pages.membersPage.thread_open_failed',
                   )}
+                  report={threadOutcome?.errorReport}
                   variant="inline"
                   askAgent={!activeSlot}
                   testId="member-thread-error"
                 />
+                {threadOutcome?.errorReport && (
+                  <details className="mt-1.5 text-[12px] text-muted" data-testid="member-thread-error-details">
+                    <summary className="w-fit cursor-pointer rounded-sm focus-ring">{t('pages.membersPage.details')}</summary>
+                    {/* No hand-off here: the notice above owns the sole action
+                        and disables it while the cached conversation holds a draft. */}
+                    <ErrorNotice
+                      message={threadOutcome.errorReport.message}
+                      report={threadOutcome.errorReport}
+                      variant="inline"
+                      askAgent={false}
+                      className="mt-1"
+                      messageClassName="whitespace-pre-wrap"
+                    />
+                  </details>
+                )}
               </div>
             )}
             {activeSlot ? (
@@ -1753,6 +2267,8 @@ export default function MembersPage() {
           narrow ones make it an overlay the header button opens, with the
           panel's own close control, on the chat page's dock motion. */}
       {active && (() => {
+          const activeLiveSlot = liveSlots.find((slot) => slot.key === slotKeyOf(active))
+          const delegatedOnly = activeLiveSlot?.subagents_running && !activeLiveSlot.running
           const summaryBody = (
             <div className="px-3 py-3" data-testid="member-crew-summary" aria-label={t('pages.membersPage.crew_summary')}>
           {/* Identity + live status line — working now, or the last time
@@ -1763,7 +2279,9 @@ export default function MembersPage() {
             <span className="text-[13px] font-semibold truncate">{active.name}</span>
             <span className="text-[11px] truncate ml-auto shrink-0" data-testid="member-summary-status">
               {isRunning(active) ? (
-                <span className="text-ok">{t('pages.membersPage.drawer_working')}</span>
+                <span className="text-ok">{t(delegatedOnly
+                  ? 'pages.membersPage.drawer_delegated_working'
+                  : 'pages.membersPage.drawer_working')}</span>
               ) : active.last_active_ts ? (
                 <span className="text-muted">{timeAgo(active.last_active_ts)}</span>
               ) : null}
@@ -2145,10 +2663,37 @@ export default function MembersPage() {
               )}
             </div>
           )}
-          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5 flex items-center">
+          <div className="text-[11px] font-semibold tracking-wide text-muted mb-1.5 flex items-center gap-1">
             <span className="flex-1">{t('pages.membersPage.wake_sources')}</span>
-            {/* Read-only view; managing schedules stays on the Schedule page
-                (same jump idiom as the crew editor's wake pane). */}
+            {/* The one write this block offers: a new schedule bound to THIS
+                member, so the common case does not require finding the member
+                again on another page. Editing an existing one still lives on
+                the Schedule page (the jump beside it), which is where a job's
+                logs, secrets and delete already are.
+
+                LABELLED, unlike its neighbour, because the two do different
+                things — create here vs leave the page — and two bare 12px icons
+                side by side are told apart only by their tooltips. The words
+                also carry the sibling crew editor's own idiom (`<Plus/>` plus
+                "New schedule") onto this surface.
+
+                WITHHELD while the list is empty: the empty state offers the same
+                action in words, and two copies of one action at the same moment
+                is a reader pausing to work out whether they differ. The empty
+                state's is the one that survives, because that is where a reader
+                who has never made a schedule is looking. */}
+            {(wakeJobs.length > 0 || wakeHooks.length > 0 || patrolState === 'active') && (
+              <button
+                onClick={() => openSchedFor(active.name)}
+                className="inline-flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent/40 text-muted hover:text-text"
+                data-testid="member-wake-create"
+              >
+                <Plus size={12} className="lucide-inline" aria-hidden="true" />
+                <span className="text-[10.5px] font-normal">{t('pages.membersPage.new_schedule')}</span>
+              </button>
+            )}
+            {/* Managing an existing schedule stays on the Schedule page (same
+                jump idiom as the crew editor's wake pane). */}
             <button
               onClick={() => navigate('/schedule')}
               className="inline-flex items-center p-0.5 rounded hover:bg-accent/40 text-muted hover:text-text"
@@ -2159,6 +2704,66 @@ export default function MembersPage() {
               <ExternalLink size={12} className="lucide-inline" />
             </button>
           </div>
+          {/* A create whose dialog was dismissed mid-flight and then FAILED. The
+              footer had told the user it might still be created, so its failure
+              has to land somewhere; the block that would have listed it is the
+              honest place. Shown ONLY under the member it belongs to, and naming
+              them and the schedule, so switching members cannot make one
+              member's failure read as another's, and two failures under one
+              member read as two schedules. Dismissible, because it reports a
+              past event rather than a current state. What else it carries
+              depends on whether the server ANSWERED: a create that reached the
+              server and was refused is exactly the case where the reason ("cron
+              store is read-only", a validation refusal) is worth showing and
+              handing to the agent — unlike the sibling read errors, the user
+              cannot retry their way to an explanation. A request that got no
+              answer has no server words to show, only a transport failure
+              ("Failed to fetch") that explains nothing the sentence does not,
+              so it renders the sentence alone. */}
+          {schedErrorList?.map((schedError) => (
+            <div className="mb-4" key={schedError.id}>
+              <ErrorNotice
+                /* BLOCK, not inline: this notice carries a title, the server's
+                   reason, a hand-off and a dismiss, and the inline row squeezed
+                   all four into a 432px panel — the title wrapped to three lines
+                   with the reason crushed beside it. Stacked, each part gets its
+                   own line. */
+                variant="block"
+                testId="member-schedule-late-error"
+                /* CONFIRMED: the RAW server error is the `message`, and the
+                   context goes in the `title`. `askAgent` recovers structured
+                   context (endpoint, status, backend `code`) by matching that
+                   string against the error journal, so wrapping it in a
+                   translated sentence — as an earlier revision did — silently
+                   degraded the hand-off to prose. Splitting them also reads
+                   better: the outcome is the heading and the server's own words
+                   sit under it.
+
+                   UNCONFIRMED: the sentence IS the whole report, so it takes the
+                   one slot `ErrorNotice` requires. No `title` above it — that
+                   split exists to set a heading apart from raw server words, and
+                   there are none worth showing. No `askAgent` — the hand-off's
+                   journal match is keyed on a server reason, and a request that
+                   never got one has nothing for the agent to look up. */
+                askAgent={schedError.confirmed}
+                title={schedError.confirmed
+                  ? t('pages.membersPage.schedule_create_failed', { member: activeMemberName, job: schedError.job })
+                  : undefined}
+                message={schedError.confirmed
+                  ? schedError.message
+                  : t('pages.membersPage.schedule_create_no_answer', { member: activeMemberName, job: schedError.job })}
+                onDismiss={() => setSchedErrors((prev) => {
+                  // Only this entry: a sibling failure is its own past event,
+                  // and dismissing one report must not silence another.
+                  const kept = (prev[activeMemberName] ?? []).filter((e) => e.id !== schedError.id)
+                  const next = { ...prev }
+                  if (kept.length === 0) delete next[activeMemberName]
+                  else next[activeMemberName] = kept
+                  return next
+                })}
+              />
+            </div>
+          ))}
           {!wakeLoaded ? (
             <div className="mb-4 space-y-1.5" data-testid="member-wake-loading" aria-hidden>
               <div className="h-3 rounded bg-accent/40 animate-pulse" />
@@ -2173,7 +2778,20 @@ export default function MembersPage() {
               />
             </div>
           ) : wakeJobs.length === 0 && wakeHooks.length === 0 && patrolState !== 'active' ? (
-            <div className="text-[11px] text-muted mb-4">{t('pages.membersPage.wake_none')}</div>
+            <div className="text-[11px] text-muted mb-4">
+              {t('pages.membersPage.wake_none')}{' '}
+              {/* The header's 12px icon is the wrong place to LEARN this exists,
+                  and an empty state is exactly where a reader is asking "so how
+                  do I add one?" — so the empty case carries the action in
+                  words, the way the crew editor's own pane labels its Plus. */}
+              <button
+                onClick={() => openSchedFor(active.name)}
+                className="underline decoration-dotted underline-offset-2 hover:text-text"
+                data-testid="member-wake-create-empty"
+              >
+                {t('pages.membersPage.new_schedule')}
+              </button>
+            </div>
           ) : (
             <ul className="list-none m-0 p-0 mb-4 space-y-1.5" data-testid="member-wake-sources">
               {/* An active patrol IS a wake source — the one this member set
@@ -2239,18 +2857,30 @@ export default function MembersPage() {
               <dd className="min-w-0 truncate">{String(active.memory_store ?? '')}</dd>
             </div>
           </dl>
-          {/* Honest disclosure, always rendered, worded for this member's store.
-              Only the markdown layer (preferences, project notes) is read from a
-              named memory_store; conversation memory and lessons live in the
-              one global vector store every member reads, so "what you tell it
-              is known to all of them" stays true on a dedicated store too.
-              Store identity is a config fact — never inferred from the roster. */}
-          <div className="mt-3 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
-            {String(active.memory_store || 'default') === 'default'
-              ? t('pages.membersPage.memory_shared_note')
-              : t('pages.membersPage.memory_dedicated_note', {
-                  store: String(active.memory_store),
-                })}
+          <div className="mt-3 flex flex-col gap-2 text-[11px] text-muted border border-border rounded-md px-2.5 py-2">
+            <span>
+              {activeMemory === 'global'
+                ? t('pages.kiroCrewAgentsPage.global_memory_v1')
+                : activeMemory === 'private'
+                  ? t('pages.kiroCrewAgentsPage.private_memory_owned')
+                  : activeMemory === 'legacy'
+                    ? t('pages.kiroCrewAgentsPage.private_memory_legacy')
+                    : activeMemory === 'ownership_mismatch'
+                      ? t('pages.kiroCrewAgentsPage.memory_binding_mismatch')
+                      : t('pages.kiroCrewAgentsPage.memory_binding_unavailable')}
+            </span>
+            <Btn onClick={() => {
+              const destination = activeMemory === 'global' || activeMemory === 'private'
+                ? `/settings/overview?view=memory&store=${encodeURIComponent(active.name === 'default' ? 'default' : String(active.memory_store))}`
+                : `${CREW_MANAGER_PATH}&crew=${encodeURIComponent(active.name)}`
+              leave(() => navigate(destination), destination)
+            }}>
+              {activeMemory === 'global' || activeMemory === 'private'
+                ? t('pages.kiroCrewAgentsPage.manage_private_memory')
+                : activeMemory === 'legacy'
+                  ? t('pages.membersPage.setup_in_crew_manager')
+                  : t('pages.kiroCrewAgentsPage.open_crew_manager')}
+            </Btn>
           </div>
           {/* One exit, into the crew manager (the only writer), landing on
               THIS member's editor — the same destination as the header face,
@@ -2352,10 +2982,10 @@ export default function MembersPage() {
                     ? 'h-full overflow-visible flex justify-end shrink-0'
                     /* The overlay MUST be dismissable, so it is the one placement
                        that hands the panel an onClose — and the scrim is a second
-                       dismiss, the drawer convention. On a phone the panel's
-                       mobile `100%` width fills the scrim; on a tablet-width
-                       window the panel keeps its own (resizable, persisted)
-                       width against the dimmed chat. */
+                       dismiss, the drawer convention. On a phone the panel is
+                       handed the window width (`fillWidth`) so it fills the
+                       scrim; on a tablet-width window the panel keeps its own
+                       (resizable, persisted) width against the dimmed chat. */
                     : 'fixed top-safe-offset-[42px] bottom-safe left-safe right-safe z-40 flex justify-end bg-bg/60 backdrop-blur-sm'}
                   style={panelHidden ? { display: 'none' } : undefined}
                   onClick={beside ? undefined : (e) => { if (e.target === e.currentTarget) closeOverlay() }}
@@ -2381,6 +3011,10 @@ export default function MembersPage() {
                          covers the thread, so nothing to reserve. */
                       onClose={beside ? undefined : closeOverlay}
                       extraReserveW={beside ? roster.width + PANEL_GAPS_W : 0}
+                      /* Phone only (see panelFillWidth): the overlay fills the
+                         window. Off the phone this is undefined and the panel
+                         sizes itself. */
+                      fillWidth={panelFillWidth}
                     />
                   </motion.div>
                 </motion.div>
@@ -2388,6 +3022,98 @@ export default function MembersPage() {
             </AnimatePresence>
           )
         })()}
+      {/* Page root, not inside the summary body: the panel unmounts on a tab
+          switch and would take a half-typed schedule with it. */}
+      <Dialog
+        open={!!schedFor}
+        /* Every way out funnels through one rule (`closeSchedDialog`): Escape, a
+           click outside, the built-in close control and the footer button alike.
+           Nothing is ever REFUSED here — a POST cannot be un-sent, so the dialog
+           says so instead of pretending to cancel — but a dismissal that would
+           destroy typed work asks first. */
+        onOpenChange={next => { if (!next) closeSchedDialog() }}
+      >
+        {!!schedFor && (() => {
+          // Captured once per open. Every callback this dialog hands out is
+          // stamped with it, so a create that outlives the dialog can be told
+          // from the live one when it finally answers.
+          const gen = schedGen.current
+          return (
+            <MemberScheduleDialog
+              key={`${schedFor}#${gen}`}
+              member={schedFor}
+              /* Undefined while the roster is refetching — the form then offers
+                 the global model list rather than that template's, which is a
+                 narrower field, never a wrong binding: `member` is what the job
+                 is filed under. */
+              agentTemplate={schedMember?.kiro_agent}
+              saving={schedSaving}
+              onSavingChange={(v) => { if (gen === schedGen.current) setSchedSaving(v) }}
+              onDirtyChange={(d) => { if (gen === schedGen.current) setSchedDirty(d) }}
+              /* Reported only for a dialog that is GONE: a live form renders its
+                 own error inline, and duplicating it in the block below would
+                 say the same thing twice. */
+              /* Reported in the member's own Wake sources block — the place the
+                 promise was made. It is NOT also pushed to the bell feed: that
+                 row is client-only, and `fetchNotifications.fulfilled` replaces
+                 `state.items` wholesale on every reconnect, so it would vanish
+                 on the next socket blip while claiming to be the durable copy.
+                 A report that survives leaving the page needs the SERVER to
+                 emit it; until then this page does not pretend otherwise, and
+                 the limitation is stated in the PR description and #10307. */
+              onSubmitError={(msg, confirmed, job) => {
+                if (gen === schedGen.current) return
+                setSchedErrors((prev) => ({
+                  ...prev,
+                  // Appended, never assigned: a second dismissed create for the
+                  // SAME member can fail while the first's notice still stands,
+                  // and overwriting would silently lose one verdict.
+                  [schedFor]: [...(prev[schedFor] ?? []), { id: ++schedErrSeq.current, message: msg, confirmed, job }],
+                }))
+              }}
+              onClose={closeSchedDialog}
+              onSaved={() => {
+                // ALWAYS, whichever generation reports it: the schedule really
+                // was created, so the shared job-list key must refresh — the
+                // wake block, the composer's watch popover and the Schedule
+                // page all read it.
+                queryClient.invalidateQueries({ queryKey: cronJobsQuery.queryKey })
+                // Dialog state, only for the dialog still on screen. A create
+                // the user closed out from under keeps running, and its late
+                // success used to close whatever dialog had replaced it and
+                // discard that draft.
+                if (gen === schedGen.current) { setSchedSaving(false); closeSchedNow() }
+              }}
+            />
+          )
+        })()}
+      </Dialog>
+      {/* Nested over the schedule dialog, so `z-[110]` clears its `z-[101]` —
+          the same stacking the Schedule page's delete confirm uses. Only ever
+          armed for a DIRTY form, and the destructive choice is the one that
+          needs the deliberate click. */}
+      <Dialog open={schedConfirmDiscard} onOpenChange={next => { if (!next) setSchedConfirmDiscard(false) }}>
+        <DialogContent maxWidth={380} className="z-[110]">
+          <DialogHeader>
+            <DialogTitle>{t('pages.membersPage.discard_schedule')}</DialogTitle>
+          </DialogHeader>
+          <DialogBody>
+            <p className="text-[12.5px] text-muted">{t('pages.membersPage.discard_schedule_body')}</p>
+          </DialogBody>
+          <DialogFooter>
+            <Btn onClick={() => setSchedConfirmDiscard(false)}>
+              {t('pages.membersPage.keep_editing')}
+            </Btn>
+            <Btn
+              danger
+              data-testid="member-schedule-discard"
+              onClick={() => { setSchedConfirmDiscard(false); closeSchedNow() }}
+            >
+              {t('pages.membersPage.discard')}
+            </Btn>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }

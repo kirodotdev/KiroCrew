@@ -37,12 +37,13 @@ from kiro_crew import platform_compat
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import CRED_WEIXIN_TOKEN, KiroCrewConfig, config_path, env_path
 from kiro_crew.dashboard.channel_folders import (
-    LIVE_RELOAD_FIELDS,
+    channel_restart_required,
     clean_session_folder,
     ensure_channel_folder,
     stored_folder_name,
 )
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
+from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 from kiro_crew.dashboard.handlers.messaging import is_direct_local_request
 from kiro_crew.weixin.client import ILINK_BASE_URL, WeixinClient
 
@@ -482,12 +483,16 @@ async def weixin_config_save(request: web.Request) -> web.Response:
                     relabel="session_folder" in body,
                 )
 
-    # Every weixin field is read once in the orchestrator's constructor —
-    # except session_folder, which the channel-slot reconciler re-reads live, so
-    # a save that only changes it does not ask the user to restart.
+    # Answer only after the watcher applied the write: this save carries the
+    # allow-list, so a removed sender must be unauthorized on the running
+    # transport before the caller sees "saved", not one poll interval later.
+    await _hot_apply_after_write()
+    # Per field: session_folder is re-read live by the channel-slot reconciler,
+    # and the connection fields (token, account_id, base_url, enabled) are what a
+    # restart is actually for.
     return web.json_response(
         {
             "ok": True,
-            "restart_required": bool(set(body) - LIVE_RELOAD_FIELDS),
+            "restart_required": channel_restart_required("weixin", body.keys()),
         }
     )

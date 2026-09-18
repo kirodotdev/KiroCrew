@@ -410,6 +410,10 @@ function createIpcRegistrar({
     // this bridge never exposes a raw CDP method to the renderer.
     ipcMain.handle("browser:control", (event, panelId, op, args) =>
       windows.browser.control(event.sender, panelId, op, args));
+    // Element annotation on the native page (human-initiated; closed op set,
+    // not a control op -- it takes no agent ownership of the view).
+    ipcMain.handle("browser:annotate", (event, panelId, op, args) =>
+      windows.browser.annotate(event.sender, panelId, op, args));
 
     ipcMain.on("mic:denied", () => windows.security.micDenied());
 

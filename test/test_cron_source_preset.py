@@ -22,8 +22,6 @@ import pytest
 
 from kiro_crew.cron import CronJob, CronService
 
-pytestmark = pytest.mark.asyncio
-
 
 @pytest.fixture(autouse=True)
 def _isolate_cron_store(monkeypatch, tmp_path):
@@ -118,9 +116,19 @@ class TestFields:
         assert loaded.source_template_prompt == ""
 
 
+@pytest.mark.asyncio
 class TestAddJobAsync:
     """The dashboard create path (add_job_async) stamps both fields, fully-formed
-    on the first save."""
+    on the first save.
+
+    The asyncio marker is scoped to this class, not the module: it is the only
+    class here whose tests are `async def`. A module-level `pytestmark` reaches
+    the plain `def` tests in TestFields/TestNotUpdatable too, and in strict mode
+    pytest-asyncio then builds and closes a throwaway event loop for each of them
+    and emits a "marked with '@pytest.mark.asyncio' but it is not an async
+    function" PytestWarning -- which also makes a sync test indistinguishable
+    from an async one when reading the file, and would go red the day the suite
+    runs under -W error."""
 
     async def test_async_create_stamps_both_and_persists(self, tmp_path):
         svc = CronService()

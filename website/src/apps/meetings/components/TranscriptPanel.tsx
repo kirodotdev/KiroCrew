@@ -71,6 +71,9 @@ interface Props {
   partial?: string
   primary?: boolean
   status?: MeetingStatus
+  /** True while a resume request is in flight, so the empty hint stops
+   *  claiming the meeting is paused beside a Resuming badge. */
+  resuming?: boolean
   full?: boolean
 }
 
@@ -121,6 +124,7 @@ export default function TranscriptPanel({
   partial = '',
   primary = false,
   status = 'active',
+  resuming = false,
   full = false,
 }: Props) {
   const scrollerRef = useRef<HTMLDivElement | null>(null)
@@ -157,7 +161,17 @@ export default function TranscriptPanel({
     setFollowing(distance <= FOLLOW_THRESHOLD_PX)
   }
 
-  const liveEmptyState = status === 'active' && !full
+  // Each in-flight state names its own empty hint: "No transcript was
+  // recorded" under a Paused badge reads as pause having discarded the
+  // recording, and the live "as the meeting continues" promise is false
+  // while ingress is closed.
+  const emptyHintKey = full
+    ? 'apps.meetings.transcript.emptyHintRecorded'
+    : status === 'active' || resuming
+      ? 'apps.meetings.transcript.emptyHintLive'
+      : status === 'paused'
+        ? 'apps.meetings.transcript.emptyHintPaused'
+        : 'apps.meetings.transcript.emptyHintRecorded'
 
   return (
     <section
@@ -202,11 +216,7 @@ export default function TranscriptPanel({
             {i18nT('apps.meetings.transcript.empty')}
           </p>
           <p className="text-[13px] text-muted mt-1 max-w-sm">
-            {i18nT(
-              liveEmptyState
-                ? 'apps.meetings.transcript.emptyHintLive'
-                : 'apps.meetings.transcript.emptyHintRecorded',
-            )}
+            {i18nT(emptyHintKey)}
           </p>
         </div>
       ) : virtualized ? (

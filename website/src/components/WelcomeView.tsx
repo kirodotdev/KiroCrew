@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Droplet, EyeOff, Ghost, RefreshCw, Undo2, VenetianMask } from 'lucide-react'
+import { EyeOff, Ghost, RefreshCw, Undo2, VenetianMask } from 'lucide-react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { KiroGhost } from './KiroGhost'
 import { useTheme } from '../hooks/useTheme'
@@ -13,8 +13,6 @@ interface WelcomeViewProps {
   setInput: (v: string) => void
   memoryMode?: string
   onSwitchMode?: (mode: 'persistent' | 'incognito' | 'temporary') => void
-  cleanMode?: boolean
-  onToggleClean?: (clean: boolean) => void
 }
 
 function SuggestedPills({ setInput }: { setInput: (v: string) => void }) {
@@ -80,8 +78,6 @@ export default function WelcomeView({
   setInput,
   memoryMode,
   onSwitchMode,
-  cleanMode,
-  onToggleClean,
 }: WelcomeViewProps) {
   const [anonOpen, setAnonOpen] = useState(false)
   const anonBtnRef = useRef<HTMLButtonElement>(null)
@@ -137,32 +133,24 @@ export default function WelcomeView({
           {i18nT('components.welcomeView.try_create_a_plan_to_analyze_kirocrew_code_packa')}
         </button>
       )}
-      {(onSwitchMode || onToggleClean) && (
+      {onSwitchMode && (
         <>
           {(() => {
-            // Clean supersedes the memory mode, so it counts as "ephemeral" for
-            // the trigger: an active clean OR a non-persistent memory mode means
-            // we're in some ephemeral state and the button offers to go back.
-            const ephemeralActive = cleanMode || currentMode !== 'persistent'
+            // A non-persistent memory mode is the ephemeral state; the trigger
+            // then offers the way back instead of the chooser.
+            const ephemeralActive = currentMode !== 'persistent'
             const modeActionLabel = !ephemeralActive
               ? i18nT('components.welcomeView.choose_memory_mode')
-              : cleanMode
-                ? i18nT('components.welcomeView.switch_to_persistent_mode')
-                : currentMode === 'incognito'
-                  ? i18nT('components.welcomeView.incognito_active_switch_to_persistent')
-                  : i18nT('components.welcomeView.temporary_active_switch_to_persistent')
+              : currentMode === 'incognito'
+                ? i18nT('components.welcomeView.incognito_active_switch_to_persistent')
+                : i18nT('components.welcomeView.temporary_active_switch_to_persistent')
             return (
               <button
                 ref={anonBtnRef}
                 className="flex items-center gap-1.5 text-[12px] text-muted hover:text-warn transition-colors"
                 onClick={() => {
                   if (!ephemeralActive) setAnonOpen(!anonOpen)
-                  // Returning to default must fire exactly ONE recreation. Both
-                  // handlers do create-first-then-delete, so calling both leaks a
-                  // slot (two creates, one delete). Clean supersedes the memory
-                  // mode, so clear clean if it's on; otherwise reset memory mode.
-                  else if (cleanMode) onToggleClean?.(false)
-                  else onSwitchMode?.('persistent')
+                  else onSwitchMode('persistent')
                 }}
               >
                 {!ephemeralActive ? <Ghost size={13} /> : <Undo2 size={13} />}
@@ -176,7 +164,7 @@ export default function WelcomeView({
               className="fixed z-[9999] bg-bg-elevated border border-border rounded-xl shadow-xl p-2 flex gap-2"
               style={(() => { const r = anonBtnRef.current?.getBoundingClientRect(); return { top: r ? r.bottom + 6 : '50%', left: r ? r.left + r.width / 2 : '50%', transform: 'translateX(-50%)' } })()}
             >
-              {onSwitchMode && ([
+              {([
                 { key: 'incognito' as const, Icon: EyeOff, label: i18nT('components.welcomeView.incognito'), desc: i18nT('components.welcomeView.incognito_desc'), color: 'text-warn' },
                 { key: 'temporary' as const, Icon: VenetianMask, label: i18nT('components.welcomeView.temporary'), desc: i18nT('components.welcomeView.temporary_desc'), color: 'text-aim' },
               ] as const).map(t => (
@@ -192,22 +180,6 @@ export default function WelcomeView({
                   <div className="text-[11px] text-muted leading-snug">{t.desc}</div>
                 </button>
               ))}
-              {/* Clean is a peer option in this group, but it is NOT a memory
-                  mode — it picks no memory_mode. It supersedes them entirely:
-                  the agent runs with its own identity only, no KiroCrew context
-                  or MCP servers injected. */}
-              {onToggleClean && (
-                <button
-                  className="w-[220px] p-3 rounded-lg border border-border hover:border-accent hover:bg-bg-hover transition-all text-left flex flex-col gap-1.5"
-                  onClick={() => { onToggleClean(true); setAnonOpen(false) }}
-                >
-                  <div className="flex items-center gap-1.5 text-[13px] font-semibold text-text">
-                    <Droplet size={14} className="text-accent" />
-                    <span>{i18nT('components.welcomeView.clean')}</span>
-                  </div>
-                  <div className="text-[11px] text-muted leading-snug">{i18nT('components.welcomeView.agent_only_no_kirocrew_context_or_mcp')}</div>
-                </button>
-              )}
             </div>,
             document.body
           )}

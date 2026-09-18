@@ -153,6 +153,7 @@ const renderChatPage = (initial: unknown[]) => {
       slotStatusDetail: {}, slotHasMore: false, slotOldestIndex: 0, loadingOlder: false,
       lastChunkSeq: undefined, history: [], historyHasMore: false, historyOffset: 0,
       pendingInput: null, slotContextPct: {}, voicePlaying: false, voiceAudio: null,
+      mcpApps: {},
       subagents: {}, toolLog: [], activityOpen: false, activityTab: 'tools', slotActivity: {}, slotHistory: [],
     } as never,
   })
@@ -236,5 +237,310 @@ describe('ChatPage — the virtualizer row survives steer reconciliation without
     const keys = opts.items.map((it, i) => opts.getKey(it, i))
     expect(keys.length).toBeGreaterThanOrEqual(2)
     expect(new Set(keys).size).toBe(keys.length)
+  })
+
+  it('keeps an MCP App iframe mounted when reasoning becomes the running turn lead', () => {
+    const appTool = {
+      role: 'tool', content: '🔧 Running: create_view', cls: '',
+      ts: '2026-09-15T17:56:47.149560+00:00',
+      meta: { tool_call_id: 'tc-app' },
+    }
+    const before = [
+      appTool,
+      { role: 'assistant', content: 'The app is ready while I keep working.', cls: '', ts: '2026-09-15T17:56:48.000000+00:00' },
+      { role: 'streaming', content: 'Continuing the turn.', cls: '', meta: { clientTs: 'stream-1' } },
+    ]
+    const { store, container } = renderChatPage(before)
+    act(() => {
+      store.dispatch({ type: 'chat/setSlotRunning', payload: true })
+      store.dispatch({
+        type: 'chat/sseMcpAppRender',
+        payload: {
+          session_key: 'chat-1', tool_call_id: 'tc-app',
+          server: 'excalidraw', tool: 'create_view',
+          html: '<!doctype html><html><body><canvas></canvas></body></html>',
+          csp: null, permissions: null, spool_id: 'a'.repeat(32),
+        },
+      })
+    })
+
+    const beforeRow = rowNode(container)
+    const beforeFrame = container.querySelector('iframe')
+    expect(beforeRow).toBeTruthy()
+    expect(beforeFrame).toBeTruthy()
+    ;(beforeFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState = 'kept'
+
+    act(() => {
+      store.dispatch({
+        type: 'chat/replaceMessages',
+        payload: [
+          { role: 'thinking', content: 'Checking one more thing.', cls: '', meta: { clientTs: 'msg-reasoning-burst' } },
+          ...before,
+        ],
+      })
+    })
+
+    const afterRow = rowNode(container)
+    const afterFrame = container.querySelector('iframe')
+    expect(afterRow).toBe(beforeRow)
+    expect(afterFrame).toBe(beforeFrame)
+    expect((afterFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept')
+  })
+
+  it('keeps an MCP App iframe mounted when prepended history collides with its former row key', () => {
+    const sameTs = '2026-09-15T17:58:00.000000+00:00'
+    const appTool = {
+      role: 'tool', content: '🔧 Running: create_view', cls: '', ts: sameTs,
+      meta: { tool_call_id: 'tc-collision-app' },
+    }
+    const liveTurn = [
+      appTool,
+      { role: 'streaming', content: 'The app turn is still running.', cls: '', meta: { clientTs: 'stream-collision-app' } },
+    ]
+    const { store, container } = renderChatPage(liveTurn)
+    act(() => {
+      store.dispatch({ type: 'chat/setSlotRunning', payload: true })
+      store.dispatch({
+        type: 'chat/sseMcpAppRender',
+        payload: {
+          session_key: 'chat-1', tool_call_id: 'tc-collision-app',
+          server: 'excalidraw', tool: 'create_view',
+          html: '<!doctype html><html><body><canvas></canvas></body></html>',
+          csp: null, permissions: null, spool_id: 'd'.repeat(32),
+        },
+      })
+    })
+
+    const beforeFrame = container.querySelector('iframe')
+    expect(beforeFrame).toBeTruthy()
+    ;(beforeFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState = 'kept-collision'
+
+    act(() => {
+      store.dispatch({
+        type: 'chat/replaceMessages',
+        payload: [
+          // This older loose row derives the app anchor's former `row-<ts>` key.
+          // `uniqueRowKeys` therefore suffixes the later app turn unless the app
+          // key belongs to a disjoint namespace.
+          { role: 'user', content: 'Older history prompt.', cls: '', ts: sameTs },
+          ...liveTurn,
+        ],
+      })
+    })
+
+    const afterFrame = container.querySelector('iframe')
+    expect(afterFrame).toBe(beforeFrame)
+    expect((afterFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-collision')
+  })
+
+  it('keeps an MCP App iframe mounted when a loose app row becomes a TurnBlock', () => {
+    const appTool = {
+      role: 'tool', content: '🔧 Running: create_view', cls: '',
+      ts: '2026-09-15T18:00:00.000000+00:00',
+      meta: { tool_call_id: 'tc-loose-app' },
+    }
+    const before = [
+      appTool,
+      { role: 'streaming', content: 'The short turn is still running.', cls: '', meta: { clientTs: 'stream-loose-app' } },
+    ]
+    const { store, container } = renderChatPage(before)
+    act(() => {
+      store.dispatch({ type: 'chat/setSlotRunning', payload: true })
+      store.dispatch({
+        type: 'chat/sseMcpAppRender',
+        payload: {
+          session_key: 'chat-1', tool_call_id: 'tc-loose-app',
+          server: 'excalidraw', tool: 'create_view',
+          html: '<!doctype html><html><body><canvas></canvas></body></html>',
+          csp: null, permissions: null, spool_id: 'c'.repeat(32),
+        },
+      })
+    })
+
+    const beforeItems = ((globalThis as Record<string, unknown>).__vcOpts as { items: Array<{ kind?: string }> }).items
+    expect(beforeItems).toHaveLength(1)
+    expect(beforeItems[0]?.kind).toBe('turn')
+    const beforeFrame = container.querySelector('iframe')
+    expect(beforeFrame).toBeTruthy()
+    ;(beforeFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState = 'kept-loose'
+
+    act(() => {
+      store.dispatch({
+        type: 'chat/replaceMessages',
+        payload: [
+          ...before,
+          { role: 'thinking', content: 'One more check.', cls: '', meta: { clientTs: 'reasoning-promotes-turn' } },
+        ],
+      })
+    })
+
+    const afterItems = ((globalThis as Record<string, unknown>).__vcOpts as { items: Array<{ kind?: string }> }).items
+    expect(afterItems).toHaveLength(1)
+    expect(afterItems[0]?.kind).toBe('turn')
+    const afterFrame = container.querySelector('iframe')
+    expect(afterFrame).toBe(beforeFrame)
+    expect((afterFrame as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-loose')
+  })
+
+  it('keeps parallel loose MCP App iframes mounted when they coalesce into one turn', () => {
+    const appA = {
+      role: 'tool', content: '🔧 Running: app_a', cls: '', ts: '2026-09-15T18:01:00.000000+00:00',
+      meta: { tool_call_id: 'tc-loose-a' },
+    }
+    const appB = {
+      role: 'tool', content: '🔧 Running: app_b', cls: '', ts: '2026-09-15T18:01:01.000000+00:00',
+      meta: { tool_call_id: 'tc-loose-b' },
+    }
+    const loose = [appA, appB]
+    const { store, container } = renderChatPage(loose)
+    act(() => {
+      store.dispatch({ type: 'chat/setSlotRunning', payload: true })
+      for (const [toolCallId, tool] of [['tc-loose-a', 'app_a'], ['tc-loose-b', 'app_b']] as const) {
+        store.dispatch({
+          type: 'chat/sseMcpAppRender',
+          payload: {
+            session_key: 'chat-1', tool_call_id: toolCallId, server: 'parallel-loose', tool,
+            html: `<!doctype html><html><body>${tool}</body></html>`,
+            csp: null, permissions: null, spool_id: toolCallId.repeat(16),
+          },
+        })
+      }
+    })
+
+    const beforeFrameA = container.querySelector('iframe[title="parallel-loose / app_a"]')
+    const beforeFrameB = container.querySelector('iframe[title="parallel-loose / app_b"]')
+    expect(beforeFrameA).toBeTruthy()
+    expect(beforeFrameB).toBeTruthy()
+    ;(beforeFrameA as HTMLIFrameElement & { __canvasState?: string }).__canvasState = 'kept-a'
+    ;(beforeFrameB as HTMLIFrameElement & { __canvasState?: string }).__canvasState = 'kept-b'
+
+    act(() => {
+      store.dispatch({
+        type: 'chat/replaceMessages',
+        payload: [
+          ...loose,
+          { role: 'thinking', content: 'Merge the parallel work.', cls: '', meta: { clientTs: 'reasoning-merges-parallel' } },
+        ],
+      })
+    })
+
+    const afterItems = ((globalThis as Record<string, unknown>).__vcOpts as { items: Array<{ kind?: string }> }).items
+    expect(afterItems).toHaveLength(1)
+    expect(afterItems[0]?.kind).toBe('turn')
+    const afterFrameA = container.querySelector('iframe[title="parallel-loose / app_a"]')
+    const afterFrameB = container.querySelector('iframe[title="parallel-loose / app_b"]')
+    expect(afterFrameA).toBe(beforeFrameA)
+    expect(afterFrameB).toBe(beforeFrameB)
+    expect((afterFrameA as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-a')
+    expect((afterFrameB as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-b')
+  })
+
+  it('keeps the first rendered app as the anchor when an earlier app payload arrives later', () => {
+    const appA = {
+      role: 'tool', content: '🔧 Running: app_a', cls: '', ts: '1',
+      meta: { tool_call_id: 'tc-a' },
+    }
+    const appB = {
+      role: 'tool', content: '🔧 Running: app_b', cls: '', ts: '2',
+      meta: { tool_call_id: 'tc-b' },
+    }
+    const messages = [
+      appA,
+      appB,
+      { role: 'streaming', content: 'Both calls are still settling.', cls: '', meta: { clientTs: 'stream-parallel' } },
+    ]
+    const { store, container } = renderChatPage(messages)
+    act(() => {
+      store.dispatch({ type: 'chat/setSlotRunning', payload: true })
+      store.dispatch({
+        type: 'chat/sseMcpAppRender',
+        payload: {
+          session_key: 'chat-1', tool_call_id: 'tc-b', server: 'parallel', tool: 'app_b',
+          html: '<!doctype html><html><body>B</body></html>',
+          csp: null, permissions: null, spool_id: 'b'.repeat(32),
+        },
+      })
+    })
+
+    const beforeRow = rowNode(container)
+    const beforeFrameB = container.querySelector('iframe[title="parallel / app_b"]')
+    expect(beforeRow).toBeTruthy()
+    expect(beforeFrameB).toBeTruthy()
+    ;(beforeFrameB as HTMLIFrameElement & { __canvasState?: string }).__canvasState = 'kept-b'
+
+    act(() => {
+      store.dispatch({
+        type: 'chat/sseMcpAppRender',
+        payload: {
+          session_key: 'chat-1', tool_call_id: 'tc-a', server: 'parallel', tool: 'app_a',
+          html: '<!doctype html><html><body>A</body></html>',
+          csp: null, permissions: null, spool_id: 'a'.repeat(32),
+        },
+      })
+    })
+
+    const afterRow = rowNode(container)
+    const afterFrameB = container.querySelector('iframe[title="parallel / app_b"]')
+    expect(afterRow).toBe(beforeRow)
+    expect(afterFrameB).toBe(beforeFrameB)
+    expect((afterFrameB as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-b')
+  })
+
+  it('keeps the surviving app iframe mounted when retention evicts the turn anchor payload', () => {
+    const appA = {
+      role: 'tool', content: '🔧 Running: app_a', cls: '', ts: '1',
+      meta: { tool_call_id: 'tc-a' },
+    }
+    const appB = {
+      role: 'tool', content: '🔧 Running: app_b', cls: '', ts: '2',
+      meta: { tool_call_id: 'tc-b' },
+    }
+    const messages = [
+      appA,
+      appB,
+      { role: 'streaming', content: 'Both apps remain in this turn.', cls: '', meta: { clientTs: 'stream-retention' } },
+    ]
+    const { store, container } = renderChatPage(messages)
+    act(() => {
+      store.dispatch({ type: 'chat/setSlotRunning', payload: true })
+      for (const [toolCallId, tool] of [['tc-a', 'app_a'], ['tc-b', 'app_b']]) {
+        store.dispatch({
+          type: 'chat/sseMcpAppRender',
+          payload: {
+            session_key: 'chat-1', tool_call_id: toolCallId, server: 'retention', tool,
+            html: `<!doctype html><html><body>${tool}</body></html>`,
+            csp: null, permissions: null, spool_id: toolCallId.repeat(16),
+          },
+        })
+      }
+    })
+
+    const beforeRow = rowNode(container)
+    const beforeFrameB = container.querySelector('iframe[title="retention / app_b"]')
+    expect(beforeRow).toBeTruthy()
+    expect(beforeFrameB).toBeTruthy()
+    ;(beforeFrameB as HTMLIFrameElement & { __canvasState?: string }).__canvasState = 'kept-b'
+
+    act(() => {
+      // Two turn payloads plus 23 later renders exceed the reducer's per-slot
+      // cap of 24 and evict tc-a through the production retention path.
+      for (let i = 0; i < 23; i++) {
+        store.dispatch({
+          type: 'chat/sseMcpAppRender',
+          payload: {
+            session_key: 'chat-1', tool_call_id: `tc-extra-${i}`, server: 'retention', tool: `extra_${i}`,
+            html: `<!doctype html><html><body>${i}</body></html>`,
+            csp: null, permissions: null, spool_id: String(i).padStart(32, '0'),
+          },
+        })
+      }
+    })
+
+    expect(Object.values(store.getState().chat.mcpApps).some(app => app.tool_call_id === 'tc-a')).toBe(false)
+    const afterRow = rowNode(container)
+    const afterFrameB = container.querySelector('iframe[title="retention / app_b"]')
+    expect(afterRow).toBe(beforeRow)
+    expect(afterFrameB).toBe(beforeFrameB)
+    expect((afterFrameB as HTMLIFrameElement & { __canvasState?: string }).__canvasState).toBe('kept-b')
   })
 })

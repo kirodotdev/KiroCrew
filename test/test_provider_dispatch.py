@@ -11,12 +11,12 @@ from kiro_crew.config.loader import DEFAULT_MODEL, KiroCrewConfig
 class TestAcpPerAgentModel:
     """A custom agent on the acp (kiro-cli) backend must run its own model.
 
-    Regression: the acp factory previously passed model=None for custom agents,
-    relying on kiro's session/set_mode to resolve the agent's model — but
-    set_mode switches the prompt/tools, not the model, so the handshake skipped
-    session/set_model and kiro fell back to its cli.json chat.defaultModel.
-    These tests exercise the REAL factory (create_provider_factory) so the model
-    actually threaded into AcpProvider is asserted end to end.
+    If the acp factory passes model=None for custom agents, relying on kiro's
+    session/set_mode to resolve the model, the handshake skips session/set_model
+    (set_mode switches the prompt/tools, not the model) and kiro falls back to
+    its cli.json chat.defaultModel. These tests exercise the REAL factory
+    (create_provider_factory) so the model actually threaded into AcpProvider is
+    asserted end to end.
     """
 
     @staticmethod
@@ -54,9 +54,9 @@ class TestAcpPerAgentModel:
     def test_unresolved_agent_model_falls_back_to_the_global_default(self):
         # When the agent declares no model, _resolve_named_agent_model returns ""
         # and the factory falls through to the configured global default. This
-        # tier used to be skipped entirely for named agents, so an agent pinning
-        # nothing ignored the user's configured default and let kiro pick from
-        # cli.json instead — the global was not really a global.
+        # A named agent that pins no model must not bypass this tier, or the
+        # user's configured global default is ignored and kiro picks from
+        # cli.json instead — the global would not really be a global.
         cfg = self._acp_cfg()
         cfg.agent.model = "claude-sonnet-4.6"
         with patch.object(KiroCrewConfig, "_resolve_named_agent_model", return_value=""):

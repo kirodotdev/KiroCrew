@@ -31,8 +31,6 @@ from kiro_crew.auth.service import (
 from kiro_crew.auth.shape import Transport
 from kiro_crew.auth.store import TokenStore
 
-pytestmark = pytest.mark.asyncio
-
 
 class _FakeResp:
     def __init__(self, status: int, payload):
@@ -125,6 +123,7 @@ async def _poll_until_terminal(service, login_id, tries=50):
     raise AssertionError("login never reached a terminal state")
 
 
+@pytest.mark.asyncio
 async def test_begin_loopback_refused_when_transport_is_device(tmp_path, monkeypatch):
     monkeypatch.setenv("KIRO_AUTH_TRANSPORT", Transport.DEVICE.value)
     service, _ = _service(tmp_path)
@@ -132,12 +131,14 @@ async def test_begin_loopback_refused_when_transport_is_device(tmp_path, monkeyp
         await service.begin_loopback("google")
 
 
+@pytest.mark.asyncio
 async def test_begin_loopback_rejects_non_social_provider(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     with pytest.raises(ValueError):
         await service.begin_loopback("builder_id")
 
 
+@pytest.mark.asyncio
 async def test_begin_loopback_returns_portal_url_and_holds_a_port(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
@@ -156,6 +157,7 @@ async def test_begin_loopback_returns_portal_url_and_holds_a_port(tmp_path, loop
         await service.cancel(begin["login_id"])
 
 
+@pytest.mark.asyncio
 async def test_loopback_callback_exchanges_code_and_persists(tmp_path, loopback_shape):
     service, session = _service(
         tmp_path,
@@ -194,6 +196,7 @@ async def test_loopback_callback_exchanges_code_and_persists(tmp_path, loopback_
         await service.poll_device(begin["login_id"])
 
 
+@pytest.mark.asyncio
 async def test_loopback_state_mismatch_is_error_and_saves_nothing(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
@@ -207,6 +210,7 @@ async def test_loopback_state_mismatch_is_error_and_saves_nothing(tmp_path, loop
     assert TokenStore(tmp_path).resolve() is None
 
 
+@pytest.mark.asyncio
 async def test_loopback_portal_error_is_error(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
@@ -219,6 +223,7 @@ async def test_loopback_portal_error_is_error(tmp_path, loopback_shape):
     }
 
 
+@pytest.mark.asyncio
 async def test_loopback_timeout_reports_expired_with_fallback_code(
     tmp_path, loopback_shape, monkeypatch
 ):
@@ -231,6 +236,7 @@ async def test_loopback_timeout_reports_expired_with_fallback_code(
     assert LOOPBACK_TIMEOUT_SECS == 300.0  # the module default is untouched
 
 
+@pytest.mark.asyncio
 async def test_cancel_releases_the_port_for_reuse(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     first = await service.begin_loopback("google")
@@ -251,6 +257,7 @@ async def test_cancel_releases_the_port_for_reuse(tmp_path, loopback_shape):
     await service.cancel("nope")
 
 
+@pytest.mark.asyncio
 async def test_close_releases_pending_loopback_logins(tmp_path, loopback_shape):
     service, _ = _service(tmp_path)
     begin = await service.begin_loopback("google")
@@ -266,6 +273,7 @@ async def test_close_releases_pending_loopback_logins(tmp_path, loopback_shape):
         await other.cancel(again["login_id"])
 
 
+@pytest.mark.asyncio
 async def test_all_ports_busy_is_loopback_unavailable(tmp_path, loopback_shape, monkeypatch):
     def _no_ports():
         raise portal.PortalAuthError("all callback ports in use")
@@ -276,6 +284,7 @@ async def test_all_ports_busy_is_loopback_unavailable(tmp_path, loopback_shape, 
         await service.begin_loopback("google")
 
 
+@pytest.mark.asyncio
 async def test_loopback_provider_follows_the_portal_choice_not_the_button(tmp_path, loopback_shape):
     """The Kiro portal is where Google vs GitHub is actually picked.
 
@@ -299,6 +308,7 @@ async def test_loopback_provider_follows_the_portal_choice_not_the_button(tmp_pa
     assert result2 == {"status": "authorized", "provider": "Google"}
 
 
+@pytest.mark.asyncio
 async def test_cancelled_loopback_never_persists_even_after_callback(tmp_path, loopback_shape):
     """Persistence happens in the poll, not the listener task.
 
@@ -320,6 +330,7 @@ async def test_cancelled_loopback_never_persists_even_after_callback(tmp_path, l
         await service.poll_device(begin["login_id"])
 
 
+@pytest.mark.asyncio
 async def test_cancel_cannot_interleave_with_an_in_flight_save(tmp_path, loopback_shape):
     """A cancel issued while the poll is persisting waits for the write to land.
 

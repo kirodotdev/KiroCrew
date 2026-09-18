@@ -512,14 +512,6 @@
       "prose": 1,
       "template": 20
     },
-    "pages/AgentsPage.tsx": {
-      "total": 12,
-      "array": 2,
-      "expression": 3,
-      "object-prop": 1,
-      "prose": 3,
-      "template": 3
-    },
     "pages/aidlc/TaskDetailPanel.tsx": {
       "total": 2,
       "template": 2
@@ -770,10 +762,6 @@
       "total": 5,
       "expression": 1,
       "template": 4
-    },
-    "pages/settings/McpPoolableServers.tsx": {
-      "total": 2,
-      "template": 2
     },
     "pages/settings/NotificationsPanel.tsx": {
       "total": 3,

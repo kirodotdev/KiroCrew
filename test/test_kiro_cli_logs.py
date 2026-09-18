@@ -803,7 +803,108 @@ def _stub_sel(monkeypatch):
     sel = MagicMock()
     monkeypatch.setattr("kiro_crew.mcp_core.sel", lambda: sel)
     monkeypatch.setattr("kiro_crew.mcp_core._resolve_session_key", lambda: "sk")
+    monkeypatch.setattr(
+        "kiro_crew.member_memory_auth.private_memory_boundaries_active", lambda: False
+    )
     return sel
+
+
+@pytest.mark.parametrize("private_boundaries", [False, True])
+def test_tool_global_scope_keeps_redacted_logs_and_captured_audit_identity(
+    tmp_path, monkeypatch, private_boundaries
+):
+    from unittest.mock import Mock
+
+    sel = _stub_sel(monkeypatch)
+    _source(monkeypatch, tmp_path, _LOG)
+    monkeypatch.setattr(
+        "kiro_crew.member_memory_auth.private_memory_boundaries_active", lambda: private_boundaries
+    )
+    strict = Mock(return_value=("dashboard:global", ""))
+    scope = Mock(return_value="")
+    monkeypatch.setattr(logs_tool.mcp_core, "require_strict_session_key", strict)
+    monkeypatch.setattr("kiro_crew.member_memory_auth.mcp_memory_scope", scope)
+
+    result = logs_tool.kiro_cli_logs("kiro_cli_logs", {"tail": 10})
+
+    assert "a perfectly normal log line" in result
+    assert all(secret not in result for secret in _SECRETS)
+    audit = sel.log_tool_invocation.call_args.kwargs
+    assert audit["outcome"] == "success"
+    assert audit["session_key"] == ("dashboard:global" if private_boundaries else "sk")
+    if private_boundaries:
+        strict.assert_called_once()
+        scope.assert_called_once_with("dashboard:global")
+    else:
+        strict.assert_not_called()
+        scope.assert_not_called()
+
+
+@pytest.mark.parametrize("identity", ["private", "missing", "invalid", "unreadable"])
+def test_tool_refuses_shared_logs_before_reading_for_private_or_unverified_caller(
+    monkeypatch, identity
+):
+    from unittest.mock import Mock
+
+    sel = _stub_sel(monkeypatch)
+    monkeypatch.setattr(
+        "kiro_crew.member_memory_auth.private_memory_boundaries_active", lambda: True
+    )
+    session_key = "" if identity == "missing" else "dashboard:member"
+    strict = Mock(
+        return_value=(session_key, "Error: identity unavailable" if not session_key else "")
+    )
+    scope = Mock(return_value="member-store")
+    if identity == "invalid":
+        scope.side_effect = ValueError("invalid protected proof")
+    elif identity == "unreadable":
+        scope.side_effect = OSError("protected binding cannot be read")
+    reader = Mock(return_value="ANOTHER SESSION'S ORDINARY LOG PROSE")
+    lenient = Mock(return_value="dashboard:forged-global")
+    monkeypatch.setattr(logs_tool.mcp_core, "require_strict_session_key", strict)
+    monkeypatch.setattr(logs_tool.mcp_core, "_resolve_session_key", lenient)
+    monkeypatch.setattr("kiro_crew.member_memory_auth.mcp_memory_scope", scope)
+    monkeypatch.setattr(logs_tool.diagnostics, "read_kiro_cli_logs", reader)
+
+    result = logs_tool.kiro_cli_logs("kiro_cli_logs", {"tail": 10})
+
+    assert result.startswith("Error:")
+    assert "ANOTHER SESSION" not in result
+    reader.assert_not_called()
+    lenient.assert_not_called()
+    if session_key:
+        scope.assert_called_once_with(session_key)
+    else:
+        scope.assert_not_called()
+    sel.log_tool_invocation.assert_called_once_with(
+        session_key=session_key,
+        source="mcp",
+        tool_name="kiro_cli_logs",
+        tool_kind="read",
+        outcome="denied_memory_scope",
+    )
+
+
+def test_tool_denial_audit_failure_cannot_allow_shared_log_read(monkeypatch):
+    from unittest.mock import Mock
+
+    sel = _stub_sel(monkeypatch)
+    sel.log_tool_invocation.side_effect = OSError("audit unavailable")
+    monkeypatch.setattr(
+        "kiro_crew.member_memory_auth.private_memory_boundaries_active", lambda: True
+    )
+    monkeypatch.setattr(
+        logs_tool.mcp_core, "require_strict_session_key", lambda *_args: ("dashboard:member", "")
+    )
+    monkeypatch.setattr(
+        "kiro_crew.member_memory_auth.mcp_memory_scope", lambda _key: "member-store"
+    )
+    reader = Mock()
+    monkeypatch.setattr(logs_tool.diagnostics, "read_kiro_cli_logs", reader)
+
+    assert logs_tool.kiro_cli_logs("kiro_cli_logs", {}).startswith("Error:")
+    reader.assert_not_called()
+    sel.log_tool_invocation.assert_called_once()
 
 
 def test_tool_returns_reader_output_and_audits(tmp_path, monkeypatch):

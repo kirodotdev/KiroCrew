@@ -43,6 +43,7 @@
  */
 import type { ComponentType } from 'react'
 import type { LaunchJob, RemoteProvisioner } from '../api/client'
+import { BUILTIN_PROVISIONER_ID } from '../utils/remoteCrew'
 import { reportSeamCollision } from '../apps/seamCollision'
 
 /**
@@ -53,7 +54,8 @@ import { reportSeamCollision } from '../apps/seamCollision'
  * selector, and then renders nothing when picked, which is the outcome this seam
  * exists to avoid.
  */
-export const BUILTIN_REMOTE_PROVISIONER_KINDS = ['aws_ec2'] as const
+// The built-in EC2 launcher's kind equals its provisioner id.
+export const BUILTIN_REMOTE_PROVISIONER_KINDS = [BUILTIN_PROVISIONER_ID] as const
 
 /**
  * What a registered form is handed. Everything a launch needs and nothing the

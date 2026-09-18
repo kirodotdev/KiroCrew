@@ -29,6 +29,17 @@ def store(tmp_path):
     s.close()
 
 
+# ``close()`` releases only the CALLING thread's connection, so a worker that
+# used ``store.db`` must close it before returning. A connection a pool thread
+# leaves open lives as long as the thread does -- and the pool outlives the
+# test -- so every helper that runs off the main thread ends with this.
+def _on_worker(fn, store):
+    try:
+        return fn()
+    finally:
+        store.close()
+
+
 def _add_item(store: KnowledgeStore, title: str, content: str) -> None:
     now = datetime.utcnow().isoformat()
     store.db.execute(
@@ -51,8 +62,11 @@ def test_db_property_returns_per_thread_connections(store):
     seen = {}
 
     def grab(idx):
-        seen[idx] = store.db
-        assert store.db is seen[idx]
+        def body():
+            seen[idx] = store.db
+            assert store.db is seen[idx]
+
+        _on_worker(body, store)
 
     threads = [threading.Thread(target=grab, args=(i,)) for i in range(3)]
     for t in threads:
@@ -69,7 +83,10 @@ def test_worker_thread_query_does_not_raise(store):
     _add_item(store, "Deployment Runbook", "How to deploy the gateway safely.")
 
     def query():
-        return store.db.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"]
+        return _on_worker(
+            lambda: store.db.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"],
+            store,
+        )
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         # Before the fix this raised sqlite3.ProgrammingError
@@ -85,7 +102,9 @@ def test_hybrid_retriever_search_from_executor_thread(store):
     retriever = HybridRetriever(store)
 
     with ThreadPoolExecutor(max_workers=2, thread_name_prefix="mc-embed-test") as pool:
-        results = pool.submit(retriever.search, "gateway restart", 5).result(timeout=10)
+        results = pool.submit(
+            _on_worker, lambda: retriever.search("gateway restart", 5), store
+        ).result(timeout=10)
 
     assert any(r["id"] == "gateway-restart-guide" for r in results)
 
@@ -94,7 +113,7 @@ def test_writes_from_two_threads_are_serialized(store):
     """WAL + busy_timeout must let concurrent writers succeed, not error."""
 
     def write(n):
-        _add_item(store, f"Doc {n}", f"content {n}")
+        _on_worker(lambda: _add_item(store, f"Doc {n}", f"content {n}"), store)
 
     with ThreadPoolExecutor(max_workers=4) as pool:
         for f in [pool.submit(write, i) for i in range(8)]:
@@ -110,11 +129,14 @@ def test_close_only_releases_calling_threads_connection(store):
     worker_conn_ok = {}
 
     def use_then_signal(barrier):
-        store.db.execute("SELECT 1").fetchone()
-        barrier.wait(timeout=10)  # main thread closes its conn here
-        worker_conn_ok["ok"] = (
-            store.db.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"] == 1
-        )
+        def body():
+            store.db.execute("SELECT 1").fetchone()
+            barrier.wait(timeout=10)  # main thread closes its conn here
+            worker_conn_ok["ok"] = (
+                store.db.execute("SELECT COUNT(*) AS n FROM items").fetchone()["n"] == 1
+            )
+
+        _on_worker(body, store)
 
     barrier = threading.Barrier(2)
     t = threading.Thread(target=use_then_signal, args=(barrier,))
@@ -128,9 +150,9 @@ def test_close_only_releases_calling_threads_connection(store):
 
 
 # ── In-memory graph thread-safety ──
-# The thread-local sqlite fix (above) removed a de-facto guard: previously the
-# shared connection raised sqlite3.ProgrammingError in _keyword_search before
-# _graph_search ran, so the in-memory graph was never traversed cross-thread.
+# Per-thread sqlite connections remove a de-facto guard: a single shared
+# connection raises sqlite3.ProgrammingError in _keyword_search before
+# _graph_search runs, so the in-memory graph is never traversed cross-thread.
 # With per-thread connections, HybridRetriever.search() reaches the graph leg on
 # an mc-embed thread (get_neighbors -> successors/predecessors/nodes) while the
 # event-loop thread mutates the SAME SimpleDiGraph inline (ingest add_entity/

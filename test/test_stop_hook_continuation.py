@@ -21,7 +21,6 @@ from kiro_crew.dashboard.chat_utils import SYNTHETIC_RECOVERY_KIND, is_synthetic
 from kiro_crew.dashboard.state import (
     HOOK_CONTINUATION_RECOVERY_PREFIX,
     HOOK_HALTED_RECOVERY_PREFIX,
-    STOP_REASON_CANCELLED,
     _ChatSlot,
     parse_hook_continuations,
     should_queue_hook_continuation,
@@ -82,17 +81,35 @@ class TestParseHookContinuations:
 
 class TestShouldQueueHookContinuation:
     def test_normal_turn_end_allows_a_continuation(self) -> None:
-        assert should_queue_hook_continuation(False, False, "end_turn") is True
+        assert should_queue_hook_continuation(False, user_stopped=False) is True
 
     def test_user_stop_suppresses_it(self) -> None:
         """A hook must never be able to override the Stop button."""
-        assert should_queue_hook_continuation(True, False, "end_turn") is False
+        assert should_queue_hook_continuation(False, user_stopped=True) is False
 
     def test_pending_session_reset_suppresses_it(self) -> None:
-        assert should_queue_hook_continuation(False, True, "end_turn") is False
+        assert should_queue_hook_continuation(True, user_stopped=False) is False
 
-    def test_cancelled_turn_suppresses_it(self) -> None:
-        assert should_queue_hook_continuation(False, False, STOP_REASON_CANCELLED) is False
+    def test_the_gate_takes_one_stop_input(self) -> None:
+        # The in-flight stop and the resolved-during-the-turn stop are ONE
+        # signal (`user_stopped`, read live at the gate), so a caller cannot
+        # pass a stale in-flight read beside a live one.
+        import inspect
+
+        params = inspect.signature(should_queue_hook_continuation).parameters
+        assert list(params) == ["needs_reset", "user_stopped"]
+        assert params["user_stopped"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["user_stopped"].default is inspect.Parameter.empty
+
+    def test_a_backend_abort_alone_does_not_suppress_it(self) -> None:
+        # No wire stop reason is consulted: a backend that aborts a policy-denied
+        # turn (codex) reports "cancelled" with no Stop pressed, and the hook's
+        # continuation is still owed. The gate has no parameter for the stop
+        # reason at all, so this cannot regress by omission.
+        import inspect
+
+        assert "stop_reason" not in inspect.signature(should_queue_hook_continuation).parameters
+        assert should_queue_hook_continuation(False, user_stopped=False) is True
 
 
 class TestQueuedContinuationProvenance:
@@ -209,7 +226,7 @@ class TestRunnerWiring:
                 "content": f"{HOOK_CONTINUATION_RECOVERY_PREFIX}\nRead the log first.",
                 "kind": SYNTHETIC_RECOVERY_KIND,
                 "payload": "",
-                # Admission stamp (#5911): recovery requeues record the containment
+                # Admission stamp: recovery requeues record the containment
                 # that held at requeue so the drain can re-validate the retry.
                 "meta": slot._queue[0]["meta"],
             }

@@ -61,6 +61,9 @@ from kiro_crew.dashboard.handlers.agents import (  # noqa: E402, F401
     _installed_agent_config,
     api_agent_config,
     api_agent_detail,
+    api_agent_fork,
+    api_agent_publish,
+    api_agent_reset,
     api_agents_installed,
     api_capability_agents_install,
     api_capability_agents_list,
@@ -94,6 +97,7 @@ from kiro_crew.dashboard.handlers.appearances import (  # noqa: E402, F401
     api_appearance_delete,
     api_appearance_detail,
     api_appearance_slot,
+    api_appearance_sound,
     api_appearances_import,
     api_appearances_list,
     api_appearances_petdex_fetch,
@@ -105,10 +109,20 @@ from kiro_crew.dashboard.handlers.connections import (  # noqa: E402, F401
     api_connections_disconnect,
     api_connections_mint,
     api_connections_mint_state,
+    api_connections_oauth_client_delete,
+    api_connections_oauth_client_put,
+    api_connections_oauth_clients,
     api_connections_premint,
     api_connections_status,
     api_connections_test,
     api_mcp_oauth_relay,
+)
+
+# ── Session crew log (handlers/crew_log.py) ──
+from kiro_crew.dashboard.handlers.crew_log import (  # noqa: E402, F401
+    api_session_crew_log,
+    api_session_crew_log_projection,
+    install_crew_log_publisher,
 )
 from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_ack,
@@ -127,6 +141,7 @@ from kiro_crew.dashboard.handlers.cron import (  # noqa: E402, F401
     api_cron_script_source,
     api_cron_secret_grant,
     api_cron_to_chat,
+    api_cron_tools,
     api_cron_update,
     api_crons,
     api_crons_create,
@@ -151,6 +166,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_dashboard_config,
     api_file_diff,
     api_file_download,
+    api_file_grep,
     api_file_office_preview,
     api_file_raw,
     api_file_read,
@@ -162,6 +178,7 @@ from kiro_crew.dashboard.handlers.files import (  # noqa: E402, F401
     api_outbox_download,
     api_outbox_list,
     api_outbox_notify,
+    api_path_complete,
     api_project_git,
     api_project_git_log,
     api_project_git_status,
@@ -245,6 +262,7 @@ from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
     _get_vector_store,
     _redact_memory_field,
     _set_migrated,
+    api_memory_carve,
     api_memory_consolidate,
     api_memory_context_preview,
     api_memory_disable_embeddings,
@@ -270,6 +288,28 @@ from kiro_crew.dashboard.handlers.memory import (  # noqa: E402, F401
     api_memory_stats,
 )
 
+# ── Memory store administration (handlers/memory_admin.py) ──
+from kiro_crew.dashboard.handlers.memory_admin import (  # noqa: E402, F401
+    api_memory_backup,
+    api_memory_backups,
+    api_memory_restore,
+    api_memory_restore_cancel,
+    api_memory_retired,
+    api_memory_retired_restore,
+    api_memory_stores,
+)
+from kiro_crew.dashboard.handlers.memory_edit import (  # noqa: E402, F401
+    api_memory_bulk_apply,
+    api_memory_bulk_preview,
+    api_memory_record_history,
+    api_memory_records,
+    api_memory_records_refresh,
+)
+from kiro_crew.dashboard.handlers.memory_member import (  # noqa: E402, F401
+    api_memory_recall,
+    api_memory_seed,
+)
+
 # ── Messaging (extracted to handlers/messaging.py) ──
 from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     _redact,
@@ -281,6 +321,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_browser_engine_install,
     api_browser_install_get,
     api_browser_install_start,
+    api_browser_open,
     api_browser_token_put,
     api_browser_view_get,
     api_browser_view_start,
@@ -308,7 +349,6 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_slack_profile,
     api_slack_reactions,
     api_spawn,
-    api_spawn_clear,
     api_spawn_continue,
     api_spawn_delete,
     api_spawn_list,
@@ -396,7 +436,6 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_sessions,
     api_sessions_clear,
     api_sessions_clearable_count,
-    api_sessions_context,
     api_sessions_health,
     api_sessions_memory,
     api_sessions_restart,
@@ -465,6 +504,39 @@ from kiro_crew.dashboard.handlers.taskrunner import (  # noqa: E402, F401
     api_taskrunner_update_plan,
     api_taskrunner_update_task,
 )
+
+
+# ── Durable task queue + capacity view (handlers/tasks.py) ──
+async def api_task_action(request):
+    from kiro_crew.dashboard.handlers.tasks import api_task_action as handler
+
+    return await handler(request)
+
+
+async def api_task_cancel(request):
+    from kiro_crew.dashboard.handlers.tasks import api_task_cancel as handler
+
+    return await handler(request)
+
+
+async def api_task_detail(request):
+    from kiro_crew.dashboard.handlers.tasks import api_task_detail as handler
+
+    return await handler(request)
+
+
+async def api_tasks_list(request):
+    from kiro_crew.dashboard.handlers.tasks import api_tasks_list as handler
+
+    return await handler(request)
+
+
+async def api_tasks_summary(request):
+    from kiro_crew.dashboard.handlers.tasks import api_tasks_summary as handler
+
+    return await handler(request)
+
+
 from kiro_crew.dashboard.handlers.telemetry import (  # noqa: E402, F401
     api_beacon_status,
     api_collection_status,
@@ -907,8 +979,11 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
 )
 
 # Flagged-file delivery consent — owner-gated, and the ONLY writer of
-# ``file_delivery_consent.json``. No CLI counterpart, deliberately.
+# ``file_delivery_consent.json``. Recording is arm (owner POST) + approve
+# (host-only ``kirocrew file-delivery approve``, which consumes the nonce).
 from kiro_crew.dashboard.handlers.file_delivery_consent import (  # noqa: E402, F401
+    api_file_delivery_consent_approve,
+    api_file_delivery_consent_arm_status,
     api_file_delivery_consent_delete,
     api_file_delivery_consent_get,
     api_file_delivery_consent_post,

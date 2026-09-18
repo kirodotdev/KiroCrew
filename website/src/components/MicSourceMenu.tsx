@@ -1,9 +1,10 @@
 import { Check, ChevronDown, Mic, TriangleAlert } from 'lucide-react'
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 
 import { i18nT } from '../i18n/t'
 import { getPreferredMicId, listMicrophones } from '../hooks/mic'
+import { useAnchorRemeasure } from '../hooks/useAnchorRemeasure'
 import { useMenuKeyboard } from '../hooks/useMenuKeyboard'
 
 interface Props {
@@ -123,22 +124,15 @@ export default function MicSourceMenu({ deviceLabel, activeDeviceId, onSelect, r
   // Reposition-or-close when the anchor moves under an open menu. `rect` is
   // captured once and consumed as fixed viewport coordinates, and the composer
   // GROWS as dictated text accumulates — the feature's primary scenario — so
-  // without this the menu visibly detaches from its trigger.
-  useEffect(() => {
-    if (!open) return
-    const sync = () => {
-      const r = wrapRef.current?.getBoundingClientRect()
-      if (r) setRect({ left: r.left, top: r.bottom, bottom: r.top })
-      else setOpen(false)
-    }
-    window.addEventListener('resize', sync)
-    // Capture phase: a scroll inside the chat transcript does not bubble to window.
-    window.addEventListener('scroll', sync, true)
-    return () => {
-      window.removeEventListener('resize', sync)
-      window.removeEventListener('scroll', sync, true)
-    }
-  }, [open])
+  // without this the menu visibly detaches from its trigger. The shared hook
+  // also covers the mobile-keyboard case, which only `window.visualViewport`
+  // announces.
+  const measureAnchor = useCallback(() => {
+    const r = wrapRef.current?.getBoundingClientRect()
+    if (r) setRect({ left: r.left, top: r.bottom, bottom: r.top })
+    else setOpen(false)
+  }, [])
+  useAnchorRemeasure(open, measureAnchor)
 
   // The saved device is gone (unplugged, or its permission-scoped id rotated).
   // Session-start acquisition falls back to the default in that case, so say so

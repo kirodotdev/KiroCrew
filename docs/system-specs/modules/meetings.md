@@ -230,7 +230,7 @@ rows.
 Dispatch admission has its own short lock covering the live-session check,
 append, and synchronous queue fan-out. Lifecycle handlers wait for that
 transaction, close admission where necessary, and release the lock before slow
-agent flushes. Stop/review/delete therefore cannot detach agents mid-dispatch or
+agent flushes. Stop/pause/review/delete therefore cannot detach agents mid-dispatch or
 resurrect an orphan transcript directory, while a slow agent does not hold every
 later speech request behind its flush.
 Meetings created by an older version have no file and read as an empty transcript.

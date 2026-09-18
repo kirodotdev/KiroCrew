@@ -11,6 +11,7 @@ import json
 import logging
 import random
 import time
+import weakref
 from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -21,9 +22,15 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew import name_grant
 from kiro_crew.acp.client import AcpError, AcpPromptBusy, advertised_model_ids
 from kiro_crew.acp.types import EVENT_STEER_CONSUMED, TurnUsage
+from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.credential_errors import is_credential_propagation_delay
-from kiro_crew.hooks import _EDIT_TOOL_KIND, fire_tool_hooks, get_global_hook_store
+from kiro_crew.hooks import (
+    _EDIT_TOOL_KIND,
+    fire_tool_hooks,
+    get_global_hook_store,
+    hook_gate_kwargs,
+)
 from kiro_crew.platform.tool_paths import (
     command_shaped_strings,
     edit_target_candidates,
@@ -42,10 +49,11 @@ from kiro_crew.security import (
     MAX_SCANNABLE_COMMAND_CHARS,
     is_denied,
     is_sensitive_bash_command,
-    is_sensitive_path,
     is_sensitive_write_path,
+    is_unverifiable_path_refusal,
     redact_credentials,
     redact_exfiltration_urls,
+    sensitive_path_refusal,
 )
 from kiro_crew.sel import sel as _sel
 
@@ -450,8 +458,19 @@ def next_fallback_candidate(
     list fails OPEN (candidates accepted): entitlement unknown is not
     entitlement denied, matching ``model_is_unusable``'s stance, and the
     substitute ``set_model`` path re-validates against the live list anyway.
+
+    A persisted chain entry can carry a stale ``<namespace>::<bare-id>``
+    qualifier from the catalog that advertised it (the catalog/session
+    spelling-mismatch class)
+    while the session advertises the bare id, so membership is judged through
+    :func:`resolve_pin_spelling` (the shared fold) rather than literally — an
+    entry absent under BOTH spellings is still skipped, and the active-model
+    skip applies to the folded spelling too. The CHAIN's own spelling is what
+    is returned (``FallbackState.next_candidate`` locates the applied
+    candidate with ``remaining.index``); wire-facing consumers re-fold it via
+    :func:`_fallback_wire_spelling`.
     """
-    adv = {a.strip().lower() for a in (advertised or []) if isinstance(a, str) and a.strip()}
+    adv = [a for a in (advertised or []) if isinstance(a, str) and a.strip()]
     act = (active_model or "").strip().lower()
     for cand in chain:
         if not isinstance(cand, str):
@@ -459,11 +478,35 @@ def next_fallback_candidate(
         low = cand.strip().lower()
         if not low or low == act:
             continue
-        if adv and low not in adv:
-            logger.debug("model fallback: skipping %r (not advertised)", cand)
-            continue
+        if adv:
+            served = resolve_pin_spelling(cand, adv)
+            if not served:
+                logger.debug("model fallback: skipping %r (not advertised)", cand)
+                continue
+            if served.strip().lower() == act:
+                # Post-fold active skip: a qualified entry that resolves to
+                # the currently-failing model cannot help.
+                continue
         return cand
     return None
+
+
+def _fallback_wire_spelling(candidate: str, advertised: Sequence[str] | None) -> str:
+    """The spelling of *candidate* to send on the wire and keep in records.
+
+    A chain entry stays in its OWN spelling for ``FallbackState`` bookkeeping
+    (``remaining.index``), but everything later compared against SERVED models
+    — the substitute ``set_model`` call, the swap witness, the sticky
+    :data:`TURN_FALLBACK_ATTR` marker the restore probe reads, and the
+    active/walked records — must carry the ADVERTISED spelling: a
+    ``<namespace>::``-qualified spelling there is one the backend never
+    advertised (``AcpClient.set_model``'s explicit-pick guard would raise) and
+    desynchronizes the restore probe from the session it watches. Falls back
+    to the candidate's own spelling when the advertised set cannot resolve it
+    (empty/unknown fails open, matching :func:`next_fallback_candidate`).
+    """
+    ids = [a for a in (advertised or []) if isinstance(a, str) and a.strip()]
+    return (resolve_pin_spelling(candidate, ids) if ids else "") or candidate
 
 
 @dataclass
@@ -545,9 +588,13 @@ async def advance_fallback_candidate(
     chain skipping the primary, unadvertised ids, and the currently-active
     (failing) candidate; applies the first candidate whose substitute
     ``set_model`` lands; publishes the sticky marker
-    (:data:`TURN_FALLBACK_ATTR`); and emits the greppable swap warning.
-    Returns the applied candidate, or ``None`` when the chain is exhausted or
-    the provider exposes no ``set_model`` seam — the caller then surfaces the
+    (:data:`TURN_FALLBACK_ATTR`); and emits the greppable swap warning. A
+    ``<namespace>::``-qualified chain entry is applied AND recorded under its
+    advertised spelling (:func:`_fallback_wire_spelling`) — the wire, the
+    marker, and the walked/active records must agree with the served model
+    the restore probe later compares against. Returns the applied candidate
+    (advertised spelling), or ``None`` when the chain is exhausted or the
+    provider exposes no ``set_model`` seam — the caller then surfaces the
     original error exactly as before this feature existed.
     """
     advertised = provider_advertised_ids(provider)
@@ -573,18 +620,21 @@ async def advance_fallback_candidate(
         cand = fb_state.next_candidate(fb_state.primary or active, advertised)
         if cand is None:
             return None
-        if cand.strip().lower() == (active or "").strip().lower():
+        # The chain's own spelling drove the walk bookkeeping; the wire and
+        # every served-model comparison below use the advertised spelling.
+        wire = _fallback_wire_spelling(cand, advertised)
+        if wire.strip().lower() == (active or "").strip().lower():
             # With a marker-seeded primary, the chain can still name the
             # CURRENTLY-failing fallback the session sits on — retrying it is
             # what this walk exists to escape.
             continue
         _raw_before = provider_raw_model(provider)
         try:
-            await set_model_fn(cand)
+            await set_model_fn(wire)
         except Exception:
             logger.debug(
                 "model fallback: set_model(%r) failed; skipping candidate",
-                cand,
+                wire,
                 exc_info=True,
             )
             continue
@@ -599,30 +649,110 @@ async def advance_fallback_candidate(
         if (
             _raw_before
             and _raw_after == _raw_before
-            and _raw_after.strip().lower() != cand.strip().lower()
+            and _raw_after.strip().lower() != wire.strip().lower()
         ):
             logger.debug(
                 "model fallback: set_model(%r) was a silent no-op (model still %r); "
                 "skipping candidate",
-                cand,
+                wire,
                 _raw_after,
             )
             continue
-        fb_state.active = cand
+        fb_state.active = wire
         fb_state.attempts = 1
-        fb_state.walked.append(cand)
+        fb_state.walked.append(wire)
         try:
-            setattr(provider, TURN_FALLBACK_ATTR, (fb_state.primary, cand))
+            setattr(provider, TURN_FALLBACK_ATTR, (fb_state.primary, wire))
         except Exception:
             logger.debug("publishing fallback marker failed", exc_info=True)
         logger.warning(
             "model fallback: %s -> %s (reason=throttle-exhaustion, surface=%s%s)",
             fb_state.primary or "?",
-            cand,
+            wire,
             surface,
             log_suffix,
         )
-        return cand
+        return wire
+
+
+def pick_epoch_host(provider: Any) -> Any:
+    """The one object the explicit-pick epoch lives on for this session.
+
+    A pick and a refusal-fallback restore can hold DIFFERENT layers of the
+    same session — the model handler holds the ``AcpProvider`` wrapper while
+    the chat runner's acquisition can hand the wrapped client — so both must
+    resolve the SAME host or the writer stamps an object the reader never
+    sees. The innermost wrapped client wins, following the same unwrap order
+    as :func:`resolve_substitute_set_model`; a bare test client resolves to
+    itself.
+    """
+    for attr in ("client", "_client"):
+        try:
+            inner = getattr(provider, attr, None)
+        except Exception:  # pragma: no cover - exotic property getters
+            inner = None
+        if inner is not None and not callable(inner):
+            return inner
+    return provider
+
+
+_slot_switch_session_locks: "weakref.WeakValueDictionary[str, asyncio.Lock]" = (
+    weakref.WeakValueDictionary()
+)
+
+
+def slot_switch_session_lock(session_key: str) -> asyncio.Lock:
+    """The per-session lock every explicit model switch runs under.
+
+    Serializes model switches for aliases of ONE session — a channel-born
+    slot and its dashboard twin drive one wire session through disjoint slot
+    objects, so per-slot locks cannot order their switches. The switch
+    handlers in ``chat_handlers`` acquire it between ``slot._lock`` and
+    ``slot._model_pick_lock`` (the lock-order contract is documented at
+    their acquisition site); the chat runner's refusal-fallback restore
+    acquires it before the pick lock, so a restore's ``set_model(primary)``
+    await cannot interleave with an alias pick and silently overwrite the
+    user's selection. Lives here rather than in
+    ``chat_handlers`` because ``chat_handlers`` imports from the runner —
+    the runner could not import it back without a cycle.
+
+    A ``WeakValueDictionary`` so a session's lock is collected once no
+    request holds it; unrelated sessions resolve different keys and so take
+    different locks.
+
+    An ``asyncio.Lock`` binds to the loop it is first contended on and
+    raises ``RuntimeError`` when awaited from any other loop. A cached lock
+    that is still alive when a different loop asks for the same key (a test
+    holding a reference past its per-test loop, an embedder that runs the
+    gateway on a fresh loop) is therefore unusable to the caller, so it is
+    replaced rather than returned. Holders on the old loop keep their lock;
+    the two loops cannot contend with each other in any case.
+    """
+    lock = _slot_switch_session_locks.get(session_key)
+    if lock is not None and _bound_to_other_loop(lock):
+        lock = None
+    if lock is None:
+        lock = asyncio.Lock()
+        _slot_switch_session_locks[session_key] = lock
+    return lock
+
+
+def _bound_to_other_loop(lock: asyncio.Lock) -> bool:
+    """Whether ``lock`` is bound to a loop other than the running one.
+
+    ``asyncio.Lock`` records its loop in ``_loop`` on first contention and
+    leaves it ``None`` before that; an unbound lock is usable from any loop.
+    With no running loop the caller is synchronous setup code and the lock
+    is handed back unchanged.
+    """
+    bound = getattr(lock, "_loop", None)
+    if bound is None:
+        return False
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return bound is not running
 
 
 def resolve_substitute_set_model(provider: Any) -> Callable[[str], Awaitable[None]] | None:
@@ -999,7 +1129,12 @@ def _title_denial(
     place. The tuple is ``(kind, reason)`` with *kind* ``"path"`` / ``"bash"`` /
     ``"regex"``; the reasons are the exact strings the on-loop checks produced.
     """
-    if is_sensitive_path(title):
+    path_refusal = sensitive_path_refusal(title)
+    if path_refusal:
+        # A stall is passed through as worded (recognised by its fixed prefix, which
+        # the deny guidance classifies by); a match keeps this producer's wording.
+        if is_unverifiable_path_refusal(path_refusal):
+            return ("path", path_refusal)
         return ("path", f"Blocked: sensitive path: {title}")
     bash_reason = is_sensitive_bash_command(title)
     if bash_reason:
@@ -1114,7 +1249,10 @@ def _first_tool_input_denial(
                 ),
                 s[:64],
             )
-        if is_sensitive_path(s):
+        path_refusal = sensitive_path_refusal(s)
+        if path_refusal:
+            if is_unverifiable_path_refusal(path_refusal):
+                return ("path", path_refusal, s)
             return ("path", f"Blocked: sensitive path in tool_input: {s}", s)
         _input_bash = is_sensitive_bash_command(s)
         if _input_bash:
@@ -1129,11 +1267,42 @@ def _first_tool_input_denial(
 
 
 class ToolApprovalPolicy(Enum):
-    """How to handle tool permission requests during streaming."""
+    """How to handle tool permission requests during streaming.
+
+    ``READ_ONLY`` is the dashboard "Reads" approval mode's semantics ported to
+    surfaces that have no interactive approver: provably read-only calls are
+    auto-approved through the SAME hook gate the Reads mode uses (deny floor
+    first, then the read-only classifier), and every call that is not provably
+    read-only is rejected — where the Reads mode would ask, this policy
+    refuses. Requires ``hooks``; without a gate to classify with it fails
+    closed and rejects everything, exactly like ``REJECT_ALL``.
+
+    Only the classifier's own verdict approves under ``READ_ONLY``. The hook
+    gate is asked ``classifier_only``, so its GRANT tiers — the operator's
+    ``auto_approve_tools`` globs and the app-own-server rule, which vouch for
+    the caller and say nothing about what the call does — are skipped rather
+    than honoured, and an auto-approve is then trusted only when the result
+    carries the classifier's ``read_only`` tag. A grant that shadows a
+    read-only call therefore still gets the read approved (by the classifier),
+    and a grant that shadows a write approves nothing.
+
+    With no approver to catch an over-approval, ``classifier_only`` also
+    restricts proof to HOST-TRUSTED facts: the recovered shell command judged
+    by ``is_read_only_bash``, or a built-in the host knows to be read-only
+    (``hooks._HOST_READ_ONLY_BUILTIN_TOOLS``) named by the non-model-authored
+    ``_meta.kiro.toolName`` with no MCP server behind it, and only when the
+    event carries ``mcp_identity_trusted`` (the pair came from the
+    provenance-verified caches, not an inline payload). The agent-influenced
+    ACP ``kind`` and the model-authored title may narrow but never prove, so a
+    mutating tool labelled ``kind="read"``, a read-looking title, and any
+    MCP-served tool (no host-trusted read-only marker exists for one) are
+    rejected here where the interactive Reads mode would still ask.
+    """
 
     AUTO_APPROVE = "auto_approve"
     REJECT_ALL = "reject_all"
     HOOK_BASED = "hook_based"
+    READ_ONLY = "read_only"
 
 
 # ── Stream and Collect ──
@@ -1573,12 +1742,37 @@ def _provider_label(provider: Any) -> str:
         return ""
 
 
+async def _cleanup_memory_consolidation_session(
+    sessions: Any, key: str, memory_store: str, log: Any
+) -> None:
+    """Retire one generated runtime before removing its private artifacts."""
+    try:
+        await sessions.remove(key)
+    except Exception:
+        # A provider that failed to retire may still have a live process or a
+        # late PID proof. Preserve both the transcript and binding in that case;
+        # deleting authority while the process survives would be unsafe.
+        logger.debug("memory consolidation session retirement failed", exc_info=True)
+        return
+    try:
+        from kiro_crew.member_memory_auth import retire_memory_consolidation_binding
+
+        # remove() waits for retirement but preserves resumable mappings. This
+        # generated UUID has no user continuation, so discard that mapping too.
+        await sessions.destroy(key)
+        await asyncio.to_thread(log.delete_memory_consolidation_session, key, memory_store)
+        await asyncio.to_thread(retire_memory_consolidation_binding, key, memory_store)
+    except Exception:
+        logger.debug("memory consolidation artifact cleanup failed", exc_info=True)
+
+
 @asynccontextmanager
 async def background_turn(
     sessions: Any,
     *,
     task: str,
     agent: "str | None" = None,
+    memory_store: str = "",
 ) -> "AsyncIterator[Any]":
     """Take the shared background session for ONE turn, then release and account.
 
@@ -1610,10 +1804,34 @@ async def background_turn(
     """
     from kiro_crew.session import BACKGROUND_AGENT, BACKGROUND_KEY  # circular import
 
-    if agent is None:
-        client, _new, _resumed = await sessions.get_or_create(BACKGROUND_KEY)
-    else:
-        client, _new, _resumed = await sessions.get_or_create(BACKGROUND_KEY, agent=agent)
+    key = BACKGROUND_KEY
+    if memory_store:
+        from uuid import uuid4
+
+        from kiro_crew.history import ConversationLog
+        from kiro_crew.member_memory_auth import bind_private_session_store
+        from kiro_crew.memory_stores import memory_store_version, require_memory_store
+
+        await asyncio.to_thread(require_memory_store, memory_store)
+        if memory_store_version(memory_store) != 2:
+            raise ValueError("Dedicated member consolidation requires private V2 memory")
+        key = f"memory-consolidation:{memory_store}:{uuid4().hex}"
+        log = ConversationLog()
+        try:
+            await asyncio.to_thread(log.update_metadata, key, {"memory_store": memory_store})
+            await asyncio.to_thread(bind_private_session_store, key, memory_store)
+        except BaseException:
+            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+            raise
+    try:
+        if agent is None:
+            client, _new, _resumed = await sessions.get_or_create(key)
+        else:
+            client, _new, _resumed = await sessions.get_or_create(key, agent=agent)
+    except BaseException:
+        if memory_store:
+            await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+        raise
     # The stats object as it stands BEFORE this turn. The shared session serves
     # many turns, and the runner replaces this object only once a turn actually
     # begins, so identity is what separates a turn that ran from one whose
@@ -1641,7 +1859,7 @@ async def background_turn(
         # and an await ordered ahead of this would let a cancelled task hold the
         # shared semaphore forever.
         try:
-            sessions.release(BACKGROUND_KEY)
+            sessions.release(key)
         except Exception:
             logger.debug("background session release failed task=%s", task, exc_info=True)
         # Recycle sits in a finally for the same cancellation reason, and follows
@@ -1663,7 +1881,7 @@ async def background_turn(
                 # dimensions alongside the kiro credits/token signals.
                 if usage_has_billing(usage):
                     await persist_token_record_async(
-                        BACKGROUND_KEY,
+                        key,
                         "",
                         usage,
                         _provider_label(client),
@@ -1676,7 +1894,10 @@ async def background_turn(
                 logger.debug("background turn accounting failed task=%s", task, exc_info=True)
         finally:
             try:
-                await sessions.recycle_background()
+                if memory_store:
+                    await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
+                else:
+                    await sessions.recycle_background()
             except Exception:
                 logger.debug("background recycle failed task=%s", task, exc_info=True)
 
@@ -1709,7 +1930,7 @@ async def stream_and_collect(
         provider: The LLM provider to stream through.
         message: The prompt to send.
         approval_policy: How to handle tool permission requests.
-        hooks: HookManager for HOOK_BASED approval policy.
+        hooks: HookManager for the HOOK_BASED and READ_ONLY approval policies.
         on_chunk: Optional callback invoked with each text chunk (for progress).
         on_tool_approval: Optional async callback for interactive approval.
         on_steer_consumed: Optional callback invoked with the backend's
@@ -1749,7 +1970,8 @@ async def stream_and_collect(
         app: Owning app name, forwarded to the gate so the app's governance
             PROFILE is resolved — not just the enterprise ceiling.
 
-            All three matter for ``HOOK_BASED`` callers specifically. The gate
+            All three matter for ``HOOK_BASED`` and ``READ_ONLY`` callers
+            specifically. The gate
             resolves ``ceiling ∩ profile``, and it can only look up a profile it
             has been told the name of; with all three empty it applied the
             ceiling alone, so an app profile narrowing (say) ``filesystem.write``
@@ -2379,20 +2601,30 @@ async def _resolve_permission(
         )
         return False
 
-    if policy == ToolApprovalPolicy.HOOK_BASED and hooks:
+    if policy == ToolApprovalPolicy.READ_ONLY and hooks is None:
+        # Fail closed: READ_ONLY's classifier IS the hook gate. Without one
+        # there is no way to prove a call read-only, so the policy degrades to
+        # REJECT_ALL rather than to the caller-less auto-approve below.
+        await provider.reject_tool(event.request_id)
+        _log("rejected", metadata={"reason": "read_only_policy_no_hooks"})
+        return False
+
+    if policy in (ToolApprovalPolicy.HOOK_BASED, ToolApprovalPolicy.READ_ONLY) and hooks:
         tool_result = hooks.on_tool_call(
             event.title,
             session_key=session_key,
             agent=agent,
             app=app,
-            tool_kind=event.tool_kind,
-            raw_params=event.raw_tool_params,
-            diff_path=event.diff_path,
-            command=event.shell_command,
-            is_shell=event.is_shell,
-            mcp_server_name=event.mcp_server_name,
-            mcp_tool_name=event.tool_name,
-            mcp_identity_trusted=event.mcp_identity_trusted,
+            **hook_gate_kwargs(event),
+            # READ_ONLY asks for the classifier's verdict alone: the gate skips
+            # its grant tiers (`auto_approve_tools`, app-own-server), which vouch
+            # for the caller rather than for the call's effect, so a grant that
+            # shadows a read still lets the classifier approve the read and a
+            # grant that shadows a write approves nothing. Under READ_ONLY the
+            # provenance flag above is also what lets a host-known built-in
+            # (``fs_read``) count as proven read-only. HOOK_BASED keeps the
+            # grants — its approver is the card they skip.
+            classifier_only=policy == ToolApprovalPolicy.READ_ONLY,
         )
         if tool_result.action == TOOL_DENY:
             await provider.reject_tool(event.request_id)
@@ -2411,6 +2643,20 @@ async def _resolve_permission(
             )
             return False
         if tool_result.action == TOOL_AUTO_APPROVE:
+            if policy == ToolApprovalPolicy.READ_ONLY and not tool_result.read_only:
+                # READ_ONLY honours the classifier's verdict alone, and the
+                # result says which route produced it: ``read_only`` is set only
+                # by the read-only classifier, never by a grant (the operator's
+                # `auto_approve_tools` globs, the app-own-server rule), which
+                # vouches for the caller and says nothing about the call's
+                # effect. The gate is asked classifier-only above, so an
+                # untagged auto-approve here comes from a gate that does not
+                # carry the tag — a double, a tier that omits it — and this
+                # surface has no approver to hand it to. Refuse, as policy
+                # state: the same call is allowed where a card exists.
+                await provider.reject_tool(event.request_id)
+                _log("rejected", metadata={"reason": "read_only_policy_unclassified"})
+                return False
             # The hook granted this by NAME (its `auto_approve_tools` globs, or
             # the read-only allowlist). Verify it UNCONDITIONALLY: this helper
             # serves unattended callers (cron / autonudge / heartbeat / Meetings
@@ -2446,6 +2692,19 @@ async def _resolve_permission(
                 await provider.reject_tool(event.request_id)
                 _log("rejected", metadata={"reason": "name_grant_headless_reject"})
                 return False
+
+    if policy == ToolApprovalPolicy.READ_ONLY:
+        # Everything the hook gate did not deny (rejected above) or positively
+        # classify as read-only (approved above, name-grant verified) lands
+        # here: `allow` results, and auto-approves whose name grant was
+        # withheld (a grant-shaped auto-approve is refused above, before the
+        # name check). Where the interactive Reads mode would fall through to the
+        # approval card, this policy refuses — reject is the fallback, and it
+        # runs BEFORE the interactive callback so a caller passing one cannot
+        # widen the policy.
+        await provider.reject_tool(event.request_id)
+        _log("rejected", metadata={"reason": "read_only_policy"})
+        return False
 
     # Interactive approval if callback provided
     if on_tool_approval:

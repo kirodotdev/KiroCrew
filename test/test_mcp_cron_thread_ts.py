@@ -37,6 +37,7 @@ class TestCronAddThreadTs:
                 {
                     "id": "abc",
                     "name": "test",
+                    "timezone": "",
                     "schedule": type(
                         "S",
                         (),
@@ -71,6 +72,7 @@ class TestCronAddThreadTs:
                 {
                     "id": "def",
                     "name": "test",
+                    "timezone": "",
                     "schedule": type(
                         "S",
                         (),

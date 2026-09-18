@@ -205,7 +205,7 @@ def open_write_nofollow(path: str | Path, *, what: str) -> int:
     is opened at all. The ``is_symlink()`` check is kept only so the refusal says
     "this is a symbolic link" instead of "something exists here".
 
-    A ctypes ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT`` is no longer worth
+    A ctypes ``CreateFileW`` with ``FILE_FLAG_OPEN_REPARSE_POINT`` is not worth
     considering here: it would buy the same property exclusive creation already has,
     at the price of security code that cannot be exercised on the machine this
     harness is developed on.
@@ -263,7 +263,7 @@ def _existing_name_refusal(as_given: Path, *, what: str) -> UnsafePathError:
 
     ``O_CREAT|O_EXCL`` reports ``EEXIST`` for a symlink too -- it never follows it, so
     ``ELOOP`` does not arrive -- and "something already exists" would be a worse
-    message than the two this used to give. The name is inspected only to phrase the
+    message than the two this gives. The name is inspected only to phrase the
     refusal; the write has already been refused by then, so nothing here can be raced
     into permitting anything.
     """
@@ -341,7 +341,7 @@ def write_text_atomic_nofollow(path: str | Path, text: str, *, what: str) -> Non
     which is right for a staging file and wrong for a durable artifact. A report
     written with a reused ``--stem`` is destroyed the instant that truncation lands,
     and an interruption or ENOSPC part-way through the write leaves an empty or
-    half-written file where a valid baseline used to be -- and the baseline is the
+    half-written file in place of a valid baseline -- and the baseline is the
     only thing a benchmark report is for.
 
     Here the bytes go to a sibling temporary in the SAME directory, are flushed and
@@ -436,10 +436,9 @@ def _refuse_alias_at(dir_fd: int, name: str, *, what: str) -> None:
 def _revalidate_unpinned(as_given: Path, *, what: str) -> None:
     """The no-``dir_fd`` platform's stand-in for :func:`_pin_parent_for`.
 
-    Round 16 put the re-validation in the pinned branch and left the fallback reading
-    the verdict of a resolution taken earlier -- the same rule, applied at one of two
-    sites, which is the defect class this module keeps having to close. Both branches
-    now re-check.
+    The re-validation must run in BOTH branches, not only the pinned one: applying
+    the rule at one of two sites is the defect class this module keeps having to
+    close. Both branches re-check.
 
     Two things happen here, and only the first is available on the pinned path:
 

@@ -14,6 +14,7 @@ from kiro_crew.config.loader import KiroCrewConfig, config_dir
 from kiro_crew.config.sections import OrchestratorConfig
 from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
+from kiro_crew.dashboard.chat_utils import chat_done_payload
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot, append_and_surface
 from kiro_crew.dashboard.turn_dispatch import _bounded_turn
 from kiro_crew.hooks import safe_read_file
@@ -360,7 +361,7 @@ async def _exit_cancelled_plan(state: "DashboardState", slot: "_ChatSlot") -> No
         _next_started = await _start_next_queued_turn(state, slot)
     if not _next_started and not slot.running:
         slot.append("done", "", "done")
-        state.broadcast_ws("chat_done", {"slot": slot.key})
+        state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         slot.task = None
     state.push_slots_update()
 
@@ -485,7 +486,7 @@ async def _stage_loop(
                 resources=f"slot={slot.key}",
             )
         )
-        state.broadcast_ws("chat_done", {"slot": slot.key})
+        state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         slot.task = None
         state.push_slots_update()
         return
@@ -716,6 +717,9 @@ async def _stage_loop(
                             slot,
                             context,
                             _directive_user_origin=False,
+                            # Stage context assembled by the orchestrator, so the
+                            # ledger records the gateway rather than a user.
+                            _turn_actor="gateway",
                         ),
                         _turn_timeout,
                     )
@@ -725,6 +729,7 @@ async def _stage_loop(
                         slot,
                         context,
                         _directive_user_origin=False,
+                        _turn_actor="gateway",
                     )
             except (asyncio.TimeoutError, TimeoutError):
                 # `_bounded_turn` raises builtin TimeoutError; on 3.10
@@ -1155,7 +1160,10 @@ async def _stage_loop(
         if not _next_started and not _turn_live:
             if not _paused:
                 slot.append("done", "", "done")
-                state.broadcast_ws("chat_done", {"slot": slot.key})
+            done_payload = await chat_done_payload(state, slot)
+            if _paused:
+                done_payload["needs_input"] = True
+            state.broadcast_ws("chat_done", done_payload)
             # Clean up task so the slot is available for the next "Go" click
             # (paused) or new messages (completed).
             slot.task = None
@@ -1226,7 +1234,7 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
         if not already_cancelled:
             stop_msg = "🛑 Plan cancelled."
             append_and_surface(state, slot, "assistant", stop_msg, "msg msg-a")
-            state.broadcast_ws("chat_done", {"slot": slot.key})
+            state.broadcast_ws("chat_done", await chat_done_payload(state, slot))
         return web.json_response({"ok": True, "cancelled": True})
 
     # Go or Go All — use Python-controlled stage loop
@@ -1284,7 +1292,10 @@ async def api_chat_plan_action(request: web.Request) -> web.Response:
                 resources=f"slot={slot.key}",
             )
         )
-    task = asyncio.create_task(_stage_loop(state, slot, auto_run=is_auto))
+    task = asyncio.create_task(
+        _stage_loop(state, slot, auto_run=is_auto),
+        name=f"dashboard-stage:{slot.key}",
+    )
     slot.task = task
     slot._recovery_retrigger_count = 0
     state._background_tasks.add(task)

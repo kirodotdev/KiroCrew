@@ -54,9 +54,9 @@ DEFAULT_MAX_FILES = 5000
 MAX_SCAN_ATTEMPTS = 3
 
 # How many discovered files a scan processes between ``scan_paused`` re-reads.
-# The check used to run per file, i.e. one on-loop sqlite SELECT against
-# ``sources`` for every discovered file (up to ``max_files``). Re-reading on this
-# interval keeps a mid-scan pause responsive while bounding the query count at
+# Running the check per file would be one on-loop sqlite SELECT against ``sources``
+# for every discovered file (up to ``max_files``); re-reading on this interval
+# instead keeps a mid-scan pause responsive while bounding the query count at
 # ceil(files / _PAUSE_RECHECK_FILES) + 1.
 _PAUSE_RECHECK_FILES = 100
 
@@ -1031,10 +1031,9 @@ class FolderWatcher:
         #   under cancellation) and only where nothing was committed.
         #   `test_knowledge_ingest_scan_off_loop.py` ratchets both properties.
         #
-        # `on_committed` fires only on the fully-successful branch, so it also
-        # replaces the `sources.sync_status` read that used to detect a partial
-        # rollback -- and it does so per call, rather than reading a column a
-        # concurrent ingest on the same source can flip.
+        # `on_committed` fires only on the fully-successful branch, so it detects
+        # a partial rollback per call, rather than reading a `sources.sync_status`
+        # column a concurrent ingest on the same source can flip.
         committed: list[str] | None = None
 
         def _record_committed(item_ids: list[str]) -> None:
@@ -1095,8 +1094,8 @@ class FolderWatcher:
 
         # The pre-ingest gate reports a refusal the same way the commit path reports
         # its ids: through a callback invoked INSIDE the gate's own transaction, on
-        # its worker thread. Latching it here replaces the `get_job_status` read-back
-        # this frame used to do after the pipeline returned -- a synchronous sqlite
+        # its worker thread. Latching it here avoids a `get_job_status` read-back
+        # after the pipeline returns -- a synchronous sqlite
         # round-trip on the event loop for every ingested file, which is exactly
         # the class of call the store's on-loop guard flags. The callback is the
         # only place `DUPLICATE_JOB_STATUS` is ever written, so the latch is the

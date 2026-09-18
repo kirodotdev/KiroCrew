@@ -177,7 +177,7 @@ appends every other JSON line verbatim (`history_projection.py`,
 `TranscriptReadProjection`).
 
 One thing to *not* do: leave the new role out of `_QUESTION_RETIRING_ROLES`
-(`dashboard/state.py:2063`, currently `{user, nudge}`, mirrored by the frontend's
+(`dashboard/state.py`, currently `{user}`, mirrored by the frontend's
 `QUESTION_RETIRING_ROLES`). A marker must not retire a pending question card.
 Default behaviour is already correct; this is a note against a well-meaning later
 edit.

@@ -47,6 +47,14 @@ function setRect(el: HTMLElement, top: number, height: number) {
   })
 }
 
+/** A row whose viewport rect tracks the scroller, the way a real one does. */
+function trackScroll(el: HTMLElement, contentTop: number, height: number, g: { scrollTop: number }) {
+  Object.defineProperty(el, 'getBoundingClientRect', {
+    configurable: true,
+    value: () => rect(contentTop - g.scrollTop, height),
+  })
+}
+
 function flushFrame(at: number) {
   const frame = frames.shift()
   expect(frame, 'expected a queued animation frame').toBeDefined()
@@ -111,23 +119,28 @@ function mountGeometry(rowCount: number) {
   }
 }
 
-function renderEarly(mountIndex: (index: number) => boolean = () => false) {
+function renderEarly(
+  mountIndex: (index: number) => boolean = () => false,
+  estimateRowTop: (index: number) => number | null = () => null,
+) {
   const vGetFollowRef = { current: () => false }
   const slotRunningRef = { current: false }
   const mountIndexRef = { current: vi.fn(mountIndex) }
+  const estimateRowTopRef = { current: vi.fn(estimateRowTop) }
   const scrollerRef = { current: null as HTMLDivElement | null }
   const vScrollToBottomRef = { current: vi.fn() }
   const scrollToDisplayIndex = vi.fn()
   const hook = renderHook(() => useChatPageTranscriptEarlyController({
     activeTip: null,
     mountIndexRef,
+    estimateRowTopRef,
     scrollerRef: scrollerRef as never,
     scrollToDisplayIndex: scrollToDisplayIndex as never,
     slotRunningRef,
     vGetFollowRef,
     vScrollToBottomRef,
   }))
-  return { ...hook, vGetFollowRef, mountIndexRef, scrollerRef, vScrollToBottomRef, scrollToDisplayIndex }
+  return { ...hook, vGetFollowRef, mountIndexRef, estimateRowTopRef, scrollerRef, vScrollToBottomRef, scrollToDisplayIndex }
 }
 
 beforeEach(() => {
@@ -155,7 +168,10 @@ afterEach(() => {
 })
 
 describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
-  it('derives a machine prompt from live geometry and throttles scroll recomputes', () => {
+  it('skips a machine opener behind the fold, pins the user prompt above it, and throttles scroll recomputes', () => {
+    // The nudge at index 2 is the row that has scrolled behind the band, but a
+    // machine opener is never a pin candidate: the walk continues up to the
+    // user's own prompt at index 0 (utils/pinnedPrompt isPrompt).
     const { result, scrollerRef } = renderEarly()
     const geometry = mountGeometry(5)
     const items: DisplayItem[] = [
@@ -176,11 +192,15 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
     })
 
     expect(result.current.pinned).toMatchObject({
-      idx: 2,
-      raw: '[auto-nudge cycle 2]\ninspect the latest logs',
-      full: 'inspect the latest logs',
+      idx: 0,
+      raw: 'first prompt',
+      full: 'first prompt',
       push: 0,
-      bannerH: 70,
+      // The height reported by `onPinCollapsedHeight` (60), not the live card
+      // rect (70): the push geometry is derived from the card's SETTLED resting
+      // height so a card grown by the hover peek cannot feed its own push. See
+      // usePinnedPrompt.test.tsx.
+      bannerH: 60,
     })
 
     act(() => {
@@ -189,10 +209,10 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
     })
     expect(frames).toHaveLength(1)
     flushFrame(16)
-    expect(result.current.pinned?.idx).toBe(2)
+    expect(result.current.pinned?.idx).toBe(0)
   })
 
-  it('glides a near pinned jump and sends a far one through the mounted-row poll', () => {
+  it('glides a near pinned jump after the unioned rows measure, then converges on the landing', () => {
     const near = renderEarly(() => false)
     const nearGeometry = mountGeometry(3)
     const items: DisplayItem[] = [
@@ -204,40 +224,73 @@ describe('useChatPageTranscriptEarlyController pinned prompt coverage', () => {
       near.scrollerRef.current = nearGeometry.scroller
       near.result.current.pinFoldRef.current = nearGeometry.fold
       near.result.current.pinCardRef.current = nearGeometry.card
-      setRect(nearGeometry.rows[2], 300, 40)
+      // Content top 500: viewport y=300 at scrollTop 200. Landing = 500 minus
+      // the chrome (fold 100 + pinPushTravel(70) 74 + 24 slack = 198) = 302.
+      trackScroll(nearGeometry.rows[2], 500, 40, nearGeometry)
       near.result.current.displayItemsRef.current = items
       near.result.current.onPinCollapsedHeight(60)
       near.result.current.scrollToPinnedPrompt(2)
     })
+    // A near target unions the window; nothing is replaced.
+    expect(near.mountIndexRef.current).toHaveBeenCalledWith(2, { unionOnly: true })
 
-    // Three stable observations enter the self-driven glide; the final frame
-    // advances beyond GLIDE_MS so the test asserts the settled destination.
+    // Three stable observations of the unioned row enter the glide.
     flushFrame(0)
     flushFrame(16)
     flushFrame(32)
-    flushFrame(532)
-    expect(near.mountIndexRef.current).toHaveBeenCalledWith(2)
+    expect(nearGeometry.scrollTop).toBe(200)
+    flushFrame(257)   // mid-travel: between, so a glide rather than a teleport
     expect(nearGeometry.scrollTop).toBeGreaterThan(200)
+    expect(nearGeometry.scrollTop).toBeLessThan(302)
+    flushFrame(482)   // travel over: on the goal, loop still armed to converge
+    expect(nearGeometry.scrollTop).toBe(302)
+    expect(frames).toHaveLength(1)
+    flushFrame(498)
+    flushFrame(514)
+    flushFrame(750)   // quiet for GLIDE_QUIET_MS over ≥ 2 frames: settled
+    expect(nearGeometry.scrollTop).toBe(302)
+    expect(frames).toHaveLength(0)
+    expect(near.scrollToDisplayIndex).not.toHaveBeenCalled()
+  })
 
-    const far = renderEarly(() => true)
-    const farGeometry = mountGeometry(3)
+  it('glides a far pinned jump toward the height-index estimate instead of teleporting', () => {
+    // The target row is NOT mounted (the fixture holds rows 0-1 only) and the
+    // virtualizer reports it far. The jump must not replace the window and must
+    // not teleport: it steers by the estimate the virtualizer supplies, moving
+    // through intermediate positions, and converges once the goal holds still.
+    const far = renderEarly(() => true, (index) => (index === 2 ? 1500 : null))
+    const farGeometry = mountGeometry(2)
+    const items: DisplayItem[] = [
+      single(0, 'user', 'first prompt'),
+      single(1, 'assistant', 'reply'),
+      single(2, 'user', 'target prompt'),
+    ]
     act(() => {
       far.scrollerRef.current = farGeometry.scroller
       far.result.current.pinFoldRef.current = farGeometry.fold
       far.result.current.pinCardRef.current = farGeometry.card
       far.result.current.displayItemsRef.current = items
+      far.result.current.onPinCollapsedHeight(60)
       far.result.current.scrollToPinnedPrompt(2)
     })
+    expect(far.mountIndexRef.current).toHaveBeenCalledWith(2, { unionOnly: true })
+    expect(far.estimateRowTopRef.current).toHaveBeenCalledWith(2)
 
-    // A far jump delegates to navToDisplayIndex, which waits for the mounted
-    // row instead of gliding across virtualizer spacer.  Its first poll step
-    // may immediately scroll because this fixture already contains the row.
-    flushFrame(548)
-    expect(far.mountIndexRef.current).toHaveBeenCalledWith(2)
-    expect(far.scrollToDisplayIndex).toHaveBeenCalledWith(2, {
-      behavior: 'auto',
-      align: 'start',
-      offset: -198,
-    })
+    // Estimate 1500 minus the chrome (198) = 1302, inside the 1800 max.
+    flushFrame(0)
+    expect(farGeometry.scrollTop).toBe(200)
+    flushFrame(225)
+    expect(farGeometry.scrollTop).toBeGreaterThan(200)
+    expect(farGeometry.scrollTop).toBeLessThan(1302)
+    flushFrame(450)
+    expect(farGeometry.scrollTop).toBe(1302)
+    expect(frames).toHaveLength(1)
+    flushFrame(466)
+    flushFrame(482)
+    flushFrame(720)
+    expect(farGeometry.scrollTop).toBe(1302)
+    expect(frames).toHaveLength(0)
+    // The old far path: an instant scroll through the mounted-row poll.
+    expect(far.scrollToDisplayIndex).not.toHaveBeenCalled()
   })
 })

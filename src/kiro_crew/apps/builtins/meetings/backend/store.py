@@ -452,12 +452,11 @@ def delete_meeting(meeting_id: str, root: Path | None = None) -> bool:
     safe_id = safe_meeting_id(meeting_id)
     entry = meetings_root(root) / safe_id
     resolved = contain(entry, operation="meetings.delete", root=root)
-    # Built from the RESOLVED data dir so ``_refuse_linked`` covers the whole
-    # chain — a linked edits ROOT would redirect this rmtree just as surely as a
-    # linked per-meeting entry.
-    edit_entry = data_dir(root).resolve() / k.AGENT_EDITS_DIR / safe_id
-    contain(edit_entry, operation="meetings.delete_edits", root=root)
-    edit_resolved = _refuse_linked(edit_entry, operation="meetings.delete_edits")
+    # One spelling of the edits-path derivation: ``agent_edits_dir`` applies the
+    # same ``contain`` + ``_refuse_linked`` barrier at both the edits ROOT and
+    # the per-meeting entry, so a linked entry anywhere on the chain is refused
+    # before this rmtree could follow it.
+    edit_resolved = agent_edits_dir(safe_id, root)
 
     # ``contain`` deliberately follows links to detect an escape. For deletion,
     # following an in-root link would still select the wrong meeting directory.
@@ -689,7 +688,7 @@ def append_translation(
     both be writing, and ``atomic_write`` makes the WRITE atomic, not the
     read-modify-write around it.
 
-    Returns ``None`` without writing when the meeting no longer exists: the
+    Returns ``None`` without writing when the meeting does not exist: the
     worker's persistence runs on a thread and can lose a race with
     ``delete_meeting`` — without this guard, ``_write_json``'s ``mkdir`` would
     silently recreate the deleted meeting's directory. Both sides take

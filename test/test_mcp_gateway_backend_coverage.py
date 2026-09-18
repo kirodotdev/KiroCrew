@@ -32,7 +32,10 @@ import asyncio
 import base64
 import json
 import logging
+import sys
+import threading
 import time
+from pathlib import Path
 from typing import Any, Optional, cast
 from unittest.mock import AsyncMock, MagicMock
 
@@ -227,8 +230,8 @@ class TestFrameHelpers:
     def test_strip_caller_meta_also_removes_a_forged_TENANT_block(self) -> None:
         """The nonce decides which namespace an unnamed co-tenant lands in.
 
-        A stub allowed to supply its own would pick a PEER's namespace — #5322's
-        collision chosen instead of accidental — so the nonce is stripped on the
+        A stub allowed to supply its own would pick a PEER's namespace — a chosen
+        collision rather than an accidental one — so the nonce is stripped on the
         same trust boundary as the identity, by the same function, on every
         forwarded frame.
         """
@@ -401,6 +404,38 @@ class TestAttachDetachAndAccounting:
 
 
 class TestForwardFromStub:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("proof", ["trusted.signature", "", None])
+    async def test_only_current_gateway_member_proof_reaches_backend(self, proof) -> None:
+        from kiro_crew.member_memory_auth import PROOF_META_KEY
+
+        backend = _make_backend()
+        backend.supports_caller_identity = True
+        caller = None if proof is None else CallerContext(
+            session_key="reviewer", from_gateway=True, member_memory_proof=proof,
+        )
+        msg = {
+            "method": "tools/call", "id": 23,
+            "params": {"name": "memory_recall", "_meta": {
+                CALLER_META_KEY: {
+                    "schemaVersion": 1, "sessionKey": "victim", PROOF_META_KEY: "forged.signature",
+                },
+                "progressToken": "visible-progress",
+            }},
+        }
+        await backend.forward_from_stub("s1", msg, caller=caller)
+        meta = _frames(backend)[0]["params"]["_meta"]
+        parsed = CallerContext.from_meta(meta)
+        if caller is None:
+            assert parsed is None
+        else:
+            assert parsed is not None
+            assert parsed.session_key == "reviewer"
+            assert parsed.member_memory_proof == proof
+        assert "forged.signature" not in json.dumps(meta)
+        assert meta["progressToken"] == "visible-progress"
+        assert "forged.signature" in json.dumps(msg)
+
     @pytest.mark.asyncio
     async def test_dead_backend_raises_backend_gone(self) -> None:
         backend = _make_backend()
@@ -1768,8 +1803,8 @@ class TestRouteBackendLine:
     async def test_replay_grant_for_a_detached_stub_releases_the_lease(self) -> None:
         """Detach cannot see a sentinel-owned replay pending, so the response
         arm must catch the mid-replay disconnect itself: a grant for a stub
-        that is no longer attached is released, never recorded against the
-        dead UUID (which would pin the lease to a stub that cannot drain it)."""
+        that is already detached is released, never recorded against the dead
+        UUID (which would pin the lease to a stub that cannot drain it)."""
         backend = _make_backend()
         await backend.attach_stub("s1")
         await backend.attach_stub("s2")
@@ -2372,8 +2407,8 @@ class TestSubscriptionResponseHardening:
     async def test_grant_commits_every_rider_before_replies(self) -> None:
         """The coalesced grant commits the forwarder AND every rider before
         any reply: a mid-loop detach that empties the entry would otherwise
-        delete it from the table, stranding later riders in a stale set
-        alias that no longer routes."""
+        delete it from the table, stranding later riders in a stale set alias
+        that routes nowhere."""
         backend = _make_backend()
         s1_inbox = await backend.attach_stub("s1")
         s2_inbox = await backend.attach_stub("s2")
@@ -3329,11 +3364,11 @@ class TestSubscriptionResponseHardening:
 
     @pytest.mark.asyncio
     async def test_respawn_capture_survives_backend_death(self) -> None:
-        """The backend-gone cleanup clears the pending table — previously
-        erasing an in-flight replay's only record, so a replacement dying
-        before its replay responses arrived left the NEXT respawn's capture
-        empty and the subscription permanently dark. Death now preserves the
-        replay-target URIs for the capture. A rekey-evicted replay
+        """The backend-gone cleanup clears the pending table, which is an
+        in-flight replay's only record: erase it and a replacement dying before
+        its replay responses arrive leaves the NEXT respawn's capture empty and
+        the subscription permanently dark. Death preserves the replay-target URIs
+        for the capture. A rekey-evicted replay
         (``replay_stub`` scoped to ``""``) is correctly NOT preserved."""
         backend = _make_backend()
         await backend.attach_stub("s1")
@@ -4474,7 +4509,7 @@ class TestCallMetrics:
 
 
 class TestBackendTmpContainment:
-    """Issue #5064: spawn injects a contained temp dir; shutdown reclaims it."""
+    """Spawn injects a contained temp dir; shutdown reclaims it."""
 
     @pytest.mark.asyncio
     async def test_spawn_contains_temp_under_managed_root(
@@ -4504,31 +4539,209 @@ class TestBackendTmpContainment:
         assert (contained / bt.OWNER_FILENAME).is_file()
 
     @pytest.mark.asyncio
-    async def test_operator_declared_temp_wins(self, fake_spawn, monkeypatch, tmp_path) -> None:
-        # A spec that sets TMPDIR deliberately points a heavy server at
-        # chosen storage; containment must not trade litter for ENOSPC.
-        # Declaration is the CALLER's signal (declared_temp_keys), carried
-        # from the gatewayd closure that knows the declared-env set.
+    async def test_unsealed_declaration_is_honored_verbatim(
+        self, fake_spawn, monkeypatch, tmp_path
+    ) -> None:
+        from kiro_crew import sandbox as sandbox_mod
         from kiro_crew.mcp_gateway import backend_tmp as bt
 
         home = tmp_path / "home"
         home.mkdir()
         monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", lambda _path: None)
 
         await spawn_backend(
             _pool_key(),
             "/usr/bin/example-mcp",
             [],
-            {"TMPDIR": "/mnt/bigdisk/tmp"},
+            {"tmpdir": "/mnt/bigdisk/tmp"},
+            "/nonexistent-work-dir",
+            declared_temp_keys=("tmpdir",),
+        )
+
+        env = fake_spawn["kwargs"]["env"]
+        assert env["TMPDIR"] == "/mnt/bigdisk/tmp"
+        assert "tmpdir" not in env
+        assert not (home / "run" / "mcp-tmp").exists() or not any(
+            (home / "run" / "mcp-tmp").iterdir()
+        )
+
+    @pytest.mark.asyncio
+    async def test_sealed_declaration_uses_managed_temp_and_warns(
+        self, fake_spawn, monkeypatch, tmp_path, caplog
+    ) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        declared = str(home / "run" / "custom-tmp")
+        loop_thread = threading.get_ident()
+        classifier_threads: list[int] = []
+
+        def _sealed(_path: str) -> str:
+            classifier_threads.append(threading.get_ident())
+            return "sealed"
+
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", _sealed)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await spawn_backend(
+                _pool_key(),
+                "/usr/bin/example-mcp",
+                [],
+                {"TMPDIR": declared},
+                "/nonexistent-work-dir",
+                declared_temp_keys=("TMPDIR",),
+            )
+
+        env = fake_spawn["kwargs"]["env"]
+        managed = Path(env["TMPDIR"])
+        assert managed.parent == home / "run" / "mcp-tmp"
+        assert env["TMP"] == env["TEMP"] == str(managed)
+        assert declared not in env.values()
+        assert classifier_threads and all(thread != loop_thread for thread in classifier_threads)
+        warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "ignoring spec-declared" in record.getMessage()
+        )
+        assert f"TMPDIR={declared!r}" in warning
+        assert "inside the sandbox-sealed runtime parent" in warning
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="nothing seals run/ on Windows")
+    @pytest.mark.asyncio
+    async def test_real_classifier_refuses_a_sealed_declaration(
+        self, fake_spawn, monkeypatch, tmp_path
+    ) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        (home / "run").mkdir(parents=True)
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        monkeypatch.setattr(sandbox_mod, "config_dir", lambda: home)
+        declared = str(home / "run" / "custom-tmp")
+
+        await spawn_backend(
+            _pool_key(),
+            "/usr/bin/example-mcp",
+            [],
+            {"TMPDIR": declared},
             "/nonexistent-work-dir",
             declared_temp_keys=("TMPDIR",),
         )
 
         env = fake_spawn["kwargs"]["env"]
-        assert env["TMPDIR"] == "/mnt/bigdisk/tmp"
-        assert not (home / "run" / "mcp-tmp").exists() or not any(
-            (home / "run" / "mcp-tmp").iterdir()
+        managed = Path(env["TMPDIR"])
+        assert managed.parent == home / "run" / "mcp-tmp"
+        assert declared not in env.values()
+
+    @pytest.mark.asyncio
+    async def test_secret_backed_refusal_never_logs_the_resolved_path(
+        self, fake_spawn, monkeypatch, tmp_path, caplog
+    ) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        resolved_secret = str(home / "run" / "vault-secret-value")
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", lambda _path: "sealed")
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await spawn_backend(
+                _pool_key(),
+                "/usr/bin/example-mcp",
+                [],
+                {"TMPDIR": resolved_secret},
+                "/nonexistent-work-dir",
+                declared_temp_keys=("TMPDIR",),
+                secret_env_keys=("TMPDIR",),
+            )
+
+        warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "ignoring spec-declared" in record.getMessage()
         )
+        assert resolved_secret not in warning
+        assert "TMPDIR='<resolved secret>'" in warning
+
+    @pytest.mark.asyncio
+    async def test_check_failure_uses_managed_temp_and_warns(
+        self, fake_spawn, monkeypatch, tmp_path, caplog
+    ) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+        from kiro_crew.mcp_gateway import backend_tmp as bt
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setattr(bt, "config_dir", lambda: home)
+        declared = str(home / "run" / "custom-tmp")
+
+        def _raise(_path: str) -> None:
+            raise OSError("classifier unavailable\nFORGED")
+
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", _raise)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await spawn_backend(
+                _pool_key(),
+                "/usr/bin/example-mcp",
+                [],
+                {"TMPDIR": declared},
+                "/nonexistent-work-dir",
+                declared_temp_keys=("TMPDIR",),
+            )
+
+        env = fake_spawn["kwargs"]["env"]
+        managed = Path(env["TMPDIR"])
+        assert managed.parent == home / "run" / "mcp-tmp"
+        assert declared not in env.values()
+        warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "ignoring spec-declared" in record.getMessage()
+        )
+        assert "seal check itself failed" in warning
+        assert "\\nFORGED" in warning
+        assert "\nFORGED" not in warning
+
+    @pytest.mark.asyncio
+    async def test_refusal_allocation_failure_uses_the_platform_default(
+        self, fake_spawn, monkeypatch, caplog
+    ) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", lambda _path: "sealed")
+        monkeypatch.setattr(
+            backend_mod,
+            "allocate_backend_tmp",
+            MagicMock(side_effect=OSError("disk full")),
+        )
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.backend"):
+            await spawn_backend(
+                _pool_key(),
+                "/usr/bin/example-mcp",
+                [],
+                {"TMPDIR": "/sealed/temp"},
+                "/nonexistent-work-dir",
+                declared_temp_keys=("TMPDIR",),
+            )
+
+        env = fake_spawn["kwargs"]["env"]
+        assert not [key for key in env if key.upper() in ("TMPDIR", "TMP", "TEMP")]
+        allocation_warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "could not allocate a contained temp dir" in record.getMessage()
+        )
+        assert "platform default" in allocation_warning
+        assert "inherited temp" not in allocation_warning
 
     @pytest.mark.asyncio
     async def test_partial_declaration_strips_competing_ambient_keys(

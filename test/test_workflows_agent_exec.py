@@ -3,7 +3,7 @@
 Asserts build_agent_fn's wiring WITHOUT a real model/kiro-cli:
   * each call acquires a session and streams the prompt via stream_and_collect
   * default (no session=) → a fresh isolated per-call session, released after
-  * session=<key> → reuse that named session, NOT released (stateful chain)
+  * session=<key> → reuse that named session, release its lease but keep history
   * agent/model/cwd from opts (or defaults) flow into get_or_create
   * end-to-end through the runner: a workflow's ctx.agent() reaches the model
 
@@ -85,15 +85,15 @@ async def test_subagents_get_full_tooled_agent_not_lite() -> None:
     assert sessions2.created[0][1]["agent"] == "agent-sde"
 
 
-async def test_named_session_is_reused_and_not_released() -> None:
+async def test_named_session_is_reused_and_lease_released() -> None:
     sessions = FakeSessions()
     fn = build_agent_fn(sessions, run_id="wf_x")
 
     out = await fn("step1", {"session": "chain-A"})
     assert out == "reply[chain-A]:step1"
     assert sessions.created[0][0] == "chain-A"
-    # a named (stateful) session persists across steps — NOT released
-    assert sessions.released == []
+    # Returning the lease does not destroy the named provider or its history.
+    assert sessions.released == ["chain-A"]
 
 
 async def test_two_default_calls_get_distinct_sessions() -> None:
@@ -112,17 +112,23 @@ async def test_opts_and_defaults_flow_into_get_or_create() -> None:
 
     await fn("p", {})  # uses defaults
     assert sessions.created[-1][1] == {
-        "agent": "researcher", "model": "m1", "cwd": None, "extra_env": None
+        "agent": "researcher",
+        "model": "m1",
+        "cwd": None,
+        "extra_env": None,
     }
 
     await fn("p", {"agent": "coder", "model": "m2", "cwd": "/tmp/x"})  # opts override
     assert sessions.created[-1][1] == {
-        "agent": "coder", "model": "m2", "cwd": "/tmp/x", "extra_env": None
+        "agent": "coder",
+        "model": "m2",
+        "cwd": "/tmp/x",
+        "extra_env": None,
     }
 
 
 async def test_extra_env_run_level_pin_flows_into_get_or_create() -> None:
-    """Issue #2207: a run-level extra_env pin reaches every spawned session,
+    """A run-level extra_env pin reaches every spawned session,
     just like default_agent/default_model/cwd (WorkflowContext.agent has no
     per-call env= override, so this is a run-level pin)."""
     env = {"CORRELATION_ID": "abc123", "MC_ENDPOINT": "https://example.test"}
@@ -162,20 +168,19 @@ async def test_end_to_end_through_runner() -> None:
 
 
 async def test_agent_step_persists_usage_row_with_surface() -> None:
-    """Issue #647: each workflow agent step appends one usage row tagged
+    """Each workflow agent step appends one usage row tagged
     surface='workflow', carrying the step's agent/model and context occupancy."""
     sessions = FakeSessions()
-    fn = build_agent_fn(
-        sessions, run_id="wf_u", default_agent="researcher", default_model="m1"
-    )
+    fn = build_agent_fn(sessions, run_id="wf_u", default_agent="researcher", default_model="m1")
 
     persist = AsyncMock()
-    with patch(
-        "kiro_crew.dashboard.handlers.usage.persist_token_record_async", persist
-    ), patch(
-        "kiro_crew.dashboard.handlers.usage.read_context_tokens",
-        MagicMock(return_value=(42, 200000)),
-        create=True,
+    with (
+        patch("kiro_crew.dashboard.handlers.usage.persist_token_record_async", persist),
+        patch(
+            "kiro_crew.dashboard.handlers.usage.read_context_tokens",
+            MagicMock(return_value=(42, 200000)),
+            create=True,
+        ),
     ):
         await fn("do work", {})
 
@@ -185,3 +190,29 @@ async def test_agent_step_persists_usage_row_with_surface() -> None:
     assert kwargs["agent"] == "researcher"
     assert kwargs["context_used"] == 42
     assert kwargs["context_window"] == 200000
+
+
+@pytest.mark.parametrize("opts", [{}, {"session": "chain-A"}])
+async def test_identity_is_published_before_each_agent_turn(monkeypatch, opts):
+    from kiro_crew.messaging import identity
+
+    sessions = FakeSessions()
+    events = []
+
+    async def publish(owner, key):
+        assert owner is sessions
+        assert sessions.created[-1][0] == key
+        events.append(("publish", key))
+
+    async def stream(provider, message, **kwargs):
+        assert events[-1] == ("publish", provider.key)
+        events.append(("stream", provider.key))
+        return "done"
+
+    monkeypatch.setattr(identity, "publish_turn_identity", publish)
+    monkeypatch.setattr(agent_exec, "stream_and_collect", stream)
+    agent = build_agent_fn(sessions, run_id="wf_identity")
+    assert await agent("first", opts) == "done"
+    assert await agent("second", opts) == "done"
+    assert [event for event, _ in events] == ["publish", "stream", "publish", "stream"]
+    assert sessions.released == [key for key, _ in sessions.created]

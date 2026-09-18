@@ -4,23 +4,19 @@ Applying the owner-only lockdown after the payload is already at its final path
 leaves a window in which the file exists under whatever permissions it
 inherited. On Windows that is the parent directory's DACL, and POSIX mode bits
 are not enforced there at all, so ``atomic_write(mode=0o600)`` does not close
-it. Issue #5307 converted the last seven such writers to
-``atomic_write(..., restrict_to_owner=True)``, which locks the temp file down
-before the first content byte and before the rename.
+it. Such writers use ``atomic_write(..., restrict_to_owner=True)``, which locks
+the temp file down before the first content byte and before the rename.
 
-Nothing prevented a NEW writer from reintroducing the shape. Two layers here:
+Two layers guard against a new writer reintroducing the exposed shape:
 
 * ``scripts/check_lockdown_before_publish.py`` is an AST rule over
   ``src/kiro_crew``, exercised below against fixtures for every shape it must
-  catch and every correct shape it must not. Validated against real history:
-  run against the tree before #5329 it flags 6/6 of #5307's sites; against
-  ``main`` after it, 0/6.
+  catch and every correct shape it must not.
 * behavioural probes assert the ORDER at the live writers, rather than the
   final mode -- a final-mode assertion passes just as happily when the payload
   was exposed for the whole write window, and on NTFS reports ``0o666``
-  regardless of the DACL. The technique (record whether the FINAL path exists
-  at the moment lockdown runs) is from PR #5314 by @leonlaiyc, whose
-  production change landed via #5329.
+  regardless of the DACL. The technique records whether the FINAL path exists
+  at the moment lockdown runs.
 """
 
 from __future__ import annotations
@@ -717,9 +713,9 @@ class TestTheRealTree:
 
         `scan_path` normalises with `.as_posix()` for the same reason. On Linux
         `str()` and `as_posix()` agree, so no assertion here can distinguish
-        them -- the Windows shard is the real verification, and it caught this
-        exact bug: every allowlist entry reported "no longer violates" while
-        every real site reported as new.
+        them -- the Windows shard is the real verification: a backslash key
+        matches no real site, so the entry reads as already-clean while every
+        real site reports as new.
         """
         bad = [key for key in checker.KNOWN_UNCONVERTED if "\\" in key]
         assert not bad, f"KNOWN_UNCONVERTED keys must use forward slashes: {bad}"
@@ -752,9 +748,8 @@ class TestTheRealTree:
 
         The enforcement lives in ``main()`` (``entry[1] == expr``), so this runs a
         real file through it: one function, the tracked violation plus a second
-        unrelated one. An earlier version of this test only compared two dict
-        entries and never invoked the scanner at all, so it asserted nothing
-        about the property it claimed to pin (First Principles review, #5348).
+        unrelated one. Comparing two dict entries without invoking the scanner
+        would assert nothing about the property this pins.
         """
         fixture = tmp_path / "writer.py"
         fixture.write_text(
@@ -805,7 +800,7 @@ class TestTheRealTree:
 
 # ─── behavioural probes: ORDER at the live writers ──────────────────────────
 #
-# Technique from PR #5314 (@leonlaiyc): patch the lockdown helper and record
+# Technique: patch the lockdown helper and record
 # whether the FINAL path already exists when it runs. That is a property both
 # platforms must satisfy, unlike a final-mode assertion.
 

@@ -57,3 +57,70 @@ class TestPickerIncludesInstallable:
         assert set(rows) == {"ready", "heals"}  # 'hidden' filtered out
         assert rows["ready"]["available"] is True
         assert rows["heals"]["available"] is False
+
+
+class TestPickerPublicReachable:
+    """Each row carries `public_reachable` so the FE can decide whether the
+    public-exposure warning and acknowledgment belong in front of the confirm."""
+
+    @pytest.mark.asyncio
+    async def test_declared_false_is_carried_as_false(self, monkeypatch):
+        import json
+
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.handlers import artifacts as handlers
+
+        private = _fake_provider("private", available=True, installable=False)
+        private.public_reachable = False
+        public = _fake_provider("public", available=True, installable=False)
+        public.public_reachable = True
+        monkeypatch.setattr(handlers, "list_providers", lambda: [private, public])
+
+        req = make_mocked_request("GET", "/api/artifacts/publish-providers?kind=markdown")
+        resp = await handlers.api_artifact_publish_providers(req)
+
+        rows = {r["name"]: r for r in json.loads(resp.text)["providers"]}
+        assert rows["private"]["public_reachable"] is False
+        assert rows["public"]["public_reachable"] is True
+
+    @pytest.mark.asyncio
+    async def test_undeclared_provider_defaults_to_reachable(self, monkeypatch):
+        """A provider that never declares the field is reported reachable: the
+        wrong default here would be a public link with no warning."""
+        import json
+
+        from aiohttp.test_utils import make_mocked_request
+
+        from kiro_crew.dashboard.handlers import artifacts as handlers
+        from kiro_crew.publish_provider import PublishProvider
+
+        class Undeclared(PublishProvider):
+            name = "undeclared"
+
+            def available(self) -> bool:
+                return True
+
+            def view_url_for(self, external_id: str) -> str:
+                return f"https://example.com/{external_id}"
+
+            async def publish(self, **kwargs):  # pragma: no cover
+                raise NotImplementedError
+
+            async def push_version(self, **kwargs):  # pragma: no cover
+                raise NotImplementedError
+
+            async def update_sharing(self, **kwargs):  # pragma: no cover
+                raise NotImplementedError
+
+            async def unpublish(self, **kwargs):  # pragma: no cover
+                raise NotImplementedError
+
+        assert PublishProvider.public_reachable is True
+        monkeypatch.setattr(handlers, "list_providers", lambda: [Undeclared()])
+
+        req = make_mocked_request("GET", "/api/artifacts/publish-providers?kind=markdown")
+        resp = await handlers.api_artifact_publish_providers(req)
+
+        (row,) = json.loads(resp.text)["providers"]
+        assert row["public_reachable"] is True

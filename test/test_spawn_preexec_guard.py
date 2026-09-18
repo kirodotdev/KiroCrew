@@ -1,4 +1,4 @@
-"""No spawn may hand CPython a ``preexec_fn`` (issue #935).
+"""No spawn may hand CPython a ``preexec_fn``.
 
 ``preexec_fn`` forces a plain ``fork()`` of the multi-GB, ~118-thread gateway and
 runs Python bytecode in the child before ``exec``. A lock another thread held at

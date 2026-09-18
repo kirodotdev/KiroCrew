@@ -8,7 +8,7 @@ reads it. Three things make that risky enough to pin here rather than trust:
 * it must not shadow a kiro-cli slash command, which is forwarded to the harness
   and never reaches the expansion at all;
 * it replaces the turn wholesale, so the user-text span the caller measured
-  before the swap describes bytes that no longer exist.
+  before the swap describes bytes the swapped-in turn does not contain.
 
 The build_message tests drive the REAL assembly rather than the expander alone,
 because the value of putting the macro in ``build_message`` is precisely that

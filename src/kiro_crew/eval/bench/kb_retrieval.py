@@ -46,7 +46,7 @@ from kiro_crew.eval.bench.retrieval import (
 from kiro_crew.eval.bench.safepath import UnsafePathError, read_text_nofollow
 from kiro_crew.eval.bench.toy_embedder import TOY_EMBEDDER_ID, toy_embed_fn
 from kiro_crew.knowledge.embedder import floats_to_bytes
-from kiro_crew.knowledge.retrieval import HybridRetriever
+from kiro_crew.knowledge.retrieval import ANY_EMBEDDING_SPACE, HybridRetriever
 from kiro_crew.knowledge.store import KnowledgeStore
 
 # Module-scope imports are safe here despite the boot-path perf concern: this
@@ -566,7 +566,11 @@ def run_kb_retrieval(
     store = KnowledgeStore(db_path)
     try:
         _build_store(store, golden.docs, wrapped)
-        retriever = HybridRetriever(store, embedder=wrapped)
+        # This disposable corpus and every query use the same callable. Its
+        # vectors have no persisted model identity and cannot mix with user data.
+        retriever = HybridRetriever(
+            store, embedder=wrapped, embed_sig=ANY_EMBEDDING_SPACE if wrapped else None
+        )
 
         report = KBRetrievalReport(
             golden_set=golden.name,

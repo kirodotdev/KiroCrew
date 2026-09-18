@@ -1,4 +1,4 @@
-"""Tests for ``atomic_write``'s bytes and owner-only capabilities (issue #1105).
+"""Tests for ``atomic_write``'s bytes and owner-only capabilities.
 
 These two gaps are why a set of hand-rolled temp-write-and-rename sites could
 not adopt the shared helper, and so silently missed the Windows rename retry:
@@ -183,7 +183,7 @@ def test_a_failing_lockdown_leaves_no_temp_and_no_target(tmp_path, monkeypatch):
 
 
 def _failing_restrict(monkeypatch):
-    """Make the owner-only lockdown fail the way a read-only FS or icacls would."""
+    """Make the owner-only lockdown fail the way a read-only FS or a DACL write failure would."""
 
     def _boom(path, **_kw):
         raise OSError("cannot set DACL")

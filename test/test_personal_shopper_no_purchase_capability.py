@@ -9,7 +9,7 @@ tool with which a checkout could be completed.
 Two distinct routes had to be closed, and the second is why this file pins an
 ALLOWLIST rather than listing forbidden names:
 
-1. **A shell.** Post-#3233 browsing IS shell (``playwright-cli``), and ``click``
+1. **A shell.** Browsing IS shell (``playwright-cli``), and ``click``
    and ``attach`` are both on the auto-approve page-verb allowlist, so a shell
    grant means an injected advisor can click "Place Order" on the operator's
    logged-in store with no human in the loop.
@@ -31,8 +31,8 @@ app's own sqlite store out of the data home -- which would make the advisor's
 "I cannot read your Preferences tab" honesty claim enforced by prompt text
 rather than by capability. That is the same trap this file exists to avoid, one
 level down, so the local read tools are withheld too and the honesty claims are
-true by construction. Restoring browsing (#3426) or app-API access (#3444)
-deliberately has to come back through this test.
+true by construction. Restoring browsing or app-API access deliberately has to
+come back through this test.
 """
 
 from __future__ import annotations

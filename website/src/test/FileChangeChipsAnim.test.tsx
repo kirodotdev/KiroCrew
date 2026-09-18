@@ -106,10 +106,15 @@ describe('chip row collapse animation', () => {
     expect(row).toHaveAttribute('role', 'button')
 
     fireEvent.keyDown(row, { key: 'Enter' })
-    await waitFor(() => expect(document.activeElement).toBe(chevron()))
-    expect(latest().unsafeCSS).not.toContain('fccHide')
-    expect(row).not.toHaveAttribute('role')
-    expect(row).not.toHaveAttribute('tabindex')
+    // Focus moves synchronously; removing the proxy role needs React's commit.
+    await waitFor(() => {
+      expect(document.activeElement).toBe(chevron())
+      expect(latest().unsafeCSS).not.toContain('fccHide')
+      expect(row).not.toHaveAttribute('role')
+      expect(row).not.toHaveAttribute('tabindex')
+      expect(row).not.toHaveAttribute('aria-label')
+      expect(row).not.toHaveAttribute('aria-expanded')
+    })
   })
 
   it('disarms the hide animation once the collapse animation has run', async () => {
@@ -162,9 +167,13 @@ describe('chip row collapse animation', () => {
 
     hoisted.prefixVisible = true
     rerender(<FileChangeChips fileChanges={[...fileChanges]} />)
-    await waitFor(() => expect(document.activeElement).toBe(hiddenChevron))
-    expect(row).not.toHaveAttribute('role')
-    expect(row).not.toHaveAttribute('tabindex')
+    await waitFor(() => {
+      expect(document.activeElement).toBe(hiddenChevron)
+      expect(row).not.toHaveAttribute('role')
+      expect(row).not.toHaveAttribute('tabindex')
+      expect(row).not.toHaveAttribute('aria-label')
+      expect(row).not.toHaveAttribute('aria-expanded')
+    })
   })
 
   it('keeps focus on the row until Pierre’s lazy chevron mounts', () => {
@@ -281,9 +290,14 @@ describe('chip row collapse animation', () => {
     expect(document.activeElement).toBe(row)
     expect(row).toHaveAttribute('tabindex', '-1')
 
-    await waitFor(() => expect(container.querySelector('[data-testid="pierre-pair"]')).toBeNull())
-    expect(document.activeElement).toBe(chevron())
-    expect(row).not.toHaveAttribute('tabindex')
+    await waitFor(() => {
+      expect(container.querySelector('[data-testid="pierre-pair"]')).toBeNull()
+      expect(document.activeElement).toBe(chevron())
+      expect(row).not.toHaveAttribute('role')
+      expect(row).not.toHaveAttribute('tabindex')
+      expect(row).not.toHaveAttribute('aria-label')
+      expect(row).not.toHaveAttribute('aria-expanded')
+    })
   })
 
   it('does not reclaim focus when the user leaves during collapse', async () => {

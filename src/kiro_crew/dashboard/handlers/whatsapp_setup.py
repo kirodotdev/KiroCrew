@@ -11,11 +11,13 @@ from aiohttp import web
 
 from kiro_crew.config.loader import KiroCrewConfig, update_config_locked
 from kiro_crew.dashboard.channel_folders import (
+    channel_restart_required,
     clean_session_folder,
     ensure_channel_folder,
     stored_folder_name,
 )
 from kiro_crew.dashboard.handlers.agents import _get_config_lock
+from kiro_crew.dashboard.handlers.core import _hot_apply_after_write
 from kiro_crew.dashboard.handlers.messaging import is_direct_local_request
 
 logger = logging.getLogger(__name__)
@@ -147,7 +149,22 @@ async def whatsapp_config_save(request: web.Request) -> web.Response:
                     _folder_name,
                     relabel="session_folder" in body,
                 )
-    return web.json_response({"ok": True, "restart_required": True})
+    # Answer only after the watcher applied the write: the allow-list is live
+    # and, for a connection field, the old client is already unregistered and
+    # its reconnect scheduled -- so a QR request that follows this response
+    # cannot land on the client being closed.
+    await _hot_apply_after_write()
+    # Per FIELD, not a blanket True: the schema's `restart=True` marks are the one
+    # source of truth (`whatsapp.db_path` today). `enabled` and the other
+    # connection fields are applied by the gateway restarting the channel in
+    # process on the next config reload, so a save that touches them must not ask
+    # for a gateway restart either.
+    return web.json_response(
+        {
+            "ok": True,
+            "restart_required": channel_restart_required("whatsapp", body.keys()),
+        }
+    )
 
 
 async def whatsapp_qr_start(request: web.Request) -> web.Response:
@@ -158,7 +175,7 @@ async def whatsapp_qr_start(request: web.Request) -> web.Response:
     if client is None:
         return web.json_response(
             {
-                "error": "channel not running (enable whatsapp and restart)",
+                "error": "channel not running (enable whatsapp, or wait for it to reconnect)",
                 "code": "channel_not_running",
             },
             status=409,

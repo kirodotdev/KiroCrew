@@ -252,7 +252,7 @@ def test_resolve_model_window_unknown_model_returns_none():
 
 
 def test_resolve_model_window_known_regardless_of_serving_provider():
-    # Regression for the acp no-op: a known 200K model must resolve to 200K even
+    # The acp no-op: a known 200K model must resolve to 200K even
     # on the default acp deployment. Window is intrinsic to the model, not the
     # provider — has_known_window takes no provider arg and works for kiro/acp
     # model ids (they are registry aliases).

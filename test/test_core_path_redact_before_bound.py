@@ -1,4 +1,4 @@
-"""Redact-before-bound at the core-path slice sites (issue #7390).
+"""Redact-before-bound at the core-path slice sites.
 
 A bounded slice applied to text BEFORE it is passed to a redactor can cut a
 credential at the slice boundary into fragments no redaction regex matches, so
@@ -115,7 +115,7 @@ class TestArtifactSnippetStraddle:
 class TestToolResultPartStraddle:
     """Tool-output parts must be redacted as ONE combined text, bounded after.
 
-    Two failure shapes are pinned: a credential straddling what used to be a
+    Two failure shapes are pinned: a credential straddling a
     per-part cut (a bound applied before redaction severs it into unmatchable
     fragments), and a multi-line PEM key whose header and footer arrive in
     DIFFERENT parts (per-part redaction can never see it whole — only the
@@ -170,7 +170,7 @@ _SCANNED_MODULES = [
     "src/kiro_crew/acp/_dispatch.py",
     # Its near-twin: AcpClient carries a hand-copied tool-result extractor with
     # the same shape, and its absence from this list is why the bound-then-redact
-    # ordering survived there (issue #7799). NOTE the scan would not have caught
+    # ordering survived there. NOTE the scan would not have caught
     # that instance -- the slice was a separate statement, not an argument to the
     # redactor -- so the behavioural pin for it lives in
     # test_acp_client.py::test_credential_straddling_the_bound_is_still_redacted.
@@ -189,7 +189,7 @@ _SCANNED_MODULES = [
 
 
 class TestNoSliceInsideRedactCallInNamedModules:
-    """Structural class pin over every module issue #7390 names."""
+    """Structural class pin over every module this suite names."""
 
     def test_no_bounded_slice_inside_a_redact_call(self) -> None:
         offenders: list[str] = []

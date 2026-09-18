@@ -1,4 +1,4 @@
-"""Offline regressions for idempotent push-disabled clone setup."""
+"""Offline tests pinning idempotent, push-disabled clone setup."""
 
 from __future__ import annotations
 

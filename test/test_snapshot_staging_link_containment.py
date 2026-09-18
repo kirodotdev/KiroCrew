@@ -17,13 +17,12 @@ from kiro_crew import snapshot as snap
 
 
 class TestAnUnsafeTreeRootFailsTheSnapshot:
-    """Superseded contract, and the change is a strengthening.
+    """An unsafe root fails the snapshot rather than being skipped.
 
-    This class previously asserted that an unsafe root was SKIPPED and left nothing in
-    the bundle. Skipping was still wrong: the manifest went on declaring the component,
-    so the artefact claimed to contain memory it had silently omitted, and the operator
-    only found out when they tried to recover. A backup that lies about its contents is
-    worse than a refusal, so an unsafe root now fails the snapshot.
+    Skipping is wrong: the manifest goes on declaring the component, so the
+    artefact claims to contain memory it silently omitted, and the operator only
+    finds out when they try to recover. A backup that lies about its contents is
+    worse than a refusal, so an unsafe root fails the snapshot.
     """
 
     def test_a_symlinked_component_root_refuses_the_snapshot(self, tmp_path, monkeypatch, capsys):

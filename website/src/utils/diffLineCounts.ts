@@ -69,3 +69,38 @@ export function countDiffStats(diff: string): { added: number; removed: number }
   }
   return { added, removed }
 }
+
+/** The 0-based line span that differs between two texts, per side, or `null`
+ *  when they are identical. `oldStart`/`oldEnd` index `before`'s lines and
+ *  `newStart`/`newEnd` index `after`'s; each `*End` is exclusive.
+ *
+ *  This is a common-prefix / common-suffix walk, NOT a diff: it finds only the
+ *  OUTER bounds of the change (first line that differs from the top, last line
+ *  that differs from the bottom), so a scatter of edits reports one span that
+ *  covers them all. That span is a locality region, not a row-level diff. Only
+ *  its first and last non-empty rows are proven to differ; consumers must not
+ *  give the interior add/remove semantics. The oversized fallback exists because
+ *  a real line-level diff is too expensive to run on the renderer thread for
+ *  these inputs (see `renderBudget`), and this stays cheap for the same reason:
+ *  two pointer walks that stop at the first difference, no LCS, no allocation
+ *  beyond the two line arrays the caller already holds. Its one job is to tell
+ *  the fallback WHERE to look so it can anchor there instead of at line 1. */
+export function changedLineSpan(
+  beforeLines: readonly string[],
+  afterLines: readonly string[],
+): { oldStart: number; oldEnd: number; newStart: number; newEnd: number } | null {
+  const m = beforeLines.length
+  const n = afterLines.length
+  let start = 0
+  const max = Math.min(m, n)
+  while (start < max && beforeLines[start] === afterLines[start]) start++
+  if (start === m && start === n) return null // identical
+  // Walk the common suffix, but never cross the common prefix on either side.
+  let endBack = 0
+  while (
+    endBack < m - start
+    && endBack < n - start
+    && beforeLines[m - 1 - endBack] === afterLines[n - 1 - endBack]
+  ) endBack++
+  return { oldStart: start, oldEnd: m - endBack, newStart: start, newEnd: n - endBack }
+}

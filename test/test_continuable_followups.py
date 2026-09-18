@@ -1,13 +1,13 @@
-"""Tests for the continuable-conversation follow-up fixes (#1113/#1114/#1115).
+"""Tests for the continuable-conversation follow-up behaviours.
 
-- #1113: spawn_steer startup grace — a steer landing before the run's
+- spawn_steer startup grace — a steer landing before the run's
   session registers waits (bounded) instead of failing with a bare
   ``no_session``; typed ``session_starting`` on timeout; ``not_running``
   when the run finishes mid-wait.
-- #1114: conversation TTL registry rebuild from state.json on the reaper's
+- conversation TTL registry rebuild from state.json on the reaper's
   first pass after a gateway restart, gated on session files still being
   resumable (released conversations stay dead).
-- #1115: state.json as the single source of retention truth — the
+- state.json as the single source of retention truth — the
   SessionManager continuable cache falls back to disk on a miss, promotion
   goes through one choke point, and release demotes the disk flag.
 """
@@ -68,7 +68,7 @@ def _steer_provider(ok: bool = True) -> MagicMock:
     return provider
 
 
-# ── #1113: steer startup grace ──
+# ── steer startup grace ──
 
 
 class TestSteerStartupGrace:
@@ -145,7 +145,7 @@ class TestSteerStartupGrace:
         assert time.monotonic() - t0 < 1.0  # no full-window wait
 
 
-# ── #1114: TTL registry rebuild from disk ──
+# ── TTL registry rebuild from disk ──
 
 
 class TestConversationRegistryRebuild:
@@ -268,7 +268,7 @@ class TestConversationRegistryRebuild:
         """A conversation appears once per run that touched it (original +
         continuations). The rebuild must register the NEWEST last_used —
         seeding a stale one would let the same pass's sweep expire a
-        conversation whose real last-use is recent (GPT finding, PR #1246)."""
+        conversation whose real last-use is recent."""
         sessions = _mock_sessions()
         mgr = _manager(sessions)
         # Original run: old timestamp. Continuation run: recent, points at
@@ -304,7 +304,7 @@ class TestConversationRegistryRebuild:
     @pytest.mark.asyncio
     async def test_rebuild_flag_not_set_on_failure(self) -> None:
         """A failed rebuild must retry on the next sweep (flag only set on
-        success — Arbiter suggestion, PR #1246). Covered here by verifying
+        success). Covered here by verifying
         the rebuild raises through (the reaper catches and leaves the flag
         unset)."""
         sessions = _mock_sessions()
@@ -329,7 +329,7 @@ class TestConversationRegistryRebuild:
         sessions.seed_conversation.assert_not_called()
 
 
-# ── #1115: state.json as retention source of truth ──
+# ── state.json as retention source of truth ──
 
 
 class TestRetentionSourceOfTruth:

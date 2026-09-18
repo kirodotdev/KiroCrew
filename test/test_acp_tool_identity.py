@@ -683,7 +683,7 @@ class TestChatRunnerDirectiveSeam:
         self, tmp_path, monkeypatch, caplog
     ):
         """A directive tool's ARGUMENT rejection must not fire the lost-marker
-        WARNING (#8635). The tool's result is produced by really calling it, so
+        WARNING. The tool's result is produced by really calling it, so
         the test cannot drift from what the tool actually returns; the rejection
         happens in the dispatch wrapper ahead of the handler, which is why the
         refusal tag is applied at the server's outermost return.

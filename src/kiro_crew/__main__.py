@@ -3,8 +3,8 @@
 ``_ensure_ssl_certs()`` MUST run before ``from kiro_crew.cli import main``
 because importing ``cli`` can still reach ``aiohttp`` transitively (e.g. via
 ``cli_doctor`` → ``dashboard.crash_dump_store`` / ``dashboard.origin``).
-Issue #3504 deferred cli.py's heaviest aiohttp edges (``cli_server``,
-``dashboard.state``) to call time, which makes this ordering EASIER to hold —
+cli.py's heaviest aiohttp edges (``cli_server``, ``dashboard.state``) are
+deferred to call time, which makes this ordering EASIER to hold —
 but any module-scope import that reaches aiohttp, now or later, must still
 execute after ``_ensure_ssl_certs()``, so the prelude stays mandatory.
 
@@ -16,7 +16,9 @@ certs and every HTTPS connection fails with CERTIFICATE_VERIFY_FAILED.
 
 from __future__ import annotations
 
-from kiro_crew import platform_compat
+import sys
+
+from kiro_crew import __version__, platform_compat
 from kiro_crew._ssl_compat import _ensure_ssl_certs
 
 # Windows: force UTF-8 stdout/stderr before any non-ASCII output (no-op on POSIX).
@@ -24,6 +26,15 @@ platform_compat.ensure_utf8_console()
 _ensure_ssl_certs()
 
 if __name__ == "__main__":
+    # Fast-path for bare `--version` (`python -m kiro_crew --version`, which
+    # also covers the desktop launchers): skip importing `kiro_crew.cli`
+    # (~250ms). Mirrored by the `_bootstrap.main` guard for the console
+    # script; only the bare form fast-paths to preserve
+    # `artifact show --version N` semantics.
+    if len(sys.argv) == 2 and sys.argv[1] == "--version":
+        print(f"kirocrew {__version__}")
+        raise SystemExit(0)
+
     from kiro_crew.cli import main  # noqa: E402
 
     main()

@@ -72,7 +72,7 @@ import atexit
 import functools
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 
 _T = TypeVar("_T")
 
@@ -87,6 +87,9 @@ __all__ = [
     "image_executor",
     "stt_executor",
     "path_resolve_executor",
+    "path_probe_executor",
+    "path_transfer_executor",
+    "ledger_executor",
     "governance_executor",
     "cron_gate_executor",
     "CronGateTimeout",
@@ -95,6 +98,8 @@ __all__ = [
     "run_in_cron_gate_pool",
     "cron_gate_budget",
     "run_in_embed_pool",
+    "run_with_recall_deadline",
+    "recall_executor",
     "shutdown_maintenance_executor",
 ]
 
@@ -118,6 +123,21 @@ _MAX_MAINT_WORKERS = 4
 # run_in_executor future cannot be cancelled, so this caps how many wedged
 # closes/spawns we hold threads for; excess work queues here.
 _MAX_SUBPROCESS_WORKERS = 8
+
+# Windows-only: the thread that owns a ``kiro-cli`` readiness spawn's PRIVATE
+# event loop, so ``CreateProcess`` -- which CPython performs synchronously
+# inside the subprocess transport's constructor, before that transport's first
+# await -- runs there instead of on the gateway loop.  Deliberately NOT
+# :func:`subprocess_executor`: the offloaded loop awaits the Windows descendant
+# scan, which submits back into that pool, so sharing one pool would let
+# concurrent spawns deadlock waiting on workers their own scans need.  Two is
+# enough -- ``_probe_lock`` serializes the readiness probes, leaving the much
+# rarer update spawn as the only concurrent caller -- and a bound matters here
+# because a started run_in_executor future cannot be cancelled: a spawn wedged
+# behind an endpoint-protection filter driver holds its worker for the caller's
+# full timeout (10s for a probe, 120s for an update), so excess work queues
+# here rather than occupying threads the rest of the gateway shares.
+_MAX_KIRO_SPAWN_WORKERS = 2
 
 # Cron jobs can be long (default 300s timeout) and several can be due in the
 # same tick (the scheduler fires each as an independent task).  Give them their
@@ -144,18 +164,10 @@ _CRON_QUEUE_WAIT_SECS = 900
 # the maintenance pool's orphan-sweep workers.
 _MAX_DISCOVERY_WORKERS = 4
 
-# Ollama embed/probe offloads (consolidation lesson writes, memory import,
-# context-preview, and every build_message call — its episodic recall embeds
-# the query) block on network I/O for up to embedding_timeout_secs per call —
-# and against a HUNG endpoint every call eats the full timeout, since failures
-# are deliberately not cached.  Give them their own bounded pool so a wedged
-# Ollama parks mc-embed threads and queues further embed work behind ITSELF,
-# instead of exhausting asyncio's default executor (which the loop shares for
-# DNS resolution and every other asyncio.to_thread user).  Sized above the
-# other pools because build_message runs on every new session across all
-# surfaces (dashboard + Slack + cron + heartbeat + subagent can land
-# concurrently after a restart); with a healthy endpoint each call is fast,
-# so the cap only bites — deliberately — when Ollama is wedged.
+# Memory filesystem work and explicit embedding requests stay off the default
+# executor used by DNS. Prompt construction shares this pool but never embeds.
+# run_in_embed_pool admits work before submission, so a burst waits as cancellable
+# coroutines instead of growing ThreadPoolExecutor's unbounded work-item queue.
 _MAX_EMBED_WORKERS = 8
 
 # Governance checks for EXTERNALLY-triggered surfaces: the per-inbound-message
@@ -260,21 +272,61 @@ _MAX_STT_WORKERS = 2
 # the wait does NOT free the worker, so this is its OWN tiny pool: a wedged
 # resolution can only ever starve other path resolution, never the sweeps or
 # the default executor's DNS.  Two workers is deliberate -- healthy resolution is
-# microseconds, so the cap only bites when the filesystem is wedged, which is
-# exactly when queueing behind a wedged sibling is the correct outcome.
+# microseconds, so sustained queueing means the filesystem is wedged, and
+# queueing behind a wedged sibling can only time out.  The cap also bites under
+# plain concurrency (simultaneous cron fires submitting at once); a queued
+# resolution that never starts is cancelled on timeout and refused for that
+# call alone, charging no prefix cooldown (see
+# ``security.paths._run_resolution_bounded``).
 _MAX_PATH_RESOLVE_WORKERS = 2
+
+# Dashboard file endpoints take a path from the REQUEST, so which mount it lands
+# on is the caller's choice, and a probe on an unresponsive mount blocks its
+# thread for as long as the kernel takes.  Two pools, split by how long a
+# healthy call holds a worker, so that a burst of large transfers cannot starve
+# the millisecond validation probes behind them:
+#
+# * ``mc-pathprobe`` -- validation and stats (``realpath``, ``isfile``,
+#   ``isdir``).  Milliseconds when healthy, so eight workers is a ceiling on how
+#   many can be WEDGED at once, not on ordinary throughput.
+# * ``mc-pathxfer`` -- the calls that hold a worker for the length of a transfer:
+#   the shared open-and-check envelope's bounded full read, the search walk, the
+#   browse listings, the spreadsheet and document parses.  Bounded by their own
+#   caps when healthy, wedged exactly like a stat when not.
+#
+# Both are reached only through the dashboard's admission gate
+# (``handlers.files._run_path_probe`` -> :func:`run_in_cron_pool`), which
+# refuses with a typed error when no worker frees within its queue budget, so
+# saturating either pool degrades the file surface alone and never the default
+# executor the rest of the gateway shares.
+_MAX_PATH_PROBE_WORKERS = 8
+_MAX_PATH_TRANSFER_WORKERS = 8
+# ONE worker, and the count is the contract rather than a capacity guess. An
+# append-only crew log assigns ``seq`` by reading the file's own tail under its
+# lock, and a turn's entries thread under the ``seq`` its ``turn/started``
+# returned -- so the entries of one unit must reach the file in the order their
+# call sites produced them. A single worker draining a FIFO queue is what
+# guarantees that; two workers would let a tool frame overtake the turn start it
+# threads under, and the lock would serialize those writes without restoring
+# their order. Appends are small and fsync-bound, so one worker is also enough.
+_MAX_LEDGER_WORKERS = 1
 
 _lock = threading.Lock()
 _pool: ThreadPoolExecutor | None = None
 _subprocess_pool: ThreadPoolExecutor | None = None
+_kiro_spawn_pool: ThreadPoolExecutor | None = None
 _cron_pool: ThreadPoolExecutor | None = None
 _discovery_pool: ThreadPoolExecutor | None = None
 _embed_pool: ThreadPoolExecutor | None = None
+_recall_pool: ThreadPoolExecutor | None = None
 _image_pool: ThreadPoolExecutor | None = None
 _stt_pool: ThreadPoolExecutor | None = None
 _governance_pool: ThreadPoolExecutor | None = None
 _cron_gate_pool: ThreadPoolExecutor | None = None
 _path_resolve_pool: ThreadPoolExecutor | None = None
+_path_probe_pool: ThreadPoolExecutor | None = None
+_path_transfer_pool: ThreadPoolExecutor | None = None
+_ledger_pool: ThreadPoolExecutor | None = None
 
 
 def configure_default_executor() -> None:
@@ -340,6 +392,35 @@ def subprocess_executor() -> ThreadPoolExecutor:
                 )
                 atexit.register(shutdown_maintenance_executor)
     return _subprocess_pool
+
+
+def kiro_spawn_executor() -> ThreadPoolExecutor:
+    """Return the process-wide Kiro CLI readiness-spawn pool, creating it on first use.
+
+    Threads are named ``mc-kirospawn``.  Windows-only in practice: a worker here
+    owns one ``kiro_prerequisite._run_process`` call's private event loop, so the
+    ``CreateProcess`` that CPython runs synchronously inside the subprocess
+    transport's constructor happens on this thread rather than on the gateway
+    loop.
+
+    Separate from :func:`subprocess_executor` for a reason stronger than
+    isolation: the offloaded loop awaits
+    ``platform_compat.descendant_termination_handles_async``, which submits into
+    THAT pool.  One shared pool would let ``_MAX_SUBPROCESS_WORKERS``
+    concurrent spawns each hold a worker while waiting on a scan queued behind
+    them -- a deadlock, not merely contention.  See
+    :data:`_MAX_KIRO_SPAWN_WORKERS` for why it is bounded at two.
+    """
+    global _kiro_spawn_pool
+    if _kiro_spawn_pool is None:
+        with _lock:
+            if _kiro_spawn_pool is None:
+                _kiro_spawn_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_KIRO_SPAWN_WORKERS,
+                    thread_name_prefix="mc-kirospawn",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _kiro_spawn_pool
 
 
 def cron_executor() -> ThreadPoolExecutor:
@@ -453,14 +534,88 @@ def path_resolve_executor() -> ThreadPoolExecutor:
     return _path_resolve_pool
 
 
-def embed_executor() -> ThreadPoolExecutor:
-    """Return the process-wide Ollama embed/probe pool, creating it on first use.
+def path_probe_executor() -> ThreadPoolExecutor:
+    """Return the dashboard request-path PROBE pool, creating it on first use.
 
-    Threads are named ``mc-embed``.  Separate from asyncio's default executor
-    so a hung embedding endpoint (every call eats the full
-    ``embedding_timeout_secs``; failures are deliberately not cached) parks
-    only these workers — embed work queues behind ITSELF instead of starving
-    the loop's DNS resolution and every other ``asyncio.to_thread`` user.
+    Threads are named ``mc-pathprobe``.  Serves the validation and stat half of
+    the dashboard file endpoints (see :data:`_MAX_PATH_PROBE_WORKERS`).  Callers
+    go through ``handlers.files._run_path_probe``, never ``submit`` directly:
+    the gate is what turns a full pool into a refusal instead of an unbounded
+    queue.
+    """
+    global _path_probe_pool
+    if _path_probe_pool is None:
+        with _lock:
+            if _path_probe_pool is None:
+                _path_probe_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_PATH_PROBE_WORKERS,
+                    thread_name_prefix="mc-pathprobe",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _path_probe_pool
+
+
+def path_transfer_executor() -> ThreadPoolExecutor:
+    """Return the dashboard request-path TRANSFER pool, creating it on first use.
+
+    Threads are named ``mc-pathxfer``.  Serves the calls that hold a worker for
+    the length of a bounded transfer rather than a stat (see
+    :data:`_MAX_PATH_TRANSFER_WORKERS`); same gate, same refusal, separate
+    workers so transfers queue behind transfers and probes behind probes.
+    """
+    global _path_transfer_pool
+    if _path_transfer_pool is None:
+        with _lock:
+            if _path_transfer_pool is None:
+                _path_transfer_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_PATH_TRANSFER_WORKERS,
+                    thread_name_prefix="mc-pathxfer",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _path_transfer_pool
+
+
+def ledger_executor() -> ThreadPoolExecutor:
+    """Return the process-wide append-only crew log writer pool, creating it on first use.
+
+    Threads are named ``mc-ledger``, and there is exactly ONE of them
+    (:data:`_MAX_LEDGER_WORKERS`) because the order entries reach a unit's file
+    is part of the format, not an optimization -- see that constant.
+
+    Serves :mod:`kiro_crew.crew_log.emit`, whose storage call takes the
+    per-ledger lock, reads a bounded tail to assign ``seq`` and ``fsync``s the
+    appended line. Those otherwise run on the gateway's own event loop: a
+    ``flock`` that waits and an ``fsync`` that enters the kernel, once per tool
+    frame and once per turn, on the single loop that also drives the liveness
+    heartbeat.
+
+    Its OWN pool rather than :func:`maintenance_executor`, for the reason
+    :func:`path_resolve_executor` has one: an ``fsync`` on a wedged or full
+    filesystem holds its worker until the kernel returns, and a started
+    ``run_in_executor`` future cannot be cancelled. Here that can only delay
+    other crew log writes -- which are fail-soft and never block a turn -- while on
+    the maintenance pool it would occupy a worker the orphan-reaping sweeps need
+    to recover from an event-loop wedge.
+    """
+    global _ledger_pool
+    if _ledger_pool is None:
+        with _lock:
+            if _ledger_pool is None:
+                _ledger_pool = ThreadPoolExecutor(
+                    max_workers=_MAX_LEDGER_WORKERS,
+                    thread_name_prefix="mc-ledger",
+                )
+                atexit.register(shutdown_maintenance_executor)
+    return _ledger_pool
+
+
+def embed_executor() -> ThreadPoolExecutor:
+    """Return the process-wide memory/embedding pool, creating it on first use.
+
+    Threads are named ``mc-embed``. Separate from asyncio's default executor so
+    memory I/O and explicit retrieval cannot occupy the workers used for DNS
+    resolution. ``run_in_embed_pool`` admits work before creating executor jobs;
+    native inference has its own bounded queue in ``embeddings``.
     """
     global _embed_pool
     if _embed_pool is None:
@@ -709,10 +864,9 @@ def cron_gate_budget(wake_budget: float) -> float:
 async def run_in_cron_gate_pool(func: Callable[..., _T], /, *args: Any, timeout: float) -> _T:
     """Run a cron fire-time gate on :func:`cron_gate_executor`, bounded both ways.
 
-    Two changes from awaiting ``run_in_executor`` directly, which is what the
-    gate sites used to do:
+    Two differences from awaiting ``run_in_executor`` directly:
 
-    * the gate no longer shares a pool with externally-paced inbound traffic, so
+    * the gate does not share a pool with externally-paced inbound traffic, so
       an inbound burst cannot put a FIFO backlog ahead of it; and
     * the wait is BOUNDED, raising :class:`CronQueueTimeout` when the gate never
       got a worker, which is the signal the callers translate into a
@@ -797,15 +951,73 @@ async def run_in_cron_gate_pool(func: Callable[..., _T], /, *args: Any, timeout:
         raise CronGateTimeout(asyncio.get_running_loop().time() - queued_at) from exc
 
 
-async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
-    """Run a blocking Ollama embed/probe callable on :func:`embed_executor`.
+RECALL_TIMEOUT_SECS = 9.0  # Finish before the MCP HTTP client's ten-second timeout.
 
-    Drop-in replacement for ``asyncio.to_thread`` at embed call sites: same
-    signature, but the work lands on the bounded ``mc-embed`` bulkhead pool
-    instead of asyncio's shared default executor.
+
+def recall_executor() -> ThreadPoolExecutor:
+    """Retrieval cannot occupy the workers needed for prompt preparation."""
+    global _recall_pool
+    with _lock:
+        if _recall_pool is None:
+            _recall_pool = ThreadPoolExecutor(
+                max_workers=_MAX_EMBED_WORKERS, thread_name_prefix="mc-recall"
+            )
+            atexit.register(shutdown_maintenance_executor)
+        return _recall_pool
+
+
+async def run_with_recall_deadline(awaitable: Awaitable[_T]) -> _T:
+    """Bound an entire recall, including cold store opening and pool admission."""
+    import time
+
+    from kiro_crew.embeddings import EmbeddingWork, embedding_work
+
+    inherited = embedding_work.get()
+    work = inherited or EmbeddingWork(time.monotonic() + RECALL_TIMEOUT_SECS)
+    token = embedding_work.set(work)
+    try:
+        return await asyncio.wait_for(awaitable, timeout=max(0.0, work.deadline - time.monotonic()))
+    finally:
+        if inherited is None:
+            work.cancelled.set()
+        embedding_work.reset(token)
+
+
+async def run_in_embed_pool(func: Callable[..., _T], /, *args: Any, **kwargs: Any) -> _T:
+    """Offload bounded memory work, waiting without rejecting ordinary prompts.
+
+    Submission is bounded to the worker count for this gateway event loop. A
+    cancelled caller releases a slot only when its underlying thread actually
+    finishes (or the queued future is successfully cancelled).
     """
+    from contextvars import copy_context
+
+    from kiro_crew.embeddings import embedding_work
+
     loop = asyncio.get_running_loop()
-    return await loop.run_in_executor(embed_executor(), functools.partial(func, *args, **kwargs))
+    recall = embedding_work.get() is not None
+    admission_key = "_kirocrew_recall_admission" if recall else "_kirocrew_memory_admission"
+    admission = getattr(loop, admission_key, None)
+    if admission is None:
+        admission = asyncio.Semaphore(_MAX_EMBED_WORKERS)
+        setattr(loop, admission_key, admission)
+    await admission.acquire()
+    try:
+        executor = recall_executor() if recall else embed_executor()
+        future = executor.submit(copy_context().run, functools.partial(func, *args, **kwargs))
+    except BaseException:
+        admission.release()
+        raise
+
+    def finished(_future: object) -> None:
+        try:
+            loop.call_soon_threadsafe(admission.release)
+        except RuntimeError:
+            # The owning loop has closed; no new task can await its admission.
+            pass
+
+    future.add_done_callback(finished)
+    return await asyncio.wrap_future(future, loop=loop)
 
 
 def shutdown_maintenance_executor() -> None:
@@ -814,29 +1026,40 @@ def shutdown_maintenance_executor() -> None:
     The default executor pool is NOT included here -- it is owned by each event
     loop and shut down by asyncio when the loop closes.
     """
-    global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool
+    global _pool, _subprocess_pool, _cron_pool, _discovery_pool, _embed_pool, _recall_pool
     global _governance_pool, _image_pool, _cron_gate_pool, _stt_pool, _path_resolve_pool
+    global _path_probe_pool, _path_transfer_pool
+    global _ledger_pool, _kiro_spawn_pool
     with _lock:
         pool, _pool = _pool, None
         subprocess_pool, _subprocess_pool = _subprocess_pool, None
+        kiro_spawn_pool, _kiro_spawn_pool = _kiro_spawn_pool, None
         cron_pool, _cron_pool = _cron_pool, None
         discovery_pool, _discovery_pool = _discovery_pool, None
         embed_pool, _embed_pool = _embed_pool, None
+        recall_pool, _recall_pool = _recall_pool, None
         governance_pool, _governance_pool = _governance_pool, None
         image_pool, _image_pool = _image_pool, None
         cron_gate_pool, _cron_gate_pool = _cron_gate_pool, None
         stt_pool, _stt_pool = _stt_pool, None
         path_resolve_pool, _path_resolve_pool = _path_resolve_pool, None
+        path_probe_pool, _path_probe_pool = _path_probe_pool, None
+        path_transfer_pool, _path_transfer_pool = _path_transfer_pool, None
+        ledger_pool, _ledger_pool = _ledger_pool, None
     if pool is not None:
         pool.shutdown(wait=False, cancel_futures=True)
     if subprocess_pool is not None:
         subprocess_pool.shutdown(wait=False, cancel_futures=True)
+    if kiro_spawn_pool is not None:
+        kiro_spawn_pool.shutdown(wait=False, cancel_futures=True)
     if cron_pool is not None:
         cron_pool.shutdown(wait=False, cancel_futures=True)
     if discovery_pool is not None:
         discovery_pool.shutdown(wait=False, cancel_futures=True)
     if embed_pool is not None:
         embed_pool.shutdown(wait=False, cancel_futures=True)
+    if recall_pool is not None:
+        recall_pool.shutdown(wait=False, cancel_futures=True)
     if governance_pool is not None:
         governance_pool.shutdown(wait=False, cancel_futures=True)
     if image_pool is not None:
@@ -847,3 +1070,9 @@ def shutdown_maintenance_executor() -> None:
         stt_pool.shutdown(wait=False, cancel_futures=True)
     if path_resolve_pool is not None:
         path_resolve_pool.shutdown(wait=False, cancel_futures=True)
+    if path_probe_pool is not None:
+        path_probe_pool.shutdown(wait=False, cancel_futures=True)
+    if path_transfer_pool is not None:
+        path_transfer_pool.shutdown(wait=False, cancel_futures=True)
+    if ledger_pool is not None:
+        ledger_pool.shutdown(wait=False, cancel_futures=True)

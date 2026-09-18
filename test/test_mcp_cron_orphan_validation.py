@@ -183,7 +183,7 @@ class TestCronServiceUpdateJobValidation:
         assert CronService(base_dir=tmp_path).list_jobs()[0].skip_dates == []
 
     def test_service_update_rejects_non_padded_skip_date(self, tmp_path):
-        # "2026-1-1" parses via strptime but renders back as "2026-01-01",
+        # A non-padded skip date parses via strptime but renders back padded,
         # so fire-time skip matching would silently never match. It must be
         # rejected at the persistence owner rather than stranded on disk.
         svc = CronService(base_dir=tmp_path)

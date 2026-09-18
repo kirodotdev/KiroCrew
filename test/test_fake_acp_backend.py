@@ -23,6 +23,7 @@ def _capture(monkeypatch) -> io.StringIO:
     """Redirect the fake's stdout to a buffer for the duration of the test."""
     buf = io.StringIO()
     monkeypatch.setattr(fake.sys, "stdout", buf)
+    monkeypatch.setattr(fake, "_SESSIONS", {"s1": ([], "")})
     return buf
 
 
@@ -96,6 +97,7 @@ def test_tool_prompt_emits_tool_call_without_permission(monkeypatch):
             "id": 5,
             "method": "session/prompt",
             "params": {
+                "sessionId": "s1",
                 "prompt": [{"type": "text", "text": f"go {fake.TOOL_TRIGGER} now"}]
             },
         }
@@ -138,7 +140,10 @@ def test_permission_prompt_raises_request_permission(monkeypatch):
             "jsonrpc": "2.0",
             "id": 6,
             "method": "session/prompt",
-            "params": {"prompt": [{"type": "text", "text": fake.PERMISSION_TRIGGER}]},
+            "params": {
+                "sessionId": "s1",
+                "prompt": [{"type": "text", "text": fake.PERMISSION_TRIGGER}],
+            },
         }
     )
     msgs = _messages(buf)

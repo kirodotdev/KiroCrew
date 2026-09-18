@@ -437,7 +437,7 @@ class TestCronReaper:
 
     @pytest.mark.asyncio
     async def test_reaper_falls_back_for_deleted_job(self, tmp_path: object) -> None:
-        """Reaper uses default deadline when job is no longer in self._jobs."""
+        """Reaper uses the default deadline when the job is absent from self._jobs."""
         svc = CronService(base_dir=None, on_job=AsyncMock())
         svc._history = CronHistoryStore(base_dir=tmp_path)
         svc._sessions = _mock_sessions()

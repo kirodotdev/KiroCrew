@@ -186,6 +186,17 @@ describe('the autolink template placeholder is exempt', () => {
   })
 })
 
+describe('the goal loop kill-switch placeholder is exempt', () => {
+  it('stays quiet on the exact wire token', async () => {
+    expect(await lint(`export const STOP_FILE_TOKEN = '{{STOP_FILE}}'`)).toEqual([])
+  })
+
+  it('still reports prose that carries the token, and any other double-braced word', async () => {
+    const messages = await lint(`export const PROBE = ['To halt the loop, create {{STOP_FILE}}', '{{OTHER_FILE}}']`)
+    expect(messages).toHaveLength(2)
+  })
+})
+
 describe('diagnostic log sentinels are exempt', () => {
   it('stays quiet on the bare sentinels', async () => {
     // Real site: lib/paneLog.ts. The reader is whoever greps gateway-launch.log
@@ -405,5 +416,12 @@ describe('Gateway wire markers with a bracketed ALL-CAPS tag are exempt', () => 
     // No second `[` may follow: that shape is a selector or a class cluster,
     // both of which have their own narrower exemptions.
     expect(await lint("export const PROBE = ['[SYSTEM] see [details] here']")).toHaveLength(1)
+  })
+})
+
+describe('capability retention protocol sentinel', () => {
+  it('allows the exact wire mask but still reports prose around it', async () => {
+    expect(await lint("export const mask = '[REDACTED]'" )).toEqual([])
+    expect(await lint("export const label = 'Keep [REDACTED] value'" )).not.toEqual([])
   })
 })

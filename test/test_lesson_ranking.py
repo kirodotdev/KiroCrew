@@ -251,7 +251,7 @@ class TestStoredVectorComparability:
 
 
 class TestImportedLessonShapes:
-    """Imported lessons are stored as a mapping, not a string (see #2656)."""
+    """Imported lessons are stored as a mapping, not a string."""
 
     def test_mapping_lesson_renders_as_its_rule_and_ranks(
         self, store: VectorMemoryStore

@@ -46,7 +46,7 @@ def _coerce_float(value: Any) -> float | None:
 
     Load-bearing: a ``primary_delta`` of ``"n/a"``, ``"-"``, ``""`` or any other
     non-numeric string must read as *missing*, not raise. An unguarded ``float()``
-    here previously crashed the whole progress read on one bad row.
+    here crashes the whole progress read on one bad row.
     """
     try:
         return float(str(value).strip())
@@ -122,7 +122,7 @@ def _archive_rows() -> list[dict[str, Any]]:
 def read_findings() -> list[dict[str, Any]]:
     """Ledger entries, newest first, with the PR reference normalized.
 
-    The on-disk field is historically named ``cr``; both keys are read and the
+    The on-disk field is named ``cr``; both keys are read and the
     result always carries ``pr`` so every consumer speaks one vocabulary.
     """
     path = store.ledger_path()

@@ -71,6 +71,19 @@ describe('ArtifactBodyIframe document URL lifecycle', () => {
     expect(mintSpy).toHaveBeenCalledWith(HTML_CONTENT)
   })
 
+  it('does not delegate clipboard-write to agent-authored HTML', async () => {
+    // A delegated write permission lets an on-load script overwrite the
+    // clipboard without a Copy action. The injected shim still lets a real
+    // button press fall back to execCommand without widening frame permissions.
+    render(<ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} />)
+    const frame = await waitFor(() => {
+      const el = document.querySelector('iframe')
+      if (!el) throw new Error('frame never mounted')
+      return el as HTMLIFrameElement
+    })
+    expect(frame.hasAttribute('allow')).toBe(false)
+  })
+
   it('builds no blob URL for the frame', async () => {
     render(<ArtifactBodyIframe artifact={makeArtifact(HTML_CONTENT)} />)
     await waitFor(() => expect(mintSpy).toHaveBeenCalled())

@@ -369,9 +369,9 @@ describe('WidgetFrame widget actions', () => {
 
 describe('WidgetFrame artifact star', () => {
   const TS = '1700000000.001'
-  const SLUG = effectiveWidgetSlug({ messageTs: TS, widgetIndex: 0 })!
+  const SLUG = effectiveWidgetSlug({ messageTs: TS, body: '<p>zzq-star</p>' })!
   const derived = (over: Record<string, unknown> = {}) => (
-    <WidgetFrame html="<p>zzq-star</p>" title="zzq-title" messageTs={TS} widgetIndex={0} {...over} />
+    <WidgetFrame html="<p>zzq-star</p>" title="zzq-title" messageTs={TS} {...over} />
   )
   const starName = i18nT('components.widgetFrame.star_as_artifact')
   const unstarName = i18nT('components.widgetFrame.remove_artifact_from_library', { name: SLUG })
@@ -446,7 +446,7 @@ describe('WidgetFrame artifact star', () => {
   })
 
   it('falls back to the generic name when the widget carries the default title', async () => {
-    wrap(<WidgetFrame html="<p>zzq</p>" messageTs={TS} widgetIndex={0} />)
+    wrap(derived({ title: undefined }))
     await act(async () => {})
     fireEvent.click(star())
     await screen.findByRole('button', { name: unstarName })

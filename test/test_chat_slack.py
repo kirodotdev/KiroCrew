@@ -1,4 +1,4 @@
-"""Unit tests for chat_slack.py — Slack link, handoff, channel listing."""
+"""Unit tests for chat_slack.py — Slack link, channel listing."""
 
 from __future__ import annotations
 
@@ -12,10 +12,8 @@ from chat_test_helpers import _make_state, drain_background_tasks
 
 def _make_slack_app(state):
     from kiro_crew.dashboard.chat_slack import (
-        api_chat_slot_handoff,
         api_chat_slot_slack_link,
         api_chat_slot_slack_unlink,
-        api_handoff_channels,
         api_slack_channels,
     )
 
@@ -24,8 +22,6 @@ def _make_slack_app(state):
     app.router.add_post("/api/chat/slots/{slot}/slack-link", api_chat_slot_slack_link)
     app.router.add_post("/api/chat/slots/{slot}/slack-unlink", api_chat_slot_slack_unlink)
     app.router.add_get("/api/slack/channels", api_slack_channels)
-    app.router.add_post("/api/chat/slots/{slot}/handoff", api_chat_slot_handoff)
-    app.router.add_get("/api/handoff-channels", api_handoff_channels)
     return app
 
 
@@ -315,29 +311,6 @@ class TestSlackChannels:
             unresolved = next((c for c in data if c["id"] == "C0AU38Q0E4B"), None)
             assert unresolved is not None
             assert unresolved["name"] == "C0AU38Q0E4B"
-
-
-class TestHandoff:
-    @pytest.mark.asyncio
-    async def test_handoff_no_slack(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-        state.get_or_create_slot("s1")
-        state.slack_client = None
-        async with TestClient(TestServer(_make_slack_app(state))) as client:
-            resp = await client.post("/api/chat/slots/s1/handoff")
-            assert resp.status == 503
-
-
-class TestHandoffChannels:
-    @pytest.mark.asyncio
-    async def test_deprecated_endpoint(self, tmp_path, monkeypatch):
-        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
-        state = _make_state(tmp_path)
-        async with TestClient(TestServer(_make_slack_app(state))) as client:
-            resp = await client.get("/api/handoff-channels")
-            assert resp.status == 200
-            assert await resp.json() == {}
 
 
 class TestSlackLinkAnchorTitleFallback:

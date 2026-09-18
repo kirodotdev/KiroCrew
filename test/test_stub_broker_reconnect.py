@@ -6,9 +6,9 @@ to the session afterwards. That leaves the property this module exists for
 unasserted: *after the broker comes back, can the session still call its
 servers?*
 
-The answer used to be no, and the failure was silent and permanent. A session's
-MCP toolset is frozen at ``session/new``, so the tools stayed listed and simply
-failed for the rest of the session's life; the only recovery was opening a new
+Without a reconnect the failure is silent and permanent. A session's
+MCP toolset is frozen at ``session/new``, so the tools stay listed and simply
+fail for the rest of the session's life; the only recovery is opening a new
 one. Two shapes, neither observable from a "nothing errored" assertion:
 
 * with a call in flight, the liveness monitor failed it with ``-32603`` and a
@@ -37,6 +37,7 @@ import sys
 from pathlib import Path
 
 import pytest
+from fake_pool_mcp_server import recorded
 
 from kiro_crew import platform_compat as pc
 from kiro_crew.mcp_gateway import gatewayd as gw
@@ -197,10 +198,14 @@ def _resolver_for(
 
 
 def _observed_callers(log: Path) -> list[str]:
-    """The session key each ``tools/call`` reached the backend carrying."""
-    if not log.exists():
-        return []
-    return log.read_text(encoding="utf-8").splitlines()
+    """The session key each ``tools/call`` reached the backend carrying.
+
+    Read through the fake's own :func:`~fake_pool_mcp_server.recorded`, which is
+    the only thing that knows the on-disk layout: each daemon generation here
+    spawns its own backend process, so the identities are spread across per-pid
+    files that a direct read of *log* would never see.
+    """
+    return recorded(log)
 
 
 async def _start_daemon(sock: Path, resolver) -> tuple[asyncio.Event, asyncio.Task]:
@@ -472,7 +477,7 @@ async def test_replay_refuses_a_generation_that_answers_differently() -> None:
     The session's toolset was frozen at ``session/new`` against the first
     answer. If a new generation resolves this server to something else -- a
     different binary, a changed config -- then reconnecting would leave the
-    session calling tools that are no longer the ones it was offered. Answering
+    session calling tools that differ from the ones it was offered. Answering
     wrongly is worse than the terminal exit, so this fails closed. It is also
     REFUSE rather than RETRY: that generation owns the endpoint, so the next
     attempt would get the same answer.
@@ -671,8 +676,8 @@ async def test_a_closed_stdin_is_not_a_reconnectable_ending() -> None:
 # --- A reconnect must not silently drop resource subscriptions --------------
 # The daemon's subscription table lives in its process. Replaying only
 # ``initialize`` would return a connection that answers calls while resource
-# updates never arrive again -- a quiet degradation where there used to be a
-# visible one, which is the opposite of what this fix is for. A subscribed
+# updates never arrive again -- a quiet degradation in place of a visible
+# one, which is the opposite of what this fix is for. A subscribed
 # session is refused the reconnect until replaying subscriptions is done
 # properly.
 
@@ -862,3 +867,41 @@ async def test_reconnect_accepts_that_daemon_when_sharing_was_requested(
         pool_label="probe:fake",
     )
     assert attached is not None
+
+
+def test_the_reconnect_budget_covers_the_supervisor_s_own_recovery() -> None:
+    """The budget has to outlast the recovery it is waiting for.
+
+    A stub that gives up before its gateway can possibly be back turns an
+    ordinary slow restart into permanent tool loss for the session: kiro-cli is
+    told the server is done, and nothing re-establishes it without a new session.
+    The supervisor's owned liveness path cannot beat 91s -- three
+    `_LIVENESS_PING_INTERVAL_SECS` cycles must elapse before the third failure
+    can even be counted, and only then does it kill and respawn -- so any budget
+    at or below that is a guarantee of loss rather than a bound on patience.
+
+    Asserted against the manager's own constants rather than a copied number, so
+    raising the detection cost fails here instead of silently re-breaking it.
+    """
+    from kiro_crew.mcp_gateway import manager as mgr
+    from kiro_crew.mcp_gateway import stub as stub_mod
+
+    floor = mgr._LIVENESS_MAX_CONSECUTIVE_FAILURES * mgr._LIVENESS_PING_INTERVAL_SECS
+    assert stub_mod._RECONNECT_TOTAL_BUDGET_SECS > floor, (
+        f"a {stub_mod._RECONNECT_TOTAL_BUDGET_SECS:.0f}s reconnect budget cannot "
+        f"outlast the {floor:.0f}s of sleeps the liveness loop needs before it "
+        "even declares the daemon dead, so an ordinary recovery loses the session"
+    )
+
+    # The probes and the SIGTERM wait sit on top of those sleeps; the budget
+    # should clear the whole worst case with room, not merely edge past it.
+    worst = (
+        floor
+        + mgr._LIVENESS_MAX_CONSECUTIVE_FAILURES
+        * (3 * mgr._PING_TIMEOUT_SECS + mgr._LIVENESS_ESCALATED_TIMEOUT_SECS)
+        + mgr._SHUTDOWN_GRACE_SECS
+    )
+    assert stub_mod._RECONNECT_TOTAL_BUDGET_SECS > worst, (
+        f"budget {stub_mod._RECONNECT_TOTAL_BUDGET_SECS:.0f}s does not clear the "
+        f"derived worst-case recovery of {worst:.0f}s"
+    )

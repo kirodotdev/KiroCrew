@@ -19,7 +19,6 @@ import { renderWithProviders } from './helpers'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
-vi.mock('../pages/AgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => null }))
 vi.mock('../pages/LogsPage', () => ({ default: () => null }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
@@ -181,7 +180,7 @@ describe('top-bar metrics control — collapsed band opens a popover', () => {
     // The connection dot folds the capsule down to itself, which unmounts every
     // readout including this trigger. A popover left open would then be anchored
     // to a box that no longer exists, with nothing on screen owning it.
-    fireEvent.click(screen.getByLabelText('Gateway connected'))
+    fireEvent.click(screen.getByLabelText(/Gateway connected/i))
 
     expect(screen.queryByLabelText('System metrics')).toBeNull()
     expect(screen.queryByRole('dialog', { name: 'System metrics' })).toBeNull()

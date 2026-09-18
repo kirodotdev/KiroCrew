@@ -27,7 +27,7 @@ from kiro_crew.apps.routes import (
     handle_enable_app,
 )
 
-# Synthetic builtin used to drive the generic machinery.
+# Synthetic builtin that drives the generic machinery.
 _TEST_BUILTIN = "test-svc"
 _TEST_CFG_KEY = "test_svc"
 _TEST_RESTART_ATTR = "_test_svc_restart"
@@ -176,7 +176,7 @@ class TestSyncBuiltinConfig:
         assert cfg.read_text(encoding="utf-8") == before
 
     def test_async_call_sites_offload_off_the_event_loop(self):
-        """The helper does file I/O and, on Windows, spawns icacls via
+        """The helper does file I/O and, on Windows, a DACL write via
         restrict_to_owner — its async callers must never run it on the loop
         (no-blocking-call-on-event-loop). Any bare direct call (statement,
         assignment, or nested argument) is a violation; a dispatched form never
@@ -363,6 +363,8 @@ class TestBuiltinConfigSyncHoldsBothConfigLocks:
         request = AsyncMock()
         request.match_info = {"name": name}
         request.app = {"state": state} if state is not None else {}
+        # No app identity: the enable route refuses app tokens outright.
+        request.get = lambda key, default=None: default
         return request
 
     @staticmethod

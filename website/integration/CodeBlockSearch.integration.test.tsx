@@ -1,7 +1,9 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeAll } from 'vitest'
 import { render, waitFor } from '@testing-library/react'
 import SearchHighlightContext, { MessageSearchScope } from '../src/hooks/SearchHighlightContext'
 import AssistantMessage from '../src/pages/chat/AssistantMessage'
+import { SEARCH_HL_MATCH, SEARCH_HL_CURRENT } from '../src/utils/domHighlight'
+import { installHighlightApiStub, registeredRanges } from '../src/test/highlightApiStub'
 
 vi.mock('../src/utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolvedValue(undefined) }))
 
@@ -9,11 +11,11 @@ vi.mock('../src/utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolved
  *  MutationObserver that re-runs it when a code block's DOM lands late -- not
  *  Pierre's highlighter. Pierre highlights in a worker, and under a loaded
  *  coverage-instrumented shard that worker never resolved inside the test
- *  budget, so the code text (and therefore every `<mark>`) simply never
+ *  budget, so the code text (and therefore every painted range) simply never
  *  appeared: the suite passed alone and failed in CI. Rendering the code
  *  synchronously keeps the whole chain under test and makes it deterministic.
  *
- *  The marks still have to arrive through the observer, so the polls below stay
+ *  The ranges still have to arrive through the observer, so the polls below stay
  *  -- with a deadline under vitest's own `testTimeout`, or a genuine failure is
  *  reported as a timeout instead of as the assertion that broke.
  *
@@ -23,7 +25,11 @@ vi.mock('../src/utils/clipboard', () => ({ copyToClipboard: vi.fn().mockResolved
  *  MutationObserver removed. So the stub can also mount EMPTY and land its text
  *  in a later task (`stub.late`), which is the shape Pierre's worker actually
  *  produces -- the one case below that uses it can only go green via the
- *  observer's re-run. */
+ *  observer's re-run.
+ *
+ *  Matches are Ranges on the page-wide `CSS.highlights` entries, never elements
+ *  in the bubble (domHighlight.ts); each assertion scopes to the ranges that
+ *  point into its own container. */
 const stub = vi.hoisted(() => ({ late: false }))
 
 vi.mock('../src/pierre', async () => {
@@ -45,6 +51,23 @@ vi.mock('../src/pierre', async () => {
 
 const PIERRE_RENDERED = { timeout: 8_000 } as const
 
+beforeAll(() => { installHighlightApiStub() })
+
+function inContainer(container: HTMLElement, name: string): Range[] {
+  return registeredRanges(name).filter(r => container.contains(r.startContainer))
+}
+function painted(container: HTMLElement, name: string): string[] {
+  return inContainer(container, name).map(r => r.toString())
+}
+function paintedInOrder(container: HTMLElement): Array<'match' | 'current'> {
+  const all = [
+    ...inContainer(container, SEARCH_HL_MATCH).map(r => ({ r, kind: 'match' as const })),
+    ...inContainer(container, SEARCH_HL_CURRENT).map(r => ({ r, kind: 'current' as const })),
+  ]
+  all.sort((a, b) => a.r.compareBoundaryPoints(Range.START_TO_START, b.r))
+  return all.map(x => x.kind)
+}
+
 function renderWithSearch(code: string, lang: string, term: string, currentOcc: number) {
   const content = `\`\`\`${lang}\n${code}\n\`\`\``
   return render(
@@ -57,31 +80,29 @@ function renderWithSearch(code: string, lang: string, term: string, currentOcc: 
 }
 
 describe('Code block search highlighting via AssistantMessage', () => {
-  it('no <mark> elements when term is empty', () => {
+  it('paints nothing when term is empty', () => {
     const { container } = renderWithSearch('const x = 1', 'javascript', '', -1)
-    expect(container.querySelectorAll('mark.search-match, mark.search-current')).toHaveLength(0)
+    expect(paintedInOrder(container)).toEqual([])
   })
 
-  it('wraps matching text inside code blocks', async () => {
+  it('paints matching text inside code blocks', async () => {
     const { container } = renderWithSearch('const hello = "world"', 'javascript', 'hello', -1)
     await waitFor(() => {
-      const marks = container.querySelectorAll('mark.search-match')
-      expect(marks).toHaveLength(1)
-      expect(marks[0].textContent).toBe('hello')
+      expect(painted(container, SEARCH_HL_MATCH)).toEqual(['hello'])
     }, PIERRE_RENDERED)
+    expect(inContainer(container, SEARCH_HL_MATCH)[0].startContainer.parentElement!.closest('pre')).not.toBeNull()
+    expect(container.querySelectorAll('mark')).toHaveLength(0)
   })
 
   it('re-runs the pass when the code block DOM lands after mount', async () => {
-    // The observer's reason to exist. Nothing is markable on the initial pass,
-    // so a mark can only appear because the subtree mutation re-ran the walker.
+    // The observer's reason to exist. Nothing is paintable on the initial pass,
+    // so a range can only appear because the subtree mutation re-ran the walker.
     stub.late = true
     try {
       const { container } = renderWithSearch('const hello = "world"', 'javascript', 'hello', -1)
-      expect(container.querySelectorAll('mark.search-match')).toHaveLength(0)
+      expect(painted(container, SEARCH_HL_MATCH)).toEqual([])
       await waitFor(() => {
-        const marks = container.querySelectorAll('mark.search-match')
-        expect(marks).toHaveLength(1)
-        expect(marks[0].textContent).toBe('hello')
+        expect(painted(container, SEARCH_HL_MATCH)).toEqual(['hello'])
       }, PIERRE_RENDERED)
     } finally {
       stub.late = false
@@ -98,7 +119,7 @@ describe('Code block search highlighting via AssistantMessage', () => {
       </SearchHighlightContext.Provider>,
     )
     await waitFor(() => {
-      expect(container.querySelectorAll('mark.search-match').length).toBeGreaterThan(0)
+      expect(painted(container, SEARCH_HL_MATCH).length).toBeGreaterThan(0)
     }, PIERRE_RENDERED)
     rerender(
       <SearchHighlightContext.Provider value={{ term: '', caseSensitive: false, currentMessageIdx: -1, currentOccurrenceIdx: -1 }}>
@@ -108,7 +129,7 @@ describe('Code block search highlighting via AssistantMessage', () => {
       </SearchHighlightContext.Provider>,
     )
     await waitFor(() => {
-      expect(container.querySelectorAll('mark.search-match, mark.search-current')).toHaveLength(0)
+      expect(paintedInOrder(container)).toEqual([])
     }, PIERRE_RENDERED)
   })
 
@@ -122,7 +143,7 @@ describe('Code block search highlighting via AssistantMessage', () => {
       </SearchHighlightContext.Provider>,
     )
     await waitFor(() => {
-      expect(container.querySelectorAll('mark.search-match')).toHaveLength(3)
+      expect(painted(container, SEARCH_HL_MATCH)).toEqual(['Hello', 'hello', 'HELLO'])
     }, PIERRE_RENDERED)
     rerender(
       <SearchHighlightContext.Provider value={{ term: 'Hello', caseSensitive: true, currentMessageIdx: -1, currentOccurrenceIdx: -1 }}>
@@ -132,19 +153,14 @@ describe('Code block search highlighting via AssistantMessage', () => {
       </SearchHighlightContext.Provider>,
     )
     await waitFor(() => {
-      expect(container.querySelectorAll('mark.search-match')).toHaveLength(1)
-      expect(container.querySelector('mark')!.textContent).toBe('Hello')
+      expect(painted(container, SEARCH_HL_MATCH)).toEqual(['Hello'])
     }, PIERRE_RENDERED)
   })
 
   it('currentOcc targets specific occurrence inside code block', async () => {
     const { container } = renderWithSearch('foo foo foo', 'javascript', 'foo', 1)
     await waitFor(() => {
-      const marks = container.querySelectorAll('mark')
-      expect(marks).toHaveLength(3)
-      expect(marks[0].className).toBe('search-match')
-      expect(marks[1].className).toBe('search-current')
-      expect(marks[2].className).toBe('search-match')
+      expect(paintedInOrder(container)).toEqual(['match', 'current', 'match'])
     }, PIERRE_RENDERED)
   })
 })

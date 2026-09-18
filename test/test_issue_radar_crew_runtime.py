@@ -63,7 +63,7 @@ def _effectively_trusted(slot: Any) -> bool:
 
 @pytest.fixture(autouse=True)
 def _private_sel_root_per_test(sel_private_root):
-    """Every test in this module gets its OWN SEL root (issue #7029).
+    """Every test in this module gets its OWN SEL root.
 
     The trust assertions here transitively depend on a fail-closed critical SEL
     audit WINNING the chain lock: ``sync_trust`` → ``activate_scoped`` audits
@@ -377,7 +377,7 @@ class TestNudge(unittest.TestCase):
         self.assertNotIn("crew: needs human", nudge)
 
     def test_the_nudge_never_mentions_escalation(self):
-        """A crew must not be told a concept the protocol no longer has.
+        """A crew must not be told a concept the protocol does not have.
 
         The nudge is re-sent every turn and is the most recent instruction in the
         window, so a stale counter here outranks the brief: a crew reading
@@ -1624,7 +1624,7 @@ class TestTheWakesLivenessGuardIsTotal(unittest.TestCase):
                 ):
                     owners.append(fn.name)
         # ``_reconcile_trust`` reaches ``sync_trust`` through ``_trust_inputs`` so
-        # that the app gate is read in the same hop; it is no longer a direct owner.
+        # that the app gate is read in the same hop; it is not a direct owner.
         self.assertEqual(sorted(owners), ["ensure_crew_session"])
 
     def test_the_app_gate_is_read_in_the_hop_and_never_on_the_loop(self):
@@ -1851,16 +1851,24 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
         slot = _FakeSlot()
         ran: list[str] = []
         origins: list[bool | None] = []
+        actors: list[str | None] = []
 
+        # ``**_rest`` on purpose: this double stands in for ``_run_chat``, whose
+        # keyword surface grows, and a double that enumerates it fails on the next
+        # argument added rather than on anything this test is about. The two
+        # keywords it DOES name are the two it asserts on.
         async def _turn(
             _state: Any,
             _slot: Any,
             prompt: str,
             *,
             _directive_user_origin: bool | None = None,
+            _turn_actor: str | None = None,
+            **_rest: Any,
         ) -> None:
             ran.append(prompt)
             origins.append(_directive_user_origin)
+            actors.append(_turn_actor)
 
         with mock.patch.object(cr, "_run_chat", _turn):
             self.assertTrue(cr.dispatch_crew_turn(state, slot, "advance one item"))
@@ -1868,6 +1876,9 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(state.capped, [slot.key])
         self.assertEqual(ran, ["advance one item"])
         self.assertEqual(origins, [False])
+        # A crew-composed prompt is not a person typing, and the session ledger
+        # records who caused a turn as fact.
+        self.assertEqual(actors, ["crew"])
 
     async def test_a_turn_that_never_got_a_permit_says_so_in_the_transcript(self):
         """A refused turn and a finished one must not look the same.
@@ -1886,6 +1897,7 @@ class TestTurnDispatch(unittest.IsolatedAsyncioTestCase):
             prompt: str,
             *,
             _directive_user_origin: bool | None = None,
+            **_rest: Any,
         ) -> None:
             raise AssertionError("the turn must not run without a permit")
 
@@ -2949,7 +2961,7 @@ _CLAIMED_SEL_ROOTS: set[str] = set()
 
 
 class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
-    """The per-test SEL root that closes issue #7029, pinned differentially.
+    """The per-test SEL root, pinned differentially.
 
     Every trust assertion in this file requires a fail-closed critical SEL
     audit to WIN the chain lock, and on the event-loop thread that acquire is a
@@ -2981,7 +2993,7 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(reset_singleton)
 
     async def test_a_holder_of_the_shared_default_root_cannot_refuse_trust(self):
-        """A concurrent writer on the SHARED root no longer reaches this module.
+        """A concurrent writer on the SHARED root does not reach this module.
 
         The holder below stands in for the writer the flake needed: it takes
         the chain lock of the DEFAULT SEL root — the directory ``sel()`` would
@@ -2989,7 +3001,7 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
         test's writer would actually hold — through its own file description,
         which is how a foreign holder looks to ``flock``. On the shared-root
         arrangement the fail-closed trust audit loses its single-shot acquire
-        against exactly this and the grant is refused (the #7029 failure
+        against exactly this and the grant is refused (the original failure
         verbatim); with a private per-test root the holder is a stranger to the
         audit, and trust must be granted.
         """
@@ -3045,7 +3057,7 @@ class TestSelRootIsolation(unittest.IsolatedAsyncioTestCase):
         self._claim_root()
 
     async def test_this_tests_sel_root_is_private_second_claim(self):
-        """Second claimant: on the pre-#7029 arrangement both tests resolve the
+        """Second claimant: on the shared-root arrangement both tests resolve the
         one session directory, so whichever of the pair runs second trips the
         reuse assertion (and both trip the shared-default one)."""
         self._claim_root()

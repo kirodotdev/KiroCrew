@@ -1,6 +1,6 @@
 """The API-Gateway-over-Function-URL rationale is stated security-first.
 
-Issue #3475: the artifact-deploy docs argued the M2 backend shape backwards --
+The artifact-deploy docs must not argue the M2 backend shape backwards --
 as if API Gateway were chosen *so that* a corporate account's automated
 guardrails would not fire. The actual reason is the security property itself: a
 Function URL needs a ``Principal:"*"`` resource policy, so the Lambda becomes

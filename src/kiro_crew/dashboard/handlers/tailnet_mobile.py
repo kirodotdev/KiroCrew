@@ -60,7 +60,6 @@ from kiro_crew.dashboard.token_auth import (
     LINK_WINDOW_SECS,
     MAX_SESSION_TTL_SECS,
     generate_token,
-    parse_duration,
 )
 from kiro_crew.qr import render_qr_data_uri
 
@@ -265,6 +264,13 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
     port = _dashboard_port(request)
     live = await _live_state(request, port)
     probe = live.probe
+    # ONLY the fields the card renders. The status body once mirrored the whole
+    # probe (installed/reachable/logged_in/trusted/startup_trusted/published/
+    # governance_pinned) plus serve_port/dashboard_port/qr_ttl_secs/host, but
+    # the card derives everything it shows from ``step`` — the one owner of the
+    # state machine — and read none of those. An unread field on a network-facts
+    # body is disclosure surface with no consumer, so the body carries only what
+    # is actually rendered.
     return web.json_response(
         {
             # A per-process marker lets the setup flow prove that a requested
@@ -274,29 +280,18 @@ async def api_tailnet_mobile_status(request: web.Request) -> web.Response:
             # mint one last boot-bound QR before exiting.
             "boot_id": current_boot_id(),
             "step": live.step,
-            "host": probe.name,
             "origin": f"https://{probe.name}" if probe.name else "",
-            "installed": probe.installed,
-            "reachable": probe.reachable,
-            "logged_in": probe.logged_in,
             # The OTHER devices on this tailnet. Carried because publishing and
             # the QR both succeed on a tailnet of one, and the scan then fails in
             # the phone's browser with nothing on this machine to blame.
             "peer_count": probe.peer_count,
             "peers_online": probe.peers_online,
-            "trusted": live.trusted,
-            "startup_trusted": live.startup_host == probe.name,
-            "published": live.published,
             "keep_awake": live.keep_awake,
-            "governance_pinned": live.pinned,
             # Verbatim daemon/serve text, never a rephrasing. The classification
             # above is a best-effort hint; this is what Tailscale actually said,
             # and it is the only thing that stays correct if upstream rewords.
             "detail": live.serve_detail or probe.detail,
             "download_url": TAILSCALE_DOWNLOAD_URL,
-            "qr_ttl_secs": DEFAULT_QR_TTL_SECS,
-            "serve_port": tailnet_serve.SERVE_HTTPS_PORT,
-            "dashboard_port": port,
         }
     )
 
@@ -895,23 +890,26 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
         )
     host = live.probe.name
 
-    ttl = DEFAULT_QR_TTL_SECS
+    # The QR session lifetime is fixed at the endpoint default. A caller-supplied
+    # ``ttl`` was accepted here once, but no caller ever sent one — both the card
+    # and the connect modal mint with no body — so it was dead request surface on
+    # a credential-minting endpoint. Clamped to this endpoint's own ceiling and
+    # the global session ceiling so a future raise of DEFAULT_QR_TTL_SECS cannot
+    # exceed what token_auth itself allows; the caller's own remaining lifetime is
+    # applied further down, after the last awaited step before the mint, so it
+    # cannot go stale while this handler waits.
+    ttl = min(DEFAULT_QR_TTL_SECS, MAX_QR_TTL_SECS, MAX_SESSION_TTL_SECS)
+
+    # Drain the request body even though nothing here reads it. The caller's
+    # remaining-lifetime check below is deliberately taken AFTER this await: a
+    # client that trickles the body in byte by byte controls how long this
+    # handler waits, and a session in its last seconds must not stretch the mint
+    # past its own expiry while the body arrives. The awaited step is the point
+    # of the guard, not the payload -- so the read stays, the value is discarded.
     try:
-        body = await request.json()
+        await request.json()
     except Exception:
-        body = {}
-    if isinstance(body, dict):
-        raw_ttl = body.get("ttl")
-        if isinstance(raw_ttl, str) and raw_ttl.strip():
-            parsed = parse_duration(raw_ttl)
-            if parsed:
-                ttl = parsed
-    # Clamped by this endpoint's own ceiling first, then the global session
-    # ceiling, so neither a caller-supplied value nor a future raise of
-    # MAX_QR_TTL_SECS can exceed what token_auth itself allows. The caller's
-    # own remaining lifetime is applied further down, after the last awaited
-    # step before the mint, so it cannot go stale while this handler waits.
-    ttl = min(ttl, MAX_QR_TTL_SECS, MAX_SESSION_TTL_SECS)
+        pass
 
     state_obj = request.app.get("state")
     owner_id = str(getattr(state_obj, "owner_id", "") or "")
@@ -1119,6 +1117,5 @@ async def api_tailnet_mobile_qr(request: web.Request) -> web.Response:
             # ``exp`` to the session TTL, so a short-lived caller's link dies
             # with the ttl it lent — report the live window, not the constant.
             "link_window_secs": min(LINK_WINDOW_SECS, ttl),
-            "host": host,
         }
     )

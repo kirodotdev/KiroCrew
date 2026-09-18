@@ -186,6 +186,15 @@ interface Conn {
    * stay bannerless, preserving the deliberate anti-flicker behaviour.
    */
   manualRetry: boolean
+  /**
+   * Set when the server told this socket that a newer connection now owns the
+   * PTY (`error` frame with `code: 'displaced'`). The close that follows is
+   * deliberate, not a drop: automatic redial would take the terminal straight
+   * back and two open windows would displace each other forever. The session
+   * parks in 'disconnected' until the user clicks Reconnect (a manual retry
+   * clears the flag); the online/visibility revive listeners leave it alone.
+   */
+  displaced: boolean
 }
 const conns = new Map<string, Conn>()
 
@@ -252,6 +261,26 @@ export function useTerminalManualRetry(sessionId: string): boolean {
   )
 }
 
+/**
+ * React hook: whether this session is parked because a newer window took the
+ * terminal (server `error` frame with `code: 'displaced'`). Lets the banner
+ * say so instead of rendering the generic network-failure copy. Publishes on
+ * the same listener set as the status, since it only ever changes alongside a
+ * status transition (the displaced close, or the manual Reconnect that clears it).
+ */
+export function useTerminalDisplaced(sessionId: string): boolean {
+  return useSyncExternalStore(
+    (cb) => {
+      let s = statusListeners.get(sessionId)
+      if (!s) { s = new Set(); statusListeners.set(sessionId, s) }
+      s.add(cb)
+      return () => { s?.delete(cb) }
+    },
+    () => conns.get(sessionId)?.displaced ?? false,
+    () => false,
+  )
+}
+
 /** React hook: a session's live connection status. Undefined until a
  *  connection is managed for the session. */
 export function useTerminalConnStatus(sessionId: string): TerminalConnStatus | undefined {
@@ -280,6 +309,14 @@ export function useTerminalConnStatus(sessionId: string): TerminalConnStatus | u
 export function retryTerminalConnection(sessionId: string, manual = true): void {
   const c = conns.get(sessionId)
   if (!c || c.disposed) return
+  // A displaced session was closed on purpose by the server; only the user
+  // takes it back. Automatic revives (online / tab foreground) must not, or a
+  // background tab regaining focus would silently displace the active window.
+  if (c.displaced) {
+    if (!manual) return
+    c.displaced = false
+    notifyStatus(sessionId)
+  }
   if (manual) setManualRetry(sessionId, c)
   const rs = c.ws?.readyState
   if (rs === WebSocket.OPEN || rs === WebSocket.CONNECTING) return
@@ -370,6 +407,7 @@ function connect(sessionId: string, c: Conn) {
         }
         if (m && m.type === 'title' && typeof m.text === 'string') setSessionTitle(sessionId, m.text)
         if (m && m.type === 'cwd' && typeof m.path === 'string') cwds.set(sessionId, m.path)
+        if (m && m.type === 'error' && m.code === 'displaced') c.displaced = true
       } catch { /* ignore non-JSON control frames */ }
     }
   }
@@ -377,6 +415,15 @@ function connect(sessionId: string, c: Conn) {
   ws.onclose = () => {
     unregisterTerminalWs(sessionId)
     if (c.disposed) return
+    if (c.displaced) {
+      // The server handed this PTY to a newer window and closed us on purpose.
+      // Park instead of redialing: a redial would displace that window right
+      // back. The banner's Reconnect button is the way to take the terminal.
+      clearTimeout(c.reconnectTimer)
+      c.reconnectTimer = undefined
+      setConnStatus(sessionId, c, 'disconnected')
+      return
+    }
     const attempt = c.retries++
     if (attempt >= MAX_RETRIES) {
       // Already past the ceiling (a straggler close after dialing stopped):
@@ -403,7 +450,7 @@ export function ensureTerminalConnection(
   sessionId: string, term: Terminal, fit: FitAddon, cwd?: string | null,
 ): void {
   if (conns.has(sessionId)) return
-  const c: Conn = { term, fit, cwd, ws: null, disposed: false, retries: 0, status: 'reconnecting', manualRetry: false }
+  const c: Conn = { term, fit, cwd, ws: null, disposed: false, retries: 0, status: 'reconnecting', manualRetry: false, displaced: false }
   conns.set(sessionId, c)
   // Wire terminal I/O once (the term is cached for the session's lifetime;
   // its listeners are cleaned up by term.dispose() in destroyTerm).

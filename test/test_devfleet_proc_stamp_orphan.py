@@ -2,12 +2,12 @@
 
 Context
 -------
-``#5297`` closed the shutdown *admission* race: a run whose ``(task, proc)``
+The shutdown *admission* race is closed: a run whose ``(task, proc)``
 tuple is registered in ``_ACTIVE_RUNS`` AFTER ``dev_fleet_cleanup`` took its
 snapshot is now refused, and a run registered before is cancelled + its process
 tree killed (see ``test_devfleet_active_runs_shutdown.py``).
 
-This is a DIFFERENT, narrower window that ``#5297`` does not close.
+This is a DIFFERENT, narrower window the admission fix does not close.
 
 ``_start_run`` registers the run under the admission lock as ``(task, None)``
 — the process handle is NOT known yet.  The worker coroutine stamps the real

@@ -10,6 +10,8 @@ different checkout.
 """
 
 import ast
+import os
+import shlex
 import subprocess
 import sys
 import textwrap
@@ -182,6 +184,144 @@ def test_requires_python_reads_a_static_omission_as_no_floor_at_all(repo):
     assert dep_sync.requires_python(repo) is None
 
 
+def test_requires_python_from_texts_judges_a_revision_without_a_working_tree():
+    """The same precedence as the checkout reader, applied to raw file bodies."""
+    py = '[project]\nname = "kirocrew"\nrequires-python = ">=3.12"\n'
+    assert dep_sync.requires_python_from_texts(py, _SETUP_CFG) == ">=3.12"
+    # No pyproject at all: setup.cfg is the authority.
+    assert dep_sync.requires_python_from_texts(None, _SETUP_CFG) == ">=3.10"
+    # A static omission in `[project]` is "no floor", never setup.cfg's copy.
+    assert dep_sync.requires_python_from_texts('[project]\nname = "kirocrew"\n', _SETUP_CFG) is None
+    assert dep_sync.requires_python_from_texts(None, None) is None
+
+
+def _git(repo: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args],
+        cwd=str(repo),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=True,
+        # A fixed identity and no user gitconfig, so the fixture commits the
+        # same way on every host.
+        # Keeps the autouse `_git_identity` isolation the rest of the module
+        # runs under; only HOME is pinned so no user gitconfig leaks in.
+        env={**os.environ, "HOME": str(repo)},
+    ).stdout.strip()
+
+
+@pytest.fixture
+def floor_repo(tmp_path):
+    """A checkout at a >=3.10 revision whose fetched successor demands >=3.12.
+
+    Mirrors the shape that stranded a live install: the working tree still
+    declares the floor the venv meets, and the revision the update would apply
+    -- reachable only by ref, not on disk -- raises it past the interpreter.
+    """
+    repo = tmp_path / "checkout"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\nrequires-python = ">=3.10"\n', encoding="utf-8"
+    )
+    _git(repo, "add", "pyproject.toml")
+    _git(repo, "commit", "-q", "-m", "floor 3.10")
+    _git(repo, "branch", "incoming")
+    _git(repo, "checkout", "-q", "incoming")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\nrequires-python = ">=3.12"\n', encoding="utf-8"
+    )
+    _git(repo, "commit", "-q", "-am", "floor 3.12")
+    _git(repo, "checkout", "-q", "main")
+    return repo
+
+
+def test_incoming_floor_breach_reads_the_fetched_revision_not_the_working_tree(floor_repo):
+    """The working tree says 3.10 and passes; the incoming commit says 3.12 and refuses."""
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 11, 9)):
+        reason = dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
+        assert reason is not None
+        assert ">=3.12" in reason and "3.11.9" in reason
+        # The tree itself is untouched by the question.
+        assert dep_sync.requires_python(floor_repo) == ">=3.10"
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "main", Path(sys.executable)) is None
+        )
+
+
+def test_incoming_floor_breach_does_not_fire_when_the_venv_meets_the_floor(floor_repo):
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 0)):
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
+            is None
+        )
+
+
+def test_incoming_floor_breach_does_not_fire_on_an_unprobeable_interpreter(floor_repo):
+    """A venv whose version cannot be asked is not a proven breach."""
+    with patch.object(dep_sync, "interpreter_version", return_value=None):
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
+            is None
+        )
+
+
+def test_incoming_floor_breach_refuses_when_git_cannot_read_the_floor(floor_repo):
+    """An unresolvable ref, a git that will not start, a timeout: none is "no floor".
+
+    On a pinned revision, reading a failed lookup as an absent floor is the one
+    way left to re-admit the stranded state the gate exists to refuse.
+    """
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 10, 0)):
+        with pytest.raises(dep_sync.IncomingFloorUnreadable):
+            dep_sync.incoming_python_floor_breach(floor_repo, "no-such-ref", Path(sys.executable))
+        with pytest.raises(dep_sync.IncomingFloorUnreadable):
+            dep_sync.incoming_python_floor_breach(
+                floor_repo, "incoming", Path(sys.executable), git_bin="/nonexistent/git"
+            )
+        with patch.object(
+            dep_sync.subprocess, "run", side_effect=subprocess.TimeoutExpired(["git"], 1)
+        ):
+            with pytest.raises(dep_sync.IncomingFloorUnreadable):
+                dep_sync.incoming_python_floor_breach(floor_repo, "incoming", Path(sys.executable))
+
+
+def test_incoming_floor_breach_reads_a_missing_floor_file_as_no_floor(floor_repo):
+    """A revision with neither floor file declares nothing; that is not a read failure."""
+    _git(floor_repo, "checkout", "-q", "-b", "floorless")
+    _git(floor_repo, "rm", "-q", "pyproject.toml")
+    _git(floor_repo, "commit", "-q", "-m", "no floor files")
+    _git(floor_repo, "checkout", "-q", "main")
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 8, 0)):
+        assert (
+            dep_sync.incoming_python_floor_breach(floor_repo, "floorless", Path(sys.executable))
+            is None
+        )
+
+
+def test_incoming_floor_breach_remedy_names_the_declared_floor_and_quotes_paths(tmp_path):
+    """The remedy asks for the interpreter the revision wants, not a constant."""
+    repo = tmp_path / "check out"
+    repo.mkdir()
+    _git(repo, "init", "-q", "-b", "main")
+    (repo / "pyproject.toml").write_text(
+        '[project]\nname = "kirocrew"\nrequires-python = ">=3.13"\n', encoding="utf-8"
+    )
+    _git(repo, "add", "pyproject.toml")
+    _git(repo, "commit", "-q", "-m", "floor 3.13")
+    venv_py = tmp_path / "my venv" / "bin" / "python"
+    with patch.object(dep_sync, "interpreter_version", return_value=(3, 12, 1)):
+        reason = dep_sync.incoming_python_floor_breach(repo, "main", venv_py)
+    assert reason is not None
+    assert "uv venv --python 3.13 --seed" in reason
+    assert "3.12" not in reason.split("uv venv")[1].split("--seed")[0]
+    # Paths with spaces are pasteable only when quoted.
+    assert shlex.quote(str(tmp_path / "my venv")) in reason
+    assert shlex.quote(str(venv_py)) in reason
+    assert shlex.quote(str(repo)) in reason
+
+
 def test_python_floor_breach_reports_the_highest_unmet_floor():
     assert dep_sync.python_floor_breach(">=3.10", (3, 12, 0)) is None
     assert dep_sync.python_floor_breach(">=3.13", (3, 10, 0)) == "3.13.0"
@@ -276,7 +416,7 @@ def test_console_script_target_reports_a_removal_rather_than_reading_a_stale_cop
     Falling through to setup.cfg here is what hides the removal: this repository
     carries the same entry point in both files, so the stale copy AGREES with the
     installed wrapper and the comparison reports success on a script the revision
-    deleted -- the wrapper left dispatching to a target that may no longer exist.
+    deleted -- the wrapper is left dispatching to a target that may not exist.
     """
     (repo / "setup.cfg").write_text(
         _SETUP_CFG + "\n\n[options.entry_points]\nconsole_scripts =\n"

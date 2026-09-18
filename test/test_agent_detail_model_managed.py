@@ -80,11 +80,10 @@ async def test_patch_clear_model_resumes_tracking(tmp_path):
 async def test_patch_without_model_lifts_stale_bookkeeping_keys(tmp_path):
     """A PATCH that never touches ``model`` still runs the shared strip/lift rule.
 
-    Regression for a design-review follow-up on #2570: this PATCH handler used
-    to unconditionally ``data.pop(...)`` these two keys, discarding a legacy
-    value already on disk instead of lifting it into the sidecar the way the
-    other three writers (PUT, migrate_agent_specs, _refresh_dynamic_fields) do.
-    Routing through ``agent_state.lift_and_strip_bookkeeping`` closes that gap.
+    This PATCH handler must lift a legacy value already on disk into the sidecar
+    rather than ``data.pop(...)`` the two keys away, the way the other three
+    writers (PUT, migrate_agent_specs, _refresh_dynamic_fields) do. It routes
+    through ``agent_state.lift_and_strip_bookkeeping`` to guarantee that.
     """
     cfg = tmp_path / "kirocrew.json"
     cfg.write_text(
@@ -101,3 +100,82 @@ async def test_patch_without_model_lifts_stale_bookkeeping_keys(tmp_path):
     assert "cc_model" not in data
     assert agent_state.get_model_managed("kirocrew") is False
     assert agent_state.get_cc_model("kirocrew") == "claude-sonnet-4.6"
+
+
+@pytest.mark.asyncio
+async def test_patch_write_is_governance_sanitized(tmp_path):
+    """The PATCH overwrite must run the whole-config governance funnel inside
+    the spec lock: a stale snapshot must not restore ceiling-rejected
+    allowedTools/autoApprove grants (a security boundary)."""
+    cfg = tmp_path / "kirocrew.json"
+    cfg.write_text(
+        json.dumps({"name": "kirocrew", "model": "claude-old", "allowedTools": ["@stale"]})
+    )
+    request = _patch_request("kirocrew", {"model": "claude-new"})
+
+    def fake_sanitize(config):
+        config["allowedTools"] = ["governance-filtered"]
+
+    with (
+        patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path),
+        patch(
+            "kiro_crew.dashboard.handlers.agents.sanitize_agent_config_governance",
+            fake_sanitize,
+        ),
+    ):
+        resp = await api_agent_detail(request)
+
+    assert resp.status == 200
+    written = json.loads(cfg.read_text(encoding="utf-8"))
+    assert written["allowedTools"] == ["governance-filtered"]
+    assert written["model"] == "claude-new"
+
+
+@pytest.mark.asyncio
+async def test_patch_merge_preserves_concurrent_writer_changes(tmp_path):
+    """The locked overwrite re-reads INSIDE the lock and merges only this
+    patch's delta: a concurrent refresh's change to an untouched key must
+    survive, and a key the concurrent writer removed must stay removed."""
+    cfg = tmp_path / "kirocrew.json"
+    cfg.write_text(
+        json.dumps(
+            {
+                "name": "kirocrew",
+                "model": "claude-old",
+                "hooks": {"old": True},
+                "staleGrant": "x",
+            }
+        )
+    )
+    request = _patch_request("kirocrew", {"model": "claude-new"})
+
+    from kiro_crew.dashboard.handlers import agents as agents_mod
+
+    real_read = agents_mod._read_agent_spec
+    calls = {"n": 0}
+
+    def racing_read(path, **kwargs):
+        calls["n"] += 1
+        result = real_read(path, **kwargs)
+        # After the handler's pre-lock re-read (2nd read: detail read + reread),
+        # simulate a concurrent refresh: change hooks, drop staleGrant.
+        if calls["n"] == 2:
+            concurrent = dict(result)
+            concurrent["hooks"] = {"refreshed": True}
+            concurrent.pop("staleGrant", None)
+            cfg.write_text(json.dumps(concurrent))
+        return result
+
+    with (
+        patch("kiro_crew.agent.KIRO_AGENTS_DIR", tmp_path),
+        patch("kiro_crew.dashboard.handlers.agents._read_agent_spec", side_effect=racing_read),
+    ):
+        resp = await api_agent_detail(request)
+
+    assert resp.status == 200
+    written = json.loads(cfg.read_text(encoding="utf-8"))
+    # This patch's own delta applied...
+    assert written["model"] == "claude-new"
+    # ...while the concurrent writer's changes to untouched keys survive.
+    assert written["hooks"] == {"refreshed": True}
+    assert "staleGrant" not in written

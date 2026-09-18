@@ -7,8 +7,8 @@ every route below is asserted twice: the non-owner is refused, and the owner
 reaches the handler's own outcome.
 
 Ordering is asserted too, because a gate placed below a referential guard leaks
-what it was added to protect. Before this change (#6470) any authenticated
-dashboard session reached all four -- including the token minted for an
+what it was added to protect. Without the gate, any authenticated
+dashboard session reaches all four -- including the token minted for an
 allow-listed Slack user by ``!dashboard``, which carries an empty app identity
 and so is authenticated but is not the owner.
 
@@ -155,7 +155,12 @@ class TestWorkspaceUpdateOwnerGate:
         assert stored["spare"]["dir"] == "workspace-spare"
 
     @pytest.mark.asyncio
-    async def test_owner_still_updates(self, cfg_env):
+    async def test_owner_still_updates(self, cfg_env, tmp_path):
+        # An update REFUSES a dir that is not there (a declared-but-missing
+        # workspace refuses every private member), so materialize the
+        # destination -- this test is about the owner gate, not that rule.
+        # Workspace dirs resolve under the patched data_home, which is tmp_path.
+        (tmp_path / "moved").mkdir()
         async with TestClient(TestServer(_workspace_app())) as client:
             resp = await client.put("/api/workspaces/spare", json={"dir": "moved"})
             assert resp.status == 200, await resp.text()

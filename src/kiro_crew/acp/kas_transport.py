@@ -102,7 +102,7 @@ def build_kas_argv(kiro_bin: str, *, host_auth: bool = False) -> list[str]:
     ``host_auth=True`` omits the flag. kiro-cli then leaves the engine's
     ``_kiro/auth/getAccessToken`` request on the wire for Crew to answer from
     :mod:`kiro_crew.auth`. The caller decides this from whether the vault holds
-    an identity (see ``AcpRuntime._resolve_spawn_argv``); this function only
+    an identity (see ``AcpRuntime._resolve_spawn_plan``); this function only
     renders the choice.
 
     No ``--agent``: Crew binds its agent by sending ``_meta.kiro.customAgents``

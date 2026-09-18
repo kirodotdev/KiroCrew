@@ -1,9 +1,9 @@
 """``_ingest_file`` must neither query per file nor await after the commit.
 
-Two defects meet in this one function, and the fix for the first used to create
+Two defects meet in this one function, and the naive fix for the first creates
 the second -- so both are ratcheted here together.
 
-**The query.** The scan used to learn which items a file produced by reading the
+**The query.** A naive scan learns which items a file produced by reading the
 source's entire item-id set BEFORE and AFTER every single file and diffing the two.
 ``idx_items_source_id`` keeps each read an index scan rather than a table scan, but
 it still materializes one row per item in the SOURCE -- about 20k rows on a large

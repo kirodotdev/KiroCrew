@@ -314,6 +314,83 @@ jobs:
           perl -i -pe 's/\b(?:AKIA|ASIA)[A-Z2-7]{16}\b/[REDACTED-AWS-KEY-ID]/g; s{arn:aws\S*}{[REDACTED-ARN]}g; s/\b[0-9]{12}\b/[REDACTED-ACCT]/g; s/(?i)(aws_secret_access_key|aws_session_token|x-amz-security-token)\s*[:=]\s*\S+/$1=[REDACTED]/g' .review-candidates.md
           if ! grep -Fq "[OPUS-DISCOVERY] $HEAD" .review-candidates.md; then
             echo "::error::Discovery produced no [OPUS-DISCOVERY] marker for $HEAD, so its output cannot be trusted as a complete candidate list. Failing closed: validation against a truncated or empty list would emit a clean [OPUS-REVIEWED] verdict and pass the gate on a review that never happened."
+            # PAYLOAD-FREE diagnostics for exactly this branch, printed AFTER the
+            # error and BEFORE `exit 1` so nothing here can change the verdict.
+            # The execution file dies with the runner and is deliberately never
+            # printed or uploaded (it echoes the diff and whatever a tool
+            # returned), so a missing marker used to be indistinguishable
+            # between "the model never wrote it", "it was written but the
+            # extraction above selected a different message" and "the file was
+            # not the shape the extraction expects". Every value below is a
+            # fixed enum, a count or a boolean computed by jq over the
+            # UNREDACTED file, and each token is validated against that shape
+            # before it is echoed -- so nothing the model or a tool wrote can
+            # reach the log through this line. Keep in sync with
+            # fork-opus-review.yml, where the same block runs on fork content.
+            #
+            # `marker_in_assistant` is true when the full marker appears in at
+            # least one assistant `text` block of the transcript. Paired with a
+            # false `marker_in_extracted`, it means a scanned assistant block
+            # contains the marker but the extracted result does not. This does
+            # not establish message order or prove the review was complete.
+            # False says only that no scanned text block carried it. Nothing
+            # here changes extraction or rescues a marker from another block.
+            #
+            # `denied_read` / `denied_grep` / `denied_glob` / `denied_bash` /
+            # `denied_other` split `permission_denials` by the denied tool. The
+            # first four match the recorded `tool_name` EXACTLY; every other
+            # name, a missing or non-string name, and a malformed entry all
+            # count as `other`, so no name the transcript carries is ever
+            # echoed. The five always sum to `permission_denials`. Read-only
+            # observation of what the run already recorded: this grants no
+            # tool and changes no allowlist.
+            diag_shape="absent"
+            diag_transcript="unknown unknown unknown unknown unknown unknown unknown unknown unknown"
+            if [ -n "$EXEC_FILE" ] && [ -f "$EXEC_FILE" ]; then
+              diag_shape="$(jq -rs 'if length == 0 then "empty" elif length == 1 then (if (.[0] | type) == "array" then "array" elif (.[0] | type) == "object" then "object" else "other" end) elif all(.[]; type == "object") then "jsonl" else "other" end' "$EXEC_FILE" 2>/dev/null)" || diag_shape="unparseable"
+              case "$diag_shape" in empty|array|object|jsonl|other) ;; *) diag_shape="unparseable" ;; esac
+              transcript="$(jq -rs --arg head "$HEAD" '
+                def denied_as: if type == "object" and (.tool_name | type) == "string" and (.tool_name == "Read" or .tool_name == "Grep" or .tool_name == "Glob" or .tool_name == "Bash") then .tool_name else "other" end;
+                [ .[] | (if type == "array" then .[] else . end) | select(type == "object") ] as $m
+                | [ $m[] | .permission_denials? | select(type == "array") | .[] | denied_as ] as $d
+                | [ ([ $m[] | select(.result != null) ] | length),
+                    ([ $m[] | select(.type == "system" and .subtype == "compact_boundary") ] | length),
+                    ([ $m[] | .permission_denials? | select(type == "array") | length ] | add // 0),
+                    ([ $m[] | select(.type == "assistant") | .message.content[]? | select(type == "object" and .type == "text") | .text | select(type == "string") | contains("[OPUS-DISCOVERY] " + $head) ] | any),
+                    ([ $d[] | select(. == "Read") ] | length),
+                    ([ $d[] | select(. == "Grep") ] | length),
+                    ([ $d[] | select(. == "Glob") ] | length),
+                    ([ $d[] | select(. == "Bash") ] | length),
+                    ([ $d[] | select(. == "other") ] | length)
+                  ] | map(tostring) | join(" ")' "$EXEC_FILE" 2>/dev/null)" || transcript=""
+              if [ "$(printf '%s' "$transcript" | wc -w)" -eq 9 ]; then diag_transcript="$transcript"; fi
+            fi
+            # Measure the text the extraction above ACTUALLY produced (`out`,
+            # before redaction), not a re-derivation of it: on a JSONL
+            # transcript the first jq form concatenates every record's
+            # `.result`, and a non-string result is rendered as JSON, so only
+            # `out` itself mirrors what the marker grep saw. It reaches jq over
+            # STDIN -- an `--arg` would put the model's text into this
+            # process's argument list, which is visible host-wide.
+            extracted="$(printf '%s' "${out-}" | jq -rRs --arg head "$HEAD" '
+                [ length,
+                  contains("[OPUS-DISCOVERY] " + $head),
+                  ((contains("[OPUS-DISCOVERY] " + $head[0:7])) and ((contains("[OPUS-DISCOVERY] " + $head)) | not)),
+                  contains("[OPUS-DISCOVERY] <HEAD_SHA>")
+                ] | map(tostring) | join(" ")' 2>/dev/null)" || extracted=""
+            diag_extracted="unknown unknown unknown unknown"
+            if [ "$(printf '%s' "$extracted" | wc -w)" -eq 4 ]; then diag_extracted="$extracted"; fi
+            diag_num() { case "$1" in ''|*[!0-9]*) printf 'unknown' ;; *) printf '%s' "$1" ;; esac; }
+            diag_bool() { case "$1" in true|false) printf '%s' "$1" ;; *) printf 'unknown' ;; esac; }
+            read -r d_results d_compacts d_denials d_amarker d_read d_grep d_glob d_bash d_other <<< "$diag_transcript" || true
+            read -r d_chars d_marker d_short d_placeholder <<< "$diag_extracted" || true
+            # BSD `wc` (macOS) right-aligns its count in a padded field, so the
+            # raw substitution would split the line into an extra token and
+            # break the one-token-per-key shape every reader relies on. Strip
+            # the blanks, then validate like every other count.
+            captured="$(wc -c < .review-candidates.md)"
+            captured="${captured//[[:space:]]/}"
+            echo "::notice::discovery-capture-diagnostics head=$HEAD exec_file=$diag_shape captured_bytes=$(diag_num "$captured") result_messages=$(diag_num "$d_results") extracted_chars=$(diag_num "$d_chars") marker_in_extracted=$(diag_bool "$d_marker") short_sha_marker_only=$(diag_bool "$d_short") placeholder_marker=$(diag_bool "$d_placeholder") marker_in_assistant=$(diag_bool "$d_amarker") compact_boundaries=$(diag_num "$d_compacts") permission_denials=$(diag_num "$d_denials") denied_read=$(diag_num "$d_read") denied_grep=$(diag_num "$d_grep") denied_glob=$(diag_num "$d_glob") denied_bash=$(diag_num "$d_bash") denied_other=$(diag_num "$d_other")"
             exit 1
           fi
           # Stage 1 has no cap on candidate count by design, so bound what stage

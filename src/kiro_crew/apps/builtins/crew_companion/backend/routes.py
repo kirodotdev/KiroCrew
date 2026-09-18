@@ -87,11 +87,11 @@ def _require_enabled(handler: Handler) -> Handler:
 
     The write-failure translation lives here, in the one wrapper every route
     already goes through, rather than in each of the seven handlers that mutate
-    the store. The store used to log an OSError and return ``{"ok": True}``, so a
-    full or read-only data home produced a 200: the panel cleared the input and
-    the reminder was gone after a restart. Now the store raises, and a raise that
-    reached aiohttp would be a bare 500 with no machine-readable ``code`` — which
-    is what ``test/test_error_code_contract.py`` exists to prevent. Putting it
+    the store. The store RAISES on a failed write: logging the OSError and
+    returning ``{"ok": True}`` would turn a full or read-only data home into a
+    200, clearing the panel's input for a reminder that is gone after a restart.
+    A raise that reached aiohttp would be a bare 500 with no machine-readable
+    ``code`` — which is what ``test/test_error_code_contract.py`` prevents. Putting it
     here also means a route added later cannot forget it.
     """
 
@@ -279,7 +279,7 @@ async def _handle_appearance_detail(request: web.Request) -> web.StreamResponse:
     pack_id = request.query.get("id", "")
     detail = await asyncio.to_thread(get_appearances().pack_detail, pack_id)
     if detail is None:
-        # Not found rather than a 400: an id that no longer resolves is the normal
+        # Not found rather than a 400: an id that does not resolve is the normal
         # outcome of a pack the user just deleted, not a malformed request.
         return _bad_request("no such appearance pack", "pack_not_found")
     return web.json_response(detail)

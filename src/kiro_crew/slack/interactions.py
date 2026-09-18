@@ -18,6 +18,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable
 
 import aiohttp
@@ -38,9 +39,10 @@ from kiro_crew.dashboard.chat_utils import (
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.messaging.identity import channel_inbound_permitted
-from kiro_crew.messaging.renderer import credential_redaction_notice
+from kiro_crew.messaging.renderer import redaction_notice
 from kiro_crew.security import (
     CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
@@ -323,9 +325,11 @@ async def ack_button(payload: dict, channel: str, msg_ts: str) -> None:
 
 def _get_forward_callback() -> str:
     """Return the configured forward-to-agent callback ID, or empty if disabled."""
-    if not _orch or not _orch._cfg:
+    if not _orch:
         return ""
-    return _orch._cfg.slack.forward_to_agent_callback
+    from kiro_crew.slack.handler import slack_cfg
+
+    return slack_cfg(_orch).slack.forward_to_agent_callback
 
 
 async def _handle_message_shortcut(payload: dict) -> None:
@@ -1044,19 +1048,21 @@ async def _refresh_channels_modal(view_id: str) -> None:
     if not _orch or not _orch.slack:
         return
     from kiro_crew.slack.blocks import channels_modal
+    from kiro_crew.slack.handler import slack_cfg
 
     current_ids = sorted(_orch._tracking_channels)
     channels = [
         {
             "channel_id": cid,
-            "activation": _orch._cfg.channel_config(cid).activation,
-            "agent": _orch._cfg.channel_config(cid).agent,
+            "activation": slack_cfg(_orch).channel_config(cid).activation,
+            "agent": slack_cfg(_orch).channel_config(cid).agent,
         }
         for cid in current_ids
     ]
     from kiro_crew.slack.events import _get_agent_names
 
-    modal = channels_modal(channels, agent_names=_get_agent_names())
+    agent_names = await asyncio.to_thread(_get_agent_names)
+    modal = channels_modal(channels, agent_names=agent_names)
     try:
         await _orch.slack.views_update(view_id=view_id, view=modal)
     except Exception:
@@ -1076,9 +1082,12 @@ async def _handle_ch_activation(payload: dict, action: dict) -> None:
 
     await run_config_write(_persist_channel_config, cid, activation=new_mode)
     if _orch:
-        from kiro_crew.config.loader import KiroCrewConfig
+        # In place, never a rebind: ``_orch._cfg`` is the object the handler
+        # module and every dispatcher hold, so rebinding it here would leave
+        # them on the stale one.
+        from kiro_crew.slack.handler import _reload_orch_cfg
 
-        _orch._cfg = KiroCrewConfig.load()
+        _reload_orch_cfg()
     sel().log_api_access(
         caller=caller,
         operation="slack.channel_activation_change",
@@ -1104,9 +1113,12 @@ async def _handle_ch_agent(payload: dict, action: dict) -> None:
 
     await run_config_write(_persist_channel_config, cid, agent=new_agent)
     if _orch:
-        from kiro_crew.config.loader import KiroCrewConfig
+        # In place, never a rebind: ``_orch._cfg`` is the object the handler
+        # module and every dispatcher hold, so rebinding it here would leave
+        # them on the stale one.
+        from kiro_crew.slack.handler import _reload_orch_cfg
 
-        _orch._cfg = KiroCrewConfig.load()
+        _reload_orch_cfg()
     logger.info("Channel %s agent changed to %s", cid, new_agent or "default")
     sel().log_api_access(
         caller=caller,
@@ -2254,7 +2266,9 @@ async def _handle_agent_select(
             return
         label = "🔄 Reset to default agent."
     else:
-        resolved = _resolve_agent_name(agent_name)
+        # The resolver lists the agents directory and reads the matching spec:
+        # filesystem work, off the loop like the other async callers of it.
+        resolved = await asyncio.to_thread(_resolve_agent_name, agent_name)
         if not resolved:
             return
         try:
@@ -2670,6 +2684,13 @@ async def _handle_session_resume(
     if not session_key:
         return
 
+    # Clicking Resume is the user asking for this conversation back, so retract
+    # any End they had recorded on it. Done here, before the destination
+    # choice, so the row returns whichever way they continue -- and so it
+    # returns at all: an active session outranks the flag only while its
+    # process lives, and the flag would hide the row again once it exits.
+    await _clear_session_dismissed(session_key)
+
     # Check if session already has a linked thread/channel
     existing_thread, existing_channel = _orch.sessions.get_slack_link(session_key)
 
@@ -2946,6 +2967,68 @@ async def _handle_resume_choice(
                 pass
 
 
+async def _record_session_dismissed(session_key: str) -> None:
+    """Stamp ``closed``/``closed_at`` on *session_key*'s transcript.
+
+    The durable half of the End button. ``closed`` is the record that the user
+    put this conversation away, read back by
+    ``messaging.sessions_view._row_is_ended`` to keep the row out of the
+    sessions list, and it is the same field a dashboard tab close writes --
+    one dismissal per transcript, because a tab and its channel conversation
+    share the file.
+
+    ``closed_at`` is stamped HERE rather than before the teardown above, so
+    that consolidation and skill extraction -- which run on the way out and
+    can write the file after this handler returns -- cannot look like the user
+    coming back. Nothing reads it for the sessions list today; it is written
+    because the dashboard's own reader compares against it, and a flag with no
+    instant would make every close there permanent.
+
+    Guarded on the metadata already existing: a missing first line means the
+    key names no transcript (a stale button, an unresolvable id), and the
+    unguarded writer would CREATE one, inventing a session out of a click.
+    Best-effort, but logged at warning -- a dismissal that silently fails to
+    land is exactly the "End does nothing" report this fixes.
+    """
+    if not (session_key and _orch and _orch.conv_log):
+        return
+    conv_log = _orch.conv_log
+    fields = {"closed": True, "closed_at": time.time()}
+    try:
+        recorded = await asyncio.to_thread(
+            conv_log.update_metadata_if, session_key, fields, lambda meta: bool(meta)
+        )
+    except Exception:
+        logger.warning("session end: dismissal not recorded for %s", session_key, exc_info=True)
+        return
+    if not recorded:
+        logger.warning(
+            "session end: no transcript metadata to dismiss for %s",
+            session_key,
+        )
+
+
+async def _clear_session_dismissed(session_key: str) -> None:
+    """Drop a ``closed`` record because the user is resuming the conversation.
+
+    Without this the row would only reappear while a process happens to be
+    live for the key (``_row_is_ended`` lets an active session outrank the
+    flag) and would vanish again the moment that process exits -- so a
+    conversation the user deliberately came back to would keep dropping out of
+    their own list. Unconditional: the click is the intent, unlike the
+    dashboard's resume route, which clears only a close it can prove predates
+    its own boundary because there the flag may belong to a different tab.
+    """
+    if not (session_key and _orch and _orch.conv_log):
+        return
+    try:
+        await asyncio.to_thread(_orch.conv_log.clear_closed, session_key)
+    except Exception:
+        logger.warning(
+            "session resume: dismissal not cleared for %s", session_key, exc_info=True
+        )
+
+
 async def _handle_session_end(
     payload: dict, action: dict, channel: str, msg_ts: str, user_id: str
 ) -> None:
@@ -2992,6 +3075,15 @@ async def _handle_session_end(
             await _orch.sessions.remove(key_to_remove)
         except Exception:
             logger.debug("session end remove failed for %s", key_to_remove, exc_info=True)
+
+    # Record the dismissal on the transcript, which is the half that makes the
+    # button do what it says. The removal above only kills a live process; the
+    # transcript stays on disk and the sessions list is built from the
+    # directory, so without this record the row is back on the next `sessions`
+    # call. It runs for a row with NO live session too -- that is the case the
+    # user hits most, because a cluttered list is mostly idle rows, and for
+    # those the block above resolves no key and does nothing at all.
+    await _record_session_dismissed(key_to_remove or session_id)
 
     response_url = payload.get("response_url", "")
     label = f"🛑 Session `{session_id[:12]}…` ended."
@@ -3257,18 +3349,22 @@ async def _handle_review_approve(payload: dict, action: dict) -> None:
     await _orch.slack.post_message(channel, draft, thread_ts)
     # Approving a draft posts it publicly to the channel, so this egress carries
     # the same silent-corruption hazard as the streaming reply path: the two lines
-    # above replaced a credential in the draft with a placeholder, and a channel
-    # member who copies the command hits an opaque downstream failure with no hint
-    # the text was rewritten. Count the tags in the redacted draft that actually
-    # shipped and post one best-effort follow-up notice. The notice carries only a
-    # count, never secret bytes, and its failure must not undo the posted draft --
-    # the draft is already public, so raising here would lose the warning and the
-    # approve's remaining teardown too.
+    # above replaced a credential or a suspicious URL in the draft with a
+    # placeholder, and a channel member who copies the command hits an opaque
+    # downstream failure with no hint the text was rewritten. Count the tags in
+    # the redacted draft that actually shipped -- credential tags exactly, the URL
+    # tag by `EXFILTRATION_REDACTION_TAG_PREFIX` prefix since it interpolates the
+    # domain -- and post one best-effort follow-up notice worded by kind (the
+    # remedies differ). The notice carries only counts, never secret bytes or the
+    # redacted domain, and its failure must not undo the posted draft -- the draft
+    # is already public, so raising here would lose the warning and the approve's
+    # remaining teardown too.
     _cred_redactions = sum(draft.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-    if _cred_redactions > 0:
+    _url_redactions = draft.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+    if _cred_redactions > 0 or _url_redactions > 0:
         try:
             await _orch.slack.post_message(
-                channel, credential_redaction_notice(_cred_redactions), thread_ts
+                channel, redaction_notice(_cred_redactions, _url_redactions), thread_ts
             )
         except Exception:
             logger.debug("Failed to post review-approve redaction notice", exc_info=True)

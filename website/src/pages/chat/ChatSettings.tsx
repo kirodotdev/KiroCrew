@@ -42,6 +42,16 @@ export interface ChatConfig {
   defaultAutopilot: boolean
   /** Pin the most recent prompt above the fold as a sticky banner. */
   pinLastPrompt: boolean
+  /** Spellcheck the message composer. When off, the composer input carries
+   *  `spellCheck={false}` so the browser draws no red misspelled-word
+   *  underlines. Default true — the behaviour every install has always had. */
+  spellcheck: boolean
+  /** Opt in to giving a folder that holds nothing no body at all, so it costs one
+   *  row instead of two. Default false: this changes how every empty folder in
+   *  the sidebar reads, and the row it removes is the only labelled "New chat in
+   *  <name>" affordance those folders have, so it is the user's call rather than
+   *  something a client with no stored config inherits. */
+  hideEmptyFolderBody: boolean
 }
 
 export type FileChipStyle = 'expanded' | 'minimal'
@@ -60,7 +70,7 @@ const LS_KEY = 'mc-chat-config'
  *  it. The sidebar's view toggle persists this flag BEFORE creating its first
  *  column, so a deliberate board user always has an explicit `true` stored and
  *  is unaffected by the default. */
-const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true }
+const DEFAULTS: ChatConfig = { historyExpanded: true, showTimestamps: true, showTurnStats: true, sendOnEnter: 'enter', collapseAllSteps: true, confirmCloseSession: false, simplifiedToolNames: true, contentWidth: 'compact', tagColumnsEnabled: false, fileChipStyle: 'expanded', followUpLayout: 'scroll', streamMode: 'smooth', showContextPct: false, showContextTokens: false, defaultAutopilot: false, pinLastPrompt: true, hideEmptyFolderBody: false, spellcheck: true }
 
 const VALID_FILE_CHIP_STYLES: ReadonlySet<FileChipStyle> = new Set(['expanded', 'minimal'])
 const VALID_FOLLOW_UP_LAYOUTS: ReadonlySet<FollowUpLayout> = new Set(['multiline', 'scroll'])
@@ -94,6 +104,12 @@ export function loadChatConfig(): ChatConfig {
     if (typeof cfg.showContextTokens !== 'boolean') cfg.showContextTokens = false
     if (typeof cfg.showTurnStats !== 'boolean') cfg.showTurnStats = true
     if (typeof cfg.pinLastPrompt !== 'boolean') cfg.pinLastPrompt = true
+    // Coerced, not trusted: a stored non-boolean must not decide whether the
+    // composer draws the browser's red spellcheck underlines.
+    if (typeof cfg.spellcheck !== 'boolean') cfg.spellcheck = true
+    // Coerced, not trusted: a stored non-boolean would otherwise make the empty
+    // folder shape depend on a truthy string.
+    if (typeof cfg.hideEmptyFolderBody !== 'boolean') cfg.hideEmptyFolderBody = false
     return cfg
   }
   catch { return { ...DEFAULTS } }
@@ -116,8 +132,11 @@ export interface DashboardConfig {
   session_grid: boolean
   tail_fork_enabled: boolean
   link_previews: boolean
+  link_patterns: { pattern: string; url: string }[]
   mcp_app_panel: boolean
   auto_open_git_panel: boolean
   session_card_source_links: boolean
   folder_suggestions_enabled: boolean
+  model_picker_hidden_models: string[]
+  model_picker_configured?: boolean
 }

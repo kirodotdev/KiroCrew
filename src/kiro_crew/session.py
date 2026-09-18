@@ -34,8 +34,8 @@ dispatch:
 * **KAS:** nothing is dispatched. KAS treats the ``/compact`` prompt as
   ordinary text and never answers it with a compaction status, so the
   gate declines (``compact_unsupported``) before the compaction task is
-  scheduled: an ungated dispatch stranded the wait for the full budget
-  while holding the semaphore and then recycled the session (#7812). KAS
+  scheduled: an ungated dispatch strands the wait for the full budget
+  while holding the semaphore and then recycles the session. KAS
   summarizes on its own initiative, the same way ``cc_managed`` leaves
   Claude-Code sessions to compact themselves.
 
@@ -64,7 +64,7 @@ Four mechanisms clean up processes. They are complementary — not redundant.
    unless explicitly killed.
 
 2. ``_cleanup_orphaned_mcp_servers()`` — **periodic** (every ~5 min).
-   Reads ``kiro_pids.txt`` (child:parent pairs). Kills children whose parent
+   Reads ``kiro_pids.txt`` (child:parent[:start-id] entries). Kills children whose parent
    is confirmed dead. PPid-based reuse guard prevents killing recycled PIDs.
    Also prunes dead bare PIDs. *Depends on (1)* — children are only orphaned
    after their sandbox root is killed.
@@ -98,6 +98,7 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol, cast
 
 if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
+    from kiro_crew.session_capabilities import LoadedCapabilities
 
 from kiro_crew import model_registry, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
@@ -112,7 +113,9 @@ from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
-from kiro_crew.config import KiroCrewConfig
+from kiro_crew.agent_spec_format import iter_agent_spec_files
+from kiro_crew.config import KiroCrewConfig, live
+from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import (
     AUTOCOMPACT_PCT_MAX,
     AUTOCOMPACT_PCT_MIN,
@@ -127,6 +130,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
+from kiro_crew.member_process_records import reclaim_stale_member_bindings
 from kiro_crew.messaging.link import (
     UNBIND_REASON_SESSION_DESTROYED,
     UNBIND_REASON_UNSPECIFIED,
@@ -144,6 +148,7 @@ from kiro_crew.sel import sel
 from kiro_crew.session_allocation import (
     AllocationConstants,
     AllocationDeps,
+    InboundCallbackReservation,
     SessionAllocationService,
 )
 from kiro_crew.session_allocation import SessionBusyError as SessionBusyError  # noqa: F401
@@ -205,6 +210,7 @@ from kiro_crew.session_pid import (
     kill_orphan_mcps,
 )
 from kiro_crew.session_pool import WarmPoolDeps, WarmSessionPool
+from kiro_crew.session_scope_reap import reap_abandoned_agent_scopes
 from kiro_crew.stats import Stats
 from kiro_crew.watchdog import CleanupHook, SessionWatchdog
 
@@ -216,6 +222,21 @@ from kiro_crew.watchdog import CleanupHook, SessionWatchdog
 ClaudeCodeProvider = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
+
+
+def _watchdog_handle_of(provider: Any) -> Any | None:
+    """The live ACP session handle behind *provider*, if it can rebind its watchdog.
+
+    Two shapes carry one: ``AcpSessionProvider`` holds ``_handle`` directly, and
+    ``AcpProvider`` wraps one as ``_client`` once its runtime is up. Anything
+    else (a placeholder client, a fake provider in a test, a Claude driver) has
+    no windows to re-clamp and is skipped.
+    """
+    for candidate in (provider, getattr(provider, "_client", None)):
+        handle = getattr(candidate, "_handle", None)
+        if handle is not None and callable(getattr(handle, "rebind_watchdog", None)):
+            return handle
+    return None
 
 
 def _is_claude_backend(provider: Any) -> bool:
@@ -301,10 +322,15 @@ def _resolve_allocation_crew_identity(
     return resolve_crew_identity(cfg, agent, crew_agent)
 
 
-def _load_allocation_watchdog_settings(crew: str) -> object:
+def _load_allocation_watchdog_settings(crew: str, cfg: object = None) -> object:
+    """The one seam this module reaches the ACP watchdog through.
+
+    ``cfg`` is the already-loaded config the watcher hands to the hot-apply path
+    so the re-clamp runs on the loop without a file read; ``None`` loads.
+    """
     from kiro_crew.acp.session_handle import _load_watchdog_settings
 
-    return _load_watchdog_settings(crew)
+    return _load_watchdog_settings(crew, cfg=cfg)
 
 
 def _get_agent_model_cache() -> dict[str, tuple[str, float, float]]:
@@ -449,6 +475,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "miss_empty",
         "bypass_resume",
         "bypass_stateless",
+        "bypass_private_memory",
         "bypass_cwd",
         "bypass_effort",
         "bypass_env",
@@ -509,6 +536,18 @@ BACKGROUND_AGENT = "kirocrew-lite"
 # ``register_selectable_backend`` — strictly after this module is imported. A
 # module-level intersection would snapshot the baseline and permanently exclude
 # a backend the operator did register.
+#
+# The SET here, deliberately, and NOT ``acp_runtime_backends()``: the codex
+# preview switch does not reach the background path. Background handles are the
+# high-churn ones — title generation, suggestions, folders and nav each take their
+# own ephemeral sessionId, many per conversation — and codex's teardown verb is
+# ``session/cancel``, which ends the turn without evicting the session from the
+# adapter's own map. On a shared process that is unbounded growth in the adapter,
+# at a rate a user never controls, and nothing Crew can send reclaims it.
+# Foreground sessions leak the same way but at the rate a person opens chats, and
+# the runtime's age/RSS recycle eventually collects the process. So the preview is
+# scoped to the path whose exposure is bounded; making codex a member of this set
+# requires a real per-session eviction first.
 def _bg_runtime_backends() -> frozenset[str]:
     return ACP_BACKENDS_ACP_RUNTIME & selectable_backends()
 
@@ -591,8 +630,8 @@ _COMPACT_MIN_EFFECT_PCT_POINTS = 5.0
 # re-crosses the trigger threshold, and on the task runner the next prompt
 # itself may no longer fit. Such a session is reset — with its native resume
 # sid cleared, so the overflowed conversation is not reloaded — instead of
-# limping through compact/cooldown cycles. Promoted from the task runner's
-# post-compaction verification so every compaction caller gets it (#4686).
+# limping through compact/cooldown cycles. Every compaction caller gets this,
+# not just the task runner's post-compaction verification.
 # The escalation rides the verdict settle (not a raw re-read after compact())
 # because only a settled reading has passed the measurability rules — a raw
 # re-read can be unknown (kiro zeroes + flags stats) or stale (a backend that
@@ -677,16 +716,16 @@ def _model_fallback(per_agent_model: str, global_default: str) -> "str | None":
     return global_default if global_default and global_default not in _SENTINEL_MODELS else None
 
 
-def _session_model(cfg: "KiroCrewConfig", agent: str | None) -> "str | None":
+def _session_model(
+    cfg: "KiroCrewConfig", agent: str | None, *, crew_agent: str | None = None
+) -> "str | None":
     """Resolve the model for a new session on *agent*, for EVERY surface.
 
-    ``agent`` is whatever the caller passed, and callers are not consistent: the
-    dashboard passes a resolved kiro template name, while Slack threads, cron
-    jobs and spawned agents pass a KiroCrew agent (crew) name. Both are handled
-    by trying the crew namespace first, so a crew's own ``model`` applies no
-    matter which surface starts the turn. Without this, a crew pinned to one
-    model in the Crews table still ran the template/global model from Slack or
-    cron — the same per-surface drift this tier exists to remove.
+    ``crew_agent`` carries the allocation's explicit member identity, including
+    "" for a literal template. The empty claim excludes a same-named member's
+    pin while preserving the template/global fallback. Without an explicit
+    claim, the shared identity resolver retains legacy crew-name inference for
+    callers such as Slack and cron.
 
     Returns ``None`` when nothing is pinned above the kiro layer, which leaves
     the provider factory to resolve the template pin / global itself. A crew pin
@@ -695,7 +734,8 @@ def _session_model(cfg: "KiroCrewConfig", agent: str | None) -> "str | None":
 
     Blocking I/O (globs + reads ``~/.kiro/agents/*.json``): call in an executor.
     """
-    crew = cfg.agents.get(agent) if agent else None
+    crew_name = _resolve_allocation_crew_identity(cfg, agent, crew_agent)
+    crew = cfg.agents.get(crew_name) if crew_name else None
     if crew is not None:
         crew_model = normalize_agent_model(crew.model)
         if crew_model:
@@ -781,7 +821,7 @@ def _provider_has_unfinished_turn(provider: LLMProvider) -> bool:
     already been ``session/cancel``'d but whose native turn-done ack has not yet
     arrived reports ``has_active_turn() is False`` yet still holds kiro-cli's
     native-session lock open; killing the process now reproduces the
-    empty-response-after-restart bug (#200). Reporting it as "unfinished" keeps
+    empty-response-after-restart bug. Reporting it as "unfinished" keeps
     it in the drain set so the ack is waited on before teardown.
 
     Same defensive guard as :func:`_provider_has_active_turn`: providers that
@@ -888,6 +928,8 @@ class _Session:
     semaphore: asyncio.BoundedSemaphore = field(default_factory=lambda: asyncio.BoundedSemaphore(1))
     approval_policy: str = ""  # "" (interactive) | "auto" (auto-approve all tools)
     agent: str = ""  # kiro agent name used for this session
+    capability_member: str = ""
+    loaded_capabilities: LoadedCapabilities | None = None
     # Slack message queue: FIFO of (msg_ts, text, kwargs) waiting for the semaphore
     queue: deque[tuple[str, str, dict]] = field(default_factory=deque)
     # Set when this session's last turn was cancelled via soft-stop.
@@ -895,10 +937,17 @@ class _Session:
     # must re-inject the cancelled turn (user prompt + partial assistant) as a
     # preamble on the next prompt. One-shot: consumers clear after use.
     prev_turn_cancelled: bool = False
-    # Set when a provider switch is detected (e.g. kiro→CC or CC→kiro).
-    # Consumed one-shot by the next prompt builder to inject history replay
-    # from KiroCrew's conversation_log. Ensures replay fires exactly once
-    # per switch, even if the session is reused across multiple prompts.
+    # Set when a provider switch, failed native resume, or Tool Search
+    # compatibility fallback creates a fresh provider that still needs Kiro Crew
+    # history. Non-destructive slash commands read without clearing; a confirmed
+    # native `/clear` consumes it so replay cannot undo the user's deletion. The
+    # first provider event records acceptance only in the dashboard runner's
+    # turn-local state; the shared lease remains armed until a clean,
+    # non-synthetic, non-empty end_turn atomically promotes the fresh SID and
+    # consumes it. Cancellation, raised streams, empty verdicts, and synthetic
+    # terminals leave it armed because kiro-cli discards or cannot prove those
+    # turns. This preserves replay across empty streams, pre-output failures, and
+    # soft Stops while surviving loss of the separate ``first_turn`` observation.
     provider_switch_replay: bool = False
     # Set of msg_ts values cancelled (message deleted while processing)
     cancelled: set[str] = field(default_factory=set)
@@ -906,6 +955,17 @@ class _Session:
     # Consumed one-shot by the next prompt builder to re-inject the skills
     # index so the model can still discover skills post-compaction.
     needs_context_reinjection: bool = False
+    # Set when this session's cold start consumed a replay suppression, so it
+    # started with NO conversation. Cleared by the compaction coordinator once
+    # the first confirmed reading is recorded below. Lives on the session so it
+    # dies with it: a successor that never reports leaves nothing behind.
+    floor_pending: bool = False
+    # First confirmed context reading of a session that started with no
+    # conversation: what a fresh session on this key reads before anyone has
+    # said anything. ``None`` until measured, and never for a session whose
+    # first turn replayed history. Read by the compaction coordinator to decide
+    # whether a reset could free anything at all.
+    floor_pct: float | None = None
 
     def adopt_provider(self, provider: LLMProvider) -> None:
         """Swap in a freshly-spawned *provider*, resetting conversation state.
@@ -920,6 +980,7 @@ class _Session:
         session's role, not its transcript, so they are kept.
         """
         self.provider = provider
+        self.loaded_capabilities = None
         self.provider_switch_replay = False
         # The replacement provider is a fresh native session, not a resumed
         # one — a stale armed observation would make the next first turn skip
@@ -932,6 +993,10 @@ class _Session:
         self.consecutive_failures = 0
         self.prev_turn_cancelled = False
         self.needs_context_reinjection = False
+        # A recycled provider replays history on its first turn, so its first
+        # reading is not a floor; the measurement belongs to the old provider.
+        self.floor_pending = False
+        self.floor_pct = None
         self.created_at = time.time()
         self.last_used = time.monotonic()
 
@@ -1021,7 +1086,7 @@ class SessionManager:
             session_provider_type=lambda: _load_acp_session_provider_type(),
             unlink_session_queue=lambda session: _unlink_session_queue(session),
             unlink_queued_temp_paths=lambda kwargs: unlink_queued_temp_paths(kwargs),
-            session_model=lambda cfg, agent: _session_model(cfg, agent),
+            session_model=lambda cfg, agent, crew: _session_model(cfg, agent, crew_agent=crew),
             load_config=lambda: KiroCrewConfig.load(),
             resolve_crew_identity=lambda cfg, agent, crew: _resolve_allocation_crew_identity(
                 cfg, agent, crew
@@ -1135,6 +1200,9 @@ class SessionManager:
             cleanup_stale_sandbox_profiles=lambda: cleanup_stale_sandbox_profiles(
                 data_home=data_home
             ),
+            reclaim_member_bindings=lambda cursor: reclaim_stale_member_bindings(
+                data_home=data_home, cursor=cursor
+            ),
             prune_pycache=lambda: prune_pycache(),
             collect_active_pids=lambda sessions: _collect_active_pids(
                 cast(dict[Any, Any], sessions)
@@ -1148,6 +1216,7 @@ class SessionManager:
             ),
             find_orphan_mcp_candidates=lambda active_pids: find_orphan_mcp_candidates(active_pids),
             kill_orphan_mcps=lambda candidates: kill_orphan_mcps(candidates),
+            reap_agent_scopes=lambda active_pids: reap_abandoned_agent_scopes(active_pids),
             build_child_map=lambda: _build_child_map(),
             rss_mb_from_tree=lambda pid, child_map: _rss_mb_from_tree(pid, child_map),
             get_session_rss_mb=lambda pid: get_session_rss_mb(pid),
@@ -1163,6 +1232,9 @@ class SessionManager:
             get_stuck_turn_report_secs=lambda: _STUCK_TURN_REPORT_SECS,
             get_pycache_gc_interval_secs=lambda: PYCACHE_GC_INTERVAL_SECS,
             get_session_idle_expired_event=lambda: SESSION_IDLE_EXPIRED,
+            # Resolved per call, not captured: the dashboard installs the probe
+            # after this manager (and possibly its cleanup boundary) exists.
+            has_attached_subagents=lambda key: self._has_attached_subagents(key),
         )
 
     def _cleanup_boundary(self) -> SessionCleanup:
@@ -1176,6 +1248,7 @@ class SessionManager:
                     [
                         CleanupHook("idle_expiry", self._expire_idle_hook),
                         CleanupHook("orphan_mcp", self._orphan_mcp_hook),
+                        CleanupHook("reap_agent_scopes", self._reap_agent_scopes_hook),
                         CleanupHook("rss_threshold", self._rss_threshold_check),
                         CleanupHook("stuck_turn", self._stuck_turn_check),
                         CleanupHook("bg_drain_reap", self._bg_drain_reap_hook),
@@ -1319,6 +1392,34 @@ class SessionManager:
     @_closing.setter
     def _closing(self, value: bool) -> None:
         self._registry_state().closing = value
+
+    @property
+    def admission_closed(self) -> bool:
+        """Return the shared shutdown/update admission gate without yielding.
+
+        Background launchers read this immediately before registering work. On
+        the event loop that check-and-register span is atomic with respect to
+        ``pause_turn_admission_for_update()``, which sets the same state under
+        the registry lock.
+        """
+        return self._closing
+
+    @property
+    def _update_pause_owned(self) -> bool:
+        return self._registry_state().update_pause_owned
+
+    @_update_pause_owned.setter
+    def _update_pause_owned(self, value: bool) -> None:
+        self._registry_state().update_pause_owned = value
+
+    @property
+    def update_restart_fenced(self) -> bool:
+        """Whether refused callbacks must persist inline before imminent re-exec."""
+        return self._registry_state().update_restart_fenced
+
+    @update_restart_fenced.setter
+    def update_restart_fenced(self, value: bool) -> None:
+        self._registry_state().update_restart_fenced = value
 
     @property
     def _start_sem(self) -> asyncio.Semaphore:
@@ -1510,9 +1611,29 @@ class SessionManager:
         """Return the live provider for a folded key."""
         return self._allocation_boundary().get_provider(key)
 
+    def session_generation(self, key: str) -> int:
+        """Capture the monotonic logical-key generation for conditional destruction."""
+        return self._allocation_boundary().session_generation(key)
+
+    def _advance_session_generation(self, key: str) -> int:
+        """Advance ownership generation after registry publication/removal."""
+        return self._allocation_boundary().advance_ownership_generation(key)
+
+    def session_keys(self) -> frozenset[str]:
+        """Snapshot current and in-flight registry keys for a same-tick fence."""
+        return self._allocation_boundary().session_keys()
+
+    def _has_allocation_reservation(self, key: str) -> bool:
+        """Return whether allocation/claim ownership is reserved for *key*."""
+        return self._allocation_boundary().has_allocation_reservation(key)
+
     async def try_acquire(self, key: str) -> bool:
         """Try to acquire an exact-key idle session."""
         return await self._allocation_boundary().try_acquire(key)
+
+    def capability_runtime_view(self, member: str, saved_revision: str) -> dict[str, Any]:
+        """Return capability adoption without exposing mutable allocation state."""
+        return self._allocation_boundary().capability_runtime_view(member, saved_revision)
 
     def active_providers(self) -> list[LLMProvider]:
         """Return all currently registered providers."""
@@ -1539,6 +1660,9 @@ class SessionManager:
         # whatever the last load in this process happened to publish.
         self._adopted_autocompact_pct = published_autocompact_pct()
         self._provider_factory = provider_factory
+        # Installed by the dashboard once its state exists (set_subagent_probe);
+        # None means "no dashboard, so no children can be attached".
+        self._subagent_probe: "Callable[[str], bool | Awaitable[bool]] | None" = None
         self._allocation_state = SessionRegistryState(
             start_sem=asyncio.Semaphore(_MAX_CONCURRENT_COLD_STARTS)
         )
@@ -1625,21 +1749,124 @@ class SessionManager:
             rss_max_mb=max(0, _rss_cfg) if isinstance(_rss_cfg, int) else 0,
         )
         self._cleanup_boundary()
+        # The watcher holds the bound method weakly, so a manager that a test or
+        # a provider reload discards falls out of the registry on its own.
+        self._config_sub = live.subscribe(
+            *self._CONFIG_SECTIONS,
+            callback=self._on_config_change,
+            name="SessionManager",
+        )
 
     def _ensure_cleanup_task(self) -> None:
         """Start the one cleanup loop at the allocation registration point."""
         self._cleanup_boundary().start_cleanup()
 
-    async def refresh_defaults(self) -> None:
-        """Adopt changed defaults for new sessions without touching live sessions."""
-        await self._lifecycle_boundary().refresh_defaults()
+    # Paths whose new value is only honoured by a rebuilt provider factory or a
+    # re-derived warm pool. Anything else under ``session``/``agent`` is read
+    # off ``_cfg`` (or fresh from the loader) at its point of use, so adopting
+    # the new config object is the whole apply.
+    # The sections this manager subscribes to; a degraded one defers the apply.
+    _CONFIG_SECTIONS: tuple[str, ...] = (
+        "session",
+        "agent",
+        "watchdog",
+        "agents",
+        "workspaces",
+        "default_workspace",
+    )
+    _FACTORY_CONFIG_PATHS: tuple[str, ...] = (
+        "agent.model",
+        "agent.reasoning_effort",
+        "agent.acp_backend",
+        "agent.role_efforts",
+        "agent.tool_search",
+        "agent.tool_search_min_pct",
+        "agent.tool_search_min_tokens",
+        "agent.sandbox",
+        "agent.sandbox_allow_no_isolation",
+        "agent.sandbox_allow_unsandboxed_exec",
+        "agent.member_acp_backend",
+        # The warm pool's agent is `session.pool_agent or agent.default_agent`, and
+        # WarmPoolState.agent is captured once, so the default is a factory input.
+        "agent.default_agent",
+        "session.pool_size",
+        "session.pool_agent",
+        "session.pool_ttl_secs",
+        # The warm pool's cwd is `default_project_dir()`, resolved from these two
+        # and captured into WarmPoolState, so a workspace edit must re-derive the
+        # pool or a cwd-less subagent keeps inheriting the previous directory.
+        "workspaces",
+        "default_workspace",
+    )
+
+    async def _on_config_change(self, change: ConfigChange) -> None:
+        """Hot-apply a ``config.json`` write observed by the config watcher.
+
+        Every writer -- dashboard, ``kirocrew config set``, ``$EDITOR`` -- lands
+        here, so nothing below depends on which one wrote. The new config is
+        adopted as ``_cfg`` unconditionally: the cleanup loop re-reads its idle
+        timeout and RSS ceiling from it every tick, and the soft-stop budget is
+        read from it per stop. A change to a factory-bound default goes through
+        ``refresh_defaults`` so live sessions keep running while new ones spawn
+        on the new defaults. A ``watchdog.*`` or per-crew ``watchdog_*`` change
+        re-clamps the windows on every live handle.
+
+        Fails closed like the owned appliers: while any watched section is
+        degraded the document holds DEFAULTS for it, and adopting those would
+        rebuild the provider factory on the default model and backend and drain
+        the warm pool. The manager keeps what is in force and the watcher retries
+        each tick until the document validates.
+        """
+        if change.new.degraded_sections.intersection(self._CONFIG_SECTIONS):
+            raise live.ConfigDeferred(change.changed)
+        if change.touched(*self._FACTORY_CONFIG_PATHS):
+            await self.refresh_defaults(cfg=change.new)
+        else:
+            async with self._lock:
+                self._cfg = change.new
+        if change.touched("watchdog", "agent.chat_turn_timeout_secs") or any(
+            path.rsplit(".", 1)[-1].startswith("watchdog_") for path in change.under("agents")
+        ):
+            await self._rebind_live_watchdogs(change.new)
+
+    async def _rebind_live_watchdogs(self, cfg: KiroCrewConfig) -> None:
+        """Re-snapshot ``watchdog.*`` on every live session handle.
+
+        New sessions resolve the windows at spawn; a live handle keeps the
+        snapshot it was built with. The rebind runs ``_load_watchdog_settings``
+        again for the handle's own crew identity -- override overlay and
+        prompt-ceiling clamp included -- rather than copying raw values, and it
+        reads the config the watcher already loaded, so nothing touches disk on
+        the loop. The dispatch loop reads the snapshot every tick, so the new
+        windows govern the next check.
+        """
+        async with self._lock:
+            handles = [
+                handle
+                for handle in (_watchdog_handle_of(s.provider) for s in self._sessions.values())
+                if handle is not None
+            ]
+        for handle in handles:
+            try:
+                crew = getattr(handle, "_crew_agent", "") or ""
+                handle.rebind_watchdog(crew, _load_allocation_watchdog_settings(crew, cfg))
+            except Exception:
+                logger.debug("watchdog rebind failed for a live handle", exc_info=True)
+
+    async def refresh_defaults(self, cfg: KiroCrewConfig | None = None) -> None:
+        """Adopt changed defaults for new sessions without touching live sessions.
+
+        ``cfg`` is an already-loaded config (the watcher's); ``None`` loads one
+        off-loop.
+        """
+        await self._lifecycle_boundary().refresh_defaults(cfg)
 
     def _sync_autocompact_pct(self) -> None:
         """Adopt a newly published compaction threshold, if one arrived.
 
-        The threshold is captured on ``_cfg`` when the gateway starts, so a
-        config write used to reach disk and stop there. Every successful
-        ``KiroCrewConfig.load`` now publishes it, and prompt assembly loads
+        The threshold is captured on ``_cfg`` when the gateway starts, so on its
+        own a config write would reach disk and stop there. Every successful
+        ``KiroCrewConfig.load`` publishes it, and prompt assembly loads
         config once per turn, so a write from ANY writer -- the dashboard PATCH
         handler or ``kirocrew config set`` -- is in force by the next context
         reading without a restart.
@@ -1659,9 +1886,12 @@ class SessionManager:
             self._adopted_autocompact_pct = published
             self._cfg.session.autocompact_pct = published
 
-    async def reload_provider_factory(self) -> None:
-        """Rebuild the provider factory and retire sessions created by the old one."""
-        await self._lifecycle_boundary().reload_provider_factory()
+    async def reload_provider_factory(self, cfg: KiroCrewConfig | None = None) -> None:
+        """Rebuild the provider factory and retire sessions created by the old one.
+
+        ``cfg`` is the config the live applier already holds; ``None`` loads.
+        """
+        await self._lifecycle_boundary().reload_provider_factory(cfg=cfg)
 
     # ── Background Session ──
 
@@ -1905,10 +2135,6 @@ class SessionManager:
         """Append background and subagent runtime process rows."""
         self._allocation_boundary()._append_companion_runtime_rows(rows)
 
-    def context_info(self) -> list[dict[str, object]]:
-        """Return the dashboard-facing live context snapshot."""
-        return self._allocation_boundary().context_info()
-
     @staticmethod
     def _resolve_agent_model(agent: str) -> str:
         """Resolve model from agent config file. Cached at class level with
@@ -1945,10 +2171,11 @@ class SessionManager:
         model = "auto"
         try:
             # Use the SAME directory as the cache stamp and preserve the former
-            # native-order, first-match scan.  This runs on the event-loop
-            # thread, so a match must stop all later spec reads rather than
-            # building a full map on every cache miss / TTL expiry.
-            for agent_file in agents_dir.glob("*.json"):
+            # native-order, first-match scan. The async caller hands this to a
+            # thread (the walk and the reads are filesystem work), and a match
+            # still stops all later spec reads rather than building a full map
+            # on every cache miss / TTL expiry.
+            for agent_file in iter_agent_spec_files(agents_dir, ordered=False):
                 data = _read_agent_spec(
                     agent_file,
                     operation="resolve_agent_model",
@@ -2044,16 +2271,6 @@ class SessionManager:
                 return
         self._compaction.set_autocompact_pct(key, pct)
 
-    def drop_autocompact_overrides_matching(
-        self, exact_keys: set[str], folded_keys: set[str], fold: Callable[[str], str]
-    ) -> int:
-        """Drop threshold overrides for permanently deleted, slotless sessions.
-
-        The slotless complement of ``destroy()``'s override clear — see the
-        coordinator method for the matching contract.
-        """
-        return self._compaction.drop_autocompact_overrides_matching(exact_keys, folded_keys, fold)
-
     async def compact_if_needed(self, key: str) -> str:
         """Delegate awaited between-turn compaction."""
         return await self._compaction.compact_if_needed(key)
@@ -2070,6 +2287,63 @@ class SessionManager:
         """Consume a live session's reinjection marker."""
         return self._compaction.consume_needs_reinjection(key)
 
+    def provider_switch_replay_pending(self, key: str) -> bool:
+        """Return whether a live session still owes conversation replay.
+
+        The first real claimant can be a native non-destructive slash command,
+        which deliberately bypasses prompt construction. Reading without clearing
+        lets that command finish while preserving replay for the next prompt. A
+        confirmed ``/clear`` is the exception and consumes the marker at its
+        provider event.
+        """
+        session = self._sessions.get(self._fold_key(key))
+        return bool(session is not None and session.provider_switch_replay)
+
+    def mark_provider_switch_replay(self, key: str) -> bool:
+        """Re-arm replay after an accepted turn is discarded by cancellation."""
+        session = self._sessions.get(self._fold_key(key))
+        if session is None:
+            return False
+        session.provider_switch_replay = True
+        return True
+
+    def commit_provider_switch_replay_sid(self, key: str) -> bool:
+        """Settle replay, promoting the live ACP SID when one was deferred.
+
+        Allocation leaves the prior resumable SID in ``SessionMap`` only for an
+        ACP provider that explicitly defers promotion. Other providers publish
+        their own SID during allocation, so a landed replay consumes the lease
+        without another mapping write. This keeps cross-provider history replay
+        one-shot instead of re-arming forever on a non-ACP session.
+        """
+        folded = self._fold_key(key)
+        session = self._sessions.get(folded)
+        if session is None or not session.provider_switch_replay:
+            return False
+        if not _is_acp_provider(session.provider):
+            session.provider_switch_replay = False
+            return True
+        client = getattr(session.provider, "client", None)
+        sid = getattr(client, "_session_id", None)
+        if not isinstance(sid, str) or not sid:
+            return False
+        self._session_map.set(
+            folded,
+            sid,
+            provider=_provider_label(session.provider),
+            cwd=session.provider.cwd,
+        )
+        session.provider_switch_replay = False
+        return True
+
+    def consume_provider_switch_replay(self, key: str) -> bool:
+        """Explicitly retire replay after confirmed native history deletion."""
+        session = self._sessions.get(self._fold_key(key))
+        if session is None or not session.provider_switch_replay:
+            return False
+        session.provider_switch_replay = False
+        return True
+
     def consume_replay_suppression(self, key: str) -> bool:
         """Read *and clear* whether *key*'s next cold start must skip replay.
 
@@ -2080,18 +2354,52 @@ class SessionManager:
         key — an idle-timeout expiry, a gateway restart — silently amnesiac,
         which nobody asked for.
         """
+        folded = self._fold_key(key)
         if key in self._suppress_replay:
             self._suppress_replay.discard(key)
-            return True
-        folded = self._fold_key(key)
-        if folded in self._suppress_replay:
+        elif folded in self._suppress_replay:
             self._suppress_replay.discard(folded)
-            return True
-        return False
+        else:
+            return False
+        # The session that consumed the suppression starts with no history, so
+        # its first confirmed reading is this key's floor. Marked here, on the
+        # session itself, because this is the one place that knows the replay
+        # was actually skipped -- and the flag then dies with the session.
+        session = self._sessions.get(folded) or self._sessions.get(key)
+        if session is not None:
+            session.floor_pending = True
+        return True
 
     def set_recycle_callback(self, cb: _RecycleCallback | None) -> None:
         """Register the lifecycle recycle callback."""
         self._lifecycle_boundary().set_recycle_callback(cb)
+
+    def set_subagent_probe(self, fn: "Callable[[str], bool | Awaitable[bool]] | None") -> None:
+        """Install the "does *key* have sub-agent work attached?" predicate.
+
+        The RSS ceiling consults it before recycling an idle session: with
+        session sharing on, a parent's sub-agents run on the parent's runtime
+        after its own turn ends, so the busy semaphore alone cannot see them.
+        ``None`` uninstalls the probe (no dashboard, no children).
+        """
+        self._subagent_probe = fn
+
+    def _has_attached_subagents(self, key: str) -> bool | Awaitable[bool]:
+        """Answer the installed sub-agent probe, or False when none is installed.
+
+        The probe's answer is handed back UNCOERCED: the dashboard installs a
+        coroutine probe (its queued half reads the task store, and the sweep
+        that asks is on the gateway loop), and ``bool()`` of a coroutine is True
+        for every session while never running the probe at all. The cleanup
+        boundary awaits an awaitable answer and coerces there.
+
+        A raising probe propagates: the cleanup boundary treats that as
+        "attached" so the session is kept.
+        """
+        probe = self._subagent_probe
+        if probe is None:
+            return False
+        return probe(key)
 
     def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
         """Delegate the ordered compaction gate ladder."""
@@ -2171,6 +2479,22 @@ class SessionManager:
         """Permanently destroy a session and its persistence entry."""
         await self._lifecycle_boundary().destroy(key)
 
+    async def destroy_if(
+        self,
+        key: str,
+        expected_generation: int,
+        should_destroy: Callable[[], bool],
+        *,
+        preserve_autocompact_override: bool = False,
+    ) -> bool:
+        """Destroy the captured idle generation if its slot guard stays true."""
+        return await self._lifecycle_boundary().destroy_if(
+            key,
+            expected_generation,
+            should_destroy,
+            preserve_autocompact_override=preserve_autocompact_override,
+        )
+
     async def discard_conversation(
         self, key: str, *, replay: bool = True, skip_if_busy: bool = False
     ) -> bool:
@@ -2203,9 +2527,44 @@ class SessionManager:
         """Record a failure and apply the circuit breaker."""
         return await self._allocation_boundary().record_failure(key)
 
+    def reserve_inbound_callback(self) -> InboundCallbackReservation | None:
+        """Claim one callback before any pre-turn command or card handling."""
+        return self._allocation_boundary().reserve_inbound_callback()
+
+    @property
+    def inbound_callback_count(self) -> int:
+        """Return callbacks admitted but not yet finished."""
+        return self._allocation_boundary().inbound_callback_count
+
     def begin_turn(self, key: str) -> None:
         """Apply the yield-free pre-dispatch closing gate."""
         self._allocation_boundary().begin_turn(key)
+
+    async def pause_turn_admission_for_update(self) -> bool:
+        """Block new turns for update apply without overriding real shutdown."""
+        async with self._lock:
+            if self._closing and not self._update_pause_owned:
+                return False
+            self._closing = True
+            self._update_pause_owned = True
+            self.update_restart_fenced = False
+            return True
+
+    def fence_update_restart(self) -> bool:
+        """Commit inline refusal persistence before the final restart drain."""
+        if not self._closing or not self._update_pause_owned:
+            return False
+        self.update_restart_fenced = True
+        return True
+
+    async def resume_turn_admission_after_update(self) -> None:
+        """Release this caller's temporary update pause, if it still owns it."""
+        async with self._lock:
+            if not self._update_pause_owned:
+                return
+            self.update_restart_fenced = False
+            self._update_pause_owned = False
+            self._closing = False
 
     # ── Per-session semaphore ──
 
@@ -2300,6 +2659,10 @@ class SessionManager:
     def get_agent(self, key: str) -> str:
         """Return a folded session agent name."""
         return self._allocation_boundary().get_agent(key)
+
+    def get_agent_selection(self, key: str) -> tuple[str, str]:
+        """Snapshot the allocation-owned namespace and name for inheritance."""
+        return self._allocation_boundary().get_agent_selection(key)
 
     def set_approval_policy(self, key: str, policy: str) -> None:
         """Update a folded session approval policy with audit logging."""
@@ -2587,6 +2950,10 @@ class SessionManager:
             on_hard=on_hard,
         )
 
+    def stop_generation(self, key: str) -> int:
+        """Monotonic count of :meth:`stop_turn` requests recorded for *key*."""
+        return self._lifecycle_boundary().stop_generation(key)
+
     async def _send_abort_for_session(self, key: str, session: Any) -> None:
         """Best-effort abort gateway work before hard session teardown."""
         await self._lifecycle_boundary()._send_abort_for_session(key, session)
@@ -2631,6 +2998,10 @@ class SessionManager:
     async def _orphan_mcp_hook(self) -> None:
         """Run the legacy orphan-MCP cleanup hook."""
         await self._cleanup_boundary()._orphan_mcp_hook()
+
+    async def _reap_agent_scopes_hook(self) -> None:
+        """Reclaim abandoned agent cgroup scopes during a cleanup tick."""
+        await self._cleanup_boundary()._reap_agent_scopes_hook()
 
     async def _rss_threshold_check(self) -> None:
         """Recycle idle sessions whose process trees exceed the RSS policy."""

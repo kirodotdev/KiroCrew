@@ -1,10 +1,14 @@
 import { useNavigate } from 'react-router-dom'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { ArrowRight } from 'lucide-react'
 
+import { api } from '../../api/client'
+import ErrorNotice from '../../components/ErrorNotice'
 import { SettingsSection, SettingsCard, SettingsToggle } from '../../components/settings'
 import { FeaturePreviewIntroButton, type FeaturePreviewIntro } from '../../components/FeaturePreviewIntroDialog'
 import { usePreviewFlag } from '../../hooks/usePreviewFlag'
-import { PREVIEW_CREW, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { PREVIEW_CREW, PREVIEW_INSTANCE_SESSIONS, PREVIEW_REMOTE_CREW_CHAT, PREVIEW_WEBHOOKS, setPreviewFlag } from '../../utils/previewFlags'
+import { DECISIONS_PREVIEW_PATH, readDecisionsPreview } from './decisionsPreview'
 import { i18nT } from '../../i18n/t'
 
 /**
@@ -14,9 +18,9 @@ import { i18nT } from '../../i18n/t'
  * Formerly its own tab on the standalone Developer page (`/developer`). It moved
  * here because the switch that HOLDS an unreleased feature belongs next to the
  * switch that REVEALS the developer tooling (Developer Mode, one section up):
- * both are per-device consent gates, and a reader looking for "how do I turn
- * the unfinished thing on" looks in Settings, not on an internals page they
- * first have to unlock. `DeveloperPage.tsx` redirects the old
+ * both are consent gates, and a reader looking for "how do I turn the unfinished
+ * thing on" looks in Settings, not on an internals page they first have to
+ * unlock. `DeveloperPage.tsx` redirects the old
  * `/developer?tab=feature-previews` link here.
  *
  * The USER-FACING copy says "features" and "pages", never "surfaces": `Surface`
@@ -40,7 +44,7 @@ import { i18nT } from '../../i18n/t'
  * short-lived, so the cost of a card is paid once and then deleted with it.
  *
  * Under `pages/settings/` ON PURPOSE, reversing the old tab's stance:
- * `gen-settings-registry.mjs` scans this directory, so the three toggles ARE
+ * `gen-settings-registry.mjs` scans this directory, so these toggles ARE
  * indexed into Settings search (`PANEL_TAB_MAP` maps this file to `developer`).
  * The old tab kept itself out of the index so that searching "webhooks" would
  * not advertise a hidden page. In Settings the calculus flips: a control the
@@ -50,11 +54,16 @@ import { i18nT } from '../../i18n/t'
  * page it holds. The PAGE stays un-advertised: `getAdvertisedSurfaces()` and
  * the Search Everywhere Pages provider still filter it until the flag is on.
  *
- * No `configKey` on these toggles, deliberately. That prop names a
- * `config.json` path so `<SettingRef>` chips can deep-link, and preview flags
- * are per-device localStorage keys by design (`previewFlags.ts` explains why
- * they are NOT backend config). Search deep-links still reach each toggle
- * through its registry id + `data-setting-label`, which need no configKey.
+ * No `configKey` on these toggles, deliberately — INCLUDING the one whose value
+ * really is a `config.json` path (Decisions, below). That prop is what makes a
+ * `<SettingRef>` chip deep-link here, and it also feeds
+ * `settingsRegistry.gen.ts`, whose every `configKey` is asserted to exist in the
+ * backend `SCHEMA_REGISTRY` (`test/test_settingref_schema_fixture.py`). A
+ * frontend that ships before the schema entry does would fail that guard, which
+ * is precisely the split this file has to survive. The four `previewFlags.ts`
+ * toggles have no path to name at all. Search deep-links still reach every
+ * toggle through its registry id + `data-setting-label`, which need no
+ * configKey.
  *
  * Each card may also carry a "See what it looks like" button (`FeaturePreviewIntroButton`)
  * opening a dialog with a REAL capture of the surface the flag reveals, a
@@ -88,7 +97,7 @@ function webhooksIntro(): FeaturePreviewIntro {
   }
 }
 
-/** Crew: BOTH doors the one flag opens — the Members page and the create-menu entry. */
+/** Crew Members: the `/members` page, the flag's only door. */
 function crewIntro(): FeaturePreviewIntro {
   return {
     summary: i18nT('pages.developer.featurePreviewsTab.intro.crew_summary'),
@@ -100,14 +109,139 @@ function crewIntro(): FeaturePreviewIntro {
         dark: `${MEDIA_BASE}/crew-members-dark.png`,
         caption: i18nT('pages.developer.featurePreviewsTab.intro.crew_media_members'),
       },
-      {
-        kind: 'gif',
-        light: `${MEDIA_BASE}/crew-menu-light.gif`,
-        dark: `${MEDIA_BASE}/crew-menu-dark.gif`,
-        caption: i18nT('pages.developer.featurePreviewsTab.intro.crew_media_menu'),
-      },
     ],
   }
+}
+
+/** ids of the notes this card points its switch at via `aria-describedby`. */
+const DECISIONS_BACKEND_NOTE_ID = 'decisions-preview-backend-note'
+const DECISIONS_EGRESS_NOTE_ID = 'decisions-preview-egress-note'
+
+/**
+ * Decisions (Jev): the one card here whose switch is BACKEND config.
+ *
+ * The other four previews are `previewFlags.ts` keys — per-device localStorage,
+ * because what they hold is a page this browser either draws or does not. What
+ * this one holds is a gate that will run in the GATEWAY, which cannot read this
+ * browser's localStorage — so the value has to live in `config.json`, and the
+ * switch writes it through the same `PATCH /api/config/kirocrew` route the
+ * Privacy panel's telemetry switch uses. Sharing the `['kirocrewConfig']` cache
+ * entry with every other config reader is what keeps this switch from disagreeing
+ * with the file about its own state.
+ *
+ * NOTHING READS `decisions.preview` YET, and that is the honest state of it: the
+ * gate, the config section and the schema entry all arrive in a separate backend
+ * PR. Stated here rather than implied because the alternative is a comment that
+ * names a module in the present tense before it exists.
+ *
+ * Which means EVERY gateway answers the config GET with no `decisions` section
+ * today, and would refuse the PATCH as a non-editable field. The switch therefore
+ * renders DISABLED with the reason next to it rather than offering a write that
+ * comes back 400 — the same stance the telemetry switch takes when an env var or
+ * an overlay is what decides. When the backend lands, this toggle gains
+ * `configKey={DECISIONS_PREVIEW_PATH}` and the cross-layer fixture guard
+ * (`test/test_settingref_schema_fixture.py`) starts holding the two halves
+ * together. That is tracked as issue #11510 — the guard being ENGAGED is the
+ * deliverable there, not the prop.
+ *
+ * The point rows are read-only on purpose. Which arm a point is on is an
+ * experiment setting (`off` / `shadow` / `live`), not a preference: a reader here
+ * is deciding whether to let the preview run at all, and offering three more
+ * switches would imply this release can act on what the model answers. It
+ * cannot — this release logs and discards.
+ *
+ * NO "See what it looks like" button, and that is the missing-capture rule the
+ * "Chat on a crew" card below states, not an omission: this preview draws no
+ * surface at all. Everything it produces is a line in a log file.
+ */
+function DecisionsPreviewCard() {
+  const qc = useQueryClient()
+  const configQ = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
+  const view = readDecisionsPreview(configQ.data)
+  const mut = useMutation({
+    mutationFn: (value: boolean) => api.patchConfig(DECISIONS_PREVIEW_PATH, value),
+    // Refetch rather than trusting the value just sent: the server owns the
+    // effective verdict, and only it knows whether an overlay shadowed the write.
+    //
+    // RETURNED, not just started: react-query holds a mutation pending only while
+    // `onSettled` has an unresolved promise outstanding. Dropping the return let
+    // `isPending` clear the instant the PATCH resolved, which re-enabled the
+    // switch for as long as the refetch took — while `checked` still read the
+    // pre-flip value. The flip looked like it had not taken, and a second click
+    // wrote the same value again.
+    onSettled: () => qc.invalidateQueries({ queryKey: ['kirocrewConfig'] }),
+  })
+  // "Old gateway" and "could not read the config" are different facts and must
+  // not share a sentence: the first is a state the user fixes by updating, the
+  // second by retrying. Only the first is knowable from a config that WAS read.
+  const backendMissing = configQ.isSuccess && !view.supported
+  const describedBy =
+    [backendMissing ? DECISIONS_BACKEND_NOTE_ID : '', DECISIONS_EGRESS_NOTE_ID]
+      .filter(Boolean)
+      .join(' ')
+
+  return (
+    <SettingsCard>
+      <SettingsToggle
+        label={i18nT('pages.developer.featurePreviewsTab.decisions')}
+        description={i18nT('pages.developer.featurePreviewsTab.decisions_desc')}
+        checked={view.preview}
+        onChange={v => mut.mutate(v)}
+        // A config that has not been read, or could not be, is no basis for
+        // offering a write against the value it holds.
+        disabled={configQ.isLoading || configQ.isError || !view.supported || mut.isPending}
+        describedBy={describedBy}
+      />
+      {/* The egress fact carries body weight, not muted fine print: it is what a
+          reader is actually consenting to, and it stays outside the row so a
+          disabled switch does not dim its own explanation. */}
+      <p id={DECISIONS_EGRESS_NOTE_ID} className="text-[12px] text-text">
+        {i18nT('pages.developer.featurePreviewsTab.decisions_egress')}
+      </p>
+      {backendMissing && (
+        <p id={DECISIONS_BACKEND_NOTE_ID} className="text-[12px] text-muted">
+          {i18nT('pages.developer.featurePreviewsTab.decisions_backend_required')}
+        </p>
+      )}
+      {/* Nothing on this card is a draft, so the hand-off to the agent is on. */}
+      {configQ.isError && (
+        <ErrorNotice
+          variant="inline"
+          className="mt-1"
+          askAgent
+          message={i18nT('pages.developer.featurePreviewsTab.decisions_config_unavailable')}
+        />
+      )}
+      {mut.isError && (
+        <ErrorNotice
+          variant="inline"
+          className="mt-1"
+          askAgent
+          message={i18nT('pages.developer.featurePreviewsTab.decisions_save_failed')}
+        />
+      )}
+      {/* Only rendered for points the config actually exposes: a row invented for
+          a point the gateway does not carry would describe an arm nothing is on. */}
+      {view.arms.length > 0 && (
+        <div className="pt-1">
+          <div className="text-[12px] text-muted mb-1">
+            {i18nT('pages.developer.featurePreviewsTab.decisions_points')}
+          </div>
+          <ul className="list-none p-0 m-0 flex flex-col gap-1">
+            {view.arms.map(({ point, arm }) => (
+              // The point name and the arm are config vocabulary, printed
+              // verbatim in mono rather than translated: they are the strings a
+              // reader types into `config.json` or greps the log for.
+              <li key={point} className="flex items-center justify-between text-[12px]">
+                <span className="font-mono text-text">{point}</span>
+                <span className="font-mono text-muted">{arm}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </SettingsCard>
+  )
 }
 
 /**
@@ -126,6 +260,7 @@ export function FeaturePreviewsSection() {
   const webhooks = usePreviewFlag(PREVIEW_WEBHOOKS)
   const crew = usePreviewFlag(PREVIEW_CREW)
   const remoteCrewChat = usePreviewFlag(PREVIEW_REMOTE_CREW_CHAT)
+  const instanceSessions = usePreviewFlag(PREVIEW_INSTANCE_SESSIONS)
 
   return (
     // The wrapper exists for the legacy redirect: `?highlight=key:<anchor>`
@@ -178,41 +313,41 @@ export function FeaturePreviewsSection() {
           )}
         </div>
       </SettingsCard>
-      {/* One card, one flag, BOTH crew doors: the Crew Members rail item and the
-          sidebar's "New Crew Mode chat" entry. The toggle copy names both, because
-          a reader who only sees "Crew" cannot predict which of the two moves — and
-          the two appear in places far enough apart that discovering the second one
-          by flipping the switch is not reliable.
+      {/* One card, one flag, one door: the Crew Members page (`/members`) and its
+          rail item. Crew Mode — the second door this card used to name — retired
+          in favour of that page; the sidebar create menu keeps a "Crew Members"
+          entry that opens the page, or lands HERE with this card ringed while the
+          flag is still off (`ChatSidebar.openCrewMembers`).
 
           NO ingress button here, deliberately, unlike the webhooks card above. That
           one needs its link because `/webhooks` is `hiddenFromNav` and the card is
-          its ONLY door. Crew is not: flipping this switch puts the Crew Members row
-          back on the rail in the same tick (`usePreviewFlagRevision`), so a link
-          here would be a second spelling of a door the user can already see — and
-          one that costs a catalog key in twelve languages permanently. */}
+          its ONLY door. Crew Members is not: flipping this switch puts the row back
+          on the rail in the same tick (`usePreviewFlagRevision`), so a link here
+          would be a second spelling of a door the user can already see — and one
+          that costs a catalog key in twelve languages permanently. */}
       <SettingsCard>
         <SettingsToggle
-          label={i18nT('pages.developer.featurePreviewsTab.crew')}
-          description={i18nT('pages.developer.featurePreviewsTab.the_crew_members_page_and_crew_mode_chats_both_a')}
+          label={i18nT('pages.developer.featurePreviewsTab.crew_members')}
+          description={i18nT('pages.developer.featurePreviewsTab.crew_members_desc')}
           checked={crew}
           onChange={v => setPreviewFlag(PREVIEW_CREW, v)}
         />
-        {/* "See what it looks like" is not an ingress: it shows the two doors instead of
-            opening one, which is exactly what a reader who cannot predict which
-            surfaces move needs BEFORE flipping the switch. */}
+        {/* "See what it looks like" is not an ingress: it shows the page instead of
+            opening it, which is what a reader deciding whether to flip the switch
+            needs BEFORE flipping it. */}
         <div className="pt-1">
           <FeaturePreviewIntroButton
-            title={i18nT('pages.developer.featurePreviewsTab.crew')}
+            title={i18nT('pages.developer.featurePreviewsTab.crew_members')}
             intro={crewIntro()}
             checked={crew}
             onChange={v => setPreviewFlag(PREVIEW_CREW, v)}
           />
         </div>
       </SettingsCard>
-      {/* A SEPARATE card from Crew above, because the word names two unrelated
-          things: that flag holds Crew Mode and the Crew Members page, this one
-          holds a chat dispatched to another MACHINE over the instances tunnel.
-          One card each keeps a reader from flipping the wrong switch.
+      {/* A SEPARATE card from Crew Members above, because the word names two
+          unrelated things: that flag holds the Crew Members page, this one holds
+          a chat dispatched to another MACHINE over the instances tunnel. One card
+          each keeps a reader from flipping the wrong switch.
 
           NO ingress button, for the same reason as the crew card: turning it on
           puts the create-menu entry back in the same tick, and that menu is
@@ -233,6 +368,27 @@ export function FeaturePreviewsSection() {
           onChange={v => setPreviewFlag(PREVIEW_REMOTE_CREW_CHAT, v)}
         />
       </SettingsCard>
+      {/* Adjacent to the card above and still SEPARATE from it, because the two
+          point opposite ways across the same tunnel: that flag DISPATCHES a chat
+          to another machine, this one LISTS the sessions that machine already
+          owns. Sharing a card would imply flipping one gets the other.
+
+          NO ingress button, and for a different reason than the crew cards: they
+          omit it because their door is already on screen, whereas this preview
+          has no page of its own at all — it changes the Sessions list every user
+          is already looking at, so the toggle IS the whole affordance. */}
+      <SettingsCard>
+        <SettingsToggle
+          label={i18nT('pages.developer.featurePreviewsTab.remote_instance_sessions')}
+          description={i18nT('pages.developer.featurePreviewsTab.merge_a_connected_remote_instances_live_sessions')}
+          checked={instanceSessions}
+          onChange={v => setPreviewFlag(PREVIEW_INSTANCE_SESSIONS, v)}
+        />
+      </SettingsCard>
+      {/* LAST, and the only card here whose switch is not a per-device flag: it
+          writes `decisions.preview` in `config.json`. Its own doc comment carries
+          why, and why its point rows are read-only. */}
+      <DecisionsPreviewCard />
     </SettingsSection>
     </div>
   )

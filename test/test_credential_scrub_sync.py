@@ -1,6 +1,6 @@
 """KIRO_API_KEY credential-scrub coverage.
 
-The Docker entrypoint moves every ``_CREDENTIAL_KEYS`` entry from the process
+The Docker entrypoint moves every ``CREDENTIAL_KEYS`` entry from the process
 environment into the data home's ``.env`` (mode 600) so credentials never
 reside in a long-lived ``/proc/<pid>/environ``, and ``load_credentials()``
 refuses to re-inject them while ``_KIROCREW_CREDS_SCRUBBED=1``. ``KIRO_API_KEY``
@@ -27,8 +27,8 @@ import pytest
 from kiro_crew import platform_compat
 from kiro_crew.acp.client import _resolve_spawn_env
 from kiro_crew.config.loader import (
-    _CREDENTIAL_KEYS,
     CRED_KIRO_API_KEY,
+    CREDENTIAL_KEYS,
     inject_kiro_cli_api_key,
     read_env_file_credential,
     strip_kiro_cli_api_key,
@@ -47,7 +47,7 @@ async def _no_audit(**_kwargs: Any) -> None:
 
 
 class TestScrubListSync:
-    """docker/entrypoint.sh CRED_KEYS mirrors config/loader.py _CREDENTIAL_KEYS."""
+    """docker/entrypoint.sh CRED_KEYS mirrors config/loader.py CREDENTIAL_KEYS."""
 
     def test_entrypoint_and_loader_lists_are_identical(self) -> None:
         """Set equality both ways: a key scrubbed by the entrypoint that the
@@ -58,11 +58,11 @@ class TestScrubListSync:
         match = re.search(r'^CRED_KEYS="([^"]+)"', text, re.MULTILINE)
         assert match, "CRED_KEYS assignment not found in docker/entrypoint.sh"
         entrypoint_keys = set(match.group(1).split())
-        assert entrypoint_keys == set(_CREDENTIAL_KEYS)
+        assert entrypoint_keys == set(CREDENTIAL_KEYS)
 
     def test_kiro_api_key_is_in_both_lists(self) -> None:
         """The regression this file exists for, pinned by name."""
-        assert CRED_KIRO_API_KEY in _CREDENTIAL_KEYS
+        assert CRED_KIRO_API_KEY in CREDENTIAL_KEYS
         assert CRED_KIRO_API_KEY in _ENTRYPOINT.read_text(encoding="utf-8")
 
 
@@ -72,10 +72,7 @@ class TestReadEnvFileCredential:
         line for a key is the one that counts."""
         env_file = tmp_path / ".env"
         env_file.write_text(
-            "# comment\n"
-            "OTHER=nope\n"
-            "KIRO_API_KEY=first\n"
-            "KIRO_API_KEY = second \n"
+            "# comment\n" "OTHER=nope\n" "KIRO_API_KEY=first\n" "KIRO_API_KEY = second \n"
         )
         assert read_env_file_credential("KIRO_API_KEY", env_file) == "second"
 
@@ -92,9 +89,7 @@ class TestInjectKiroCliApiKey:
     def test_injects_from_env_file_when_absent(self, tmp_path: Path, monkeypatch) -> None:
         env_file = tmp_path / ".env"
         env_file.write_text("KIRO_API_KEY=from-file\n")
-        monkeypatch.setattr(
-            "kiro_crew.config.loader.env_path", lambda: env_file
-        )
+        monkeypatch.setattr("kiro_crew.config.loader.env_path", lambda: env_file)
         env: dict[str, str] = {"PATH": "/usr/bin"}
         inject_kiro_cli_api_key(env)
         assert env[CRED_KIRO_API_KEY] == "from-file"
@@ -103,17 +98,13 @@ class TestInjectKiroCliApiKey:
         """Same precedence as load_credentials(): the environment beats .env."""
         env_file = tmp_path / ".env"
         env_file.write_text("KIRO_API_KEY=from-file\n")
-        monkeypatch.setattr(
-            "kiro_crew.config.loader.env_path", lambda: env_file
-        )
+        monkeypatch.setattr("kiro_crew.config.loader.env_path", lambda: env_file)
         env = {CRED_KIRO_API_KEY: "from-environ"}
         inject_kiro_cli_api_key(env)
         assert env[CRED_KIRO_API_KEY] == "from-environ"
 
     def test_noop_when_unset_everywhere(self, tmp_path: Path, monkeypatch) -> None:
-        monkeypatch.setattr(
-            "kiro_crew.config.loader.env_path", lambda: tmp_path / "missing.env"
-        )
+        monkeypatch.setattr("kiro_crew.config.loader.env_path", lambda: tmp_path / "missing.env")
         env: dict[str, str] = {}
         inject_kiro_cli_api_key(env)
         assert CRED_KIRO_API_KEY not in env
@@ -148,9 +139,7 @@ class TestSpawnEnvInjection:
     def test_kiro_backend_gets_the_key(self, tmp_path: Path, monkeypatch) -> None:
         env_file = tmp_path / ".env"
         env_file.write_text("KIRO_API_KEY=spawn-key\n")
-        monkeypatch.setattr(
-            "kiro_crew.config.loader.env_path", lambda: env_file
-        )
+        monkeypatch.setattr("kiro_crew.config.loader.env_path", lambda: env_file)
         env: dict[str, str] = {"PATH": "/usr/bin"}
         _resolve_spawn_env(env, kiro_api_key=True)
         assert env[CRED_KIRO_API_KEY] == "spawn-key"
@@ -160,9 +149,7 @@ class TestSpawnEnvInjection:
         through the same path must not inherit it from the .env file."""
         env_file = tmp_path / ".env"
         env_file.write_text("KIRO_API_KEY=spawn-key\n")
-        monkeypatch.setattr(
-            "kiro_crew.config.loader.env_path", lambda: env_file
-        )
+        monkeypatch.setattr("kiro_crew.config.loader.env_path", lambda: env_file)
         env: dict[str, str] = {"PATH": "/usr/bin"}
         _resolve_spawn_env(env, kiro_api_key=False)
         assert CRED_KIRO_API_KEY not in env
@@ -172,9 +159,7 @@ class TestSpawnEnvInjection:
         must actively remove a copy inherited from the raw os.environ snapshot
         — merely skipping re-injection would hand a Claude/KAS child the Kiro
         model credential on any host that has it exported."""
-        monkeypatch.setattr(
-            "kiro_crew.config.loader.env_path", lambda: tmp_path / "missing.env"
-        )
+        monkeypatch.setattr("kiro_crew.config.loader.env_path", lambda: tmp_path / "missing.env")
         env = {CRED_KIRO_API_KEY: "inherited", "PATH": "/usr/bin"}
         _resolve_spawn_env(env, kiro_api_key=False)
         assert CRED_KIRO_API_KEY not in env
@@ -268,9 +253,7 @@ class TestJiraTokenScrubGuard:
         monkeypatch.delenv("JIRA_TOKEN_AABBCC", raising=False)
 
         # Patch config_dir to point at our tmp
-        monkeypatch.setattr(
-            "kiro_crew.config.loader.config_dir", lambda: config_dir
-        )
+        monkeypatch.setattr("kiro_crew.config.loader.config_dir", lambda: config_dir)
 
         cfg = KiroCrewConfig.load()
         cfg.load_credentials()

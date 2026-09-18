@@ -738,9 +738,8 @@ async def test_claim_skips_recycled_pid(
 ) -> None:
     """The core defect scenario: the register-time owner of PID P exited, the
     OS recycled P to a different session's runtime, and the claim for the NEW
-    process must not retarget the STALE connection — previously it silently
-    re-attributed every call (issue #1018). Definite token mismatch → skip,
-    WARN, denied audit."""
+    process must not retarget the STALE connection. A definite token mismatch
+    must skip, WARN, and write a denied audit."""
     sel = _fake_sel(monkeypatch)
     conn = _indexed_conn(_PID, "111", "dashboard:original-owner")
     with caplog.at_level("WARNING", logger="kiro_crew.mcp_gateway.gatewayd"):
@@ -933,13 +932,12 @@ def test_stub_register_payload_carries_ancestor_pids() -> None:
 
 
 def test_stub_register_payload_keeps_legacy_user_identity_key() -> None:
-    """Wire-compat ratchet (#3604): ``user_identity`` was deleted as a
-    PoolKey dimension, but the register payload must keep sending the key.
-    The manager adopts a running daemon with no version handshake, so a
-    daemon predating the deletion can serve new stubs — and its
-    ``PoolKey.from_register`` hard-requires the field, rejecting a payload
-    without it and silently un-pooling every session until the daemon
-    restarts. Drop this only when no pre-#3604 daemon can be adopted."""
+    """Wire-compat ratchet: ``user_identity`` is not a PoolKey dimension, but
+    the register payload must keep sending the key. The manager adopts a
+    running daemon with no version handshake, so an older daemon can serve new
+    stubs — and its ``PoolKey.from_register`` hard-requires the field,
+    rejecting a payload without it and silently un-pooling every session until
+    the daemon restarts. Keep sending it while any such daemon can be adopted."""
     args = stub_mod._parse_args(
         ["--server", "echo-mcp", "--agent", "cp-agent",
          "--target-command", "/bin/true", "--work-dir", "/tmp"]

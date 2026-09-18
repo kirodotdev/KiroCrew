@@ -433,7 +433,7 @@ def addressed(
 
     Fails CLOSED, because :func:`_secure_for_role` does: a read that fails or a
     provider that will not answer is treated as secure, so an unreadable field cannot
-    be used to get a write through.
+    get a write through.
 
     An action cannot reuse the walk that produced the model's tree — that walk
     released every reference it returned — so reaching element 7 means REPRODUCING
@@ -446,7 +446,7 @@ def addressed(
     wrapper is dropped WITHOUT consuming an index there, so position and index are
     not interchangeable and indexing the raw walk would address the wrong node.
 
-    Yields ``None`` when the tree no longer has that index — the drift check upstream
+    Yields ``None`` when the tree has no such index — the drift check upstream
     normally catches this first, but a UI can change between the check and the
     action, and yielding ``None`` makes that a clean refusal rather than an
     IndexError inside a ctypes call.

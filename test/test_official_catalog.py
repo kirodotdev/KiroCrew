@@ -188,7 +188,7 @@ class TestAnnotate:
         manifest belongs to the app.
 
         `version` is excluded on purpose and is asserted unchanged here rather
-        than in a separate test, so the line that used to overlay it cannot come
+        than in a separate test, so any line that overlays it cannot come
         back without this test noticing.
         """
         rows = self.rows()

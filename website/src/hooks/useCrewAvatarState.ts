@@ -22,8 +22,9 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { useAppSelector } from '../store'
-import type { AvatarFaceState, AvatarSounds } from '../lib/crewAvatarState'
-import { loadSoundSettings, playPreset } from './useNotificationSound'
+import { packSoundUrl } from '../lib/appearancePacks/library'
+import type { AvatarFaceState, AvatarSounds, AvatarState } from '../lib/crewAvatarState'
+import { loadSoundSettings, playPreset, playSoundFile } from './useNotificationSound'
 
 /** How long `done` / `error` shows before the face returns to rest. */
 export const AVATAR_FLASH_MS = 4000
@@ -68,8 +69,30 @@ export interface CrewAvatarStateOptions {
    *  live slot alone: MembersPage falls back to the roster endpoint's snapshot
    *  before the first slots frame arrives. Omitted, the live slot decides. */
   running?: boolean
-  /** The crew's per-state sounds. Absent or `'none'` for a state = silent. */
+  /** The crew's per-state preset sounds. Absent or `'none'` = silent. This is
+   *  the GHOST's cue: `soundsFrom` reads it on the ghost tier alone. */
   sounds?: AvatarSounds | null
+  /**
+   * The pack this crew wears, and the states its manifest declares a cue for.
+   *
+   * A pack brings its own audio, so it answers the cue question INSTEAD of the
+   * presets rather than alongside them — a crew cannot report one moment with two
+   * sounds. A state the pack does not declare is silent, and deliberately does
+   * not fall back to a preset: the pack's author chose which moments make a
+   * sound, and filling the gaps with a synthesized tone would report their pack
+   * with a sound they left out.
+   */
+  packCue?: { id: string; states: Readonly<Record<string, boolean>> } | null
+  /**
+   * The crew wears a pack whose manifest has NOT arrived yet, so what it sounds
+   * like is not yet knowable.
+   *
+   * Distinct from `packCue: null`, which means "no cue" — a crew wearing no
+   * pack, or a pack that declares none. Without the distinction a turn that
+   * finishes during the read resolves to silence AND consumes the transition, so
+   * the cue never plays for that turn even once the manifest lands.
+   */
+  packPending?: boolean
 }
 
 /** A flash plus the edge that produced it: two finishes in a row carry the
@@ -85,6 +108,8 @@ export function useCrewAvatarState({
   agentName,
   running,
   sounds,
+  packCue,
+  packPending,
 }: CrewAvatarStateOptions): AvatarFaceState {
   // A crew's member slot, when the caller passed a name instead of a key.
   // Returns a string, so this selector cannot churn on slot-array identity.
@@ -159,12 +184,38 @@ export function useCrewAvatarState({
   // tone and the face always agree about which moment this is.
   useEffect(() => {
     const previous = previousState.current
+    // A pack whose manifest has not arrived cannot answer the cue question yet,
+    // and advancing the baseline would CONSUME the transition: the effect would
+    // not run again as an edge once the manifest landed, so a turn that finished
+    // during the read would be silent for good. Holding it costs nothing — the
+    // effect re-runs when `packCue` resolves and sees the same edge still
+    // pending.
+    //
+    // The hold lasts exactly as long as the REACTION IS ON SCREEN, and that bound
+    // is deliberate rather than emergent: when the flash dwell ends, `state`
+    // returns to `idle`, the baseline advances there, and a manifest arriving
+    // afterwards finds no edge. A read slower than the dwell therefore loses that
+    // turn's cue — which is the outcome to want, because a chime arriving seconds
+    // after the face has gone back to rest is a sound with nothing on screen to
+    // explain it, and the next turn would inherit it. Pinned by "does not fire a
+    // stale edge once the flash has passed".
+    //
+    // The other consequence of holding rather than queueing: the cue that fires
+    // when the manifest lands is for the state the crew is in THEN. A state it
+    // passed through during the read — a short turn whose `working` became `done`
+    // before the manifest arrived — is not replayed, because two cues for one
+    // moment would report the crew twice. Pinned by "plays only the current
+    // state's cue when the manifest lands after a superseded edge".
+    if (packPending && state !== 'idle') return
     previousState.current = state
     // Same baseline rule as the face: mounting into a running crew is not an
     // entry into `working`, and page load must be silent.
     if (previous === null || previous === state || state === 'idle') return
-    const preset = sounds?.[state]
-    if (!preset || preset === 'none') return
+    // A worn pack owns the cue outright — see `packCue`. Resolved BEFORE the
+    // gate and the debounce so both halves share them: whichever source answers,
+    // the global toggle silences it and one crew cannot chime twice for one edge.
+    const play = cueFor(state, packCue, sounds)
+    if (!play) return
     // Read fresh: the global toggle and volume live in localStorage and the
     // user may have changed them since this component mounted.
     const settings = loadSoundSettings()
@@ -176,8 +227,31 @@ export function useCrewAvatarState({
     if (at - (lastPlayedAt.get(key) ?? Number.NEGATIVE_INFINITY) < AVATAR_SOUND_WINDOW_MS) return
     if (lastPlayedAt.size >= MAX_TRACKED_SLOTS) lastPlayedAt.clear()
     lastPlayedAt.set(key, at)
-    playPreset(preset, settings.volume)
-  }, [state, sounds, identity])
+    play(settings.volume)
+  }, [state, sounds, packCue, packPending, identity])
 
   return state
+}
+
+/**
+ * What to play for this state, or null for silence — one decision, so the gate
+ * and the debounce below it cannot disagree with it.
+ *
+ * A pack SHORT-CIRCUITS: a crew wearing one is silent on a state the pack does
+ * not declare rather than falling through to a preset, because the pack is the
+ * answer to "what does this crew sound like" once it is worn.
+ */
+function cueFor(
+  state: AvatarState,
+  packCue: CrewAvatarStateOptions['packCue'],
+  sounds: AvatarSounds | null | undefined,
+): ((volume: number) => void) | null {
+  if (packCue) {
+    if (!packCue.states[state]) return null
+    const url = packSoundUrl(packCue.id, state)
+    return volume => playSoundFile(url, volume)
+  }
+  const preset = sounds?.[state]
+  if (!preset || preset === 'none') return null
+  return volume => playPreset(preset, volume)
 }

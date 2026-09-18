@@ -415,7 +415,7 @@ class TestRedactionStableIdentity:
     """The two files' copies of one message can differ byte-for-byte.
 
     The dashboard write path has always redacted model-authored text; the channel
-    path historically stored it verbatim. Comparing raw content would call those
+    path stores it verbatim. Comparing raw content would call those
     two different messages and keep both.
     """
 

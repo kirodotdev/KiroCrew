@@ -20,10 +20,11 @@ import { i18nT } from '../../i18n/t'
 import { compareText } from '../../i18n/format'
 import type { EditorialArtwork } from '../../components/appstore/useEditorialArt'
 import type { SourceRow } from '../../components/appstore/CategoryRail'
+import { orderByReview } from '../../components/appstore/registryOrder'
 import { categoryCounts, mergeCategoryOrder, type Category } from '../../components/appstore/categories'
 import { hasHeroArt } from '../../components/appstore/useHeroArt'
 import {
-  isVerified, normalizeInstalledApp, normalizeRegistryApp,
+  isVerified, normalizeInstalledApp, normalizeRegistryApp, sourceKey,
   type InstalledApp, type RegistryApp,
 } from '../../components/appstore/types'
 import { isBuiltinServerRow } from '../../components/appstore/mergeBuiltinRow'
@@ -603,22 +604,62 @@ export default function useAppsData({ showAll = true }: { showAll?: boolean } = 
     // Count built-ins from browseApps so the SOURCES totals describe the same
     // population as the "All apps" count (built-ins are always browsable,
     // enabled or not).
-    const builtinCount = browseApps.filter(a => a.origin === 'builtin').length
+    const builtinCount = browseApps.filter(a => sourceKey(a) === '__builtin__').length
     const counts = new Map<string, number>()
     let coreCount = 0
     for (const a of browseApps) {
-      if (a.origin === 'builtin') continue
-      if (a._registry) counts.set(a._registry, (counts.get(a._registry) || 0) + 1)
-      else coreCount++
+      const key = sourceKey(a)
+      if (key === '__builtin__') continue
+      if (key === '__core__') coreCount++
+      else counts.set(key, (counts.get(key) || 0) + 1)
     }
     const rows: SourceRow[] = []
     if (builtinCount > 0) rows.push({ name: '__builtin__', label: i18nT('pages.appsPage.built_in_kirocrew'), count: builtinCount, builtin: true })
-    for (const reg of registriesData?.registries || []) {
-      rows.push({ name: reg.repo, label: reg.name || reg.repo, count: counts.get(reg.name || reg.repo) || 0, builtin: false })
-      counts.delete(reg.name || reg.repo)
+    // Build-pinned and operator registries in ONE pass, ordered by review tier.
+    // Pinned rows were previously absent from this list entirely, so their apps
+    // fell through to the stale-cache loop below and the rail showed the bare
+    // registry id with a neutral Database icon — no name, no review claim. They
+    // are read here so a pinned source gets its label and its tier like any
+    // other. `name` stays the identity every count and refresh call is keyed by;
+    // `label` is only what is displayed.
+    //
+    // ORDER OF THE TWO STEPS IS LOAD-BEARING. Dedupe FIRST, on the pinned-first
+    // concatenation, and only then sort. That is the merge rule the backend's
+    // `_effective_registries` applies ("an edition default wins on a name
+    // collision"), and it is necessary because GET reports `config.registries`
+    // raw beside `pinned`: a config.json naming a pinned registry would
+    // otherwise render twice — duplicate React keys, and a second row whose apps
+    // never load, since the backend merge dropped it.
+    //
+    // Sorting first would INVERT that rule for exactly the row it matters most
+    // for: a pinned `community` row ranks after an unreviewed row, so a
+    // hand-edited operator row sharing its id would be seen first and win, and
+    // the card would show the operator's row in place of the build's community
+    // registry — with none of its warning copy.
+    //
+    // Keyed case-insensitively for the same reason the backend keys on the cache
+    // FILE: `Official` and `official` are one file on Windows and default macOS,
+    // so a case variant is contested there and must not read as its own source.
+    const seen = new Set<string>()
+    const merged: typeof rows = []
+    for (const reg of [...(registriesData?.pinned || []), ...(registriesData?.registries || [])]) {
+      const id = reg.name || reg.repo
+      const key = id.toLowerCase()
+      if (seen.has(key)) continue
+      seen.add(key)
+      const sourceId = sourceKey({ _registry: id })
+      merged.push({ name: id, label: reg.label || reg.name || reg.repo, count: counts.get(sourceId) || 0, builtin: false, review: reg.review })
+      counts.delete(sourceId)
     }
+    // Display order last, through the same helper the External Registries card
+    // uses, so the two lists put a community source in the same place. Stable, so
+    // unreviewed and operator rows keep the order the backend sent.
+    rows.push(...orderByReview(merged))
     // Registries present in entries but no longer configured (stale cache)
-    for (const [name, count] of counts) rows.push({ name, label: name, count, builtin: false })
+    for (const [key, count] of counts) {
+      const name = key.slice('registry:'.length)
+      rows.push({ name, label: name, count, builtin: false })
+    }
     if (coreCount > 0) rows.push({ name: '__core__', label: i18nT('pages.appsPage.kirocrew_registry'), count: coreCount, builtin: true })
     return rows
   }, [browseApps, registriesData])

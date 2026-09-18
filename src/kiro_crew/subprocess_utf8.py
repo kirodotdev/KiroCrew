@@ -8,11 +8,9 @@ with no explicit ``encoding=`` decodes the child's output with
 UTF-8, so the bug is invisible where most development happens. On Windows it is
 the legacy ANSI code page -- cp1252, cp936, cp949, depending on the system
 locale -- so any non-ASCII byte the child prints comes back as mojibake or, with
-strict decoding, a ``UnicodeDecodeError``. Issue #3219 was this exact class
-surfacing in the dashboard's file diffs; #3669 fixed the two confirmed sites
-inline. This module is the prevention half (#5249): one shared definition of
-"decode this child as UTF-8" so new call sites cannot re-forget the encoding,
-enforced by ``scripts/check_subprocess_encoding.py`` in CI.
+strict decoding, a ``UnicodeDecodeError``. This module is the prevention half: one
+shared definition of "decode this child as UTF-8" so new call sites cannot
+re-forget the encoding, enforced by ``scripts/check_subprocess_encoding.py`` in CI.
 
 ## When pinning UTF-8 is CORRECT -- and when it is not
 
@@ -43,7 +41,7 @@ Two reasons, both structural:
   with caller-controlled argv would be a new unaudited primitive -- exactly
   what that audit exists to prevent. A mapping spawns nothing.
 
-``errors="replace"`` matches the shape #3669 established: a malformed byte in
+``errors="replace"`` is the deliberate shape: a malformed byte in
 one path or commit message must degrade to U+FFFD in that spot, not throw away
 the whole diff or crash the caller. The one place that policy is WRONG is a
 payload that must round-trip byte-exactly back into a child (a captured diff
@@ -59,8 +57,58 @@ from typing import Any, Mapping
 # Splat into any subprocess.run / subprocess.Popen / subprocess.check_output
 # call (or a kwargs-forwarding wrapper such as sandbox.run_limited) in place of
 # ``text=True``. Passing ``encoding`` alone already implies text mode;
-# ``text=True`` stays in the mapping so a call site that previously asserted
+# ``text=True`` stays in the mapping so a call site that asserts
 # ``text is True`` in a spy keeps seeing it.
 UTF8_TEXT: Mapping[str, Any] = MappingProxyType(
     {"text": True, "encoding": "utf-8", "errors": "replace"}
 )
+
+
+def utf8_stdout(raw: bytes | str | None) -> str:
+    """Decode a child's captured output as UTF-8 with no newline translation.
+
+    Text mode cannot express this: ``subprocess`` wraps the pipe in a
+    ``TextIOWrapper`` with universal newlines hard-enabled and exposes no
+    ``newline=`` control, so every ``\\r`` the child prints is rewritten to
+    ``\\n`` before the caller sees it. For output where a carriage return is
+    CONTENT -- git prints paths byte-for-byte, and a POSIX path may legally
+    contain ``\\r`` -- capture bytes (drop the ``UTF8_TEXT`` splat) and decode
+    through this function instead. Same ``errors="replace"`` policy as
+    ``UTF8_TEXT``, for the same reason.
+
+    A ``str`` passes through unchanged, so a test stand-in that substitutes an
+    already-decoded ``CompletedProcess`` keeps working; ``None`` (stream not
+    captured) decodes as ``""``.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", "replace")
+
+
+def utf8_path_stdout(raw: bytes | str | None) -> str:
+    """Decode a child's captured output that names a FILESYSTEM PATH.
+
+    ``errors="replace"`` is wrong for a path: a byte that is not valid UTF-8
+    becomes U+FFFD, a decoded string that fails to round-trip to the bytes
+    the filesystem knows -- ``os.lstat`` then inspects a DIFFERENT path than
+    git answered with, and a guard that clears on ``FileNotFoundError`` fails
+    open for a path that exists. ``errors="surrogateescape"`` (PEP 383) maps
+    each such byte to a lone surrogate that ``os.fsencode`` -- the encode step
+    inside every ``os`` path call -- restores byte-exactly, so the ``lstat``
+    lands on the path git actually printed. This is the module docstring's
+    "must round-trip byte-exactly" policy, packaged for the git path probes
+    (``rev-parse --absolute-git-dir``) that feed
+    :func:`kiro_crew.git_worktree_scope.worktree_probe_failure_is_empty_scope`.
+
+    Same pass-through contract as :func:`utf8_stdout`: ``str`` unchanged (test
+    stand-ins), ``None`` decodes as ``""``. Never hand the result to a display
+    or JSON surface -- a lone surrogate is unencodable there; this decoder is
+    for values consumed by ``os`` path calls.
+    """
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw
+    return raw.decode("utf-8", "surrogateescape")

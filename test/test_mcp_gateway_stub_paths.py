@@ -1,9 +1,9 @@
 """The stub's path resolution must produce ABSOLUTE paths on every platform.
 
 Both the default socket path and the fallback audit log derive from one data
-home. That home used to fall back to ``os.environ["HOME"]``, which is normally
-unset on Windows (it uses ``USERPROFILE``), so the expression evaluated to
-``Path("")`` and every derived path became relative to the stub's cwd.
+home. That home must not fall back to ``os.environ["HOME"]``, which is normally
+unset on Windows (it uses ``USERPROFILE``): the expression then evaluates to
+``Path("")`` and every derived path becomes relative to the stub's cwd.
 
 That is not cosmetic. The Windows pipe name is a hash of the socket path, so a
 daemon and a stub started from different working directories would hash to two
@@ -89,7 +89,7 @@ def test_unresolvable_home_degrades_instead_of_raising(
     assert _fallback_log_path().name == "stub_fallback.jsonl"
 
 
-# --- fallback log rotation + aggregation (issue #3495) ----------------------
+# --- fallback log rotation + aggregation ------------------------------------
 
 
 def _fallback_args():
@@ -107,8 +107,8 @@ def test_log_fallback_rotates_at_the_size_cap(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     """The log rotated at the cap keeps ONE previous generation, bounding disk
-    use — it previously grew without limit (467 KB in 15 h on a degraded
-    host)."""
+    use. Unrotated it grows without limit — hundreds of KB in hours on a
+    degraded host."""
     from kiro_crew.mcp_gateway import stub
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))

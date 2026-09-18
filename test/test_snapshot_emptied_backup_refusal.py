@@ -21,7 +21,7 @@ KEY = "AKIAIOSFODNN7EXAMPLE"
 class TestMergeNeverOverwrites:
     """`merge` adds what is missing. Exclusive creation is the promise, not a hint.
 
-    Retargeted for M1: the merge no longer has a `copy2` + `os.link`/`os.replace` publish
+    The merge has no `copy2` + `os.link`/`os.replace` publish
     with a separate no-hard-link fallback -- `_merge_exclusive_copy` is gone. Every file
     now goes through `pinned_fs.copy_file_pinned(..., skip_existing=True)`, whose
     destination is created `O_CREAT|O_EXCL|O_NOFOLLOW`, so "it did not exist" and "this

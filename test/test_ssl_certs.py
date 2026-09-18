@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from conftest import forget_env_at_teardown
 from kiro_crew import _ssl_compat
 from kiro_crew._ssl_compat import _CA_CANDIDATES, _ensure_ssl_certs
 
@@ -16,6 +17,10 @@ def _reset_ssl_bootstrap(monkeypatch):
     """Keep tests independent and file-bootstrap cases platform-neutral."""
     monkeypatch.setattr(_ssl_compat, "_TRUSTSTORE_INJECTED", False)
     monkeypatch.setattr(sys, "platform", "linux")
+    # _ensure_ssl_certs() WRITES these two variables. A plain delenv(raising=False)
+    # on a key that is absent records no undo, so the value the code exports would
+    # outlive the test and pre-empt every later bootstrap on this worker.
+    forget_env_at_teardown(monkeypatch, "SSL_CERT_FILE", "REQUESTS_CA_BUNDLE")
 
 
 class TestEnsureSslCerts:

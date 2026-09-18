@@ -27,11 +27,13 @@ import json
 import os
 import threading
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from chat_test_helpers import _make_ready_kiro_prerequisite
+from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew import name_grant
 from kiro_crew.acp.types import (
@@ -42,9 +44,11 @@ from kiro_crew.acp.types import (
     STOP_REASON_STALE_RECOVER,
     STOP_REASON_TOOL_STALL,
 )
+from kiro_crew.config.sections import ResolvedBindings
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 from kiro_crew.history import ConversationLog
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.metrics import turns as turns_mod
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.security import oauth_url_contains_credential
@@ -75,6 +79,7 @@ def _state(tmp_path, **kwargs) -> DashboardState:
     # MagicMock it would answer a truthy provider whose has_active_turn() is also
     # truthy, so every busy-probe would read "turn in flight" on an idle state.
     sessions.get_provider = MagicMock(return_value=None)
+    sessions.resumable_sid = MagicMock(return_value=None)
     sessions.remove = AsyncMock()
     sessions.record_failure = AsyncMock()
     sessions.remove_if_unclaimed = AsyncMock(return_value=False)
@@ -142,6 +147,8 @@ def _runner_state(tmp_path, *, hook_store=None, context_builder=None):
     client._client = client
     client.exit_code = None
     state.sessions.get_or_create = AsyncMock(return_value=(client, True, False))
+    state.sessions.consume_replay_suppression = MagicMock(return_value=False)
+    state.sessions.consume_needs_reinjection = MagicMock(return_value=False)
     state._hook_store = hook_store or MagicMock(fire=AsyncMock(return_value=[]))
     if context_builder is not None:
         state.context_builder = context_builder
@@ -205,6 +212,123 @@ async def _settle(slot) -> None:
         pass
     except Exception:  # pragma: no cover — draining, never the assertion
         pass
+
+
+@pytest.mark.asyncio
+async def test_memory_refusal_preserves_diagnostic_without_initialization_recovery(tmp_path):
+    state, _client = _runner_state(tmp_path)
+    slot = _slot()
+    slot.agent = "reviewer"
+    refusal = UnknownMemoryStore("the owned memory binding cannot be replaced")
+    with patch.object(chat_runner, "resolve_agent_bindings", side_effect=refusal):
+        await _drive(state, slot)
+
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["content"] == f"memory_unavailable: {refusal}"
+    assert error["meta"]["code"] == "memory_unavailable"
+    assert "recovery" not in error["meta"]
+    state.sessions.record_failure.assert_awaited_once()
+    state.sessions.get_or_create.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("damaged_record", [False, True])
+async def test_private_session_cannot_dispatch_as_legacy_after_unsigned_binding_loss(
+    tmp_path, monkeypatch, damaged_record
+):
+    from kiro_crew import member_memory_auth
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.memory_stores import provision_member_memory
+
+    state, client = _runner_state(tmp_path)
+    slot = _slot()
+    slot.agent = "legacy"
+    key = chat_runner.effective_session_key(slot)
+
+    def seed():
+        cfg = KiroCrewConfig.load()
+        cfg.agents["writer"] = KiroCrewAgentConfig()
+        cfg.agents["legacy"] = KiroCrewAgentConfig()
+        store = provision_member_memory(cfg, "writer")
+        cfg.save()
+        member_memory_auth.bind_private_session_store(key, store)
+        if damaged_record:
+            member_memory_auth._session_binding_path(key).unlink()
+        return store
+
+    store = await asyncio.to_thread(seed)
+    read_threads = []
+    original = member_memory_auth.read_private_session_store
+
+    def read_binding(session_key):
+        read_threads.append(threading.get_ident())
+        return original(session_key)
+
+    monkeypatch.setattr(member_memory_auth, "read_private_session_store", read_binding)
+    await _drive(state, slot)
+
+    state.sessions.get_or_create.assert_not_awaited()
+    client.stream.assert_not_called()
+    assert read_threads and threading.get_ident() not in read_threads
+    assert slot.memory_store == ""
+    assert state.conversation_log.get_metadata(key).get("memory_store") is None
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["meta"]["code"] == "memory_unavailable"
+    assert (
+        "private memory assignment" in error["content"]
+        or "binding is unreadable" in error["content"]
+    )
+    if not damaged_record:
+        assert await asyncio.to_thread(original, key) == store
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("old_context", ["history", "native", "unsaved"])
+async def test_cli_opt_in_cannot_promote_an_existing_v1_conversation(
+    tmp_path, old_context, monkeypatch
+):
+    import argparse
+
+    from kiro_crew.cli_commands import _handle_agent
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.member_memory_auth import read_private_session_store
+
+    patch_private_memory_supported(monkeypatch)
+    state, client = _runner_state(tmp_path)
+    slot = _slot("legacy-before-opt-in")
+    slot.agent = "reviewer"
+    key = chat_runner.effective_session_key(slot)
+    if old_context == "history":
+        await asyncio.to_thread(state.conversation_log.append, key, "assistant", "V1 history")
+    elif old_context == "native":
+        state.sessions.resumable_sid.return_value = "v1-native-session"
+    else:
+        slot.append("assistant", "Unflushed V1 answer", "msg msg-a")
+
+    def opt_in():
+        cfg = KiroCrewConfig.load()
+        cfg.agents["reviewer"] = KiroCrewAgentConfig()
+        cfg.save()
+        _handle_agent(
+            argparse.Namespace(
+                agent_action="update",
+                name="reviewer",
+                kiro_agent=None,
+                workspace=None,
+                memory_store=None,
+                provision_memory=True,
+            )
+        )
+
+    await asyncio.to_thread(opt_in)
+    await _drive(state, slot)
+    error = next(row for row in slot.messages if row["role"] == "error")
+    assert error["meta"]["code"] == "memory_unavailable"
+    assert "new conversation" in error["content"]
+    state.sessions.get_or_create.assert_not_awaited()
+    client.stream.assert_not_called()
+    assert await asyncio.to_thread(read_private_session_store, key) is None
+    assert state.conversation_log.get_metadata(key).get("memory_store") in (None, "")
 
 
 @pytest.mark.asyncio
@@ -437,13 +561,10 @@ class TestDrainPendingContext:
     def test_frame_carries_silent_consumption_contract(self):
         """Every drained block instructs the agent to consume it silently.
 
-        Regression for #4780: the feature-request seed (and any other
-        pending-context producer) was framed with a bare source label and no
-        consumption contract, so on a fresh session the agent recited the
-        injected workflow verbatim as its visible reply. The contract line
-        must sit INSIDE the frame (between the opening delimiter and the
-        content) so it binds per-block, for every producer, and must both
-        forbid echoing and redirect the reply to the user's visible message.
+        The consumption contract belongs inside each frame, between its opening
+        delimiter and content. It forbids echoing injected workflows and redirects
+        the reply to the user's visible message, giving every producer the same
+        per-block boundary.
         """
         slot = _slot()
         slot._pending_context = [
@@ -602,12 +723,15 @@ class TestSnapshotHelpers:
         target = tmp_path / "note.txt"
         target.write_text("hello\n", newline="\n")
 
-        assert chat_runner._safe_read_snapshot(str(target)) == "hello\n"
+        snapshot = chat_runner._safe_read_snapshot(str(target))
+        assert snapshot is not None
+        assert snapshot.content == "hello\n"
 
     def test_truncate_snapshot_marks_the_cut(self):
         out = chat_runner._truncate_snapshot("x" * (chat_runner._MAX_SNAPSHOT + 10))
 
-        assert out.endswith(f"... (truncated at {chat_runner._MAX_SNAPSHOT} chars)")
+        assert out.content.endswith(f"... (truncated at {chat_runner._MAX_SNAPSHOT} chars)")
+        assert out.truncated is True
 
     def test_reconstruct_declines_when_neither_state_is_plausible(self, tmp_path):
         """Ambiguous disk content must decline rather than fabricate a before."""
@@ -659,7 +783,7 @@ class TestSnapshotHelpers:
 
         got = chat_runner._snapshot_write_target({"command": "create", "path": str(target)})
 
-        assert got == {"path": str(target), "content": ""}
+        assert got == {"path": str(target), "content": "", "truncated": False}
 
 
 class TestFlushFileChanges:
@@ -1205,7 +1329,7 @@ class TestFlushSegment:
         assert "AKIAIOSFODNN7EXAMPLE" not in assistants[0]["content"]
 
     def test_a_redacted_connection_string_warns_the_user(self, tmp_path):
-        """issue #6189: the corruption must not be silent.
+        """The corruption must not be silent.
 
         Uses the reporter's exact command. The assistant row keeps the mangled
         text (redaction is not weakened), but a notice row now follows it saying
@@ -1261,7 +1385,7 @@ class TestFlushSegment:
 
         `redact_credentials` pass 2 substitutes `[REDACTED: encoded credential]`,
         which is not a substring of the plaintext tag. Counting only the plaintext
-        tag left this segment silently rewritten -- the same #6189 failure, just
+        tag left this segment silently rewritten -- the same failure, just
         reached by another pass.
         """
         import base64
@@ -1308,7 +1432,7 @@ class TestFlushSegment:
         assert len(set(CREDENTIAL_REDACTION_TAGS)) == len(CREDENTIAL_REDACTION_TAGS)
 
     def test_a_redacted_url_warns_the_user(self, tmp_path):
-        """issue #8132: a URL rewrite must not be silent either.
+        """A URL rewrite must not be silent either.
 
         `redact_exfiltration_urls` runs a few lines above the credential pass in
         the same flush and rewrites a URL to `[REDACTED: suspicious URL to
@@ -1342,7 +1466,7 @@ class TestFlushSegment:
         assert notice["cls"] == "msg msg-info"
 
     def test_a_credential_only_notice_does_not_mention_urls(self, tmp_path):
-        """Regression guard on #8109: the credential wording is unchanged."""
+        """The credential wording is unchanged."""
         state, slot = _state(tmp_path), _slot()
 
         chat_runner._flush_segment(
@@ -1392,7 +1516,7 @@ class TestFlushSegment:
 
 
 class TestAppendRedactionNotice:
-    """Unit coverage for the shared notice helper (issue #8311).
+    """Unit coverage for the shared notice helper.
 
     ``_flush_segment`` and the seven exception/teardown persists all route
     through ``_append_redaction_notice`` so the credential-redaction notice
@@ -1446,7 +1570,7 @@ class TestAppendRedactionNotice:
         """A base64-encoded credential is redacted by a DIFFERENT pass and tag.
 
         Counting only the plaintext tag would leave this silently rewritten --
-        the same #6189 failure, reached by another pass. The helper reads
+        the same failure, reached by another pass. The helper reads
         ``CREDENTIAL_REDACTION_TAGS`` so a newly added tag cannot escape.
         """
         import base64
@@ -1472,7 +1596,7 @@ class TestAppendRedactionNotice:
 
 
 class TestExceptionPathRedactionNotice:
-    """The notice must fire on the exception/teardown persists too (issue #8311).
+    """The notice must fire on the exception/teardown persists too.
 
     Seven branches finalize a pasteable assistant body directly via
     ``slot.append("assistant", <redacted>, "msg msg-a")`` and bypass
@@ -2321,7 +2445,9 @@ class TestScheduleEagerSpawn:
 
 class TestCapArmedPrefetches:
     @pytest.mark.asyncio
-    async def test_eviction_failure_still_drops_the_registry_entry(self, tmp_path):
+    async def test_eviction_failure_keeps_the_registry_entry(self, tmp_path):
+        """A removal that raises leaves its entry registered: the process is
+        still live, so it still counts, and the next eviction retries it."""
         state = _state(tmp_path)
         state.sessions.remove_if_unclaimed = AsyncMock(side_effect=RuntimeError("shutdown hung"))
         chat_runner._armed_prefetches.clear()
@@ -2329,8 +2455,15 @@ class TestCapArmedPrefetches:
             for i in range(chat_runner._RESUME_PREFETCH_MAX_LIVE + 1):
                 await chat_runner._cap_armed_prefetches(state.sessions, f"key-{i}")
 
-            assert len(chat_runner._armed_prefetches) == chat_runner._RESUME_PREFETCH_MAX_LIVE
+            assert len(chat_runner._armed_prefetches) == chat_runner._RESUME_PREFETCH_MAX_LIVE + 1
+            assert "key-0" in chat_runner._armed_prefetches
+            # Only the oldest is attempted per pass; a failure stops the pass.
+            assert state.sessions.remove_if_unclaimed.await_count == 1
+
+            state.sessions.remove_if_unclaimed = AsyncMock(return_value=True)
+            await chat_runner._cap_armed_prefetches(state.sessions, "newest")
             assert "key-0" not in chat_runner._armed_prefetches
+            assert len(chat_runner._armed_prefetches) == chat_runner._RESUME_PREFETCH_MAX_LIVE
         finally:
             chat_runner._armed_prefetches.clear()
 
@@ -2532,7 +2665,7 @@ class TestStartNextQueuedTurn:
 
         The note's context half drains inside that turn's ``_run_chat``, so
         flushing after it started would put the visible line below the response
-        the note shaped. Only ``_finish_queue_cycle`` used to flush, and the main
+        the note shaped. Only ``_finish_queue_cycle`` flushes, and the main
         dispatch path calls it AFTER this function.
         """
         state, slot = _state(tmp_path), _slot()
@@ -2745,7 +2878,7 @@ class TestFinishQueueCycle:
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._synthesis_inflight is True
@@ -2770,7 +2903,7 @@ class TestFinishQueueCycle:
             patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
             patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()),
         ):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._synthesis_inflight is True
@@ -2794,7 +2927,7 @@ class TestFinishQueueCycle:
         state.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush:
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
         flush.assert_not_called()
         if slot.task is not None:
@@ -2807,7 +2940,7 @@ class TestFinishQueueCycle:
         state2.subagents = MagicMock(running_agents_for=MagicMock(return_value=[]))
 
         with patch.object(type(slot2), "flush_deferred_notes", return_value=0) as flush2:
-            chat_runner._finish_queue_cycle(state2, slot2)
+            await chat_runner._finish_queue_cycle(state2, slot2)
             await asyncio.sleep(0)
         flush2.assert_called_once()
         if slot2.task is not None:
@@ -2829,7 +2962,7 @@ class TestFinishQueueCycle:
         assert state._slots.get(slot.key) is None
 
         with patch.object(chat_runner, "_run_pending_synthesis", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot._deferred_notes == [], "the held note was discarded on close"
@@ -2850,7 +2983,7 @@ class TestFinishQueueCycle:
             patch.object(type(slot), "flush_deferred_notes", return_value=0) as flush,
             patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()),
         ):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         flush.assert_called_once()
@@ -2860,13 +2993,15 @@ class TestFinishQueueCycle:
         state, slot = _state(tmp_path), _slot()
 
         with patch.object(chat_runner, "maybe_refresh_title", new=AsyncMock()):
-            chat_runner._finish_queue_cycle(state, slot)
+            await chat_runner._finish_queue_cycle(state, slot)
             await asyncio.sleep(0)
 
         assert slot.messages[-1]["role"] == "done"
         assert slot.task is None
         state.refresh_slot_source_status.assert_called_once_with(slot.key)
-        state.broadcast_ws.assert_any_call("chat_done", {"slot": slot.key})
+        state.broadcast_ws.assert_any_call(
+            "chat_done", {"slot": slot.key, "continuing": False, "needs_input": False}
+        )
 
 
 class TestTtftMetric:
@@ -3343,8 +3478,7 @@ class TestRunChatRecoveryLadders:
         """A PERMANENT compaction failure is terminal: the reason is in the
         "error:" family, so without its own branch it lands in pipe-death
         recovery — a re-queue plus a "Connection lost" card, both false. An
-        overflowing conversation fails again identically, so it earns no retry
-        (issue #3583)."""
+        overflowing conversation fails again identically, so it earns no retry."""
         state, client = _runner_state(tmp_path)
         slot = _slot()
         _set_stream(
@@ -3719,6 +3853,49 @@ class TestRunChatAutoApproveRungs:
         await _drive(state, slot)
 
         client.approve_tool.assert_awaited_once_with("req-cov-1")
+
+    @pytest.mark.asyncio
+    async def test_trusted_pattern_append_persists_tool_meta_untruncated(self, tmp_path):
+        """The trusted-pattern rung's persisted meta must be `_tool_meta` exactly.
+
+        A hand-rolled meta dict at this rung diverges from every other
+        approval rung: a shorter purpose cap cuts restored transcripts
+        mid-sentence while live rows (broadcast at `_MAX_TOOL_PURPOSE`)
+        show the whole purpose, and a dict without `input`/`kind` or the
+        `tool_call_id` redaction breaks the live↔replay join. One builder,
+        one cap.
+        """
+        state, client = _runner_state(tmp_path)
+        slot = _slot()
+        canonical = canonical_non_shell_trust_key("records:primary", "read_record")
+        slot._trusted_patterns = {exact_trust_pattern(canonical)}
+        purpose = (
+            "Get the PMET record header fields (Program/Marketplace/Operation) "
+            "exactly as the LS writes them, from the small current-hour file "
+            "(0 replicas, so few records), to query MWS with the right "
+            "dimensions, then fold the result back into the incident brief"
+        )
+        assert len(purpose) > 200, "purpose long enough that a divergent short cap cuts it"
+        perm = _permission(
+            title="Looking up the record",
+            tool_kind="other",
+            is_shell=False,
+            tool_name="read_record",
+            mcp_server_name="records:primary",
+        )
+        perm.tool_call_id = "call-cov-1"
+        perm.tool_purpose = purpose
+        _set_stream(client, [perm, _complete()])
+
+        await _drive(state, slot)
+
+        client.approve_tool.assert_awaited_once_with("req-cov-1")
+        (tool_msg,) = [m for m in slot.messages if m.get("role") == "tool"]
+        meta = tool_msg.get("meta") or {}
+        assert meta.get("purpose") == purpose
+        # Everything `_tool_meta` builds must be persisted verbatim; `append`
+        # additionally stamps its own `mid`, which is not part of the contract.
+        assert chat_runner._tool_meta(perm).items() <= meta.items()
 
     @pytest.mark.asyncio
     async def test_structured_non_shell_reprompt_never_matches_tool_identity_trust(self, tmp_path):
@@ -4201,17 +4378,16 @@ class TestRunChatPlanGate:
 
 
 def _bindings(*, kiro_agent, resolved_alias, requested_resolved):
-    """A minimal ResolvedBindings stand-in for the app-agent dispatch guard.
-
-    Only the fields ``_run_chat`` reads off the resolve result are populated;
-    ``model`` is a real ``str`` so ``normalize_agent_model`` stays happy.
-    """
-    return SimpleNamespace(
+    """Real bindings for a materialized app template or its cold fallback."""
+    return ResolvedBindings(
+        workspace_dir=Path("workspace"),
         kiro_agent=kiro_agent,
         resolved_alias=resolved_alias,
         memory_store_name="default",
+        effective_memory_config={},
         model="",
         requested_resolved=requested_resolved,
+        selection_kind="template" if requested_resolved else "member",
     )
 
 
@@ -4440,13 +4616,7 @@ class TestAppAgentDispatchGuard:
 
 
 class TestPromptSubmitTranscriptRead:
-    """The re-injection probe's transcript read must not run on the loop.
-
-    ``_run_chat`` compares the in-memory message count against the on-disk one to
-    decide whether a reset session needs its history re-injected. That disk count
-    comes from ``read_messages``, which parses the whole transcript -- 100-300 ms
-    on a large store, on the hottest path there is (issue #7408).
-    """
+    """The canonical replay's transcript read must not run on the loop."""
 
     @pytest.mark.asyncio
     async def test_disk_count_read_runs_off_the_loop_thread(self, tmp_path, monkeypatch):
@@ -4457,13 +4627,13 @@ class TestPromptSubmitTranscriptRead:
         # branch holding the read is skipped and the test would pass vacuously.
         slot.append("user", "an earlier turn", "msg msg-u")
         seen: list[int] = []
-        real_read = ConversationLog.read_messages
+        real_read = ConversationLog.read_messages_chained
 
         def recording(self, key):  # noqa: ANN001 -- test double
             seen.append(threading.get_ident())
             return real_read(self, key)
 
-        monkeypatch.setattr(ConversationLog, "read_messages", recording)
+        monkeypatch.setattr(ConversationLog, "read_messages_chained", recording)
 
         await _drive(state, slot, "hello")
 
@@ -4475,3 +4645,39 @@ class TestPromptSubmitTranscriptRead:
             "the re-injection probe read the transcript on the event-loop thread; "
             "it must go through asyncio.to_thread"
         )
+
+
+# ── SessionClosingError shutdown race ─────────────────────────────────────
+
+
+class TestSessionClosingQuietAbort:
+    """A gateway-shutdown race during turn prep is a quiet abort, not an error.
+
+    Two dashboard slots were mid ``get_or_create`` when a restart's
+    ``close_all`` set ``_closing``; the allocation gate raised
+    ``SessionClosingError`` (by design) but the generic terminal handler then
+    logged an ERROR traceback, appended an ❌ error card to the slot, and
+    recorded a spurious session failure. The dedicated arm must swallow it: no
+    card, no record_failure, no exception out of ``_run_chat``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_get_or_create_closing_appends_no_error_card(self, tmp_path):
+        from kiro_crew.session import SessionClosingError
+
+        state, _client = _runner_state(tmp_path)
+        state.sessions.get_or_create = AsyncMock(
+            side_effect=SessionClosingError(
+                "SessionManager began closing during provider startup; "
+                "refusing to register a session behind the shutdown snapshot"
+            )
+        )
+        slot = _slot()
+
+        await _drive(state, slot, "hello")
+
+        assert _errors(slot) == [], (
+            "a shutdown race during session creation must not surface an "
+            "error card in the chat slot"
+        )
+        state.sessions.record_failure.assert_not_awaited()

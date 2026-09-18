@@ -372,7 +372,7 @@ def test_deleting_a_newer_overlay_does_not_reinstate_its_threshold(tmp_path, mon
     _reset_published_threshold()
     try:
         # Settle the base: this load runs the write-back migration, so afterwards
-        # the base's mtime no longer moves under us.
+        # the base's mtime does not move under us.
         _loader._invalidate_config_cache()
         _loader.KiroCrewConfig.load()
         assert _loader.published_autocompact_pct() == 70.0

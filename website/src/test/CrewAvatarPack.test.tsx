@@ -2,18 +2,55 @@
  * `CrewAvatar` — the appearance-pack tier.
  *
  * The pack tier is the one tier whose art this build did not draw: the record
- * names a pack and the gateway serves each state's frame. So what matters here
- * is the ADDRESS (one URL per state, the server resolving the fallback), the
- * failure (a pack that does not load falls back to the crew's own face rather
- * than a broken-image glyph), and the one pack that must never be fetched — the
- * built-in `kiro-ghost`, whose art is this bundle's own ghost.
+ * names a pack and `PackAvatar` draws whatever format that pack holds. So what
+ * matters here is the HANDOFF — that a pack record reaches `PackAvatar` with the
+ * resolved state, that the failure it reports falls back to the crew's own face
+ * rather than a broken-image glyph, and that the one pack which must never be
+ * fetched (the built-in `kiro-ghost`, whose art is this bundle's own ghost) takes
+ * the local path instead.
+ *
+ * `PackAvatar` itself is stubbed: which player draws which format, and the slot
+ * fallback chain, are its own tests (`PackAvatar.test.tsx`).
  */
 import { describe, it, expect, vi } from 'vitest'
-import { fireEvent, render } from '@testing-library/react'
+import { act, render, screen } from '@testing-library/react'
 import CrewAvatar, { hasAvatarOverride, packAvatarFrom, unclaimedAvatarFrom } from '../components/CrewAvatar'
 import { BUILTIN_PACK_ID } from '../lib/appearancePacks/library'
 
+/** The pack renderer, reduced to the props it was handed plus a way to make it
+ *  fail: a click reports through `onError` and draws the caller's `fallback` in
+ *  place — the real component's contract, which is what keeps its query observed
+ *  (see `CrewAvatarPackRecovery.test.tsx` for the real one recovering). */
+vi.mock('../components/appearancePacks/PackAvatar', async () => {
+  const React = await import('react')
+  function PackAvatarStub({ id, state, size, onError, fallback }: {
+      id: string; state: string; size: number; onError?: () => void; fallback?: React.ReactNode
+    }) {
+      const [failed, setFailed] = React.useState(false)
+      return (
+        <>
+          <button
+            type="button"
+            aria-label="pack avatar stub"
+            data-testid="pack-avatar-stub"
+            data-id={id}
+            data-state={state}
+            data-size={String(size)}
+            data-failed={String(failed)}
+            onClick={() => {
+              setFailed(true)
+              onError?.()
+            }}
+          />
+          {failed ? fallback : null}
+        </>
+      )
+  }
+  return { default: PackAvatarStub }
+})
+
 const src = (container: HTMLElement) => container.querySelector('img')!.getAttribute('src')!
+const stub = () => screen.getByTestId('pack-avatar-stub')
 
 describe('packAvatarFrom', () => {
   it('reads a pack override', () => {
@@ -128,27 +165,27 @@ describe('unclaimedAvatarFrom', () => {
 })
 
 describe('CrewAvatar — pack rendering', () => {
-  it('draws the slot the state names', () => {
-    for (const [state, slot] of [
+  it('hands the pack and the resolved state to the renderer', () => {
+    for (const [state, resolved] of [
       [undefined, 'idle'],
       ['idle', 'idle'],
       ['working', 'working'],
       ['done', 'done'],
       ['error', 'error'],
     ] as const) {
-      const { container, unmount } = render(
-        <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} state={state} />,
+      const { unmount } = render(
+        <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} state={state} size={38} />,
       )
-      expect(src(container)).toBe(`/api/appearances/aurora/slot/${slot}`)
+      expect(stub().getAttribute('data-id')).toBe('aurora')
+      expect(stub().getAttribute('data-state')).toBe(resolved)
+      expect(stub().getAttribute('data-size')).toBe('38')
       unmount()
     }
   })
 
   it('reads a bare `working` as the working state, same as the ghost tier', () => {
-    const { container } = render(
-      <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} working="full" />,
-    )
-    expect(src(container)).toBe('/api/appearances/aurora/slot/working')
+    render(<CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} working="full" />)
+    expect(stub().getAttribute('data-state')).toBe('working')
   })
 
   it('composes the built-in pack locally and fetches nothing', () => {
@@ -158,6 +195,7 @@ describe('CrewAvatar — pack rendering', () => {
     const { container } = render(
       <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: BUILTIN_PACK_ID }} state="working" />,
     )
+    expect(screen.queryByTestId('pack-avatar-stub')).toBeNull()
     const uri = src(container)
     expect(uri).not.toContain('/api/appearances')
     expect(uri.startsWith('data:image/svg+xml')).toBe(true)
@@ -178,46 +216,51 @@ describe('CrewAvatar — pack rendering', () => {
     expect(src(pack.container)).toBe(src(ghost.container))
   })
 
-  it('falls back to the crew face when the pack art does not load, and reports it', () => {
+  it('hands the renderer the crew face as its fallback, and reports a failure', () => {
     const onImageError = vi.fn()
     const { container } = render(
       <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} onImageError={onImageError} />,
     )
-    const img = container.querySelector('img')!
-    expect(img.getAttribute('src')).toBe('/api/appearances/aurora/slot/idle')
-
-    fireEvent.error(img)
+    // Nothing drawn for the fallback until the renderer says it needs it.
+    expect(container.querySelector('img')).toBeNull()
+    act(() => stub().click())
 
     expect(onImageError).toHaveBeenCalledTimes(1)
     // A broken-image glyph on a roster reads as "this crew is broken"; the
     // name-derived ghost reads as "this pack is gone", which is the truth.
     expect(src(container).startsWith('data:image/svg+xml')).toBe(true)
+    // The renderer is STILL MOUNTED: it owns the pack's query, and a refetch
+    // after a gateway blip has to find it here to redraw. Unmounting it would
+    // make every failed read a ghost until the record names another pack.
+    expect(stub().getAttribute('data-failed')).toBe('true')
   })
 
-  it('gives a failed pack a fresh chance once the record names a different one', () => {
-    const { container, rerender } = render(
-      <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} />,
+  it('keeps the renderer mounted across a re-render while failed', () => {
+    const onImageError = vi.fn()
+    const { rerender } = render(
+      <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} onImageError={onImageError} />,
     )
-    fireEvent.error(container.querySelector('img')!)
-    expect(src(container).startsWith('data:image/svg+xml')).toBe(true)
-
-    rerender(<CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'nebula' }} />)
-    expect(src(container)).toBe('/api/appearances/nebula/slot/idle')
+    act(() => stub().click())
+    rerender(
+      <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} state="working" onImageError={onImageError} />,
+    )
+    expect(stub().getAttribute('data-state')).toBe('working')
+    expect(stub().getAttribute('data-failed')).toBe('true')
   })
 
   it('ignores a pack record\u2019s expressions — served art has no face to overlay', () => {
     // The state still picks the SLOT; what it cannot do is repaint eyes onto a
     // drawing this build never composed.
-    const plain = render(
-      <CrewAvatar seed="oncall" avatar={{ kind: 'pack', id: 'aurora' }} state="working" />,
-    )
-    const decorated = render(
+    render(
       <CrewAvatar
         seed="oncall"
         avatar={{ kind: 'pack', id: 'aurora', expressions: { working: { eyes: 'wink' } } }}
         state="working"
       />,
     )
-    expect(src(decorated.container)).toBe(src(plain.container))
+    // Reached the renderer as the plain pack it is: no face was composed, so no
+    // ghost <img> is drawn beside it carrying an overlay.
+    expect(stub().getAttribute('data-state')).toBe('working')
+    expect(document.querySelector('img')).toBeNull()
   })
 })

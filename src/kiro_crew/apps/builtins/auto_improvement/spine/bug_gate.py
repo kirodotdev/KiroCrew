@@ -235,7 +235,7 @@ class BugGate:
 
             # ── STAYGREEN (§2.2 step 3) ─────────────────────────────────────
             # Run the full suite (or documented smoke subset — Profile choice) with
-            # the full fix applied. Any PREVIOUSLY-PASSING test now failing →
+            # the full fix applied. Any test that fails under the fix but passes on base →
             # the fix regressed something → discard.
             suite_ok, failing = runner.run_suite(src=cand_src)
             if not suite_ok:

@@ -111,8 +111,9 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPage from '../pages/ChatPage'
 import { api } from '../api/client'
 import { savePttConfig } from '../lib/pushToTalk'
+import { DRAFTS_KEY } from '../utils/chatDrafts'
 
-function makeStore(activeSlot: string, slots: { key: string; mode?: string }[]) {
+function makeStore(activeSlot: string, slots: { key: string; mode?: string }[], running = false) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
@@ -123,13 +124,13 @@ function makeStore(activeSlot: string, slots: { key: string; mode?: string }[]) 
         // widget event, question card), so without this seed send() bails before
         // api.sendChat is invoked. dashboardSlice initial state defaults connected
         // to false (= fresh page load before WS handshake).
-        status: null, connected: true, slots: slots.map(s => ({ key: s.key, messages: 1, running: false, mode: s.mode || '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined })),
+        status: null, connected: true, slots: slots.map(s => ({ key: s.key, messages: 1, running, mode: s.mode || '', pending_approval: false, waiting_for_input: false, last_activity_ts: undefined })),
         unreadSlots: [], refreshTrigger: 0, approvalMode: 'normal',
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
       chat: {
         activeSlot, messages: [{ role: 'assistant', content: 'hi', cls: '' }],
-        slotRunning: false, slotStopping: false, slotState: 'idle',
+        slotRunning: running, slotStopping: false, slotState: 'idle',
         history: [], historyHasMore: false, pendingInput: null,
         subagents: {}, toolLog: [], activityOpen: false, activityTab: 'tools',
         slotHasMore: false, slotOldestIndex: 0, loadingOlder: false,
@@ -220,6 +221,30 @@ describe('ChatPage — sending while dictating', () => {
     expect(ta.value).toBe('')
   })
 
+  it('an empty steer mid-turn does NOT end a live streaming capture (GPT F1, round 13)', async () => {
+    // Enter on an EMPTY composer while a turn runs is a steer with nothing to
+    // steer. Before the fix, steer() disarmed the capture before it looked at
+    // the payload, so a user who pressed Enter in the sub-second window before
+    // the first partial landed lost the utterance in flight and sent nothing.
+    const store = makeStore('chat-main', [{ key: 'chat-main' }], true)
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: /voice input/i })) })
+    expect(voice.recording).toBe(true)
+    vi.mocked(voice.stop).mockClear(); vi.mocked(voice.toggle).mockClear()
+
+    await act(async () => { fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter' }) })
+
+    // Nothing was sent, and the capture is still live: no stop, no toggle.
+    expect(api.sendChat).not.toHaveBeenCalled()
+    expect(voice.stop).not.toHaveBeenCalled()
+    expect(voice.toggle).not.toHaveBeenCalled()
+    expect(voice.recording).toBe(true)
+    // The partial that was in flight still lands.
+    await act(async () => { voice.onPartial?.('still here') })
+    expect(ta.value).toBe('still here')
+  })
+
   it('does NOT disarm batch capture — the transcript arrives after stop', async () => {
     // The mirror-image bug of the test above. In batch mode (whisper) there are
     // no partials: MediaRecorder.onstop posts the blob and the whole transcript
@@ -254,6 +279,28 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { fireEvent.keyDown(ta, { key: 'Enter', code: 'Enter' }) })
     await waitFor(() => expect(api.sendChat).toHaveBeenCalled())
     expect(voice.toggle).not.toHaveBeenCalled()
+  })
+
+  it('routes a batch transcript for a slot that is not on screen into that slot’s persisted draft', async () => {
+    // ChatPage keeps ONE composer over many slots, so it is the host that tells
+    // the Voice atom where an off-screen transcript goes (`deliverOffScreen`):
+    // the target slot's persisted draft, recoverable when the user returns —
+    // never the live composer, which belongs to another slot right now.
+    setStt(false)
+    const store = makeStore('chat-main', [{ key: 'chat-main' }, { key: 'chat-other' }])
+    await renderAndWaitForInput(store)
+    const ta = screen.getByLabelText('Message input') as HTMLTextAreaElement
+    await act(async () => { fireEvent.change(ta, { target: { value: 'typing in main' } }) })
+    expect(typeof voice.onText).toBe('function')
+
+    // A batch transcript whose capture session was `chat-other` lands while
+    // `chat-main` is on screen.
+    await act(async () => { voice.onText?.('note for the other room', 'chat-other', 'batch') })
+
+    expect(ta.value).toBe('typing in main')
+    const saved = JSON.parse(localStorage.getItem(DRAFTS_KEY) || '{}') as Record<string, string>
+    expect(saved['chat-other']).toBe('note for the other room')
+    expect(saved['chat-main']).not.toBe('note for the other room')
   })
 
   it('inserts a batch transcript at the caret, not appended to the end', async () => {
@@ -406,6 +453,8 @@ describe('ChatPage — sending while dictating', () => {
     await act(async () => { fireEvent.change(ta, { target: { value: 'Hello world' } }) })
     await act(async () => { ta.setSelectionRange(5, 5); fireEvent.select(ta) })
 
+    // React updates must not consume the hold threshold on a busy test worker.
+    vi.useFakeTimers()
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keydown', { code: 'AltRight', altKey: true, bubbles: true, cancelable: true }))
     })
@@ -418,6 +467,7 @@ describe('ChatPage — sending while dictating', () => {
 
     // Sub-threshold release in hold-only mode: discarded, and the draft must be
     // exactly what the user had typed.
+    act(() => { vi.advanceTimersByTime(100) })
     await act(async () => {
       document.dispatchEvent(new KeyboardEvent('keyup', { code: 'AltRight', bubbles: true }))
     })

@@ -37,6 +37,7 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api, type InstanceView } from '../api/client'
+import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
 import { useAppDispatch, useAppSelector } from '../store'
 import { type WarmConn } from '../store/instancesSlice'
 import { isEmbeddedPane } from '../lib/embedded'
@@ -145,7 +146,7 @@ export function useAutoConnectInstances() {
     const data = instancesQuery.data
     if (!data?.active || !data.instances?.length) return
 
-    const warmCap = data.warm_set_cap || 5
+    const warmCap = data.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
     const excluded = readAutoConnectExcludes()
     const now = Date.now()
     const targets = selectAutoConnectTargets(data.instances, warmRef.current, excluded, warmCap)

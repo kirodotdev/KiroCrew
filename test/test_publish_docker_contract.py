@@ -324,9 +324,7 @@ def test_public_access_gate_is_required_by_every_canonical_caller() -> None:
 def test_callers_do_not_inherit_secrets_into_the_lane() -> None:
     """The lane authenticates with the implicit GITHUB_TOKEN only. Callers
     passing ``secrets: inherit`` would expose every repo secret (signing,
-    CDN) to a workflow documented as needing none. Parsed structurally —
-    an indentation-based line scan here previously never reached its own
-    assertion."""
+    CDN) to a workflow documented as needing none. Parsed structurally."""
     import yaml
 
     for caller in CALLERS:

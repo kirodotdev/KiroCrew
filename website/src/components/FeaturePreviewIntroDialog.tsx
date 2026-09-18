@@ -121,12 +121,18 @@ function FeaturePreviewIntroDialog({ open, onOpenChange, title, intro, checked, 
               <div className="relative overflow-hidden rounded-lg border border-border bg-bg-accent">
                 {/* `key` on the theme+index pair forces a fresh <img>, so a GIF
                     restarts from its first frame when paged to rather than
-                    resuming mid-loop from a cached decode. */}
+                    resuming mid-loop from a cached decode.
+                    Height-capped to the viewport: the captures are full-window
+                    frames (3:2), and at the 90vh the dialog allows, one at full
+                    width pushed the "where you'll see it" sentence under a fold
+                    that showed no scrollbar (UX review on #9519) — the clause
+                    that explains the feature was the part a reader lost. The
+                    picture scales down and centres; the copy stays in view. */}
                 <img
                   key={`${isDark ? 'dark' : 'light'}-${index}`}
                   src={isDark ? media.dark : media.light}
                   alt={media.caption}
-                  className="block w-full h-auto"
+                  className="mx-auto block h-auto max-h-[42vh] w-auto max-w-full"
                   loading="eager"
                   decoding="async"
                 />

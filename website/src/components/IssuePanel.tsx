@@ -370,6 +370,7 @@ export default function IssuePanel({
     const raw = typeof err?.body === 'string' ? err.body : ''
     try { return (JSON.parse(raw) as { code?: string }).code || '' } catch { return '' }
   })()
+  const refreshFailure = i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')
   const sourceUrl = safeExternalUrl(source?.url || '')
   const handleRefresh = () => {
     forceRefreshRef.current = true
@@ -511,15 +512,16 @@ export default function IssuePanel({
               but still the shared notice (askAgent on — read failure). */}
           <ErrorNotice
             variant="inline"
-            className="min-w-0 truncate text-[11px]"
-            message={i18nT('components.pullRequestPanel.could_not_refresh_showing_cached')}
+            className="min-w-0 text-[11px]"
+            messageClassName="line-clamp-1"
+            message={refreshFailure}
             askAgent
             testId="issue-panel-refresh-error"
           />
           {/* The login command is the one actionable fix, so it must survive a narrow
-              panel: it sits outside the truncating span and never clips. */}
+              panel: it sits outside the clamped message and never clips. */}
           {queryError.loginCommand && <code className="shrink-0 text-text" title={queryError.loginCommand}>{queryError.loginCommand}</code>}
-          <Btn type="button" onClick={handleRefresh} className="ml-auto inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" aria-hidden="true" />{i18nT('components.issuePanel.retry')}</Btn>
+          <Btn type="button" onClick={handleRefresh} className="ml-auto shrink-0 whitespace-nowrap inline-flex items-center gap-1 px-1.5 py-0.5 rounded border border-border bg-transparent text-[11px] text-muted hover:text-text hover:bg-bg-hover cursor-pointer"><RefreshCw className="lucide-inline" aria-hidden="true" />{i18nT('components.issuePanel.retry')}</Btn>
         </div>
       )}
       {source && (

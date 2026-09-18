@@ -398,6 +398,53 @@ def test_new_command_starts_a_fresh_session_without_a_turn(tmp_path):
     assert "新对话" in client.sent[0]["text"]
 
 
+def test_inline_callback_reservation_releases_before_poll_task_continues(tmp_path):
+    class Reservation:
+        def __init__(self):
+            self.releases = 0
+
+        def release(self):
+            self.releases += 1
+
+    d, _client, sessions = _make(tmp_path)
+    reservation = Reservation()
+    sessions.reserve_inbound_callback = lambda: reservation
+
+    async def run():
+        await d.handle_message(_msg("/help"))
+        # The caller is still the long-lived poll task here. A task-done lease
+        # would remain held until disconnect and defer every future update.
+        assert reservation.releases == 1
+
+    asyncio.run(run())
+
+
+def test_update_pause_spools_new_before_generation_side_effects(tmp_path, monkeypatch):
+    import kiro_crew.messaging.dispatch as dispatch
+
+    d, client, sessions = _make(tmp_path)
+    sessions.reserve_inbound_callback = lambda: None
+    spooled: list[tuple[str, Any]] = []
+
+    async def capture(*, channel_type, route):
+        spooled.append((channel_type, route))
+
+    monkeypatch.setattr(dispatch, "spool_refused_turn", capture)
+    before = d._session_key("userA")
+
+    asyncio.run(d.handle_message(_msg("/new")))
+
+    assert d._session_key("userA") == before
+    assert sessions.reserved_generations == []
+    assert client.sent == []
+    assert len(spooled) == 1
+    channel_type, refused = spooled[0]
+    assert channel_type == "weixin"
+    assert refused is not None
+    assert refused.conversation_id == "userA"
+    assert refused.text == "/new"
+
+
 def test_compact_command_compacts_without_a_turn(tmp_path):
     provider = FakeProvider()
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -409,7 +456,7 @@ def test_compact_command_compacts_without_a_turn(tmp_path):
 
 def test_compact_command_declined_on_auto_managed_backend(tmp_path):
     # A backend that cannot serve /compact gets the informational reply and
-    # compact() is NEVER dispatched (#8156).
+    # compact() is NEVER dispatched.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -430,7 +477,7 @@ def test_compact_none_capability_preserves_dispatch(tmp_path):
 
 def test_hard_threshold_declines_silently_on_auto_managed_backend(tmp_path):
     # No /compact to dispatch and no notice: the backend compacts on its own
-    # as context fills (#8156).
+    # as context fills.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -442,7 +489,7 @@ def test_hard_threshold_declines_silently_on_auto_managed_backend(tmp_path):
 
 def test_soft_nudge_suppressed_on_auto_managed_backend(tmp_path):
     # The nudge advises /compact, which this backend refuses — it compacts on
-    # its own, so there is nothing for the user to act on (#8156).
+    # its own, so there is nothing for the user to act on.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, client, sessions = _make(tmp_path, provider=provider)
@@ -657,7 +704,7 @@ def test_turn_failure_records_failure_and_still_releases(tmp_path):
 def test_delivery_failure_is_not_recorded_as_success(tmp_path):
     """An undelivered reply must fail the turn, not persist as a success.
 
-    Regression: the renderer used to swallow send errors, so a send timeout left
+    The renderer must not swallow send errors, or a send timeout leaves
     the dispatcher recording + persisting a reply the user never received.
     """
     rows: list[tuple[str, str]] = []

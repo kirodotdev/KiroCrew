@@ -309,6 +309,39 @@ class TestFormatDashboardUrls:
 
     @patch.dict("os.environ", {}, clear=True)
     @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
+    @patch(f"{_MOD}.machine_hostname", return_value="Mac-1234.local")
+    def test_a_hanging_hostname_lookup_cannot_stall_startup(self, _mh: object, _dp: object) -> None:
+        """The Remote hint is cosmetic; the event loop it runs on is not.
+
+        A GitHub macOS runner's own hostname does not resolve and the resolver
+        sits in a multi-second mDNS timeout. Unbounded, that blocked the loop
+        past the dashboard watchdog's 15 s threshold and the gateway exited
+        right after READY (first cross-OS boot matrix run). The lookup is
+        bounded and abandoned, so the lines come back without the hint.
+        """
+        import threading
+        import time
+
+        release = threading.Event()
+
+        def _hang(_host: str) -> str:
+            release.wait(30)
+            return "10.0.0.1"
+
+        with (
+            patch(f"{_MOD}.socket.gethostbyname", side_effect=_hang),
+            patch(f"{_MOD}.HOSTNAME_RESOLVE_TIMEOUT_SECS", 0.2),
+        ):
+            started = time.monotonic()
+            try:
+                lines = format_dashboard_urls("http://localhost:5476", port=5476, local_only=True)
+            finally:
+                release.set()
+        assert time.monotonic() - started < 5
+        assert not any("Remote" in ln for ln in lines)
+
+    @patch.dict("os.environ", {}, clear=True)
+    @patch(f"{_MOD}.devspaces_proxy_url", return_value=None)
     @patch(f"{_MOD}.machine_hostname", return_value="myhost.internal.example.com")
     @patch(f"{_MOD}.socket.gethostbyname", return_value="10.0.0.1")
     def test_custom_host_suppresses_remote_hint(
@@ -846,3 +879,34 @@ class TestFrameAncestorsValue:
         from kiro_crew.dashboard.origin import frame_ancestors_value
 
         assert frame_ancestors_value([bad]) == "'self'"
+
+
+class TestBoundedHostnameResolve:
+    """The resolver is best-effort, and 'best-effort' has to include the failure
+    to START the worker at all."""
+
+    def test_thread_exhaustion_reads_as_unresolved_not_as_a_raise(self, monkeypatch):
+        """A RuntimeError from ``Thread.start`` must not escape into the banner.
+
+        ``_resolve_hostname_bounded``'s only caller decides whether to print one
+        extra ``ssh -NL`` hint line with it. Under thread exhaustion the naive
+        spelling propagates a RuntimeError out through the code that prints the
+        dashboard's URLs, so the operator loses the whole banner -- including the
+        authenticated URL they actually need -- to gain nothing. Unresolved is the
+        honest answer and it costs a hint line.
+        """
+        from kiro_crew.dashboard import urls as urls_mod
+
+        class _RefusingThread:
+            def __init__(self, *a, **k):
+                pass
+
+            def start(self):
+                raise RuntimeError("can't start new thread")
+
+            def join(self, timeout=None):  # pragma: no cover - never reached
+                raise AssertionError("join must not be reached when start failed")
+
+        monkeypatch.setattr(urls_mod.threading, "Thread", _RefusingThread)
+
+        assert urls_mod._resolve_hostname_bounded("example.invalid") is None

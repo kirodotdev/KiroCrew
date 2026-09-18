@@ -62,7 +62,16 @@ For a single-select question, selecting a different option replaces the previous
 
 Every question must have an answer before Submit becomes available. The card emits answers keyed by question text; the stateless wrapper sends the answer values as newline-separated message text. Dismiss removes the stateless card and its `needs_input` status without sending an answer.
 
-Only one stateless card is retained per slot; a later card replaces the earlier one. A live user or nudge message retires an unanswered stateless card. Reloads and websocket reconnects reconcile pending cards with `GET /api/ask-question/pending`.
+Only one stateless card is retained per slot; a later card replaces the earlier one. A live user message retires an unanswered stateless card; an auto-nudge cycle does not, because it wakes the same agent in the same conversation and the answer still reaches it. Anything else needs the card's own Dismiss control. Reloads and websocket reconnects reconcile pending cards with `GET /api/ask-question/pending`.
+
+## Two delivery paths for a card answer
+
+A no-`ask_id` question card can be answered on two paths, chosen by whether the slot's turn is live when Submit is pressed:
+
+- **Non-blocking `ask_question` card.** This tool ends the agent's turn before the card appears, so the turn is idle when the user answers. The answer starts an ordinary next turn, carrying full context. This is the path the flow above describes.
+- **Native `AskUserQuestion` card.** kiro-cli raises this card while its own turn is still running and waiting on the answer. Submitting it therefore *steers* the answer into that live turn (the same `steer: true` delivery the mid-turn split send uses), so the waiting turn consumes it instead of the answer queuing behind the very turn that asked for it. If the turn has already ended by the time the user answers (the card outlived it), there is nothing to steer into and the answer falls back to starting an ordinary next turn, exactly like the non-blocking card.
+
+Both the main chat and the split panes key this decision on the shared `selectComposerBusy` slot-turn-live rule, so the two surfaces cannot drift. Because the card clears on Submit and a steer into a busy slot shows no optimistic bubble, a steer whose delivery is not confirmed (a transport failure or a late receipt) hands the answer back to the composer with a delivery-unconfirmed notice rather than dropping it.
 
 The blocking `POST /api/ask-question` round trip is a separate owner-only HTTP
 path that no agent tool uses; its endpoint contract is a contributor reference

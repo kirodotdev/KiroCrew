@@ -1,5 +1,5 @@
-"""Hang-resilience telemetry — the kirocrew.* series added after the silent
-child-permission hang incidents (issue #3785, PRs #3786/#3889).
+"""Hang-resilience telemetry — the kirocrew.* series for the silent
+child-permission hang class.
 
 Each test drives the REAL production emit site (never a reimplementation)
 with the recorder mocked, so a renamed metric, changed attr enum, or removed
@@ -136,7 +136,7 @@ def test_handle_reject_emits_child_permission_denied(recorded):
 async def test_routed_child_permission_emits_routed(recorded):
     """A child permission request delivered to the owner's queue (the
     mode-parity pipeline) counts as ROUTED — the impact numerator: each one
-    would have been a silent 2h hang before #3786."""
+    would otherwise be a silent 2h hang."""
     rt, reader, _ = _make_runtime()
     queues = _register(rt, "parent-session")
     task = asyncio.ensure_future(rt._reader_loop())

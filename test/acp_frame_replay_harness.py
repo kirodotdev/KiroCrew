@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -207,14 +208,47 @@ def _response_summary(msg: JsonRpcMessage) -> dict[str, Any]:
     return summary
 
 
-def replay_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def replay_frames(
+    frames: list[dict[str, Any]], *, gate_envelope_nonce: str | None = None
+) -> list[dict[str, Any]]:
     """Turn a raw frame sequence into the snapshot form.
 
     Mirrors the dispatch the two reader loops perform: classify, then hand the
     frame to the parser for its action. Caches are per replay, matching the
     runtime's per-session caches, so a ``tool_call_update`` recovers the input
     its originating ``tool_call`` recorded.
+
+    ``gate_envelope_nonce`` is what a session running Kiro Crew's gate extension
+    hands the permission builder; a fixture recorded on such a session declares
+    the value its extension echoed as ``_meta.gate_envelope_nonce`` so the replay
+    reads its permission frames the way the live session did. Absent, as on every
+    other harness, no frame is read as an envelope.
+
+    The crew log flag is forced ON for the replay. The parsers measure a
+    tool result's full byte count and digest only while that flag is set, since
+    the emitter is its only consumer -- so replaying with it off would record a
+    shorter event than any session with the feature enabled produces, and the
+    corpus would stop pinning the shape it exists to pin. Set here rather than in
+    each caller so the snapshot WRITER and the test that checks it against the
+    committed snapshot cannot disagree about which shape is being recorded. It is
+    restored afterwards: this process runs other tests, and leaving the feature on
+    for them would change what they exercise.
     """
+    prior = os.environ.get("KIROCREW_CREW_LOG")
+    os.environ["KIROCREW_CREW_LOG"] = "1"
+    try:
+        return _replay(frames, gate_envelope_nonce=gate_envelope_nonce)
+    finally:
+        if prior is None:
+            os.environ.pop("KIROCREW_CREW_LOG", None)
+        else:
+            os.environ["KIROCREW_CREW_LOG"] = prior
+
+
+def _replay(
+    frames: list[dict[str, Any]], *, gate_envelope_nonce: str | None = None
+) -> list[dict[str, Any]]:
+    """The replay itself. See :func:`replay_frames` for the flag it runs under."""
     caches: dict[str, Any] = {
         "tool_input_cache": {},
         "shell_cache": {},
@@ -241,7 +275,9 @@ def replay_frames(frames: list[dict[str, Any]]) -> list[dict[str, Any]]:
         update = params.get("update") if isinstance(params.get("update"), dict) else {}
 
         if action == "permission":
-            event, options = build_permission_event(msg, **caches)
+            event, options = build_permission_event(
+                msg, gate_envelope_nonce=gate_envelope_nonce, **caches
+            )
             entry["events"] = [event_dict(event)]
             entry["recorded_options"] = options
         elif action in ("update", "subagent_activity"):

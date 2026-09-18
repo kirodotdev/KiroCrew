@@ -34,7 +34,7 @@ def _home(tmp_path, monkeypatch):
 
 
 class TestReplaceDoesNotKeepATreeTheArchiveLacks:
-    """A bundle without `workspace/knowledge` used to leave the destination's own
+    """A bundle without `workspace/knowledge` must not leave the destination's own
     knowledge tree in place, so a "replace" produced restored memory mixed with stale
     notes — and reported success. Replace means the destination matches the archive."""
 

@@ -195,7 +195,7 @@ describe('ReviewChat', () => {
     expect(call[1]).toBe('sage-reviewer')
     expect(call[4]).toBe('persistent')
     expect(call[5]).toBeUndefined()   // title
-    expect(call[8]).toBeUndefined()   // folder_id
+    expect(call[7]).toBeUndefined()   // folder_id
   })
 
   it('arms the resume, then creates the slot, then navigates to it', async () => {
@@ -222,7 +222,7 @@ describe('ReviewChat', () => {
     expect(call[0]).toBe('sage-followup-abc123def456')
     expect(call[1]).toBe('sage-reviewer')
     expect(call[5]).toBe('followup-pr#42-fix the thing')
-    expect(call[8]).toBe('fold1')
+    expect(call[7]).toBe('fold1')
     await waitFor(() => expect(navigate).toHaveBeenCalledWith(
       '/chat?sid=sage-followup-abc123def456'))
   })

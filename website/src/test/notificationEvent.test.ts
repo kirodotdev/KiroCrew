@@ -1,12 +1,23 @@
 import { describe, it, expect } from 'vitest'
 import { shouldChimeOnTurnDone, TURN_DONE_KIND } from '../hooks/notificationEvent'
 
-// Policy: every real turn completion chimes — active chat or background.
-// Only slot-less events and reconnect catch-up replays are suppressed.
+// Only a terminal conversation or an explicit request for input warrants audio.
 
 describe('shouldChimeOnTurnDone', () => {
-  it('chimes when a turn finishes (active or background — no attention gating)', () => {
-    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false })).toBe(true)
+  it('chimes when the conversation stops, whether active or background', () => {
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, continuing: false })).toBe(true)
+  })
+
+  it('stays silent at an intermediate turn boundary', () => {
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, continuing: true })).toBe(false)
+  })
+
+  it('an explicit input request outranks automated work', () => {
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: false, continuing: true, needsInput: true })).toBe(true)
+  })
+
+  it('does not replay input requests on reconnect', () => {
+    expect(shouldChimeOnTurnDone({ slot: 's1', reconnecting: true, needsInput: true })).toBe(false)
   })
 
   it('never chimes during reconnect catch-up replay', () => {

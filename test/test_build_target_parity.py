@@ -124,7 +124,7 @@ def test_frontend_target_installs_the_electron_subpackage() -> None:
     A scripted build that skips it leaves ``npm test`` / ``npm run check`` in
     website/ dying with MODULE_NOT_FOUND on electron's missing deps -- the gap
     that made CONTRIBUTING.md grow a manual work-around note, since dropped
-    because the build owns the install (#7226).
+    because the build owns the install.
     """
     recipe = _makefile_recipe("frontend")
     assert "cd electron" in recipe, (

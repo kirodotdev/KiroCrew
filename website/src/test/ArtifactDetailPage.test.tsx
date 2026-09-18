@@ -792,7 +792,7 @@ describe('ArtifactDetailPage', () => {
     fireEvent.click(screen.getByLabelText('Toggle agent chat'))
     await waitFor(() => expect(createSlotSpy).toHaveBeenCalledTimes(1))
     // The 8th positional argument is the artifact binding the backend persists.
-    expect(createSlotSpy.mock.calls[0][7]).toBe('cr-queue')
+    expect(createSlotSpy.mock.calls[0][6]).toBe('cr-queue')
   })
 
   it('description renders when artifact has one', async () => {

@@ -44,14 +44,16 @@ import { recordSessionStart, recordEvent } from './rum'
 import { ZoomProvider } from './hooks/ZoomProvider'
 import { api, isAuthBannerShown } from './api/client'
 import type { KiroCreditUsage, KiroUsagePayload } from './api/client'
+import { cronJobsQuery } from './api/cronJobsQuery'
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { isMetricNumber, metricNumber } from './utils/metrics'
-import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Loader2, Download, Hammer, XCircle, Check, AlertTriangle, CheckCircle, X, AudioWaveform, ChevronUp, MoreHorizontal, Coins, ArrowLeftToLine, Compass, LayoutGrid, Fullscreen, Menu, PanelLeft, SquareTerminal, Bot, Smartphone, Search as SearchIcon } from 'lucide-react'
 import { GithubIcon, DiscordIcon } from './components/BrandIcon'
 import { Toggle } from './components/ui'
 import OnboardingFlow from './components/OnboardingFlow'
 import AgentImportFlow from './components/AgentImportFlow'
+import ErrorNotice from './components/ErrorNotice'
 import PrivacyChapter from './components/PrivacyChapter'
 import { OnboardingShellHost } from './components/OnboardingChapterShell'
 import { PREVIEW_EXPAND_EVENT } from './components/WebPreviewPanel'
@@ -108,6 +110,7 @@ import ArtifactDetailPage from './pages/ArtifactDetailPage'
 import RemoteArtifactDetailPage from './pages/RemoteArtifactDetailPage'
 import ArtifactDeployPage from './pages/ArtifactDeployPage'
 import SettingsPage from './pages/SettingsPage'
+import { InAppUpdateFlow } from './pages/settings/AboutPanel'
 import EmbedSettingsPage from './pages/EmbedSettingsPage'
 import KiroCrewNavBridge from './components/KiroCrewNavBridge'
 import InstanceTabBar from './components/InstanceTabBar'
@@ -122,7 +125,9 @@ import UpdateModal from './components/UpdateModal'
 
 import ComputerUseLiveView from './components/ComputerUseLiveView'
 import BottomTerminalPanel, { TerminalDetachedBar } from './components/BottomTerminalPanel'
-import { toggleBottomTerminal, useBottomTerminalOpen, useTerminalPosition } from './hooks/useBottomTerminal'
+import { confirmRestoredTabs, reconcileRestoredTabs, toggleBottomTerminal, useBottomTerminalOpen, useTerminalPosition } from './hooks/useBottomTerminal'
+import { RUN_IN_TERMINAL_OPENING_GRACE_MS } from './utils/fenceShell'
+import { withDeadline } from './lib/withDeadline'
 import { toggleTerminalByChord } from './lib/terminalChordFocus'
 import { useTerminalPoppedOut, focusPopout as focusTerminalPopout } from './utils/terminalPopout'
 import { setTerminalEnabledFlag } from './utils/terminalRegistry'
@@ -150,6 +155,7 @@ import ReportProblemModal from './components/ReportProblemModal'
 import FeedbackPill from './components/FeedbackPill'
 import KiroAccountModal, { type KiroAccountUsage } from './components/KiroAccountModal'
 import WindowsTitlebarMenu from './components/WindowsTitlebarMenu'
+import { NavHistoryArrows } from './components/NavHistoryArrows'
 
 import {
   canShowStartupVideo,
@@ -159,6 +165,7 @@ import {
 import { i18nT } from './i18n/t'
 import { appNavTarget } from './appNav'
 import { appNotificationBadges, isAppNavId, mergeAppBadges } from './appNotificationBadges'
+import { appRunStates, nextSuccessExpiryMs, type AppRunState } from './appRunState'
 import { resolveSlotOverlays, type SlotOwners } from './apps/overlaySlots'
 import { fmtCompact, fmtNumber, fmtPercent, fmtUnit } from './i18n/format'
 // Static on purpose, and the tradeoff is real: the sidebar updates badge
@@ -337,6 +344,9 @@ const UPDATE_STEPS: Record<string, { icon: ReactNode }> = {
   installing: { icon: <Package className="lucide-inline" /> },
   restarting: { icon: <Rocket className="lucide-inline" /> },
   failed:     { icon: <XCircle className="lucide-inline" /> },
+  // The per-step handlers report their failure as `error`; without an entry
+  // the header fell back to the spinning glyph over a failure card.
+  error:      { icon: <XCircle className="lucide-inline" /> },
 }
 
 /**
@@ -353,6 +363,7 @@ const UPDATE_STEP_LABEL_KEY: Record<string, string> = {
   installing: 'app.installing_packages',
   restarting: 'app.restarting_server',
   failed: 'app.update_failed_2',
+  error: 'app.update_failed_2',
 }
 
 const STEP_ORDER = ['pulling', 'syncing', 'building', 'installing', 'restarting']
@@ -379,7 +390,11 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   const detail = progress?.detail || ''
   const info = UPDATE_STEPS[step]
   const currentIdx = STEP_ORDER.indexOf(step)
-  const isFailed = step === 'failed'
+  // Both spellings are terminal: the apply path pushes `failed` from its
+  // outer handler and `error` from its per-step handlers (pull, pip), and a
+  // step the overlay does not recognise as final renders as a stall until the
+  // stuck timer fires five minutes later.
+  const isFailed = step === 'failed' || step === 'error'
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(Date.now())
 
@@ -413,7 +428,8 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center bg-bg/80 backdrop-blur-sm animate-rise">
       <div className="bg-card border border-border rounded-xl p-8 max-w-md w-full mx-4 shadow-xl text-center">
-        <div className="text-4xl mb-4 animate-pulse">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
+        {/* A terminal step is not in progress, so it does not pulse. */}
+        <div className={`text-4xl mb-4 ${isFailed ? 'text-danger' : 'animate-pulse'}`} data-testid="update-overlay-step-icon">{info?.icon || <RefreshCw className="lucide-inline" />}</div>
         <div className="text-lg font-bold text-text-strong mb-2">{i18nT('app.updating_kirocrew')}</div>
         <div className="text-sm text-muted mb-5">{detail || i18nT('app.starting_update')}</div>
         {/* Step progress */}
@@ -433,7 +449,18 @@ export function UpdateOverlay({ onCancel }: { onCancel: () => void }) {
         </div>
         {isFailed ? (
           <div className="flex flex-col gap-3 items-center">
-            <div className="text-sm text-danger">{detail || i18nT('app.check_logs_for_details')}</div>
+            {/* askAgent ON: a failed step has already stopped the worker, so
+                the hand-off can destroy nothing; the causes (pull refused,
+                pip refusing the merged revision) are diagnosable by the agent.
+                The hand-off navigates to chat UNDER this z-[100] overlay, so
+                it also dismisses the overlay -- the same clear as Dismiss. */}
+            <ErrorNotice
+              askAgent
+              className="text-left"
+              message={detail || i18nT('app.check_logs_for_details')}
+              onHandoff={handleCancel}
+              testId="update-overlay-error"
+            />
             <button className="px-4 py-1.5 rounded-lg text-[13px] font-medium cursor-pointer bg-card border border-border text-text hover:border-border-strong transition-colors" onClick={handleCancel}>
               {i18nT('app.dismiss')}
             </button>
@@ -493,6 +520,40 @@ export function MobileNavGlyph({ avatar }: { avatar: string }) {
   )
 }
 
+/** Glyph inside the nav-rail header's expand/collapse button — the same
+ *  load-proof contract as MobileNavGlyph, with the rail's own geometry. When
+ *  the rail is collapsed the logo is the button's ONLY visible content (the
+ *  bot name is unmounted), so a 404 on the avatar asset, a blocked request or
+ *  a hung fetch used to leave an invisible control that still toggled the
+ *  rail when clicked. A PanelLeft glyph therefore fills the box by default,
+ *  the swap to the logo happens only on the img's own `load` event, and
+ *  `error` reverts it. `loadedSrc` records WHICH src loaded so a branding or
+ *  theme swap falls back until the new asset proves itself. `boxClass` is the
+ *  theme-overridable size (`branding.logoClass`, else w-10 collapsed / w-7
+ *  expanded) and is applied to BOTH the fallback and the img so the swap never
+ *  moves the button's geometry; the hover tilt and `transition-all` classes
+ *  live on the img exactly as before. The img stays mounted (display:none)
+ *  while hidden so the browser still fetches it. A sibling rather than a
+ *  generalisation of MobileNavGlyph: that component's literal `w-6 h-6` box is
+ *  pinned by narrowFirstBaseline.test.ts, while this box is a runtime
+ *  expression. */
+export function RailHeaderGlyph({ avatar, boxClass, iconSize }: { avatar: string; boxClass: string; iconSize: number }) {
+  const [loadedSrc, setLoadedSrc] = useState<string | null>(null)
+  const showLogo = !!avatar && loadedSrc === avatar
+  return (
+    <>
+      {!showLogo && (
+        <span data-testid="rail-header-fallback" className={`${boxClass} flex items-center justify-center shrink-0 transition-all duration-300 group-hover:rotate-[-8deg]`} aria-hidden="true">
+          <PanelLeft size={iconSize} />
+        </span>
+      )}
+      {!!avatar && (
+        <img src={avatar} alt="" aria-hidden="true" onLoad={() => setLoadedSrc(avatar)} onError={() => setLoadedSrc(null)} className={`${boxClass} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg] ${showLogo ? '' : 'hidden'}`} />
+      )}
+    </>
+  )
+}
+
 function BadgeIndicator({ count, collapsed, label }: { count: number; collapsed: boolean; label: string }) {
   if (count <= 0) return null
   const ariaLabel = `${count} ${label}`
@@ -515,6 +576,69 @@ function ActivityIndicator({ count, collapsed, label }: { count: number; collaps
 }
 
 /**
+ * Accessible name for a rail run-state mark.
+ *
+ * A literal key per state rather than one interpolated from the state value:
+ * `dynamicKeys.test.ts` polices composed keys, and a literal also keeps the
+ * three strings findable by grep from the catalog side.
+ */
+function runStateLabel(state: AppRunState | undefined): string {
+  if (state === 'running') return i18nT('app.app_job_running')
+  if (state === 'error') return i18nT('app.app_job_failed')
+  if (state === 'success') return i18nT('app.app_job_succeeded')
+  return ''
+}
+
+/**
+ * Run-state mark for an installed app's rail row.
+ *
+ * Renders in BOTH rail modes, unlike `ActivityIndicator` above. That component
+ * withholds itself when collapsed because a second anonymous dot there competes
+ * with the unread badge without identifying a session; this mark is the opposite
+ * case on both counts -- it names the row's own app, and the collapsed rail is
+ * exactly where "is that job still going?" has to be answerable without opening
+ * the app, which is the whole point of having it.
+ *
+ * Placed in a corner the count badge does not use. `BadgeIndicator` takes
+ * `top-1 right-1` collapsed and the `right-2` pill expanded; `ActivityIndicator`
+ * takes `right-8` expanded, and exactly one surface in the registry carries an
+ * `activitySelector` to render it -- `chat` (Sessions), a Main-group HOST
+ * surface. A host surface row never carries an `appName`, so it never receives
+ * this mark, and an app row never receives an activity count. The two cannot
+ * meet on one icon regardless of what an app is called.
+ *
+ * Colour alone does not carry the state. `running` is a filled dot inside a wide
+ * halo ring, `error` is a plain solid fill, and `success` is HOLLOW -- a ring
+ * with no fill. The error/success pair is the one that matters: red and green
+ * are the classic confusion, and a static red dot beside a static green one
+ * differing only in hue reads a failing job as a fresh success, silently, every
+ * time. The fill carries that distinction so hue does not have to, and `title`
+ * plus the accessible name state it in words for a sighted user and a screen
+ * reader.
+ *
+ * Nothing animates. An earlier revision pulsed `running` to mirror the Schedule
+ * page's badge, but this mark lives in persistent chrome on every page, so a
+ * long job would pull peripheral attention for its whole duration -- a cost the
+ * Schedule page does not pay, because the user goes there to watch. The halo
+ * ring distinguishes `running` without motion.
+ */
+function RunStateIndicator({ state, collapsed, label }: { state: AppRunState | undefined; collapsed: boolean; label: string }) {
+  if (!state) return null
+  const shape = state === 'running'
+    ? 'bg-accent ring-2 ring-accent/30'
+    : state === 'error'
+      ? 'bg-danger'
+      : 'bg-transparent ring-1 ring-ok'
+  const position = collapsed ? 'bottom-1 right-1' : 'right-8 top-1/2 -translate-y-1/2'
+  return <span
+    className={`absolute ${position} w-2 h-2 rounded-full z-10 ${shape}`}
+    role="status"
+    aria-label={label}
+    title={label}
+  />
+}
+
+/**
  * Badge slot for a nav item. Resolves the count from the surface registry
  * (built-in surfaces) and falls back to the `mc:app:badge`-driven `appBadges`
  * map (dynamic apps + bridges from non-Redux sources like global approvals)
@@ -522,7 +646,7 @@ function ActivityIndicator({ count, collapsed, label }: { count: number; collaps
  * prior two-pipeline behavior without leaving per-id branches in the
  * renderer.
  */
-function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: boolean; appBadges: Record<string, number> }) {
+function NavBadge({ navId, collapsed, appBadges, runState }: { navId: string; collapsed: boolean; appBadges: Record<string, number>; runState?: AppRunState }) {
   const surface = getBuiltinSurface(navId)
   // selectSurfaceBadgeCount caches per-navId so this stays referentially
   // stable across renders inside a `.map()`.
@@ -541,6 +665,7 @@ function NavBadge({ navId, collapsed, appBadges }: { navId: string; collapsed: b
   return (
     <>
       <ActivityIndicator count={activityCount} collapsed={collapsed} label={activityLabel} />
+      <RunStateIndicator state={runState} collapsed={collapsed} label={runStateLabel(runState)} />
       <BadgeIndicator count={builtinCount} collapsed={collapsed} label={builtinLabel} />
       <BadgeIndicator count={dynamicCount} collapsed={collapsed} label={builtinLabel} />
     </>
@@ -679,10 +804,14 @@ function NavItem({ path, label, icon, active, collapsed, badge, onClickOverride,
       // it when collapsed (icon-only, no text).
       role="button"
       tabIndex={0}
-      whileHover={collapsed ? undefined : { scale: 1.02 }}
+      // Hover is a HOVER: the row paints (`hover:bg-bg-hover` / `hover:text-text`
+      // below) and does not move. A scale on hover made every rail row grow a
+      // couple of pixels under the cursor, nudging its neighbours and re-reading
+      // as a layout change rather than as "you are pointing at this". Press still
+      // scales — that one is feedback for an action the user actually took.
       whileTap={{ scale: 0.97 }}
       transition={{ duration: 0.15 }}
-      className={`nav-item group/nav relative flex items-center min-w-0 rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle' : 'text-muted hover:text-text hover:bg-bg-hover'}`}
+      className={`nav-item group/nav relative flex items-center min-w-0 rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 ${collapsed ? '' : 'overflow-hidden'} ${active ? 'nav-active text-text-strong bg-accent-subtle hover:brightness-110' : 'text-muted hover:text-text hover:bg-bg-hover/60'}`}
       onClick={activate}
       onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate() } }}
       onMouseEnter={showTip}
@@ -812,7 +941,7 @@ function NavToggle({ collapsed, expanded, hiddenCount, onClick }: {
   const titleText = showsCollapse ? i18nT('app.show_fewer_apps') : i18nT('app.show_more_apps', { count: hiddenCount })
   return (
     <button ref={rowRef}
-      className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none w-full"
+      className="group/nav relative flex items-center rounded-md cursor-pointer text-sm font-medium whitespace-nowrap gap-2.5 py-2 pl-3 pr-3 transition-colors duration-200 text-muted hover:text-text hover:bg-bg-hover/60 bg-transparent border-none w-full"
       // Dismiss the hover label on activation, without the fade-out. Unlike a
       // NavItem (which stays put when clicked, so the pointer is still
       // legitimately over it), activating this toggle re-flows the Apps list and
@@ -1209,6 +1338,14 @@ function NotificationsBellButton() {
   )
 }
 
+/** Deadline on each look at `GET /api/terminal/sessions` during hydrate. The
+ *  restored terminal tabs stay gated until both looks have settled, so a probe
+ *  that never answers must be made to answer: past this bound it reads as a
+ *  failed probe, which keeps every tab. Well above the route's normal
+ *  round-trip (it reads an in-memory registry) and far below any wait a user
+ *  would sit through for an empty panel. */
+const TERMINAL_PROBE_TIMEOUT_MS = 10_000
+
 export default function App() {
   const location = useLocation()
   const isEmbed = location.pathname.startsWith('/embed/')
@@ -1242,24 +1379,36 @@ export default function App() {
   // Can the GATEWAY replace its own code? False on a wheel install and on a
   // desktop bundle, where `POST /api/update` answers 400/409.
   const canApplyUpdate = useAppSelector(s => s.dashboard.status?.update_can_apply)
+  const canArmUpdate = useAppSelector(s => s.dashboard.status?.update_can_arm)
   const updateCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
+  const updateTargetVersion = useAppSelector(
+    s => s.dashboard.status?.update_latest_version_display
+      || s.dashboard.status?.update_latest_version
+      || '',
+  )
   // Availability and capability are separate facts; `updateAffordance` is the one
   // place that combines them, so the modal and the nav badge cannot disagree.
   const affordance = updateAffordance({
     updateAvailable: useAppSelector(s => s.dashboard.status?.update_available),
     canApply: canApplyUpdate,
+    canArm: canArmUpdate,
     command: updateCommand,
   })
   const version = useAppSelector(s => s.dashboard.status?.version) || '—'
   // Track whether the session-expired auth banner is currently injected by
   // api/client.ts. When auth is the real reason the gateway is unreachable,
-  // the red top-banner already tells the user what to do (paste a fresh
-  // `kirocrew token` URL) -- showing the loud pulsing "Offline" pill on top
-  // of that just stacks two banners arguing about the same root cause. So
-  // when authRequired is true, we suppress the offline pill in the top bar;
-  // auth banner is the single canonical signal. `isAuthBannerShown()` seeds
-  // initial state in case the banner was injected before App mounted (e.g.
-  // a 403 fired during the very first /api/status before React hydrated).
+  // the red top-banner tells the user what to do (paste a fresh
+  // `kirocrew token` URL) and the capsule reddens quietly underneath it --
+  // for a sighted user the tint does not argue with the banner. But the
+  // banner is a plain <div> with no role="alert"/aria-live, so it is never
+  // announced; the capsule's accessible name and role="status" region are the
+  // only screen-reader carriers of the offline cause. So when authRequired is
+  // true the capsule announces the auth-specific wording (session expired, see
+  // banner) instead of the generic "Gateway offline", which would point a
+  // screen-reader user at reconnection when pasting a token is the fix.
+  // `isAuthBannerShown()` seeds initial state in case the banner was injected
+  // before App mounted (e.g. a 403 fired during the very first /api/status
+  // before React hydrated).
   const [authRequired, setAuthRequired] = useState<boolean>(isAuthBannerShown)
   useEffect(() => {
     const onRequired = () => setAuthRequired(true)
@@ -1288,10 +1437,15 @@ export default function App() {
     refetchInterval: 30_000,
   })
   const approvalCount = pendingApprovals.filter((a: { id?: string }) => a.id?.startsWith('task-gate-')).length
-  const { data: terminalConfig } = useQuery({
+  const { data: terminalConfig, isError: terminalProbeFailed } = useQuery({
     queryKey: ['terminal-enabled'],
-    queryFn: async () => {
-      const r = await fetch('/api/terminal/sessions')
+    // Bounded because the restored terminal tabs below stay gated until this
+    // query settles one way or the other: a request that hangs would otherwise
+    // hold a blank panel open for as long as the socket did. Same bound as the
+    // confirm look further down.
+    queryFn: async ({ signal }) => {
+      const r = await withDeadline(TERMINAL_PROBE_TIMEOUT_MS, signal, s =>
+        fetch('/api/terminal/sessions', { signal: s }))
       // Default-on: the terminal is enabled unless the server explicitly says
       // otherwise. A transient/auth-timing failure of this probe must NOT hide
       // an enabled terminal by falling back to {enabled:false}, which with
@@ -1306,6 +1460,31 @@ export default function App() {
   // so there is no hidden-until-fetch-resolves flash.
   const terminalEnabled = terminalConfig?.enabled !== false
   useEffect(() => { setTerminalEnabledFlag(terminalEnabled) }, [terminalEnabled])
+  // The same answer weighs the terminal tabs restored from storage (#10977): a
+  // tab whose session the list omits, or reports dead, is a suspect. Absent is
+  // not yet gone — the route skips a session another window is still opening —
+  // so suspects are confirmed by one uncached re-probe after the same opening
+  // grace the run-in-terminal deadline uses, and only the ones still missing
+  // are dropped, before any view reconnects to them. A probe that never answers
+  // must still settle — the hosts draw no terminal until it does — so a failure
+  // in either look, including a request that runs past its deadline, hands
+  // over null, which keeps every tab. Both calls are once-per-load no-ops after
+  // that, so the query's later refetches change nothing.
+  useEffect(() => {
+    if (terminalConfig === undefined && !terminalProbeFailed) return
+    const suspects = reconcileRestoredTabs(terminalProbeFailed ? null : terminalConfig)
+    if (suspects.length === 0) return
+    void (async () => {
+      await new Promise(resolve => setTimeout(resolve, RUN_IN_TERMINAL_OPENING_GRACE_MS))
+      let second: unknown = null
+      try {
+        const r = await withDeadline(TERMINAL_PROBE_TIMEOUT_MS, undefined, s =>
+          fetch('/api/terminal/sessions', { signal: s }))
+        if (r.ok) second = await r.json()
+      } catch { /* null: the confirm look could not rule, so every suspect stays */ }
+      confirmRestoredTabs(second)
+    })()
+  }, [terminalConfig, terminalProbeFailed])
   // True while the terminal panel lives in its own popped-out window: the
   // docked panel is suppressed here and the sidebar toggle focuses that
   // window instead of opening an (empty-handed) panel.
@@ -1365,7 +1544,7 @@ export default function App() {
     return setArtifactNavIntentHandler((intent) =>
       applyNavIntentInMain(intent, {
         navigate,
-        switchSlot: (slotKey) => { dispatch(switchSlot(slotKey)) },
+        switchSlot: (slotKey) => { dispatch(switchSlot({ key: slotKey, announceOnMissing: true })) },
       }),
     )
   }, [isPopout, isEmbed, navigate, dispatch])
@@ -2044,6 +2223,14 @@ export default function App() {
               label: target.label,
               group: 'Apps',
               icon,
+              // The app's own name, carried rather than re-derived from `id`.
+              // `id` is `app-<name>` only for AppHost-routed apps and the BARE
+              // name for a native builtin, so parsing it back cannot tell a
+              // builtin app's row from a host surface's row -- and a helper that
+              // guesses would have to choose between missing every builtin app
+              // and letting an app named `schedule` claim host chrome. Passing
+              // the name the target already resolved avoids that choice.
+              appName: target.name,
             }]
           })
         setAppNavItems(items)
@@ -2190,6 +2377,46 @@ export default function App() {
     () => mergeAppBadges(appBadges, appNotificationBadges(notificationItems)),
     [appBadges, notificationItems],
   )
+
+  // Rail RUN STATE for installed apps, derived from the app's own cron jobs.
+  // Separate from the badge above and deliberately not merged into it: the badge
+  // is a count meaning "something is waiting for you", while this is the state of
+  // scheduled work and is addressed to nobody -- see `appRunState`.
+  //
+  // Reads the SHARED ['cron-jobs'] query rather than adding a poll. That key is
+  // invalidated on every server `refresh` frame (`useWebSocket`), which is where
+  // its freshness comes from, and several surfaces already observe it, so the
+  // rail costs no extra request. `enabled` is not gated on having installed apps:
+  // the query is shared, so gating it here would only change WHICH observer
+  // happens to fetch first.
+  const { data: cronJobsForRail } = useQuery({
+    ...cronJobsQuery,
+    refetchOnWindowFocus: false,
+  })
+  // The derivation is a pure function of the job list AND an instant, so it needs
+  // a clock of its own: without one a `success` mark stays on screen past its
+  // window whenever no refresh follows, and the window would be a claim the code
+  // does not keep. The clock is state rather than a `Date.now()` read inside the
+  // memo so it is a real dependency, and it advances on exactly two occasions --
+  // the job list changed, or the earliest showing `success` just expired. That is
+  // why there is no ticking interval: a per-second clock would re-render the rail
+  // continuously to show the same thing in every second but one.
+  const [runStateClockMs, setRunStateClockMs] = useState(() => Date.now())
+  const railAppRunStates = useMemo(
+    () => appRunStates(cronJobsForRail ?? [], runStateClockMs),
+    [cronJobsForRail, runStateClockMs],
+  )
+  // Fresh data is judged against now, not against the previous tick.
+  useEffect(() => { setRunStateClockMs(Date.now()) }, [cronJobsForRail])
+  useEffect(() => {
+    const due = nextSuccessExpiryMs(cronJobsForRail ?? [], runStateClockMs)
+    // Null means nothing is showing `success`, so the common case arms no timer.
+    // Re-arming on each clock change walks a batch of successes in expiry order
+    // and terminates when the last one is gone, rather than looping.
+    if (due === null) return
+    const timer = setTimeout(() => setRunStateClockMs(Date.now()), due)
+    return () => clearTimeout(timer)
+  }, [cronJobsForRail, runStateClockMs])
 
   const [updating, setUpdating] = useState(false)
   const [showUpdateModal, setShowUpdateModal] = useState(false)
@@ -2447,7 +2674,7 @@ export default function App() {
   // backend cache has not warmed yet" (null) apart from "the request failed"
   // (undefined) — both are falsy. Without it a failing endpoint renders as a
   // spinner that never resolves, since the 30s refetch keeps retrying forever.
-  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | 'scrape-disabled' | null>({
+  const { data: kiroUsage, isError: kiroUsageFailed } = useQuery<KiroCreditUsage | 'none' | 'api-key' | 'scrape-disabled' | 'signin-required' | null>({
     queryKey: ['kiro-usage'],
     queryFn: () => api.sessionsUsage().then(d => {
       const u: KiroUsagePayload = d?.usage || {}
@@ -2522,9 +2749,13 @@ export default function App() {
       // warming cache). Scrape opt-in off with no API plan -> same treatment:
       // permanent until the user flips dashboard.usage_text_scrape_enabled, so
       // explain rather than hide (#7623 — hiding left no hint a knob exists).
+      // No readable Kiro credential -> also terminal, but a DIFFERENT remedy:
+      // sign in again, which is free, where flipping the scrape knob spends
+      // credits on a fetch that cannot authenticate (#11602).
       // Empty cache (Kiro warming) -> spinner.
       if (u.available === false) {
         if (u.reason === 'api_key_auth') return 'api-key' as const
+        if (u.reason === 'signin_required') return 'signin-required' as const
         if (u.reason === 'scrape_disabled') return 'scrape-disabled' as const
         return 'none' as const
       }
@@ -2691,7 +2922,7 @@ export default function App() {
           // NavIntent carries no query string, and ChatPage writes `?sid=` back
           // into the URL itself once the session is active.
           { path: '/chat', slotKey },
-          { navigate, switchSlot: (key) => { dispatch(switchSlot(key)) } },
+          { navigate, switchSlot: (key) => { dispatch(switchSlot({ key, announceOnMissing: true })) } },
         )
         return
       }
@@ -3094,7 +3325,7 @@ export default function App() {
   }
 
   const renderNavRow = (
-    n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode },
+    n: { path: string; id: string; label: string; labelKey?: string; icon: React.ReactNode; appName?: string },
   ) => (
     <NavItem
       navId={n.id}
@@ -3105,7 +3336,7 @@ export default function App() {
       collapsed={effectiveCollapsed}
       onClick={closeMobileNav}
       onClickOverride={isChat && (activePath === n.path || activePath.startsWith(n.path + '/')) ? () => window.dispatchEvent(new Event('toggle-pin-chat-sidebar')) : undefined}
-      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} />}
+      badge={<NavBadge navId={n.id} collapsed={effectiveCollapsed} appBadges={isAppNavId(n.id) ? railAppBadges : appBadges} runState={n.appName ? railAppRunStates[n.appName] : undefined} />}
     />
   )
 
@@ -3300,6 +3531,13 @@ export default function App() {
               query responds to -- instead of eating the centred search's. */}
           {!isMobile && isWinElectron && <WindowsTitlebarMenu />}
 
+          {/* Route-history Back/Forward (#8258). Desktop layout only: on mobile
+              the platform owns Back (left-edge swipe), and the drill-in surfaces
+              navigate by component state that pushes nothing, so arrows there
+              would walk an unrelated stack. Order: after the Windows app menu,
+              before the instance selector — the leftmost NAVIGATION control,
+              matching where every browser puts it. */}
+          {!isMobile && <NavHistoryArrows />}
           {isMobile && (
             <button className="group p-2 rounded-md bg-transparent border-none cursor-pointer text-muted hover:text-text shrink-0" onClick={toggleNav} aria-label={i18nT('app.open_menu')}>
               {/* The product logo, not a generic menu glyph. A narrow layout has exactly
@@ -3469,6 +3707,37 @@ export default function App() {
               this fork's usage pill is Kiro-credits-only.) */}
           {(() => {
             const offline = !connected
+            // The accessible name and the role="status" live region are the
+            // ONLY screen-reader carriers of the offline cause: the
+            // session-expired banner api/client.ts injects is a plain <div>
+            // with no role="alert"/aria-live, so it is never announced. When
+            // auth is the real cause they must therefore say so -- announcing
+            // the generic "Gateway offline" points a screen-reader user at
+            // reconnection when pasting a token is the fix. This mirrors the
+            // branch the button `title` already uses (minus the collapse-toggle
+            // suffix, which is interaction text, not a status cause).
+            // Auth takes precedence over transport for the ANNOUNCED cause:
+            // `authRequired` (a 403 auth flag) and `connected` (Redux transport
+            // state) are independently sourced, so the session can expire while
+            // the socket is still up. In that state a transport-first ternary
+            // announces "Gateway connected" -- a reassuring lie -- and the
+            // session-expired banner api/client.ts injects is a plain <div>
+            // with no role="alert"/aria-live, so nothing else corrects it. The
+            // transport being up does not help a user whose session is dead, so
+            // the auth wording wins whenever auth is the real blocker.
+            const gatewayStatusMsg = authRequired
+              ? i18nT('app.gateway_offline_session_expired_see_banner_above')
+              : connected
+                ? i18nT('app.gateway_connected')
+                : i18nT('app.gateway_offline_reconnecting')
+            // The connection dot doubles as the capsule collapse toggle, so its
+            // accessible name must name that action -- not just the gateway
+            // state. title and aria-label share this composed value; the
+            // role="status" live region stays pure gatewayStatusMsg (a status
+            // region announces the connection cause, not the button's toggle
+            // affordance, which would speak "click to collapse" on every
+            // reconnect).
+            const capsuleActionMsg = `${gatewayStatusMsg} · ${capsuleCollapsed ? i18nT('app.click_to_expand_readouts') : i18nT('app.click_to_collapse_readouts')}`
             // whitespace-nowrap is the ladder's backstop for the BUILT-IN
             // segments that share this class string: if the group is ever
             // narrower than its contents (a locale wider than the measured
@@ -3487,15 +3756,15 @@ export default function App() {
                 key="conn"
                 className="flex items-center justify-center p-1.5 -m-1.5 rounded-full bg-transparent border-none cursor-pointer shrink-0"
                 onClick={() => { pulseCapsuleLayout(); setCapsuleCollapsed(c => !c) }}
-                title={`${connected ? i18nT('app.gateway_connected') : authRequired ? i18nT('app.gateway_offline_session_expired_see_banner_above') : i18nT('app.gateway_offline_reconnecting')} · ${capsuleCollapsed ? i18nT('app.click_to_expand_readouts') : i18nT('app.click_to_collapse_readouts')}`}
-                aria-label={connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}
+                title={capsuleActionMsg}
+                aria-label={capsuleActionMsg}
                 aria-expanded={!capsuleCollapsed}
               >
                 <span aria-hidden="true" className={`w-1.5 h-1.5 rounded-full transition-colors duration-300 ${offline ? 'bg-danger animate-pulse motion-reduce:animate-none' : 'bg-ok shadow-[0_0_8px_rgba(34,197,94,.4)]'}`} />
                 {/* Live-region announcement lives in its own hidden span:
                     role="status" on the button itself would override its
                     implicit button role for screen readers. */}
-                <span role="status" className="sr-only">{connected ? i18nT('app.gateway_connected') : i18nT('app.gateway_offline')}</span>
+                <span role="status" className="sr-only">{gatewayStatusMsg}</span>
               </button>
             )
             // Resource pressure indicator — always visible when tight/critical
@@ -3660,6 +3929,13 @@ export default function App() {
                 // the knob — hiding the segment here left users of v0.1.3-era
                 // dashboards with a pill that silently vanished (#7623).
                 segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_scrape_disabled')} aria-label={i18nT('app.kiro_credit_usage_scrape_disabled')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
+              } else if (kiroUsageState === 'signin-required') {
+                // No live Kiro credential could be read (or it was rejected), so
+                // the free API never got an answer about this account. Terminal
+                // like 'scrape-disabled', but the label must name the FREE remedy,
+                // signing in again, because the scrape-disabled copy sent these
+                // users to a billed knob that cannot authenticate either (#11602).
+                segments.push(<button key="usage" className={`${seg} text-muted opacity-60`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_signin_required')} aria-label={i18nT('app.kiro_credit_usage_signin_required')}><Coins size={12} /> <span className="font-mono text-[11px] tabular-nums">—</span></button>)
               } else if (!kiroUsageState) {
                 segments.push(<button key="usage" className={`${seg} text-muted`} onClick={() => setKiroUsageOpen(true)} title={i18nT('app.kiro_credit_usage_checking')} aria-label={i18nT('app.kiro_credit_usage_checking_2')}><Coins size={12} /> {!isMobile && <Loader2 size={11} className="animate-spin" />}</button>)
               } else {
@@ -3808,12 +4084,15 @@ export default function App() {
                 <button className="w-full py-2 rounded-lg text-[13px] font-medium cursor-pointer bg-accent text-accent-fg border-none hover:opacity-90 transition-opacity" onClick={handleUpdate}>
                   {i18nT('app.update_now')}
                 </button>
+              ) : affordance === 'arm' ? (
+                <InAppUpdateFlow
+                  version={updateTargetVersion}
+                  manualCommand=""
+                  onHandoff={() => setShowChangelog(false)}
+                />
               ) : affordance === 'command' ? (
-                // This install cannot replace its own code from here: `POST
-                // /api/update` is git fetch + reset, so a wheel install answers
-                // 400/409 and a desktop bundle is owned by its own updater.
-                // Settings > About carries the same command with an explanation
-                // and a copy button.
+                // A non-managed source install cannot use host-local approval.
+                // Its installer remains a manual recovery command.
                 <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
                   data-testid="modal-update-command">
                   {updateCommand}
@@ -3997,7 +4276,7 @@ export default function App() {
               aria-expanded={!effectiveCollapsed}
             >
               <span className="flex items-center gap-2.5 min-w-0">
-                <img src={avatar} alt="" aria-hidden="true" className={`${branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} rounded-md shrink-0 object-contain transition-all duration-300 group-hover:rotate-[-8deg]`} />
+                <RailHeaderGlyph avatar={avatar} boxClass={branding?.logoClass ?? (effectiveCollapsed ? 'w-10 h-10' : 'w-7 h-7')} iconSize={effectiveCollapsed ? 24 : 18} />
                 <AnimatePresence initial={false}>
                   {!effectiveCollapsed && (
                     <motion.span

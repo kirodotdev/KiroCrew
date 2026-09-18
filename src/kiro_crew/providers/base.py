@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
-from typing import Literal, Protocol, runtime_checkable
+from functools import cached_property
+from typing import TYPE_CHECKING, Literal, Protocol, runtime_checkable
 
 # Event kinds — re-exported from the single source of truth
 from kiro_crew.acp.types import (  # noqa: F401
@@ -29,6 +30,13 @@ from kiro_crew.acp.types import (  # noqa: F401
 )
 from kiro_crew.acp.types import AcpEvent as LLMEvent  # noqa: F401
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
+from kiro_crew.essential_delivery import EssentialDelivery
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    # Type-only: this module's runtime imports are deliberately just acp.types
+    # and constants, and recovery.ladder pulls in mcp_gateway + metrics.
+    from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
+    from kiro_crew.recovery.ladder import InfraError
 
 CancelOutcome = Literal["acked", "timeout", "no_turn", "error"]
 
@@ -77,6 +85,31 @@ class SessionMcpReport(Protocol):
 class LLMProvider(ABC):
     """Abstract LLM backend."""
 
+    @cached_property
+    def essential_delivery(self) -> EssentialDelivery:
+        """Private prompt receipts belong to this provider, never the builder."""
+        return EssentialDelivery()
+
+    @property
+    def context_incarnation(self) -> object:
+        """Identity of the native conversation retaining injected instructions."""
+        return (id(self), self.session_id)
+
+    @property
+    def context_provider_type(self) -> str:
+        """Actual provider label used by context assembly, not global config."""
+        return "acp"
+
+    @property
+    def native_steering(self) -> bool:
+        """Whether the serving harness owns conditional steering selection."""
+        return False
+
+    @property
+    def native_context_documents(self) -> dict[str, str]:
+        """Exact documents supplied at native startup, empty without evidence."""
+        return {}
+
     @abstractmethod
     async def start(self) -> None:
         """Initialize the provider (spawn process, create client, etc.)."""
@@ -120,6 +153,15 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def defer_replay_sid_promotion(self) -> bool:
+        """Whether replay settlement must precede publishing a fresh native SID.
+
+        The safe default is False: adapters added later publish their own session
+        identity normally unless they explicitly adopt the deferred-SID contract.
+        """
+        return False
+
+    @property
     def is_claude_backend(self) -> bool:
         """True when this provider drives claude-agent-acp."""
         return False
@@ -159,6 +201,21 @@ class LLMProvider(ABC):
         a compaction that cannot succeed.
         """
         return False
+
+    @property
+    def last_infra_error(self) -> InfraError | None:
+        """The L1 verdict on the LAST tool result, or None for "no verdict".
+
+        Declared here so the session layer never has to probe an adapter for the
+        attribute: the default None is the SAFE value, the same rule as
+        ``last_compaction_transient``. A provider that cannot classify tool
+        results gives up the turn exactly as it did before L1 existed.
+
+        Read-only on purpose — the classifying layer (``AcpSessionHandle``) is
+        the sole writer, so no caller can fabricate a verdict to force a tool
+        re-issue.
+        """
+        return None
 
     def context_window_tokens(self) -> int:
         """Return the real served context window in tokens (0 if unknown).
@@ -242,6 +299,16 @@ class LLMProvider(ABC):
         equality across spawns must be impossible, which is why the ACP session
         id (reused by resume on a new process) can never serve here.
         """
+        return ""
+
+    @property
+    def member_capabilities_supported(self) -> bool:
+        """Whether a dedicated startup can load a complete member agent spec."""
+        return False
+
+    @property
+    def loaded_capability_template(self) -> str:
+        """Confirmed active full-spec template; empty means no loading evidence."""
         return ""
 
     @property
@@ -365,14 +432,29 @@ class LLMProvider(ABC):
         return False
 
     @property
+    def tool_search_settings(self) -> "ToolSearchSettings | None":
+        """The operator's MCP Tool Search choice this provider spawned with, or
+        ``None`` when it carries none.
+
+        Read by whoever builds a runtime on this provider's behalf (a companion
+        runtime for a sub-agent) so that runtime is handed the SAME setting the
+        parent's handshake sent, rather than being left to the host's default.
+        Declared here with a safe default rather than probed off the instance
+        (harness-parity H14): a provider that never threaded the setting answers
+        ``None`` and the runtime it seeds stays exactly as before. The ACP
+        provider answers with its resolved ``ToolSearchSettings``.
+        """
+        return None
+
+    @property
     def manual_compact_unsupported_backend(self) -> str | None:
         """Backend id when this provider cannot serve a manual ``/compact``,
         ``None`` when the command is fine to dispatch.
 
         The manual entry points gate on this so an unsupported backend gets an
         immediate, user-visible refusal instead of a prompt whose
-        compaction-status wait strands until ``COMPACT_WAIT_TIMEOUT_SECS``
-        (#7800). Default ``None`` — a provider that has not positively named an
+        compaction-status wait strands until ``COMPACT_WAIT_TIMEOUT_SECS``.
+        Default ``None`` — a provider that has not positively named an
         unsupported backend passes through, because it handles ``/compact`` on
         its own terms. Declared here with a safe default rather than probed off
         the instance (harness-parity H14); the ACP implementations answer from

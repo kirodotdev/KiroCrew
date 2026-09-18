@@ -24,9 +24,9 @@ that marker away, so the runner's check is now structural
 coupling guard below fails if a future reformat re-breaks it.
 
 Both handle sites also pass the session's advertised model ids, so the
-entitlement discriminator added by #1550 (``_model_is_unentitled``) actually
-fires on this path. #1550 wired only the ``AcpClient`` sites, and this handle
-is the path every dashboard chat takes.
+entitlement discriminator (``_model_is_unentitled``) fires on this path — the
+path every dashboard chat takes, not only the ``AcpClient`` sites where the
+discriminator is also wired.
 """
 
 import asyncio
@@ -57,8 +57,8 @@ _PROMPT_BUSY = {
 }
 
 # kiro-cli >= 2.16 rewording of the capacity rejection, which names NO model.
-# The exact frame from a live cron failure (gateway.log 2026-08-12 02:57), with
-# the request id value swapped. Before its own pattern existed this fell
+# A representative capacity-rejection frame, with the request id value
+# swapped. Before its own pattern existed this fell
 # through to the unknown-shape branch and classified TERMINAL, so unattended
 # callers failed fast on a momentary blip instead of retrying.
 _MODEL_TEMP_UNAVAILABLE = {
@@ -71,7 +71,7 @@ _MODEL_TEMP_UNAVAILABLE = {
     ),
 }
 
-# A structural "Improperly formed request" rejection (#6022). The backend
+# A structural "Improperly formed request" rejection. The backend
 # passes this string through verbatim; before FEAT-001 it fell through to the
 # unknown-shape branch (raw passthrough) with an incidental terminal verdict.
 _MALFORMED_REQUEST = {
@@ -160,7 +160,7 @@ class TestNoRawDictInUserFacingError:
         session -- so on every other surface it is an inert instruction. It was
         also unnecessary, because the handlers reset and re-queue on
         AcpPromptBusy on their own. Asserted as an absence, and paired with a
-        positive check that the recovery advice survived (#7213).
+        positive check that the recovery advice survived.
         """
         msg = str(await driver(_PROMPT_BUSY))
 
@@ -177,8 +177,8 @@ class TestNoRawDictInUserFacingError:
 class TestEntitlementReachesTheHandlePath:
     """The shared-runtime path must feed the entitlement discriminator too.
 
-    #1550 added ``_model_is_unentitled`` and wired it into the three
-    ``AcpClient`` raise sites. ``AcpSessionHandle`` is the path every dashboard
+    ``_model_is_unentitled`` is wired into the three ``AcpClient`` raise sites,
+    but ``AcpSessionHandle`` is the path every dashboard
     chat actually takes, so without passing its advertised ids the entitlement
     split stays inert exactly where users hit it: a free-tier rejection would
     still read as a capacity blip and still burn the retry ladder.
@@ -225,7 +225,7 @@ class TestNamelessCapacityWording:
     """kiro-cli >= 2.16's nameless capacity rejection must stay retryable.
 
     The rewording dropped the model name from "The model 'X' is not
-    available", so ``_RE_MODEL_UNAVAILABLE`` no longer matches and the error
+    available", so ``_RE_MODEL_UNAVAILABLE`` does not match and the error
     fell through to the unknown-shape branch: passthrough text (fine) with a
     TERMINAL verdict (not fine). A cron hit exactly this during a backend
     capacity blip — the run before and after both succeeded — and failed
@@ -324,8 +324,8 @@ class TestTransientMarkerCoupling:
     still fall back to substring matching against ``_TRANSIENT_MARKERS``, whose
     entries quote ``_format_acp_error``'s prose verbatim. Rewording a branch
     without updating that tuple makes a retryable failure look terminal — which
-    is exactly what #1550 did when it changed "on Bedrock" to "on the backend"
-    and left the marker behind.
+    is exactly the hazard when a reword changes "on Bedrock" to "on the backend"
+    and leaves the marker behind.
 
     Scope note: this pins the OUTCOME (formatted transients classify), not any
     single marker. The capacity branch is matched twice over — by
@@ -353,7 +353,7 @@ class TestTransientMarkerCoupling:
         """The terminal sibling branch must NOT match a retry marker.
 
         A marker that caught the unentitled text would resurrect the pointless
-        retry loop #1550 removed, via the string-fallback path.
+        retry loop the entitlement split removed, via the string-fallback path.
         """
         from kiro_crew.acp.client import _format_acp_error
         from kiro_crew.llm_helpers import is_transient_backend_error
@@ -448,6 +448,30 @@ class TestTransientMarkerCoupling:
         assert "set agent.model to 'auto'" not in _format_acp_error(unnamed, no_auto)
         assert "set agent.model to 'auto'" in _format_acp_error(unnamed, with_auto)
 
+    def test_auto_served_checks_agree_with_model_is_unusable(self):
+        """Both 'is ``auto`` served?' call sites route through the canonical
+        helper: feed mixed-case, whitespace-padded advertised lists and assert
+        each site's verdict is exactly the helper's, so a change to
+        advertised-list semantics lands once.
+        """
+        from kiro_crew.acp.client import (
+            DEFAULT_MODEL,
+            _auto_remedy,
+            _format_acp_error,
+            model_is_unusable,
+        )
+
+        for advertised in ([" Auto ", "claude-x"], ["CLAUDE-X"]):
+            served = not model_is_unusable(DEFAULT_MODEL, advertised)
+            # (a) _auto_remedy emits the "(2) set agent.model" step iff served.
+            remedy = _auto_remedy(advertised)
+            assert ("(2) set agent.model" in remedy) is served
+            # (b) an unentitled non-auto id picks the "set it to 'auto'"
+            # wording iff served ('claude-opus-4.8' is absent from both lists).
+            formatted = _format_acp_error(_MODEL_UNAVAILABLE, advertised)
+            assert "does not have access to model 'claude-opus-4.8'" in formatted
+            assert ("agent.model to 'auto' in ~/.kiro/crew/config.json to let" in formatted) is served
+
 
 class TestConnectionErrorClassification:
     """Connection failures are transient, while credential failures win precedence."""
@@ -503,7 +527,7 @@ class TestConnectionErrorClassification:
 
 class TestMalformedRequestReachesTheHandlePath:
     """The shared-runtime path must surface the structural-rejection guidance
-    (#6022) and carry a terminal verdict, mirroring TestNoRawDictInUserFacingError.
+    and carry a terminal verdict, mirroring TestNoRawDictInUserFacingError.
 
     "Improperly formed request" is a DETERMINISTIC structural rejection: the
     identical payload cannot succeed on retry, so both handle raise sites must
@@ -539,7 +563,7 @@ class TestMalformedRequestReachesTheHandlePath:
         (``/new`` on Telegram and Discord, a new tab on the dashboard), so the
         one actionable instruction a stuck user received was inert -- and on a
         session this broken the non-command is forwarded as a prompt and
-        re-fails with this same error (#7213).
+        re-fails with this same error.
 
         Asserted as an absence rather than by re-stating the sentence, so the
         test constrains the CLASS of mistake (a fabricated command) instead of
@@ -557,3 +581,51 @@ class TestMalformedRequestReachesTheHandlePath:
     async def test_malformed_request_verdict_is_terminal(self, driver):
         """A structurally-rejected payload must not be re-sent by the ladder."""
         assert (await driver(_MALFORMED_REQUEST)).transient is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_malformed_request_is_tagged_structural_terminal(self, driver):
+        """The exception carries the narrower structural fact, not just terminal.
+
+        ``transient is False`` is the retry-layer verdict; ``structural_terminal``
+        is the stronger fact that the payload's SHAPE was rejected, so a NEW
+        context cannot help either. A self-driving caller (the auto-nudge loop)
+        reads this to STOP re-firing the same context rather than merely decline
+        an in-turn retry -- the two verdicts are distinct because a spent usage
+        limit is also terminal yet a fresh context there CAN succeed.
+        """
+        assert (await driver(_MALFORMED_REQUEST)).structural_terminal is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_message_only_echo_is_not_tagged_structural(self, driver):
+        """A malformed phrase echoed only in the JSON-RPC ``message`` (with a
+        real transient fault in ``data``) must NOT be read as structural.
+
+        Scoping the pattern to ``data`` is what keeps an unrelated 5xx from being
+        stamped terminal-structural by an incidental echo in ``message`` -- the
+        same scope the transient classifier and the formatter use.
+        """
+        echo = {
+            "code": -32603,
+            "message": "Improperly formed request",
+            "data": "InternalServerError: the backend hiccupped",
+        }
+        exc = await driver(echo)
+        assert exc.structural_terminal is False
+        assert exc.transient is True
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("driver", [_raise_via_wait, _raise_via_dispatch])
+    async def test_other_terminal_errors_are_not_structural(self, driver):
+        """A spent usage limit is terminal but NOT structural: a fresh context
+        can succeed once the allowance resets, so it must not carry the tag that
+        stops a loop from ever re-firing."""
+        usage = {
+            "code": -32603,
+            "message": "Internal error",
+            "data": "You have reached your usage limit for this period.",
+        }
+        exc = await driver(usage)
+        assert exc.transient is False
+        assert exc.structural_terminal is False

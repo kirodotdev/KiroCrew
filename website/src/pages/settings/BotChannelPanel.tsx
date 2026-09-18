@@ -914,7 +914,7 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
         </Btn>
         {saved && (
           <span className="inline-flex items-center gap-1.5 text-[12px] text-ok">
-            <Check size={14} /> {tokenVerified ? i18nT('pages.settings.botChannelPanel.verified_with_channel_and_saved', { channel: spec.name }) : restartHint ? i18nT('pages.settings.botChannelPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.botChannelPanel.saved')}
+            <Check size={14} /> {tokenVerified ? (restartHint ? i18nT('pages.settings.botChannelPanel.verified_with_channel_and_saved', { channel: spec.name }) : i18nT('pages.settings.botChannelPanel.verified_and_saved', { channel: spec.name })) : restartHint ? i18nT('pages.settings.botChannelPanel.saved_restart_the_gateway_to_apply') : i18nT('pages.settings.botChannelPanel.saved')}
           </span>
         )}
         {saved && verifyWarning && (

@@ -159,3 +159,44 @@ describe('board view: folder-into-folder nest wiring', () => {
     expect(container.querySelector(`[data-col-folder-sortable="${FOLDER_B}"]`)).toBeTruthy()
   })
 })
+
+describe('nested subfolders are drawn in their stored order', () => {
+  /**
+   * The list-view nested render (`renderFolderBlock`) and the board-view one
+   * (`renderColumnFolder`) both drew `folders.filter(parent_id === folder.id)`
+   * in raw cache order, so a subfolder's stored `order` never reached the
+   * screen. That was invisible while nothing could set it deliberately (a drag
+   * only ever reordered ROOTS) and wrong the moment `chat_folder_move`'s
+   * `before`/`after` could — the store would say one sequence and the sidebar
+   * show another.
+   */
+  const PARENT = 'folder-pppp'
+  const EARLIER = 'folder-1111'
+  const LATER = 'folder-2222'
+
+  it('follows order, not the position the row holds in the cache', () => {
+    // Listed AGAINST order on purpose: the higher position comes first in the
+    // array, so array order and stored order disagree.
+    const { container } = renderSidebar([
+      { id: PARENT, name: 'Parent', order: 0 },
+      { id: LATER, name: 'Later', order: 9, parent_id: PARENT },
+      { id: EARLIER, name: 'Earlier', order: 1, parent_id: PARENT },
+    ])
+    const drawn = [...container.querySelectorAll('[data-folder-drop]')]
+      .map(el => el.getAttribute('data-folder-drop'))
+      .filter(id => id === EARLIER || id === LATER)
+    expect(drawn).toEqual([EARLIER, LATER])
+  })
+
+  it('breaks an order tie on name so the sequence cannot shuffle on refetch', () => {
+    const { container } = renderSidebar([
+      { id: PARENT, name: 'Parent', order: 0 },
+      { id: LATER, name: 'Zulu', order: 4, parent_id: PARENT },
+      { id: EARLIER, name: 'Alpha', order: 4, parent_id: PARENT },
+    ])
+    const drawn = [...container.querySelectorAll('[data-folder-drop]')]
+      .map(el => el.getAttribute('data-folder-drop'))
+      .filter(id => id === EARLIER || id === LATER)
+    expect(drawn).toEqual([EARLIER, LATER])
+  })
+})

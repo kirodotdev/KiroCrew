@@ -689,7 +689,7 @@ class TestAliasSlotsShareOneTranscript:
 class TestLegacyMetadataDeleteWon:
     """The delete-won guard must cover LEGACY transcripts (no ``created_at``).
 
-    Legacy metadata records no ``created_at``, which used to leave the slot's
+    Legacy metadata records no ``created_at``, which leaves the slot's
     observed identity EMPTY — the guard read that as "fresh slot, no evidence"
     and a save racing a permanent delete recreated the deleted transcript. The
     observation is now tracked as its own bit, so the missing-file witness
@@ -893,56 +893,21 @@ class TestSiblingFlushCannotStaleTheCommit:
         state.sessions.set_autocompact_pct.assert_not_called()
 
 
-class TestSlotlessDeletionClearsOverride:
-    """Permanently deleting ARCHIVED history must drop the session's override.
-
-    ``destroy()`` clears a live session's override, but the history-delete
-    helper only calls it when a live slot exists. Channel keys are
-    deterministic, so without a slotless sweep a recreated session silently
-    inherits the deleted conversation's threshold while the UI reports
-    "following global".
-    """
-
-    def test_drop_matching_clears_exact_and_folded_keys_only(self) -> None:
-        mgr = _manager()
-        mgr.set_autocompact_pct("dashboard_chat-9-123", 40.0)
-        mgr.set_autocompact_pct("channel:slack:C1:171", 55.0)
-        mgr.set_autocompact_pct("unrelated-key", 80.0)
-
-        def fold(k: str) -> str:
-            return k.replace(":", "_")
-
-        dropped = mgr.drop_autocompact_overrides_matching(
-            {"dashboard_chat-9-123"},  # exact spelling
-            {"channel_slack_C1_171"},  # folded spelling only
-            fold,
-        )
-        assert dropped == 2
-        assert _override_of(mgr, "dashboard_chat-9-123") is None
-        assert _override_of(mgr, "channel:slack:C1:171") is None
-        # A non-matching override must survive the sweep untouched.
-        assert _override_of(mgr, "unrelated-key") == 80.0
+class TestSlotlessDeletionPreservesOverride:
+    """History deletion preserves independently owned override state."""
 
     @pytest.mark.asyncio
-    async def test_slotless_history_delete_sweeps_the_override(self) -> None:
-        """The GPT round-18 scenario: no live slot, delete must still sweep."""
+    async def test_slotless_history_delete_preserves_the_override(self) -> None:
+        """A transcript delete never proves cross-process override ownership."""
         from kiro_crew.dashboard.handlers.sessions import _remove_slot_for_history_key
 
         key = "dashboard_chat-77-1788240000"
+        mgr = _manager()
+        mgr.set_autocompact_pct(key, 55.0)
         state = MagicMock(spec=DashboardState)
-        state._slots = {}  # closed tab: NO live slot for this history key
-        state.crew = None
-        state.remove_chat_pins_for_slots = AsyncMock()
-        state.sessions = MagicMock()
-        state.sessions.drop_autocompact_overrides_matching = MagicMock(return_value=1)
+        state._slots = {}
+        state.sessions = mgr
 
         await _remove_slot_for_history_key(state, key)
 
-        # destroy() is unreachable without a slot; the sweep is the only clear.
-        state.sessions.destroy.assert_not_called()
-        state.sessions.drop_autocompact_overrides_matching.assert_called_once()
-        exact_keys, folded_keys, _fold = (
-            state.sessions.drop_autocompact_overrides_matching.call_args.args
-        )
-        assert key in exact_keys, "the deleted history key must be in the sweep set"
-        assert folded_keys, "folded spellings must be swept for channel keys"
+        assert _override_of(mgr, key) == 55.0

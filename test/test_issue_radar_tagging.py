@@ -697,9 +697,9 @@ class TestUntaggedQueueRoute(unittest.IsolatedAsyncioTestCase):
             shutil.rmtree(tmp, ignore_errors=True)
 
     async def test_serves_label_counts_and_titles_over_the_open_set(self):
-        # Both used to be derived from the frontend's shared issue list, which
-        # follows the user's open/closed filter — so entering Tagging from a
-        # Closed filter reported closed counts as open ones.
+        # Counts and titles come over the open set, not the frontend's shared
+        # issue list, which follows the user's open/closed filter — deriving from
+        # it would report closed counts as open ones.
         with (
             mock.patch.object(store, "is_repo_connected", return_value=True),
             mock.patch.object(store, "read_issues_cache", return_value=self.ISSUES),
@@ -1912,8 +1912,9 @@ class TestFallbackRereadRepairsTheCache(unittest.IsolatedAsyncioTestCase):
     """A successful handler-level retry must patch the caches, not just answer.
 
     `_apply_label_change` returns None when every removal was a no-op AND its
-    in-lock re-read failed. The handler retries, and that retry used to only build
-    the response: the caller saw the label gone while the cache still held it, so
+    in-lock re-read failed. The handler retries, and that retry must patch the
+    caches, not only build the response: otherwise the caller sees the label gone
+    while the cache still holds it, so
     the next reload put it back — the exact bug a user reports as "the label
     came back by itself"."""
 
@@ -2002,3 +2003,35 @@ class TestQueueResponseBoundsAndCaps(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(str(routes._RECO_ISSUE_SAMPLE + 50), body["titles"])
         # Counts still cover the WHOLE open set — they are a different question.
         self.assertEqual(body["label_counts"]["bug"], len(issues))
+
+
+class TestNormalizeSettingsWorkspacePath(unittest.TestCase):
+    """`workspace_path` is a local, per-repo working-copy path the Investigate
+    action opens its chat session in. It is stored verbatim (only stripped) and
+    never validated against the filesystem: the gateway may run on a different
+    host, and a not-yet-checked-out path is a legitimate empty state, not an
+    error."""
+
+    def test_default_is_empty_string(self):
+        self.assertEqual(store.DEFAULT_REPO_SETTINGS["workspace_path"], "")
+
+    def test_a_string_is_stripped_and_kept(self):
+        out = store._normalize_settings({"workspace_path": "  /home/me/repo  "})
+        self.assertEqual(out["workspace_path"], "/home/me/repo")
+
+    def test_a_non_string_degrades_to_empty(self):
+        for junk in (123, True, ["/a"], {"p": "/a"}, None):
+            out = store._normalize_settings({"workspace_path": junk})
+            self.assertEqual(out["workspace_path"], "", f"junk={junk!r}")
+
+    def test_a_missing_field_defaults_to_empty(self):
+        self.assertEqual(store._normalize_settings({})["workspace_path"], "")
+        self.assertEqual(store._normalize_settings(None)["workspace_path"], "")
+
+    def test_it_does_not_disturb_the_other_fields(self):
+        out = store._normalize_settings(
+            {"workspace_path": "/x", "notify_on_new_issue": True, "revision": 4}
+        )
+        self.assertTrue(out["notify_on_new_issue"])
+        self.assertEqual(out["revision"], 4)
+        self.assertIn("triage_labels", out)

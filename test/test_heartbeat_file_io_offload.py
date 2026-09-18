@@ -13,7 +13,7 @@ Two sites are pinned.
 ``workspace_dir()`` is operator-configurable and routinely sits on a synced or
 network volume, so neither call is guaranteed to be a RAM-speed syscall. A stall
 here freezes the loop the liveness heartbeat is supposed to prove alive — the
-self-inflicted version of the watchdog hard-exit in issue #2960.
+self-inflicted version of the watchdog hard-exit.
 
 Asserted on the thread the IO ACTUALLY ran on, matching
 ``test_heartbeat_sel_prune_offload.py``: an inline call reports ``MainThread``

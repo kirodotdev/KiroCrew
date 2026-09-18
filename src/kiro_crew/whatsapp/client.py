@@ -207,6 +207,7 @@ class WhatsAppClient:
         self.on_qr: Callable[[list[str]], None] | None = None
         self._client: Any = None
         self._idle_task: asyncio.Task | None = None
+        self._handler_tasks: set[asyncio.Task[Any]] = set()
         self.connected_at: float | None = None
         #: latest rotating QR codes + monotonic stamp (Settings pairing UI).
         self.latest_qr: list[str] = []
@@ -362,12 +363,19 @@ class WhatsAppClient:
 
         @client.event(MessageEv)
         async def _on_message(_client: Any, event: Any) -> None:
-            if self.on_message is None:
-                return
+            task = asyncio.current_task()
+            if task is not None:
+                self._handler_tasks.add(task)
             try:
-                await self.on_message(event)
-            except Exception:  # noqa: BLE001 — one bad message must not kill inbound
-                logger.exception("whatsapp: inbound handler failed")
+                if self.on_message is None:
+                    return
+                try:
+                    await self.on_message(event)
+                except Exception:  # noqa: BLE001 — one bad message must not kill inbound
+                    logger.exception("whatsapp: inbound handler failed")
+            finally:
+                if task is not None:
+                    self._handler_tasks.discard(task)
 
         if not had_session:
             self._set_state(STATE_PAIRING, "waiting for first QR")

@@ -52,8 +52,7 @@ mistaken for a stronger one:
   agent writing the shim in that window still wins. Closing that needs the
   child's ``PATH`` to stop leading with agent-writable directories, which
   changes the execution environment of every command the agent runs and is a
-  separate change with its own compatibility surface (upstream issue #4438
-  names it).
+  separate change with its own compatibility surface.
 * It does not decide that a user-owned directory is untrustworthy. A program
   the user installed into ``~/.local/bin`` is theirs, and refusing it outright
   would leave the auto-approve tiers dead on the most common developer host --
@@ -138,7 +137,7 @@ _COMMAND_STARTERS = frozenset({"|", "||", "&&", ";", ";;", "&", "|&", "(", ")", 
 #: Redirection operators, EXACTLY. ``shlex`` groups a run of punctuation into one
 #: token, so a composite like ``;(`` or ``;>`` arrives whole -- and a membership
 #: test against these two sets is what makes such a token unrecognized instead of
-#: silently skipped. ``head x;(payload)`` used to yield only ``head``.
+#: silently skipped. Without it, ``head x;(payload)`` yields only ``head``.
 _REDIRECT_OPERATORS = frozenset(
     {"<", ">", ">>", "<<", "<<<", "<&", ">&", "<>", ">|", "&>", "&>>", ">>&"}
 )
@@ -478,10 +477,10 @@ def _program_names_line(command: str) -> list[str] | None:
 _DISPATCHERS = frozenset(
     {
         # Command SHELLS. `sh -c 'head file'` runs an arbitrary command string, so
-        # vouching for `/bin/sh` says nothing about what executes. Scoped out in
-        # round 9 and asked for in round 12: a grant naming a shell is a grant to
-        # run anything, which is a decision for the approval card, not for a name
-        # check. Interpreters that take CODE (`python3 -c`) are deliberately NOT
+        # vouching for `/bin/sh` says nothing about what executes: a grant naming
+        # a shell is a grant to run anything, which is a decision for the approval
+        # card, not for a name check. Interpreters that take CODE (`python3 -c`)
+        # are deliberately NOT
         # here -- the read-only tier already restricts them through its own
         # denied-programs list, and listing them would refuse `python3 --version`,
         # which that tier grants on purpose.
@@ -786,9 +785,9 @@ def _shebang_interpreter(real: str) -> str | None:
 
 
 #: Read size for the identity digest. The WHOLE file is digested -- this is only
-#: the chunk size. An earlier version capped the digest at 1 MiB and hashed a
-#: large file's head and tail, which left a middle-only rewrite of a big binary
-#: undetected when it also preserved the size and landed inside one ctime tick.
+#: the chunk size. Capping the digest and hashing only a large file's head and
+#: tail would leave a middle-only rewrite of a big binary undetected when it also
+#: preserved the size and landed inside one ctime tick.
 #: Refusing large files instead would have been worse: `node`, `gh` and `docker`
 #: are all above any sane cap, and they are exactly what people grant.
 _DIGEST_CHUNK = 1 << 20
@@ -1019,18 +1018,17 @@ def _program_refusal(
         # NOTHING ON THE SEARCH PATH ANSWERS TO THIS NAME, SO IT IS A SHELL
         # BUILTIN (or a typo), AND IT IS REFUSED UNLESS PROVABLY INERT.
         #
-        # This branch used to allow every unresolved name, reasoning that there
-        # was no shadowed program and so nothing to vouch for. That reasoning is
-        # wrong, and it generated a review finding per round for four rounds:
-        # `exec`, then `export`, then `set`, then `printf -v`, then `trap
-        # 'payload' DEBUG`. A builtin does not need to SHADOW a program to decide
+        # Allowing every unresolved name -- on the reasoning that there is no
+        # shadowed program and so nothing to vouch for -- is wrong, and it admits
+        # `exec`, `export`, `set`, `printf -v` and `trap 'payload' DEBUG` one at a
+        # time. A builtin does not need to SHADOW a program to decide
         # what runs -- it IS the mechanism, and `shutil.which` cannot see it at
         # all. Bash has around seventy builtins, so enumerating the dangerous
-        # ones was never going to converge; the ALLOWLIST below is the whole
+        # ones does not converge; the ALLOWLIST below is the whole
         # inversion, and it is short because very few builtins can neither run a
         # program nor change how a later name resolves.
         #
-        # The cost is that an unknown command word now prompts instead of being
+        # The cost is that an unknown command word prompts instead of being
         # waved through: a shell function or alias from the user's rc file, and a
         # typo (which would have failed anyway). That is the correct direction for
         # a check whose entire job is to say which file will run.

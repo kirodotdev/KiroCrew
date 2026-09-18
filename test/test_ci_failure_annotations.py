@@ -1,4 +1,4 @@
-"""A red pytest job must annotate the TESTS that failed (issue #7296).
+"""A red pytest job must annotate the TESTS that failed.
 
 Annotations are what a check run shows: the PR page renders them, a fork
 contributor who cannot re-run a job has nothing else, and a triage report copies
@@ -7,7 +7,7 @@ problem matcher ``actions/setup-python`` registers by default -- a two-line
 pattern (a traceback frame, then ``raise SomeError('msg')``) applied to the whole
 log, including the part where pytest prints its WARNINGS summary.
 
-MEASURED on the six Backend Tests jobs cited in #7296: that pattern matched a
+MEASURED on six Backend Tests jobs: that pattern matched a
 warning traceback every time and a pytest failure not once. All six reds carried
 only ``Event loop is closed`` at line 545 -- ``asyncio/base_events.py`` inside
 ``_check_closed``, reached from a ``PytestUnraisableExceptionWarning`` about a
@@ -18,7 +18,7 @@ flake on that evidence.
 
 So these tests pin the two halves of the answer: the rootdir conftest turns each
 failing report into an annotation that names the test, and every workflow job
-that runs pytest has the matcher that used to lie turned off.
+that runs pytest has the mismatching default matcher turned off.
 """
 
 from __future__ import annotations
@@ -199,7 +199,7 @@ class TestTheAnnotationSurvivesTheRunnersParser:
     def test_a_parametrized_id_with_a_comma_is_escaped_in_the_title(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A real id from the #7296 logs carried spaces, quotes and separators."""
+        """A real parametrized id carries spaces, quotes and separators."""
         nodeid = 'test/test_data_home_not_relocatable.py::test_alias[cd ~; mv "a,b" /tmp/x]'
         reporter = _emit({"failed": [_report(nodeid)]}, monkeypatch)
         # The command's own leading "::" is not a separator, so drop the prefix
@@ -314,7 +314,25 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
 
     @staticmethod
     def _runs_pytest(step: dict) -> bool:
-        return re.search(r"(?m)^\s*pytest\s", str(step.get("run", ""))) is not None
+        return (
+            re.search(r"(?m)^\s*(?:python(?:3)?\s+-m\s+)?pytest(?:\s|$)", str(step.get("run", "")))
+            is not None
+        )
+
+    @pytest.mark.parametrize(
+        ("command", "expected"),
+        [
+            ("pytest -q", True),
+            ("pytest", True),
+            ("python -m pytest -q", True),
+            ("  python3 -m pytest --collect-only", True),
+            ("echo pytest", False),
+            ("# python -m pytest -q", False),
+            ("python -m pytest_helper", False),
+        ],
+    )
+    def test_recognizes_direct_and_module_invocations(self, command, expected) -> None:
+        assert self._runs_pytest({"run": command}) is expected
 
     @classmethod
     def _pytest_jobs(cls) -> dict[str, list[dict]]:
@@ -333,14 +351,18 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
         assert set(self._pytest_jobs()) >= {
             "ci.yml:backend-test",
             "ci.yml:backend-test-windows",
-            "ci.yml:backend-test-macos",
+            "ci.yml:backend-test-windows-fail-closed",
             "ci.yml:backend-test-sandbox",
+            # The macOS suite moved out of ci.yml (the runner queue sat on the
+            # required check); macos-on-demand.yml calls this same job on the PR
+            # path, so the one entry covers both.
+            "platform-tests.yml:backend-test-macos",
             "release.yml:release-candidate-tests",
             "test-durations.yml:refresh",
         }, set(self._pytest_jobs())
 
     def test_every_pytest_job_removes_the_python_matcher_before_pytest_runs(self) -> None:
-        """Its pattern matches a traceback, and a warning can print one (#7296).
+        """Its pattern matches a traceback, and a warning can print one.
 
         Ordering matters and is asserted, not assumed: ``::remove-matcher`` takes
         effect for the rest of the job from the point it is echoed, so a
@@ -404,3 +426,53 @@ class TestTheMatcherThatLiedIsOffWhereverPytestRuns:
             "a second definition in test/conftest.py would shadow nothing but would "
             "annotate twice for `test/` and not at all for the in-package suites"
         )
+
+
+class TestDurationRefreshRequiresACompleteSession:
+    """A duration refresh may publish only when every collected item was reported."""
+
+    @staticmethod
+    def _measure_script() -> str:
+        document = yaml.safe_load((_WORKFLOWS / "test-durations.yml").read_text(encoding="utf-8"))
+        steps = document["jobs"]["refresh"]["steps"]
+        return next(step["run"] for step in steps if step.get("name") == "Measure test durations")
+
+    def test_the_duration_file_contains_only_this_sessions_reports(self) -> None:
+        script = self._measure_script()
+
+        assert re.search(
+            r"pytest[^\n]*--store-durations[^\n]*--clean-durations", script
+        ), "stale duration keys can hide tests that the xdist session never scheduled"
+
+    def test_collection_is_an_independent_serial_completion_marker(self) -> None:
+        script = self._measure_script()
+        collection_line = next(
+            line for line in script.splitlines() if "pytest --collect-only" in line
+        )
+
+        assert "-n" not in collection_line.split(), collection_line
+        # `-qq` prints only per-file counts when addopts lacks `--verbose`, so
+        # the tally regex below would fail closed on every run.
+        assert "-q" in collection_line.split(), collection_line
+        assert "-qq" not in collection_line.split(), collection_line
+        assert 'tally = re.search(r"(\\d+) tests? collected", collected_text)' in script
+        assert "collected_count = int(tally.group(1))" in script
+        assert "recorded_count = len(json.load(durations_file))" in script
+        assert "if collected_count != recorded_count:" in script
+
+    def test_exit_zero_and_one_both_reach_the_completion_marker(self) -> None:
+        script = self._measure_script()
+        accepted = script.index("0|1) ;;")
+        case_end = script.index("esac", accepted)
+        marker = script.index("if collected_count != recorded_count:")
+
+        assert accepted < case_end < marker
+        assert "exit" not in script[accepted:case_end].splitlines()[0]
+
+    def test_a_mismatch_reports_both_counts_and_refuses_publication(self) -> None:
+        script = self._measure_script()
+        mismatch = script[script.index("if collected_count != recorded_count:") :]
+
+        assert "collected {collected_count} test ids" in mismatch
+        assert "recorded {recorded_count} durations" in mismatch
+        assert "raise SystemExit(1)" in mismatch

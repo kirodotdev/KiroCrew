@@ -240,11 +240,51 @@ class TestOwnerLivenessSweeper:
 
     @pytest.mark.asyncio
     async def test_no_baseline_disables_the_check(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """An owner that EXISTS but will not report a start time is unknown, not gone.
+
+        Nothing to compare against, so the check stands down and the daemon
+        keeps serving. ``_pid_exists`` is True here on purpose: that is what
+        makes the unreadable start time inconclusive rather than a conclusion.
+        """
+        stop = asyncio.Event()
+        monkeypatch.setattr(gw, "_process_start_time", lambda pid: None)
+        monkeypatch.setattr(gw, "_pid_exists", lambda pid: True)
+        await asyncio.wait_for(gw._owner_liveness_sweeper(4242, 0.01, stop), timeout=5)
+        assert not stop.is_set()
+
+    @pytest.mark.asyncio
+    async def test_an_owner_already_gone_at_arm_time_stops_the_daemon(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The regression: no baseline AND no owner is gone, not unknown.
+
+        The listening socket is bound and advertised before this sweeper first
+        runs, so a contended host can lose the owner inside that gap. Standing
+        the check down there retires the only mechanism that would ever end
+        this daemon, so it outlives its owner indefinitely. A conclusive
+        ``pid_exists`` miss must take the same graceful drain path a later
+        conclusive miss takes.
+        """
         stop = asyncio.Event()
         monkeypatch.setattr(gw, "_process_start_time", lambda pid: None)
         monkeypatch.setattr(gw, "_pid_exists", lambda pid: False)
         await asyncio.wait_for(gw._owner_liveness_sweeper(4242, 0.01, stop), timeout=5)
-        assert not stop.is_set()
+        assert stop.is_set(), "a daemon whose owner is already gone must not serve on"
+
+    @pytest.mark.asyncio
+    async def test_arm_time_stop_does_not_wait_out_a_probe_interval(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The arm-time conclusion is reached before the first probe sleep.
+
+        A long interval must not delay it: the sweeper already knows the owner
+        is gone, so there is nothing to wait for.
+        """
+        stop = asyncio.Event()
+        monkeypatch.setattr(gw, "_process_start_time", lambda pid: None)
+        monkeypatch.setattr(gw, "_pid_exists", lambda pid: False)
+        await asyncio.wait_for(gw._owner_liveness_sweeper(4242, 3600.0, stop), timeout=5)
+        assert stop.is_set()
 
     def test_the_manager_names_itself_as_owner(self, tmp_path: Path) -> None:
         """The argv the manager builds carries this process's PID."""

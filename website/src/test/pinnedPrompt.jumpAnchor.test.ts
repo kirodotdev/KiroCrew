@@ -39,51 +39,37 @@ describe('jumpAnchorIdx', () => {
     expect(jumpAnchorIdx(items, 2)).toBe(2)
   })
 
-  // Machine turn openers (nudge, subagent — TURN_OPENER_ROLES) are prompts
-  // too: the walk consumes runs of them, anchoring at the head of the block
-  // so the row that explains the run is read first.
+  // Machine turn openers (nudge, subagent) are NOT prompts to the banner: they
+  // are never pinned, so a run of them is an ordinary non-prompt gap and the
+  // walk stops at the target. (Only user rows are pinnable — see isPrompt.)
 
-  it('walks a subagent fan-out run to its head (synthesis still pending)', () => {
-    // 4-agent fan-out, no synthesis row yet: user(0), assistant(1),
-    // subagent(2..5). Pinning the third completion must anchor at the FIRST
-    // completion — the fan-out reads as one block opened by subagent[0], with
-    // the assistant's dispatch directly above it taking the straddle.
+  it('does not walk a subagent fan-out run: the target is its own anchor', () => {
     const items = [user(), asst(), sub(), sub(), sub(), sub()]
-    expect(jumpAnchorIdx(items, 4)).toBe(2)
+    expect(jumpAnchorIdx(items, 4)).toBe(4)
   })
 
-  it('walks consecutive unanswered nudge cycles to the head of the run', () => {
-    // Three nudged turns that persisted no reply (errored or cancelled cycles
-    // — a normal cycle interposes its tool/assistant rows): user(0),
-    // assistant(1), nudge(2..4), assistant(5). Pinning the middle nudge
-    // anchors at the first nudge of the run; the assistant row above it is
-    // NOT consumed (it is not a turn opener).
+  it('does not walk consecutive nudge cycles', () => {
     const items = [user(), asst(), nudge(), nudge(), nudge(), asst()]
-    expect(jumpAnchorIdx(items, 3)).toBe(2)
+    expect(jumpAnchorIdx(items, 3)).toBe(3)
   })
 
-  it('a turn group between machine openers breaks the run', () => {
-    // The shape a healthy babysit loop produces: each nudge's cycle collapses
-    // into a turn group, so consecutive CYCLES never form one run. The walk
-    // must stop at the turn group and return the target unchanged — walking
-    // across cycles would send the jump many turns up the transcript.
+  it('a turn group between machine openers still returns the target unchanged', () => {
     const items = [user(), asst(), nudge(), turn(), nudge()]
     expect(jumpAnchorIdx(items, 4)).toBe(4)
   })
 
-  it('consumes a mixed run of different machine opener types', () => {
-    // nudge(2) then subagent(3,4) back to back: the walk does not stop at a
-    // type boundary — any TURN_OPENER_ROLES row extends the run, so pinning
-    // the last subagent anchors at the nudge that heads the block.
-    const items = [user(), asst(), nudge(), sub(), sub(), asst()]
-    expect(jumpAnchorIdx(items, 4)).toBe(2)
+  it('a machine row directly above a user prompt breaks the run', () => {
+    // nudge(1) then user(2): the nudge is not a prompt, so the user prompt is
+    // the head of its own run and the walk stops on it.
+    const items = [asst(), nudge(), user(), asst()]
+    expect(jumpAnchorIdx(items, 2)).toBe(2)
   })
 
-  it('extends a machine run into the user prompt that heads it', () => {
-    // A user prompt immediately followed by machine openers (dispatch with no
-    // assistant text row): the run is contiguous through the role change, so
-    // the anchor is the human prompt at its head.
+  it('a user prompt followed by machine openers is not extended through them', () => {
+    // user(1), sub(2), sub(3): jumping to the second completion does not walk
+    // up into the user prompt — the subagent rows are not prompts, so the walk
+    // never starts.
     const items = [asst(), user(), sub(), sub(), asst()]
-    expect(jumpAnchorIdx(items, 3)).toBe(1)
+    expect(jumpAnchorIdx(items, 3)).toBe(3)
   })
 })

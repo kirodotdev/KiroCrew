@@ -852,11 +852,16 @@ async def api_computer_use_invoke(request: web.Request) -> web.Response:
     shim) still get 4xx.
 
     The identity fields are not an authorization claim this handler trusts: the
-    ``session_key`` is resolved STRICTLY on the shim side (``KIROCREW_SESSION_KEY``,
-    else ``KIROCREW_HOST_PID`` + the HMAC sidecar), which refuses an unresolvable
-    key before it reaches the wire. Passing them in the body is how the gateway
-    learns which surface is calling — it is the AUDIT identity, not a permit; the
-    trust comes from the local-secret handshake plus that strict resolution.
+    ``session_key`` is resolved STRICTLY on the shim side (the gateway-injected
+    caller block, else ``KIROCREW_SESSION_KEY``, else ``KIROCREW_HOST_PID`` + the
+    HMAC sidecar). An unresolvable key is NOT refused there: the shim substitutes
+    its ``unresolved:<pid>[#<nonce>]`` placeholder in the body and sends no
+    ``X-Session-Key`` header at all, so the middleware's kernel peer check has no
+    claim to verify and the call proceeds unnamed (``mcp_computer._declares_identity``).
+    Passing them in the body is how the gateway learns which surface is calling; it
+    is the AUDIT identity and the ``SnapshotIndex`` namespace, not a permit. The
+    trust comes from the local-secret handshake plus the peer check on any key
+    that IS declared.
 
     ``approval_recorded`` is passed as ``False`` and does not change any outcome:
     nothing reads it. It is not minted from the request body, because a body field

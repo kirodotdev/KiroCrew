@@ -128,6 +128,22 @@ beforeEach(() => {
 })
 
 describe('ChatPage — Continue appears only on an interrupted turn', { timeout: 15_000 }, () => {
+  it('allows legacy retry after an old setup refusal without offering mandatory initialization', async () => {
+    await renderWith([
+      { role: 'user', content: 'remember this', cls: '' },
+      { role: 'error', content: 'memory_unavailable: Open Workspace · Memory and choose Create private memory.', cls: '', meta: {
+        code: 'memory_unavailable', recovery: { kind: 'initialize_member_memory', member: 'reviewer' },
+      } },
+    ])
+
+    expect(screen.getByTestId('composer-continue')).toBeVisible()
+    expect(screen.getByTestId('error-card-continue')).toBeVisible()
+    expect(screen.queryByRole('link', { name: 'Set up private memory' })).toBeNull()
+    expect(screen.getByTestId('error-card')).not.toHaveTextContent('memory_unavailable:')
+    fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'try after setup' } })
+    expect(screen.getByLabelText('Send')).not.toBeDisabled()
+  })
+
   it('shows the ordinary Send button after a clean completion, not Continue', async () => {
     // The assistant answered and handed the floor back: the common resting
     // state of every chat the user returns to.

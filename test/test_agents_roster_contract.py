@@ -1,11 +1,11 @@
 """``GET /api/agents`` ships an explicit allowlist, never the whole record.
 
-The endpoint used to build each row with ``{**dataclasses.asdict(agent_cfg)}``,
-which made its response contract "every field ``KiroCrewAgentConfig`` has now,
-plus every field anyone adds later", automatically — a field added by someone
-who never looked at this endpoint shipped to the browser by omission. #8454
-converted both row sources to an explicit allowlist, mirroring the rule
-``handlers/members.py`` already documents for ``GET /api/members``.
+Building each row with ``{**dataclasses.asdict(agent_cfg)}`` would make its
+response contract "every field ``KiroCrewAgentConfig`` has, plus every field
+anyone adds later", automatically — a field added by someone who never looked
+at this endpoint would ship to the browser by omission. Both row sources use an
+explicit allowlist instead, mirroring the rule ``handlers/members.py`` already
+documents for ``GET /api/members``.
 
 These tests are the half that keeps it converted. The key set is pinned as a
 literal, and a separate ratchet compares that literal against the live record
@@ -18,7 +18,6 @@ from __future__ import annotations
 
 import dataclasses
 import json
-import tempfile
 import types
 import unittest.mock
 from pathlib import Path
@@ -118,42 +117,38 @@ class TestRosterRowKeySet:
     """The response's exact key set, measured at the endpoint."""
 
     @pytest.mark.asyncio
-    async def test_global_row_ships_exactly_the_allowlist(self) -> None:
+    async def test_global_row_ships_exactly_the_allowlist(self, tmp_path: Path) -> None:
         """A ``cfg.agents`` row carries the allowlist and nothing else."""
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(_seed_config_with_every_field_set(), f)
-            tmp = Path(f.name)
-        try:
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                async with TestClient(TestServer(_make_app())) as client:
-                    resp = await client.get("/api/agents")
-                    assert resp.status == 200
-                    row = {a["name"]: a for a in (await resp.json())["agents"]}["roster-probe"]
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config_with_every_field_set()), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            async with TestClient(TestServer(_make_app())) as client:
+                resp = await client.get("/api/agents")
+                assert resp.status == 200
+                row = {a["name"]: a for a in (await resp.json())["agents"]}["roster-probe"]
 
-            assert set(row) == ROSTER_ROW_KEYS
-            # The allowlisted values still arrive — an allowlist that shipped
-            # the right KEYS with empty values would pass a key-set assertion
-            # while breaking every consumer.
-            assert row["scope"] == "global"
-            assert row["workspace"] == "probe-ws"
-            assert row["memory_store"] == "probe-ms"
-            assert row["model"] == "claude-opus-5"
-            assert row["reasoning_effort"] == "high"
-            assert row["description"] == "probe description"
-            assert row["triggers"] == "probe triggers"
-            assert row["session_color"] == "#abcdef"
-            # And the withheld fields are gone even though the config set them
-            # to distinctive non-default values.
-            assert not (set(row) & WITHHELD_RECORD_FIELDS)
-            assert "probe-telegram-binding" not in json.dumps(row)
-        finally:
-            tmp.unlink(missing_ok=True)
+        assert set(row) == ROSTER_ROW_KEYS
+        # The allowlisted values still arrive — an allowlist that shipped
+        # the right KEYS with empty values would pass a key-set assertion
+        # while breaking every consumer.
+        assert row["scope"] == "global"
+        assert row["workspace"] == "probe-ws"
+        assert row["memory_store"] == "probe-ms"
+        assert row["model"] == "claude-opus-5"
+        assert row["reasoning_effort"] == "high"
+        assert row["description"] == "probe description"
+        assert row["triggers"] == "probe triggers"
+        assert row["session_color"] == "#abcdef"
+        # And the withheld fields are gone even though the config set them
+        # to distinctive non-default values.
+        assert not (set(row) & WITHHELD_RECORD_FIELDS)
+        assert "probe-telegram-binding" not in json.dumps(row)
 
     @pytest.mark.asyncio
-    async def test_project_row_ships_the_same_key_set(self, monkeypatch) -> None:
+    async def test_project_row_ships_the_same_key_set(self, monkeypatch, tmp_path: Path) -> None:
         """A project-scope row carries the SAME keys as a global row.
 
-        The two sources were separate spreads before #8454, so they could drift
+        The two sources are separate spreads, so they could drift
         into different key sets; pinning both is what makes one allowlist the
         answer for the whole response.
         """
@@ -165,31 +160,29 @@ class TestRosterRowKeySet:
             "kiro_crew.dashboard.handlers.agents.project_agent_names",
             lambda project_dir, **kw: frozenset({"project-only-agent"}),
         )
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(_seed_config_with_every_field_set(), f)
-            tmp = Path(f.name)
-        try:
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                app = _make_app()
-                # Truthy state with no conversation log: the handler then takes
-                # the project-scan branch and skips the usage re-sort.
-                app["state"] = types.SimpleNamespace(conversation_log=None)
-                async with TestClient(TestServer(app)) as client:
-                    resp = await client.get("/api/agents")
-                    assert resp.status == 200
-                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(_seed_config_with_every_field_set()), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            app = _make_app()
+            # Truthy state with no conversation log: the handler then takes
+            # the project-scan branch and skips the usage re-sort.
+            app["state"] = types.SimpleNamespace(conversation_log=None)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/agents")
+                assert resp.status == 200
+                rows = {a["name"]: a for a in (await resp.json())["agents"]}
 
-            assert "project-only-agent" in rows, "project scan produced no row to check"
-            project_row = rows["project-only-agent"]
-            assert set(project_row) == ROSTER_ROW_KEYS
-            assert set(project_row) == set(rows["roster-probe"])
-            assert project_row["scope"] == "project"
-            assert not (set(project_row) & WITHHELD_RECORD_FIELDS)
-        finally:
-            tmp.unlink(missing_ok=True)
+        assert "project-only-agent" in rows, "project scan produced no row to check"
+        project_row = rows["project-only-agent"]
+        assert set(project_row) == ROSTER_ROW_KEYS
+        assert set(project_row) == set(rows["roster-probe"])
+        assert project_row["scope"] == "project"
+        assert not (set(project_row) & WITHHELD_RECORD_FIELDS)
 
     @pytest.mark.asyncio
-    async def test_app_token_caller_gets_the_same_keys_with_scrubbed_values(self) -> None:
+    async def test_app_token_caller_gets_the_same_keys_with_scrubbed_values(
+        self, tmp_path: Path
+    ) -> None:
         """End to end: the caller class is resolved from the request, not passed in.
 
         The row-level tests cover ``redact=`` directly; this one covers the
@@ -200,31 +193,27 @@ class TestRosterRowKeySet:
         probe = "AKIAIOSFODNN7EXAMPLE"
         seed = _seed_config_with_every_field_set()
         seed["agents"]["roster-probe"]["description"] = f"see {probe}"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            tmp = Path(f.name)
-        try:
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
 
-            @web.middleware
-            async def _as_app(request: web.Request, handler):  # type: ignore[no-untyped-def]
-                request["app"] = "probe-app"
-                return await handler(request)
+        @web.middleware
+        async def _as_app(request: web.Request, handler):  # type: ignore[no-untyped-def]
+            request["app"] = "probe-app"
+            return await handler(request)
 
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                app = web.Application(middlewares=[_as_app])
-                from kiro_crew.dashboard.handlers import api_kirocrew_agents
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            app = web.Application(middlewares=[_as_app])
+            from kiro_crew.dashboard.handlers import api_kirocrew_agents
 
-                app.router.add_get("/api/agents", api_kirocrew_agents)
-                async with TestClient(TestServer(app)) as client:
-                    resp = await client.get("/api/agents")
-                    assert resp.status == 200
-                    body = await resp.json()
-                    row = {a["name"]: a for a in body["agents"]}["roster-probe"]
+            app.router.add_get("/api/agents", api_kirocrew_agents)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/agents")
+                assert resp.status == 200
+                body = await resp.json()
+                row = {a["name"]: a for a in body["agents"]}["roster-probe"]
 
-            assert set(row) == ROSTER_ROW_KEYS, "key set must not depend on caller class"
-            assert probe not in json.dumps(row), "app token received an unscrubbed value"
-        finally:
-            tmp.unlink(missing_ok=True)
+        assert set(row) == ROSTER_ROW_KEYS, "key set must not depend on caller class"
+        assert probe not in json.dumps(row), "app token received an unscrubbed value"
 
 
 class TestRosterRowIsAnAllowlistNotASpread:
@@ -248,7 +237,7 @@ class TestRosterRowIsAnAllowlistNotASpread:
         # The withheld set must name real fields — a typo there would silently
         # stop classifying anything and let the next added field through.
         assert WITHHELD_RECORD_FIELDS <= record_fields
-        # And the allowlist must not claim a record field that no longer exists.
+        # And the allowlist must not claim a record field that does not exist.
         assert ROSTER_ROW_KEYS - {"name", "scope"} <= record_fields
 
     def test_an_attribute_the_allowlist_does_not_name_is_dropped(self) -> None:
@@ -440,7 +429,50 @@ class TestAvatarIsShapeAllowlistedNotMasked:
         assert self.PROBE not in json.dumps(row)
 
     def test_a_credential_shaped_expression_value_is_masked(self) -> None:
-        """The per-state axes carry user text too, so they mask like traits."""
+        """The per-state axes carry user text too, so they mask like traits.
+
+        ``expressions`` is legal on every tier and its ``eyes``/``mouth`` values
+        are free strings (32-char truncation is the only pin), so they are the
+        one reaction leaf that can carry what a trait can, and they go through
+        ``_roster_mask`` the same way. A pack record carries the same key, so the
+        mask is checked on both tiers.
+        """
+        for record in (
+            {"kind": "ghost", "expressions": {"working": {"eyes": self.PROBE}}},
+            {"kind": "pack", "id": "aurora", "expressions": {"error": {"mouth": self.PROBE}}},
+        ):
+            row = _agent_roster_row(
+                "probe",
+                "global",
+                cast(
+                    KiroCrewAgentConfig,
+                    types.SimpleNamespace(
+                        **{
+                            **{f.name: "" for f in dataclasses.fields(KiroCrewAgentConfig)},
+                            "avatar": record,
+                        }
+                    ),
+                ),
+                redact=False,
+            )
+            avatar = cast(dict, row["avatar"])
+            state = next(iter(record["expressions"]))
+            axis = next(iter(record["expressions"][state]))
+            assert _carries_mask(avatar["expressions"][state][axis]), record["kind"]
+            assert self.PROBE not in json.dumps(row), record["kind"]
+
+    def test_the_pinned_reaction_names_survive_intact(self) -> None:
+        """The direction that rots. A reaction NAMES a shipped animation or preset.
+
+        ``_safe_motions`` and ``_safe_sounds`` pin both to a closed vocabulary, so
+        neither is user-authored text: masking one would break the reaction and
+        buy nothing, the same reason the regex-pinned ``file`` is left alone. A
+        credential-shaped value cannot survive validation to reach the roster at
+        all -- it is dropped, which is stronger than masking it.
+
+        The two keys differ in WHERE they are legal, not in how they are handled:
+        ``motions`` is ghost-only, ``sounds`` is legal on every tier.
+        """
         row = _agent_roster_row(
             "probe",
             "global",
@@ -451,7 +483,7 @@ class TestAvatarIsShapeAllowlistedNotMasked:
                         **{f.name: "" for f in dataclasses.fields(KiroCrewAgentConfig)},
                         "avatar": {
                             "kind": "ghost",
-                            "expressions": {"working": {"eyes": self.PROBE}},
+                            "motions": {"done": "bounce", "error": self.PROBE},
                             "sounds": {"working": "chime"},
                         },
                     }
@@ -460,11 +492,9 @@ class TestAvatarIsShapeAllowlistedNotMasked:
             redact=False,
         )
         avatar = cast(dict, row["avatar"])
-        assert _carries_mask(avatar["expressions"]["working"]["eyes"])
-        assert self.PROBE not in json.dumps(row)
-        # The direction that rots: a cue name is pinned to a shipped preset by
-        # `_safe_sounds`, so masking it would break the cue and buy nothing.
+        assert avatar["motions"] == {"done": "bounce"}
         assert avatar["sounds"] == {"working": "chime"}
+        assert self.PROBE not in json.dumps(row)
 
     def test_the_pinned_file_and_kind_survive_intact(self) -> None:
         """The direction that rots. `file` is regex-pinned, so it needs no mask.
@@ -592,41 +622,37 @@ class TestCredentialShapedNamesAreRefusedAtCreation:
             assert _roster_mask(benign) == benign
 
     @pytest.mark.asyncio
-    async def test_creation_refuses_a_credential_shaped_name(self) -> None:
+    async def test_creation_refuses_a_credential_shaped_name(self, tmp_path: Path) -> None:
         seed = _seed_config_with_every_field_set()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            tmp = Path(f.name)
-        try:
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                from kiro_crew.dashboard.handlers import api_kirocrew_agents_create
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            from kiro_crew.dashboard.handlers import api_kirocrew_agents_create
 
-                # POST is owner-gated (`_require_owner`), so the caller must BE the
-                # owner for the request to reach the name check at all.
-                @web.middleware
-                async def _owner(request: web.Request, handler):  # type: ignore[no-untyped-def]
-                    request["app"] = ""
-                    request["user"] = "owner-1"
-                    return await handler(request)
+            # POST is owner-gated (`_require_owner`), so the caller must BE the
+            # owner for the request to reach the name check at all.
+            @web.middleware
+            async def _owner(request: web.Request, handler):  # type: ignore[no-untyped-def]
+                request["app"] = ""
+                request["user"] = "owner-1"
+                return await handler(request)
 
-                app = web.Application(middlewares=[_owner])
-                app["state"] = types.SimpleNamespace(owner_id="owner-1", conversation_log=None)
-                app.router.add_post("/api/agents", api_kirocrew_agents_create)
-                async with TestClient(TestServer(app)) as client:
-                    resp = await client.post(
-                        "/api/agents",
-                        json={"name": self.PROBE, "kiro_agent": "kirocrew"},
-                    )
-                    assert resp.status == 400, await resp.text()
-                    payload = await resp.json()
-                    assert payload["code"] == "credential_shaped_name"
-                    # The refusal must not reflect the value into the response or
-                    # the request log -- that is the disclosure being prevented.
-                    assert self.PROBE not in json.dumps(payload)
-            # And nothing was stored under it.
-            assert self.PROBE not in json.loads(tmp.read_text()).get("agents", {})
-        finally:
-            tmp.unlink(missing_ok=True)
+            app = web.Application(middlewares=[_owner])
+            app["state"] = types.SimpleNamespace(owner_id="owner-1", conversation_log=None)
+            app.router.add_post("/api/agents", api_kirocrew_agents_create)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.post(
+                    "/api/agents",
+                    json={"name": self.PROBE, "kiro_agent": "kirocrew"},
+                )
+                assert resp.status == 400, await resp.text()
+                payload = await resp.json()
+                assert payload["code"] == "credential_shaped_name"
+                # The refusal must not reflect the value into the response or
+                # the request log -- that is the disclosure being prevented.
+                assert self.PROBE not in json.dumps(payload)
+        # And nothing was stored under it.
+        assert self.PROBE not in json.loads(tmp.read_text()).get("agents", {})
 
 
 class TestCallerClassIsTheOwnerPredicate:
@@ -662,16 +688,16 @@ class TestCallerClassIsTheOwnerPredicate:
                 rows = (await resp.json())["agents"]
         return str(rows[0]["name"])
 
-    def _seed(self) -> Path:
+    def _seed(self, tmp_path: Path) -> Path:
         seed = _seed_config_with_every_field_set()
         seed["agents"] = {f"crew-{self.PROBE}": seed["agents"]["roster-probe"]}
         seed["default_agent"] = f"crew-{self.PROBE}"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            return Path(f.name)
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        return tmp
 
     @pytest.mark.asyncio
-    async def test_a_non_owner_dashboard_session_gets_the_name_masked(self) -> None:
+    async def test_a_non_owner_dashboard_session_gets_the_name_masked(self, tmp_path: Path) -> None:
         """The hole an app-token-only check leaves open.
 
         `request.get("app", "")` asks "is this an app?", and a non-owner DASHBOARD
@@ -679,36 +705,27 @@ class TestCallerClassIsTheOwnerPredicate:
         holds a dashboard token with `app == ""`. That caller is not the trust
         root, so it must not receive a credential-shaped crew name raw.
         """
-        tmp = self._seed()
-        try:
-            name = await self._name_for(self._app(user="someone-else", owner_id="owner-1"), tmp)
-            assert _carries_mask(name), "a non-owner dashboard session saw the raw name"
-        finally:
-            tmp.unlink(missing_ok=True)
+        tmp = self._seed(tmp_path)
+        name = await self._name_for(self._app(user="someone-else", owner_id="owner-1"), tmp)
+        assert _carries_mask(name), "a non-owner dashboard session saw the raw name"
 
     @pytest.mark.asyncio
-    async def test_the_owner_still_gets_an_addressable_global_name(self) -> None:
+    async def test_the_owner_still_gets_an_addressable_global_name(self, tmp_path: Path) -> None:
         """The owner keeps the row's only handle, or edit and delete break."""
-        tmp = self._seed()
-        try:
-            name = await self._name_for(self._app(user="owner-1", owner_id="owner-1"), tmp)
-            assert name == f"crew-{self.PROBE}"
-        finally:
-            tmp.unlink(missing_ok=True)
+        tmp = self._seed(tmp_path)
+        name = await self._name_for(self._app(user="owner-1", owner_id="owner-1"), tmp)
+        assert name == f"crew-{self.PROBE}"
 
     @pytest.mark.asyncio
-    async def test_a_stateless_app_fails_closed(self) -> None:
+    async def test_a_stateless_app_fails_closed(self, tmp_path: Path) -> None:
         """No state means no owner can be resolved, so mask rather than show.
 
         `is_owner_dashboard_request` subscripts `app["state"]`. For a disclosure
         control, "unknown caller" must mean "mask".
         """
-        tmp = self._seed()
-        try:
-            name = await self._name_for(_make_app(), tmp)
-            assert _carries_mask(name)
-        finally:
-            tmp.unlink(missing_ok=True)
+        tmp = self._seed(tmp_path)
+        name = await self._name_for(_make_app(), tmp)
+        assert _carries_mask(name)
 
     def test_a_mask_nested_in_a_structured_field_is_refused(self) -> None:
         """The corruption a top-level-only check let through.
@@ -728,39 +745,35 @@ class TestCallerClassIsTheOwnerPredicate:
         assert _carries_mask({"kind": "ghost", "traits": {"eyes": "wide", "blush": True}}) is False
 
     @pytest.mark.asyncio
-    async def test_an_echoed_avatar_does_not_overwrite_a_masked_trait(self) -> None:
+    async def test_an_echoed_avatar_does_not_overwrite_a_masked_trait(self, tmp_path: Path) -> None:
         """End to end: the sentinel never reaches config.json through the nest."""
         from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
         seed = _seed_config_with_every_field_set()
         stored = f"eyes-{self.PROBE}"
         seed["agents"]["roster-probe"]["avatar"] = {"kind": "ghost", "traits": {"eyes": stored}}
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            tmp = Path(f.name)
-        try:
-            with (
-                unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
-                unittest.mock.patch(
-                    "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
-                    lambda request: True,
-                ),
-            ):
-                from kiro_crew.dashboard.handlers import api_kirocrew_agent_update
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp),
+            unittest.mock.patch(
+                "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
+                lambda request: True,
+            ),
+        ):
+            from kiro_crew.dashboard.handlers import api_kirocrew_agent_update
 
-                app = web.Application()
-                app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
-                async with TestClient(TestServer(app)) as client:
-                    put = await client.put(
-                        "/api/agents/roster-probe",
-                        json={"avatar": {"kind": "ghost", "traits": {"eyes": _SENSITIVE_MASK}}},
-                    )
-                    assert put.status == 200, await put.text()
-            after = json.loads(tmp.read_text())["agents"]["roster-probe"]["avatar"]
-            assert _SENSITIVE_MASK not in json.dumps(after), "the nested sentinel was persisted"
-            assert after["traits"]["eyes"] == stored
-        finally:
-            tmp.unlink(missing_ok=True)
+            app = web.Application()
+            app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+            async with TestClient(TestServer(app)) as client:
+                put = await client.put(
+                    "/api/agents/roster-probe",
+                    json={"avatar": {"kind": "ghost", "traits": {"eyes": _SENSITIVE_MASK}}},
+                )
+                assert put.status == 200, await put.text()
+        after = json.loads(tmp.read_text())["agents"]["roster-probe"]["avatar"]
+        assert _SENSITIVE_MASK not in json.dumps(after), "the nested sentinel was persisted"
+        assert after["traits"]["eyes"] == stored
 
 
 class TestMaskIsTreatedAsUnchangedOnWrite:
@@ -813,7 +826,7 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
         assert _carries_mask(f"a {_SENSITIVE_MASK} b") is True
 
     @pytest.mark.asyncio
-    async def test_appending_to_a_masked_field_does_not_overwrite_it(self) -> None:
+    async def test_appending_to_a_masked_field_does_not_overwrite_it(self, tmp_path: Path) -> None:
         """End to end: glyphs never reach config.json, and the original survives.
 
         This is GPT 5.6's finding on `a34a51a88`'s successor as an executable test:
@@ -825,29 +838,27 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
         seed = _seed_config_with_every_field_set()
         stored = f"use when {self.PROBE}"
         seed["agents"]["roster-probe"]["triggers"] = stored
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            tmp = Path(f.name)
-        try:
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                from kiro_crew.dashboard.handlers import api_kirocrew_agent_update
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            from kiro_crew.dashboard.handlers import api_kirocrew_agent_update
 
-                app = web.Application()
-                app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
-                async with TestClient(TestServer(app)) as client:
-                    put = await client.put(
-                        "/api/agents/roster-probe",
-                        json={"triggers": f"{_SENSITIVE_MASK} and also triage"},
-                    )
-                    assert put.status == 200, await put.text()
-            after = json.loads(tmp.read_text())["agents"]["roster-probe"]
-            assert after["triggers"] == stored, "the appended mask was persisted"
-            assert _SENSITIVE_MASK not in after["triggers"]
-        finally:
-            tmp.unlink(missing_ok=True)
+            app = web.Application()
+            app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+            async with TestClient(TestServer(app)) as client:
+                put = await client.put(
+                    "/api/agents/roster-probe",
+                    json={"triggers": f"{_SENSITIVE_MASK} and also triage"},
+                )
+                assert put.status == 200, await put.text()
+        after = json.loads(tmp.read_text())["agents"]["roster-probe"]
+        assert after["triggers"] == stored, "the appended mask was persisted"
+        assert _SENSITIVE_MASK not in after["triggers"]
 
     @pytest.mark.asyncio
-    async def test_end_to_end_read_then_write_preserves_the_stored_value(self) -> None:
+    async def test_end_to_end_read_then_write_preserves_the_stored_value(
+        self, tmp_path: Path
+    ) -> None:
         """The whole point, over HTTP: GET the roster, PUT the row back.
 
         This is the round-trip defect as an executable test. The agents page seeds
@@ -859,46 +870,42 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
         seed = _seed_config_with_every_field_set()
         stored_triggers = f"use when {self.PROBE}"
         seed["agents"]["roster-probe"]["triggers"] = stored_triggers
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            tmp = Path(f.name)
-        try:
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                from kiro_crew.dashboard.handlers import (
-                    api_kirocrew_agent_update,
-                    api_kirocrew_agents,
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            from kiro_crew.dashboard.handlers import (
+                api_kirocrew_agent_update,
+                api_kirocrew_agents,
+            )
+
+            app = web.Application()
+            app.router.add_get("/api/agents", api_kirocrew_agents)
+            app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+            async with TestClient(TestServer(app)) as client:
+                resp = await client.get("/api/agents")
+                rows = {a["name"]: a for a in (await resp.json())["agents"]}
+                row = rows["roster-probe"]
+                assert _carries_mask(row["triggers"]), "the value should arrive masked"
+                # Echo the row back the way `saveEdit` does: every field, always.
+                put = await client.put(
+                    "/api/agents/roster-probe",
+                    json={
+                        "kiro_agent": row["kiro_agent"],
+                        "workspace": row["workspace"],
+                        "memory_store": row["memory_store"],
+                        "triggers": row["triggers"],
+                        "model": row["model"],
+                        "reasoning_effort": row["reasoning_effort"],
+                        "session_color": row["session_color"],
+                    },
                 )
+                assert put.status == 200, await put.text()
 
-                app = web.Application()
-                app.router.add_get("/api/agents", api_kirocrew_agents)
-                app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
-                async with TestClient(TestServer(app)) as client:
-                    resp = await client.get("/api/agents")
-                    rows = {a["name"]: a for a in (await resp.json())["agents"]}
-                    row = rows["roster-probe"]
-                    assert _carries_mask(row["triggers"]), "the value should arrive masked"
-                    # Echo the row back the way `saveEdit` does: every field, always.
-                    put = await client.put(
-                        "/api/agents/roster-probe",
-                        json={
-                            "kiro_agent": row["kiro_agent"],
-                            "workspace": row["workspace"],
-                            "memory_store": row["memory_store"],
-                            "triggers": row["triggers"],
-                            "model": row["model"],
-                            "reasoning_effort": row["reasoning_effort"],
-                            "session_color": row["session_color"],
-                        },
-                    )
-                    assert put.status == 200, await put.text()
-
-                stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
-                assert stored["triggers"] == stored_triggers, "the mask was persisted"
-        finally:
-            tmp.unlink(missing_ok=True)
+            stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
+            assert stored["triggers"] == stored_triggers, "the mask was persisted"
 
     @pytest.mark.asyncio
-    async def test_a_stale_view_cannot_corrupt_the_config(self) -> None:
+    async def test_a_stale_view_cannot_corrupt_the_config(self, tmp_path: Path) -> None:
         """The failure mode a recomputed-equality rule had and a sentinel does not.
 
         If the stored value changes between the GET and the PUT (an agent editing
@@ -910,39 +917,34 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
         """
         seed = _seed_config_with_every_field_set()
         seed["agents"]["roster-probe"]["triggers"] = f"first {self.PROBE}"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            tmp = Path(f.name)
-        try:
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                from kiro_crew.dashboard.handlers import (
-                    api_kirocrew_agent_update,
-                    api_kirocrew_agents,
-                )
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            from kiro_crew.dashboard.handlers import (
+                api_kirocrew_agent_update,
+                api_kirocrew_agents,
+            )
 
-                app = web.Application()
-                app.router.add_get("/api/agents", api_kirocrew_agents)
-                app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
-                async with TestClient(TestServer(app)) as client:
-                    rows = {
-                        a["name"]: a
-                        for a in (await (await client.get("/api/agents")).json())["agents"]
-                    }
-                    stale = rows["roster-probe"]["triggers"]
-                    # Someone else rewrites the stored value AFTER the read.
-                    on_disk = json.loads(tmp.read_text())
-                    on_disk["agents"]["roster-probe"]["triggers"] = f"second {self.PROBE} changed"
-                    tmp.write_text(json.dumps(on_disk))
-                    put = await client.put("/api/agents/roster-probe", json={"triggers": stale})
-                    assert put.status == 200, await put.text()
+            app = web.Application()
+            app.router.add_get("/api/agents", api_kirocrew_agents)
+            app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+            async with TestClient(TestServer(app)) as client:
+                rows = {
+                    a["name"]: a for a in (await (await client.get("/api/agents")).json())["agents"]
+                }
+                stale = rows["roster-probe"]["triggers"]
+                # Someone else rewrites the stored value AFTER the read.
+                on_disk = json.loads(tmp.read_text())
+                on_disk["agents"]["roster-probe"]["triggers"] = f"second {self.PROBE} changed"
+                tmp.write_text(json.dumps(on_disk))
+                put = await client.put("/api/agents/roster-probe", json={"triggers": stale})
+                assert put.status == 200, await put.text()
 
-                stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
-                assert stored["triggers"] == f"second {self.PROBE} changed"
-        finally:
-            tmp.unlink(missing_ok=True)
+            stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
+            assert stored["triggers"] == f"second {self.PROBE} changed"
 
     @pytest.mark.asyncio
-    async def test_an_echoed_mask_cannot_reject_an_unrelated_edit(self) -> None:
+    async def test_an_echoed_mask_cannot_reject_an_unrelated_edit(self, tmp_path: Path) -> None:
         """The mask filter runs BEFORE the validated fields are validated.
 
         ``model`` and ``reasoning_effort`` are checked before the config load and
@@ -952,56 +954,48 @@ class TestMaskIsTreatedAsUnchangedOnWrite:
         entries first means a mask is never validated as if it were content.
         """
         seed = _seed_config_with_every_field_set()
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            tmp = Path(f.name)
-        try:
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                from kiro_crew.dashboard.handlers import api_kirocrew_agent_update
-                from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            from kiro_crew.dashboard.handlers import api_kirocrew_agent_update
+            from kiro_crew.dashboard.handlers.core import _SENSITIVE_MASK
 
-                app = web.Application()
-                app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
-                async with TestClient(TestServer(app)) as client:
-                    put = await client.put(
-                        "/api/agents/roster-probe",
-                        # The mask in a VALIDATED field, alongside a real edit.
-                        json={
-                            "reasoning_effort": _SENSITIVE_MASK,
-                            "model": _SENSITIVE_MASK,
-                            "triggers": "a genuine new value",
-                        },
-                    )
-                    assert put.status == 200, await put.text()
-                stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
-                # The real edit landed...
-                assert stored["triggers"] == "a genuine new value"
-                # ...and the masked fields kept their stored values.
-                assert stored["reasoning_effort"] == "high"
-                assert stored["model"] == "claude-opus-5"
-        finally:
-            tmp.unlink(missing_ok=True)
+            app = web.Application()
+            app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+            async with TestClient(TestServer(app)) as client:
+                put = await client.put(
+                    "/api/agents/roster-probe",
+                    # The mask in a VALIDATED field, alongside a real edit.
+                    json={
+                        "reasoning_effort": _SENSITIVE_MASK,
+                        "model": _SENSITIVE_MASK,
+                        "triggers": "a genuine new value",
+                    },
+                )
+                assert put.status == 200, await put.text()
+            stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
+            # The real edit landed...
+            assert stored["triggers"] == "a genuine new value"
+            # ...and the masked fields kept their stored values.
+            assert stored["reasoning_effort"] == "high"
+            assert stored["model"] == "claude-opus-5"
 
     @pytest.mark.asyncio
-    async def test_a_real_edit_still_writes_through(self) -> None:
+    async def test_a_real_edit_still_writes_through(self, tmp_path: Path) -> None:
         """The rule must not swallow an actual change, or editing is broken."""
         seed = _seed_config_with_every_field_set()
         seed["agents"]["roster-probe"]["triggers"] = f"use when {self.PROBE}"
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".json", delete=False) as f:
-            json.dump(seed, f)
-            tmp = Path(f.name)
-        try:
-            with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
-                from kiro_crew.dashboard.handlers import api_kirocrew_agent_update
+        tmp = tmp_path / "config.json"
+        tmp.write_text(json.dumps(seed), encoding="utf-8")
+        with unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=tmp):
+            from kiro_crew.dashboard.handlers import api_kirocrew_agent_update
 
-                app = web.Application()
-                app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
-                async with TestClient(TestServer(app)) as client:
-                    put = await client.put(
-                        "/api/agents/roster-probe", json={"triggers": "an actual new value"}
-                    )
-                    assert put.status == 200, await put.text()
-                stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
-                assert stored["triggers"] == "an actual new value"
-        finally:
-            tmp.unlink(missing_ok=True)
+            app = web.Application()
+            app.router.add_put("/api/agents/{name}", api_kirocrew_agent_update)
+            async with TestClient(TestServer(app)) as client:
+                put = await client.put(
+                    "/api/agents/roster-probe", json={"triggers": "an actual new value"}
+                )
+                assert put.status == 200, await put.text()
+            stored = json.loads(tmp.read_text())["agents"]["roster-probe"]
+            assert stored["triggers"] == "an actual new value"

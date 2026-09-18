@@ -29,6 +29,7 @@ a trust boundary rather than a writable input.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import json
 import os
@@ -206,6 +207,31 @@ def _spool(path: Path, **kw: Any) -> SpooledInbound:
     )
     assert record_refusal_sync(entry, path=path)
     return entry
+
+
+# ── Shared-dispatch adoption pin ───────────────────────────────────────────────
+
+
+def test_every_shared_channel_turn_declares_an_inbound_route() -> None:
+    root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    calls: list[tuple[Path, ast.Call]] = []
+    for path in root.glob("*/transport_dispatch.py"):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        calls.extend(
+            (path, node)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "ChannelTurn"
+        )
+
+    assert calls, "shared dispatcher scan found no ChannelTurn call sites"
+    missing = [
+        f"{path.relative_to(root)}:{call.lineno}"
+        for path, call in calls
+        if not any(keyword.arg == "inbound_route" for keyword in call.keywords)
+    ]
+    assert missing == [], f"shared dispatchers can drop update-refused turns: {missing}"
 
 
 # ── The loss (red-before on an unwired tree) ──────────────────────────────────
@@ -760,6 +786,22 @@ def test_a_threaded_route_is_authorized_by_the_thread_roster_alone(spool_home: P
     assert sorted(transport.send_gate_calls) == sorted([("thr", "thr", ""), ("dm", None, "u")])
 
 
+def test_slack_rechecks_the_sender_for_its_threaded_route(spool_home: Path) -> None:
+    """Slack has no separate thread roster, so its accepted sender owns the route."""
+    _spool(
+        spool_home,
+        channel_type="slack",
+        conversation_id="C1",
+        thread_id="1700.0",
+        user_id="U_OWNER",
+    )
+    transport = _Transport()
+
+    asyncio.run(replay_spooled(transports={"slack": transport}))
+
+    assert transport.send_gate_calls == [("C1", "1700.0", "U_OWNER")]
+
+
 def test_a_revoked_discord_thread_gets_no_notice_even_from_an_allowed_sender(
     spool_home: Path,
 ) -> None:
@@ -1163,13 +1205,16 @@ def test_a_cancelled_refusal_handler_still_lands_the_write(spool_home: Path) -> 
             task.cancel()
             with pytest.raises(asyncio.CancelledError):
                 await task
+            assert S.pending_refusal_write_count() == 1
+            assert len(S.pending_refusal_writes()) == 1
             assert not spool_home.exists(), "the write had not been released yet"
             release.set()
             # Let the shielded inner task finish before the loop closes.
             for _ in range(50):
-                if spool_home.exists():
+                if spool_home.exists() and S.pending_refusal_write_count() == 0:
                     break
                 await asyncio.sleep(0.02)
+            assert S.pending_refusal_write_count() == 0
         finally:
             S.record_refusal_sync = real_sync  # type: ignore[assignment]
 
@@ -1442,3 +1487,39 @@ def test_no_transport_still_carries_a_replay_hook() -> None:
     assert not hasattr(S, "ReplayOutcome")
     assert not hasattr(S, "conversation_moved_on")
     assert S.__all__ == ["InboundRoute", "replay_spooled", "spool_refused_turn"]
+
+
+# ── Webex spool notice against the real egress gate ──────────────────────────
+#
+# Pins that Webex's ``may_send_to`` room-id arm grants a spooled space route that
+# carries no principal, using the REAL transport gate rather than a stand-in.
+
+
+def test_a_webex_allowed_space_gets_its_notice_at_the_room_root(spool_home: Path) -> None:
+    """Against the REAL Webex egress gate: an allow-listed space route is delivered.
+
+    ``may_send_to`` checks the room-id arm first (``room_id in _allowed_rooms``
+    with group rooms on) and grants there, so a space route carrying no principal
+    is authorized by its ``room_id`` alone and the notice posts at the room root.
+    """
+    from kiro_crew.webex.transport import WEBEX_CAPABILITIES, WebexTransport
+
+    transport = WebexTransport.__new__(WebexTransport)
+    transport._allowed = frozenset()  # no sender principal; the room-id arm grants it
+    transport._allow_group_rooms = True
+    transport._allowed_rooms = frozenset({"SPACE9"})
+    transport.capabilities = WEBEX_CAPABILITIES
+    sent: list[Any] = []
+
+    async def _send(conversation_id: str, content: str, thread_id: str | None = None) -> str:
+        sent.append((conversation_id, thread_id))
+        return "mid"
+
+    transport.send_message = _send  # type: ignore[method-assign]
+    # A space entry with no principal, authorized by the room-id arm alone.
+    _spool(spool_home, channel_type="webex", conversation_id="SPACE9", text="please check CI")
+
+    report = asyncio.run(replay_spooled(transports={"webex": transport}))
+
+    assert report.notified and not report.dropped, "an allow-listed space was not noticed"
+    assert sent == [("SPACE9", None)]

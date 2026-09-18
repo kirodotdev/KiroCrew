@@ -1,6 +1,6 @@
 ---
 title: Orchestrator Chat Sessions — an engineered pipeline with a decision-only agent
-status: partial
+status: superseded
 revision: v5
 author: kirocrew agent session, directed by zezhexu
 created: 2026-08-03
@@ -10,15 +10,18 @@ doc-pr: 1280
 implementation-prs: [1295]
 tracking-issues: []
 supersedes: []
-superseded-by: []
+superseded-by: [../system-specs/modules/crew-mode.md]
 ---
 # RFC: Orchestrator Chat Sessions — an engineered pipeline with a decision-only agent
 
-> **[`../system-specs/modules/crew-mode.md`](../system-specs/modules/crew-mode.md)
-> owns Crew Mode; this document carries the intent.** Crew Mode ships and
-> diverges from the design below in three places — no snapshot-generation CAS, no
-> `release` action, immediate per-result delivery instead of burst coalescing.
-> Read the spec for current behaviour and the divergences here for why it differs.
+> **Crew Mode is retired.** It shipped from this design (PR #1295) and was
+> removed in favour of the Crew Members page, where each crew is a standing
+> agent with its own thread. The record of what shipped, what diverged from the
+> design below (no snapshot-generation CAS, no `release` action, immediate
+> per-result delivery instead of burst coalescing) and how existing sessions
+> are treated is
+> [`../system-specs/modules/crew-mode.md`](../system-specs/modules/crew-mode.md)
+> § "Retired: Crew Mode". This document is kept as the intent behind it.
 
 Status: partial — v5 was accepted as design of record in PR #1280 and Crew Mode
 shipped in PR #1295. The implementation has since received store and routing fixes,

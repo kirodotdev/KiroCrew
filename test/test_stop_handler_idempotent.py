@@ -594,7 +594,7 @@ class TestStopCardTeardownRace:
         """Pin the prod write that creates the race.
 
         This is the mechanism the handler tests below simulate. If this ever
-        stops mapping falsy to "idle", those simulations are no longer faithful.
+        stops mapping falsy to "idle", those simulations stop being faithful.
         """
         from kiro_crew.dashboard.state import _ChatSlot
 

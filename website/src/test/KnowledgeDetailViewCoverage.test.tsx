@@ -371,6 +371,21 @@ describe('DetailView — copy and export', () => {
     expect(writeText).toHaveBeenCalledWith('Ledger design notes')
   })
 
+  it('does not claim "Copied!" when the text never reached the clipboard', async () => {
+    // The shared helper resolves FALSE rather than rejecting when both the async
+    // Clipboard API and its execCommand fallback fail. A tick shown anyway would
+    // be a lie the user only discovers at the moment they paste, so the label
+    // must stay put. `execCommand` is absent under happy-dom, which is what
+    // makes the fallback fail here.
+    writeText.mockRejectedValueOnce(new DOMException('denied', 'NotAllowedError'))
+    renderDetail()
+    fireEvent.click(await screen.findByRole('button', { name: /Copy Content/ }))
+
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(screen.queryByRole('button', { name: /Copied!/ })).not.toBeInTheDocument()
+    expect(await screen.findByRole('button', { name: /Copy Content/ })).toBeInTheDocument()
+  })
+
   it('exports through a download link named after the item', async () => {
     renderDetail()
     const btn = await screen.findByRole('button', { name: /Export/ })

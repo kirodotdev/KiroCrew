@@ -271,8 +271,8 @@ def classify_source(path: str) -> tuple[str, str]:
 
     # (2) Bounded walk up to a git repository root.
     #
-    # A registered-project branch used to sit here and was REMOVED: the recents
-    # list it drew on lives in the agent-writable data home, so it let an agent
+    # A registered-project branch deliberately does NOT sit here: the recents
+    # list it would draw on lives in the agent-writable data home, so it would let
     # nominate its own authorizing root (write ["/"], then forge an artifact
     # naming source_root="/"). Whatever authorizes a LINK has to be re-verifiable
     # at read time from something the attacker cannot also write — see

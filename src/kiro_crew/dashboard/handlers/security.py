@@ -430,9 +430,7 @@ def _reload_live_hooks(request: web.Request, denied_state: dict) -> None:
     replaced from *denied_state* (the keystone file's new content). Best-effort:
     a missing context builder (e.g. in a unit test harness) is a no-op.
     """
-    import dataclasses
-
-    from kiro_crew.hooks import HooksConfig
+    from kiro_crew.hooks import HooksConfig, splice_denied_commands
 
     try:
         state = request.app["state"]
@@ -440,22 +438,13 @@ def _reload_live_hooks(request: web.Request, denied_state: dict) -> None:
         manager = getattr(builder, "hooks", None)
         if manager is None:
             return
-        # Reparse ONLY the opt-out fields from the keystone state and splice them
-        # onto the live config so the flat hook keys (auto_replies, transforms,
-        # auto_approve_tools, …) are not lost.
-        parsed = HooksConfig.from_dict({"denied_commands": denied_state})
+        # Splice ONLY the opt-out fields from the keystone state onto the live config
+        # so the flat hook keys (auto_replies, transforms, auto_approve_tools, …) are
+        # not lost. Same helper the config.json hooks reload uses from the other
+        # side, so neither write reverts the other's half.
         current = getattr(manager, "_config", None)
-        if isinstance(current, HooksConfig):
-            manager.reload(
-                dataclasses.replace(
-                    current,
-                    denied_commands_disabled_ids=parsed.denied_commands_disabled_ids,
-                    denied_commands_disable_all=parsed.denied_commands_disable_all,
-                    denied_commands_user_added=parsed.denied_commands_user_added,
-                )
-            )
-        else:
-            manager.reload(parsed)
+        base = current if isinstance(current, HooksConfig) else HooksConfig()
+        manager.reload(splice_denied_commands(base, denied_state))
     except Exception:
         logger.warning(
             "failed to hot-reload HookManager after denied-commands change", exc_info=True
@@ -1878,8 +1867,8 @@ def _serialize_ruleset(value: object) -> dict:
         return {
             "mode": "intersect",
             "components": [
-                _serialize_ruleset(value.ceiling),
-                _serialize_ruleset(value.profile),
+                _serialize_ruleset(value.outer),
+                _serialize_ruleset(value.inner),
             ],
         }
     return {}

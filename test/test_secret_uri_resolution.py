@@ -222,7 +222,7 @@ class TestResolveSecretUris:
 
         Counts calls on the SecretVault class methods (reader-agnostic: patched
         on the class, so it holds regardless of how get_many is wired
-        internally) to prove the spawn path no longer re-reads the store and
+        internally) to prove the spawn path does not re-read the store and
         key file per reference.
         """
         from kiro_crew.secrets import SecretVault

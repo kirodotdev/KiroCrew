@@ -1,21 +1,165 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from 'react'
-import { XCircle, AlertTriangle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen } from 'lucide-react'
+import { useQueryClient } from '@tanstack/react-query'
+import { useNavigate } from 'react-router-dom'
+import { XCircle, AlertTriangle, CheckCircle, RefreshCw, Hourglass, Check, BookOpen, SlidersHorizontal } from 'lucide-react'
 import { api } from '../../api/client'
-import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState } from '../../components/ui'
+import { Card, CardTitle, Btn, SendBtn, Input, Badge, EmptyState, Skeleton } from '../../components/ui'
 import InfoTip from '../../components/InfoTip'
 import SimpleSelect from '../../components/SimpleSelect'
 import { esc } from '../../api/helpers'
 import VectorMemoryCard from './VectorMemoryCard'
 import EmbeddingModelCard from './EmbeddingModelCard'
+import MemoryStoreCard, {
+  MEMORY_QUERY_PREFIXES,
+  MemoryScopeNotice,
+  useMemoryStores,
+} from './MemoryStoreCard'
+import MemoryCarveCard from './MemoryCarveCard'
+import MemoryRetiredCard from './MemoryRetiredCard'
+import MemoryBackupsCard from './MemoryBackupsCard'
+import MemberMemoryPanel from './MemberMemoryPanel'
+import MemoryRecordsEditor from './MemoryRecordsEditor'
+import MemoryDocCard from './MemoryDocCard'
+import Modal from '../../components/Modal'
+import { useConfirm } from '../../components/ConfirmDialog'
+import ErrorNotice from '../../components/ErrorNotice'
+import { useSidePanelLeaveGuard } from '../../components/SidePanelLayout'
+import { useGuardedLeave } from '../../components/NavigationLeaveGuard'
 import type { Lesson, SessionInfo } from '../../types'
 import { useSortableTable } from '../../hooks/useSortableTable'
 import SortableHeader from '../../components/SortableHeader'
 
 import { i18nT } from '../../i18n/t'
-import { fmtDateTimeNumeric } from '../../i18n/format'
-export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }) {
-  const [pref, setPref] = useState(''); const [proj, setProj] = useState(''); const [hist, setHist] = useState('')
-  const [prefSaved, setPrefSaved] = useState(false); const [projSaved, setProjSaved] = useState(false); const [histSaved, setHistSaved] = useState(false)
+import { compareText, fmtDateTimeNumeric } from '../../i18n/format'
+
+/** The Scope cell. The three values are the three delete selectors the list
+ *  reports, and each must read differently: a fragment is that scope's row;
+ *  `""` is the global row, labelled rather than left blank so it does not read
+ *  as missing data beside a scoped sibling; `null` is a row whose stored scope
+ *  the store cannot use, labelled so the reader can see that its Delete is the
+ *  one that reaches every scope. */
+function scopeCell(lesson: Lesson) {
+  const scope = lesson.repo_scope
+  const repo = scope === null
+    ? <span className="text-muted italic" title={i18nT('pages.overview.memoryTab.scope_unusable_hint')}>{i18nT('pages.overview.memoryTab.scope_unusable')}</span>
+    : !scope
+      ? <span className="text-muted">{i18nT('pages.overview.memoryTab.scope_global')}</span>
+      : <span className="font-mono break-all">{scope}</span>
+  // The JSONL tier is the other half of the row's identity: a same-text row in
+  // the active workspace's file and one in the global file would otherwise read
+  // alike, and their Deletes go to different files.
+  if (lesson.scope !== 'workspace' || !lesson.workspace) return repo
+  return <>{repo}<span className="block text-[12px] text-muted">{i18nT('pages.overview.memoryTab.scope_workspace', { name: lesson.workspace })}</span></>
+}
+
+export default function MemoryTab({ refreshTrigger, selectedStore, onStoreNavigate }: { refreshTrigger: number; selectedStore?: string; onStoreNavigate?: (store: string) => void }) {
+  const stores = useMemoryStores()
+  const navigate = useNavigate()
+  const leave = useGuardedLeave()
+  const queryClient = useQueryClient()
+  useEffect(() => {
+    if (refreshTrigger) for (const prefix of MEMORY_QUERY_PREFIXES) void queryClient.invalidateQueries({ queryKey: prefix })
+  }, [refreshTrigger, queryClient])
+  const [store, setStore] = useState(() => {
+    const selected = new URLSearchParams(window.location.search).get('store') || ''
+    return selected === 'default' ? '' : selected
+  })
+  useEffect(() => {
+    if (selectedStore !== undefined) setStore(selectedStore === 'default' ? '' : selectedStore)
+  }, [selectedStore])
+  const [dirty, setDirty] = useState(false)
+  useSidePanelLeaveGuard(() => !dirty || window.confirm(i18nT('memoryV2.leave_discard_explanation')), dirty)
+  useEffect(() => {
+    if (!dirty) return
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = '' }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirty])
+  const [pendingStore, setPendingStore] = useState<string | null>(null)
+  const selected = stores.data?.stores.find(s => s.name === store)
+  // Content may already be cached while its catalog is still loading. Never
+  // turn a private directory name into a member identity, or expose actions
+  // until the authoritative owner row arrives. React Query retains settled
+  // catalog data during refresh, so existing editors keep their drafts mounted.
+  const identityReady = !!selected && (
+    selected.is_default
+    || (!selected.owner_member && (selected.memory_version === 1 || (selected.memory_version == null && selected.lineage === 'v1')))
+    || (selected.memory_version === 2 && !!selected.owner_member)
+  )
+  const applyStore = (next: string) => {
+    setStore(next)
+    if (onStoreNavigate) { onStoreNavigate(next); return }
+    const url = new URL(window.location.href)
+    if (next) url.searchParams.set('store', next)
+    else url.searchParams.delete('store')
+    window.history.replaceState(window.history.state, '', url)
+  }
+  const choose = (next: string) => {
+    if (next === store) return
+    if (dirty) setPendingStore(next)
+    else applyStore(next)
+  }
+  return <>
+    <MemoryStoreCard store={store} onStoreChange={choose} compact={!!store} />
+    {store ? identityReady ? <MemberMemoryPanel key={store} store={store} summary={selected!} onDirtyChange={setDirty} /> : <Card>
+      {stores.isPending ? <div role="status" aria-busy="true" className="flex min-w-0 items-center gap-3">
+        <Skeleton className="h-12 w-12 shrink-0 motion-reduce:animate-none" />
+        <div className="min-w-0 flex-1 space-y-2">
+          <p className="text-[13px] text-muted">{i18nT('memoryV2.identity_loading')}</p>
+          <Skeleton className="h-4 w-48 max-w-full motion-reduce:animate-none" />
+          <Skeleton className="h-3 w-32 max-w-full motion-reduce:animate-none" />
+        </div>
+      </div> : <>
+        <CardTitle>{i18nT('memoryV2.identity_unavailable')}</CardTitle>
+        <MemoryScopeNotice error={stores.error} />
+        <div className="flex flex-wrap gap-2">
+          <Btn className="min-h-11" disabled={stores.isFetching} onClick={() => void stores.refetch()}>{i18nT('memoryV2.retry_identity')}</Btn>
+          <Btn className="min-h-11" onClick={() => {
+            const destination = selected?.owner_member
+              ? `/capabilities?tab=crews&crew=${encodeURIComponent(selected.owner_member)}`
+              : '/capabilities?tab=crews'
+            leave(() => navigate(destination), destination)
+          }}>{i18nT('pages.kiroCrewAgentsPage.open_crew_manager')}</Btn>
+        </div>
+      </>}
+    </Card> : <GlobalMemoryTab refreshTrigger={refreshTrigger} onDirtyChange={setDirty} />}
+    {pendingStore !== null && <Modal open title={i18nT('memoryV2.discard_title')} onClose={() => setPendingStore(null)}><div className="flex flex-col gap-3">
+      <p className="text-[13px]">{i18nT('memoryV2.discard_explanation')}</p>
+      <div className="flex flex-wrap gap-2">
+        <Btn onClick={() => setPendingStore(null)}>{i18nT('pages.kiroCrewAgentsPage.keep_editing')}</Btn>
+        <Btn danger onClick={() => { applyStore(pendingStore); setPendingStore(null); setDirty(false) }}>{i18nT('memoryV2.discard_title')}</Btn>
+      </div>
+    </div></Modal>}
+  </>
+}
+
+function GlobalMemoryTab({ refreshTrigger, onDirtyChange }: { refreshTrigger: number; onDirtyChange?: (dirty: boolean) => void }) {
+  const queryClient = useQueryClient()
+  const [recordDirty, setRecordDirty] = useState(false)
+  const [recordsOpen, setRecordsOpen] = useState(false)
+  const [docDirty, setDocDirty] = useState<Record<string, boolean>>({})
+  const dirty = recordDirty || Object.values(docDirty).some(Boolean)
+  useEffect(() => { onDirtyChange?.(dirty); return () => onDirtyChange?.(false) }, [dirty, onDirtyChange])
+  /** The memory store every store-aware card on this page reads, ON THE WIRE.
+   *
+   *  `''` means no store is NAMED, which the gateway resolves to the global store —
+   *  what every one of these routes served before the picker existed. It is
+   *  deliberately not spelled `'default'`: the parameter's PRESENCE is what takes
+   *  the owner gate, so naming the store the page already reads would gate a read
+   *  that needs no gate and refuse the whole page on an install with no configured
+   *  owner. `MemoryStoreCard` displays the active store while this stays `''`. */
+  const store = ''
+  const stores = useMemoryStores()
+  /** Look the row up under the store being SHOWN, not the wire value: `''` matches
+   *  no row, so keying on it would make every "is this store readable" answer
+   *  default to yes for the store the page is actually displaying. */
+  const shownStore = store || stores.data?.active || ''
+  const selectedStore = stores.data?.stores.find(s => s.name === shownStore)
+  /** A store whose file could not be read has nothing to list. Backups are the
+   *  exception and stay visible: a missing database is exactly when a restore is
+   *  the thing the operator came for. */
+  const storeReadable = selectedStore?.exists !== false
+
   const [lessons, setLessons] = useState<Lesson[]>([]); const [rule, setRule] = useState(''); const [cat, setCat] = useState('knowledge')
   const [lessonFeedback, setLessonFeedback] = useState<{
     tone: 'info' | 'warning' | 'error'
@@ -44,24 +188,68 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     timeoutsRef.current.push(id)
   }, [])
   const loadLessons = useCallback(async () => { const d = await api.lessons(); setLessons(d.lessons || []) }, [])
-  const loadMemory = useCallback(() => {
-    api.memoryPreferences().then(d => setPref(d.content || ''))
-    api.memoryProjects().then(d => setProj(d.content || ''))
-    api.memoryHistory().then(d => setHist(d.content || ''))
-  }, [])
+  const { confirm, confirmDialog } = useConfirm()
+  // Which step of a delete failed decides the banner's title: the request
+  // itself (the row is still stored) or the list refresh after it succeeded
+  // (the row is gone but may still be shown).
+  const [deleteError, setDeleteError] = useState<{ step: 'delete' | 'refresh' | 'nothing'; message?: string } | null>(null)
+  // A `null` scope is the one row whose Delete cannot be limited to itself: the
+  // route refuses the stored value as a selector, so the client sends none and
+  // the unselective delete removes every same-rule row in every scope. That is
+  // the collateral this tab otherwise exists to prevent, so it asks first --
+  // through the shared themed dialog, whose confirm button restates the act.
+  const deleteLesson = async (l: Lesson) => {
+    if (l.repo_scope === null && !(await confirm({
+      title: i18nT('pages.overview.memoryTab.delete_unusable_scope_title'),
+      body: i18nT('pages.overview.memoryTab.delete_unusable_scope_confirm'),
+      confirmLabel: i18nT('pages.overview.memoryTab.delete_unusable_scope_button'),
+    }))) return
+    setDeleteError(null)
+    // Both steps are awaited and reported where the row is, rather than letting
+    // the click end in silence: a rejected delete leaves the row stored, and a
+    // rejected refresh leaves a deleted row on screen.
+    // `exact`: this row holds the whole rule, so it names exactly one row; the
+    // route's default substring match would also take every longer rule that
+    // contains it.
+    let result: { ok: boolean }
+    try {
+      result = await api.deleteLesson(l.rule, l.repo_scope, { scope: l.scope, workspace: l.workspace, exact: true })
+    } catch (e) {
+      setDeleteError({ step: 'delete', message: e instanceof Error ? e.message : String(e) })
+      return
+    }
+    if (!result?.ok) {
+      // The store found no row matching these selectors: the list is stale, or
+      // the displayed (redacted) text differs from the stored one.
+      setDeleteError({ step: 'nothing' })
+    }
+    try {
+      await loadLessons()
+    } catch (e) {
+      setDeleteError({ step: 'refresh', message: e instanceof Error ? e.message : String(e) })
+    }
+  }
   const lessonComparators = useMemo(() => ({
     rule: (a: Lesson, b: Lesson) => a.rule.localeCompare(b.rule),
     category: (a: Lesson, b: Lesson) => a.category.localeCompare(b.category),
+    repo_scope: (a: Lesson, b: Lesson) => compareText(a.repo_scope ?? '', b.repo_scope ?? ''),
     ts: (a: Lesson, b: Lesson) => new Date(a.ts).getTime() - new Date(b.ts).getTime(),
   }), [])
   const recentLessons = useMemo(() => lessons.slice(-20), [lessons])
   const { sorted: sortedLessons, sort: lessonSort, toggle: toggleLessonSort } = useSortableTable(recentLessons, 'memory-lessons', lessonComparators, { key: 'ts', dir: 'desc' })
   useEffect(() => {
-    loadMemory()
     api.memorySettings().then(d => { setIdleHours(d.history_idle_hours ?? 3); setMaxDays(d.history_max_days ?? 90); setMigrated(d.migrated ?? false) })
     loadLessons()
-  }, [loadLessons, loadMemory])
-  useEffect(() => { loadLessons(); loadMemory() }, [refreshTrigger, loadLessons, loadMemory])
+  }, [loadLessons])
+  // The page's own refresh signal. Invalidated by query-key PREFIX rather than
+  // for the selected store only, so the rows cached for a store the user looked
+  // at earlier cannot outlive the refresh and reappear on the next switch.
+  useEffect(() => {
+    loadLessons()
+    for (const prefix of MEMORY_QUERY_PREFIXES) {
+      queryClient.invalidateQueries({ queryKey: prefix })
+    }
+  }, [refreshTrigger, loadLessons, queryClient])
   const consolidate = async () => {
     setConsolidating(true); setConsolidateMsg(''); setConsolidateOk(false)
     const sessions = await api.sessions(200).catch(() => ({ sessions: [] }))
@@ -109,9 +297,6 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     })
   }
   return (<>
-    {/* Graph/vector internals live on the Developer page (Memory tab); this
-        surface is the user-facing browser: settings, preferences, projects,
-        daily history, and lessons. */}
     <Card><CardTitle>{i18nT('pages.overview.memoryTab.memory_settings')} <InfoTip text={i18nT('pages.overview.memoryTab.controls_how_conversation_history_is_consolidate')} /></CardTitle>
       <div className="flex gap-3 items-end flex-wrap">
         <label htmlFor="memory-idle-hours" className="flex flex-col gap-1 text-[13px] text-muted">
@@ -133,14 +318,74 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
     </Card>
     <VectorMemoryCard onActiveChange={setVectorActive} onMigratedChange={setMigrated} />
     <EmbeddingModelCard />
+    <details onToggle={event => setRecordsOpen(event.currentTarget.open)}>
+      <summary className="min-h-11 cursor-pointer rounded-lg border border-border p-3 text-[13px] text-muted">
+        <SlidersHorizontal className="lucide-inline mr-2" aria-hidden="true" />
+        {i18nT('memoryV2.edit_saved_memories')}
+      </summary>
+      {recordsOpen && <div className="mt-4"><MemoryRecordsEditor store="default" onDirtyChange={setRecordDirty} /></div>}
+    </details>
+    {/* The graph explorer lives on Developer. This user-facing V1 browser keeps
+        its preferences, projects, history, semantic/episodic records, recovery,
+        settings and lessons in the normal page flow. */}
+    {/* `vectorActive` comes from the vector card, which reads the global store,
+        independently of the picked one — so these three text documents are hidden whenever THAT
+        store has migrated to semantic memory, whichever store the picker names.
+        Pre-existing coupling, kept rather than widened: making the gate per-store
+        needs the vector card to take the picker too, and that card is where the
+        migration state is actually known. */}
     {!vectorActive && (<>
-      <Card><CardTitle>{i18nT('pages.overview.memoryTab.preferences')} <InfoTip text={i18nT('pages.overview.memoryTab.learned_user_preferences_coding_style_tools_work')} /> <Btn onClick={async () => { await api.saveMemoryPreferences(pref); setPrefSaved(true); scheduleClear(() => setPrefSaved(false), 2000) }}>{prefSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn></CardTitle>
-        <textarea aria-label={i18nT('pages.overview.memoryTab.preferences')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={8} value={pref} onChange={e => setPref(e.target.value)} placeholder={i18nT('pages.overview.memoryTab.loading')} /></Card>
-      <Card><CardTitle>{i18nT('pages.overview.memoryTab.projects')} <Btn onClick={async () => { await api.saveMemoryProjects(proj); setProjSaved(true); scheduleClear(() => setProjSaved(false), 2000) }}>{projSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn></CardTitle>
-        <textarea aria-label={i18nT('pages.overview.memoryTab.projects')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-body outline-none resize-y leading-relaxed transition-colors focus-ring" rows={8} value={proj} onChange={e => setProj(e.target.value)} placeholder={i18nT('pages.overview.memoryTab.loading')} /></Card>
-      <Card><CardTitle>{i18nT('pages.overview.memoryTab.daily_history')} <Btn onClick={async () => { await api.saveMemoryHistory(hist); setHistSaved(true); scheduleClear(() => setHistSaved(false), 2000) }}>{histSaved ? <><Check className="lucide-inline" /> {i18nT('pages.overview.memoryTab.saved')}</> : i18nT('pages.overview.memoryTab.save')}</Btn></CardTitle>
-        <textarea aria-label={i18nT('pages.overview.memoryTab.daily_history')} className="w-full bg-bg-elevated border border-border rounded-md p-3 text-text text-sm font-mono outline-none resize-y leading-relaxed transition-colors focus-ring" rows={10} value={hist} onChange={e => setHist(e.target.value)} placeholder={i18nT('pages.overview.memoryTab.no_history_yet')} /></Card>
+      {/* `key={store}`: a remount is what drops an unsaved draft when the scope
+          changes, so a body typed against one store can never be saved into
+          another. */}
+      <MemoryDocCard
+        key={`preferences-${store}`}
+        docKey="preferences"
+        onDirtyChange={dirty => setDocDirty(old => old.preferences === dirty ? old : { ...old, preferences: dirty })}
+        store={store}
+        title={i18nT('pages.overview.memoryTab.preferences')}
+        info={i18nT('pages.overview.memoryTab.learned_user_preferences_coding_style_tools_work')}
+        rows={8}
+        placeholder={i18nT('pages.overview.memoryTab.loading')}
+        read={s => api.memoryPreferences(s)}
+        write={(c, s) => api.saveMemoryPreferences(c, s)}
+      />
+      <MemoryDocCard
+        key={`projects-${store}`}
+        docKey="projects"
+        onDirtyChange={dirty => setDocDirty(old => old.projects === dirty ? old : { ...old, projects: dirty })}
+        store={store}
+        title={i18nT('pages.overview.memoryTab.projects')}
+        rows={8}
+        placeholder={i18nT('pages.overview.memoryTab.loading')}
+        read={s => api.memoryProjects(s)}
+        write={(c, s) => api.saveMemoryProjects(c, s)}
+      />
+      <MemoryDocCard
+        key={`history-${store}`}
+        docKey="history"
+        onDirtyChange={dirty => setDocDirty(old => old.history === dirty ? old : { ...old, history: dirty })}
+        store={store}
+        title={i18nT('pages.overview.memoryTab.daily_history')}
+        rows={10}
+        mono
+        placeholder={i18nT('pages.overview.memoryTab.no_history_yet')}
+        read={s => api.memoryHistory(s)}
+        write={(c, s) => api.saveMemoryHistory(c, s)}
+      />
     </>)}
+    {/* Store-specific keys REMOUNT each card on a store switch, which discards
+        its per-store local state. Without it, MemoryBackupsCard keeps an ARMED
+        restore across the switch — and a backup's name is not unique across stores
+        (one sweep stamps every store's copy identically, and every store's file
+        stem is `memory`), so the same-named row of the newly picked store renders
+        already-confirmed and one click restores a store the operator never armed.
+        Its "Back up now" and "Restored" status lines have the same problem in a
+        milder form: they would report a mutation that landed on the store the card
+        no longer shows. */}
+    {storeReadable && <MemoryCarveCard key={`carve-${store}`} store={store} />}
+    {storeReadable && <MemoryRetiredCard key={`retired-${store}`} store={store} />}
+    <MemoryBackupsCard key={`backups-${store}`} store={store} />
     {!vectorActive && (
       <Card><CardTitle>{i18nT('pages.overview.memoryTab.lessons')} <InfoTip text={i18nT('pages.overview.memoryTab.persistent_lessons_injected_into_every_session_a')} /></CardTitle>
       <div className="flex gap-2 items-center flex-wrap mb-3">
@@ -169,11 +414,27 @@ export default function MemoryTab({ refreshTrigger }: { refreshTrigger: number }
           </span>
         )}
       </div>
-      <table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
-        <tbody>{lessons.length === 0 ? <tr><td colSpan={4}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
-          <tr key={`${l.rule}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(l.ts)}</td>
-            <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={async () => { await api.deleteLesson(l.rule); loadLessons() }}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
-        ))}</tbody></table></Card>
+      {/* No agent hand-off: it navigates away, and the Add row above may hold
+          an unsaved rule draft. */}
+      <ErrorNotice
+        title={i18nT(deleteError?.step === 'refresh' ? 'pages.overview.memoryTab.lessons_refresh_failed' : 'pages.overview.memoryTab.delete_failed')}
+        message={deleteError?.step === 'nothing' ? i18nT('pages.overview.memoryTab.delete_matched_nothing') : deleteError?.message}
+        onDismiss={() => setDeleteError(null)}
+        askAgent={false}
+        className="mb-2"
+      />
+      {/* Scrolls sideways rather than clipping: five columns plus a long path
+          fragment overrun a narrow viewport, and the card hides overflow. */}
+      <div className="overflow-x-auto"><table className="w-full border-collapse table-striped"><thead><tr><SortableHeader label={i18nT('pages.overview.memoryTab.rule')} sortKey="rule" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.category')} sortKey="category" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.scope')} sortKey="repo_scope" sort={lessonSort} onToggle={toggleLessonSort} /><SortableHeader label={i18nT('pages.overview.memoryTab.when')} sortKey="ts" sort={lessonSort} onToggle={toggleLessonSort} /><th aria-label={i18nT('pages.overview.memoryTab.actions')} className="text-left text-muted text-[12px] uppercase tracking-[.04em] px-2.5 py-2 border-b border-border font-medium"></th></tr></thead>
+        <tbody>{lessons.length === 0 ? <tr><td colSpan={5}><EmptyState icon={<BookOpen className="lucide-inline" />} title={i18nT('pages.overview.memoryTab.no_lessons_yet')} subtitle={i18nT('pages.overview.memoryTab.lessons_empty_subtitle')} /></td></tr> : sortedLessons.map((l) => (
+          // Scope is part of the key: a scoped and a global row sharing rule text
+          // are two lessons, and can share a timestamp. String() keeps the null
+          // (unusable-scope) row distinct from the "" (global) one; the JSONL tier
+          // keeps a workspace row distinct from a global one.
+          <tr key={`${l.rule}-${String(l.repo_scope)}-${l.workspace ?? ''}-${l.ts}`} className="hover:bg-bg-hover transition-colors"><td className="px-2.5 py-2 border-b border-border text-sm">{esc(l.rule)}</td><td className="px-2.5 py-2 border-b border-border text-sm"><Badge variant="ok">{l.category}</Badge></td><td className="px-2.5 py-2 border-b border-border text-sm">{scopeCell(l)}</td><td className="px-2.5 py-2 border-b border-border text-sm">{fmtDateTimeNumeric(l.ts)}</td>
+            <td className="px-2.5 py-2 border-b border-border text-sm"><Btn danger onClick={() => deleteLesson(l)}>{i18nT('pages.overview.memoryTab.delete')}</Btn></td></tr>
+        ))}</tbody></table></div></Card>
     )}
+    {confirmDialog}
   </>)
 }

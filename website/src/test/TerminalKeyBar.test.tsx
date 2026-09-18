@@ -102,6 +102,36 @@ function makeSelectableTerm(
   }
 }
 
+/**
+ * Force the coarse/fine pointer environment isTouchDevice() reads. isTouchDevice
+ * checks `matchMedia('(pointer: coarse)').matches || matchMedia('(hover: none)')
+ * .matches`; happy-dom's default matchMedia answers false for both (fine
+ * pointer), which is why the pre-existing copy tests exercise the non-touch
+ * (fallback-included) path without stubbing. Returns a restore fn — call it in
+ * a finally so the stub never leaks into a later test.
+ */
+function stubPointer(coarse: boolean): () => void {
+  const original = Object.getOwnPropertyDescriptor(window, 'matchMedia')
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: (q: string) => ({
+      matches: coarse && (q.includes('coarse') || q.includes('hover: none')),
+      media: q,
+      onchange: null,
+      addEventListener() {},
+      removeEventListener() {},
+      addListener() {},
+      removeListener() {},
+      dispatchEvent: () => false,
+    }),
+  })
+  return () => {
+    if (original) Object.defineProperty(window, 'matchMedia', original)
+    else delete (window as unknown as { matchMedia?: unknown }).matchMedia
+  }
+}
+
 afterEach(cleanup)
 
 describe('TerminalKeyBar', () => {
@@ -463,14 +493,28 @@ describe('TerminalKeyBar', () => {
    */
   describe('copy key', () => {
     const origClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const origExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
     afterEach(() => {
       if (origClipboard) Object.defineProperty(navigator, 'clipboard', origClipboard)
       else delete (navigator as unknown as Record<string, unknown>).clipboard
+      if (origExecCommand) Object.defineProperty(document, 'execCommand', origExecCommand)
+      else delete (document as unknown as Record<string, unknown>).execCommand
     })
     function stubWrite(writeText: ((t: string) => Promise<void>) | undefined) {
       Object.defineProperty(navigator, 'clipboard', {
         configurable: true,
         value: writeText ? { writeText } : undefined,
+      })
+    }
+    // copyToClipboard's execCommand fallback gets a real chance to run now
+    // that Copy routes through it, so a test asserting a GENUINE residual
+    // failure must stub execCommand itself — happy-dom's own implementation
+    // is unmocked and unreliable, same as every other clipboard test in this
+    // suite (clipboard.test.ts, clipboardCov80.test.ts).
+    function stubExecCommand(result: boolean) {
+      Object.defineProperty(document, 'execCommand', {
+        configurable: true,
+        value: vi.fn(() => result),
       })
     }
     function withSelection(term: Terminal, text: string) {
@@ -536,8 +580,10 @@ describe('TerminalKeyBar', () => {
     })
 
     /**
-     * A failed/rejected copy must NOT clear the selection: the text never
-     * reached the clipboard, so the user keeps their selection to retry.
+     * A copy that fails all the way through — the async API rejects AND the
+     * execCommand fallback also reports failure — must NOT clear the
+     * selection: the text never reached the clipboard, so the user keeps
+     * their selection to retry.
      */
     it('does not clear the selection when the copy fails', async () => {
       const { term } = makeTerm()
@@ -545,26 +591,31 @@ describe('TerminalKeyBar', () => {
       const clearSelection = vi.fn()
       ;(term as unknown as { clearSelection: () => void }).clearSelection = clearSelection
       stubWrite(() => Promise.reject(new DOMException('denied', 'NotAllowedError')))
+      stubExecCommand(false)
       render(<TerminalKeyBar term={term} />)
 
       await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
-      // Let the rejection propagate.
+      // Let the rejection and the fallback attempt both propagate. A refused
+      // permission is recoverable, so the remedy asks for the grant rather
+      // than reporting a dead end.
       await screen.findByRole('button', { name: 'Allow clipboard access' })
 
       expect(clearSelection).not.toHaveBeenCalled()
     })
 
     /**
-     * On the common first-run permission deny, the failure remedy ("Allow
-     * clipboard access") and the still-standing Select stage label ("Line · tap
-     * for all") would share the 390px row and both truncate, muting the
-     * decision-critical remedy. The failure path must collapse the VISIBLE
-     * select label back to idle while KEEPING the stage machinery intact — so
-     * the next Select tap still advances to stage 2 rather than restarting.
+     * On a genuine residual failure (the async API rejects AND the fallback
+     * also fails), the remedy ("Allow clipboard access") and the still-standing
+     * Select stage label ("Line · tap for all") would share the 390px row and
+     * both truncate, muting the decision-critical remedy. The failure path
+     * must collapse the VISIBLE select label back to idle while KEEPING the
+     * stage machinery intact — so the next Select tap still advances to stage
+     * 2 rather than restarting.
      */
     it('resets the select label AND stage together on copy failure', async () => {
       const { term, selectLines, selectAll } = makeSelectableTerm(['top', 'bottom'], { baseY: 0, cursorY: 2 })
       stubWrite(() => Promise.reject(new DOMException('denied', 'NotAllowedError')))
+      stubExecCommand(false)
       render(<TerminalKeyBar term={term} />)
 
       // Stage 1 via Select puts the "Line · tap for all" label up.
@@ -746,22 +797,28 @@ describe('TerminalKeyBar', () => {
       expect(await screen.findByRole('button', { name: 'Long-press a line or tap Select, then Copy' })).toBeTruthy()
     })
 
-    it('surfaces a denied clipboard write with the remedy, not a generic failure', async () => {
+    /**
+     * A permission-denied writeText no longer ends the attempt: the fallback
+     * still gets a real chance to land the text, and a "Copied" success beat
+     * is what a working fallback shows — not a failure.
+     */
+    it('lands the copy via the fallback when the clipboard write is permission-denied', async () => {
       const { term } = makeTerm()
       withSelection(term, 'secret')
       stubWrite(() => Promise.reject(new DOMException('denied', 'NotAllowedError')))
+      stubExecCommand(true)
       render(<TerminalKeyBar term={term} />)
 
       await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
 
-      const failed = await screen.findByRole('button', { name: 'Allow clipboard access' })
-      expect(failed.textContent).toContain('Allow clipboard access')
+      expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy()
     })
 
-    it('surfaces a non-permission rejection as a plain failure', async () => {
+    it('surfaces a non-permission rejection as a plain failure when the fallback also fails', async () => {
       const { term } = makeTerm()
       withSelection(term, 'text')
       stubWrite(() => Promise.reject(new Error('boom')))
+      stubExecCommand(false)
       render(<TerminalKeyBar term={term} />)
 
       await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
@@ -774,17 +831,36 @@ describe('TerminalKeyBar', () => {
      * LAN access — the self-hosted-dashboard-from-a-phone case). It must name
      * the HTTPS remedy, and it must decide that BEFORE reporting no-selection
      * would be wrong: here there IS a selection, so the HTTPS branch is what
-     * should show.
+     * should show. This still requires the execCommand fallback to ALSO fail
+     * — a missing async API alone no longer ends the attempt.
      */
-    it('names the HTTPS remedy when the clipboard API is missing (non-secure context)', async () => {
+    it('names the HTTPS remedy when the clipboard API is missing and the fallback also fails', async () => {
       const { term } = makeTerm()
       withSelection(term, 'text')
       stubWrite(undefined)
+      stubExecCommand(false)
       render(<TerminalKeyBar term={term} />)
 
       await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
 
       expect(await screen.findByRole('button', { name: 'Copy needs a secure (HTTPS) connection' })).toBeTruthy()
+    })
+
+    /**
+     * A missing clipboard API is no longer fatal by itself: the execCommand
+     * fallback still gets a real attempt, and when IT lands the text the key
+     * must confirm success rather than naming a remedy nothing actually needed.
+     */
+    it('lands the copy via the fallback when the clipboard API is missing but execCommand works', async () => {
+      const { term } = makeTerm()
+      withSelection(term, 'text')
+      stubWrite(undefined)
+      stubExecCommand(true)
+      render(<TerminalKeyBar term={term} />)
+
+      await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+
+      expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy()
     })
 
     it('cancels pointerdown so copying never dismisses the on-screen keyboard', () => {
@@ -797,6 +873,35 @@ describe('TerminalKeyBar', () => {
       screen.getByRole('button', { name: 'Copy' }).dispatchEvent(ev)
 
       expect(ev.defaultPrevented).toBe(true)
+    })
+
+    /**
+     * The reason this key once refused the shared helper: its execCommand
+     * fallback used to leave focus on the scratch textarea, dismissing the
+     * on-screen keyboard mid-interaction. The helper now restores whatever was
+     * focused beforehand (the Copy button itself, once tapped) — so the
+     * terminal pane must not lose that focus to a stray offscreen textarea
+     * once a fallback-routed copy completes.
+     */
+    it('keeps the tapped Copy button focused after a copy that falls back to execCommand', async () => {
+      const { term } = makeTerm()
+      withSelection(term, 'text')
+      stubWrite(() => Promise.reject(new DOMException('denied', 'NotAllowedError')))
+      stubExecCommand(true)
+      render(<TerminalKeyBar term={term} />)
+      // makeTerm() itself plants xterm's own hidden textarea in document.body
+      // (unrelated to the clipboard fallback), so assert no NEW one is added
+      // rather than that none exists at all.
+      const textareasBefore = document.querySelectorAll('textarea').length
+
+      const copyBtn = screen.getByRole('button', { name: 'Copy' })
+      copyBtn.focus()
+      await userEvent.click(copyBtn)
+      await screen.findByRole('button', { name: 'Copied' })
+
+      // No leaked scratch textarea, and focus landed back where the tap put it.
+      expect(document.querySelectorAll('textarea').length).toBe(textareasBefore)
+      expect(document.activeElement).toBe(copyBtn)
     })
 
     /**
@@ -893,6 +998,65 @@ describe('TerminalKeyBar', () => {
         expect(screen.queryByRole('button', { name: 'Long-press a line or tap Select, then Copy' })).toBeNull()
       } finally {
         vi.useRealTimers()
+      }
+    })
+
+    /**
+     * Touch, no async Clipboard API (a plain-HTTP phone — where EVERY touch
+     * Copy takes this path). The key must name the HTTPS remedy and must NOT
+     * stage the execCommand textarea: on the coarse-pointer devices this bar
+     * exists for, the fallback's ta.select() dismisses the on-screen keyboard
+     * and collapses the layout mid-interaction — the exact regression the key
+     * was built to avoid, which is why touch never runs the fallback.
+     */
+    it('on touch with no async API, names the HTTPS remedy and stages NO textarea', async () => {
+      const restore = stubPointer(true)
+      try {
+        const { term } = makeTerm()
+        withSelection(term, 'text')
+        stubWrite(undefined) // no async Clipboard API (non-secure origin)
+        // A spy the test can inspect: execCommandCopy is the ONLY thing that
+        // stages a textarea, so asserting it never ran proves none was staged.
+        const execCommand = vi.fn(() => true)
+        Object.defineProperty(document, 'execCommand', { configurable: true, value: execCommand })
+        // xterm's own hidden textarea is planted by makeTerm(); assert no NEW
+        // one appears (the fallback would add exactly one).
+        const textareasBefore = document.querySelectorAll('textarea').length
+        render(<TerminalKeyBar term={term} />)
+
+        await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+
+        expect(await screen.findByRole('button', { name: 'Copy needs a secure (HTTPS) connection' })).toBeTruthy()
+        // No fallback attempt: execCommand untouched and no scratch textarea.
+        expect(execCommand).not.toHaveBeenCalled()
+        expect(document.querySelectorAll('textarea').length).toBe(textareasBefore)
+      } finally {
+        restore()
+      }
+    })
+
+    /**
+     * Fine pointer (desktop), no async Clipboard API. Here the fallback IS
+     * wanted — a physical keyboard means ta.select() dropping focus is
+     * harmless — so the copy lands via execCommand and the key confirms
+     * "Copied" rather than naming a remedy nothing needed. This pins the
+     * non-touch branch explicitly rather than relying on the environment
+     * default.
+     */
+    it('on a fine pointer with no async API, copies through the execCommand fallback', async () => {
+      const restore = stubPointer(false)
+      try {
+        const { term } = makeTerm()
+        withSelection(term, 'text')
+        stubWrite(undefined)
+        stubExecCommand(true)
+        render(<TerminalKeyBar term={term} />)
+
+        await userEvent.click(screen.getByRole('button', { name: 'Copy' }))
+
+        expect(await screen.findByRole('button', { name: 'Copied' })).toBeTruthy()
+      } finally {
+        restore()
       }
     })
   })

@@ -2004,8 +2004,8 @@ class TestPrAiFingerprint(unittest.TestCase):
 
     def test_an_edited_comment_changes_it(self):
         # Editing a comment changes neither its created_at nor the comment count,
-        # so a metadata-only digest would keep serving a summary written from text
-        # that no longer exists.
+        # so a metadata-only digest would keep serving a summary written from the
+        # replaced text.
         self.assertNotEqual(
             self._fp(), self._fp(timeline=[_ev("comment", "a", "2026-01-01", "edited")])
         )

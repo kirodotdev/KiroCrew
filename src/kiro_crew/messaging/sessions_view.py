@@ -6,8 +6,9 @@ answers about each transcript on disk: what it is called, which agent ran it,
 and whether it is live. That reading is pure filesystem work with no channel in
 it, so it lives here and each surface owns only its own rendering.
 
-Dependency direction stays one-way: this module imports ``config.paths`` and
-``security`` and nothing from ``kiro_crew.slack`` / ``kiro_crew.dashboard``.
+Dependency direction stays one-way: this module imports ``config.paths``,
+``history`` and ``security``, and nothing from ``kiro_crew.slack`` /
+``kiro_crew.dashboard``.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.paths import data_home
+from kiro_crew.history import transcript_stem
 from kiro_crew.security import redact
 from kiro_crew.sel import sel
 
@@ -92,6 +94,85 @@ def _default_session_title(key: str, kind: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Dismissal
+# ---------------------------------------------------------------------------
+
+
+def _resolved_session_key(stem_key: str, sessions: "SessionManager | None") -> str:
+    """The real session key behind a transcript filename, where one is knowable.
+
+    ``history._safe_key`` folds every ``:`` in a session key to ``_`` to build
+    the filename, and that fold is not reversible: nothing in
+    ``slack_C123.1700000000`` says which underscores were colons. Two cases can
+    still be answered:
+
+    * ``dashboard_`` has exactly one colon, at a fixed position, so *stem_key*
+      arrives already unfolded from the caller;
+    * a CHANNEL session's unfolded key is held by the session map, and
+      ``SessionManager.channel_key_for_stem`` is the only authority on it. An
+      empty answer means "not knowable", and then the folded spelling stands.
+
+    Getting this wrong is not cosmetic here. The key decides ``has_session``,
+    so a live Slack conversation read under its folded spelling looks idle --
+    which now means its row is HIDDEN if it carries a dismissal, and the End
+    button on that row carries a key naming no live session, so it writes the
+    dismissal without stopping the process it appeared to end. It is also the
+    key the Resume and End buttons carry, so the resolved spelling is what
+    makes those buttons address the session the channel is actually running.
+
+    *sessions* is duck-typed (the collector documents only ``has_session``), so
+    the resolver is optional and its absence simply leaves the fold in place.
+
+    The answer is VERIFIED rather than trusted: it counts only when folding it
+    back reproduces the stem that was asked about, the same check
+    ``messaging.session_resume`` applies to this resolver. Binding a row to a
+    key the filename does not fold to would put the End button on one
+    conversation and the transcript of another.
+    """
+    resolve = getattr(sessions, "channel_key_for_stem", None)
+    if not callable(resolve):
+        return stem_key
+    try:
+        resolved = str(resolve(stem_key) or "")
+    except Exception:  # noqa: BLE001 - a listing must not fail on a map read
+        logger.debug("sessions view: stem resolve failed for %s", stem_key, exc_info=True)
+        return stem_key
+    if not resolved or transcript_stem(resolved) != stem_key:
+        return stem_key
+    return resolved
+
+
+def _row_is_ended(*, dismissed: bool, active: bool) -> bool:
+    """True when a row has been dismissed and is not live again.
+
+    THE definition of "ended" for every surface that lists sessions, so the
+    End button, the row marker and the opt-in cannot drift apart.
+
+    *dismissed* is the transcript metadata's ``closed`` flag — the durable
+    record that the user put this conversation away, written by the Slack End
+    button and by a dashboard tab close. There is one such record per
+    transcript: a tab and its channel conversation share the file, so a
+    dismissal is stored once and every surface reads the same one.
+
+    A live session outranks the flag. ``has_session`` is true only while a
+    process is actually serving the key, so a resumed conversation is back in
+    the list immediately, without waiting for anyone to rewrite the file.
+
+    The flag alone otherwise decides, and deliberately **not** "unless the
+    file was written after the dismissal", which is how
+    ``dashboard.channel_slots._close_stands`` reads the same flag for the
+    dashboard's own listing. The two surfaces are answering different
+    questions. That one asks whether a conversation outran a closed tab and
+    compares against the channel's last write. This one asks whether the user
+    still wants the row, and background housekeeping writes the file without
+    the user doing anything — consolidation on end, skill extraction, an
+    auto-title. Letting any write undo the dismissal would put the row
+    straight back, which is the behaviour End is supposed to stop.
+    """
+    return dismissed and not active
+
+
+# ---------------------------------------------------------------------------
 # Collector
 # ---------------------------------------------------------------------------
 
@@ -103,10 +184,11 @@ def _collect_recent_sessions(
     kind: "str | Iterable[str] | None" = None,
     sessions_dir: Path | None = None,
     with_messages: bool = True,
+    include_ended: bool = False,
 ) -> list[dict]:
     """Read JSONLs under ``<config_dir>/sessions/`` and return a sorted list.
 
-    Each row: ``{key, title, agent, mtime, active, kind, msgs}`` where
+    Each row: ``{key, title, agent, mtime, active, ended, kind, msgs}`` where
     ``msgs`` is a list of ``{"role": str, "content": str}`` dicts (last
     ``_SESSIONS_MAX_PREVIEW`` user/assistant messages, truncated to
     ``_SESSIONS_MAX_MSG_CHARS`` chars but **not** redacted — redaction
@@ -120,17 +202,34 @@ def _collect_recent_sessions(
     an iterable of kinds (the Home Tab uses this to fetch dashboard +
     taskrunner in a single directory scan), or ``None`` for no filter.
 
+    *include_ended* keeps rows the user has dismissed. Default ``False``: a
+    dismissed row is what the End button promises to take away, and leaving
+    it in means End appears to do nothing while the row still competes for
+    one of *limit* slots. See :func:`_row_is_ended` for what counts.
+
     Sorted by mtime descending, capped at *limit*. The kind filter and the
     mtime sort key are both derivable without opening a file (kind from the
-    filename stem, mtime from ``stat``), so only the newest *limit*
-    matching transcripts are actually read — the directory can hold an
-    unbounded number of historical sessions without the read cost growing
-    with it. Files that turn out to be empty or unreadable are skipped and
-    the scan continues down the mtime order, so the result still holds
-    *limit* rows whenever enough valid transcripts exist.
+    filename stem, mtime from ``stat``), so the number of transcripts read
+    does not grow with the size of the directory — it is *limit* plus however
+    many SKIPPED candidates are met on the way down the mtime order. Skipping
+    keeps going rather than ending the scan, so the result still holds *limit*
+    rows whenever enough usable transcripts exist.
+
+    Three things are skipped: an empty file, an unreadable one, and a
+    dismissed row. The first two are corrupt-file cases, so before dismissals
+    existed the read count was ``limit`` in every ordinary directory. A
+    dismissal is an ORDINARY state, so the extra reads are now reachable in
+    normal use: with the *n* newest rows dismissed, *n* transcripts are read
+    and discarded before the first row is kept. That cost is accepted rather
+    than avoided, because the flag lives on the metadata line and cannot be
+    read from ``stat``, and because the alternative — letting a dismissed row
+    hold its slot — is the bug this exists to fix. It is bounded by the
+    directory and cheap to bound further: ``with_messages=False`` reads only
+    line 0, which is where the flag is.
 
     This function performs synchronous filesystem I/O (directory scan plus
-    up to *limit* whole-file reads, each bounded only by transcript size).
+    up to *limit* whole-file reads plus one per skipped candidate, each
+    bounded only by transcript size).
     Callers on the asyncio event loop MUST use
     :func:`_collect_recent_sessions_off_loop` instead of calling this
     directly — a multi-MB transcript read on the loop stalls every other
@@ -201,6 +300,7 @@ def _collect_recent_sessions(
 
         title = ""
         agent = "kirocrew"
+        dismissed = False
         msgs: list[dict] = []
 
         for line in lines:
@@ -214,6 +314,7 @@ def _collect_recent_sessions(
             if d.get("_type") == "metadata":
                 title = d.get("title") or title
                 agent = d.get("agent") or agent
+                dismissed = bool(d.get("closed"))
                 continue
             if not with_messages:
                 continue
@@ -230,14 +331,24 @@ def _collect_recent_sessions(
         if not title:
             title = _default_session_title(key, row_kind)
 
-        active = bool(sessions and sessions.has_session(key))
+        # Resolved HERE and not in the pre-scan: the resolver walks the session
+        # map, so doing it per candidate would make the scan cost grow with the
+        # directory, which the pre-scan exists to avoid. One resolve per
+        # candidate READ, which is *limit* kept rows plus the skipped ones --
+        # not *limit* flat, for the reason the read-count paragraph above gives.
+        row_key = _resolved_session_key(key, sessions)
+        active = bool(sessions and sessions.has_session(row_key))
+        ended = _row_is_ended(dismissed=dismissed, active=active)
+        if ended and not include_ended:
+            continue
         rows.append(
             {
-                "key": key,
+                "key": row_key,
                 "title": title[:80],
                 "agent": agent,
                 "mtime": mtime,
                 "active": active,
+                "ended": ended,
                 "kind": row_kind,
                 "msgs": msgs[-_SESSIONS_MAX_PREVIEW:],
             }
@@ -253,6 +364,7 @@ async def _collect_recent_sessions_off_loop(
     kind: "str | Iterable[str] | None" = None,
     sessions_dir: Path | None = None,
     with_messages: bool = True,
+    include_ended: bool = False,
 ) -> list[dict]:
     """Run :func:`_collect_recent_sessions` in a worker thread.
 
@@ -276,6 +388,9 @@ async def _collect_recent_sessions_off_loop(
     caller that discards it otherwise pays a multi-MB read per row for nothing.
     A ``False`` row still carries ``msgs``, as an empty list, so the shape does
     not fork.
+
+    *include_ended* keeps rows the user dismissed with End; see
+    :func:`_collect_recent_sessions`.
     """
     return await asyncio.to_thread(
         _collect_recent_sessions,
@@ -284,6 +399,7 @@ async def _collect_recent_sessions_off_loop(
         kind=kind,
         sessions_dir=sessions_dir,
         with_messages=with_messages,
+        include_ended=include_ended,
     )
 
 
@@ -311,6 +427,10 @@ async def collect_recent_sessions_audited(
     *caller* and *source* are the audit's subject and surface (e.g. a session key
     and ``"telegram"``). Returns the rows, or ``None`` when the collector failed
     and the caller only has to choose its own wording.
+
+    No ``include_ended`` passthrough: this wrapper has no callers yet, so the
+    parameter would be a surface nothing exercises. Add it with the first caller
+    that needs it.
     """
     try:
         rows = await _collect_recent_sessions_off_loop(

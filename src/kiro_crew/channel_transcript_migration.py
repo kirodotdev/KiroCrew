@@ -137,8 +137,8 @@ def _identity(message: dict) -> tuple:
 
     Content is compared through both redactors so the two files' copies of one
     message match. They can legitimately differ byte-for-byte: the dashboard
-    write path has always redacted model-authored text, while the channel path
-    historically stored it verbatim — so a credential-bearing turn exists as
+    write path redacts model-authored text, while text stored by the channel path
+    may be verbatim — so a credential-bearing turn exists as
     redacted text in the orphan and raw text in the channel file. Comparing raw
     content would call those two different messages and keep both.
     """

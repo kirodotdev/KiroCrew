@@ -37,6 +37,7 @@ from kiro_crew.dashboard.chat_folder_scaffold import (  # noqa: F401
 from kiro_crew.dashboard.chat_folders import (  # noqa: F401
     api_chat_folder_create,
     api_chat_folder_delete,
+    api_chat_folder_reorder,
     api_chat_folder_update,
     api_chat_folders,
     api_chat_slot_folder,
@@ -125,11 +126,9 @@ from kiro_crew.dashboard.chat_runner import (  # noqa: F401
     _run_chat,
 )
 from kiro_crew.dashboard.chat_slack import (  # noqa: F401
-    api_chat_slot_handoff,
     api_chat_slot_slack_link,
     api_chat_slot_slack_pause,
     api_chat_slot_slack_unlink,
-    api_handoff_channels,
     api_slack_channels,
 )
 from kiro_crew.dashboard.chat_tags import (  # noqa: F401

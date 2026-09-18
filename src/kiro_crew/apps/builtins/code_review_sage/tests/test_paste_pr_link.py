@@ -2,10 +2,10 @@
 """Pasting a PULL REQUEST link into the add-repo field.
 
 That field is the only place in the app you can type, so a URL from the clipboard
-lands there whatever it points at. It used to reject a PR link and tell the user to
-use the paste-PR box — which only exists once a repo is already picked, i.e. the
-thing they were trying to do. Now the PR's repo is pinned and the PR is reported
-back so the caller can open it.
+lands there whatever it points at. A PR link pins that PR's repo and reports the
+PR back so the caller can open it, rather than being refused in favour of the
+paste-PR box — which only exists once a repo is already picked, i.e. the thing the
+user is trying to do.
 """
 from __future__ import annotations
 
@@ -102,8 +102,8 @@ class TestRepoEndpointWithPullRequest(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("pull_request", _text(resp))
 
     async def test_reports_which_repo_was_added(self):
-        # The caller previously guessed repos[0], which is only right if the store
-        # happens to prepend.
+        # repos[0] is only the added repo if the store happens to prepend, so the
+        # response names it.
         await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]
             {"repo": "https://github.com/first/one"}))
         resp = await routes._handle_repos(_FakeRequest(  # type: ignore[arg-type]

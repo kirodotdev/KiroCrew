@@ -30,6 +30,7 @@ import {
   toSeconds,
 } from '../lib/pushToTalk'
 import { i18nT } from '../i18n/t'
+import { isTypingElement } from '../utils/editableTarget'
 
 interface Props {
   binding: PttBinding
@@ -67,9 +68,7 @@ type Status =
  * easier to get wrong than testing the predicate that actually decides.
  */
 export function isTypingTarget(target: EventTarget | null): boolean {
-  const el = target as HTMLElement | null
-  if (!el || typeof el.tagName !== 'string') return false
-  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable === true
+  return isTypingElement(target)
 }
 
 export function PttTestStrip({ binding, mode, holdMs, modeLabel, fieldLabel }: Props) {

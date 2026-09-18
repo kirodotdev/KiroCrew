@@ -49,7 +49,7 @@ adding a subsystem. The positions this RFC takes, one line each:
 5. **Placement** is a **sixth `HOOK_EVENTS` entry** (a `SessionTagsChanged`
    script-hook event), because the ask is to *run an automation now* on the
    transition, which is precisely what the script-hook engine does, not to
-   fold a log after the fact, which is what `src/kiro_crew/events/` is for.
+   fold a log after the fact, which is what an append-only event log is for.
 
 ## Motivation
 
@@ -230,16 +230,19 @@ path (`api_hook_test` → `run_script_hook`), its capability gate
 tuple (`hooks.py:93-99`) and the `ALLOWED_HOOK_EVENTS` frozenset
 (`validation.py:92-94`); existing hooks are unaffected.
 
-**Option B: a session-domain kind in `src/kiro_crew/events/`.** That package
-already has a `session` domain (`session/message`, `events/kinds.py:40`), and
-`rfc-mcp-lifecycle-event-log.md` is settling its first-emitter precedents right
-now (per-`key` monotonic `seq`, one gateway append writer, fail-open because "the
-log is observability, not audit"). A `session/tags-changed` kind would fit its
-envelope (`{v, kind, src, key, ts_ms, data}`, additive-only, opaque `key`,
-`RawEvent` tolerance, `events/base.py`).
+**Option B: a session-domain kind in a global lifecycle-event package.** The package
+this option named is deleted, so the option needs a base before it can be taken at
+all. It had a `session` domain already, and `rfc-mcp-lifecycle-event-log.md` was
+settling its first-emitter precedents (per-`key` monotonic `seq`, one gateway append
+writer, fail-open because "the log is observability, not audit"). A
+`session/tags-changed` kind would have fit its envelope (`{v, kind, src, key, ts_ms,
+data}`, additive-only, opaque `key`, unknown-kind tolerance). The surviving
+append-only stream is the per-unit crew log, whose scope is one crew or one session --
+a cross-session tag transition has no unit to belong to, so this option would need
+the `gateway` kind that stream does not yet define.
 
-**Recommendation: Option A.** The decisive difference is what the ask *does*. The
-`events/` log is an **observe-after-the-fact** surface, a fold/read that a
+**Recommendation: Option A.** The decisive difference is what the ask *does*. An
+event log is an **observe-after-the-fact** surface, a fold/read that a
 consumer polls or replays (its own contract says ordering and the write path
 "arrive with the first emitter", and its consumers "fold the log"). The request
 here is to **run an automation now**, at the moment of transition, exactly the
@@ -386,12 +389,12 @@ and the emit helper.
 - **Poll `GET /api/chat/slots` and diff (status quo).** Rejected: reaction
   latency equals the poll interval, and every consumer reimplements the diff and
   first-run baselining. This is the problem, not a solution.
-- **A `session/tags-changed` kind in `src/kiro_crew/events/` as the primary
+- **A `session/tags-changed` kind in a global lifecycle-event log as the primary
   mechanism.** Rejected as *primary* because the ask is run-now automation, and the
   log is an observe-after-the-fact fold; routing through it needs a separate
-  consumer that then dispatches a hook. May be added later as a *secondary*
-  history/observability emit once the lifecycle log has a live writer (that RFC's
-  Phase 1); this RFC does not block it.
+  consumer that then dispatches a hook. The package that option named is deleted, so
+  a secondary history/observability emit would first need a stream with a unit a
+  cross-session transition can belong to; this RFC does not block one.
 - **A vetoing / blocking variant (`PreToolUse`-style exit-2 block).** Rejected per
   Question 3: the user already performed the drag, and a broken hook must not make
   the board unusable.

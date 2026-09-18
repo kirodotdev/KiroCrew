@@ -750,6 +750,11 @@ resolution carries two earlier fixes (fetch through the configured url because b
 urls are neutralized, and never trust the frozen ``origin/<branch>`` tracking ref), and a
 second copy would have drifted from them.
 
+Queued-diff materialization encodes patch text as UTF-8 with `surrogateescape`
+and sends binary stdin to Git, preserving line endings and non-UTF-8 bytes on
+every platform. Apply-failure stderr is decoded with replacement before redaction
+and truncation; failure still resets the clone to its selected base.
+
 ### Why an unproven ruler halts the perf track (a reversed decision)
 
 ``canaryAdvisory`` defaulted to ``True``, so a perf run whose canary failed to clear the band

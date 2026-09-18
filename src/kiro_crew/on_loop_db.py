@@ -3,14 +3,14 @@
 The gateway runs one asyncio event loop. A blocking SQLite call made ON that
 loop stalls every session's turn while it waits, and a stall held past
 ``dashboard.loop_stall_exit_after_secs`` (25s) makes the watchdog kill the
-process and drop every in-flight turn in every channel (#1572, #3057).
+process and drop every in-flight turn in every channel.
 
 ``scripts/check_sync_io_in_async.py`` catches that defect only where it is
 written *lexically* inside an ``async def``. It cannot see the same call one
 frame down -- an ``async def`` that calls a plain synchronous helper which runs
 the query -- and no name-based AST scan can, without whole-program type
-inference. Closing that interprocedural half is what #3057 called remedy A: put
-the check at the store's connection accessor, where it fires for every caller
+inference. Closing that interprocedural half needs the check at the store's
+connection accessor, where it fires for every caller
 regardless of how deep in the stack the call sits.
 
 Adopting the guard in a store is two lines: build one MODULE-LEVEL
@@ -23,8 +23,8 @@ would leak them.
 ``history.py`` keeps its own guard rather than adopting this one. Its
 :class:`~kiro_crew.history.OnLoopPersistError` subclasses ``AssertionError``,
 a semantic this module deliberately does not reproduce (see
-:class:`OnLoopStoreError`), and that PR must not change. History's
-``ContextVar`` opt-out IS mirrored here since #8231 -- as the per-instance
+:class:`OnLoopStoreError`), and that must not change. History's
+``ContextVar`` opt-out IS mirrored here -- as the per-instance
 :meth:`OnLoopDBGuard.allow_on_loop` -- but scoped per guard rather than
 module-wide, so one store's vetted take cannot mute another's diagnostic;
 the two guards stay separate because their error taxonomies and strictness

@@ -213,9 +213,7 @@ class TestClientSpawnPidTrackingOffLoop:
             ),
             patch(
                 "kiro_crew.session._track_session_pid",
-                side_effect=lambda pid: session_track_threads.append(
-                    threading.current_thread()
-                ),
+                side_effect=lambda pid: session_track_threads.append(threading.current_thread()),
             ),
             # PID 12345 may be a real host process; an empty scan keeps the
             # early-descendant branch (and its own tracking write) out of
@@ -292,11 +290,11 @@ class TestRuntimeSpawnOffLoop:
             mkdir_threads.append(threading.current_thread())
             return real_mkdir(self, *a, **kw)
 
-        monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
-        monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
-        monkeypatch.setattr(
-            runtime_mod, "wrap_argv", lambda argv, mode, **kw: (list(argv), None)
-        )
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kw: (list(argv), None))
         monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", _rec_cgroup)
         monkeypatch.setattr(
             runtime_mod,
@@ -344,9 +342,7 @@ class TestSpawnCancellationSandboxCleanup:
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize("raise_in", ["cgroup", "env"])
-    async def test_client_spawn_cancel_unlinks_sandbox_file(
-        self, tmp_path, raise_in
-    ) -> None:
+    async def test_client_spawn_cancel_unlinks_sandbox_file(self, tmp_path, raise_in) -> None:
         sandbox_file = self._sandbox_file(tmp_path)
         client = AcpClient(work_dir=tmp_path / "workspace", session_key="k")
 
@@ -392,8 +388,10 @@ class TestSpawnCancellationSandboxCleanup:
         def _krb5(env):
             raise asyncio.CancelledError()
 
-        monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
-        monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
         monkeypatch.setattr(
             runtime_mod,
             "wrap_argv",
@@ -469,7 +467,7 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
                 "finish_suspended_spawn",
                 side_effect=_raise_if("finish_suspended_spawn"),
             ),
-            patch.object(client_mod, "_get_start_time", return_value=1.0),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=1.0),
             patch("kiro_crew.session._track_pid", side_effect=_raise_if("track_pid")),
             patch(
                 "kiro_crew.session._track_session_pid",
@@ -513,7 +511,7 @@ class TestSpawnFailureCannotLeaveAnUntrackedProcess:
                 return_value=mock_proc,
             ),
             patch.object(client_mod, "finish_suspended_spawn"),
-            patch.object(client_mod, "_get_start_time", return_value=1.0),
+            patch("kiro_crew.platform_compat.get_process_start_id", return_value=1.0),
             patch("kiro_crew.session._track_pid"),
             patch(
                 "kiro_crew.session._track_session_pid",
@@ -549,13 +547,15 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         async def resolve_bin(*, environ=None, home=None) -> str:
             return "/usr/bin/kiro-cli"
 
-        monkeypatch.setattr(runtime_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
-        monkeypatch.setattr(runtime_mod, "ensure_agent_materialized", lambda agent: None)
+        monkeypatch.setattr(client_mod, "_resolve_kiro_bin_for_spawn", resolve_bin)
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda agent: None)
         monkeypatch.setattr(runtime_mod, "wrap_argv", lambda argv, mode, **kw: (list(argv), None))
         monkeypatch.setattr(runtime_mod, "cgroup_scope_argv", lambda argv: list(argv))
         monkeypatch.setattr(runtime_mod, "resolve_krb5_ccname", lambda env: None)
         monkeypatch.setattr(runtime_mod, "inject_xdist_auto_cap", lambda env: None)
-        monkeypatch.setattr(runtime_mod, "_get_start_time", lambda pid: 1.0)
+        monkeypatch.setattr("kiro_crew.platform_compat.get_process_start_id", lambda pid: 1.0)
 
         async def fake_spawn(*_a, **_kw):
             return mock_proc
@@ -570,7 +570,7 @@ class TestRuntimeShieldSurvivesAFailedAppend:
         """The sibling of the client-side window. ``finish_suspended_spawn``
         documents its own resume failure as FATAL and ``_get_start_time`` can
         raise, and every ``runtime.spawn()`` caller catches only
-        ``AcpRuntimeError`` / ``AcpRuntimeDead`` -- so an ``OSError`` here used to
+        ``AcpRuntimeError`` / ``AcpRuntimeDead`` -- so an ``OSError`` here would
         propagate with a live, unrecorded process behind it."""
         mock_proc = MagicMock()
         mock_proc.pid = 5151
@@ -589,7 +589,8 @@ class TestRuntimeShieldSurvivesAFailedAppend:
             )
         else:
             monkeypatch.setattr(
-                runtime_mod, "_get_start_time", lambda pid: (_ for _ in ()).throw(boom)
+                "kiro_crew.platform_compat.get_process_start_id",
+                lambda pid: (_ for _ in ()).throw(boom),
             )
 
         monkeypatch.setattr(runtime_mod, "register_protected_pid", lambda pid: None)

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import time
 
+import pytest
+
 from kiro_crew.channel_history import ChannelHistory
 
 
@@ -322,6 +324,10 @@ class TestObservePersistence:
 
 class TestChannelHistoryContext:
     """Integration tests for ContextBuilder + ChannelHistory."""
+
+    # Every test here asserts the SHAPE of a built turn, so the host's own free
+    # memory must not be an input: see the fixture for the advisory it pins off.
+    pytestmark = pytest.mark.usefixtures("ample_host_resources")
 
     def test_context_builder_injects_channel_history(self):
         """ContextBuilder includes channel history when channel_id is provided."""

@@ -16,8 +16,6 @@ import pytest
 from kiro_crew.workflows.runner import WorkflowRunner
 from kiro_crew.workflows.validate import validate
 
-pytestmark = pytest.mark.asyncio
-
 NOW = "2026-07-17T00:00:00Z"
 
 
@@ -46,6 +44,7 @@ SCRIPT_WITH_PHASE_CM = (
 )
 
 
+@pytest.mark.asyncio
 async def test_with_ctx_phase_runs_successfully() -> None:
     """The community-reported bug: with ctx.phase() raised AttributeError."""
     res = await _runner().run(SCRIPT_WITH_PHASE_CM, run_id="phase_cm_1", now=NOW)
@@ -53,6 +52,7 @@ async def test_with_ctx_phase_runs_successfully() -> None:
     assert res.result == {"result": "echo:hello"}
 
 
+@pytest.mark.asyncio
 async def test_with_ctx_phase_emits_phase_events() -> None:
     """Both phases emit phase_started events in order."""
     res = await _runner().run(SCRIPT_WITH_PHASE_CM, run_id="phase_cm_2", now=NOW)
@@ -76,6 +76,7 @@ SCRIPT_WITH_LOG_CM = (
 )
 
 
+@pytest.mark.asyncio
 async def test_with_ctx_log_runs_successfully() -> None:
     """with ctx.log() also works without crashing."""
     res = await _runner().run(SCRIPT_WITH_LOG_CM, run_id="log_cm_1", now=NOW)
@@ -167,6 +168,7 @@ HELLO_WORLD_SCRIPT = (
 )
 
 
+@pytest.mark.asyncio
 async def test_hello_world_e2e_through_runner() -> None:
     """Full e2e: validate + exec a hello-world workflow with ctx.phase CM."""
     # Validate first

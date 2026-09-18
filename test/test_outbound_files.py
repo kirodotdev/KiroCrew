@@ -758,7 +758,7 @@ class TestLinkedAncestorGate:
     """On Windows, a destination beneath a linked ANCESTOR must be refused
     BEFORE ``is_symlink()`` -- that leaf probe is an lstat that resolves every
     ancestor, so the probe itself would traverse the link and open the SMB
-    connection the lexical UNC screen exists to prevent (#5962)."""
+    connection the lexical UNC screen exists to prevent."""
 
     def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:
         import types

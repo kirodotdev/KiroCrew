@@ -40,10 +40,10 @@ so the runner unwinds AT that point. The second is the stronger form -- the
 ``cancelled`` record then names an observed stop rather than a set flag -- but
 neither reaches work the runner spawned onto a thread the SDK does not own. For
 that work there is exactly one instant where a stop is possible: if the runner
-hands the work back -- the reported #7814 case returns an unwaited
+hands the work back -- a runner that submits to a pool returns an unwaited
 ``concurrent.futures.Future`` -- then ``_stop_returned_work`` asks it not to run,
 and the record states which of the two things happened. If nothing comes back,
-nothing can be asked; that residue is #7814's execution-ownership half, which needs
+nothing can be asked; that residue is the execution-ownership half, which needs
 the spawn to register itself and is out of scope here.
 
 **One writer per run file.** There is no lock helper beside ``atomic_write`` and
@@ -119,7 +119,7 @@ from kiro_crew.sel import sel
 logger = logging.getLogger(__name__)
 
 #: Identity of THIS gateway process. A run record carrying a different origin
-#: belongs to a process that no longer exists, which is what makes staleness
+#: belongs to a process that is gone, which is what makes staleness
 #: decidable without trusting a pid (pids are reused, and the reconciling
 #: process could hold the very pid a stale record names).
 _ORIGIN = uuid.uuid4().hex
@@ -354,9 +354,8 @@ _SUSPENDABLE_KINDS: tuple[tuple[str, Any], ...] = (
 )
 
 
-#: The wording for an unsettled future this SDK could NOT stop. Kept verbatim from
-#: the string #7737 shipped, because for this branch every clause of it is still
-#: true and a consumer matching the old text must still find it.
+#: The wording for an unsettled future this SDK could NOT stop. Every clause of it
+#: is true for this branch, and consumers match on the text, so it stays verbatim.
 _UNSETTLED_NOT_STOPPED = (
     "a future that is not settled, so the runner returned before its work "
     "finished; that work may still be running somewhere this SDK does not "
@@ -376,9 +375,9 @@ _UNSETTLED_STOPPED = (
 def _stop_returned_work(result: Any) -> bool:
     """Ask work a runner handed back to not run. ``True`` ONLY when it is stopped.
 
-    This is the reachability half of #7814. The SDK cannot stop work a runner
-    spawned onto a thread it does not own -- unless the runner hands the work back,
-    which the reported case does: it submits to a pool and returns the unwaited
+    This is the reachability half of the ownership problem. The SDK cannot stop work
+    a runner spawned onto a thread it does not own -- unless the runner hands the
+    work back, which a runner submitting to a pool does: it returns the unwaited
     ``concurrent.futures.Future``. At that instant this process holds the only
     reference to that work, so this is the one moment a stop is even possible.
 
@@ -487,10 +486,9 @@ def _undriven_result(result: Any) -> str:
     discards return values by design, so returning a suspendable cannot serve a runner
     even in principle.
 
-    An async generator needs no separate case now. It used to have one because its
-    state was not portably readable (``inspect.getasyncgenstate`` is 3.12+ while this
-    module supports 3.10) -- and no state is read any more, so the special case that
-    existed to avoid a version-dependent record dissolves into the general rule.
+    An async generator needs no separate case: no state is read, and reading it would
+    not be portable anyway (``inspect.getasyncgenstate`` is 3.12+ while this module
+    supports 3.10), so it falls under the general rule.
 
     **Futures, four verdicts, and deliberately NOT flattened.** Unlike a suspendable, a
     future does answer the question, so the distinctions it draws are kept. ``done()``
@@ -591,9 +589,9 @@ def _close_quietly(result: Any) -> None:
     async generator's ``aclose`` is itself a coroutine needing a loop, so it is
     left to the interpreter rather than driven from this thread.
 
-    This ``cancel`` is HYGIENE, and it used to be the only one. Stopping the work a
-    future stands for is now :func:`_stop_returned_work`'s job, which runs earlier
-    and reads what the stop returned. The two are not duplicates: that one answers
+    This ``cancel`` is HYGIENE only. Stopping the work a future stands for is
+    :func:`_stop_returned_work`'s job, which runs earlier and reads what the stop
+    returned. The two are not duplicates: that one answers
     a question the record needs, this one silences a warning, and by the time this
     runs on a future the earlier call has usually already settled it -- a second
     ``cancel`` on a cancelled or running future returns ``False`` and invokes no
@@ -770,14 +768,14 @@ class JobHandle:
     remains cooperative either way.
 
     ``checkpoint`` is the P1 progress channel, and it is deliberately the SAME
-    call that carries cancellation -- the pairing #7804 and #7814 asked to be
-    designed together. A runner that reports it reached a checkpoint necessarily
+    call that carries cancellation -- progress and cancellation are one design,
+    not two. A runner that reports it reached a checkpoint necessarily
     observes the cancel signal AT that checkpoint, because ``checkpoint`` raises
     ``JobCancelled`` before it returns when a cancel is pending. There is no way
     to spell "report progress but ignore cancellation": the channel that answers
     "did work happen" is the channel that answers "should it stop", so a progress
-    report that left cancellation unobservable -- the half-capability the issues
-    warned about -- is not a state this API can represent.
+    report that left cancellation unobservable -- a half-capability -- is not a
+    state this API can represent.
 
     It writes NOTHING to disk. The observed fact lives on the handle and is read
     ONCE by ``_execute`` at the terminal write, so the record keeps its single
@@ -824,8 +822,8 @@ class JobHandle:
         if a cancel is pending.
 
         Call this at each unit of work a runner completes. Two things happen, and
-        they are one act on purpose -- the pairing #7804 and #7814 asked to be
-        designed together:
+        they are one act on purpose -- progress and cancellation are one design,
+        not two:
 
         * The handle records that a checkpoint was reached -- an OBSERVED fact the
           terminal write reads, so ``done`` rests on "this runner did work" rather
@@ -1073,17 +1071,16 @@ class JobSDK:
     ) -> bool:
         """Write a run's record. The ONLY path that writes one.
 
-        Three callers used to write directly -- start, the worker's terminal
-        write, and reconcile (a fourth, a persisting progress write, never
-        existed; ``handle.checkpoint`` reports progress WITHOUT touching disk, so
-        it adds no writer) -- and each had to remember the same three rules. Two
-        review rounds found a different one missed each time, so the rules live here
-        instead:
+        Three callers reach it -- start, the worker's terminal write, and reconcile
+        (there is no persisting progress write; ``handle.checkpoint`` reports
+        progress WITHOUT touching disk, so it adds no writer) -- and the same three
+        rules hold for every one of them, so they live here rather than in each
+        caller:
 
         * the discard check and the write happen under ONE lock acquisition, the
-          same lock ``remove_all_async`` sets ``discarded`` with, so cleanup can
-          no longer land between a caller's check and its write and have the
-          record recreated;
+          same lock ``remove_all_async`` sets ``discarded`` with, so cleanup cannot
+          land between a caller's check and its write and have the record
+          recreated;
         * a serialization or I/O failure returns ``False`` instead of raising, so
           a caller's bookkeeping (the live table, the dedupe claim) can never be
           skipped by an exception escaping mid-cleanup;
@@ -1148,11 +1145,11 @@ class JobSDK:
         and three shapes return a lazy object instead of doing the work: a
         coroutine function, an async generator function, and a plain generator
         function. For each, the object is dropped and no line of the runner's body
-        ever runs. Such a run USED to be recorded ``done`` -- a run reporting
-        success having executed nothing, and silent, since an un-awaited coroutine
-        warning goes to the gateway log at most. That is now caught at execution by
-        ``_undriven_result`` and recorded ``failed``, so refusing here is the early
-        friendly error and not the thing that makes the record honest. The check
+        ever runs. Recording such a run ``done`` would report success having executed
+        nothing, and silently, since an un-awaited coroutine warning goes to the
+        gateway log at most. ``_undriven_result`` catches it at execution and records
+        ``failed``, so refusing here is the early friendly error and not the thing
+        that makes the record honest. The check
         goes through ``__call__`` as well as the object itself, so a callable
         instance with an ``async def __call__`` is caught too.
 
@@ -1381,15 +1378,15 @@ class JobSDK:
         run.status = RUNNING
         try:
             # The transition is a PRECONDITION for running the body, not a
-            # notification alongside it. This return used to be discarded, so a
-            # failed write left the record at `starting` while the runner went on
-            # to commit real work -- and if the process then died before the
-            # terminal write, `reconcile` read that record and stated the run had
+            # notification alongside it. Discarding this return would let a failed
+            # write leave the record at `starting` while the runner went on to
+            # commit real work -- and if the process then died before the terminal
+            # write, `reconcile` would read that record and state the run had
             # never begun. There is no way to correct that claim after the fact,
             # because the knowledge that the write failed dies with the process.
             # So the run does not begin unless the record can say it began.
             #
-            # The cost is deliberate: a transient store error now fails a run that
+            # The cost is deliberate: a transient store error fails a run that
             # might have succeeded. For an SDK whose product is a durable record,
             # a run that is not recorded is worse than a run not attempted.
             if not self._persist(run, handle):
@@ -1618,7 +1615,7 @@ class JobSDK:
         committed side effects, one interrupted from ``queued`` or ``starting``
         provably has not, and only the cause says whether offering a retry makes
         sense. ``error`` is composed from both by :func:`_interrupt_error`, which
-        is why the pass no longer has to choose one of two strings from the runner
+        is why the pass does not have to choose one of two strings from the runner
         table alone. This runs only after every app has registered, so a missing
         runner means the kind is gone rather than not yet loaded.
 
@@ -1726,17 +1723,17 @@ class JobSDK:
         """
         with self._lock:
             # Set BEFORE the snapshot, under the lock ``start``'s claim section
-            # takes. Marking and snapshotting were previously the whole of this
-            # section, so a start that had already read the runner table could
-            # still claim afterwards and spawn a worker this cleanup would never
-            # see -- a disabled app doing real work with its records deleted.
+            # takes. Marking after the snapshot would let a start that had already
+            # read the runner table claim afterwards and spawn a worker this
+            # cleanup would never see -- a disabled app doing real work with its
+            # records deleted.
             # Disable is terminal for this instance; a re-enable builds a new one.
             self._closed = True
             live = list(self._live.values())
             # Marked and cleared under the SAME lock the guarded writer takes,
             # so a worker cannot slip a write in between this and the delete.
             # The dedupe index goes too, or a key would stay owned by a run
-            # whose record no longer exists and the next start would adopt a
+            # whose record does not exist and the next start would adopt a
             # ghost.
             for entry in live:
                 entry.handle.discarded.set()

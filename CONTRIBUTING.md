@@ -401,6 +401,7 @@ cd website
 npm test                     # vitest (unit/component) + electron tests
 npm run check                # typecheck + lint + tests
 npm run test:integration     # MSW-based integration tests
+npx playwright install chromium  # one-time E2E browser setup
 npm run test:playwright      # E2E (requires a running backend)
 ```
 

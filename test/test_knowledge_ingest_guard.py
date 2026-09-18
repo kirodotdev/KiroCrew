@@ -374,9 +374,9 @@ class TestChunkPropsCoercion:
     async def test_any_post_insert_exception_marks_job_failed(
             self, pipeline, kstore, tmp_path, monkeypatch):
         """The job row is persisted as 'processing' BEFORE any fallible work.
-        Any exception between the insert and finalize (chunker, extractor, DB)
-        previously stranded the job in 'processing' forever, and the folder
-        watcher retried the file every scan. It must be marked 'failed' and
+        An exception between the insert and finalize (chunker, extractor, DB) that
+        is not handled strands the job in 'processing' forever, and the folder
+        watcher then retries the file every scan. It must be marked 'failed' and
         the source 'error', while the original exception still propagates."""
         _set_limit_mb(monkeypatch, 100.0)
         pipeline.extractor.extract_batch = AsyncMock(

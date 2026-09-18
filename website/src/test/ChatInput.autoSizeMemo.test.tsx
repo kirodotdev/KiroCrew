@@ -105,4 +105,49 @@ describe('composer auto-size measurement memo', () => {
     expect(ta.style.height).toBe(autoSized)
     expect(state.measures).toBe(0)
   })
+
+  it('re-measures when the box is resized from outside, with no keystroke (#9979)', () => {
+    // happy-dom has no ResizeObserver; install one the test can fire by hand,
+    // recording what the composer observes. The composer needs it at mount.
+    const instances = new Set<{ cb: ResizeObserverCallback; targets: Set<Element> }>()
+    const RO = class {
+      cb: ResizeObserverCallback
+      targets = new Set<Element>()
+      constructor(cb: ResizeObserverCallback) { this.cb = cb; instances.add(this) }
+      observe(el: Element) { this.targets.add(el) }
+      unobserve(el: Element) { this.targets.delete(el) }
+      disconnect() { instances.delete(this) }
+    } as unknown as typeof ResizeObserver
+    vi.stubGlobal('ResizeObserver', RO)
+    try {
+      renderWithProviders(<Harness initial="wrapped text" />)
+      const ta = screen.getByRole('textbox') as HTMLTextAreaElement
+      const mine = [...instances].filter((i) => i.targets.has(ta))
+      expect(mine.length).toBeGreaterThan(0)
+      let width = 600
+      Object.defineProperty(ta, 'clientWidth', { configurable: true, get: () => width })
+      const state = countMeasures(ta)
+      // Only the observer(s) watching the textarea fire — the shelf and control
+      // row observers are not what this case is about.
+      const fire = () => { for (const i of mine) i.cb([], {} as ResizeObserver) }
+
+      // The observer baselined the width at mount (happy-dom: 0), so the first
+      // notification at 600 IS a width change: one measurement, no keystroke.
+      fire()
+      expect(state.measures).toBe(1)
+
+      // A resize that did not change the width (the composer's own height write)
+      // measures nothing.
+      fire()
+      expect(state.measures).toBe(1)
+
+      // The column narrowed (window resize, sibling column, panel dock): the
+      // value is unchanged, so no other path re-measures — this one must.
+      width = 300
+      fire()
+      expect(state.measures).toBe(2)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
 })

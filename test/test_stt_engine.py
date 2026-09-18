@@ -571,7 +571,7 @@ def _pretend_absent(monkeypatch):
     Absence has to be simulated at `find_spec` rather than by making the import
     raise. Those are different states and the probe now reports them differently:
     an installed-but-unloadable package (missing system library, too-old glibc,
-    numpy ABI mismatch) used to be reported as "install the voice extra" to a user
+    numpy ABI mismatch) must not be reported as "install the voice extra" to a user
     who already had it installed.
     """
     monkeypatch.setattr(engine_mod.importlib.util, "find_spec", lambda name: None, raising=True)
@@ -1096,7 +1096,7 @@ def test_shared_engine_is_a_process_singleton(monkeypatch):
 def test_a_zero_argument_shared_engine_does_not_reset_configured_bounds(monkeypatch):
     """`prewarm` and `close` ask for the engine without opinions about its config.
 
-    The bounds used to default to the module constants, which made every
+    The bounds must not default to the module constants, which would make every
     zero-argument caller a silent WRITER: one `stt.close()` or `stt.prewarm()` put
     an operator's configured idle window back to 600 s, so the setting appeared to
     work and then quietly reverted.

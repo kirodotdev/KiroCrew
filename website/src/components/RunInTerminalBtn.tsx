@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { SquareTerminal, Check, AlertCircle } from 'lucide-react'
 import { checkSensitiveCommand } from '../utils/sensitiveCommand'
+import { RUN_IN_TERMINAL_RESULT_FALLBACK_MS } from '../utils/fenceShell'
 import RunInTerminalConfirm from './RunInTerminalConfirm'
 
 import { i18nT } from '../i18n/t'
@@ -62,7 +63,7 @@ export default function RunInTerminalBtn({ code, lang }: { code: string; lang?: 
     // Single unsub clears both the listener and the fallback timer.
     resultUnsubRef.current?.()
     window.addEventListener('mc:run-in-terminal-result', onResult)
-    resultTimerRef.current = setTimeout(() => { resultUnsubRef.current?.(); flash('error') }, 8000)
+    resultTimerRef.current = setTimeout(() => { resultUnsubRef.current?.(); flash('error') }, RUN_IN_TERMINAL_RESULT_FALLBACK_MS)
     resultUnsubRef.current = () => {
       window.removeEventListener('mc:run-in-terminal-result', onResult)
       clearTimeout(resultTimerRef.current)

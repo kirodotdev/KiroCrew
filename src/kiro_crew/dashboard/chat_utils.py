@@ -69,6 +69,24 @@ from kiro_crew.validation import (
 
 logger = logging.getLogger(__name__)
 
+#: The generation every chat_chunk of this process carries (see chunk_generation).
+_CHUNK_GENERATION: str = uuid.uuid4().hex[:8]
+
+
+def chunk_generation() -> str:
+    """The ``gen`` stamped on every chat_chunk frame and window row this process
+    emits: one random value per gateway process.
+
+    Chunk ``seq`` numbers are a per-slot counter that continues across turns,
+    so a client's replay floor -- the newest seq its transcript holds -- orders
+    every later chunk above it. The counter lives in memory and restarts with
+    the gateway, so a floor from before a restart could sit above the new
+    process's early seqs; the client compares ``gen`` first and replaces its
+    floor when the generation changes, instead of dropping those chunks as
+    replays. Not a secret and not an identity: it only says "same process".
+    """
+    return _CHUNK_GENERATION
+
 
 async def run_config_write(fn, /, *args, **kwargs):
     """Run a blocking ``config.json`` writer under BOTH config locks.
@@ -255,12 +273,11 @@ def _build_stream_chunk(msg: dict, *, include_row_meta: bool = False) -> str:
             meta = row_meta
     if meta:
         meta = _redact_deep(meta)
-    content = msg.get("content", "")
-    if isinstance(content, str):
-        content, _ = redact_exfiltration_urls(content)
-        content, _ = redact_credentials(content)
-    else:
-        content = _redact_deep(content)
+    # One shared guard for content: redact recursively and hold the
+    # wire-string shape (see redact_display_content). This stream has no
+    # user-content carve-out — it redacts every role, same as its previous
+    # inline redactor pair.
+    content = redact_display_content(msg.get("content", ""))
     cls_val = msg.get("cls", "")
     if isinstance(cls_val, str):
         cls_val, _ = redact_exfiltration_urls(cls_val)
@@ -442,6 +459,28 @@ def is_harness_slash_command(first_word: str, *, cc_provider: bool) -> bool:
     return first_word.lower() not in QUICK_PROMPTS
 
 
+def _tool_identity_fields(event: "LLMEvent") -> dict[str, str]:
+    """``tool_name`` / ``mcp_server`` for a tool_call frame, present only when known.
+
+    Read from the trusted ``_meta.kiro`` identity the dispatcher extracted, never
+    from the title. Omitted rather than sent empty so a consumer merging a
+    refinement field-by-field keeps what the initial frame supplied, and so a
+    frame from a backend that sends no ``_meta`` carries nothing to misread. The
+    dashboard's title derivation treats both as optional and falls back to
+    parsing the title, so an absent pair never breaks a row.
+    """
+    out: dict[str, str] = {}
+    name = getattr(event, "tool_name", "")
+    server = getattr(event, "mcp_server_name", "")
+    # Only a real string is an identity; any other value (an event shape that
+    # lacks the attribute, a stand-in object) is treated as unknown.
+    if isinstance(name, str) and name:
+        out["tool_name"] = _redact_tool_field(name, limit=200)
+    if isinstance(server, str) and server:
+        out["mcp_server"] = _redact_tool_field(server, limit=200)
+    return out
+
+
 def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEvent") -> str:
     """Broadcast an auto-approved tool call via WS with redacted title. Returns redacted title."""
     title, _ = redact_exfiltration_urls(event.title)
@@ -460,6 +499,7 @@ def _broadcast_auto_tool(state: DashboardState, slot: _ChatSlot, event: "LLMEven
             "tool_call_id": tcid,
             "purpose": _redact_tool_field(event.tool_purpose, limit=_MAX_TOOL_PURPOSE),
             "input_preview": _redact_tool_field(event.tool_input),
+            **_tool_identity_fields(event),
         },
     )
     return title
@@ -742,7 +782,7 @@ def effective_session_key(slot: _ChatSlot) -> str:
 
 
 def subagents_attached(
-    state: DashboardState, slot: _ChatSlot, session_key: str, operation: str
+    state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
 ) -> bool:
     """Whether sub-agent children are attached to *session_key*.
 
@@ -750,6 +790,10 @@ def subagents_attached(
     would discard a child's work. Every such caller shares THIS predicate: a
     second copy is how the probes diverge, and both callers must fail toward
     keeping a child's work.
+
+    *slot* may be ``None`` when no tab displays the session: the in-flight
+    delivery probe then reads as 0 (``getattr`` on ``None`` returns its
+    default) and the two registry probes still decide.
 
     Three probes, none optional:
 
@@ -764,8 +808,20 @@ def subagents_attached(
       with no children, and mistaking the two is exactly the hazard this guard
       exists to prevent.
 
+    The queued probe fails closed in TWO layers, because a raise is not how the
+    common failure arrives: an unreadable task store is absorbed one layer down
+    and answers ``taskq_bridge.UNKNOWN_PENDING`` rather than 0, so the ``except``
+    below is what covers a probe that raises for any OTHER reason — a registry
+    double without the count, an attribute gone. Neither layer may answer 0 for a
+    queue nobody could read.
+
     A state with no ``subagents`` registry answers False — there is no runtime
     for a child to be attached to.
+
+    SYNCHRONOUS variant, for a caller with no event loop under it. The queued
+    probe counts rows that live only in the task store, so it takes the SQLite
+    connection: a caller ON the gateway loop takes
+    :func:`subagents_attached_async` instead.
     """
     subs = getattr(state, "subagents", None)
     if subs is None:
@@ -779,8 +835,132 @@ def subagents_attached(
             # An unreadable queue is unknown children, not zero children.
             logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
             queued = 1
+    return _attached_verdict(running, queued, slot)
+
+
+async def subagents_attached_async(
+    state: DashboardState, slot: _ChatSlot | None, session_key: str, operation: str
+) -> bool:
+    """:func:`subagents_attached` for a caller on the event loop.
+
+    The same three probes with the same fail-closed rules; only WHERE the
+    queued half runs differs. ``_queued_depth`` counts this parent's rows that
+    live only in the store, so it takes the connection — and the store's writer
+    thread holds that connection's lock across ``BEGIN IMMEDIATE``'s busy wait,
+    so taking it here would stall every session's turn and the watchdog
+    heartbeat behind one teardown probe. ``queued_count_for_async`` is the same
+    count with the read on the writer thread.
+
+    A manager double without the async sibling is asked synchronously — it
+    models the pre-queue manager and has no store to block on — which is the
+    probe ``slack.gateway._subagent_queued_count`` and
+    ``handlers.messaging._spawn_on_loop`` already make.
+    """
+    subs = getattr(state, "subagents", None)
+    if subs is None:
+        return False
+    running = subs.running_agents_for(session_key)
+    queued = 0
+    if running is not None:
+        try:
+            queued = await _queued_depth_off_loop(subs, session_key)
+        except Exception:
+            # An unreadable queue is unknown children, not zero children.
+            logger.debug("%s: queued-depth probe failed", operation, exc_info=True)
+            queued = 1
+    return _attached_verdict(running, queued, slot)
+
+
+async def _queued_depth_off_loop(subs: Any, session_key: str) -> int:
+    """This parent's queued-spawn count with its store half off the loop."""
+    import inspect
+
+    entry = getattr(subs, "queued_count_for_async", None)
+    if inspect.iscoroutinefunction(entry):
+        return int(await entry(session_key))
+    return int(subs._queued_depth(session_key))
+
+
+def _attached_verdict(running: Any, queued: int, slot: _ChatSlot | None) -> bool:
+    """The verdict both entry points return, so the two cannot drift.
+
+    *slot* may be ``None``: ``getattr`` on ``None`` reads the in-flight
+    delivery probe as 0 and the two registry probes still decide.
+    """
     inflight = getattr(slot, "_subagent_deliveries_inflight", 0)
     return bool(running is None or running or queued or inflight)
+
+
+async def chat_done_payload(
+    state: DashboardState, slot: _ChatSlot, *, continuing: bool = False
+) -> dict[str, Any]:
+    """Describe whether a turn boundary actually hands the floor to the user.
+
+    Slot snapshots are coalesced, so a sound decision cannot use stale
+    child/plan state from the browser when this frame arrives. Read the same
+    attached-child guard that protects session teardown, including queued spawns
+    and results still being delivered. This is a notification hint only; it never
+    changes dispatch, transcript finalization, or the slot's running state.
+
+    A coroutine for one reason: that guard's queued half reads the task store,
+    and every caller here is a turn-boundary frame on the gateway loop, so the
+    read belongs on the store's writer thread
+    (:func:`subagents_attached_async`).
+    """
+    # Avoid a circular import: autonudge's slot lookup imports dashboard.state.
+    from kiro_crew.autonudge import get_instance
+
+    try:
+        service = get_instance()
+        loop = service.get_by_slot(slot.key) if service is not None else None
+        workflows = getattr(state, "workflow_service", None)
+        continuing = bool(
+            continuing
+            or slot._in_stage_execution
+            or slot._pending_synthesis
+            or (slot.queue_depth and not slot._last_turn_auth_required)
+            or await subagents_attached_async(
+                state, slot, effective_session_key(slot), "completion_sound"
+            )
+            or (
+                workflows is not None
+                and workflows.registry.has_pending_work_for(effective_session_key(slot))
+            )
+            or (loop is not None and loop.active)
+        )
+    except Exception:
+        # Unknown activity must not announce a finished conversation, but a
+        # notification failure must never prevent the terminal frame itself.
+        logger.warning("Completion activity unavailable for slot %s", slot.key, exc_info=True)
+        continuing = True
+    return {
+        "slot": slot.key,
+        "continuing": continuing,
+        "needs_input": bool(slot._question_pending),
+    }
+
+
+def wire_session_subagent_probe(state: DashboardState) -> None:
+    """Hand ``SessionManager`` the sub-agent probe its RSS ceiling consults.
+
+    The manager cannot see the dashboard's sub-agent registry or slots, so the
+    predicate is built here, over :func:`subagents_attached_async`, and
+    installed via ``set_subagent_probe``. The slot is resolved through
+    :func:`dashboard_slot_key` (the same mapping the recycle notice uses); a
+    session with no open tab passes ``None``, which the predicate accepts.
+
+    A COROUTINE predicate: the RSS sweep that consults it runs on the gateway
+    loop, and the queued half of the guard reads the task store. The manager
+    accepts either shape and awaits an awaitable answer, so a sync probe (a
+    test double, a build with no queue) still works.
+    """
+
+    async def _probe(session_key: str) -> bool:
+        slot_key = dashboard_slot_key(session_key)
+        slot = state.get_slot(slot_key) if slot_key else None
+        return await subagents_attached_async(state, slot, session_key, "rss_recycle")
+
+    state.sessions.set_subagent_probe(_probe)
 
 
 def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | None:
@@ -828,6 +1008,32 @@ def slack_options_slot(state: DashboardState, session_key: str) -> _ChatSlot | N
     except Exception:
         logger.debug("Slack OPTIONS slot lookup failed", exc_info=True)
         return None
+
+
+def reject_if_slot_under_construction(
+    state: DashboardState, slot: _ChatSlot
+) -> web.Response | None:
+    """A 409 for a mutating handler that reached a slot under construction.
+
+    Defense-in-depth over the construction mark. The primary protection for the
+    import path is that it RETRACTS the slot from ``_slots`` across its async
+    Layer B write/join and durable save (see ``api_chat_slot_import``), so a raw
+    ``state._slots.get(name)`` acquirer finds nothing during that tail. This check
+    is the belt-and-braces layer: it refuses any mutating handler (regenerate,
+    variant-switch, edit-resend, rewind) that resolves a slot still marked under
+    construction, keyed on ``_slots_under_construction`` rather than registration,
+    so it holds regardless of whether a given construction path retracts. Refused
+    the same way ``slot.running`` is. The hydrate loop itself is synchronous, so
+    there is no in-loop window; this guards the async finalization tail.
+
+    Returns a response to return as-is, or ``None`` to proceed.
+    """
+    if slot.key in getattr(state, "_slots_under_construction", ()):
+        return web.json_response(
+            {"error": "slot is being restored", "code": "slot_under_construction"},
+            status=409,
+        )
+    return None
 
 
 def slack_options_linked_slot(state: DashboardState | None, thread_ts: str) -> _ChatSlot | None:
@@ -1450,14 +1656,14 @@ def _sync_dashboard_slots(state: "DashboardState") -> None:
 
 
 def _redact_value(v):  # type: ignore[no-untyped-def]
-    """Recursively redact any value (str, dict, list, or passthrough)."""
+    """Recursively redact any value (str, dict, list/tuple, or passthrough)."""
     if isinstance(v, str):
         v, _ = redact_exfiltration_urls(v)
         v, _ = redact_credentials(v)
         return v
     if isinstance(v, dict):
         return _redact_meta(v)
-    if isinstance(v, list):
+    if isinstance(v, (list, tuple)):
         # Snapshot for the same reason as _redact_meta — the flush thread reads
         # containers the event loop is still appending to.
         return [_redact_value(i) for i in list(v)]
@@ -1527,6 +1733,66 @@ def _redact_for_display(text: str) -> str:
     text, _ = redact_exfiltration_urls(text)
     text, _ = redact_credentials(text)
     return text
+
+
+def redact_display_content(content: Any) -> str:
+    """Redact a message row's ``content`` for display, tolerating structured shapes.
+
+    The display-time content boundary — :func:`_prepare_messages` on the HTTP
+    history path and ``state._broadcast_chat_message`` on the live SSE path —
+    must neither skip a structured (list/dict) non-user value nor feed it to
+    the regex redactors, which accept only ``str`` and raise ``TypeError`` on
+    anything else. No current writer produces non-string content, but a
+    pre-rule, legacy, or hand-edited transcript row can — exactly the class of
+    row read-side redaction exists for. Both sites route through this ONE
+    helper; do not add another copy of the guard.
+
+    Delegates to :func:`_redact_value`, the same recursive walker the meta
+    redaction uses: ``str`` leaves get ``redact_exfiltration_urls`` then
+    ``redact_credentials`` (the order the existing sites apply), dict VALUES
+    are recursed, and list/tuple elements are recursed into a new list. The
+    result is then passed through :func:`serialize_wire_content`, so a
+    non-string value leaves as JSON text — and that text gets one final
+    redaction pass: the recursive walker does not rewrite dict KEYS in place
+    (two distinct keys redacting to the same string would collapse into one
+    entry), but on the serialized wire string a key is plain content, so the
+    text pass closes the key channel with no entry loss. Never mutates the
+    input (rows are shared by reference and ``dict(m)`` is shallow) and
+    never raises for JSON-shaped input.
+    """
+    redacted = _redact_value(content)
+    if isinstance(redacted, str):
+        return redacted
+    wire = serialize_wire_content(redacted)
+    wire, _ = redact_exfiltration_urls(wire)
+    wire, _ = redact_credentials(wire)
+    return wire
+
+
+def serialize_wire_content(content: Any) -> str:
+    """Wire-shape half of the display boundary: a row's ``content`` leaves as text.
+
+    ``str`` passes through unchanged; ``None`` — the absent-content shape a
+    legacy or hand-edited row can carry — becomes the empty string (its
+    display rendering; JSON "null" would put literal text in the chat); any
+    other value — container or scalar — is serialized to JSON text. Every
+    frontend consumer treats ``content`` as a string (``matchAll`` /
+    ``startsWith`` / ``replace`` / ``includes``), so any non-string on the
+    wire, ``None`` included, crashes the chat render.
+
+    No redaction happens here. The two display-boundary invariants have
+    different scopes — redaction is role-scoped (non-user only) while the
+    wire-string shape covers EVERY row, user rows and falsy values
+    included — so they are held separately: :func:`redact_display_content`
+    composes both for the redacted rows, and emission sites call this one
+    directly for the rows the redaction gate exempts. ``default=str`` keeps
+    it total for stray non-JSON leaves.
+    """
+    if isinstance(content, str):
+        return content
+    if content is None:
+        return ""
+    return json.dumps(content, ensure_ascii=False, default=str)
 
 
 def _remove_queued_by_id(messages: list[dict], queue_id: str) -> bool:
@@ -1778,6 +2044,27 @@ _NEGATED_PROMISE_RE = re.compile(
 # keeps the reject-bias but only where the promise can actually be.
 _SENTENCE_BOUNDARY_RE = re.compile(r"[.!?\n]+")
 
+# A status update can be accurate while a turn is streaming and become false as
+# soon as that turn returns control. This detector is deliberately notice-only:
+# unlike the promise-only recovery above, it may run after tools with side
+# effects, so its caller must never replay the turn automatically. Requiring a
+# first-person claim at the start of a sentence excludes third-person status
+# reports such as "the subagent is still working" or "the monitor will continue"
+# that really can outlive this turn. A first-person claim that the main agent is
+# running or checking one remains foreground work and is intentionally matched.
+_UNFINISHED_PROGRESS_RE = re.compile(
+    r"(?:^|[.!?\n]\s*)(?P<claim>(?:next[,:]?\s+)?"
+    r"(?:"
+    r"(?:i(?:'|’)?m|i\s+am)\s+(?:still\s+)?"
+    r"(?:continuing\s+(?:with|to)|proceeding\s+(?:with|to)|working\s+(?:on|through)"
+    r"|running\b|checking\b|validating\b|testing\b|building\b|reviewing\b"
+    r"|preparing\b|investigating\b)"
+    r"|i(?:'|’)?ll\s+(?:keep|continue)\s+"
+    r"(?:working|running|checking|validating|testing|building|reviewing|preparing|investigating)\b"
+    r"))",
+    re.IGNORECASE,
+)
+
 
 def _terminal_sentence(text: str) -> str:
     """Return the last sentence of ``text`` — the span the terminal promise gate
@@ -1785,6 +2072,25 @@ def _terminal_sentence(text: str) -> str:
     multi-sentence closer cannot veto a promise that sits only at the end."""
     parts = [p.strip() for p in _SENTENCE_BOUNDARY_RE.split(text) if p.strip()]
     return parts[-1] if parts else text
+
+
+def has_unfinished_progress_claim(final_segment_text: str) -> bool:
+    """Return whether a completed turn's final sentence says foreground work continues.
+
+    The caller supplies only text emitted after the last tool boundary. A match
+    is diagnostic, not permission to re-run anything: earlier tools may already
+    have produced side effects. Only the terminal sentence can describe work as
+    still running when control returns; an earlier progress update followed by a
+    completed-status sentence is not an unfinished claim. A colon followed by
+    content is likewise a lead-in fulfilled by the same response.
+    """
+    text = (final_segment_text or "").strip()
+    terminal = _terminal_sentence(text)
+    match = _UNFINISHED_PROGRESS_RE.search(terminal)
+    if match is None:
+        return False
+    claim = terminal[match.start("claim") :]
+    return not bool(re.search(r":\s*\S", claim))
 
 
 def is_promise_only_terminal(final_segment_text: str) -> bool:
@@ -2555,6 +2861,29 @@ SYNTHETIC_RECOVERY_KIND = "synthetic_recovery"
 #: been queued, so the frontend can tell a pending retry from a terminal failure.
 TRANSIENT_RETRY_KIND = "transient_retry"
 
+#: ``meta["notice"]`` on the three `error` rows the transient-5xx ladder appends
+#: (chat_runner ``acp_error_is_transient`` branches). The row's CONTENT is the
+#: English fallback below, read verbatim by non-dashboard consumers (channel
+#: mirrors, SSE, an older frontend); the dashboard ignores it and renders
+#: localized copy keyed on this token instead
+#: (``website/src/pages/chat/transientNotice.ts``). A structured token rather
+#: than prose-matching so the wording can change on either side without the
+#: other silently falling back to raw English -- the drift class
+#: ``test_recovery_marker_parity.py`` exists for. Both sides are still
+#: hand-synced (no shared schema), so ``test_transient_notice_parity.py`` pins
+#: these values against the frontend table.
+TRANSIENT_NOTICE_META_KEY = "notice"
+TRANSIENT_NOTICE_RETRYING = "transient_retrying"
+TRANSIENT_NOTICE_RESUMING = "transient_resuming"
+TRANSIENT_NOTICE_GIVE_UP = "transient_give_up"
+
+#: English fallback text for the rows above. Plain language on purpose: the
+#: failure is an upstream model-backend 5xx the gateway is already retrying
+#: against, and neither "backend" nor "hiccup" tells a reader that.
+TRANSIENT_RETRYING_TEXT = "⟳ Connection unstable — retrying…"
+TRANSIENT_RESUMING_TEXT = "⟳ Connection unstable — resuming…"
+TRANSIENT_GIVE_UP_TEXT = "⟳ Connection unstable — please try again."
+
 #: Row-level kind for the terminal `error` row a prompt-time MODEL ENTITLEMENT
 #: rejection produces ("Your account does not have access to model 'X'"), so
 #: the frontend can offer the fix (open the model picker / change the default
@@ -2562,6 +2891,15 @@ TRANSIENT_RETRY_KIND = "transient_retry"
 #: rejection. No recovery is queued for this kind: a retry cannot earn an
 #: entitlement.
 MODEL_UNENTITLED_KIND = "model_unentitled"
+
+#: Row-level kind for the terminal `error` row an ``AcpAuthRequired`` turn
+#: produces (the agent process reported it is not signed in). Like
+#: MODEL_UNENTITLED_KIND, no recovery is queued -- a retry hits the same wall --
+#: and the frontend uses the kind to offer the fix that does end it: a deep link
+#: to the dashboard's Kiro sign-in card (Developer > Agent Backend), where the
+#: user signs in to Kiro Crew's own identity again. The prose stays as the
+#: backend formatted it.
+AUTH_REQUIRED_KIND = "auth_required"
 
 #: Structural queue-entry kinds for system injections.  Classification by kind
 #: tag — set at enqueue time — is unforgeable: a user typing the same prefix
@@ -2742,7 +3080,17 @@ def _collapse_wire_rows(messages: list[dict]) -> list[dict]:
         # One join across the run, not a new string per delta: a long reply is
         # hundreds of deltas, and pairwise concatenation copies the text
         # accumulated so far every time, which is quadratic in the reply size.
-        return {**run[0], "content": "".join(m.get("content", "") for m in run)}
+        merged = {**run[0], "content": "".join(m.get("content", "") for m in run)}
+        # The fold stands for every delta in the run, so it carries the run's
+        # NEWEST seq: that is the floor a client seeds its replay guard from,
+        # and the first delta's seq would let every later one be applied twice.
+        # Older rows carry no seq (legacy window); then the fold carries none.
+        seqs = [m["seq"] for m in run if isinstance(m.get("seq"), int)]
+        if seqs:
+            merged["seq"] = max(seqs)
+        else:
+            merged.pop("seq", None)
+        return merged
 
     out: list[dict] = []
     run: list[dict] = []
@@ -2944,9 +3292,21 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
         if role == "chunk":
             text = m.get("content", "")
             if text:
-                text, _ = redact_exfiltration_urls(text)
-                text, _ = redact_credentials(text)
-                out.append({"role": "streaming", "content": text, "cls": "msg msg-a"})
+                text = redact_display_content(text)
+                row: dict[str, Any] = {"role": "streaming", "content": text, "cls": "msg msg-a"}
+                # The newest chunk seq folded into this row (see
+                # _collapse_wire_rows). The client seeds its replay guard from
+                # it, so a live frame that races this snapshot and carries a
+                # seq at or below it is dropped instead of appended twice.
+                # Omitted when the window rows carry none: a client treats a
+                # missing seq as "apply as before".
+                if isinstance(m.get("seq"), int):
+                    row["seq"] = m["seq"]
+                    # The process that numbered it, so a client can tell a
+                    # floor from before a gateway restart apart (chunk_generation).
+                    if isinstance(m.get("gen"), str):
+                        row["gen"] = m["gen"]
+                out.append(row)
             continue
         text = m.get("content", "")
         # Gate is `!= "user"`, NOT `not in ("user", "system")`. This is the
@@ -2958,22 +3318,25 @@ def _prepare_messages(messages: list[dict], running: bool, *, live_child: str) -
         # would emit raw stored bytes.
         # User-authored content stays raw: the user typed it and is the only
         # one who sees it back.
+        # Content may be structured (a legacy or hand-edited row):
+        # redact_display_content recurses into it rather than raising.
         if role != "user" and text:
-            text, _ = redact_exfiltration_urls(text)
-            text, _ = redact_credentials(text)
-            m = {**m, "content": text}
+            m = {**m, "content": redact_display_content(text)}
+        else:
+            # The wire-string invariant covers EVERY row, not just the
+            # redacted ones: a structured user row or a falsy container
+            # serializes to text (without redaction) instead of shipping a
+            # raw container the client render chokes on.
+            wire = serialize_wire_content(text)
+            if wire is not text:
+                m = {**m, "content": wire}
         msg_out = dict(m)
         if msg_out.get("variants"):
             # Snapshot for the same reason as _redact_meta — this runs in a
             # worker thread (slot-detail render offload) while the event
             # loop may still be appending variants to the live list.
             msg_out["variants"] = [
-                {
-                    **v,
-                    "content": redact_credentials(
-                        redact_exfiltration_urls(v.get("content", ""))[0]
-                    )[0],
-                }
+                {**v, "content": redact_display_content(v.get("content", ""))}
                 for v in list(msg_out["variants"])
                 if isinstance(v, dict)
             ]

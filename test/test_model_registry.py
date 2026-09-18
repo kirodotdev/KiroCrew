@@ -217,7 +217,7 @@ class TestModelRegistry:
             mr.to_provider_id("claude-opus-4.5", "claude_code")
             == "global.anthropic.claude-opus-4-8"
         )
-        # The -1m form of 4.6 no longer downgrades to 4.7; it maps to the flagship.
+        # The -1m form of 4.6 maps to the flagship, not a 4.7 downgrade.
         assert mr.to_provider_id("claude-opus-4.6-1m", "claude_code") == flagship
 
     def test_fable_5_canonical_round_trip(self):

@@ -43,7 +43,7 @@ TEMPLATE_SUFFIX = ".pptx"
 
 # Upload ceilings. A style is a single HTML document and a template is one
 # .pptx; these are an order of magnitude above any real one, and they exist so a
-# request body cannot be used to fill the disk.
+# request body cannot fill the disk.
 MAX_STYLE_BYTES = 4 * 1024 * 1024
 MAX_TEMPLATE_BYTES = 64 * 1024 * 1024
 
@@ -279,9 +279,9 @@ def _save_state_or_undo_rename(
     Returns ``None`` on success, or the caller's error response.
 
     The rename has ALREADY committed by the time state is written, so a failing
-    write left the file under its new name while ``state.json`` still referred to
-    the old one — a pin or a template's metadata pointing at a name that no longer
-    exists, with the request reporting 500 as though nothing had happened. Undoing
+    write leaves the file under its new name while ``state.json`` still refers to
+    the old one — a pin or a template's metadata pointing at a name that does not
+    exist, with the request reporting 500 as though nothing had happened. Undoing
     the rename is the only outcome that keeps the two consistent: the operation
     fails cleanly and the user can retry.
 
@@ -472,9 +472,9 @@ def rename_style(name: str, new_name: str) -> tuple[int, dict]:
         return 404, {"error": "style not found", "code": "style_not_found"}
     # The MOVE and the state update are ONE critical section.
     #
-    # Splitting them let a concurrent delete of `new_name` interleave between the link
-    # and the state write: both verbs returned 200 while `state.json` referenced a file
-    # that no longer existed. The move is what makes the state stale, so the lock has
+    # Splitting them lets a concurrent delete of `new_name` interleave between the link
+    # and the state write: both verbs return 200 while `state.json` references a file
+    # that does not exist. The move is what makes the state stale, so the lock has
     # to span both — the same rule `delete_style` above already follows, and the same
     # lost-update shape as the template-metadata fix. `_load_state`/`_save_state` do
     # not acquire the lock themselves, so this cannot self-deadlock on a plain Lock.
@@ -671,9 +671,9 @@ def rename_template(name: str, new_name: str) -> tuple[int, dict]:
     if not source.is_file():
         return 404, {"error": "template not found", "code": "template_not_found"}
     # The MOVE and the state update are ONE critical section — see `rename_style`.
-    # Splitting them let a concurrent delete of `new_name` interleave between the link
-    # and the state write, leaving `state.json` naming a file that no longer exists
-    # while both verbs answered 200.
+    # Splitting them lets a concurrent delete of `new_name` interleave between the link
+    # and the state write, leaving `state.json` naming a file that does not exist
+    # while both verbs answer 200.
     with _STATE_LOCK:
         # `os.link` + `unlink`, not `rename`. `Path.rename` REPLACES an existing target
         # on POSIX, so `exists()` then `rename` is check-then-act: two tabs renaming

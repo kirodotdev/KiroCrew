@@ -218,9 +218,12 @@ points is overhead, not richness.
   Never flatten an Age-5 or Age-10 explanation into one clipped jargon line
   because a verbosity block says to — the register is what this skill is for, and
   every level keeps it. Length is the other axis and it stays with the active
-  level: `answer_only` holds its few-plain-sentences bound unless the user asked
-  for depth (a doc, a walkthrough, in detail), and it pins its own replies to the
-  Age 5 row above, borrowing the calibration rather than a length licence.
+  level: `answer_only` holds its three checks unless the user asked for depth
+  (a doc, a walkthrough, in detail) — draw the shape, twelve words a sentence in
+  words a child knows, cut the rest. Its word check is the Age 5 row above, and
+  its own "asked why" branch is this skill's Step 3 in miniature; an explanation
+  under it follows that branch as the block spells it, and borrows the
+  calibration here, never a length licence beyond it.
   `ultra` and `concise`: keep the register the audience row calls for and spend
   the words there; the level bounds length, not vocabulary.
 - **Persist what gets forwarded.** An explanation written for a manager, a

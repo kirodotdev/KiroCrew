@@ -1,10 +1,10 @@
-"""Tests for the AutoNudge stranded-loop rescues (issue #8636).
+"""Tests for the AutoNudge stranded-loop rescues.
 
 The defect these pin: a dashboard-bound (``chat-NNN-...``) loop's only re-arm
 path after a delivered fire is ``notify_turn_complete``. If that hook never
 arrives -- the nudge turn dies on a path that skips the stop hook, the probe
-gate raises (the ``_monitor_tick_is_quiet`` await used to sit OUTSIDE
-``_timer``'s try/finally, so an escaping exception killed the timer task), or
+gate raises (an escaping exception from the ``_monitor_tick_is_quiet`` await kills
+the timer task), or
 ``notify_user_input`` dropped the deferred re-arm -- the loop was left
 persisted ``active=true`` with no live timer and nothing on a timer to revive
 it. Three fixes are covered here:

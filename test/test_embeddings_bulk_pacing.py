@@ -127,7 +127,6 @@ def test_one_pathological_row_cannot_park_the_sweep(_memory_cfg):
 def test_bulk_threads_default_to_one(_memory_cfg):
     _memory_cfg["embedding_threads"] = 4
     assert emb.bulk_embed_threads() == 1
-    # The interactive lane is untouched — that separation is the point.
     assert emb._embed_threads() == 4
 
 
@@ -198,15 +197,15 @@ def test_bulk_job_programs_the_bulk_pool(_memory_cfg):
     assert ctx.calls == [(2, 2)]
 
 
-def test_interactive_job_restores_the_full_pool(_memory_cfg):
+def test_interactive_job_restores_its_configured_pool(_memory_cfg):
     _memory_cfg["embedding_threads"] = 6
-    _memory_cfg["embedding_bulk_threads"] = 2
+    _memory_cfg["embedding_bulk_threads"] = 1
     inst = _armed_embedder()
     ctx = _FakeCtx()
     llm = _FakeLlm(ctx)
     inst._apply_thread_class(llm, emb.PRIORITY_BULK)
     inst._apply_thread_class(llm, emb.PRIORITY_INTERACTIVE)
-    assert ctx.calls == [(2, 2), (6, 6)]
+    assert ctx.calls == [(1, 1), (6, 6)]
 
 
 def test_unchanged_class_is_not_reprogrammed(_memory_cfg):
@@ -249,6 +248,9 @@ def test_infer_loop_applies_the_class_before_inference(_memory_cfg):
     import threading
 
     inst._lock = threading.Lock()
+    inst._dispatch_lock = threading.Lock()
+    inst._jobs_changed = threading.Event()
+    inst._bulk_ready_at = 0.0
     ctx = _FakeCtx()
     order: list[str] = []
 

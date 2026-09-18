@@ -387,6 +387,43 @@ def peek_data_home() -> Path:
     return _resolve_default_home()
 
 
+def private_runtime_log_dir() -> Path | None:
+    """Diagnostics routing only; this NEVER grants session or memory authority.
+
+    The namespace publishes a readonly marker and an execution-scoped log mount
+    before Python starts, so early configuration diagnostics do not race the
+    gateway's later PID publication. Seatbelt receives a path hint but confines
+    writes to that exact directory independently of the hint.
+    """
+    home = config_dir()
+    if sys.platform == "linux":
+        from kiro_crew.platform_compat import is_readonly_filesystem
+
+        if not is_readonly_filesystem(home):
+            return None
+        marker = home / ".private-member-runtime"
+        try:
+            if not marker.is_symlink() and marker.stat().st_mode & 0o222 == 0:
+                with marker.open("rb") as handle:
+                    if handle.read(2) == b"1":
+                        return home / "agent-logs"
+        except OSError:
+            pass
+    elif sys.platform == "darwin":
+        hint = os.environ.get("_KIROCREW_PRIVATE_LOG_DIRECTORY", "")
+        if hint:
+            path = Path(hint)
+            # circular import: this module is a leaf (see the module docstring) and must
+            # not import from ``kiro_crew`` at import time.
+            from kiro_crew.memory_stores import EXECUTION_LOGS_DIR_NAME, MEMORY_STORES_DIR_NAME
+
+            if path.parent == home / MEMORY_STORES_DIR_NAME / EXECUTION_LOGS_DIR_NAME and (
+                path.name.startswith("member-")
+            ):
+                return path
+    return None
+
+
 def ensure_data_home() -> Path:
     """Eagerly resolve and create the data home — call BEFORE the loop.
 
@@ -397,8 +434,107 @@ def ensure_data_home() -> Path:
     is a cheap cached lookup. Idempotent (the process-lifetime cache makes a
     second call a no-op) and safe to call unconditionally. Returns the resolved
     data home.
+
+    Also the one place the data home itself is tightened to owner-only, which
+    makes the guarantee a property of establishing the home rather than of one
+    subsystem happening to write there. The alternative — leaning on
+    ``VectorMemoryStore.init``'s ``make_owner_only_dir(db_path.parent)`` — only
+    reaches the data home while the DEFAULT store's ``memory.db`` sits directly
+    in it, so a home whose crews all use NAMED memory stores would never be
+    tightened at all. The per-store call still tightens its own directory, which
+    is what covers the files SQLite creates inside it.
+
+    Best-effort: ``restrict_dir_to_owner`` is fail-loud by contract, and a home
+    that could not be tightened must still be usable — a permission warning is
+    the right outcome, an unbootable gateway is not.
     """
-    return config_dir()
+    home = config_dir()
+    if (
+        sys.platform == "linux"
+        and private_runtime_log_dir() is not None
+        and home.stat().st_mode & 0o777 == 0o700
+    ):
+        # The private launcher already established the home. Its namespace view
+        # is readonly; attempting chmod there produces a false security warning.
+        return home
+    from kiro_crew.platform_compat import restrict_dir_to_owner
+
+    try:
+        restrict_dir_to_owner(home)
+    except OSError:
+        logger.warning(
+            "Cannot restrict the data home to owner-only; it may be readable by other users",
+            exc_info=True,
+        )
+    # UNCONDITIONAL, not in an `else`. The home failing to tighten is the case
+    # where the crew log root's own mode matters MOST: it is the only remaining
+    # boundary, and skipping it there leaves every lazily created crew log
+    # directory at the process umask. The helper reports its own failure, so a
+    # filesystem that refuses both still boots.
+    _ensure_ledger_root(home, restrict_dir_to_owner)
+    return home
+
+
+def _ensure_ledger_root(home: Path, restrict: Callable[[Path], None]) -> None:
+    """Establish ``<home>/crew-log`` owner-only, before anything writes a crew log.
+
+    Eager rather than lazy because two other mechanisms are stated per PATH and
+    both are weaker while the name does not exist: the Linux sandbox bind-mask
+    skips a leaf that is absent, and an absent directory has no mode to inherit.
+    Creating it here makes the guarantee a property of establishing the home,
+    the same argument the caller's own tightening makes for the home itself.
+
+    *restrict* is the caller's already-resolved ``restrict_dir_to_owner``, handed
+    down rather than imported again: this module is a LEAF that imports no
+    ``kiro_crew`` package at module scope, which ``TestLeafPurity`` pins, so one
+    deferred import per entry point is the budget. It is also what covers a
+    directory that already exists with a looser mode, and what makes the guarantee
+    mean something on Windows.
+
+    Best-effort, for the reason the caller's own tightening is: a read-only or
+    exotic filesystem must not make the gateway unbootable, and the sandbox mask
+    plus the file-tool fence still stand if this one assertion cannot be made.
+    """
+    root = home / "crew-log"
+    try:
+        canonical_home = home.resolve()
+        if root.is_symlink() or root.resolve() != canonical_home / "crew-log":
+            logger.warning(
+                "Refusing crew log root %s: it is a link or resolves outside %s",
+                root,
+                canonical_home,
+            )
+            return
+        root.mkdir(parents=True, exist_ok=True)
+        restrict(root)
+        # The kind directories under it need the same two properties, and for the
+        # same reason: containment resolves its base first, so a linked
+        # ``crew-log/<kind>`` would make the link's target the containment root and
+        # every crew log path beneath it would pass while living outside this tree.
+        # Establishing them here is what the argument above makes for the root --
+        # a name that does not exist has no mode to inherit and is skipped by the
+        # sandbox mask. The names are the spellings ``crew_log/store.py::_ROOT_DIR``
+        # maps its kinds to; this module imports no ``kiro_crew`` package at module
+        # scope, so they are stated rather than read.
+        for leaf in ("crews", "sessions"):
+            kind_root = root / leaf
+            if kind_root.is_symlink() or (
+                kind_root.exists() and kind_root.resolve() != canonical_home / "crew-log" / leaf
+            ):
+                logger.warning(
+                    "Refusing crew log kind directory %s: it is a link or resolves outside %s",
+                    kind_root,
+                    canonical_home,
+                )
+                continue
+            kind_root.mkdir(parents=True, exist_ok=True)
+            restrict(kind_root)
+    except (OSError, RuntimeError):
+        logger.warning(
+            "Cannot restrict %s to owner-only; crew logs may be readable by other users",
+            root,
+            exc_info=True,
+        )
 
 
 def config_package_dir() -> Path:
@@ -458,7 +594,7 @@ def _under_system_tmp(path: Path) -> bool:
     and the automation that clones a per-task scratch tree deletes it when the
     task ends. A machine-wide agent spec stamped from such a checkout outlives
     it and leaves every managed MCP server pointing at a launcher (and possibly
-    a pinned data home) that no longer exists (#4781).
+    a pinned data home) that is gone.
 
     Deliberately NOT folded into :func:`_in_ephemeral_tree`. That predicate
     serves the launcher installer, which rejected a blanket temp-dir rule on
@@ -480,8 +616,8 @@ def _under_system_tmp(path: Path) -> bool:
     root as configured AT CALL TIME (it honours ``$TMPDIR``), matching how the
     rest of this module treats redirected environments — but on macOS launchd
     sets ``$TMPDIR`` to a per-user ``/var/folders/.../T``, so ``gettempdir()``
-    alone does NOT contain ``/tmp``, and ``/tmp/<scratch clone>`` — the literal
-    shape #4781 reports — would read as durable there. POSIX ``/tmp`` is
+    alone does NOT contain ``/tmp``, and ``/tmp/<scratch clone>`` would read as
+    durable there. POSIX ``/tmp`` is
     therefore checked as well: it is reaped on reboot by contract, so nothing
     durable lives under it. ``/var/tmp`` deliberately is not: POSIX has it
     PRESERVED across reboots, which is the opposite claim.
@@ -502,12 +638,12 @@ def _under_system_tmp(path: Path) -> bool:
             roots.append(Path(candidate).resolve())
         except (OSError, ValueError):  # pragma: no cover - defensive: unusable root
             continue
-    # The PATH is resolved too, not just the roots. Resolving one side only made the
-    # comparison cross namespaces on exactly the platform this rule was added for:
+    # The PATH is resolved too, not just the roots. Resolving one side only makes the
+    # comparison cross namespaces on exactly the platform this rule exists for:
     # macOS resolves `/tmp` to `/private/tmp`, so a checkout at `/tmp/<scratch clone>`
-    # -- the literal shape #4781 reports -- kept `/tmp` among its parents, matched
-    # nothing, and read as DURABLE. The guard then stamped a machine-wide agent spec
-    # from a tree the OS reaps at reboot, which is the outcome it exists to prevent.
+    # keeps `/tmp` among its parents, matches nothing, and reads as DURABLE. The guard
+    # then stamps a machine-wide agent spec from a tree the OS reaps at reboot, which
+    # is the outcome it exists to prevent.
     #
     # Resolving is also the safe direction for a symlink pointing OUT of the temp tree:
     # the checkout really lives at the target, so a durable target correctly stops
@@ -736,7 +872,7 @@ def kiro_agents_dir() -> Path:
     ``kiro_home() / "agents"``. Two hand-written copies of the default would let a
     later change to the layout land in only one, and the write guard compares this
     resolver's answer against that one -- a stale comparison there reads a shared
-    target as private and fails OPEN on the machine-wide home, which is the #4912
+    target as private and fails OPEN on the machine-wide home, which is the
     failure class this whole seam exists to prevent.
     """
     if _agents_dir_override is not None:

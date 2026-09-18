@@ -39,7 +39,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Callable
 
 from kiro_crew import platform_compat
 from kiro_crew.agent_discovery import _read_agent_spec
@@ -59,7 +59,12 @@ from kiro_crew.sandbox import (
     wrap_argv,
 )
 from kiro_crew.secrets import SecretVault
-from kiro_crew.security import is_sensitive_path, redact
+from kiro_crew.security import (
+    _REDACTED_CREDENTIAL_TAG,
+    _STREAM_HOLDBACK_JWT_MAX,
+    is_sensitive_path,
+    redact,
+)
 from kiro_crew.sel import sel
 
 # Env vars stripped from EVERY cron subprocess (command and script), regardless
@@ -332,7 +337,7 @@ def grant_epoch_ids() -> set[str]:
 #: the cross-process half of the guarantee is the flock in
 #: :func:`_grant_epochs_guard`. Both are needed: job-removal paths bump
 #: epochs and removals also run from the CLI (``kirocrew cron remove``), so
-#: the writer set is no longer one gateway process — a thread lock alone
+#: the writer set is not one gateway process — a thread lock alone
 #: would let a gateway revoke and a CLI removal read one epoch map and
 #: overwrite each other's bump, reviving a revoked pin.
 _GRANT_EPOCHS_LOCK = threading.Lock()
@@ -742,9 +747,9 @@ def _begin_spawn(job_id: str | None) -> bool:
     cancelled sees no flag and executes.
 
     Refusing the overlap makes the per-job cancellation contract well defined.
-    It also closes a pre-existing hazard: a second concurrent run used to
-    overwrite the ``_RUNNING_PROCS`` entry, orphaning the first child from
-    cancellation entirely.
+    It also closes a standing hazard: a second concurrent run would overwrite
+    the ``_RUNNING_PROCS`` entry, orphaning the first child from cancellation
+    entirely.
 
     An unidentified run (``job_id is None``) is never registered or cancellable,
     so it is always allowed and claims nothing.
@@ -1484,6 +1489,28 @@ def _resolve_internal_secret(port: int) -> str:
     return read_local_secret(port)
 
 
+def _child_internal_secret(
+    provider: Callable[[], str] | None,
+    port: int,
+) -> str:
+    """The secret the script child sends as ``X-Internal-Secret``.
+
+    A ``provider`` returns the gateway's LIVE in-memory secret and takes
+    precedence: the in-process scheduler runs inside the gateway that minted
+    that value, so handing back its own secret is authoritative. Only when it
+    yields nothing (or no provider was given — a runner constructed outside a
+    gateway process, or a gateway with no dashboard) does resolution fall back
+    to the env/file derivation. The provided value is used only to write the
+    0600 temp file the child reads; it is never logged, put in the env, or
+    placed in an error string.
+    """
+    if provider is not None:
+        live = provider()
+        if live:
+            return live
+    return _resolve_internal_secret(port)
+
+
 def _resolve_dial_port() -> int:
     """The ONE port this cron dials, used for both the credential and the child.
 
@@ -1502,6 +1529,158 @@ def _resolve_dial_port() -> int:
     return resolve_serving_port()
 
 
+# How far BEYOND its kept slice each diagnostic-site pattern redaction reads. A
+# credential straddling the slice boundary is only detectable while the bytes
+# on the far side are still present -- but redacting the WHOLE capture to get
+# them costs a multiple of an unbounded string (``proc.communicate`` caps
+# neither stream, and ``redact_credentials`` materialises its base64 runs), so
+# a script streaming gigabytes would OOM the gateway in redaction that survived
+# capture. Redacting a fixed window that overshoots the slice by the streaming
+# redactor's credential-holdback ceiling keeps the footprint constant. Two
+# credential classes are exempted from the margin because a fixed window
+# cannot cover them: granted vault values (shapeless, unbounded -- so
+# ``_scrub_grant_values`` runs over the whole capture BEFORE the window is
+# cut; exact-substring replacement carries none of the amplification this
+# window exists to bound) and severed credentials on the tail-keeping
+# window, where the cut removes the ANCHOR a pattern needs --
+# ``_safe_tail_redaction_window`` masks both severed shapes as classes
+# (label-paired open private-key blocks, and the severed line's leading
+# non-whitespace run) rather than per pattern.
+_REDACT_STRADDLE_MARGIN = _STREAM_HOLDBACK_JWT_MAX
+
+# How much of a failed script's stderr is reported, taken from the END.
+_MAX_SCRIPT_STDERR_TAIL = 500
+
+# How much of an unparsable script stdout is reported, taken from the START.
+_MAX_BAD_OUTPUT_HEAD = 200
+
+#: Private-key PEM block markers, with the SAME label class the batch
+#: redactor's PEM alternative anchors on (``[A-Z ]*PRIVATE KEY``). Only
+#: private-key blocks are tracked: they are the one secret PEM class the
+#: redactor masks, and they have no length ceiling, so they are the one class
+#: the straddle margin cannot cover on a tail-keeping window. The label is
+#: captured so an END can only close a block whose label it MATCHES -- a
+#: certificate footer (or any foreign END line) interleaved inside an open
+#: private-key block is body text, not a close.
+_PEM_KEY_MARKER_RE = re.compile(r"-----(BEGIN|END) ([A-Z ]*PRIVATE KEY)-----")
+
+#: Everything a complete private-key BEGIN marker could start with. Recognises
+#: the cut landing INSIDE a marker, where neither the prefix scan (marker
+#: incomplete before the cut) nor the window's own pattern pass (anchor
+#: destroyed) can see the block that just opened.
+_PEM_BEGIN_LITERAL = "-----BEGIN "
+_PEM_SEVERED_LABEL_RE = re.compile(r"[A-Z ]*-{0,4}\Z")
+
+
+def _may_end_inside_begin_marker(pre_cut_line: str) -> bool:
+    """True when ``pre_cut_line`` could end with a BEGIN marker cut mid-marker.
+
+    ``pre_cut_line`` is the severed line's content BEFORE the cut (bounded by
+    the caller). A marker severed by the cut leaves a nonempty PREFIX of
+    ``-----BEGIN <label>-----`` at the line's end -- possibly after arbitrary
+    inline prose (``Error: dumping -----BEG``), so the check is on the line's
+    SUFFIX, not its start. Two forms: the suffix is a proper prefix of the
+    ``-----BEGIN `` literal itself, or the literal is complete and everything
+    after it to the cut is label characters plus at most four closing dashes.
+    Either way the label (and whether it names a private key) is unknowable
+    from this side of the cut alone, so the caller fails closed. A trailing
+    dash of ordinary prose also matches the first form; that costs a
+    tag-only report for one rare line shape, the safe direction.
+    """
+    for k in range(1, len(_PEM_BEGIN_LITERAL)):
+        if pre_cut_line.endswith(_PEM_BEGIN_LITERAL[:k]):
+            return True
+    idx = pre_cut_line.rfind(_PEM_BEGIN_LITERAL)
+    if idx == -1:
+        return False
+    return (
+        _PEM_SEVERED_LABEL_RE.fullmatch(pre_cut_line[idx + len(_PEM_BEGIN_LITERAL) :]) is not None
+    )
+
+
+def _pem_open_label(text: str, pos: int, endpos: int, open_label: str | None = None) -> str | None:
+    """Walk PEM key markers in ``text[pos:endpos]``; return the open label.
+
+    Label-paired: an END closes only the block whose label it matches, so a
+    foreign END line (a certificate footer) inside an open key block is body
+    text. A BEGIN inside an open block cannot nest (PEM has no nesting): the
+    outer block stays open -- fail closed.
+    """
+    for m in _PEM_KEY_MARKER_RE.finditer(text, pos, endpos):
+        kind, label = m.group(1), m.group(2)
+        if open_label is None:
+            if kind == "BEGIN":
+                open_label = label
+        elif kind == "END" and label == open_label:
+            open_label = None
+    return open_label
+
+
+def _mask_from_open_block(window: str, label: str) -> str:
+    """Mask ``window`` through the labelled END line of an open PEM block."""
+    close = window.find(f"-----END {label}-----")
+    if close == -1:
+        return _REDACTED_CREDENTIAL_TAG
+    close_nl = window.find("\n", close)
+    kept_after = window[close_nl + 1 :] if close_nl != -1 else ""
+    return _REDACTED_CREDENTIAL_TAG + "\n" + kept_after
+
+
+def _safe_tail_redaction_window(text: str, keep: int) -> str:
+    """Return the pattern-redaction input for a TAIL-keeping ``keep`` slice.
+
+    The window is the last ``keep + _REDACT_STRADDLE_MARGIN`` chars of
+    ``text``. Cutting there can sever a credential's ANCHOR from the body the
+    pattern would mask, so fail-closed rules cover the shapes a severed
+    credential can take, without enumerating credential patterns:
+
+    - MULTI-LINE (private-key PEM, unbounded): walk the discarded prefix's
+      PEM markers (bounded ``finditer`` state machine, no copies) pairing
+      each END with its matching BEGIN label; when the window starts inside a
+      block that never closed, mask the retained bytes through that block's
+      OWN labelled END line -- or the whole window when it never closes. The
+      SEVERED LINE gets the same walk: a BEGIN marker sitting after the cut
+      on that line opens a block whose body follows it, so masking the line
+      alone would delete the anchor and hand the body to the pattern pass
+      unanchored -- the walk continues through the severed segment and an
+      open block at its end is masked through its END like any other.
+
+    - SINGLE-LINE (JWT, Bearer, token URL, base64 run): when the window
+      starts mid-line, a broken single-line credential can sit anywhere on
+      the severed line -- directly at the cut, after whitespace, or stranded
+      from an anchor word (``Bearer``) the cut left in the prefix -- so the
+      severed line's whole in-window remainder is masked as a unit. The cost
+      is one partial line of diagnostics that was already cut anyway. When
+      the cut lands inside a BEGIN marker itself -- with or without inline
+      prose before the marker on that line -- the block's label is split
+      across the cut and unknowable, so the whole window fails closed to the
+      tag.
+    """
+    start = len(text) - (keep + _REDACT_STRADDLE_MARGIN)
+    if start <= 0:
+        return text
+    window = text[start:]
+    open_label = _pem_open_label(text, 0, start)
+    if open_label is not None:
+        return _mask_from_open_block(window, open_label)
+    if text[start - 1] not in "\r\n":
+        line_start = text.rfind("\n", 0, start) + 1
+        pre_cut_line = text[max(line_start, start - 256) : start]
+        if _may_end_inside_begin_marker(pre_cut_line):
+            return _REDACTED_CREDENTIAL_TAG
+        line_end = window.find("\n")
+        if line_end == -1:
+            return _REDACTED_CREDENTIAL_TAG
+        severed_open = _pem_open_label(window, 0, line_end)
+        if severed_open is not None:
+            # A BEGIN marker after the cut on the severed line: its block's
+            # body follows in the remainder, and the line mask below would
+            # delete the anchor -- mask through the labelled END instead.
+            return _mask_from_open_block(window[line_end:], severed_open)
+        return _REDACTED_CREDENTIAL_TAG + window[line_end:]
+    return window
+
+
 def run_script_sandboxed(
     script_path: str,
     job_id: str,
@@ -1510,10 +1689,23 @@ def run_script_sandboxed(
     secret_env: dict[str, str] | None = None,
     secret_env_pin: str = "",
     delivery: str = "",
+    internal_secret_provider: Callable[[], str] | None = None,
 ) -> dict:
     """Run a cron script in a sandboxed subprocess via wrap_argv().
 
     Returns: {"status": "ok"|"skip"|"done"|"error", "message": "...", "error": "..."}
+
+    ``internal_secret_provider`` returns the gateway's LIVE in-memory internal
+    secret — the one the auth middleware actually compares against. The
+    in-process cron scheduler passes it so the child's ``notify()`` credential
+    is the running gateway's own value rather than one re-derived from the
+    environment or a per-port file. Env/file derivation
+    (``_resolve_internal_secret``) is the fallback for a runner constructed
+    OUTSIDE a gateway process (tests, ``kirocrew cron preview``) or a gateway
+    started with no dashboard (``--no-dashboard`` / API-only), where there is
+    no live secret to hand over. A stale ``KIROCREW_INTERNAL_SECRET`` in an
+    operator shell or a stale per-port ``.secret`` file otherwise wins the
+    derivation and every ``notify()`` 403s.
 
     ``secret_env``/``secret_env_pin`` carry an operator grant of vault secrets
     (see the grant block near ``_CRON_ENV_DENY``). When a grant is present the
@@ -1666,6 +1858,13 @@ def run_script_sandboxed(
     # --port auto bind between two resolutions would pair a credential with the
     # wrong port and 403 the callback.
     dial_port = _resolve_dial_port()
+    # Prefer the gateway's LIVE in-memory secret (the value the auth middleware
+    # compares against) when the in-process scheduler supplied a provider;
+    # otherwise derive it from env/file. Deriving is correct only OUTSIDE a
+    # gateway process (tests, cron preview) or when no dashboard started —
+    # inside a live gateway a stale KIROCREW_INTERNAL_SECRET or a stale per-port
+    # .secret file would win the derivation and 403 every notify().
+    internal_secret = _child_internal_secret(internal_secret_provider, dial_port)
     # Write secret to temp file for ScriptContext (scrubbed from env)
     secret_fd, secret_path = tempfile.mkstemp(prefix="kirocrew_secret_")
     try:
@@ -1683,7 +1882,7 @@ def run_script_sandboxed(
             # unlinks the secret + launcher (otherwise the fd leaks and temp
             # files persist).
             platform_compat.restrict_to_owner(secret_path)
-            os.write(secret_fd, _resolve_internal_secret(dial_port).encode())
+            os.write(secret_fd, internal_secret.encode())
         finally:
             os.close(secret_fd)
         try:
@@ -1724,7 +1923,23 @@ def run_script_sandboxed(
             )
         else:
             hidden = ()
-        sandbox_mode = "strict" if stdin_payload is not None else "standard"
+        # Same tier as ``run_command_sandboxed`` below: a script body is
+        # agent-written, so it is the HIGHER-capability cron surface, and it
+        # ran the WIDER profile — ``standard`` leaves ~/.aws/credentials, the
+        # SSO cache, ~/.kube, ~/.netrc, ~/.git-credentials, ~/.npmrc and
+        # ~/.pypirc open to the child, while a fixed command has always run
+        # ``cc``. The static body vet cannot be the fence (its own docstring
+        # says so and names the sandbox as the runtime control), so the two
+        # cron spawn paths are aligned on ``cc`` here. ``cc`` is the Claude
+        # Code provider's tier, and on macOS it deliberately leaves ``~/.aws``
+        # readable for that provider's Bedrock ``credential_process`` auth
+        # (see ``sandbox._seatbelt_profile``); a cron borrowing the tier
+        # inherits that residual, which is the same exposure the command path
+        # has always had there. A script that needs a host credential takes
+        # the existing route an operator already approves per job: a vault
+        # secret_env grant, which runs ``strict`` and injects the one approved
+        # secret instead of exposing a store.
+        sandbox_mode = "strict" if stdin_payload is not None else "cc"
         sandboxed_argv, sandbox_cleanup = wrap_argv(
             argv, mode=sandbox_mode, extra_hidden_dirs=hidden
         )
@@ -1787,7 +2002,7 @@ def run_script_sandboxed(
         #
         # A refusal means this job is already spawning or running. Return WITHOUT
         # touching any spawn or cancellation state: that state belongs to the
-        # other run, and clearing it here is exactly how a rerun used to eat the
+        # other run, and clearing it here is exactly how a rerun eats the
         # cancel aimed at a run still in its backoff.
         #
         # Status is "skipped", NOT "error". This is a second overlap guard behind
@@ -1873,12 +2088,22 @@ def run_script_sandboxed(
             # budget, and so an all-whitespace stderr still falls through to the
             # exit-code fallback rather than reporting blank text.
             #
-            # Redact the WHOLE stream before bounding: slicing first would cut
-            # a credential that straddles the 500-char boundary in half, and
-            # ``redact`` cannot recognise the surviving fragment, so it would
-            # reach logs and the persisted ``last_error`` unmasked.
-            tail = redact(_scrub_grant_values(stderr.rstrip(), resolved_secret_env))
-            error_text = tail[-500:] if tail else f"exit {proc.returncode}"
+            # Redact BEFORE bounding: slicing first would cut a credential that
+            # straddles the 500-char boundary in half, and ``redact`` cannot
+            # recognise the surviving fragment, so it would reach logs and the
+            # persisted ``last_error`` unmasked. The two passes get DIFFERENT
+            # inputs, matching what each costs and needs. The grant scrub runs
+            # over the WHOLE capture: it is exact-substring replacement of
+            # values the parent already holds -- O(len) scans, no base64
+            # materialisation -- and a vault value has no shape, so a value
+            # straddling any window edge would stop matching ``value in text``
+            # and its fragment would leak with nothing downstream able to
+            # recognise it. Pattern ``redact`` is the memory amplifier, so ITS
+            # input is a TAIL window reaching ``_REDACT_STRADDLE_MARGIN`` back
+            # past the kept region (see ``_REDACT_STRADDLE_MARGIN``).
+            scrubbed = _scrub_grant_values(stderr.rstrip(), resolved_secret_env)
+            tail = redact(_safe_tail_redaction_window(scrubbed, _MAX_SCRIPT_STDERR_TAIL))
+            error_text = tail[-_MAX_SCRIPT_STDERR_TAIL:] if tail else f"exit {proc.returncode}"
             return {"status": "error", "error": error_text}
 
         try:
@@ -1899,12 +2124,19 @@ def run_script_sandboxed(
                         parsed[k] = _scrub_grant_values(v, resolved_secret_env)
             return parsed
         except (json.JSONDecodeError, IndexError):
+            # Redact BEFORE truncating: slicing first could cut a credential at
+            # the boundary, leaving its unredacted head in the diagnostic. Same
+            # split as the stderr tail above: the grant scrub reads the WHOLE
+            # capture (shapeless values, cheap exact replacement), pattern
+            # ``redact`` reads a HEAD window overshooting the kept region by
+            # ``_REDACT_STRADDLE_MARGIN``.
+            scrubbed_out = _scrub_grant_values(stdout, resolved_secret_env)
             return {
                 "status": "error",
-                # Redact the complete stdout BEFORE truncating: slicing first
-                # could cut a credential at the boundary, leaving its unredacted
-                # head in the diagnostic.
-                "error": f"Bad output: {redact(_scrub_grant_values(stdout, resolved_secret_env))[:200]}",
+                "error": (
+                    "Bad output: "
+                    f"{redact(scrubbed_out[: _MAX_BAD_OUTPUT_HEAD + _REDACT_STRADDLE_MARGIN])[:_MAX_BAD_OUTPUT_HEAD]}"
+                ),
             }
     except subprocess.TimeoutExpired:
         return {"status": "error", "error": f"Script timed out after {timeout}s"}

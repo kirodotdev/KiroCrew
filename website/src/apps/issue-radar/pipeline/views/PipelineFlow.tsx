@@ -20,6 +20,7 @@
 import { Activity, AlertTriangle } from 'lucide-react'
 import { Card, StatCard } from '../../../../components/ui'
 import { i18nT } from '../../../../i18n/t'
+import { stepsHaveActivity } from '../api'
 import type { OverviewResponse, OverviewStep } from '../api'
 import { formatRelativeTime } from '../lib/format'
 
@@ -249,6 +250,28 @@ export default function PipelineFlow({
               layout. */}
           <span aria-hidden="true">{' \u2014 '}</span>
           {i18nT('apps.autoTriagePipeline.global.repos_note')}
+        </p>
+      ) : null}
+
+      {/* The zero board, disclosed. The view renders this flow whenever the TRAIL
+          has activity (totalEvents or unparseable), but a repository-scoped read
+          can exclude every event from the step counters -- six zero columns above
+          a non-zero EVENTS tile, which reads as self-contradictory ("thousands of
+          events, last activity never"). Say why, in the same dim one-line pattern
+          as the census disclosures around it, instead of leaving the reader to
+          reconcile the two numbers. Only when the columns are ENTIRELY zero:
+          a board with any counted step needs no excuse. */}
+      {!stepsHaveActivity(overview.steps) ? (
+        <p
+          className="text-[11px] leading-snug"
+          style={{ color: 'var(--text-dim)' }}
+          data-testid="atp-no-step-activity"
+        >
+          <span className="font-semibold uppercase tracking-wide">
+            {i18nT('apps.autoTriagePipeline.global.no_step_activity_label')}
+          </span>
+          <span aria-hidden="true">{' \u2014 '}</span>
+          {i18nT('apps.autoTriagePipeline.global.no_step_activity_note')}
         </p>
       ) : null}
 

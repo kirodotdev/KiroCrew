@@ -358,7 +358,7 @@ def _refresh_slot_keys(index: dict) -> None:
     _INDEXED_SPEC_IDENTITIES = indexed_identities
     # Never forget a per-creation identity during this process. If an agent later
     # removes its persisted key, the ordinary resolver must stop using it because the
-    # index no longer authenticates that mapping, but legacy migration must also not
+    # index does not authenticate that mapping, but legacy migration must also not
     # reinterpret the same entry as a genuine pre-key spec and mint a second slot.
     for name, slot_key in _SLOT_KEYS.items():
         legacy_key = f"spec-builder-{name}"
@@ -672,7 +672,7 @@ async def _touch_spec(
     """Stamp ``fields`` + ``updated_at`` on a spec, re-reading the index first.
 
     Returns the updated entry (a copy, safe to read after the hop) or ``None``
-    if the spec no longer exists -- which the caller MUST treat as "deleted
+    if the spec is gone -- which the caller MUST treat as "deleted
     while this request was in flight" and abort, not as a reason to recreate it.
 
     ``expect_spec_dir`` additionally pins the spec's IDENTITY. A name is not an
@@ -884,7 +884,7 @@ def _observed_slot_keys_for_dir(dir_key: str) -> set[str]:
 
 
 def _unindexed_observed_slot_keys() -> set[str]:
-    """Authenticated creation keys no longer represented anywhere in the index."""
+    """Authenticated creation keys that no index row represents."""
     # The resolver retains an authenticated K1 for a surviving name even when
     # the agent removes or corrupts the raw slot_key.  Such a name remains a
     # valid Stop/Delete endpoint, so it is not a global orphan merely because
@@ -1413,7 +1413,7 @@ def _clear_duplicate_stage_documents_at(dir_fd: int, token: str, documents: obje
 
     The marker proves ownership of the directory, while the manifest digest
     proves ownership of each document. Recovery must preserve the reservation
-    if a present document no longer matches; a project writer may have moved an
+    if a present document does not match; a project writer may have moved an
     unrelated file into an abandoned stage before recovery runs.
 
     The marker remains until the matching index transition is durably saved.
@@ -1642,7 +1642,7 @@ def _recover_abandoned_copy(name: str, meta: dict) -> tuple[str, Path | None]:
                 pass
             finally:
                 os.close(stage_fd)
-        # The recorded transaction inode is no longer reachable at either name.
+        # The recorded transaction inode is unreachable at either name.
         # Keep the reservation hidden: clearing it would adopt the unrelated
         # target after a crash in the post-rename identity-check window.
         return _DUPLICATE_RECOVERY_RETRY, None
@@ -1898,8 +1898,8 @@ def _write_stop_sentinel(spec_dir: Path) -> bool:
 def _clear_stop_sentinel(spec_dir: Path) -> None:
     """Remove a stale STOP sentinel belonging to THIS spec.
 
-    Refuses a spec_dir that no longer resolves to itself (see
-    ``_verified_spec_dir``). Verification alone was not enough: between the check
+    Refuses a spec_dir that does not resolve to itself (see
+    ``_verified_spec_dir``). Verification alone is not enough: between the check
     and the ``unlink`` the agent this app runs can replace the verified directory
     with a symlink, and a path-based unlink then resolves through the replacement
     and deletes a STOP file outside the spec. The directory is therefore PINNED
@@ -1990,7 +1990,7 @@ def _prepare_handoff(spec_dir: Path, name: str = "", expect_slot_key: str = "") 
     With *name* and *expect_slot_key*, the identity is re-checked under the index
     lock and the sentinel is armed WITHIN THE SAME critical section, and a
     mismatch refuses. Arming is destructive -- it removes the STOP that a Pause
-    wrote -- so it must not happen for a spec this request no longer refers to: a
+    wrote -- so it must not happen for a spec this request does not refer to: a
     stale same-name, same-path execute would otherwise clear a REPLACEMENT's stop
     and let the persisted loop resume after a restart. Gating the act itself is
     what covers a request carrying no client claim, which no claim comparison can
@@ -2046,7 +2046,7 @@ def _read_spec_files(spec_dir: Path) -> tuple[dict, dict, list[dict]]:
     """Read the documents once, returning ``(files, docs, tasks)``.
 
     ``files`` is what the browser renders: the text with credentials REDACTED.
-    ``docs`` carries the ON-DISK hash used to bind approvals to the version that
+    ``docs`` carries the ON-DISK hash that binds approvals to the version that
     was reviewed. ``tasks`` carries redacted labels but raw-text identity hashes.
     Documents remain read-only here because the agent and IDE write the same files
     without participating in a dashboard lock; no portable compare-and-swap can
@@ -2087,7 +2087,7 @@ def _prepare_git_spawn(argv: list[str]) -> tuple[list[str], Any, str | None]:
     BLOCKING -- call via ``asyncio.to_thread``. Returns
     ``(argv, env, cleanup_path)``. Still its own thread hop because
     ``sandboxed_spawn_argv`` probes the sandbox host and writes the scrubbed-env
-    temp file; the resource limits are no longer built here, because
+    temp file; the resource limits are not built here, because
     ``create_subprocess_limited`` applies them after exec.
     """
     sandbox_argv, env, cleanup = sandboxed_spawn_argv(argv)
@@ -2245,7 +2245,7 @@ async def _rollback_worktree_if_ours(
     discard the REPLACEMENT spec's uncommitted work and hard-delete its branch.
 
     ``was_ours`` is the identity-pinned index pop's own answer. A False pop means
-    the name no longer refers to our create, and the worktree path is derived
+    the name does not refer to our create, and the worktree path is derived
     from the name (``<repo>-wt-<name>``), so it is not ours to remove either.
     Leaving it is the safe failure: an orphaned worktree is recoverable by hand,
     deleted work is not.

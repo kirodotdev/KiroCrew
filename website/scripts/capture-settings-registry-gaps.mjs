@@ -115,7 +115,7 @@ await scene('1-search-custom-denies', 'custom denies', ['Your custom denies'])
 // accounted in EXPECTED_DYNAMIC_SKIPS) — the statically-labelled SecretFields
 // are what the extractor indexes.
 await scene('2-search-bot-token', 'bot token', ['Slack bot token', 'Webex bot token'])
-await scene('3-search-approval-sound', 'approval', ['Tool approval requests'])
+await scene('3-search-approval-sound', 'approval', ['When the agent needs a tool approval or an answer'])
 await scene('4-search-who-can-message', 'who can message', ['(WhatsApp)', '(WeChat)'])
 
 // ── Scene 5: activate "custom denies" → deep link + highlight ring ─────────

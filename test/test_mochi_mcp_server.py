@@ -2,7 +2,7 @@
 
 The skills are written against these tool names and shapes, so a rename or a
 changed return shape silently breaks the autonomous behavior (the agent calls a
-tool that no longer exists and gets "Unknown tool" back as prose). These tests
+tool that does not exist and gets "Unknown tool" back as prose). These tests
 pin the surface and the file round-trips.
 
 The transport itself (JSON-RPC framing, cancellation, worker dispatch) is

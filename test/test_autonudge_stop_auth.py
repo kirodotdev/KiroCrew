@@ -1,6 +1,6 @@
-"""Contract tests for the stateless session-directive tools (issue #755).
+"""Contract tests for the stateless session-directive tools.
 
-``monitor_start`` / ``monitor_update`` / ``autonudge_stop`` no longer resolve a
+``monitor_start`` / ``monitor_update`` / ``autonudge_stop`` do not resolve a
 session identity or make HTTP calls. Each VALIDATES its arguments and returns a
 DIRECTIVE string — a human-readable confirmation plus an opaque marker carrying
 the validated payload (and NO session key). The session-aware consumer
@@ -18,13 +18,13 @@ The tests split along that seam:
   resolver returns ``""`` and the tool DOES emit a directive.
 * **Applier invariants** — call ``apply_session_directive`` with a fake
   AutoNudge service and fake state/slot, preserving the security invariants
-  that used to live inside the tool: capped-loop refusal, paused-loop
+  enforced in the applier: capped-loop refusal, paused-loop
   protection, and ownership by the session binding key (never a caller-supplied
   loop id).
 
-The former mock-dashboard HTTP server, user-token handshake, and
-arm-failure/lost-response recheck tests are gone: that logic no longer exists —
-the tools are stateless and the loop mutation happens in-process in the applier.
+The tools carry no mock-dashboard HTTP server, user-token handshake, or
+arm-failure/lost-response recheck: they are stateless and the loop mutation
+happens in-process in the applier.
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def test_monitor_start_returns_directive_with_validated_payload(default_install,
         "message": "check PR #1 until green",
         "idle_secs": 300,
         "max_cycles": 5,
-        "max_runtime_secs": 0,
+        "max_runtime_secs": 14_400,
         # Whether the loop may be observation-gated. Always present and True
         # unless the caller opted out, so whichever surface applies this
         # directive reads the same decision the ack reported.
@@ -100,7 +100,7 @@ def test_monitor_start_returns_directive_with_validated_payload(default_install,
 
 def test_monitor_start_runtime_budget_passes_through(default_install):
     """An explicit wall-clock budget lands in the directive payload and is
-    echoed in the confirmation; omitting it defaults to 0 (unlimited)."""
+    echoed in the confirmation."""
     result = _call_tool_inner(
         "monitor_start",
         {"message": "watch CI", "max_runtime_secs": 7200},
@@ -121,12 +121,10 @@ def test_monitor_start_defaults_interval_300_and_bounded_cap(default_install):
     assert "no cycle cap" not in result.lower()
 
 
-def test_monitor_start_explicit_zero_cap_stays_zero(default_install):
-    """An explicit 0 means the caller really wants unlimited — 0 stays 0 and the
-    confirmation says so."""
-    result = _call_tool_inner("monitor_start", {"message": "watch PR", "max_cycles": 0})
-    assert session_directive.decode(result, "monitor_start")["max_cycles"] == 0
-    assert "no cycle cap" in result.lower()
+@pytest.mark.parametrize("field", ["max_cycles", "max_runtime_secs"])
+def test_monitor_start_rejects_unbounded_zero_limits(default_install, field):
+    with pytest.raises(ValidationError):
+        _call_tool_inner("monitor_start", {"message": "watch PR", field: 0})
 
 
 def test_monitor_start_interval_maps_to_idle_secs(default_install):
@@ -250,8 +248,8 @@ def test_autonudge_stop_short_circuits_for_non_nudgeable_session(monkeypatch, ga
 
 # ── Applier invariants (dashboard.session_directive_apply) ────────────────────
 #
-# These preserve the security invariants that used to live inside the tool,
-# moved to the consumer that actually mutates loop state. The applier resolves
+# These preserve the security invariants enforced in the consumer that actually
+# mutates loop state. The applier resolves
 # the loop by ``svc.get_by_slot(binding_key_for(session_key))`` and calls the
 # authz cores; the fakes below record those calls without touching a real
 # AutoNudge service. The authz helpers are imported LAZILY inside the applier
@@ -580,7 +578,7 @@ def test_applier_monitor_update_revives_a_capped_loop_only_when_cap_is_raised(mo
 
 
 def test_applier_monitor_update_revives_a_budget_stopped_loop_on_budget_raise(monkeypatch):
-    """PAUSED-LOOP symmetry (design-review on #2116): a loop stopped by its
+    """PAUSED-LOOP symmetry: a loop stopped by its
     wall-clock budget gets the SAME agent-side recovery as a cap-stopped one —
     raising the budget above the loop's elapsed age revives it. Keyed on the
     persisted stopped_reason, not elapsed-time inference."""
@@ -614,7 +612,7 @@ def test_applier_monitor_update_revives_a_budget_stopped_loop_on_budget_raise(mo
 
 
 def test_applier_manual_pause_is_never_revived_by_a_budget_raise(monkeypatch):
-    """GPT P1 repro on #2116: pause a loop manually, let wall-clock pass its
+    """Pause a loop manually, let wall-clock pass its
     budget, then raise max_runtime_secs — the loop must STAY paused. Elapsed
     time cannot distinguish a pause from an expiry; only the persisted
     stopped_reason can, and 'manual' never auto-resumes."""

@@ -1,11 +1,11 @@
-"""Tests for ``kiro_crew.loop_lock.LoopBoundLock`` and its CI guard (#4800).
+"""Tests for ``kiro_crew.loop_lock.LoopBoundLock`` and its CI guard.
 
 The defect class: a module-global ``asyncio.Lock`` binds to the event loop it
 is first used on, and acquiring it from a *different* loop raises
 ``RuntimeError`` on Python 3.10+ — which, swallowed by a blanket ``except``,
-turned into three order-dependent CI flake classes (#4177, #4789).
-``LoopBoundLock`` is the shared remedy; ``scripts/check_loop_bound_locks.py``
-is the gate that keeps bare declarations from reintroducing the class.
+becomes an order-dependent CI flake. ``LoopBoundLock`` is the shared remedy;
+``scripts/check_loop_bound_locks.py`` is the gate that keeps bare declarations
+from reintroducing the class.
 """
 
 from __future__ import annotations
@@ -61,7 +61,7 @@ def test_bare_asyncio_lock_raises_across_loops() -> None:
     lock = asyncio.Lock()
     _contended_use(lock)  # binds the lock to loop A
     with pytest.raises(RuntimeError):
-        _contended_use(lock)  # loop B — the #4789 crash
+        _contended_use(lock)  # loop B — the cross-loop crash
 
 
 # ── LoopBoundLock behaviour ──────────────────────────────────────────────────
@@ -90,10 +90,10 @@ def test_loop_bound_lock_keeps_one_inner_lock_per_loop() -> None:
 
 
 def test_loop_bound_lock_does_not_retain_closed_loops() -> None:
-    """Regression (GPT review on #5367): weak keys alone do not bound the
-    table — a contended asyncio.Lock strongly references its loop, so the
-    value pins the weak key. The insert-time sweep must keep the table at
-    the number of live loops, not the number of loops ever seen."""
+    """Weak keys alone do not bound the table: a contended asyncio.Lock strongly
+    references its loop, so the value pins the weak key. The insert-time sweep
+    must keep the table at the number of live loops, not the number of loops ever
+    seen."""
     lock = LoopBoundLock()
     for _ in range(10):
         _contended_use(lock)  # contention pins each loop via the lock's waiters
@@ -103,9 +103,10 @@ def test_loop_bound_lock_does_not_retain_closed_loops() -> None:
 
 
 def test_concurrent_loops_emit_one_warning(caplog) -> None:
-    """A second LIVE loop using the lock logs a one-shot WARNING (Design
-    review on #5367): the bare lock failed CLOSED here with RuntimeError, so
-    the per-loop contract must stay loud rather than become a silent race."""
+    """A second LIVE loop using the lock logs a one-shot WARNING.
+
+    A bare lock fails CLOSED here with RuntimeError, so the per-loop contract must
+    stay loud rather than degrade into a silent race."""
     import logging
 
     lock = LoopBoundLock()
@@ -241,9 +242,9 @@ def test_converted_module_globals_are_loop_bound() -> None:
 
 
 def test_converted_registries_hand_out_loop_bound_locks() -> None:
-    """The registry form (#4800 review finding): dict-cached locks created
-    inside coroutines are handed across loops on a repeated key, so the five
-    known registries must store LoopBoundLock values."""
+    """The registry form: dict-cached locks created inside coroutines are handed
+    across loops on a repeated key, so the five known registries must store
+    LoopBoundLock values."""
     from kiro_crew.dashboard.handlers import worktree
 
     async def _get():

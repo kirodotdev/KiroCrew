@@ -2,8 +2,8 @@
 
 ``hooks.json`` is shared between two writers: ``ScriptHookStore`` owns the
 ``hooks`` key, while the ``register_hook`` MCP tool stores one top-level key per
-webhook resume context. The store used to write ``{"hooks": [...]}`` wholesale,
-so any script-hook mutation silently dropped every pending context — the data a
+webhook resume context. A store writing ``{"hooks": [...]}`` wholesale would let
+any script-hook mutation silently drop every pending context — the data a
 webhook callback needs to resume with prior intent.
 """
 
@@ -273,7 +273,7 @@ class TestMergeIsSerialised:
 class TestConcurrentMutationsAreSerialised:
     """Offloading persistence must not let a mutation be lost.
 
-    The CRUD methods used to be implicitly serialised by running on the single
+    The CRUD methods were implicitly serialised by running on the single
     event-loop thread; they are now dispatched with ``asyncio.to_thread`` because
     the persist path takes a file lock and fsyncs. Two hazards follow, and only
     the second is deterministic enough to pin:
@@ -281,8 +281,8 @@ class TestConcurrentMutationsAreSerialised:
     1. Iterating ``self._hooks`` to build the payload while another thread
        mutates it can raise "dictionary changed size during iteration". Real but
        GIL-timing-dependent, so not asserted here.
-    2. A persist driven from a PRE-CAPTURED snapshot (what ``fire()`` used to do:
-       snapshot on the loop, write later in a worker) drops any mutation that
+    2. A persist driven from a PRE-CAPTURED snapshot (snapshotting on the loop,
+       writing later in a worker) drops any mutation that
        lands in between. That one can be forced exactly, below.
     """
 
@@ -375,8 +375,8 @@ class TestAcquiringTheSharedLockDoesNotTruncateTheLockFile:
     truncate, which is why the defect is invisible on Linux and reddens only
     the Windows shards.
 
-    Issue #9248; same defect and same fix as ``work_ledger._open_lock``
-    (PR #9237) and ``session_pid.py``'s three lock helpers (PR #9250).
+    Same defect and same fix as ``work_ledger._open_lock``
+    and ``session_pid.py``'s three lock helpers.
     ``webhooks.locked`` matters doubly: it guards ``hooks.json.lock``, the SAME
     file ``register_hook`` (``mcp_tools/control.py``) locks from another
     module, so cross-process contention on it is the store's normal state.

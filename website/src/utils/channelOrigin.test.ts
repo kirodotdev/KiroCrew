@@ -90,6 +90,8 @@ describe('isChatPageSurface — member exclusion', () => {
     expect(isChatPageSurface('')).toBe(true)
     expect(isChatPageSurface(undefined)).toBe(true)
     expect(isChatPageSurface('orchestrator')).toBe(true)
-    expect(isChatPageSurface('crew')).toBe(true)
+    // Crew Mode retired: a persisted `crew` slot is restored server-side as
+    // the default surface, so the predicate no longer admits the value.
+    expect(isChatPageSurface('crew')).toBe(false)
   })
 })

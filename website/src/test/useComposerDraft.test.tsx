@@ -11,7 +11,7 @@ import { describe, it, expect, vi } from 'vitest'
 import { StrictMode, type FocusEvent, type KeyboardEvent } from 'react'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { renderHook, act } from '@testing-library/react'
+import { render, renderHook, act } from '@testing-library/react'
 import { useComposerDraft, pickedFromDraft, draftByteSize } from '../app-sdk/useComposerDraft'
 
 describe('pickedFromDraft', () => {
@@ -287,6 +287,23 @@ describe('useComposerDraft', () => {
       act(() => result.current.toggleOption('Alpha'))
       expect(result.current.draft).toBe('context, Beta')
     })
+
+    it('keeps re-measuring placeholder changes on a rendered ref', async () => {
+      // StrictMode's dev double-invoke runs the passive cleanup and re-mount
+      // WITHOUT detaching the ref: a cleanup-only backstop would disconnect the
+      // placeholder observer and nothing would re-install it, leaving the
+      // re-measure silently dead in development builds.
+      const Composer = () => {
+        const { textareaRef } = useComposerDraft({ maxHeight: 240 })
+        return <textarea aria-label="composer" data-testid="box" ref={textareaRef} />
+      }
+      render(<StrictMode><Composer /></StrictMode>)
+      const el = document.querySelector('[data-testid="box"]') as HTMLTextAreaElement
+      Object.defineProperty(el, 'scrollHeight', { value: 76, configurable: true })
+      el.setAttribute('placeholder', 'a much longer working-state placeholder that wraps')
+      await act(async () => { await Promise.resolve() })
+      expect(el.style.height).toBe('76px')
+    })
   })
 
   describe('controlled mode', () => {
@@ -356,6 +373,61 @@ describe('useComposerDraft', () => {
       act(() => result.current.setDraft('overflowing draft'))
       expect(el.style.overflow).toBe('auto')
       expect(el.style.height).toBe('240px')
+    })
+
+    it('re-measures when the placeholder attribute changes while the draft is empty', async () => {
+      // The placeholder is a DOM attribute the deps never see, but a wrapped
+      // placeholder decides the empty box's height — swapping it must re-measure.
+      const { result } = renderHook(() => useComposerDraft({ maxHeight: 240 }))
+      const el = attach(38)
+      // Attachment itself measures and installs the placeholder observer.
+      result.current.textareaRef.current = el
+      expect(el.style.height).toBe('38px')
+
+      Object.defineProperty(el, 'scrollHeight', { value: 76, configurable: true })
+      el.setAttribute('placeholder', 'a much longer working-state placeholder that wraps')
+      // MutationObserver callbacks run as microtasks.
+      await act(async () => { await Promise.resolve() })
+      expect(el.style.height).toBe('76px')
+    })
+
+    it('still applies the cap when a placeholder change triggers the re-measure', async () => {
+      const { result } = renderHook(() => useComposerDraft({ maxHeight: 240 }))
+      const el = attach(38)
+      result.current.textareaRef.current = el
+      expect(el.style.height).toBe('38px')
+
+      Object.defineProperty(el, 'scrollHeight', { value: 9999, configurable: true })
+      el.setAttribute('placeholder', 'a placeholder tall enough to blow past the cap')
+      await act(async () => { await Promise.resolve() })
+      expect(el.style.height).toBe('240px')
+    })
+
+    it('follows a node swap: the new node is measured and observed, the old one released', async () => {
+      // A surface can replace its textarea (a remount) while the draft stays
+      // unchanged — the observer must move with the ref, not stay on the
+      // detached node.
+      const { result } = renderHook(() => useComposerDraft({ maxHeight: 240 }))
+      const first = attach(38)
+      result.current.textareaRef.current = first
+      expect(first.style.height).toBe('38px')
+
+      const second = attach(52)
+      result.current.textareaRef.current = second
+      // Measured on attachment even though no draft change re-ran the effect.
+      expect(second.style.height).toBe('52px')
+
+      // The detached node's placeholder no longer re-measures anything.
+      Object.defineProperty(first, 'scrollHeight', { value: 999, configurable: true })
+      first.setAttribute('placeholder', 'changed on the detached node')
+      await act(async () => { await Promise.resolve() })
+      expect(first.style.height).toBe('38px')
+
+      // The live node's placeholder does.
+      Object.defineProperty(second, 'scrollHeight', { value: 76, configurable: true })
+      second.setAttribute('placeholder', 'a longer placeholder on the live node')
+      await act(async () => { await Promise.resolve() })
+      expect(second.style.height).toBe('76px')
     })
   })
 

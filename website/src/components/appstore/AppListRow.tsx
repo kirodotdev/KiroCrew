@@ -14,14 +14,16 @@ import { Btn } from '../ui'
 import Clickable from '../Clickable'
 import AppIconTile from './AppIconTile'
 import { categoryFor, categoryLabel } from './categories'
-import { sourceLabel, isVerified, type RegistryApp } from './types'
+import { isVerified, type RegistryApp } from './types'
+import AppSource, { type SourceName } from './AppSource'
 import { appDisplayName, appDescription } from './appManifest'
 import { needsDesktopApp } from '../../lib/electron'
 import { fmtCompact } from '../../i18n/format'
 
 import { i18nT } from '../../i18n/t'
-export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnable }: {
+export default function AppListRow({ app, sources, busy, onOpen, onGet, onUpdate, onEnable }: {
   app: RegistryApp
+  sources?: SourceName[]
   busy?: boolean
   onOpen: (e?: React.MouseEvent | React.KeyboardEvent) => void
   onGet: () => void
@@ -48,12 +50,12 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
             </BadgeCheck>
           )}
         </div>
-        <div className="flex items-center gap-1.5 text-[12px] text-muted min-w-0" title={`${app.author} · ${categoryLabel(categoryFor(app.tags))} · ${sourceLabel(app)}${typeof app.stargazersCount === 'number' ? ` · ${i18nT('components.appstore.appListRow.github_stars')}: ${fmtCompact(app.stargazersCount)}` : ''}`}>
-          <span className="truncate min-w-0">{app.author} · {categoryLabel(categoryFor(app.tags))} · {sourceLabel(app)}</span>
+        <div className="flex items-center gap-1.5 text-[12px] text-muted min-w-0" title={`${app.author} · ${categoryLabel(categoryFor(app.tags))}${typeof app.stargazersCount === 'number' ? ` · ${i18nT('components.appstore.appListRow.github_stars')}: ${fmtCompact(app.stargazersCount)}` : ''}`}>
+          <span className="truncate min-w-0">{app.author} · {categoryLabel(categoryFor(app.tags))}</span>
           {/* Publisher-baked GitHub star count — only git-type third-party rows
               carry the field (built-ins never do), so presence is the gate.
               Kept OUTSIDE the truncating span with shrink-0: on a narrow card
-              the provenance text ellipsizes but the count stays visible (the
+              the publisher/category text ellipsizes but the count stays visible (the
               row title above carries the full metadata line for hover). The
               visible title disambiguates ★+number from a user RATING — an
               aria-label alone tells only screen readers this is GitHub stars. */}
@@ -65,6 +67,7 @@ export default function AppListRow({ app, busy, onOpen, onGet, onUpdate, onEnabl
           )}
         </div>
         <div className="text-[12.5px] text-muted truncate" title={appDescription(app)}>{appDescription(app)}</div>
+        <AppSource app={app} sources={sources} />
       </div>
       {/* Actions: stop propagation so nested controls keep their own
           click/keyboard activation instead of triggering the row. */}

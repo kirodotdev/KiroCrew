@@ -2,8 +2,8 @@
 
 Three properties, one per failure mode observed in production:
 
-1. The window is CONFIGURABLE and short by default. It used to be a literal
-   ``7200.0`` in ``chat_runner``, identical to the turn ceiling.
+1. The window is CONFIGURABLE and short by default, not a literal
+   ``7200.0`` in ``chat_runner`` equal to the turn ceiling.
 2. It is CLAMPED below the turn ceiling. A window at or above the ceiling can
    never fire — the turn is cut first — so it is not a longer wait, it is a
    wait that never reports.
@@ -86,7 +86,7 @@ def test_token_based_restore_stays_banned_in_this_module() -> None:
     """No test here may restore ``_TURN_DEADLINE`` through a ContextVar token.
 
     The isolation fixture above masks exactly the failure it fixes: with every
-    test baselined to ``None``, the ``get() is None`` assertions can no longer
+    test baselined to ``None``, the ``get() is None`` assertions cannot
     catch a reintroduced token-based restore — the pattern that leaves the var
     set (or kills the worker) when finalization resumes in a copied Context,
     per the rationale at turn_dispatch.py:350-356. Pin the ban at the source
@@ -294,15 +294,52 @@ class TestTimeoutTellsTheAgentInBand:
             body.append(ln)
         return body
 
-    def test_the_branch_steers_the_timeout_cause(self) -> None:
+    @staticmethod
+    def _shared_steer_block() -> str:
+        """The provenance-gated steer at the shared reject branch.
+
+        The timeout arm records its cause and the correction is steered ONCE
+        where every host auto-decline funnels — immediately before the shared
+        ``reject_tool`` — so the block under ``if _host_deny_cause:`` is the
+        wiring these tests pin.
+        """
+        from kiro_crew.dashboard import chat_runner
+
+        src = inspect.getsource(chat_runner._run_chat)
+        gate = "if _host_deny_cause:"
+        assert gate in src, "the shared provenance-gated steer is gone"
+        block = src.split(gate, 1)[1]
+        end = block.index("await client.reject_tool(")
+        return block[:end]
+
+    def test_the_branch_records_the_timeout_cause(self) -> None:
         body = "\n".join(self._timeout_branch())
-        assert "_steer_policy_notice(" in body, (
-            "the approval-timeout branch sends no in-band notice; the agent is "
-            "left holding kiro-cli's generic 'User denied tool execution'"
+        assert "_host_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT" in body, (
+            "the approval-timeout branch no longer records its cause; the agent "
+            "is left holding kiro-cli's generic 'User denied tool execution'"
         )
-        assert "cause=DENY_CAUSE_APPROVAL_TIMEOUT" in body, (
-            "the notice must carry the timeout cause, not inherit the policy "
-            "wording — 'blocked by a safety policy' is false here"
+        assert (
+            "_host_deny_reason = (" in body
+        ), "the approval-timeout branch no longer records a reason sentence"
+        # The correction itself is folded into the shared reject branch — a
+        # second steer here would tell the model the same fact twice.
+        assert "_steer_policy_notice(" not in body, (
+            "the timeout arm steers its own notice again — the shared "
+            "provenance-gated steer now double-steers"
+        )
+
+    def test_the_shared_branch_steers_the_recorded_cause(self) -> None:
+        block = self._shared_steer_block()
+        assert "_steer_policy_notice(" in block
+        assert "cause=_host_deny_cause" in block, (
+            "the notice must carry the arm's recorded cause, not inherit the "
+            "policy wording — 'blocked by a safety policy' is false here"
+        )
+        # BOTH attended and unattended slots get the notice: the shared site
+        # must gate on provenance alone, never on attendedness.
+        assert "_unattended_wait" not in block, (
+            "the shared steer is gated on the unattended flag — an attended "
+            "slot's agent would never be corrected"
         )
 
     def test_the_notice_stays_out_of_the_turn_ledger(self) -> None:
@@ -318,37 +355,33 @@ class TestTimeoutTellsTheAgentInBand:
         # Scanned over CODE lines only: the comment above the call site names
         # _refusal_notices while explaining why it is NOT used, and a comment
         # must neither satisfy nor trip a wiring assertion.
-        code = "\n".join(ln for ln in self._timeout_branch() if not ln.lstrip().startswith("#"))
-        assert (
-            "_timeout_notices" in code
-        ), "expected a local throwaway notice list for the timeout steer"
+        code = "\n".join(
+            ln for ln in self._shared_steer_block().splitlines() if not ln.lstrip().startswith("#")
+        )
+        assert "[]," in code, "expected a throwaway notice list for the shared host-decline steer"
         assert "_refusal_notices" not in code, (
-            "the timeout steer must not participate in the recovery-fallback "
+            "the host-decline steer must not participate in the recovery-fallback "
             "accounting — it pairs with no _refusal_reasons entry"
         )
 
-    def test_the_steer_is_not_gated_on_the_unattended_flag(self) -> None:
+    def test_the_cause_is_not_gated_on_the_unattended_flag(self) -> None:
         """BOTH attended and unattended slots get the notice.
 
         The unattended transcript line stays unattended-only, but an attended
-        slot's AGENT is handed the exact same generic denial string — nesting
-        the steer under the flag would leave the attended case exactly as
-        broken as before this change.
+        slot's AGENT is handed the exact same generic denial string — recording
+        the cause under the flag would leave the attended case exactly as
+        broken as before this change. The shared steer is gated ONLY on the
+        recorded provenance, so the cause assignment is what must stay outside
+        the unattended gate.
         """
         body = self._timeout_branch()
         gate = next(i for i, ln in enumerate(body) if ln.strip() == "if _unattended_wait:")
-        gate_indent = len(body[gate]) - len(body[gate].lstrip())
-        call = next(i for i, ln in enumerate(body) if "_steer_policy_notice(" in ln)
-        owner = next(
-            i
-            for i in range(call, -1, -1)
-            if body[i].strip()
-            and not body[i].lstrip().startswith("#")
-            and (len(body[i]) - len(body[i].lstrip())) <= gate_indent
+        cause = next(
+            i for i, ln in enumerate(body) if "_host_deny_cause = DENY_CAUSE_APPROVAL_TIMEOUT" in ln
         )
-        assert (len(body[owner]) - len(body[owner].lstrip())) == gate_indent, (
-            "the in-band steer is nested inside a gate — an attended (or "
-            "unattended) slot's agent would never be corrected"
+        assert cause < gate, (
+            "the timeout cause is recorded inside (or after) the unattended "
+            "gate — an attended slot's agent would never be corrected"
         )
 
     def test_the_steer_is_bounded_so_reject_and_audit_cannot_be_skipped(self) -> None:
@@ -366,9 +399,11 @@ class TestTimeoutTellsTheAgentInBand:
         helper = inspect.getsource(chat_runner._steer_policy_notice)
         assert "asyncio.wait_for(" in helper, "the steer notice is awaited unbounded"
         assert "_STEER_NOTICE_BOUND_SECS" in helper
-        # The branch itself must NOT re-wrap the call: a second, per-site bound
-        # is exactly the duplication moving it into the helper removed.
-        code = "\n".join(ln for ln in self._timeout_branch() if not ln.lstrip().startswith("#"))
+        # The call site itself must NOT re-wrap the call: a second, per-site
+        # bound is exactly the duplication moving it into the helper removed.
+        code = "\n".join(
+            ln for ln in self._shared_steer_block().splitlines() if not ln.lstrip().startswith("#")
+        )
         assert "asyncio.wait_for(" not in code
 
     def test_the_reject_still_happens_after_the_steer(self) -> None:
@@ -382,7 +417,7 @@ class TestTimeoutTellsTheAgentInBand:
         from kiro_crew.dashboard import chat_runner
 
         src = inspect.getsource(chat_runner._run_chat)
-        steer = src.index("cause=DENY_CAUSE_APPROVAL_TIMEOUT")
+        steer = src.index("cause=_host_deny_cause")
         reject = src.index('slot.append("tool", _reject_label, "msg msg-tool")')
         assert steer < reject, "the steer must precede the rejection going on the wire"
         assert "await client.reject_tool(event.request_id)" in src[steer:reject]
@@ -612,7 +647,7 @@ class TestArmTimeBudget:
         value. No other test armed a non-None prior value, so the two
         ``get() is None`` neighbours above only ever exercised the None case —
         which is how a residue inherited from another test's context read as
-        this module's product bug (#6440).
+        this module's product bug.
         """
         prev = td._TURN_DEADLINE.get()
         armed = asyncio.get_running_loop().time() + 999.0

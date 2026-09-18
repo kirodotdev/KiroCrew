@@ -1,7 +1,7 @@
 """``kirocrew-computer`` and ``kirocrew-dashboard`` resolve the calling session
 from the injected caller block.
 
-The exact state #4622 described and fixed for ``kirocrew-cron``: both servers
+The same failure mode ``kirocrew-cron`` guards against applies here: both servers
 already routed identity through :func:`mcp_core._resolve_session_key_strict`,
 whose FIRST source is the gateway-injected per-call caller block — but neither
 advertised ``kirocrew.caller-identity``, and ``mcp_gateway/backend.py`` strips
@@ -172,7 +172,7 @@ def test_dashboard_verifies_tree_writes_against_the_block_identity(
     monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:from-env")
     _as_session("dashboard:from-block")
 
-    caller_key, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
+    caller_key, _app, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
     assert err is None
     assert caller_key == "dashboard:from-block"
 
@@ -184,7 +184,7 @@ def test_dashboard_falls_back_to_the_environment_without_a_block(
     monkeypatch.setattr(mcp_dashboard, "_get_rows", _rows({"key": "from-env"}))
     monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:from-env")
 
-    caller_key, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
+    caller_key, _app, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
     assert err is None
     assert caller_key == "dashboard:from-env"
 
@@ -199,7 +199,7 @@ def test_dashboard_refuses_an_unidentified_caller(monkeypatch) -> None:
     """
     monkeypatch.setattr(mcp_dashboard, "_get_rows", _rows())
 
-    caller_key, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
+    caller_key, _app, err = mcp_dashboard._refuse_tree_shaping_if_unverifiable("moving")
     assert caller_key == ""
     assert err is not None and "cannot verify" in err
 

@@ -479,6 +479,25 @@ def _stream(data: bytes) -> asyncio.StreamReader:
     return reader
 
 
+def _wait_for_raising(exc: BaseException):
+    """A ``wait_for`` stand-in that fails with *exc* without running the awaitable.
+
+    The code under test hands ``wait_for`` a fresh ``proc.communicate()``
+    coroutine on both the turn and the reap path. A plain ``AsyncMock`` with a
+    ``side_effect`` drops that argument un-awaited, and the interpreter reports
+    it at garbage collection against some later test; closing it first keeps
+    the stand-in faithful to the real ``wait_for``, which always consumes what
+    it is given.
+    """
+
+    async def _wait_for(aw, timeout=None):
+        if asyncio.iscoroutine(aw):
+            aw.close()
+        raise exc
+
+    return _wait_for
+
+
 def _fake_proc(returncode: int = 0, stdout: bytes = b"", stderr: bytes = b"") -> "MagicMock":
     """Build a mock subprocess the production code can actually read.
 
@@ -534,7 +553,7 @@ class TestCommandProviderNoShellAndTimeout:
                 return_value="/usr/bin:/bin",
             ),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
-            patch("asyncio.wait_for", AsyncMock(side_effect=asyncio.TimeoutError())),
+            patch("asyncio.wait_for", _wait_for_raising(asyncio.TimeoutError())),
         ):
             result = await p.check()
         assert result.error == "check_command timed out"
@@ -559,8 +578,8 @@ class TestCommandProviderNoShellAndTimeout:
             patch.object(sys, "platform", "linux"),
         ):
             result = await p.check()
-        # Any spawn failure becomes an error verdict; the message no longer
-        # names the shell because OSError covers more than "missing binary".
+        # Any spawn failure becomes an error verdict; the message does not
+        # name the shell because OSError covers more than "missing binary".
         assert result.error and result.available is False
 
     @pytest.mark.asyncio
@@ -577,7 +596,7 @@ class TestCommandProviderNoShellAndTimeout:
                 return_value="/usr/bin:/bin",
             ),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
-            patch("asyncio.wait_for", AsyncMock(side_effect=asyncio.TimeoutError())),
+            patch("asyncio.wait_for", _wait_for_raising(asyncio.TimeoutError())),
         ):
             assert await p.apply() is False
         proc.kill.assert_called_once()
@@ -733,7 +752,7 @@ class TestCancellationKillsUpdaterChild:
                 return_value="/usr/bin:/bin",
             ),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
-            patch("asyncio.wait_for", AsyncMock(side_effect=asyncio.CancelledError())),
+            patch("asyncio.wait_for", _wait_for_raising(asyncio.CancelledError())),
         ):
             with pytest.raises(asyncio.CancelledError):
                 await p.apply()
@@ -753,7 +772,7 @@ class TestCancellationKillsUpdaterChild:
                 return_value="/usr/bin:/bin",
             ),
             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)),
-            patch("asyncio.wait_for", AsyncMock(side_effect=asyncio.CancelledError())),
+            patch("asyncio.wait_for", _wait_for_raising(asyncio.CancelledError())),
         ):
             with pytest.raises(asyncio.CancelledError):
                 await p.check()
@@ -790,7 +809,9 @@ class TestCancellationKillsUpdaterChild:
         child leaves its members running and can leave communicate() waiting on
         pipes those survivors hold."""
         proc = MagicMock()
-        proc.pid = 4242
+        # No supported OS can allocate this PID, so the host process table cannot
+        # make the fake child look like it shares the test runner's process group.
+        proc.pid = 99_999_999_999
         proc.kill = MagicMock()
         proc.communicate = AsyncMock(return_value=(b"", b""))
         proc.stdout = _stream(b"")
@@ -799,7 +820,7 @@ class TestCancellationKillsUpdaterChild:
         with patch("kiro_crew.platform_compat.kill_process_tree_async", AsyncMock()) as tree:
             await _kill_and_reap(proc)
         tree.assert_awaited_once()
-        assert tree.await_args.args[0] == 4242
+        assert tree.await_args.args[0] == proc.pid
 
     @pytest.mark.asyncio
     async def test_kill_and_reap_bounds_the_reap(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -1432,7 +1453,7 @@ class TestWhitespaceCommandsAreNotPresence:
 
 class TestRedactionHappensBeforeTruncation:
     """Slicing stderr to 500 chars BEFORE redacting can cut a credential in half,
-    and half a token no longer matches the redactors' patterns, so the surviving
+    and half a token does not match the redactors' patterns, so the surviving
     fragment reaches gateway.log and /api/logs verbatim. Order, not presence, is
     what makes the redaction effective."""
 

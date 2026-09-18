@@ -1,8 +1,8 @@
-"""Startup warm of the SecurityEventLog singleton (#8608).
+"""Startup warm of the SecurityEventLog singleton.
 
 ``SecurityEventLog._init_locked`` runs on whatever thread first calls
 ``sel()``; after init, a non-critical ``log_api_access`` only enqueues to the
-writer thread. Before #8608 that first touch was dodged per call site — 18+
+writer thread. Without the startup warm the first touch is dodged per call site — 18+
 ``asyncio.to_thread`` wrappers across the dashboard handlers — while 250+
 other ``log_api_access`` sites remained candidate first-touch stalls. The
 cause-level fix warms the singleton once, off the loop, in BOTH async server
@@ -13,7 +13,7 @@ These tests pin the three halves of that contract:
 
 * the warm helper genuinely initializes the singleton OFF the event loop
   (real ``SecurityEventLog``, fresh directory, recorded ``_init_locked``
-  thread) — this is the migrated #8523 first-touch property, now asserted at
+  thread) — this is the first-touch property, asserted at
   the startup warm instead of at a per-site hop;
 * a failed warm never raises out of the helper (an SEL init error must not
   keep the gateway from becoming ready);
@@ -155,7 +155,7 @@ def test_writer_unavailable_fallback_never_writes_on_the_event_loop(tmp_path, mo
 
     ``log()``'s enqueue path falls back to a synchronous ``_flush_batch`` when
     ``_ensure_writer()`` raises (thread/resource exhaustion). With the per-site
-    ``to_thread`` wrappers gone (#8608), that fallback is now reachable ON the
+    ``to_thread`` wrappers gone, that fallback is reachable ON the
     event loop — where its redaction + chain lock + open/write would freeze
     every task the loop serves. So on the loop the event is dropped with a
     warning; off the loop the synchronous write still lands the entry. Either
@@ -218,7 +218,7 @@ def test_sel_is_warm_tracks_the_singleton_state(monkeypatch):
 
 def test_audit_denied_hops_off_the_loop_only_when_the_warm_failed(monkeypatch):
     """The deny path is reached by every refused request. With a warmed
-    singleton it must stay a direct enqueue (#8608: no per-call hop). With a
+    singleton it must stay a direct enqueue (no per-call hop). With a
     FAILED warm the next ``sel()`` runs ``_init_locked`` -- blocking file I/O --
     on the caller's thread, and the caller here is the event loop: that case
     must take the hop. Both branches are driven through the real helper with

@@ -33,6 +33,29 @@ class TestRepoSettings(unittest.TestCase):
         self.assertEqual(s["triage_labels"], [])
         self.assertEqual(s["good_first_issue_labels"], [])
 
+    def test_non_object_config_degrades_to_empty_repo_list(self):
+        store.config_path(self.tmp).write_text("null", encoding="utf-8")
+        self.assertEqual(store.list_connected_repos(self.tmp), [])
+        store.add_connected_repo("o", "r", root=self.tmp)
+        self.assertTrue(store.is_repo_connected("o", "r", self.tmp))
+
+    def test_bad_repo_row_does_not_hide_valid_repo(self):
+        store.config_path(self.tmp).write_text(
+            json.dumps({"repos": [None, {"owner": "o", "repo": "r"}, 42]}),
+            encoding="utf-8",
+        )
+        self.assertTrue(store.is_repo_connected("o", "r", self.tmp))
+        self.assertEqual(len(store.list_connected_repos(self.tmp)), 1)
+        store.add_connected_repo("other", "repo", root=self.tmp)
+        self.assertTrue(store.is_repo_connected("o", "r", self.tmp))
+        self.assertTrue(store.is_repo_connected("other", "repo", self.tmp))
+
+    def test_non_list_repos_degrades_to_empty_list(self):
+        store.config_path(self.tmp).write_text('{"repos": {"owner": "o"}}', encoding="utf-8")
+        self.assertEqual(store.list_connected_repos(self.tmp), [])
+        store.add_connected_repo("o", "r", root=self.tmp)
+        self.assertTrue(store.is_repo_connected("o", "r", self.tmp))
+
     def test_defaults_for_unconnected_repo(self):
         s = store.read_repo_settings("no", "pe", self.tmp)
         self.assertEqual(s, store.DEFAULT_REPO_SETTINGS)

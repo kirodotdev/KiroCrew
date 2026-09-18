@@ -18,7 +18,7 @@ import { Server } from 'lucide-react'
  * it already names the target — a screen reader would otherwise announce a
  * decorative icon before the only informative part.
  */
-export function RemoteCrewChip({ name, title }: { name: string; title?: string }) {
+export function RemoteCrewChip({ name, title, label }: { name: string; title?: string; label?: string }) {
   return (
     <span
       className="shrink-0 inline-flex items-center gap-0.5 max-w-[7rem] text-[10px] px-1 rounded bg-info-subtle text-info border border-info/40"
@@ -26,11 +26,12 @@ export function RemoteCrewChip({ name, title }: { name: string; title?: string }
       data-testid="remote-crew-chip"
     >
       <Server size={9} className="shrink-0" aria-hidden="true" />
-      {/* The instance name is user-set and unbounded. The session row is a fixed
-       *  height with the timestamp pinned at its end, so an unclamped chip pushes
-       *  the timestamp out and overflows the row. Cap the chip and truncate the
-       *  name inside it; the full value stays available in the title tooltip. */}
-      <span className="truncate">{name}</span>
+      {/* The instance name is user-set and unbounded, and the localized visible
+       *  label may add a short location word. The session row is a fixed height
+       *  with the timestamp pinned at its end, so an unclamped chip pushes the
+       *  timestamp out and overflows the row. Cap the chip and truncate the
+       *  display label; the raw full name stays available in the title tooltip. */}
+      <span className="truncate">{label || name}</span>
     </span>
   )
 }

@@ -1,5 +1,6 @@
 import type { QueryClient } from '@tanstack/react-query'
 import { api, type MemberRosterRow } from './client'
+import type { ErrorReport } from '../utils/errorReport'
 
 /**
  * The Crew Members page's React Query definitions (issue #9418).
@@ -86,4 +87,6 @@ export interface MemberThreadOutcome {
   collision?: string
   /** Set when the last POST failed. */
   failed?: boolean
+  /** Redacted diagnostics for this member's failed open or repair. */
+  errorReport?: ErrorReport
 }

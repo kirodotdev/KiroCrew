@@ -478,7 +478,7 @@ def test_another_instances_metadata_rewrite_is_not_served_stale(tmp_path):
     writer.update_metadata(key, {"tab_id": "bbbbbbbbbbbb"})
 
     # Fixture controls: without all three the test could pass vacuously -- it
-    # would no longer be exercising the case where BOTH guards are blind.
+    # would not be exercising the case where BOTH guards are blind.
     assert path.stat().st_mtime == before_mtime, "writer did not restore mtime"
     assert path.stat().st_size == before_size, "replacement was not equal-length"
     assert key not in writer._tab_id_by_key, "writer did not pop its own memo"

@@ -100,7 +100,7 @@ export function inferLane(slot: LaneSlotFields, extras: LaneExtras = {}): Sessio
   if (slot.pending_approval || (extras.subagentAwaiting ?? 0) > 0) return 'needs_approval'
   // Parked on a human answer. Deliberately NOT `waiting_for_input`, which is
   // true of every finished turn and would swallow the whole idle lane: only an
-  // explicit unanswered question or options card outranks live work.
+  // explicit unanswered question or an options card outranks live work.
   if (slot.needs_input || slot.has_options) return 'waiting'
   if (hasLiveSessionWork(slot, extras)) return 'working'
   // An interrupted turn waits on the user only when no newer work supersedes

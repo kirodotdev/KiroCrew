@@ -978,3 +978,206 @@ class TestAnExplicitDefaultDistributionIsDeclared:
             )
         )
         assert refreshed.distribution.on_unavailable == governance.UNAVAILABLE_FAIL_CLOSED
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# An unreadable home file beneath a present authority is skipped, not fatal
+# ──────────────────────────────────────────────────────────────────────────
+class TestAnUnreadableHomeFileBeneathAnAuthorityIsSkipped:
+    """An unusable home file is fatal only when that file is the sole ceiling.
+
+    The home file is folded beneath the central document on every load and on every
+    refresh poll. Raising there -- on a read error, or on valid JSON the schema
+    rejects -- would let whoever owns ``~/.kiro/crew`` refuse boot and freeze every
+    refresh on a fleet host: an availability lever, not a tightening. Beneath an
+    authority the file is skipped with one warning and the authority governs
+    unchanged, by one path whatever the shape of the damage; with no authority it is
+    the only ceiling and its error stays fatal (``test_governance_distribution.py``).
+    """
+
+    @pytest.fixture
+    def broken_home(self, monkeypatch, tmp_path):
+        home = tmp_path / "home.json"
+        home.write_text("{ not json", encoding="utf-8")
+        _point_home(monkeypatch, home)
+        return home
+
+    def test_the_authority_governs_unchanged_at_boot(self, central, broken_home):
+        central("fleet")
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.identity_issuer == "fleet"
+        assert ceiling.tier == TIER_CENTRAL
+
+    def test_the_skip_is_announced_once_per_process(self, central, broken_home, caplog):
+        central("fleet")
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            load_security_policy()
+            load_security_policy()
+        hits = [r for r in caplog.records if "is unusable" in r.getMessage()]
+        assert len(hits) == 1
+        assert str(broken_home) in hits[0].getMessage()
+
+    def test_a_refresh_keeps_the_authority_too(self, central, broken_home):
+        # ``compose_installed_ceiling`` re-reads the home file on every poll; a raise
+        # here would reject every refresh and let the cache age toward fail-closed.
+        central("fleet")
+        fetched = governance.parse_policy(_doc("fleet"))
+        refreshed = governance.compose_installed_ceiling(fetched)
+        assert refreshed.identity_issuer == "fleet"
+
+    def test_with_no_authority_the_error_is_still_fatal(self, broken_home):
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        with pytest.raises(PlatformCompositionError, match="is unreadable"):
+            load_security_policy()
+
+    @pytest.fixture
+    def schema_invalid_home(self, monkeypatch, tmp_path):
+        # Valid JSON that ``parse_policy`` refuses: the same lever, one step later.
+        home = tmp_path / "home.json"
+        home.write_text(json.dumps({"version": 2, "boot": {"fail_closed": True}}), encoding="utf-8")
+        _point_home(monkeypatch, home)
+        return home
+
+    def test_a_schema_invalid_home_file_is_skipped_by_the_same_path(
+        self, central, schema_invalid_home, caplog
+    ):
+        central("fleet")
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.identity_issuer == "fleet"
+        assert ceiling.tier == TIER_CENTRAL
+        hits = [r for r in caplog.records if "is unusable" in r.getMessage()]
+        assert len(hits) == 1
+        assert str(schema_invalid_home) in hits[0].getMessage()
+
+    def test_a_schema_invalid_home_file_does_not_reject_a_refresh(
+        self, central, schema_invalid_home
+    ):
+        central("fleet")
+        refreshed = governance.compose_installed_ceiling(governance.parse_policy(_doc("fleet")))
+        assert refreshed.identity_issuer == "fleet"
+
+    def test_with_no_authority_a_schema_error_is_still_fatal(self, schema_invalid_home):
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        with pytest.raises(PlatformCompositionError):
+            load_security_policy()
+
+    @pytest.fixture
+    def verify_raises_something_unexpected(self, monkeypatch):
+        # The catch is total: an exception class nobody anticipated must land on
+        # the same path. Stand in for the next strict operation that raises.
+        real = governance._verify_policy_signature
+
+        def boom(data, *, source):
+            if source.endswith("home.json"):
+                raise RuntimeError("unanticipated failure while verifying " + source)
+            return real(data, source=source)
+
+        monkeypatch.setattr(governance, "_verify_policy_signature", boom)
+
+    def test_an_unanticipated_exception_is_skipped_beneath_an_authority(
+        self, monkeypatch, tmp_path, central, verify_raises_something_unexpected, caplog
+    ):
+        central("fleet")
+        _point_home(monkeypatch, _write_policy(tmp_path / "home.json", "operator"))
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.identity_issuer == "fleet"
+        assert any("is unusable" in r.getMessage() for r in caplog.records)
+
+    def test_a_malformed_home_distribution_block_is_skipped_beneath_an_authority(
+        self, monkeypatch, tmp_path, central, caplog
+    ):
+        # The home ``distribution`` block is PEEKED before the central document is
+        # known; a malformed one must not refuse boot on a host central governs.
+        central("fleet")
+        _point_home(
+            monkeypatch,
+            _write_policy(tmp_path / "home.json", "operator", distribution="not-a-block"),
+        )
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.identity_issuer == "fleet"
+        assert any("is unusable" in r.getMessage() for r in caplog.records)
+
+    def test_a_malformed_home_distribution_block_with_no_authority_is_fatal(
+        self, monkeypatch, tmp_path
+    ):
+        from kiro_crew.platform.context import PlatformCompositionError
+
+        _point_home(
+            monkeypatch,
+            _write_policy(tmp_path / "home.json", "operator", distribution="not-a-block"),
+        )
+        with pytest.raises(PlatformCompositionError, match="distribution"):
+            load_security_policy()
+
+    def test_a_malformed_home_distribution_block_does_not_abort_an_env_tier_boot(
+        self, monkeypatch, tmp_path
+    ):
+        # No central document, but the env tier outranks home: the malformed home
+        # block declares no source, and the file it sits in is never the selected
+        # ceiling, so it must not refuse a boot the env document governs.
+        monkeypatch.setenv(_POLICY_ENV, str(_write_policy(tmp_path / "env.json", "local-env")))
+        _point_home(
+            monkeypatch,
+            _write_policy(tmp_path / "home.json", "operator", distribution="not-a-block"),
+        )
+        ceiling = load_security_policy()
+        assert ceiling is not None
+        assert ceiling.identity_issuer == "local-env"
+        assert ceiling.tier == TIER_ENV
+
+    def test_a_malformed_home_distribution_block_is_announced_on_the_peek_path(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        # The env tier governs and no central document resolves, so the peek in
+        # ``load_security_policy`` is the ONLY place the skipped block is seen:
+        # ``_subordinate_ceiling`` returns at the env tier without reaching its home
+        # branch. A fleet that mistyped where its ceiling lives has to find out from a
+        # log line rather than from nothing.
+        monkeypatch.setenv(_POLICY_ENV, str(_write_policy(tmp_path / "env.json", "local-env")))
+        home = _write_policy(tmp_path / "home.json", "operator", distribution="not-a-block")
+        _point_home(monkeypatch, home)
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            load_security_policy()
+            load_security_policy()
+        hits = [r for r in caplog.records if "is unusable" in r.getMessage()]
+        assert len(hits) == 1
+        assert str(home) in hits[0].getMessage()
+
+    def test_the_skip_warning_names_the_error_class_not_its_text(
+        self, monkeypatch, tmp_path, caplog
+    ):
+        # The warning is served by ``GET /api/logs``, and a ``distribution`` error
+        # quotes a fragment of the declared source -- here the port -- which the SEL
+        # rows for this tier deliberately keep off agent-reachable surfaces because a
+        # source URL may itself be a credential. Path and exception CLASS only.
+        monkeypatch.setenv(_POLICY_ENV, str(_write_policy(tmp_path / "env.json", "local-env")))
+        home = _write_policy(
+            tmp_path / "home.json",
+            "operator",
+            distribution={"source": "https://policy.example:sekrit-port/policy.json"},
+        )
+        _point_home(monkeypatch, home)
+        with caplog.at_level("WARNING", logger=governance.logger.name):
+            load_security_policy()
+        hits = [r for r in caplog.records if "is unusable" in r.getMessage()]
+        assert len(hits) == 1
+        message = hits[0].getMessage()
+        assert "PlatformCompositionError" in message
+        assert "sekrit-port" not in message
+        assert str(home) in message
+
+    def test_an_unanticipated_exception_with_no_authority_still_surfaces(
+        self, monkeypatch, tmp_path, verify_raises_something_unexpected
+    ):
+        _point_home(monkeypatch, _write_policy(tmp_path / "home.json", "operator"))
+        with pytest.raises(RuntimeError, match="unanticipated"):
+            load_security_policy()

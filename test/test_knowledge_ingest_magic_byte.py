@@ -11,6 +11,7 @@ mirroring the sibling ``api_upload_file`` magic-byte gate. Genuine text formats
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import io
 import tempfile
 import zipfile
@@ -24,16 +25,24 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers.knowledge import ingest_file
+from kiro_crew.knowledge.ingestion import IngestionPipeline
+from kiro_crew.knowledge.store import KnowledgeStore
 
 
 class _FakeStore:
+    """A store that remembers the one source the handler adds, so the
+    background task's re-read under the gate finds the row it is about to
+    fill (a missing row reads as deleted in the gap and skips the ingest)."""
+
     def __init__(self) -> None:
         self.db = MagicMock()
+        self._rows: dict[str, dict] = {}
 
     def get_source_by_uri(self, uri):
-        return None
+        return self._rows.get(uri)
 
     def add_source(self, *, name, source_type, uri, properties):
+        self._rows[uri] = {"id": "sid1"}
         return "sid1"
 
 
@@ -48,6 +57,9 @@ def _make_app() -> tuple[web.Application, AsyncMock]:
         ingest_file=ingest_spy,
         reserve_import_budget=AsyncMock(return_value=None),
         release_import_budget=MagicMock(),
+        # The background task holds the store's ingestion gate across its
+        # lookup and ingest; the fake store has no gate, so this is a no-op.
+        ingestion_in_flight=contextlib.nullcontext,
     )
     app.router.add_post("/api/knowledge/ingest", ingest_file)
     return app, ingest_spy
@@ -247,3 +259,64 @@ async def test_an_admitted_upload_never_reserves_a_second_time(mock_sel):
     assert kwargs["count_toward_import_budget"] is False, (
         "an already-admitted upload must not re-enter the budget")
     assert kwargs["import_budget_token"] is None
+
+
+@pytest.mark.asyncio
+async def test_the_background_task_holds_the_gate_from_its_lookup_through_the_ingest(mock_sel, tmp_path, monkeypatch):
+    """A re-upload ingests into an existing row, and an itemless row with a
+    terminal status is what the orphan sweep reclaims. The handler holds the
+    store's ingestion gate from its lookup until the background task holds its
+    own, and the task holds it across its re-read and the ingest, so a
+    maintenance window cannot open at any of those points and can once the task
+    is done."""
+    import kiro_crew.dashboard.handlers.knowledge as kn
+
+    store = KnowledgeStore(str(tmp_path / "k.db"))
+    try:
+        sid = store.add_source(name="notes.md", source_type="local_file",
+                               uri="upload://notes.md", properties={})
+        store.update_source(sid, sync_status="error")
+        pipeline = IngestionPipeline.__new__(IngestionPipeline)
+        pipeline.store = store
+        seen: list[bool] = []
+        real_lookup = store.get_source_by_uri
+        real_row = kn._source_row
+
+        def _lookup(uri):
+            with store.maintenance_window(timeout=0.05) as quiescent:
+                seen.append(quiescent)
+            return real_lookup(uri)
+
+        def _row(store_, source_id):
+            with store.maintenance_window(timeout=0.05) as quiescent:
+                seen.append(quiescent)
+            return real_row(store_, source_id)
+
+        async def _ingest(*_args, **_kwargs):
+            with store.maintenance_window(timeout=0.05) as quiescent:
+                seen.append(quiescent)
+            return "job"
+
+        store.get_source_by_uri = _lookup  # type: ignore[method-assign]
+        monkeypatch.setattr(kn, "_source_row", _row)
+        pipeline.ingest_file = _ingest  # type: ignore[method-assign]
+        pipeline.reserve_import_budget = AsyncMock(return_value=None)  # type: ignore[method-assign]
+        pipeline.release_import_budget = MagicMock()  # type: ignore[method-assign]
+        app = web.Application()
+        app["state"] = SimpleNamespace(knowledge_store=store)
+        app["knowledge_pipeline"] = pipeline
+        app.router.add_post("/api/knowledge/ingest", ingest_file)
+
+        status, body = await _post(app, b"# notes\n", "notes.md", "text/markdown")
+
+        assert status == 200, body
+        assert body["source_id"] == sid
+        await asyncio.gather(*app["_bg_tasks"])
+        # The handler's own lookup (the unique insert's recovery read), the
+        # task's re-read and the ingest all run under a hold: the handler holds
+        # the gate from its lookup until the task holds its own.
+        assert seen == [False, False, False]
+        with store.maintenance_window(timeout=0.05) as quiescent:
+            assert quiescent is True, "the gate stayed held after the task finished"
+    finally:
+        store.close()

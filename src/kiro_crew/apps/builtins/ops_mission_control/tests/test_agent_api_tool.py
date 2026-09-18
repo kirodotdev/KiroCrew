@@ -153,8 +153,8 @@ class TestGatewayAdmission(unittest.TestCase):
     def test_sensitive_routes_are_not_admitted(self):
         """The routes that must stay dashboard-only (cookie/token auth).
 
-        This is the property PR #1066 named when it chose full paths over the
-        app prefix: prefix-matching would admit provider secret writes and the
+        This is the property that makes the allowlist use full paths rather than
+        the app prefix: prefix-matching would admit provider secret writes and the
         human proposal-decision route to anything holding the internal secret.
         """
         mixed = self._mixed()

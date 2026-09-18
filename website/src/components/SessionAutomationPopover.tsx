@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from 'react'
-import { Activity, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
+import { Activity, Goal, Radar, RotateCw, Square, Trash2, X } from 'lucide-react'
 import { useIsFetching, useMutation, useQueryClient } from '@tanstack/react-query'
-import { api, type MonitorWrite } from '../api/client'
+import { api, ApiError, type MonitorWrite } from '../api/client'
 import {
   deriveAutomationStatus,
   MONITOR_STATUS_KEYS,
+  normalizePullRequestMonitorTarget,
   normalizeAutomationRecord,
   STRUCTURED_MONITOR_DEFAULTS,
   STRUCTURED_MONITOR_LIMITS,
@@ -61,6 +62,29 @@ type Mutation = ({ captured: AutomationRecord | null; slotKey: string; editorKey
   | { action: 'restart'; id: string }
 ))
 
+function monitorRequestError(failure: unknown): string {
+  if (!(failure instanceof ApiError) || failure.status !== 400) {
+    return i18nT('components.sessionAutomationPopover.request_failed')
+  }
+  let code = ''
+  try {
+    const body = JSON.parse(failure.body) as unknown
+    if (body && typeof body === 'object' && !Array.isArray(body)) {
+      const rawCode = (body as Record<string, unknown>).code
+      code = typeof rawCode === 'string' ? rawCode : ''
+    }
+  } catch {
+    return i18nT('components.sessionAutomationPopover.request_failed')
+  }
+  if (code === 'gitlab_host_not_allowed') {
+    return i18nT('components.sessionAutomationPopover.gitlab_host_not_allowed')
+  }
+  if (code === 'invalid_pull_request_url') {
+    return i18nT('components.sessionAutomationPopover.invalid_pull_request_url')
+  }
+  return i18nT('components.sessionAutomationPopover.request_failed')
+}
+
 const defaults = (): Draft => ({
   target: '',
   cadence: String(STRUCTURED_MONITOR_DEFAULTS.cadenceSecs),
@@ -96,6 +120,7 @@ function legacyWire(loop: LegacyGoalLoop): AutoNudgeLoop {
     active: loop.active,
     last_fire_ts: loop.lastFireAt,
     next_due_ts: loop.nextDueAt ?? 0,
+    ...(loop.stopSentinelPath !== undefined ? { stop_sentinel_path: loop.stopSentinelPath } : {}),
   }
 }
 
@@ -132,8 +157,16 @@ export default function SessionAutomationPopover({
   sessionMode = '',
 }: Props) {
   const monitor = automation?.kind === 'structured_monitor' ? automation : null
-  const [legacyModeSlot, setLegacyModeSlot] = useState<string | null>(
-    automation?.kind === 'legacy_goal_loop' ? slotKey : null,
+  /* WHICH VIEW THIS OPENS ON, and the goal loop is the default. The bounded
+     monitor accepts exactly one thing -- a pull request URL, validated against
+     four code hosts -- so opening on it put every session that is not about a
+     pull request in front of a form it cannot fill, with the surface that
+     accepts any objective one unlabelled click away. The monitor is reached by
+     asking for it, or by this slot already holding one: an armed record
+     outranks the default in either direction, because whichever view is hidden
+     is a running automation nothing on screen would report. */
+  const [boundedModeSlot, setBoundedModeSlot] = useState<string | null>(
+    automation?.kind === 'structured_monitor' ? slotKey : null,
   )
   const editorKey = monitor?.id ?? `new:${slotKey}`
   const incomingEditor = (): EditorState => ({
@@ -159,11 +192,20 @@ export default function SessionAutomationPopover({
   const slotKeyRef = useRef(slotKey)
   slotKeyRef.current = slotKey
   const sessionModeUnsupported = sessionMode === 'crew' || sessionMode === 'member'
-  const legacyView = automation?.kind === 'legacy_goal_loop' || legacyModeSlot === slotKey
+  const legacyView = automation?.kind === 'legacy_goal_loop'
+    || (!monitor && boundedModeSlot !== slotKey)
 
   useEffect(() => {
     if (!open) return
-    if (automation?.kind === 'legacy_goal_loop') setLegacyModeSlot(slotKey)
+    /* Each open re-derives the view from the RECORD, so nothing is left
+       selected from a previous open. `else if` was wrong here: a slot with no
+       automation kept whatever the reader last switched to, so pressing the
+       bounded offer and closing made the next open of an unarmed slot show the
+       pull-request form -- the exact default this change exists to remove,
+       reachable again through the popover's own history. The unsaved bounded
+       draft is not lost by this; it stays keyed on the editor and is there
+       again the moment the offer is pressed. */
+    setBoundedModeSlot(automation?.kind === 'structured_monitor' ? slotKey : null)
     setConfirmStop(false)
     setConfirmClear(false)
   }, [open, automation?.id, automation?.kind, slotKey])
@@ -209,9 +251,9 @@ export default function SessionAutomationPopover({
     },
     onSuccess: (result, request) => {
       const next = normalizeAutomationRecord(result.monitor)
-      if (request.captured !== null
-        && automationRef.current === request.captured
-        && next?.kind === 'structured_monitor') {
+      const current = automationRef.current
+      const responseIsCurrent = request.captured !== null && current === request.captured
+      if (responseIsCurrent && next?.kind === 'structured_monitor') {
         onChange(next)
       }
       // Refetch remains authoritative. Only an existing captured identity can
@@ -230,11 +272,11 @@ export default function SessionAutomationPopover({
       })
       if (slotKeyRef.current === request.slotKey) onOpenChange(false)
     },
-    onError: (_error, request) => {
+    onError: (failure, request) => {
       setErrorsByEditor(current => ({
         ...current,
         [request.editorKey]: {
-          request: i18nT('components.sessionAutomationPopover.request_failed'),
+          request: monitorRequestError(failure),
         },
       }))
     },
@@ -256,10 +298,11 @@ export default function SessionAutomationPopover({
     )
     : monitor
       ? i18nT('components.sessionAutomationPopover.monitor_status', { status: statusLabel })
-      : i18nT('components.sessionAutomationPopover.set_up_bounded_monitor')
+      : i18nT('components.autoNudgePopover.set_a_goal')
   const busy = mutation.isPending && mutation.variables?.editorKey === editorKey
   const draft = editor.draft
   const hasDirtyFields = Object.keys(editor.dirty).length > 0
+  const editedMonitor = monitor
 
   function requestOpenChange(nextOpen: boolean) {
     if (!nextOpen && busy) return
@@ -287,8 +330,8 @@ export default function SessionAutomationPopover({
 
   function writeMonitor() {
     if (sessionModeUnsupported) return
-    if (!monitor && !creationReady) return
-    if (monitor && !hasDirtyFields) return
+    if (!editedMonitor && !creationReady) return
+    if (editedMonitor && !hasDirtyFields) return
     const cadence = boundedInteger(draft.cadence, STRUCTURED_MONITOR_LIMITS.cadenceSecs)
     const runtime = boundedInteger(draft.runtime, STRUCTURED_MONITOR_LIMITS.maxRuntimeSecs)
     const turns = boundedInteger(draft.turns, STRUCTURED_MONITOR_LIMITS.maxAgentTurns)
@@ -298,13 +341,22 @@ export default function SessionAutomationPopover({
       STRUCTURED_MONITOR_LIMITS.maxProviderErrors,
     )
     const nextErrors: FormErrors = {}
-    const validates = (field: keyof Draft) => !monitor || !!editor.dirty[field]
+    const validates = (field: keyof Draft) => !editedMonitor || !!editor.dirty[field]
     const rangeError = (limits: { minimum: number; maximum: number }) => i18nT(
       'components.sessionAutomationPopover.limit_range',
       { min: fmtNumber(limits.minimum), max: fmtNumber(limits.maximum) },
     )
     if (validates('target') && !draft.target.trim()) {
       nextErrors.target = i18nT('components.sessionAutomationPopover.enter_pull_request_url')
+    }
+    const normalizedTarget = normalizePullRequestMonitorTarget(draft.target.trim())
+    if (validates('target') && draft.target.trim() && !normalizedTarget) {
+      nextErrors.target = i18nT('components.sessionAutomationPopover.invalid_pull_request_url')
+    } else if (validates('target') && editedMonitor && normalizedTarget
+      && normalizedTarget.kind !== editedMonitor.monitorKind) {
+      nextErrors.target = i18nT(
+        'components.sessionAutomationPopover.provider_change_requires_new_monitor',
+      )
     }
     if (validates('cadence') && cadence === null) {
       nextErrors.cadence = rangeError(STRUCTURED_MONITOR_LIMITS.cadenceSecs)
@@ -336,21 +388,21 @@ export default function SessionAutomationPopover({
       return
     }
     setErrorsByEditor(current => ({ ...current, [editorKey]: {} }))
-    const createPayload = {
-      kind: 'github_pull_request' as const,
-      objective: 'review_ready' as const,
-      target: draft.target.trim(),
-      cadence_secs: cadence!,
-      max_runtime_secs: runtime!,
-      max_agent_turns: turns!,
-      max_tokens: tokens!,
-      max_provider_errors: providerErrors!,
-      wake_instructions: draft.wakeInstructions.trim(),
-    }
-    if (!monitor) {
+    if (!editedMonitor) {
       mutation.mutate({
         action: 'create',
-        payload: { ...createPayload, slot_key: slotKey },
+        payload: {
+          slot_key: slotKey,
+          kind: normalizedTarget!.kind,
+          objective: 'review_ready',
+          target: normalizedTarget!.target,
+          cadence_secs: cadence!,
+          max_runtime_secs: runtime!,
+          max_agent_turns: turns!,
+          max_tokens: tokens!,
+          max_provider_errors: providerErrors!,
+          wake_instructions: draft.wakeInstructions.trim(),
+        },
         captured: automation,
         slotKey,
         editorKey,
@@ -358,19 +410,19 @@ export default function SessionAutomationPopover({
       return
     }
     const payload: MonitorWrite = {}
-    if (editor.dirty.target) payload.target = createPayload.target
-    if (editor.dirty.cadence) payload.cadence_secs = createPayload.cadence_secs
-    if (editor.dirty.runtime) payload.max_runtime_secs = createPayload.max_runtime_secs
-    if (editor.dirty.turns) payload.max_agent_turns = createPayload.max_agent_turns
-    if (editor.dirty.tokens) payload.max_tokens = createPayload.max_tokens
+    if (editor.dirty.target) payload.target = normalizedTarget!.target
+    if (editor.dirty.cadence) payload.cadence_secs = cadence!
+    if (editor.dirty.runtime) payload.max_runtime_secs = runtime!
+    if (editor.dirty.turns) payload.max_agent_turns = turns!
+    if (editor.dirty.tokens) payload.max_tokens = tokens!
     if (editor.dirty.providerErrors) {
-      payload.max_provider_errors = createPayload.max_provider_errors
+      payload.max_provider_errors = providerErrors!
     }
     if (editor.dirty.wakeInstructions) {
-      payload.wake_instructions = createPayload.wake_instructions
+      payload.wake_instructions = draft.wakeInstructions.trim()
     }
     mutation.mutate({
-      action: 'update', id: monitor.id, payload, captured: automation, slotKey, editorKey,
+      action: 'update', id: editedMonitor.id, payload, captured: automation, slotKey, editorKey,
     })
   }
 
@@ -385,16 +437,30 @@ export default function SessionAutomationPopover({
         if (automationRef.current !== automation) return
         onChange(loop ? normalizeAutomationRecord(loop) : null)
       }}
-      onBackToBoundedMonitor={legacyLoop ? undefined : () => setLegacyModeSlot(null)}
+      onSetUpBoundedMonitor={legacyLoop ? undefined : () => setBoundedModeSlot(slotKey)}
       writeDisabled={sessionModeUnsupported}
       interrupted={interrupted}
       trigger={(
         <IconButton
           aria-label={triggerLabel}
           variant={monitor?.active || legacyLoop?.active ? 'active' : 'default'}
-          className="h-8 px-2 rounded-lg shrink-0"
+          /* IconButton is a plain block button, so without a flex row the
+             inline glyph sits on the text baseline of this 32px box rather
+             than at its centre, and the count would trail it without a gap.
+             Same row layout the legacy goal trigger has always used. */
+          className="h-8 px-2 rounded-lg shrink-0 flex items-center gap-1"
         >
-          <MonitorRadar actionRunning={status === 'action_running'} />
+          {/* The glyph promises the same thing the label does. With nothing
+              armed this button opens "Set a goal", whose own panel is headed by
+              the Goal icon, so a radar here is the promise-mismatch this change
+              fixes in the label -- and there is no probing to depict. Once
+              anything IS armed the radar is accurate and carries the
+              action-running pulse. */}
+          {monitor || legacyLoop ? (
+            <MonitorRadar actionRunning={status === 'action_running'} />
+          ) : (
+            <Goal className="lucide-inline shrink-0" aria-hidden />
+          )}
           {monitor ? (
             <span className="text-[11px] font-mono">{fmtNumber(monitor.usage.probes)}</span>
           ) : legacyLoop?.cycleCount ? (
@@ -522,8 +588,11 @@ export default function SessionAutomationPopover({
                 placeholder={i18nT('components.sessionAutomationPopover.pull_request_url_placeholder')}
                 aria-labelledby={`${id}-target-label`}
                 aria-invalid={!!errors.target}
-                aria-describedby={errors.target ? `${id}-target-error` : undefined}
+                aria-describedby={`${id}-target-help${errors.target ? ` ${id}-target-error` : ''}`}
               />
+              <p id={`${id}-target-help`} className="text-[11px] text-muted">
+                {i18nT('components.sessionAutomationPopover.supported_source_providers')}
+              </p>
               <FieldError id={`${id}-target-error`} message={errors.target} />
             </div>
             <div className="grid grid-cols-1 min-[390px]:grid-cols-2 gap-3">
@@ -664,8 +733,15 @@ export default function SessionAutomationPopover({
             <>
               <Btn
                 type="button"
-                disabled={sessionModeUnsupported}
-                onClick={() => setLegacyModeSlot(slotKey)}
+                /* NOT gated on the session mode. This button only changes which
+                   view is showing -- it writes nothing, so there is nothing for
+                   an unsupported mode to refuse -- and it is the only labelled
+                   way back to the default view. Disabling it stranded a
+                   crew/member reader on the bounded form: the offer that brings
+                   them here carries no mode gate, so they could arrive and then
+                   find the exit dead, with Close as the only move. Every
+                   control that WRITES on this form stays gated. */
+                onClick={() => setBoundedModeSlot(null)}
               >
                 {i18nT('components.sessionAutomationPopover.use_legacy_costly')}
               </Btn>

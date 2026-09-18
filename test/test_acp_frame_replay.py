@@ -73,7 +73,11 @@ from acp_frame_replay_harness import (
 )
 
 from kiro_crew.acp._dispatch import agent_version_from_init, classify_notification
-from kiro_crew.acp_backends import ACP_BACKENDS_KNOWN
+from kiro_crew.acp_backends import (
+    ACP_BACKEND_KAS,
+    ACP_BACKEND_KIRO,
+    ACP_BACKENDS_KNOWN,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -81,6 +85,18 @@ _UPDATE_SCRIPT = "scripts/update_acp_frame_snapshots.py"
 
 #: A fixture is read by people, so it stays small enough to read.
 _MAX_FRAMES = 50
+
+#: Directories whose backend answers ``initialize`` without an ``agentInfo``
+#: object, so no agent version reaches the wire for the corpus to carry. Listed
+#: by name rather than inferred: an omission has to be a decision someone wrote
+#: down, or the version signal decays for every backend at once.
+#:
+#: ``kas``: KAS 0.63.3 answers with ``protocolVersion``, ``agentCapabilities``
+#: and ``authMethods`` only. Nothing consumes a KAS version --
+#: ``ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD`` holds ``kiro`` alone, and
+#: ``agent_version_from_init`` reads a missing ``agentInfo`` as ``""`` rather
+#: than raising -- so the handshake is unaffected.
+_BACKENDS_WITHOUT_AGENT_VERSION = frozenset({"kas"})
 
 
 # ── the snapshot walk ───────────────────────────────────────────────────────
@@ -102,7 +118,7 @@ def test_replayed_events_match_snapshot(fixture: Path) -> None:
         len(frames) < _MAX_FRAMES
     ), f"{fixture.name} has {len(frames)} frames; keep a fixture under {_MAX_FRAMES}"
 
-    replayed = replay_frames(frames)
+    replayed = replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce"))
     target = expected_path(fixture)
     assert target.exists(), (
         f"{target.name} is missing. Run `python3 {_UPDATE_SCRIPT}` to write it, "
@@ -118,8 +134,10 @@ def test_replayed_events_match_snapshot(fixture: Path) -> None:
 def test_the_snapshot_render_is_byte_stable() -> None:
     """The script's on-disk form must round-trip, or every run reports a diff."""
     for fixture in fixture_files():
-        _meta, frames = read_fixture(fixture)
-        rendered = snapshot_json(replay_frames(frames))
+        meta, frames = read_fixture(fixture)
+        rendered = snapshot_json(
+            replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce"))
+        )
         assert rendered == expected_path(fixture).read_text(encoding="utf-8"), (
             f"{expected_path(fixture).name} differs from the script's render even though the "
             f"parsed events match -- run `python3 {_UPDATE_SCRIPT}`"
@@ -156,6 +174,13 @@ def test_every_backend_covers_the_required_frame_kinds() -> None:
 
     Without this a directory holding one text chunk would satisfy the ratchet
     above while locking almost nothing.
+
+    An initialize response is recognised by ``protocolVersion``, which the
+    handshake makes mandatory, and the agent version is a SECOND assertion over
+    the same frame. The two are separate because they are separately true:
+    ``agentInfo`` is optional in ACP, and one shipped backend omits it
+    (``_BACKENDS_WITHOUT_AGENT_VERSION``), so folding them together would force
+    that backend's corpus to claim a field its wire never carried.
     """
     gaps: list[str] = []
     for directory in backend_dirs():
@@ -163,6 +188,7 @@ def test_every_backend_covers_the_required_frame_kinds() -> None:
         updates: set[str] = set()
         stop_reasons: set[str] = set()
         saw_init = False
+        saw_version = False
         saw_session = False
         for path in sorted(directory.glob("*.jsonl")):
             _meta, frames = read_fixture(path)
@@ -172,8 +198,10 @@ def test_every_backend_covers_the_required_frame_kinds() -> None:
                     methods.add(method)
                 result = frame.get("result")
                 if isinstance(result, dict):
-                    if agent_version_from_init(result):
+                    if "protocolVersion" in result:
                         saw_init = True
+                    if agent_version_from_init(result):
+                        saw_version = True
                     if "sessionId" in result:
                         saw_session = True
                     if result.get("stopReason"):
@@ -185,7 +213,12 @@ def test_every_backend_covers_the_required_frame_kinds() -> None:
 
         name = directory.name
         if not saw_init:
-            gaps.append(f"{name}: no initialize response (a result carrying agentInfo.version)")
+            gaps.append(f"{name}: no initialize response (a result carrying protocolVersion)")
+        if not saw_version and name not in _BACKENDS_WITHOUT_AGENT_VERSION:
+            gaps.append(
+                f"{name}: initialize response carries no agentInfo.version; if this backend "
+                "really sends none, name it in _BACKENDS_WITHOUT_AGENT_VERSION with the evidence"
+            )
         if not saw_session:
             gaps.append(f"{name}: no session/new response (a result carrying sessionId)")
         if "agent_message_chunk" not in updates:
@@ -228,8 +261,11 @@ def test_the_corpus_is_not_vacuous() -> None:
     ), f"only {len(files)} fixture file(s) for {len(ACP_BACKENDS_KNOWN)} known backend(s)"
     total_events = 0
     for path in files:
-        _meta, frames = read_fixture(path)
-        total_events += sum(len(entry.get("events", [])) for entry in replay_frames(frames))
+        meta, frames = read_fixture(path)
+        total_events += sum(
+            len(entry.get("events", []))
+            for entry in replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce"))
+        )
     assert total_events > 0, "the corpus replays into zero events; the parsers are not reached"
 
 
@@ -261,8 +297,8 @@ def test_replaying_the_whole_corpus_modifies_no_committed_file() -> None:
     assert before, "the corpus is empty; this check would be vacuous"
 
     for path in fixture_files():
-        _meta, frames = read_fixture(path)
-        snapshot_json(replay_frames(frames))
+        meta, frames = read_fixture(path)
+        snapshot_json(replay_frames(frames, gate_envelope_nonce=meta.get("gate_envelope_nonce")))
 
     after = {p: (p.stat().st_mtime_ns, p.stat().st_size) for p in tracked if p.is_file()}
     assert after == before, (
@@ -344,3 +380,78 @@ def test_the_snapshot_writer_never_records_telemetry(tmp_path) -> None:
     assert out.stdout.strip() == "0 False", (
         "the snapshot writer imported the parsers with telemetry live: " f"{out.stdout.strip()!r}"
     )
+
+
+def test_a_numeric_handshake_fixture_requires_a_protocol_version_row() -> None:
+    """A harness whose OWN wire answers a numeric version must not be sent a date string.
+
+    ``_PROTOCOL_VERSION_BY_BACKEND`` is read with ``.get(backend, PROTOCOL_VERSION)``, so
+    an id with no row silently speaks kiro-cli's date-stamped dialect. That default is
+    right for the kiro family and wrong for every spec adapter, and what it produces is
+    not a crash: the harness may accept the handshake and negotiate, so the only evidence
+    is the version that went out.
+
+    Derived from the CORPUS rather than from a list of ids, which is what makes this the
+    general form. Each backend's own ``initialize`` response is the authority on which
+    dialect it speaks, and those responses are already committed here as the thing this
+    module replays. So a fifth harness that records a numeric handshake and forgets the
+    row fails HERE with no edit to this test.
+
+    The kiro FAMILY is exempt, and the exemption is the one thing that has to be named
+    rather than derived. Those two ARE the date-stamped dialect -- the default this table
+    exists to override -- and they answer numerically because ACP's handshake NEGOTIATES:
+    a numeric response says which version the agent chose, not which version the client
+    must send. KAS is the live proof that the two can differ, since it is shipped and
+    selectable with no row. So membership of this pair is what a reader must check, and
+    adding an id to it is a claim that the harness accepts the date string.
+
+    That is also why a numeric response alone is not proof of a bug. For the harness this
+    ratchet was written for it happens to be: sent the date string, goose 1.50.1 refuses
+    ``initialize`` outright with ``-32602 Invalid params``, so the missing row was a
+    session that could not start rather than a cosmetic mismatch. A future harness might
+    negotiate instead, and the row is still right for it -- Crew should send what the
+    harness speaks.
+    """
+    from kiro_crew.acp.client import _PROTOCOL_VERSION_BY_BACKEND
+
+    # The kiro family: handed the date-stamped version by construction, and named here
+    # rather than inferred so an addition is a decision a reviewer sees.
+    date_stamped_family = {ACP_BACKEND_KIRO, ACP_BACKEND_KAS}
+
+    missing: list[str] = []
+    checked: list[str] = []
+    for directory in backend_dirs():
+        for path in sorted(directory.glob("*.jsonl")):
+            lines = [ln for ln in path.read_text(encoding="utf-8").splitlines() if ln.strip()]
+            if not lines:
+                continue
+            backend = (json.loads(lines[0]).get("_meta") or {}).get("backend")
+            if backend is None or backend not in ACP_BACKENDS_KNOWN:
+                continue
+            if backend in date_stamped_family:
+                continue
+            for line in lines[1:]:
+                result = json.loads(line).get("result")
+                if not isinstance(result, dict) or "protocolVersion" not in result:
+                    continue
+                # An integer is the SPEC dialect; kiro-cli answers with a date string.
+                # ``bool`` is an int subclass and would be a malformed frame, so it is
+                # excluded rather than read as a version.
+                version = result["protocolVersion"]
+                if isinstance(version, bool) or not isinstance(version, int):
+                    continue
+                checked.append(f"{backend} ({path.name})")
+                if backend not in _PROTOCOL_VERSION_BY_BACKEND:
+                    missing.append(
+                        f"{backend}: {path.name} answers protocolVersion {version!r}, but "
+                        "the backend has no _PROTOCOL_VERSION_BY_BACKEND row, so Crew "
+                        "sends the date-stamped version instead"
+                    )
+                break
+
+    assert checked, (
+        "no fixture outside the kiro family carries a numeric initialize response, so "
+        "this ratchet is vacuous -- either the corpus lost its handshake captures, the "
+        "_meta backend ids drifted, or the exempt family grew to cover everything"
+    )
+    assert missing == [], "\n".join(missing)

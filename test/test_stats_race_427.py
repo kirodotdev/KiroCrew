@@ -1,8 +1,8 @@
-"""Regression: Stats.__new__ must fully initialize before publishing (#427).
+"""Stats.__new__ must fully initialize before publishing.
 
-Publishing ``cls._instance`` before ``_init_counters()`` let a second thread on
-the lock-free fast path observe a half-built instance (no ``_mu`` / ``_c``) and
-raise AttributeError on the next ``.snapshot()`` / ``.inc_*()``.
+Publishing ``cls._instance`` before ``_init_counters()`` would let a second
+thread on the lock-free fast path observe a half-built instance (no ``_mu`` /
+``_c``) and raise AttributeError on the next ``.snapshot()`` / ``.inc_*()``.
 """
 
 from __future__ import annotations

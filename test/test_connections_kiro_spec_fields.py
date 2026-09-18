@@ -84,9 +84,9 @@ def test_entry_readers_accept_both_spellings() -> None:
 # ═══════════════════════════════════════════════════════════════════════════
 # The OWNERSHIP decision table. Every row below must hold SIMULTANEOUSLY --
 # each is the failure mode that appears when the discriminator collapses into
-# a simpler one, and fixing any row in isolation has historically re-broken
-# another. ``managed`` (does the dashboard store own this name?) is the
-# discriminator; internal-key presence is NOT.
+# a simpler one, and fixing any row in isolation re-breaks another. ``managed``
+# (does the dashboard store own this name?) is the discriminator; internal-key
+# presence is NOT.
 #
 #   managed     + hint valid    -> rebuilt from source     (row 1)
 #   managed     + hint emptied  -> wire key deleted        (row 2)
@@ -366,7 +366,7 @@ def test_row7_a_second_rebuild_is_a_no_op_for_every_row() -> None:
         ("row4", {"url": "https://x/mcp"}, False),
     ]
     for label, source, managed in cases:
-        # First render starts from a previously-rendered entry carrying wire keys.
+        # First render starts from an already-rendered entry carrying wire keys.
         rendered = {
             "url": "https://x/mcp",
             "oauthScopes": ["stale"],

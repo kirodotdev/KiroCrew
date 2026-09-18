@@ -121,7 +121,7 @@ def _bounded(label: str, seconds: float, fn) -> bool:
 
     SIGALRM is the mechanism because the sync Playwright API is greenlet-based
     and must be driven from the thread that created it — a worker thread cannot
-    be used to bound a blocking call like context.close().
+    impose a bound on a blocking call like context.close().
     """
     if not hasattr(signal, "setitimer") or seconds <= 0:
         if seconds > 0:                          # pragma: no cover - env guard

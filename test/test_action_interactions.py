@@ -560,8 +560,8 @@ async def test_handle_stop_confirm_rejects_unauthorized(orch_fixture: MagicMock)
 # ---------------------------------------------------------------------------
 # Home Tab Resume — Slack views.publish payloads have empty channel +
 # response_url, so _handle_session_resume must fall back to opening a DM
-# with the user. Regression for the silent failure where the spinner
-# resolved with no visible Resume confirmation.
+# with the user. Without the fallback the spinner resolves with no visible
+# Resume confirmation.
 # ---------------------------------------------------------------------------
 
 
@@ -710,13 +710,12 @@ class TestTransportApprovalAuth:
     async def test_channels_deny_drops_transport_approval(
         self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        # HIGH (GPT round-8) + MEDIUM (GPT round-13 #3): an AUTHORIZED user's
-        # APPROVE click on the transport path must not EXECUTE the governed tool
-        # when a channels policy denies slack. Originally the gate silently returned
-        # without resolving — but that STRANDS the kiro-cli approval future until it
-        # times out (~300s). The fix resolves the pending future as DENIED (False)
-        # so the tool is refused promptly and never executes. Assert the resolve was
-        # a denial, not that it never happened.
+        # An AUTHORIZED user's APPROVE click on the transport path must not
+        # EXECUTE the governed tool when a channels policy denies slack. The gate
+        # must resolve the pending future as DENIED (False) rather than return
+        # without resolving: an unresolved future STRANDS the kiro-cli approval
+        # until it times out (~300s). The tool is refused promptly and never
+        # executes. Assert the resolve was a denial, not that it never happened.
         import json
 
         from kiro_crew.platform import governance_profiles as gp
@@ -755,10 +754,10 @@ class TestTransportApprovalAuth:
     async def test_channels_deny_still_resolves_transport_reject(
         self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        # MEDIUM (GPT round-13 #3): a REJECT click on a denied channel must STILL
-        # resolve the pending approval as refused (False) — a reject is a denial,
-        # exactly what a channels-deny wants, and dropping it would strand the
-        # kiro-cli future until timeout. The reject is NOT gated out.
+        # A REJECT click on a denied channel must STILL resolve the pending
+        # approval as refused (False) — a reject is a denial, exactly what a
+        # channels-deny wants, and dropping it would strand the kiro-cli future
+        # until timeout. The reject is NOT gated out.
         import json
 
         from kiro_crew.platform import governance_profiles as gp
@@ -794,10 +793,9 @@ class TestTransportApprovalAuth:
     async def test_channels_deny_drops_review_approve(
         self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        # HIGH (GPT round-9 #3): a review-mode APPROVE posts the stored agent draft
-        # to the channel. Under a slack channels deny, the dispatch gate must stop
-        # it BEFORE the handler runs — else stale agent content posts to a denied
-        # channel. Regression-locks the review-action call site.
+        # A review-mode APPROVE posts the stored agent draft to the channel.
+        # Under a slack channels deny, the dispatch gate must stop it BEFORE the
+        # handler runs — else stale agent content posts to a denied channel.
         import json
 
         from kiro_crew.platform import governance_profiles as gp
@@ -875,11 +873,10 @@ class TestTransportApprovalAuth:
     async def test_channels_deny_drops_dashboard_link(
         self, orch_fixture: MagicMock, monkeypatch: pytest.MonkeyPatch, tmp_path
     ) -> None:
-        # BLOCKING (GPT round-17): the Link-to-Dashboard button imports the Slack
-        # thread's content into a dashboard slot (_import_thread_to_slot). A channels
-        # policy denying slack must stop it BEFORE the import — else a stale link
-        # button moves denied Slack content into the dashboard. Regression-locks the
-        # LINK_DASHBOARD_ACTION call site.
+        # The Link-to-Dashboard button imports the Slack thread's content into a
+        # dashboard slot (_import_thread_to_slot). A channels policy denying slack
+        # must stop it BEFORE the import — else a stale link button moves denied
+        # Slack content into the dashboard.
         import json
 
         from kiro_crew.platform import governance_profiles as gp

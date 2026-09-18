@@ -70,7 +70,7 @@ concurrency:
 jobs:
   add:
     name: Add contributors to README
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest  # schedule/workflow_dispatch (and workflow_call inherited from a schedule caller) has no live collaborator actor for the AWS webhook allowlist to check -- stays on ubuntu-latest.
     timeout-minutes: 10
     steps:
       # Check out the default branch. github.event.repository is absent on

@@ -65,8 +65,8 @@ def test_body_does_not_span_newlines():
 def test_trailing_markdown_link_close_tolerated():
     # Models sometimes append a stray "(OPTIONS)" (or any "(...)") right after the
     # marker, e.g. "[OPTIONS: A | B](OPTIONS)". That both breaks the end anchor and
-    # forms a valid [label](url) Markdown link, so the marker used to leak as a
-    # clickable link instead of buttons. The optional link-close is now absorbed —
+    # forms a valid [label](url) Markdown link, which would leak the marker as a
+    # clickable link instead of buttons. The optional link-close is absorbed —
     # and stays OUTSIDE the label capture, so choices are unaffected.
     assert _parse_options("Pick one.\n[OPTIONS: A | B | C](OPTIONS)") == ["A", "B", "C"]
     assert _parse_options("[OPTIONS: Ship it | Park it](https://x)") == ["Ship it", "Park it"]

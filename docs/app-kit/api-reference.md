@@ -47,9 +47,54 @@ function MyPage() {
 }
 ```
 
-`useAppApi()` returns a client whose methods (`get`, `post`, `put`, `patch`,
-`del`) call the Gateway endpoints listed below, scoped to the `permissions.api`
-paths your `app.json` declares. The host injects auth automatically.
+`useAppApi()` returns a client whose methods (`raw`, `request`, `get`, `post`,
+`put`, `patch`, `del`) call the Gateway endpoints listed below, scoped to the
+`permissions.api` paths your `app.json` declares. JSON methods parse a JSON
+response; an empty successful response returns `undefined`.
+
+- `raw(path, init?)` returns a successful `Response` without consuming its body.
+  Use it for binary downloads, text or streamed responses and response headers.
+  Non-success responses still throw `AppApiError`. Supply an `AbortSignal` for
+  long-lived streams and abort or cancel the reader when the component unmounts;
+  the method does not implement EventSource reconnect or SSE parsing.
+
+- `request<T>(path, init?)` accepts `RequestInit`, including raw bodies such as
+  `FormData`, headers and an abort signal. It does not set a content type for you.
+- `get<T>(path, init?)` and `del<T>(path, init?)` fix the HTTP method.
+- `post<T>(path, body?, init?)`, `put<T>(path, body?, init?)` and
+  `patch<T>(path, body?, init?)` serialize the body argument as JSON. Their method
+  and body arguments take precedence over `init.method` and `init.body`. Headers
+  are merged with a default `Content-Type: application/json` unless you specify
+  another media type.
+
+The host owns `X-Session-Key`: chat surfaces use their bound session and routed
+app pages use the core dashboard-page identity, `dashboard:ui`. A host-provided
+key overrides a caller-supplied one. If a host has no binding, supplying that
+header is rejected before a request is sent; callers of this scoped client
+cannot choose a session. This is a frontend guardrail, not isolation from other
+JavaScript in the dashboard document; backend authorization remains authoritative.
+The path check applies to the initial URL. Browser redirect behavior remains
+controlled by `RequestInit.redirect` (default `follow`); use `redirect: 'error'`
+when the call must not follow redirects. Redirect targets are not rechecked by
+this client.
+
+HTTP failures remain `Error` objects with the message `API <status>: <body>` and
+now also carry `name: 'AppApiError'`, numeric `status` and string `body`. Import
+`AppApiError` as a **type**, not a runtime constructor. The body is unparsed, so
+parse it only when the endpoint promises JSON (for example, a conflict response).
+Network, abort and successful-response JSON parsing failures retain their original
+error types. Stale-owner reauthentication signaling still runs before an HTTP
+failure is thrown.
+
+The path matcher uses the backend's declared-pattern semantics: `/api/example`
+matches itself and slash-delimited children; `/api/example/*` also includes the
+base path; `/api/example*` includes any string prefix match. Blank entries match
+nothing, surrounding whitespace is stripped, and request paths are normalized
+before matching. A bare trailing slash is literal, not shorthand for `/*`.
+
+An explicit authentication-expiry response (`403`, `X-Auth-Required: true`)
+notifies the dashboard's existing recovery handler. It does not turn ordinary
+permission denials into refresh attempts or automatically replay writes.
 
 For the full hook list see [getting-started.md](getting-started.md#app-sdk-hooks).
 
@@ -405,8 +450,8 @@ class DeployProbe(Probe):
             ])
         obs = []
         if status.rolled_back:
-            # Nothing improves by waiting -> NMI bypasses coalescing.
-            obs.append(Observation("rollback", Severity.NMI,
+            # Nothing improves by waiting -> IMMEDIATE bypasses coalescing.
+            obs.append(Observation("rollback", Severity.IMMEDIATE,
                                    f"{self.env} rolled back."))
         for stage in status.failed_stages:
             obs.append(Observation(f"stage:{stage}", Severity.WAKE,
@@ -431,8 +476,8 @@ Rules:
   It is the only place a verdict is raised.
 - A failed observation returns `Tick(fetch_ok=False)`, never an empty `Tick` —
   an empty tick reads as "nothing is wrong".
-- Use `Severity.NMI` only for what genuinely cannot improve by waiting. Using
-  it to mean "important" defeats coalescing.
+- Use `Severity.IMMEDIATE` only for what genuinely cannot improve by waiting.
+  Using it to mean "important" defeats coalescing.
 - Supply an `epoch` when the subject has an identity token. Without one there
   are no resets, so a re-triggered subject inherits the previous run's masks.
 - Filter out conditions the operator already knows about (a check red on the
@@ -445,6 +490,83 @@ Rules:
   you would rather be woken early than woken once: coalescing costs at least one
   cron interval of latency, because a window cannot open and fire within the
   same tick.
+
+### Content Scrubbing (`ctx.scrub`)
+
+Before your app sends content anywhere off the machine — an external document
+store, a ticket, a wiki — run it through `ctx.scrub`. It applies the same
+credential and exfiltration-URL redaction the gateway applies on its own
+boundaries, by reference rather than by copy, so a pattern tightened in a later
+release reaches your app with the wheel.
+
+```python
+result = ctx.scrub.outbound(body)          # may raise; see below
+if result.redacted:
+    ctx.logger.info("scrub removed %d credential(s), %d url(s)",
+                    result.credentials_removed, result.urls_removed)
+publish(result.text)          # only the scrubbed text may leave
+```
+
+`outbound(text) -> ScrubResult` carries `text`, `credentials_removed`,
+`urls_removed` and `redacted`.
+
+You get **counts, not descriptions**, and there is deliberately no way to learn
+which value was removed. That is not an omission to be filled in later: the
+gateway's internal exfiltration warning includes the offending domain and the
+start of the query string, so handing those through would move a secret out of
+your published text and into your logs. Report the fact — "we removed something
+before sending" — rather than rewriting the user's content silently.
+
+Use `redacted` rather than comparing against the original. It can be `True` with
+both counts at zero: on a host running an edition companion, extra patterns apply
+that the base counts do not include. It is never `False` when something was
+removed.
+
+**`outbound` can raise, and you must not swallow it.** On a host whose companion
+fails to compose, it propagates rather than quietly falling back to weaker
+redaction. Abandon the publish when that happens — publishing unredacted is worse
+than not publishing.
+
+`outbound` is the only method, on purpose: neither single pass is exposed alone,
+because an app that wants half a redaction wants something this seam should not
+make easy.
+
+`ctx.scrub` needs **no permission** and is always present: it only removes data, so
+there is nothing to withhold and no `None` branch that could become a silent
+no-redaction path. **Do not copy these patterns into your app** — a set that drifts
+from the gateway's is a control that looks present and is not.
+
+### Audit Events (`ctx.audit`)
+
+When your app acts on the user's behalf against something outside the machine,
+record the decision in the same append-only security event log the gateway's own
+decisions land in — otherwise "who changed what, and what was refused" is
+answerable for the gateway and unanswerable for your half of the same operation.
+
+```python
+ctx.audit.record("publish", "success", resources=doc_id)
+ctx.audit.record("publish", "denied", resources=doc_id, error="no edit access")
+```
+
+`record(operation, outcome, *, resources="", error="")` **never raises** — an audit
+sink that is unwritable must not fail the user's publish.
+
+`outcome` is a short verb you choose (`success`, `denied`, `error`, `completed`, …).
+It is not checked against a vocabulary — a spelling of your own is kept, because
+rewriting it would record something other than what happened. It is redacted and
+length-clipped like `resources` and `error`, so a credential that reaches it by
+accident is not written; that is a no-op for any real outcome value. This log is
+append-only and readable over `/api/sel/events`, so nothing put in it can be taken
+back — don't route free-form remote output through these fields.
+
+There is no `caller=` argument. Attribution is minted from your app name
+(`app:<name>`, the same tag `ctx.cron` uses for ownership), so there is no
+parameter to pass the wrong value into. It is **cooperative, not unforgeable**: hook
+code runs inside the gateway process and can construct another app's SDK or reach
+the log directly, so treat `app:<name>` as "which app said this", not as proof.
+`operation` is namespaced the same way, so two apps cannot collide on a bare
+`"publish"`. No permission gates it: an app cannot obtain anything with it, only
+state what it did.
 
 ### Lessons
 

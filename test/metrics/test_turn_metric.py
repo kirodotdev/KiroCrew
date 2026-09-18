@@ -24,11 +24,10 @@ def _run(duration_ms, stop_reason, slot_key="dashboard:abc123", elapsed_ms=None,
     from kiro_crew.dashboard import chat_runner
 
     rec = _CapturingRecorder()
-    # The emit moved to ``metrics/turns.py`` so every dispatch surface can reach
-    # it (it used to live in chat_runner, which only the dashboard turn loop
-    # runs). ``_emit_turn_metric`` is still the production entry point driven
-    # here; the recorder is imported at the top of its new home, so that is the
-    # consumer to patch.
+    # ``_emit_turn_metric`` lives in ``metrics/turns.py`` so every dispatch
+    # surface can reach it. It is the production entry point driven here; the
+    # recorder is imported at the top of that module, so that is the consumer
+    # to patch.
     with patch("kiro_crew.metrics.turns.get_recorder", return_value=rec):
         chat_runner._emit_turn_metric(
             duration_ms,
@@ -70,8 +69,8 @@ class TestTurnMetricOutcomeMapping:
     def test_cancelled_is_its_own_outcome_not_error(self):
         """A user cancel is not a system fault.
 
-        It used to map to ``error``, which put every press of Stop into
-        fault_rate's numerator. The label must be distinct AND stay out of
+        Mapping it to ``error`` would put every press of Stop into fault_rate's
+        numerator. The label must be distinct AND stay out of
         ``telemetry._TERMINAL_FAULT_OUTCOMES`` (pinned by the drift gate in
         test_telemetry_handler).
         """

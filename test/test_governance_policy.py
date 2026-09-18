@@ -18,6 +18,7 @@ import logging
 
 import pytest
 
+from kiro_crew.platform import governance
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance import (
     CAPABILITY,
@@ -40,6 +41,7 @@ from kiro_crew.platform.governance import (
     assert_governance_floor,
     assert_policy_signature_satisfied,
     compose_profiles,
+    compose_tier_ladder,
     deny_all_profile,
     load_security_policy,
     mcp_title_to_ref,
@@ -313,6 +315,96 @@ class TestScopedMap:
         assert not composed.permits_member("discord").permitted  # profile narrowed
         # posture is policy-only → preserved from ceiling.
         assert composed.posture_permits("slack", "allowed_team_ids", "T1").permitted
+
+    def test_three_tier_members_all_tighten(self):
+        # Regression: once one fold has produced an ``_AndRuleset``, the next
+        # fold must still honour that tier's narrowing instead of returning
+        # the existing pair unchanged.
+        t1 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack", "discord", "telegram"]}},
+            allow_posture=True,
+        )
+        t2 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack", "discord"]}}, allow_posture=False
+        )
+        t3 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack"]}}, allow_posture=False
+        )
+        composed = t1.compose(t2).compose(t3)
+        assert composed.permits_member("slack").permitted
+        # The third tier must tighten the already-composed pair.
+        assert not composed.permits_member("discord").permitted
+        assert not composed.permits_member("telegram").permitted
+
+    def test_nested_inner_denial_not_labelled_profile(self):
+        # When the inner half of an ``_AndRuleset`` is itself a nested pair,
+        # its denial is another policy tier, not the profile: the nested
+        # decision's own layer and label must propagate.
+        t1 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack", "discord", "telegram"]}},
+            allow_posture=True,
+        )
+        t2 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack"]}}, allow_posture=False
+        )
+        t3 = ScopedMap.from_dict(
+            {"members": {"mode": "allow", "allow": ["slack", "telegram"]}}, allow_posture=False
+        )
+        composed = t1.compose(t2.compose(t3))
+        decision = composed.permits_member("discord")  # denied by t2, a nested tier
+        assert not decision.permitted
+        assert decision.layer == "policy"
+        assert not decision.reason.startswith("profile:")
+
+    def test_extends_chain_third_link_channels_narrowing_applies(self):
+        # Same shape through the public entry point: a three-link ``extends``
+        # chain carrying a channels ScopedMap.
+        grandparent = parse_profile(
+            {
+                "name": "gp",
+                "channels": {
+                    "members": {"mode": "allow", "allow": ["slack", "discord", "telegram"]}
+                },
+            }
+        )
+        parent = parse_profile(
+            {
+                "name": "parent",
+                "extends": "gp",
+                "channels": {"members": {"mode": "allow", "allow": ["slack", "discord"]}},
+            }
+        )
+        child = parse_profile(
+            {
+                "name": "child",
+                "extends": "parent",
+                "channels": {"members": {"mode": "allow", "allow": ["slack"]}},
+            }
+        )
+        merged = compose_profiles(compose_profiles(grandparent, parent), child)
+        assert resolve(None, merged, "channels", "slack").permitted
+        assert not resolve(None, merged, "channels", "discord").permitted
+        assert not resolve(None, merged, "channels", "telegram").permitted
+
+    def test_tier_ladder_third_tier_channels_members_tighten(self):
+        # The tier ladder folds through the same ``ScopedMap.compose`` path;
+        # the lowest tier's channels narrowing must survive a three-tier fold.
+        managed = parse_policy(
+            _policy_body(
+                channels={"members": {"mode": "allow", "allow": ["slack", "discord", "telegram"]}}
+            )
+        )
+        central = parse_policy(
+            _policy_body(channels={"members": {"mode": "allow", "allow": ["slack", "discord"]}})
+        )
+        subordinate = parse_policy(
+            _policy_body(channels={"members": {"mode": "allow", "allow": ["slack"]}})
+        )
+        ceiling = compose_tier_ladder(managed, central, subordinate)
+        assert ceiling is not None
+        assert resolve(ceiling, None, "channels", "slack").permitted
+        assert not resolve(ceiling, None, "channels", "discord").permitted
+        assert not resolve(ceiling, None, "channels", "telegram").permitted
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -1211,6 +1303,37 @@ class TestPolicySignatureStates:
             assert ceiling is not None
             assert ceiling.signature_state == SIGNATURE_UNVERIFIED
 
+    def test_a_lone_surrogate_signature_is_unverified_not_a_crash(self):
+        """``json.loads`` accepts ``"\\udc80"``; a strict ``encode`` would raise.
+
+        A UnicodeEncodeError is a ValueError, not a PlatformCompositionError, so it
+        would escape the loader and the host would degrade to ungoverned. The tier
+        ladder verifies a user-owned home file beneath the central document on every
+        load, so this is one byte in that file removing the fleet ceiling. It must
+        classify like every other malformed signature instead.
+        """
+        doc = json.loads(
+            '{"version": 1, "boot": {"fail_closed": true}, '
+            '"identity": {"issuer": "corp", "signature": "\\udc80"}}'
+        )
+        state, _detail = governance._policy_signature_state(doc, {"corp": "k"})
+        assert state == SIGNATURE_UNVERIFIED
+
+    def test_a_lone_surrogate_trust_key_is_unverified_not_a_crash(self):
+        """The other text the compare depends on: the key from the JSON trust root.
+
+        ``hmac_signature`` encodes the key before hashing; a strict encode raised on a
+        lone surrogate there, one call before the compare this class fixes.
+        """
+        doc = json.loads(
+            '{"version": 1, "boot": {"fail_closed": true}, '
+            '"identity": {"issuer": "corp", "signature": "abcd"}}'
+        )
+        trust_keys = json.loads('{"corp": "\\udc80"}')
+        assert len(trust_keys["corp"]) == 1  # a real lone surrogate, not the 6-char escape
+        state, _detail = governance._policy_signature_state(doc, trust_keys)
+        assert state == SIGNATURE_UNVERIFIED
+
     def test_non_ascii_signature_fails_closed_when_required(self, monkeypatch, tmp_path):
         """...and with the opt-in ON it must ABORT, not degrade to ungoverned."""
         body = _policy_body(identity={"issuer": "fleet-control", "signature": "tamper\u2013ed"})
@@ -1527,6 +1650,23 @@ class TestPolicySignatureAbsenceGate:
         assert_policy_signature_satisfied(
             parse_policy(_policy_body(), signature_state=SIGNATURE_UNSIGNED)
         )
+
+    @pytest.mark.parametrize("junk", ["false", None, 0, 1, ""])
+    def test_junk_flag_in_wellformed_trust_root_fails_closed(
+        self, monkeypatch, tmp_path, junk
+    ):
+        # A well-formed trust root whose flag is PRESENT but not a boolean is a
+        # different case from a broken file: the operator wrote the key down, so
+        # it reads fail-closed as opted-in (via admission._coerce_flag) and an
+        # unsigned policy is refused. Locks the enforcement reader to the same
+        # strict read as the key store.
+        adm = tmp_path / "admission_policy.json"
+        adm.write_text(json.dumps({"require_policy_signature": junk}))
+        monkeypatch.setenv("KIROCREW_ADMISSION_POLICY", str(adm))
+        with pytest.raises(PlatformCompositionError):
+            assert_policy_signature_satisfied(
+                parse_policy(_policy_body(), signature_state=SIGNATURE_UNSIGNED)
+            )
 
     def test_absent_admission_file_is_a_noop(self, monkeypatch, tmp_path):
         # No trust root: nobody opted in, so an unsigned policy still loads and

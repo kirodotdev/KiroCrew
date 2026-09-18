@@ -241,8 +241,7 @@ class TestAcpSessionProviderStream:
     async def test_stream_command_routes_through_handle_stream_command(self):
         """Slash commands go through the handle's NATIVE commands/execute path,
         never through prompt() — a prompt round-trip would hand the command to
-        the model, which summarizes kiro-cli's output instead of returning it
-        (issue #4972)."""
+        the model, which summarizes kiro-cli's output instead of returning it."""
         handle = _make_handle()
         events = [
             AcpEvent(kind=EVENT_TEXT_CHUNK, text="13 tools"),
@@ -724,7 +723,7 @@ class TestAcpSessionProviderRound4Parity:
         assert runtime._crew_agent == ""
 
     def test_rekey_resets_context_state(self):
-        """#2932 -- the handoff must drop the previous session's context state
+        """The handoff must drop the previous session's context state
         (mirror of AcpClient.rekey): _make_handle seeds pct=42/5000/200000, so
         a leak here would hand those numbers to the claiming session and let
         check_context_usage compact its empty conversation."""

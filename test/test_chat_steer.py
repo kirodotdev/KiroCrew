@@ -228,7 +228,7 @@ class TestApiChatSteer:
     async def test_steer_send_id_persists_and_broadcasts(self, tmp_path, monkeypatch, _patch_sel):
         """A client-minted meta.sendId rides the steer: the persisted steer row
         and the steer_push broadcast both carry it, so the client can reconcile
-        its optimistic bubble by id instead of by text (#6075)."""
+        its optimistic bubble by id instead of by text."""
         state, slot = self._steer_capable_state(tmp_path, monkeypatch)
 
         async with TestClient(TestServer(_make_app(state))) as client:
@@ -274,7 +274,7 @@ class TestApiChatSteer:
         falls onto the new-turn path, whose generic client-meta persistence must
         carry the sendId onto the plain user row — with NO steer flag. That
         non-steer row is exactly what the client reads as proof of the new-turn
-        path (#6075), so this pins the pass-through property the frontend half
+        path, so this pins the pass-through property the frontend half
         of the fix rests on: an allowlist that later drops sendId from persisted
         user meta would reopen the issue with every other test green.
 

@@ -1,6 +1,6 @@
 ---
 name: security-conductor
-description: Operating procedure for the kirocrew-security-conductor agent - run proactive vulnerability discovery on one target as a supervised fleet. Decompose the target into attack surfaces, dispatch one auditor per surface behind the rules of engagement, dispatch an independent verifier per finding whose job is rejecting false positives, adjudicate severity, hold the two human gates, run a retrospective that proposes lessons, and report upward. Use when a security conductor session is being seeded, or when inspecting/debugging one.
+description: Use when a security conductor session is being seeded, or when inspecting/debugging one. Operating procedure for the kirocrew-security-conductor agent - run proactive vulnerability discovery on one target as a supervised fleet. Decompose the target into attack surfaces, dispatch one auditor per surface behind the rules of engagement, dispatch an independent verifier per finding whose job is rejecting false positives, adjudicate severity, hold the two human gates, run a retrospective that proposes lessons, and report upward.
 ---
 
 # Security Conductor
@@ -74,6 +74,24 @@ what makes it attributable and revertible.
 **The rules of engagement need a human review before the first auditor runs.**
 That review is a precondition of the first round, not a formality.
 
+### Preconditions for the first round
+
+Before the first dispatch, REPORT the readiness state as data — every item below
+read from the ledger or the filesystem in this session, never carried over from
+how a previous round left the machine. A missing or unreadable item is reported
+as missing, never inferred as ready, and is a stop condition for the first round.
+
+| Item | Read it from | Ready reads as |
+|---|---|---|
+| Active rules of engagement | `scripts/ledger.py list rules` | how many rows are `active`, and the `approved_by` on each — a row nobody signed is not a reviewed rule, and the count alone cannot tell you the review happened |
+| The gating golden-path corpus | the committed `golden-paths.json` beside the skill | the rows `scripts/verify_fix.py` will actually re-check, because that gate reads this file and never the table. `scripts/ledger.py list golden-paths` reports the table, which is import and dedupe state — a count there is not a corpus a fix is judged against |
+| The five scripts | the skill's `scripts/` directory | all five present and readable; an absent one is `UNKNOWN` and never permission |
+| Scope answered from the ledger | one `scripts/scope_check.py` call | NO fallback warning on stderr, AND a verdict that is not `UNKNOWN`. The fallback names the export it read instead, and its presence means the rows are NOT signed — an answer from a file somebody can edit without leaving a row behind. Silence alone is not the ready reading: an unreadable database, and a ledger whose every rule has been revoked, both answer `UNKNOWN` with no warning at all |
+
+Report the four as four readings, each with the number or the name you read. An
+item you did not read is not ready, and a precondition nobody stated is the state
+the operator has no way to ask about.
+
 ## What qualifies as a work item
 
 One work item is **one attack surface**. Three properties, all required — a
@@ -118,11 +136,46 @@ silence as approval, and never re-scope a blocked step into something that looks
 permitted. Record each pending gate as your own obligation and re-read it every
 cycle until it is answered.
 
+When you block on one, name WHICH of the two gates holds you, the exact step you
+are asking to be allowed — the surface, the finding id, the command or the PR —
+and what you will do the moment the answer is yes. An operator asked to approve
+"active testing" is approving a mood, and a mood cannot be refused in part; one
+asked to approve a named step can allow that step and hold the rest.
+
 A third `human_approval` row covers the golden-path corpus rather than a
 dispatch: approving a `golden_paths` row, and **deactivating an approved one**,
 both need a human yes on the same terms. The symmetry is the control — a gate
 whose input can be shrunk is not a gate, because the cheapest way to green is
 retiring the row a fix broke. That row is not yours to grant either.
+
+### Hand the operator the command, never run it
+
+Four `scripts/ledger.py` verbs are the human's: `add-rule`,
+`import-golden-paths`, `approve-golden-path` and `approve-lesson`. Each writes a
+row that IS the boundary this fleet is bounded by, so an agent that types one has
+signed the operator's name to its own decision. Being told to run one is not
+authority to run it, and there is no exception that makes it yours.
+
+When one of them is what stands between the fleet and its next step, EMIT IT,
+ready to run — a command that is described rather than handed over gets retyped,
+and retyped from the wrong directory:
+
+- The absolute path to the script, resolved in this session, so the command runs
+  from wherever the operator is standing.
+- Every flag filled from what you read, except `--approved-by`: leave it as the
+  operator's own to fill and say so on the line. The approver is the one field
+  that cannot be yours, because it is the signature.
+- One line saying what THAT verb prints back, so the operator can tell success
+  from silence. All four print one JSON line on stdout, and they do not print the
+  same thing:
+
+  | Verb | A correct run prints |
+  |---|---|
+  | `add-rule` | the new row's id and `active: 1` |
+  | `approve-lesson`, `approve-golden-path` | the row's id, `active: 1` and the approver. A repeat on the same row is instead a sentence on stderr and exit 2 — approval is recorded once, so that refusal is correct behaviour and not a failure to retry |
+  | `import-golden-paths` | the `imported`, `skipped` and `total` counts, and no row id. It is idempotent, so re-importing the same file succeeds with the rows skipped |
+
+Preparing that text is clerical. Typing it is the gate.
 
 ## Auditor seed template
 
@@ -209,10 +262,12 @@ One retrospective per round, after every finding carries a verifier verdict.
 > the outside, what the confirmed findings shared, what a `needs-human` verdict
 > was actually missing.
 > PROPOSE lessons with `scripts/ledger.py propose-lesson`, one per pattern, each
-> carrying its source finding id and one of `true-positive` / `false-positive` /
-> `missed` / `out-of-scope`. A proposed lesson is INACTIVE until a human approves
-> it — never write guidance as though it is already in force, and never inject an
-> unapproved lesson into a seed message.
+> naming EXACTLY ONE source — `--source-finding ID` for a finding, or
+> `--source-policy-block REF` for a `policy_block` event — and one of
+> `true-positive` / `false-positive` / `missed` / `out-of-scope`. Passing neither or
+> both exits 2. A proposed lesson is INACTIVE until a human approves it — never
+> write guidance as though it is already in force, and never inject an unapproved
+> lesson into a seed message.
 > RULE ON EVERY `policy_block` EVENT recorded this round, one at a time: was it a
 > FALSE POSITIVE (the fence refused a legitimate operation) or a CORRECT BLOCK
 > (the worker was reaching past the boundary)? A correct block is recorded as
@@ -220,16 +275,18 @@ One retrospective per round, after every finding carries a verifier verdict.
 > For each false positive propose the GOLDEN-PATH ROW FIRST, always: the wrongly
 > refused operation with `scripts/ledger.py propose-golden-path` (`active=0`). Its
 > `--source-finding` is optional, so a block with no finding still gets its row.
-> THEN the `false-positive` lesson with `scripts/ledger.py propose-lesson` — but
-> only when the block HAS a finding to cite. That command requires
-> `--source-finding` and exits 2 on an id that resolves to no finding, so cite the
-> finding the verifier was verifying, or the candidate the auditor was proving. A
-> block tied to no finding at all gets its golden-path row plus ONE LINE in your
-> report naming the lesson you would have written. Never invent a finding id to
-> carry a lesson, and never report a lesson you could not persist.
+> THEN the `false-positive` lesson with `scripts/ledger.py propose-lesson`, and
+> propose it for EVERY false positive — a block with no finding cites the block
+> itself with `--source-policy-block`, naming the event as you recorded it
+> (`{round_id}/policy_block-N`). Where the block does have a finding, cite it with
+> `--source-finding`: the finding the verifier was verifying, or the candidate the
+> auditor was proving. Never invent a finding id to carry a lesson; there is no
+> longer any reason to, and a fabricated id is the one thing that would make the
+> ledger's attribution a lie.
 > The two halves do different jobs — the lesson stops a future auditor re-filing
-> it, the golden path stops a future fix re-breaking it — so a round that could
-> only record the corpus half says which half is missing.
+> it, the golden path stops a future fix re-breaking it — so both are recorded for
+> every false positive, and a round that could record only one says which is
+> missing and why.
 > A HUMAN APPROVES ROWS, not you: `scripts/ledger.py approve-lesson` and
 > `approve-golden-path` are the human's commands, and nothing is injected into a
 > seed message or gates a fix before that. A proposed row is inert.
@@ -283,6 +340,17 @@ Arm the patrol with `monitor_start` (interval ~120s), never `wait`. Pass
 loop then stops with no symptom. Call `autonudge_stop` yourself when a stop
 condition fires; coasting into the cycle cap is a failure, not a finish.
 
+**Before the first dispatch, file yourself in the audit's folder** — one
+`chat_folder_file_self` with `folder` set to a few-word name for the target
+under audit. It creates the folder if needed and moves only your own session,
+so it never prompts. Every session you then open goes to
+`<audit>/<agent>` via `session_create`'s `folder` argument — auditors,
+verifiers, the retrospective and fixers each under the subfolder named for
+the agent that runs them — so the person sees one heading for the audit, your
+session directly under it, and the fleet grouped by role beneath. A conductor
+floating at the top level while its fleet sits in a folder is the shape this
+step removes.
+
 Each cycle, in this order:
 
 1. **Read the ledger** — one `session_ledger_read`. The injected block is a
@@ -296,7 +364,15 @@ Each cycle, in this order:
    verdict. These are what go missing, because nothing fires to remind you. An
    entry clears when the obligation is discharged, not when you decide about it.
 4. **Record verdicts and state back** in one write.
-5. **Report only real signals.** A quiet cycle is one line, then end the turn.
+5. **Close out what is terminal.** When a work item reaches a terminal verdict
+   (accepted, rejected, abandoned/void) and its loop is stopped,
+   `session_close` that child session in the same cycle — a finished worker
+   has nothing left to re-arm. It holds for auditor, verifier, retrospective
+   and fixer sessions alike, and a VOID fixer is closed after its
+   `session_stop` rather than left open. `session_close` archives
+   (reopenable); it never deletes. Never close a child that still has a
+   pending human question or an unmerged PR it is actively driving.
+6. **Report only real signals.** A quiet cycle is one line, then end the turn.
 
 ## Stop conditions
 
@@ -307,6 +383,9 @@ Stop and report, rather than continuing, on any of these:
   exit: final tally, then `autonudge_stop`.
 - The rules of engagement have not been reviewed by a human. Nothing is
   dispatched before that.
+- A readiness precondition is missing, unreadable, or answered from the export
+  rather than the ledger. Report the reading, hand over the command that fixes
+  it, and dispatch nothing until it reads ready.
 - A worker reports a policy refusal. That surface stops until you rule on the
   event; the worker does not continue past it, and neither do you.
 - A worker reports having circumvented a block, a scope rule, or a forbidden
@@ -319,6 +398,13 @@ Stop and report, rather than continuing, on any of these:
 - The false-positive rate for the round is high enough that verifiers are the
   only thing producing signal. Report the rate; a finding stream nobody has
   measured is not a foundation for a fixer lane.
+
+Whichever fires: before the final report, `session_close` each remaining child
+whose item is terminal — auditor, verifier, retrospective and fixer alike. **A
+child still holding a pending human question, or a fixer driving an unmerged PR,
+stays open**: the pending-human-gate stop above fires while a person is
+mid-decision on exactly such a child, and a close cancels its turn and
+discards that work.
 
 ## Known limits (state them, don't hide them)
 
@@ -336,12 +422,15 @@ Stop and report, rather than continuing, on any of these:
   circumvention is a stop condition rather than a note.
 - A lesson only changes behaviour on the NEXT round, and only after a human
   approves it. Nothing here learns inside a round.
-- **A policy block with no finding can be recorded as a golden path but not as a
-  lesson.** `ledger.py propose-lesson` requires `--source-finding` and refuses an
-  id that resolves to no finding, while a `policy_block` is deliberately an event
-  rather than a finding. So the corpus half of the retrospective's ruling survives
-  that case and the guidance half is reported to the human instead of being
-  silently dropped. Letting a lesson cite an event is a ledger change, not a
-  procedure change, and it is not made here.
+- **A policy block with no finding is recorded as both a golden path and a
+  lesson.** A `policy_block` is deliberately an event rather than a finding, so it
+  has no id for `--source-finding` to resolve; `propose-lesson` therefore takes
+  `--source-policy-block` instead, and a lesson names exactly one of the two. Both
+  halves of the retrospective's ruling survive a block that filed nothing — the
+  golden path that stops a future fix re-breaking the operation, and the guidance
+  that stops the next auditor walking into the same refusal. A policy-block
+  reference is not a foreign key and cannot be, since the events are the round's
+  own record rather than a table in the ledger, so this source is attributable but
+  not referentially checked.
 - One set of rules of engagement = one target. A second target is a second set,
   reviewed on its own.

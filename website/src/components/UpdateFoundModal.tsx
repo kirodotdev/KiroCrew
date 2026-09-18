@@ -3,6 +3,8 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useNavigate } from 'react-router-dom'
 import { Trans } from 'react-i18next'
 import MarkdownRenderer from './MarkdownRenderer'
+import ErrorNotice from './ErrorNotice'
+import { InAppUpdateFlow } from '../pages/settings/AboutPanel'
 import { Download, X, Copy, Check } from 'lucide-react'
 
 import { api, ApiError } from '../api/client'
@@ -33,9 +35,9 @@ import type { UpdateState } from '../hooks/useUpdateSubscription'
  *   as UpdateModal. Primary action = consent to download; progress then
  *   lives on the top-bar pill and UpdateModal takes over at `downloaded`.
  * - Gateway: `update_available === true` on the status frame. The primary
- *   action follows `updateAffordance`: in-process apply where the install
- *   supports it, a copyable installer command where it does not. An install
- *   with no affordance at all is never interrupted.
+ *   action follows `updateAffordance`: in-process apply for a checkout,
+ *   host-local arm/approve for a managed venv, and the installer command only
+ *   where neither in-app path is available.
  *
  * Download consent stays with the user in every path: nothing downloads or
  * installs from merely showing this modal.
@@ -66,7 +68,7 @@ type Candidate = {
   displayVersion: string
   notes?: string
   /** Gateway only: which action the primary slot offers. */
-  affordance?: 'apply' | 'command'
+  affordance?: 'apply' | 'arm' | 'command'
   command?: string
 }
 
@@ -87,6 +89,7 @@ export default function UpdateFoundModal() {
   // Raw fallback below covers a gateway that predates the field.
   const gwVersionDisplay = useAppSelector(s => s.dashboard.status?.update_latest_version_display) || ''
   const gwCanApply = useAppSelector(s => s.dashboard.status?.update_can_apply)
+  const gwCanArm = useAppSelector(s => s.dashboard.status?.update_can_arm)
   const gwCommand = useAppSelector(s => s.dashboard.status?.update_command) || ''
   const gwRequired = useAppSelector(s => s.dashboard.status?.update_required === true)
   const gwMinVersion = useAppSelector(s => s.dashboard.status?.update_min_version) || ''
@@ -121,7 +124,9 @@ export default function UpdateFoundModal() {
       notes: desktop.notes,
     }
   } else if (gwAvailable && gwVersion) {
-    const afford = updateAffordance({ updateAvailable: true, canApply: gwCanApply, command: gwCommand })
+    const afford = updateAffordance({
+      updateAvailable: true, canApply: gwCanApply, canArm: gwCanArm, command: gwCommand,
+    })
     if (afford !== 'none') {
       candidate = {
         source: 'gateway', version: gwVersion,
@@ -148,7 +153,15 @@ export default function UpdateFoundModal() {
   // long-lived window (the desktop app's normal lifetime is days).
   const [dismissedVersion, setDismissedVersion] = useState('')
   const sessionDismissed = !!candidate && dismissedVersion === candidate.version
+  // The failure notice's "Ask the agent" hand-off soft-navigates to chat, which
+  // this full-screen modal would otherwise cover -- the click would look like
+  // it did nothing. Handing off closes the modal for this page session only
+  // (nothing is persisted, so it comes back on the next load). The hand-off
+  // is offered on a voluntary update only; a mandatory one never sets this.
+  const [handedOffVersion, setHandedOffVersion] = useState('')
+  const handedOff = !!candidate && handedOffVersion === candidate.version
   const [copied, setCopied] = useState(false)
+  const [copyError, setCopyError] = useState('')
   const [restarting, setRestarting] = useState(false)
   const [applyError, setApplyError] = useState('')
   const [persistError, setPersistError] = useState('')
@@ -164,9 +177,13 @@ export default function UpdateFoundModal() {
   // Waiting for the record before opening is what makes "skip 0.5.0" hold
   // across reloads: opening optimistically would flash the modal at every
   // user who already skipped.
+  // The agent hand-off is one more dismissal, so it is confined to the
+  // voluntary branch: a mandatory prompt that a failed apply could wave away
+  // would enforce nothing.
   const open = !!candidate
     && (required || (
-      recordLoaded
+      !handedOff
+      && recordLoaded
       && !sessionDismissed
       && shouldNudge(candidate.version, record, Date.now() / 1000)
     ))
@@ -202,15 +219,52 @@ export default function UpdateFoundModal() {
     },
   })
 
+  // The gateway's apply endpoint answers `updating` BEFORE the work runs and
+  // reports the rest (pull, build, pip, restart) over the update_progress
+  // stream. A failure there — pip refusing the merged revision, a pull that
+  // cannot fast-forward — would otherwise leave this modal on "restarting…"
+  // for a restart that is never coming.
+  const gwProgress = useAppSelector(s => s.dashboard.updateProgress)
+
+  // This modal's own apply attempt: open from the click that sends the POST
+  // until a synchronous rejection or a terminal progress step ends it. It is
+  // NOT the POST's pending state — the gateway answers `updating` before the
+  // worker runs, but the worker's own frames can still arrive before that
+  // answer does (a merge that fails at once pushes `pulling` then `error` in
+  // milliseconds), and an attempt that only opened on the answer would read
+  // that failure as stale and spin forever. The ref is what the mutation
+  // callbacks consult, because they run from closures older than the state.
+  const attemptRef = useRef(false)
+  const [attemptActive, setAttemptActive] = useState(false)
+  const sawLiveStepRef = useRef(false)
+  const beginAttempt = () => {
+    attemptRef.current = true
+    sawLiveStepRef.current = false
+    setAttemptActive(true)
+  }
+  const endAttempt = () => {
+    attemptRef.current = false
+    setAttemptActive(false)
+    setRestarting(false)
+  }
+
   const gwApply = useMutation({
     mutationFn: () => api.applyUpdate(),
-    onSuccess: () => setRestarting(true),
+    // The attempt may already have ended on a terminal step that beat the
+    // answer here; re-raising the restarting latch then would hide the
+    // failure that just rendered.
+    onSuccess: () => { if (attemptRef.current) setRestarting(true) },
     onError: (e: unknown) => {
       // Same contract as the About panel's apply: a bare network failure is
       // the gateway restarting out from under the POST — the success path —
-      // and only a real server rejection (ApiError) is worth surfacing.
-      if (e instanceof ApiError) setApplyError(e.message || i18nT('components.updateFoundModal.update_failed'))
-      else setRestarting(true)
+      // and only a real server rejection (ApiError) is worth surfacing. A
+      // rejection means no worker ran, so the attempt is over.
+      if (e instanceof ApiError) {
+        endAttempt()
+        setApplyError(e.message || i18nT('components.updateFoundModal.update_failed'))
+      } else if (attemptRef.current) {
+        setRestarting(true)
+      }
     },
   })
 
@@ -260,12 +314,38 @@ export default function UpdateFoundModal() {
     if (open) dialogRef.current?.focus()
   }, [open])
 
+  // Surface a background apply failure in the same slot a synchronous
+  // rejection uses, and drop the restarting latch so the buttons come back:
+  // the user can read the reason, retry, or dismiss. Only during this modal's
+  // own attempt — an unrelated failed step from the About panel must not
+  // rewrite a modal that never started an update — and only after a live step
+  // of THIS attempt has been seen: the store holds the previous attempt's
+  // terminal step until the worker's first push replaces it, so a retry would
+  // otherwise read its predecessor's failure the instant it is clicked. The
+  // worker always announces a live step before it can fail, and each frame is
+  // its own store update, so the live step is observed even when the failure
+  // follows it within the same millisecond.
+  const gwProgressStep = gwProgress?.step ?? ''
+  const gwProgressDetail = gwProgress?.detail ?? ''
+  useEffect(() => {
+    if (!attemptActive) return
+    if (gwProgressStep !== 'failed' && gwProgressStep !== 'error') {
+      if (gwProgressStep) sawLiveStepRef.current = true
+      return
+    }
+    if (!sawLiveStepRef.current) return
+    endAttempt()
+    setApplyError(gwProgressDetail || i18nT('components.updateFoundModal.update_failed'))
+  }, [attemptActive, gwProgressStep, gwProgressDetail])
+
   // A save failure is a verdict on ONE version's write, not a permanent
   // downgrade to session-only dismissal: left sticky, the NEXT release's
   // snooze/skip would silently bypass persistence and be lost on reload.
   const candidateVersion = candidate?.version ?? ''
   useEffect(() => {
     setPersistError('')
+    setApplyError('')
+    setCopyError('')
   }, [candidateVersion])
 
   // "Copied" is transient feedback, not a latch.
@@ -279,6 +359,24 @@ export default function UpdateFoundModal() {
 
   const notes = (candidate.source === 'gateway' ? gwCheck?.changes : candidate.notes)?.trim() || ''
 
+  const copyCandidateCommand = async () => {
+    const command = candidate.command || ''
+    setCopyError('')
+    setCopied(false)
+    try {
+      if (await copyToClipboard(command)) {
+        setCopied(true)
+        return
+      }
+    } catch {
+      // The shared notice below gives the user the same recovery action for a
+      // rejected Clipboard API call and a false legacy fallback result.
+    }
+    setCopyError(
+      i18nT('pages.settings.aboutPanel.copy_failed_select_the_command_and_copy_it_manually'),
+    )
+  }
+
   const primary = () => {
     if (candidate.source === 'desktop') {
       // Consent to download. Progress rides the shared ['update-state'] cache
@@ -288,6 +386,7 @@ export default function UpdateFoundModal() {
       setDismissedVersion(candidate.version)
     } else if (candidate.affordance === 'apply') {
       setApplyError('')
+      beginAttempt()
       gwApply.mutate()
     }
   }
@@ -376,10 +475,39 @@ export default function UpdateFoundModal() {
               {i18nT('components.updateFoundModal.nothing_downloads_until_you_choose_to')}
             </p>
           )}
-          {candidate.source === 'gateway' && candidate.affordance === 'command' && (
-            <code data-testid="update-found-command" className="block mt-2 text-[12px] bg-bg border border-border rounded-md px-2 py-1.5 overflow-x-auto whitespace-nowrap">{candidate.command}</code>
+          {candidate.source === 'gateway' && candidate.affordance === 'arm' && (
+            <div className="mt-2">
+              <InAppUpdateFlow
+                version={candidate.displayVersion}
+                manualCommand=""
+                onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+                askAgent={!required}
+              />
+            </div>
           )}
-          {applyError && <p className="mt-2 text-[12px] text-danger">{applyError}</p>}
+          {candidate.source === 'gateway' && candidate.affordance === 'command' && (
+            <code data-testid="update-found-command" className="block mt-2 text-[12px] bg-bg border border-border rounded-md px-2 py-1.5 overflow-x-auto whitespace-nowrap">
+              {candidate.command}
+            </code>
+          )}
+          {/* Agent handoff is session-only for voluntary prompts. A mandatory
+              prompt keeps every dismissal path disabled. */}
+          <ErrorNotice
+            variant="inline"
+            className="mt-2"
+            message={applyError || null}
+            askAgent={!required}
+            onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+            testId="update-found-action-error"
+          />
+          <ErrorNotice
+            variant="inline"
+            className="mt-2"
+            message={copyError || null}
+            askAgent={!required}
+            onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+            testId="update-found-copy-error"
+          />
           {required && applyError && candidate.affordance === 'apply' && gwCommand && (
             // Escape hatch for the worst state: a mandatory update whose
             // in-process apply keeps failing would otherwise strand the user
@@ -389,7 +517,14 @@ export default function UpdateFoundModal() {
             // restarts on the new version.
             <code data-testid="update-required-fallback-command" className="block mt-2 text-[12px] bg-bg border border-border rounded-md px-2 py-1.5 overflow-x-auto whitespace-nowrap">{gwCommand}</code>
           )}
-          {persistError && <p role="alert" className="mt-2 text-[12px] text-danger">{persistError}</p>}
+          <ErrorNotice
+            variant="inline"
+            className="mt-2"
+            message={persistError || null}
+            askAgent={!required}
+            onHandoff={required ? undefined : () => setHandedOffVersion(candidate.version)}
+            testId="update-found-persist-error"
+          />
           {restarting && <p className="mt-2 text-[12px] text-muted">{i18nT('components.updateFoundModal.updating_and_restarting')}</p>}
           {!required && (
           <p className="mt-2 text-[12px] flex items-center gap-3">
@@ -436,12 +571,12 @@ export default function UpdateFoundModal() {
             <button
               type="button"
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer"
-              onClick={async () => { await copyToClipboard(candidate.command || ''); setCopied(true) }}
+              onClick={copyCandidateCommand}
             >
               {copied ? <Check size={14} className="lucide-inline" /> : <Copy size={14} className="lucide-inline" />}
               {copied ? i18nT('components.updateFoundModal.copied') : i18nT('components.updateFoundModal.copy_command')}
             </button>
-          ) : (
+          ) : candidate.source === 'gateway' && candidate.affordance === 'arm' ? null : (
               <button
                 type="button"
                 className="px-3 py-1.5 text-sm rounded-md bg-accent text-accent-fg hover:opacity-90 cursor-pointer disabled:opacity-50"

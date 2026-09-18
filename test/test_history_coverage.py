@@ -258,6 +258,23 @@ class TestTranscriptStems:
                 H._safe_key("dashboard:chat-1"),
             )
 
+    @pytest.mark.parametrize(
+        "key",
+        (
+            "slack:1699999999.000100",
+            "slack_1699999999.000100",
+            "1699999999.000100",
+        ),
+    )
+    def test_every_slack_spelling_has_the_same_lock_stems(self, key: str) -> None:
+        assert H.transcript_lock_stems(key) == (
+            "slack_1699999999.000100",
+            "1699999999.000100",
+        )
+
+    def test_plain_key_has_one_lock_stem(self) -> None:
+        assert H.transcript_lock_stems("dashboard:chat-1") == ("dashboard_chat-1",)
+
 
 class TestToolCallScanners:
     def test_count_tool_call_messages_counts_each_message_once(self) -> None:
@@ -943,12 +960,17 @@ class TestWriteStructuredMemory:
         }
         with caplog.at_level(logging.INFO, logger="kiro_crew.history"):
             c._write_structured_memory(result, "sess")
+        # ``facets`` is part of the call now: the consolidator stamps the carve axes
+        # it already holds. ``None`` here because this test drives
+        # ``_write_structured_memory`` directly rather than through ``_consolidate``,
+        # which is where ``_session_facets`` is built.
         vs.write_episodic.assert_called_once_with(
             text="a thing happened",
             conversation_id="sess",
             tags=["t"],
             importance=0.9,
             source="consolidation:sess",
+            facets=None,
         )
         assert "Wrote 1 episodic" in caplog.text
 
@@ -1571,7 +1593,7 @@ class TestSidecarSummariesSurviveMtimePreservingRewrites:
 
     So a compaction that drops half a transcript leaves the recorded signature
     still matching, and the sidecar describing the PRE-rewrite conversation is
-    served as valid. Unlike the in-process caches #4293 guards with a generation
+    served as valid. Unlike the in-process caches guarded with a generation
     counter, these are files on disk: the staleness outlives the process and is
     permanent until a genuine ``append`` lands.
     """

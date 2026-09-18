@@ -36,7 +36,7 @@ def records_from_this_module(caplog, level="ERROR"):
     Nothing about this module had changed.
 
     Scoping by logger name is strictly narrower than scoping by level: these
-    assertions still require an exact count, they just no longer count other
+    assertions still require an exact count, they just do not count other
     people's records as ours.
     """
     return [
@@ -140,7 +140,7 @@ class TestVerify:
 
     def test_tampered_txt_refused(self, cfg):
         """FORGERY: legitimate pair, then the .txt is redirected at another
-        slot — the old signature no longer matches."""
+        slot — the old signature does not match."""
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         (cfg / "session_pid_4242.txt").write_text(
             "dashboard:victim", encoding="utf-8"
@@ -237,10 +237,10 @@ class TestLenientReader:
 
 
 class TestPidRecycleGuard:
-    """Issue #8343: the mapping and its MAC bound only the pid NUMBER, so a
-    recycled pid kept verifying and answered with the previous owner's
-    session key until the next restart's orphan sweep. Publication now also
-    records the process START TOKEN (``platform_compat.get_process_start_id``
+    """The mapping and its MAC binding only the pid NUMBER let a recycled pid
+    keep verifying and answer with the previous owner's session key until the
+    next restart's orphan sweep. Publication also records the process START
+    TOKEN (``platform_compat.get_process_start_id``
     — the same incarnation identity ``session_pid.py``'s
     ``<gw>:<pid>:<start_token>`` sweep records use), the signature covers it,
     and BOTH readers refuse on a proven mismatch.
@@ -433,8 +433,8 @@ class TestDomainSeparation:
 
 class TestTrustRootRecovery:
     """SEL signs from key bytes it cached at init, while this protocol re-reads
-    the file on every call. Since #2588 the shared accessor re-resolves a key
-    that MOVED (a concurrent legacy -> ``trust/`` migration), so what reaches
+    the file on every call. The shared accessor re-resolves a key that MOVED
+    (a concurrent legacy -> ``trust/`` migration), so what reaches
     recovery is the residue no path can resolve: a key deleted, unreadable,
     truncated, or replaced by bytes that are not the anchor. Those would
     otherwise take this protocol down for the life of the process — with a
@@ -513,7 +513,7 @@ class TestTrustRootRecovery:
 
 
 class TestTrustRootRelocationIsFollowed:
-    """#2588 item 1, from the dependent protocol's side.
+    """Trust-root relocation is followed, from the dependent protocol's side.
 
     Deliberately does NOT use the ``cfg`` fixture: that fixture patches
     ``sel_hmac_key_path`` to a fixed path, which is exactly the seam under test.

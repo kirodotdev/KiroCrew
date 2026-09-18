@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
@@ -40,7 +40,7 @@ def _raise_on_slots(payload):
     """A ``_broadcast`` double that fails the way the evidenced defect does.
 
     The exception TYPE is incidental — ``json.dumps`` on a non-serializable slot
-    value is the shape #6522 hit — so these tests pin the ordering instead: any
+    value is one such shape — so these tests pin the ordering instead: any
     raise out of the flush must not unwind past the durable write.
     """
     if payload.get("_type") == "slots":
@@ -315,7 +315,7 @@ class TestCreateAppIsolation:
 
 
 class TestFolderTagInheritance:
-    """Folder tags copied onto NEW chats filed into the folder (issue #5419).
+    """Folder tags copied onto NEW chats filed into the folder.
 
     Creation-only: re-opening an existing session inside the folder must not
     re-stamp tags, and moving an existing session into a tagged folder via the
@@ -352,14 +352,30 @@ class TestFolderTagInheritance:
     @pytest.mark.asyncio
     async def test_new_slot_in_folder_inherits_the_folders_tags(self, tmp_path):
         """(c) A genuinely new chat filed into a tagged folder copies its tags."""
+        from kiro_crew.dashboard.state import _ChatSlot
+
         state = self._tagged_state(tmp_path, ["t1", "t2"])
-        async with TestClient(TestServer(_make_app(state))) as client:
-            resp = await client.post(
-                "/api/chat/slots", json={"name": "fresh", "folder_id": FOLDER_ID}
-            )
-            assert resp.status == 200
-            assert sorted((await resp.json())["tags"]) == ["t1", "t2"]
+        birth_revisions: list[str] = []
+        original_init = _ChatSlot.__init__
+
+        def _recording_init(self, *args, **kwargs):
+            original_init(self, *args, **kwargs)
+            birth_revisions.append(self.tags_revision)
+
+        with patch.object(_ChatSlot, "__init__", _recording_init):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat/slots", json={"name": "fresh", "folder_id": FOLDER_ID}
+                )
+                assert resp.status == 200
+                assert sorted((await resp.json())["tags"]) == ["t1", "t2"]
         assert sorted(state._slots["fresh"].tags) == ["t1", "t2"]
+        # "tags changed => revision changed": the inherited list must not ship
+        # under the newborn's birth revision, which a slots GET racing the
+        # awaited folder read may already have snapshotted with an empty list.
+        assert birth_revisions
+        assert state._slots["fresh"].tags_revision not in birth_revisions
+        assert state._slots["fresh"].tags_revision > max(birth_revisions)
 
     @pytest.mark.asyncio
     async def test_new_slot_without_folder_inherits_nothing(self, tmp_path):
@@ -431,7 +447,7 @@ class TestFolderTagInheritance:
 
     @pytest.mark.asyncio
     async def test_stale_folder_tag_id_is_not_copied_onto_the_slot(self, tmp_path):
-        """A folder id that no longer exists in the vocabulary is dropped, not stamped."""
+        """A folder id absent from the vocabulary is dropped, not stamped."""
         state = _make_state(tmp_path)
         state._folders[0]["tags"] = ["gone", "t1"]
         # Only t1 is a live tag; "gone" was deleted from the vocabulary.
@@ -505,7 +521,7 @@ class TestDurableWriteOrdering:
 
         # The failure still reaches the caller: this is an ordering fix, not a
         # swallow. Whether an already-committed create should answer 500 at all
-        # is the half of #6532 that was declined, and folding it in here would
+        # is a separate, declined question, and folding it in here would
         # resurrect it.
         assert resp.status == 500
         # But the acknowledged mutation is on disk. Outside the suspension, the

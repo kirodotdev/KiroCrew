@@ -1,14 +1,14 @@
 """A write that did not happen must not be reported as success.
 
-Two endpoints used to answer `{"ok": True}` for work they had not done:
+Two endpoints must not answer `{"ok": True}` for work they have not done:
 
-  * `patch_config` accepted `customPresets` and `kiro.accessory` and dropped both,
-    so a saved colour preset or a chosen dress-up prop vanished on the next load —
-    while the UI showed it applied, because the renderer had already set its own
+  * `patch_config` must persist `customPresets` and `kiro.accessory`; dropping
+    either loses a saved colour preset or a chosen dress-up prop on the next load —
+    while the UI shows it applied, because the renderer has already set its own
     state.
-  * `_save_locked` logged an OSError and returned, so a full or read-only data
-    home produced an HTTP 200: the panel cleared its input and the reminder was
-    gone after a restart.
+  * `_save_locked` must raise rather than log an OSError and return, so a full or
+    read-only data home cannot produce an HTTP 200: the panel would clear its input
+    and the reminder would be gone after a restart.
 
 The second is the more dangerous shape, and its test asserts the part that is easy
 to get wrong — that memory is rolled back to what is actually on disk, so the

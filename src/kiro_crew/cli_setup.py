@@ -20,7 +20,6 @@ from kiro_crew import platform_compat, slack_manifest
 from kiro_crew.acp.client import KIRO_CLI_BIN
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.cli_chat import _ensure_default_agent_in_config
-from kiro_crew.conductor_skill import generate_conductor_skill
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import (
     _WORKSPACE_DIR_NAME,
@@ -37,10 +36,11 @@ from kiro_crew.config.loader import (
     update_config_locked,
 )
 from kiro_crew.constants import DATA_WARNING, MIN_NODE_MAJOR
+from kiro_crew.dashboard.urls import _resolve_hostname_bounded
 from kiro_crew.sandbox import unavailable_kind
 from kiro_crew.secrets.migrate import _env_lock_path
 from kiro_crew.sel import sel
-from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills import remove_retired_conductor_skill
 from kiro_crew.validation import USER_ID_RE
 
 
@@ -333,19 +333,10 @@ def _setup_impl(
     # 2b. Ensure config.json has default KiroCrew agent for fresh installs
     _ensure_default_agent_in_config()
 
-    # 2c. Generate conductor skill if enabled (agent delegation).
-    try:
-        cfg = KiroCrewConfig.load()
-        if cfg.agent.conductor_skill:
-            generate_conductor_skill(SkillsLoader())
-            print("  ✅ Conductor skill generated")
-        else:
-            # Clean up stale skill if previously enabled then disabled.
-            skill_path = SkillsLoader()._dir / "conductor" / "SKILL.md"
-            if skill_path.exists():
-                skill_path.unlink()
-    except Exception as exc:
-        print(f"  ⚠️  Conductor skill generation failed: {exc}")
+    # 2c. Remove the delegation skill the retired `agent.conductor_skill` flag
+    #     generated. Only bytes that generator itself wrote are removed, so a
+    #     user skill that happens to share the directory name is left alone.
+    _remove_retired_conductor_skill()
 
     # 2d. Offer the unconfined-exec opt-in on a host with no sandbox backend.
     #     Runs BEFORE the agent-only early return: the servers this unblocks are
@@ -446,6 +437,14 @@ def _maybe_setup_cloud() -> None:
             size="",
             yes=False,
             hold_tunnel=False,
+            # Same identity behaviour as `kirocrew cloud launch` with no flags:
+            # inherit this machine's kiro-cli sign-in (Identity Center users get
+            # their organization's sign-in, not the Builder ID portal). The wizard
+            # asks for the Identity Center region interactively when needed.
+            identity_provider="",
+            license="",
+            idp_region="",
+            no_inherit_identity=False,
         )
         handle_cloud(args)
     except Exception as exc:  # pragma: no cover - non-fatal, informative
@@ -983,8 +982,8 @@ def _input_or_skip(prompt: str) -> str | None:
 
     Returns ``None`` when the user hit Enter with no input, which callers treat
     as "keep the default / skip this step". A closed/piped stdin is a different
-    condition and must not be silently coerced to ``""`` (that used to admit an
-    empty default and cascade the failure into the NEXT step's bare
+    condition and must not be silently coerced to ``""`` (coercing it admits an
+    empty default and cascades the failure into the NEXT step's bare
     ``input()``) — see ``_SetupAborted``. A non-UTF-8 locale (e.g. C/POSIX)
     makes ``input()`` raise ``UnicodeDecodeError`` the same way, so it is
     treated identically.
@@ -1059,6 +1058,15 @@ def _setup_slash_command() -> None:
         print("  ⚠️  'slack' section is not an object; leaving config untouched.\n")
         return
     print(f"  ✅ Slash command: /{raw}\n")
+
+
+def _remove_retired_conductor_skill() -> None:
+    """Run retired conductor skill cleanup without interrupting setup."""
+    try:
+        if remove_retired_conductor_skill():
+            print("  ✅ Removed retired conductor skill")
+    except Exception as exc:
+        print(f"  ⚠️  Retired conductor skill cleanup failed: {exc}")
 
 
 def _setup_sandbox_consent() -> None:
@@ -1442,12 +1450,16 @@ def _maybe_setup_dashboard_url() -> None:
     if not has_slack:
         return  # No Slack → local-only, no URL needed
 
-    # Detect if this looks like a remote host
-    try:
-        ip = socket.gethostbyname(socket.gethostname())
-        is_remote = not ip.startswith("127.")
-    except OSError:
-        is_remote = False
+    # Detect if this looks like a remote host. Bounded, because
+    # `socket.gethostbyname` has no timeout of its own: on a host whose own name
+    # does not resolve (an mDNS `*.local` with no responder) the bare call sits
+    # for 15+ seconds, which here stalls an INTERACTIVE prompt the operator is
+    # waiting on. Same resolver, same hazard and same remedy as the dashboard's
+    # startup path, so it reads through the one helper rather than growing a
+    # second bounded copy. `None` means unresolved, which is the same answer as
+    # a raised OSError: treat the host as local.
+    ip = _resolve_hostname_bounded(socket.gethostname())
+    is_remote = ip is not None and not ip.startswith("127.")
 
     if not is_remote and not cfg.dashboard.url:
         return  # Localhost machine with no existing URL config — skip

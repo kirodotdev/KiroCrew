@@ -32,8 +32,7 @@ from kiro_crew.messaging.link import (
 # Shared time origin for session stamps. Captured at import, so any test whose
 # production path reads the LIVE clock must also pin that clock to NOW (see
 # ``frozen_clock``) — otherwise eligibility decays with elapsed shard time and
-# the module fails deterministically once a shard runs past the recency window
-# (#8968).
+# the module fails deterministically once a shard runs past the recency window.
 NOW = time.time()
 
 
@@ -984,7 +983,7 @@ class TestReconcileMore:
 
 
 class TestReconcileClockCoherence:
-    """Regression pins for #8968: reconcile eligibility verdicts must be a
+    """Regression pins: reconcile eligibility verdicts must be a
     function of the stamps alone, never of wall-clock time elapsed since this
     module was imported.
 

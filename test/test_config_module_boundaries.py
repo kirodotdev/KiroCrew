@@ -77,6 +77,7 @@ McpGatewayConfig
 MemoryConfig
 MemoryStoreConfig
 MessagingConfig
+MonitoringConfig
 OrchestratorConfig
 POOL_SIZE_MAX
 POOL_TTL_SECS_MAX

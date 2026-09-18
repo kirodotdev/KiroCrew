@@ -375,7 +375,7 @@ class TestChatSlotContinue:
         # Not a read: resuming dispatches an agent turn that runs tools and writes
         # to the repo, so an app token must not reach a slot it does not own. The
         # response is the same indistinguishable 404 as the send path, so it cannot
-        # be used to probe which foreign slots exist.
+        # serve to probe which foreign slots exist.
         slot = _ChatSlot("s")
         slot.append("user", "hi", "msg msg-u")
         slot._app = "other-app"

@@ -309,19 +309,26 @@ class TestCliStatsVerb:
 
     def test_stats_keeps_the_source_row_a_migrating_open_reaps(self, seeded_home):
         # An itemless source outside the sweep exclusions that nothing references:
-        # the row `_migrate()` deletes on every ordinary open, and the write the
+        # the row the orphan sweep deletes, and the write the
         # word read-only has to exclude.
         db_path = seeded_home / "workspace" / "knowledge" / "knowledge.db"
         writer = KnowledgeStore(str(db_path))
-        writer.add_source("ghost", "web", "https://example.invalid/ghost")
+        ghost = writer.add_source("ghost", "web", "https://example.invalid/ghost")
+        # A finished, itemless source: the shape the deferred orphan sweep reclaims.
+        writer.update_source(ghost, sync_status="error")
         writer.db.close()
         before = _library_fingerprint(db_path)
         assert "ghost" in {name for _sid, name in before[1]}
         self._run(seeded_home)
         assert _library_fingerprint(db_path) == before
-        # The contrast that gives the assertion above its meaning: an ordinary
-        # open does reap the row.
-        KnowledgeStore(str(db_path)).db.close()
+        # The contrast that gives the assertion above its meaning: the store's
+        # own orphan sweep (run post-bind by the gateway, never by an open) does
+        # reap the row.
+        sweeper = KnowledgeStore(str(db_path))
+        try:
+            sweeper.reclaim_orphans()
+        finally:
+            sweeper.db.close()
         assert "ghost" not in {name for _sid, name in _library_fingerprint(db_path)[1]}
 
     def test_library_behind_the_schema_is_reported_not_migrated(self, tmp_path, capsys):
@@ -359,20 +366,27 @@ class TestCliDedupDryRun:
             cli._knowledge(args)
 
     def test_dry_run_keeps_the_source_row_a_migrating_open_reaps(self, seeded_home, capsys):
-        # The itemless source row `_migrate()` deletes on every ordinary open is
+        # The itemless source row the orphan sweep deletes is
         # exactly the write a preview printing "no changes" must not make.
         db_path = seeded_home / "workspace" / "knowledge" / "knowledge.db"
         writer = KnowledgeStore(str(db_path))
-        writer.add_source("ghost", "web", "https://example.invalid/ghost")
+        ghost = writer.add_source("ghost", "web", "https://example.invalid/ghost")
+        # A finished, itemless source: the shape the deferred orphan sweep reclaims.
+        writer.update_source(ghost, sync_status="error")
         writer.db.close()
         before = _library_fingerprint(db_path)
         assert "ghost" in {name for _sid, name in before[1]}
         self._run(seeded_home)
         assert "DRY RUN" in capsys.readouterr().out
         assert _library_fingerprint(db_path) == before
-        # The contrast that gives the assertion above its meaning: an ordinary
-        # open -- the one --apply keeps -- does reap the row.
-        KnowledgeStore(str(db_path)).db.close()
+        # The contrast that gives the assertion above its meaning: the store's
+        # own orphan sweep (run post-bind by the gateway, never by an open) does
+        # reap the row.
+        sweeper = KnowledgeStore(str(db_path))
+        try:
+            sweeper.reclaim_orphans()
+        finally:
+            sweeper.db.close()
         assert "ghost" not in {name for _sid, name in _library_fingerprint(db_path)[1]}
 
 
@@ -462,11 +476,13 @@ class TestMcpParity:
         assert "2 item(s) are owned by no registered source" in result
 
     def test_tool_keeps_the_source_row_a_migrating_open_reaps(self, seeded_home):
-        # The itemless source row `_migrate()` deletes on every ordinary open:
+        # The itemless source row the orphan sweep deletes:
         # a tool advertised as "only counts" must not be the open that reaps it.
         db_path = seeded_home / "workspace" / "knowledge" / "knowledge.db"
         writer = KnowledgeStore(str(db_path))
-        writer.add_source("ghost", "web", "https://example.invalid/ghost")
+        ghost = writer.add_source("ghost", "web", "https://example.invalid/ghost")
+        # A finished, itemless source: the shape the deferred orphan sweep reclaims.
+        writer.update_source(ghost, sync_status="error")
         writer.db.close()
         before = _library_fingerprint(db_path)
         assert "ghost" in {name for _sid, name in before[1]}
@@ -474,9 +490,14 @@ class TestMcpParity:
         assert f"Knowledge library: {EXPECTED_SOURCES + 1} source(s)" in result
         assert "- ghost — id: " in result
         assert _library_fingerprint(db_path) == before
-        # The contrast that gives the assertion above its meaning: an ordinary
-        # open does reap the row.
-        KnowledgeStore(str(db_path)).db.close()
+        # The contrast that gives the assertion above its meaning: the store's
+        # own orphan sweep (run post-bind by the gateway, never by an open) does
+        # reap the row.
+        sweeper = KnowledgeStore(str(db_path))
+        try:
+            sweeper.reclaim_orphans()
+        finally:
+            sweeper.db.close()
         assert "ghost" not in {name for _sid, name in _library_fingerprint(db_path)[1]}
 
     def test_library_behind_the_schema_is_reported_not_migrated(self, tmp_path):

@@ -1,6 +1,7 @@
 import React from 'react'
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 
@@ -113,6 +114,26 @@ describe('ChatInput project chip branch copy', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith(long))
   })
 
+  it('withholds confirmation when both clipboard paths fail', async () => {
+    originalClipboard = Object.getOwnPropertyDescriptor(navigator, 'clipboard')
+    const writeText = vi.fn().mockRejectedValue(new DOMException('denied', 'NotAllowedError'))
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+
+    const originalExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+    const execCommand = vi.fn().mockReturnValue(false)
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    try {
+      renderWithProviders(<ChatInput {...defaultProps} projectBranch="feat/example" />)
+      fireEvent.click(branchBtn())
+      await waitFor(() => expect(execCommand).toHaveBeenCalledWith('copy'))
+      expect(screen.getByRole('button', { name: 'Copy branch name feat/example' })).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Copied branch name feat/example' })).not.toBeInTheDocument()
+    } finally {
+      if (originalExecCommand) Object.defineProperty(document, 'execCommand', originalExecCommand)
+      else delete (document as { execCommand?: unknown }).execCommand
+    }
+  })
+
   it('clicking the branch does not open the project picker', () => {
     stubClipboard()
     const onProjectClick = vi.fn()
@@ -131,5 +152,23 @@ describe('ChatInput project chip branch copy', () => {
     )
     fireEvent.click(chip())
     expect(onProjectClick).toHaveBeenCalled()
+  })
+
+  it('keeps the message input focused while copying the branch', async () => {
+    // A real pointer click moves focus to the pressed button before `click`
+    // fires. The copy button cancels that transfer on mousedown so a user who
+    // is mid-sentence can copy the branch and keep typing. `userEvent`
+    // replays the full mousedown -> focus -> mouseup -> click sequence;
+    // `fireEvent.click` alone would never move focus and could not fail here.
+    const user = userEvent.setup()
+    const writeText = stubClipboard()
+    renderWithProviders(<ChatInput {...defaultProps} projectBranch="feat/example" />)
+    const input = screen.getByRole('textbox', { name: 'Message input' })
+    input.focus()
+
+    await user.click(branchBtn())
+
+    expect(input).toHaveFocus()
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('feat/example'))
   })
 })

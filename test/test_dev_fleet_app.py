@@ -9,6 +9,7 @@ import json
 import os
 import shutil
 import sys
+import tempfile
 import textwrap
 import threading
 import time
@@ -37,7 +38,7 @@ from kiro_crew.apps.builtins.dev_fleet import worktree_ops as worktree_ops_mod
 # (vs ``.venv\\Scripts\\kirocrew.exe``), systemctl/launchctl service probing, and
 # ``/``-rooted trusted-binary paths. The production code is correct on Windows;
 # only these fixtures/assertions are POSIX-shaped, so they are skipped under the
-# reduced-scope backend CI that runs on Windows. See issue #2041.
+# reduced-scope backend CI that runs on Windows.
 _POSIX_ONLY = pytest.mark.skipif(
     sys.platform == "win32",
     reason="POSIX-only Dev Fleet make-live/cancel/sync semantics (issue #2041)",
@@ -355,9 +356,16 @@ async def test_remove_succeeds_when_oid_matches():
 # --- session bus graceful degradation ---
 @pytest.mark.asyncio
 async def test_remove_proceeds_when_session_bus_absent():
-    """When require_backend() raises PodBackendAbsent, removal proceeds."""
+    """An absent backend is checked off-loop and leaves no live pod to protect."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
     from kiro_crew.pod.runtime import PodBackendAbsent
+
+    event_loop_thread = threading.get_ident()
+    backend_threads: list[int] = []
+
+    def absent_backend() -> None:
+        backend_threads.append(threading.get_ident())
+        raise PodBackendAbsent("no session bus")
 
     with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
                       return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
@@ -368,33 +376,65 @@ async def test_remove_proceeds_when_session_bus_absent():
          patch.object(fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
          patch.object(runtime_mod, "_POD_AVAILABLE", True), \
-         patch.object(runtime_mod.rt, "require_backend", side_effect=PodBackendAbsent("no session bus")), \
+         patch.object(runtime_mod.rt, "require_backend", side_effect=absent_backend), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
          patch.object(repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
         result = await mod._worktree_remove("feat-x", force=False)
     assert result["ok"] is True
+    assert len(backend_threads) == 2
+    assert all(thread != event_loop_thread for thread in backend_threads)
 
 
 @pytest.mark.asyncio
-async def test_remove_refuses_operational_pod_error():
-    """When require_backend() passes but active_names raises, removal is refused."""
+async def test_remove_refuses_stale_explicit_bus_address(monkeypatch):
+    """A stale explicit bus address must never authorize worktree removal."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
-    with patch.object(repository_mod, "_find_worktree", new_callable=AsyncMock,
-                      return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None)), \
-         patch.object(repository_mod, "_real_dirty", new_callable=AsyncMock, return_value=False), \
-         patch.object(fleet_state_mod, "_pr_status_cached", new_callable=AsyncMock, return_value={"state": "MERGED"}), \
-         patch.object(repository_mod, "_own_commits_count", new_callable=AsyncMock, return_value=1), \
-         patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value="aaa1111"), \
-         patch.object(fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"), \
-         patch.object(runtime_mod, "_load_cfg", return_value=object()), \
-         patch.object(runtime_mod, "_POD_AVAILABLE", True), \
-         patch.object(runtime_mod.rt, "require_backend", return_value=None), \
-         patch.object(runtime_mod.rt, "active_names", side_effect=OSError("launchctl error")), \
-         patch.object(repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"):
+    detail = "Failed to connect to bus: No such file or directory"
+    monkeypatch.setenv("DBUS_SESSION_BUS_ADDRESS", "unix:path=/run/user/4242/stale-bus")
+    with (
+        patch.object(
+            repository_mod,
+            "_find_worktree",
+            new_callable=AsyncMock,
+            return_value=({"path": "/fake/wt", "branch": "feat-x", "is_main": False}, None),
+        ),
+        patch.object(repository_mod, "_real_dirty", new_callable=AsyncMock, return_value=False),
+        patch.object(
+            fleet_state_mod,
+            "_pr_status_cached",
+            new_callable=AsyncMock,
+            return_value={"state": "MERGED"},
+        ),
+        patch.object(repository_mod, "_own_commits_count", new_callable=AsyncMock, return_value=1),
+        patch.object(repository_mod, "_git", new_callable=AsyncMock, return_value="aaa1111"),
+        patch.object(
+            fleet_state_mod, "_fetch_pr_head_oid", new_callable=AsyncMock, return_value="aaa1111"
+        ),
+        patch.object(runtime_mod, "_load_cfg", return_value=object()),
+        patch.object(runtime_mod, "_POD_AVAILABLE", True),
+        patch.object(runtime_mod.rt, "IS_MACOS", False),
+        patch.object(runtime_mod.rt, "IS_WINDOWS", False),
+        patch.object(runtime_mod.rt, "IS_LINUX", True),
+        patch.object(runtime_mod.rt.shutil, "which", return_value="/usr/bin/systemctl"),
+        patch.object(
+            runtime_mod.rt.platform_compat,
+            "trusted_system_bin",
+            return_value="/usr/bin/systemctl",
+        ),
+        patch.object(
+            runtime_mod.rt,
+            "_run",
+            return_value=SimpleNamespace(returncode=1, stdout="", stderr=detail),
+        ),
+        patch.object(
+            repository_mod, "_upstream_remote", new_callable=AsyncMock, return_value="origin"
+        ),
+    ):
         result = await mod._worktree_remove("feat-x", force=False)
     assert result["ok"] is False
-    assert "cannot verify pod state" in result["error"]
+    assert "cannot verify pod backend" in result["error"]
+    assert detail in result["error"]
 
 
 @pytest.mark.asyncio
@@ -953,7 +993,7 @@ async def test_sync_script_emits_step_markers():
             result = await mod._sync_start_locked()
     # Clean up the snapshot + steps file the stubbed _start_run would have —
     # BEFORE any assertion, so a failing assertion cannot leak the staged
-    # temporary directories (GPT round 2, no-test-side-effects).
+    # temporary directories (no test side effects).
     _cleanup_sync_tempdirs(mock_start)
     assert result["ok"] is True
     cmd_args = mock_start.call_args[0]
@@ -988,7 +1028,7 @@ def _steps_json_path_from_cmd(cmd):
 def _sync_steps_from_cmd(cmd):
     """Pull the structured step list back out of the runner invocation.
 
-    The runner is no longer a ``-c <script>`` string; it is a snapshot of
+    The runner is not a ``-c <script>`` string; it is a snapshot of
     sync_runner.py run BY PATH, and the steps travel as a JSON FILE whose path
     is the runner's first positional argument. Read that file so the assertions
     bite on the real step list rather than on source text.
@@ -1012,6 +1052,94 @@ def _install_step(steps):
     raise AssertionError("no 'pip install' step found in the step list")
 
 
+def _reap_cleanup_paths(cleanup_paths) -> None:
+    """Remove what the sync registered for the run's cleanup, in order.
+
+    Mirrors the real run's cleanup loop: unlink each entry and fall back to
+    rmdir, which only succeeds once the directory is empty -- so the order the
+    sync registered them in (files before their directory) is what makes the
+    directory go too.
+    """
+    for path in cleanup_paths or []:
+        try:
+            os.unlink(path)
+        except OSError:
+            try:
+                os.rmdir(path)
+            except OSError:
+                pass
+
+
+def _start_run_stub(rid: str) -> AsyncMock:
+    """A stand-in for ``_start_run`` that still honours ``cleanup_paths``.
+
+    The sync stages its runner snapshot, steps file and preflight snapshot into
+    private mkdtemp directories and hands them to ``_start_run`` for removal
+    when the run ends. A bare ``AsyncMock`` swallows that kwarg, so every sync
+    driven through one leaves those directories behind in the temp root. Use
+    this in any test that does not need to read the staged files afterwards;
+    a test that does must reap them itself once it has read them.
+    """
+
+    def _run(label, cmd, **kw):
+        _reap_cleanup_paths(kw.get("cleanup_paths"))
+        return rid
+
+    return AsyncMock(side_effect=_run)
+
+
+#: Temp-directory prefixes the dev-fleet sync stages and ``_start_run``'s finally owns.
+_STAGED_SYNC_PREFIXES = (
+    "kirocrew-sync-runner-",
+    "kirocrew-npm-preflight-",
+    "kirocrew-dep-sync-",
+)
+
+
+@pytest.fixture(autouse=True)
+def _sweep_staged_sync_tempdirs():
+    """Backstop for sync snapshots left by a test that stubbed ``_start_run`` itself.
+
+    ``_sync_start_locked`` stages three kinds of snapshot into the temp root -- the
+    runner source plus its steps JSON, the npm preflight, and the dependency-only
+    ``dep_sync`` copy -- and registers each one in the ``cleanup_paths`` list that
+    ``runtime._start_run``'s ``finally`` unlinks. Stubbing ``_start_run`` stubs out
+    the ONLY cleanup.
+
+    Two mechanisms cover that, and this is the second. :func:`_start_run_stub` is
+    the exact one and is preferred: it honours ``cleanup_paths``, so it removes
+    precisely what the sync registered. It is only usable where the test does not
+    need the staged files AFTER the call, and several tests here read the steps JSON
+    out of the staged directory, so they must keep it alive across the stubbed run.
+    Those reach the leak through their own inline ``AsyncMock``, and a per-test call
+    they must each remember is how this came back: MEASURED with
+    ``KIROCREW_TMP_PER_TEST=1``, eleven directories outlived one run of this file,
+    named after six tests.
+
+    Sweeping is sound HERE in a way a general temp sweep is not (see the residue
+    rules in testing-conventions): it runs after the test has finished reading, it is
+    confined to THIS run's own redirected temp base, it matches only prefixes this app
+    owns, and it removes only entries absent before the test -- so a concurrent run's
+    directory, which lives under its own base, can never be a candidate.
+    """
+    base = Path(tempfile.gettempdir())
+
+    def staged() -> set[Path]:
+        try:
+            return {
+                p
+                for p in base.iterdir()
+                if p.is_dir() and p.name.startswith(_STAGED_SYNC_PREFIXES)
+            }
+        except OSError:
+            return set()
+
+    before = staged()
+    yield
+    for path in staged() - before:
+        shutil.rmtree(path, ignore_errors=True)
+
+
 def _cleanup_sync_tempdirs(mock_start):
     """Delete the snapshot dirs a stubbed _start_run would have cleaned up.
 
@@ -1022,14 +1150,7 @@ def _cleanup_sync_tempdirs(mock_start):
     """
     if not getattr(mock_start, "call_args", None):
         return
-    for path in mock_start.call_args.kwargs.get("cleanup_paths") or []:
-        try:
-            os.unlink(path)
-        except OSError:
-            try:
-                os.rmdir(path)
-            except OSError:
-                pass
+    _reap_cleanup_paths(mock_start.call_args.kwargs.get("cleanup_paths"))
 
 
 #: The main checkout the sync tests run against. Pinned rather than ambient so the
@@ -1177,10 +1298,14 @@ async def test_every_step_gets_a_utf8_pin_in_its_environment():
     src = Path(sync_runner.__file__).read_text(encoding="utf-8")
     run_step_body = src.split("def run_step(", 1)[1].split("\ndef ", 1)[0]
     assert 'env["PYTHONIOENCODING"] = "utf-8:replace"' in run_step_body
-    # Applied to the env actually handed to subprocess.run, not a stale copy.
-    assert "cwd=cwd, env=env" in run_step_body
+    # Applied to the env actually handed to the spawn, not a stale copy. Matched
+    # on the keyword alone, not on a formatted argument run: the spawn became a
+    # multi-line Popen when stderr got its own pipe, and a substring spanning two
+    # arguments made this fail on a formatting change rather than on a defect.
+    assert "env=env," in run_step_body
+    assert "cwd=cwd," in run_step_body
     # Set before the step is spawned, not after.
-    assert run_step_body.index("PYTHONIOENCODING") < run_step_body.index("subprocess.run(")
+    assert run_step_body.index("PYTHONIOENCODING") < run_step_body.index("subprocess.Popen(")
 
 
 @pytest.mark.asyncio
@@ -2230,7 +2355,7 @@ def test_build_env_pins_git_protocols():
     _assert_git_neutralizers(env)
 
 
-# --- cancellation survives an already-reaped child (#2096) ---
+# --- cancellation survives an already-reaped child ---
 @pytest.mark.asyncio
 async def test_run_cmd_cancel_with_reaped_child_propagates_cancellation(monkeypatch):
     """Cancelling _run_cmd whose child was already reaped must raise
@@ -2240,7 +2365,7 @@ async def test_run_cmd_cancel_with_reaped_child_propagates_cancellation(monkeypa
     ProcessLookupError on a reaped child, REPLACING the in-flight
     cancellation; ``_status_refresher``'s broad handler then swallows it
     and loops forever, hanging ``dev_fleet_cleanup``'s ``await bg_task``
-    and the whole pytest-asyncio loop teardown (#2096).
+    and the whole pytest-asyncio loop teardown.
     """
     entered = asyncio.Event()  # deterministic rendezvous, no sleeps
 
@@ -2344,7 +2469,7 @@ async def test_start_run_readline_overrun_kills_process_tree(monkeypatch):
     assert killed == [424242]  # tree reaped exactly once
     assert FakeProc.returncode is not None  # proc.kill() ran
     # The reap drains pipes via communicate(), never a bare wait() that a
-    # full pipe could hang (#5989).
+    # full pipe could hang.
     assert FakeProc.communicate_calls == 1
     assert FakeProc.wait_calls == 0
 
@@ -2606,7 +2731,7 @@ async def test_discover_worktrees_sandbox_error_keeps_remedy():
 
     The sandbox layer appends its guidance AFTER a ~180-char preamble, so an
     over-eager length cap here delivered the diagnosis and dropped the fix — the
-    Discovery Error banner used to end mid-word at "Probe". Guard the tail, not
+    Discovery Error banner would end mid-word at "Probe". Guard the tail, not
     just the prefix (the pre-existing test only checked the prefix, which is why
     the truncation went unnoticed).
     """
@@ -2644,7 +2769,7 @@ async def test_discover_worktrees_sandbox_error_is_still_bounded():
 async def test_discover_worktrees_missing_repo_raises_actionable_error(tmp_path):
     """A missing/non-git MAIN_REPO raises with the path and the remedy.
 
-    This used to return a silent [] — which the UI renders as the
+    A silent [] here would render as the
     "No worktrees found" empty state. On packaged installs (where
     KIROCREW_PROJECT_DIR points at the app bundle and discovery falls through
     to the hardcoded ~/kirocrew) that empty state told users they had no
@@ -2694,7 +2819,7 @@ async def test_discover_worktrees_git_failure_is_bounded(tmp_path):
 async def test_discover_worktrees_unresolved_git_blames_host_not_repo(tmp_path):
     """No trusted git => the error names the tool + override, not the repo.
 
-    Issue #2530: this failure used to surface as "git worktree discovery
+    Without the fix this failure surfaces as "git worktree discovery
     failed in <repo>: no trusted executable for 'git' in <PATH>" — blaming a
     healthy checkout, echoing the whole trusted PATH into the UI, and never
     naming KIROCREW_DEVFLEET_BIN_GIT, the override that is the actual remedy.
@@ -3405,7 +3530,7 @@ def test_audited_decorator_applied_to_mutations():
         "api_dev_fleet_pod_down", "api_dev_fleet_pod_restart",
         "api_dev_fleet_pod_token", "api_dev_fleet_pod_provision",
         "api_dev_fleet_pod_provision_dismiss",
-        "api_dev_fleet_rebase", "api_dev_fleet_restart_gateway",
+        "api_dev_fleet_rebase",
     ]:
         fn = getattr(mod, name)
         # _audited wraps with __name__ preserved
@@ -3425,7 +3550,10 @@ def test_create_app_returns_aiohttp_application():
     assert "/health" in routes
     assert "/api/fleet" in routes
     assert "/api/sync" in routes
-    assert "/api/restart-gateway" in routes
+    # Served by the GATEWAY process now (gateway_routes.py): the pointer they touch
+    # is masked from this backend and every child it spawns.
+    assert "/api/restart-gateway" not in routes
+    assert "/api/make-live" not in routes
 
 
 # ---- platform fixes discovered during pod QA of the builtin re-shell ----
@@ -3600,9 +3728,14 @@ async def test_restart_gateway_active_detached():
 
 @pytest.mark.asyncio
 async def test_restart_gateway_audited():
-    """The restart-gateway endpoint is wrapped by _audited."""
+    """The restart-gateway endpoint lives in the gateway route module and is a coroutine
+    (the backend does not expose it — see gateway_routes.py)."""
     import inspect
-    fn = mod.api_dev_fleet_restart_gateway
+
+    from kiro_crew.apps.builtins.dev_fleet import gateway_routes
+
+    assert not hasattr(mod, "api_dev_fleet_restart_gateway")
+    fn = gateway_routes.handle_restart_gateway
     assert callable(fn) and inspect.iscoroutinefunction(fn)
 
 
@@ -3847,14 +3980,20 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     live-worktree cache.
 
     Restaging the definition is what keeps its ExecStart binary present: a
-    definition left pinned to a previously-made-live worktree fails EXEC once
+    definition left pinned to a worktree made live earlier fails EXEC once
     that worktree is pruned, and the gateway then never starts far enough to read
     the pointer at all.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    previous = _mk_make_live_wt(tmp_path / "previous", venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
     dropin = tmp_path / "dropins" / "make-live.conf"
-    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
+    _stub_make_live(
+        monkeypatch,
+        wt,
+        live=str(previous.resolve()),
+        pointer_dir=ptr_dir,
+    )
     monkeypatch.setattr(live_mod, "_dropin_path", lambda: dropin)
     monkeypatch.setattr(live_mod, "_LIVE_WORKTREE", "sentinel", raising=False)
     monkeypatch.setattr(live_mod, "_LIVE_CHECK_AT", 123.0, raising=False)
@@ -3874,6 +4013,7 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     import json as _json
     data = _json.loads(ptr_file.read_text())
     assert Path(data["checkout"]).resolve() == wt.resolve()
+    assert Path(data["previous_checkout"]).resolve() == previous.resolve()
     # Service definition restaged at the SAME target, then re-read.
     assert dropin.is_file()
     assert str(wt) in dropin.read_text(encoding="utf-8")
@@ -3885,6 +4025,87 @@ async def test_make_live_real_cutover_writes_pointer(monkeypatch, tmp_path):
     # Live-worktree cache invalidated so the next poll re-resolves.
     assert mod._LIVE_WORKTREE is None
     assert mod._LIVE_CHECK_AT == 0.0
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_make_live_omits_unusable_previous_checkout(monkeypatch, tmp_path):
+    """An unprovisioned running checkout is not a safe Undo destination, but
+    it must not make the primary cutover unavailable."""
+    target = _mk_make_live_wt(tmp_path / "target", venv=True, dist=True)
+    previous = tmp_path / "unprovisioned-current"
+    previous.mkdir()
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(
+        monkeypatch,
+        target,
+        live=str(previous.resolve()),
+        pointer_dir=ptr_dir,
+    )
+
+    res = await mod._make_live(str(target))
+
+    assert res["ok"] is True
+    data = json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == target.resolve()
+    assert "previous_checkout" not in data
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_undo_make_live_clears_one_level_history(monkeypatch, tmp_path):
+    """Undo reuses the cutover transaction but consumes, rather than flips,
+    the previous checkout so the inverse does not become an implicit redo."""
+    current = _mk_make_live_wt(tmp_path / "current", venv=True, dist=True)
+    previous = _mk_make_live_wt(tmp_path / "previous", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(
+        monkeypatch,
+        previous,
+        live=str(current.resolve()),
+        unit_status="no_user_unit",
+        pointer_dir=ptr_dir,
+    )
+    live_mod.live_target.write_target(
+        current,
+        previous_checkout=previous,
+    )
+
+    res = await mod._make_live(str(previous), undo=True)
+
+    assert res["ok"] is True
+    assert res["staged_only"] is True
+    data = json.loads((ptr_dir / "live_target.json").read_text())
+    assert Path(data["checkout"]).resolve() == previous.resolve()
+    assert "previous_checkout" not in data
+
+
+@pytest.mark.asyncio
+@_POSIX_ONLY
+async def test_undo_make_live_refuses_stale_banner_target(monkeypatch, tmp_path):
+    """A banner rendered for an older cutover cannot reverse a newer one."""
+    current = _mk_make_live_wt(tmp_path / "current", venv=True, dist=True)
+    previous = _mk_make_live_wt(tmp_path / "previous", venv=True, dist=True)
+    stale = _mk_make_live_wt(tmp_path / "stale", venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(
+        monkeypatch,
+        stale,
+        live=str(current.resolve()),
+        unit_status="no_user_unit",
+        pointer_dir=ptr_dir,
+    )
+    live_mod.live_target.write_target(
+        current,
+        previous_checkout=previous,
+    )
+    before = (ptr_dir / "live_target.json").read_text()
+
+    res = await mod._make_live(str(stale), undo=True)
+
+    assert res["ok"] is False
+    assert res["code"] == "undo_changed"
+    assert (ptr_dir / "live_target.json").read_text() == before
 
 
 @pytest.mark.asyncio
@@ -3962,11 +4183,11 @@ async def test_make_live_write_failure_does_not_latch(monkeypatch, tmp_path):
     original_write = live_mod.live_target.write_target
     call_count = {"n": 0}
 
-    def fail_first_write(checkout):
+    def fail_first_write(checkout, *, previous_checkout=None):
         call_count["n"] += 1
         if call_count["n"] == 1:
             raise OSError("disk full")
-        return original_write(checkout)
+        return original_write(checkout, previous_checkout=previous_checkout)
 
     monkeypatch.setattr(live_mod.live_target, "write_target", fail_first_write)
 
@@ -4054,12 +4275,22 @@ async def test_make_live_already_live_space_path(monkeypatch, tmp_path):
 
 
 def test_make_live_route_registered_and_audited():
-    """/api/make-live is wired in create_app and the handler is a coroutine."""
+    """/make-live is wired in the GATEWAY route module, not the backend's create_app:
+    the pointer it writes is masked from the backend and every child it spawns."""
     import inspect
-    app = mod.create_app()
-    paths = [getattr(r.resource, "canonical", None) for r in app.router.routes()]
-    assert "/api/make-live" in paths
-    fn = mod.api_dev_fleet_make_live
+
+    from aiohttp import web as _web
+
+    from kiro_crew.apps.builtins.dev_fleet import gateway_routes
+
+    backend_paths = [getattr(r.resource, "canonical", None) for r in mod.create_app().router.routes()]
+    assert "/api/make-live" not in backend_paths
+    assert not hasattr(mod, "api_dev_fleet_make_live")
+    gw = _web.Application()
+    gateway_routes.register_routes(gw)
+    gw_paths = [getattr(r.resource, "canonical", None) for r in gw.router.routes()]
+    assert "/api/apps/dev-fleet/make-live" in gw_paths
+    fn = gateway_routes.handle_make_live
     assert callable(fn) and inspect.iscoroutinefunction(fn)
 
 
@@ -4145,8 +4376,8 @@ async def test_make_live_stages_only_when_service_not_drivable(monkeypatch, tmp_
 async def test_live_user_unit_status_no_manager(monkeypatch):
     """A platform with neither systemd nor launchd -> no_systemd, no spawn.
 
-    Was previously asserted with ``platform="darwin"``; darwin is now a
-    SUPPORTED backend, so the "no manager at all" case has to be expressed with
+    ``platform="darwin"`` is a SUPPORTED backend, so the "no manager at all"
+    case has to be expressed with
     a platform that really has none.
     """
     monkeypatch.setattr(live_mod, "sys", MagicMock(platform="win32"))
@@ -4270,7 +4501,7 @@ async def test_live_user_unit_status_ok_and_missing(monkeypatch):
     assert await mod._live_user_unit_status() == "no_user_unit"
 
 
-# --- make-live: systemd value escaping / unsafe_path (Codex round 2, Finding A) ---
+# --- make-live: systemd value escaping / unsafe_path ---
 def test_sd_value_escapes_and_conditionally_quotes():
     """A clean path is emitted verbatim; `%` specifiers double to `%%`; only
     whitespace/metacharacters trigger double-quoting (with \\ and " escaped)."""
@@ -4510,9 +4741,11 @@ async def test_make_live_darwin_rolls_back_pointer_on_restart_failure(
     res = await mod._make_live(str(wt), dry_run=False)
     assert res["ok"] is False and res["code"] == "restart_failed"
     assert res["rolled_back"] is True
-    # Pointer rolled back: file should not exist (prior was absent).
+    # Pointer rolled back: prior was absent, so the rollback UNPINS by publishing
+    # the absent-equivalent stub, never an absent name -- the mask cannot cover
+    # a name that does not exist.
     ptr_file = ptr_dir / "live_target.json"
-    assert not ptr_file.exists()
+    assert ptr_file.read_text(encoding="utf-8") == live_mod.live_target.NO_TARGET_DOCUMENT
     assert mod._MAKE_LIVE_COMMITTED is False
 
 
@@ -4547,9 +4780,10 @@ async def test_make_live_refuses_when_prior_pointer_is_unreadable(
 ):
     """An unreadable prior pointer aborts BEFORE anything is staged.
 
-    ``restore(None)`` means "there was nothing here" and DELETES the pointer, so
-    treating a read failure as absent would let a failed cutover destroy a live
-    pointer it merely could not read. The abort must happen before staging.
+    ``restore(None)`` means "there was nothing here" and UNPINS the pointer (the
+    absent-equivalent stub replaces it), so treating a read failure as absent
+    would let a failed cutover destroy a live pointer it merely could not read.
+    The abort must happen before staging.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
@@ -4596,8 +4830,10 @@ async def test_make_live_rolls_back_pointer_on_restart_failure(monkeypatch, tmp_
     res = await mod._make_live(str(wt), dry_run=False)
     assert res["ok"] is False and res["code"] == "restart_failed"
     assert res["rolled_back"] is True
-    # Prior was absent -> pointer file deleted on rollback.
-    assert not (ptr_dir / "live_target.json").exists()
+    # Prior was absent -> rollback unpins with the absent-equivalent stub.
+    assert (ptr_dir / "live_target.json").read_text(
+        encoding="utf-8"
+    ) == live_mod.live_target.NO_TARGET_DOCUMENT
     assert mod._MAKE_LIVE_COMMITTED is False
 
 
@@ -4648,8 +4884,11 @@ async def test_make_live_concurrent_second_call_busy(monkeypatch, tmp_path):
     # unlocked lock and let the second call through.
     original_write_target = live_mod.live_target.write_target
 
-    def signalling_write(checkout):
-        result = original_write_target(checkout)
+    def signalling_write(checkout, *, previous_checkout=None):
+        result = original_write_target(
+            checkout,
+            previous_checkout=previous_checkout,
+        )
         entered.set()
         return result
 
@@ -4826,7 +5065,7 @@ async def test_repointing_at_the_running_checkout_cancels_a_staged_cutover(monke
     ptr_dir.mkdir()
 
     # The running image IS `running`, so the already_live branch is the one reached.
-    # A host this app cannot drive -- exactly the `service install` case #1700 is
+    # A host this app cannot drive -- exactly the `service install` case this is
     # about, and the only class where the pointer-only cancel applies.
     _stub_make_live(monkeypatch, running, live=str(running), pointer_dir=ptr_dir,
                     unit_status="no_user_unit")
@@ -4856,7 +5095,7 @@ def _stage_a_cutover(monkeypatch, tmp_path):
     other = _mk_make_live_wt(tmp_path / "other", venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
     ptr_dir.mkdir()
-    # A host this app cannot drive -- exactly the `service install` case #1700 is
+    # A host this app cannot drive -- exactly the `service install` case this is
     # about, and the only class where the pointer-only cancel applies.
     _stub_make_live(monkeypatch, running, live=str(running), pointer_dir=ptr_dir,
                     unit_status="no_user_unit")
@@ -4873,18 +5112,22 @@ def _stage_a_cutover(monkeypatch, tmp_path):
 async def test_cutover_unwind_runs_off_the_event_loop(monkeypatch, tmp_path):
     """The rollback must not block the loop.
 
-    restore() ends in restrict_to_owner, which shells out to icacls on Windows,
-    and svc.rollback() rewrites the service definition. Run inline, an unwind
-    would stall every other gateway request for the duration of a subprocess, so
-    it has to reach the executor like the write it is undoing.
+    restore() ends in restrict_to_owner, whose Windows DACL write can block on
+    a network volume round-trip, and svc.rollback() rewrites the service
+    definition. Run inline, an unwind would stall every other gateway request
+    for the duration of that blocking file IO, so it has to reach the executor
+    like the write it is undoing.
     """
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
     _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir, unit_status="no_user_unit")
 
     # Force the cutover write to fail so the unwind path runs.
-    monkeypatch.setattr(live_mod.live_target, "write_target",
-                        lambda _c: (_ for _ in ()).throw(OSError(28, "No space")))
+    monkeypatch.setattr(
+        live_mod.live_target,
+        "write_target",
+        lambda _c, **_kw: (_ for _ in ()).throw(OSError(28, "No space")),
+    )
     loop_thread = threading.get_ident()
     restore_threads: list = []
     monkeypatch.setattr(
@@ -4981,7 +5224,7 @@ async def test_stale_cancel_refuses_when_the_live_checkout_moved(monkeypatch, tm
 
     A cancel re-pins the checkout the operator saw as live. If a cutover to C
     landed and a new stage appeared while the dialog sat open, the stale
-    request's path names a checkout that is no longer running — matching the
+    request's path names a checkout that is not running — matching the
     (re-created) stage alone would let it fall through to the cutover path
     and restart the gateway into the old checkout. The live binding refuses.
     """
@@ -5307,8 +5550,8 @@ async def test_fleet_includes_gateway_service_active(monkeypatch):
 async def test_gateway_service_active_no_manager(monkeypatch):
     """A platform with neither systemd nor launchd -> False, and NO spawn.
 
-    Was previously asserted with ``platform="darwin"``; darwin is now a
-    SUPPORTED backend, so the "no manager at all" case has to be expressed with
+    ``platform="darwin"`` is a SUPPORTED backend, so the "no manager at all"
+    case has to be expressed with
     a platform that really has none -- mirroring
     ``test_live_user_unit_status_no_manager``. Asserting darwin here made the
     verdict depend on whether the *host* happened to have the agent loaded,
@@ -5649,16 +5892,17 @@ async def test_sync_build_steps_never_see_credential_helpers(monkeypatch):
 async def test_fetch_pr_head_oid_refuses_non_merged(monkeypatch):
     """Branch-name reuse: a fresh OPEN PR on a recycled name must NOT yield a
     head OID at the destructive boundary, even if a stale MERGED verdict is
-    cached elsewhere."""
+    cached elsewhere. The query is ``gh pr list`` (a JSON array) so it survives
+    the head branch being deleted on merge."""
     async def fake_run(cmd, **kw):
-        return 0, json.dumps({"headRefOid": "a" * 40, "state": "OPEN"}), ""
+        return 0, json.dumps([{"headRefOid": "a" * 40, "state": "OPEN"}]), ""
 
     monkeypatch.setattr(fleet_state_mod, "_get_owner_repo", AsyncMock(return_value="o/r"))
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run)
     assert await mod._fetch_pr_head_oid("feature-x") is None
 
     async def fake_run_merged(cmd, **kw):
-        return 0, json.dumps({"headRefOid": "b" * 40, "state": "MERGED"}), ""
+        return 0, json.dumps([{"headRefOid": "b" * 40, "state": "MERGED"}]), ""
 
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run_merged)
     assert await mod._fetch_pr_head_oid("feature-x") == "b" * 40
@@ -5890,8 +6134,8 @@ async def test_startup_skips_background_tasks_when_disabled(monkeypatch):
     """``dev_fleet_startup`` must not start the refresher/reaper/warm tasks
     when background tasks are disabled, so tests that boot the real app via
     ``create_app()`` (e.g. the HMAC tests above) never drag in a live network
-    ``git fetch``. See issue #1832: an unstubbed ``_status_refresher`` leaked
-    into unrelated tests and flaked ``Gateway Tests (macOS)``."""
+    ``git fetch``. An unstubbed ``_status_refresher`` leaks into unrelated tests
+    and flakes the macOS backend job."""
     monkeypatch.setattr(http_api_mod, "_load_app_secret", lambda: "sekrit")
     monkeypatch.setattr(worktree_ops_mod, "_background_tasks_disabled", lambda: True)
     app = mod.create_app()
@@ -6059,6 +6303,8 @@ async def test_sync_pip_uses_target_repo_venv(monkeypatch, tmp_path):
     async def fake_start_run(label, cmd, **kw):
         captured["cmd"] = cmd
         captured["start_run_kw"] = kw
+        # The real run removes these when it ends; the stub must too.
+        _reap_cleanup_paths(kw.get("cleanup_paths"))
         return "rid-1"
 
     monkeypatch.setattr(runtime_mod, "_start_run", fake_start_run)
@@ -6069,7 +6315,7 @@ async def test_sync_pip_uses_target_repo_venv(monkeypatch, tmp_path):
     assert pip_argvs[0][0] == str(repo / ".venv" / "bin" / "python")
     assert pip_argvs[0][0] != _sys.executable
     # A dependency sync writes into the measured repo (.venv, node_modules),
-    # so the run must carry the disk-cache invalidation hook (#8787).
+    # so the run must carry the disk-cache invalidation hook.
     assert captured["start_run_kw"].get("on_finish") is fleet_state_mod._disk_invalidate
 
 
@@ -6178,7 +6424,7 @@ async def test_head_contained_equal_oids_no_spawn(monkeypatch):
 
 
 # =============================================================================
-# Per-worktree context: issue/ticket links + purpose one-liner (issue #147)
+# Per-worktree context: issue/ticket links + purpose one-liner
 # =============================================================================
 
 # --- issue-ref extraction ---
@@ -6517,8 +6763,8 @@ async def test_fleet_payload_preserves_ordinary_main_repo_path():
 
 @pytest.mark.asyncio
 async def test_fleet_payload_discloses_why_pods_are_unavailable():
-    """_POD_ERROR used to be computed and then read by NOTHING, so a non-Linux
-    user got pod controls that silently failed. It must reach the payload."""
+    """_POD_ERROR computed but read by NOTHING leaves a non-Linux user with pod
+    controls that silently fail. It must reach the payload."""
     reason = "Pods are Linux systemd --user units; this host is darwin."
     fleet = await _fleet_with(
         [{"path": "/repo", "branch": "main", "is_main": True}],
@@ -6540,6 +6786,35 @@ async def test_fleet_payload_reports_no_reason_when_pods_work():
     )
     assert fleet["pods_available"] is True
     assert fleet["pods_unavailable_reason"] is None
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_says_live_state_is_known_when_the_pointer_reads():
+    fleet = await _fleet_with(
+        [{"path": "/repo", "branch": "main", "is_main": True}],
+        _load_cfg=lambda: None,
+    )
+    assert fleet["live_state_known"] is True
+
+
+@pytest.mark.asyncio
+async def test_fleet_payload_says_live_state_is_unknown_on_a_pointer_outage():
+    """A broker outage must not render as "nothing is live": the rows still come
+    back (no badge), and one field says the live/staged state is UNKNOWN so the
+    surface can tell the user to check the gateway instead of staging a cutover."""
+
+    async def _down(*, fresh=False):
+        raise live_mod.PointerUnavailable("gateway not answering")
+
+    with patch.object(live_mod, "pointer_state", _down):
+        fleet = await _fleet_with(
+            [{"path": "/repo", "branch": "main", "is_main": True}],
+            _load_cfg=lambda: None,
+        )
+    assert fleet["live_state_known"] is False
+    assert fleet["staged_target"] is None
+    assert fleet["staged_cancel_available"] is False
+    assert len(fleet["worktrees"]) == 1
 
 
 # =============================================================================
@@ -6630,7 +6905,7 @@ async def test_build_state_is_reported_even_where_pods_cannot_run(tmp_path):
 
 @pytest.mark.asyncio
 async def test_main_checkout_build_state_is_probed(tmp_path):
-    """Regression (#8058): the build-state probes were gated on ``not is_main``,
+    """Regression: the build-state probes were gated on ``not is_main``,
     so a fully provisioned MAIN checkout always rendered as unprovisioned —
     during a cutover that reads as "the cutover failed". Build state is a plain
     filesystem check and is knowable for every worktree, main included; only
@@ -6659,7 +6934,7 @@ async def test_main_checkout_build_state_is_probed(tmp_path):
 
 
 # =============================================================================
-# Regression: _find_cli must target a RUNNABLE entry point (issue #220)
+# Regression: _find_cli must target a RUNNABLE entry point
 # =============================================================================
 def test_find_cli_targets_kiro_crew_package():
     """_find_cli must invoke the ``kiro_crew`` package (its __main__), not
@@ -6688,7 +6963,7 @@ def test_kiro_crew_module_entry_actually_runs():
 
 
 # =============================================================================
-# _pod_down post-stop verification (issue #220)
+# _pod_down post-stop verification
 # =============================================================================
 @pytest.mark.asyncio
 async def test_pod_down_fails_closed_when_still_active():
@@ -6705,7 +6980,7 @@ async def test_pod_down_fails_closed_when_still_active():
 
 @pytest.mark.asyncio
 async def test_pod_down_ok_when_unit_gone():
-    """rc 0 AND the unit no longer active -> genuine success."""
+    """rc 0 AND the unit not active -> genuine success."""
     with patch.object(worktree_ops_mod, "_pod_checkout_guard", new_callable=AsyncMock, return_value=None), \
          patch.object(runtime_mod, "_run_cmd", new_callable=AsyncMock, return_value=(0, "", "")), \
          patch.object(runtime_mod, "_load_cfg", return_value=object()), \
@@ -6740,7 +7015,7 @@ async def test_pod_down_nonzero_rc_is_failure():
 
 
 # =============================================================================
-# auto-prune reaper (issue #220)
+# auto-prune reaper
 # =============================================================================
 def test_auto_prune_cfg_disabled_by_default():
     with patch.object(repository_mod, "_load_dev_fleet_cfg", return_value={}):
@@ -6897,7 +7172,7 @@ async def test_auto_prune_reaper_audits_scan_failure():
 
 
 # =============================================================================
-# parallel prune (issue #435)
+# parallel prune
 # =============================================================================
 async def _await_prune_idle(timeout: float = 5.0) -> None:
     """Wait until the background prune task drains (running -> False)."""
@@ -7260,7 +7535,7 @@ def test_register_skills_creates_symlinks_for_bundled_skills(tmp_path, monkeypat
     kirocrew-worktree-dev is deliberately NOT bundled here: the canonical copy
     ships in the top-level ``skills/`` catalog (synced into every install), and
     a second app-bridged copy would drift and be loaded nondeterministically
-    against it (PR #353 arbiter finding).
+    against it.
     """
     from kiro_crew.apps.bridges import _register_skills
     from kiro_crew.apps.manifest import AppManifest
@@ -7324,7 +7599,7 @@ def test_register_skills_tolerates_missing_feature_demo_recording(tmp_path, monk
         version="1.0.0",
         skills=[
             "skills/pod-e2e",
-            "skills/kirocrew-worktree-dev",  # no longer bundled — must not crash
+            "skills/kirocrew-worktree-dev",  # not bundled — must not crash
             "skills/feature-demo-recording",
         ],
     )
@@ -7389,7 +7664,7 @@ def test_own_checkout_path_resolves_this_worktree():
 
 
 # =============================================================================
-# Task: restart identity handshake + sync step labels (issue #639)
+# Task: restart identity handshake + sync step labels
 # =============================================================================
 
 
@@ -7477,7 +7752,7 @@ async def test_gateway_start_id_none_on_zero_empty_or_error():
 async def test_restart_gateway_returns_start_id_captured_before_restart():
     """restart-gateway captures the unit's start identity BEFORE scheduling the
     detached restart and returns it, so the frontend waits for a DIFFERENT one
-    rather than 'a 200 came back' (issue #639)."""
+    rather than 'a 200 came back'."""
     calls: list[list[str]] = []
 
     async def mock_run_cmd(cmd, **kw):
@@ -7551,7 +7826,7 @@ async def test_api_health_start_id_none_safe():
 @_POSIX_ONLY
 async def test_make_live_returns_start_id(monkeypatch, tmp_path):
     """A real cutover captures + returns the pre-restart start identity so the
-    dashboard reuses the same restart handshake (issue #639)."""
+    dashboard reuses the same restart handshake."""
     wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
     ptr_dir = tmp_path / "ptr"
     _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
@@ -7587,7 +7862,7 @@ def test_health_registered_on_proxied_api_path():
     matches /apps/dev-fleet/api/{path} and forwards to /api/{path}; a bare
     /apps/dev-fleet/health is NOT proxied. So /api/health (not just the
     HMAC-exempt internal /health) is what makes the handshake work on the live
-    gateway (issue #639). Guard both registrations against a silent regression.
+    gateway. Guard both registrations against a silent regression.
     """
     app = mod.create_app()
     paths = {
@@ -7749,7 +8024,7 @@ async def test_fresh_request_coalescing_onto_a_racing_build_still_omits_the_row(
 @pytest.mark.asyncio
 async def test_tombstones_are_reaped_by_a_later_build(_clean_fleet_cache):
     """Tombstones must not accumulate: once a build that started after the
-    eviction completes, git no longer reports the worktree and the entry is dead
+    eviction completes, git does not report the worktree and the entry is dead
     weight. A stale tombstone would also hide a worktree later re-created under
     the same name."""
     mod._fleet_forget("wt-gone")
@@ -7915,6 +8190,8 @@ async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_pat
     monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run_cmd)
 
     async def fake_start_run(label, cmd, **kw):
+        # The real run removes these when it ends; the stub must too.
+        _reap_cleanup_paths(kw.get("cleanup_paths"))
         return "rid-stage"
 
     monkeypatch.setattr(runtime_mod, "_start_run", fake_start_run)
@@ -7943,7 +8220,7 @@ async def test_sync_builds_and_stages_under_one_lock_holder(monkeypatch, tmp_pat
     # sys.argv[2]=npm, sys.argv[3]=git. Both binaries are the trusted _trusted_bin
     # paths (stubbed here to /usr/bin/<name>), passed through explicitly rather
     # than re-resolved in the child. The git path is a later addition (the
-    # read-only build-source fingerprint, #7132), so npm is now the
+    # read-only build-source fingerprint), so npm is now the
     # second-to-last arg and git the last -- assert each trusted path reaches the
     # spawn at the position its child consumes, not merely that one is last.
     assert argvs[stage_i][4].endswith("npm"), "the trusted npm path is passed through (argv[2])"
@@ -8163,7 +8440,7 @@ async def test_serving_install_reason_resolves_paths_off_the_event_loop(monkeypa
 async def test_serving_install_reason_recomputes_when_the_checkout_set_changes(
     monkeypatch
 ):
-    """A new worktree can make a previously-foreign serving install managed, so
+    """A new worktree can make a foreign serving install managed, so
     the memo must be keyed on the set, not just on MAIN_REPO."""
     monkeypatch.setattr(fleet_state_mod, "_SERVING_REASON", None)
     monkeypatch.setattr(repository_mod, "MAIN_REPO", "/nowhere")
@@ -8179,12 +8456,12 @@ async def test_serving_install_reason_recomputes_when_the_checkout_set_changes(
     assert seen == [("/wt/a",), ("/wt/a", "/wt/b")]
 
 
-# --- Worktree teardown guard tests (issue #1554) ---
+# --- Worktree teardown guard tests ---
 
 
 @pytest.mark.asyncio
 async def test_force_remove_refuses_dirty_unmerged_worktree():
-    """Regression for #1554: force=True must NOT destroy a dirty tree whose PR
+    """force=True must NOT destroy a dirty tree whose PR
     is unmerged — that combination is unrecoverable data loss."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
@@ -8216,7 +8493,7 @@ async def test_force_remove_refuses_dirty_unmerged_worktree():
 
 @pytest.mark.asyncio
 async def test_force_remove_refuses_dirty_merged_worktree():
-    """Regression for #1554 round-5: force=True must NOT destroy a dirty tree
+    """force=True must NOT destroy a dirty tree
     even when the PR IS merged — containment proves commits are shipped but
     says nothing about working-tree edits. --force bypasses git's dirty check
     and would irrecoverably destroy uncommitted edits."""
@@ -8472,7 +8749,7 @@ async def test_removal_audit_log_emitted(caplog):
 
 @pytest.mark.asyncio
 async def test_removal_invalidates_disk_cache():
-    """Successful removal drops the disk cache's freshness stamp (#8787).
+    """Successful removal drops the disk cache's freshness stamp.
 
     The chokepoint that every removal path routes through (single-worktree
     handler, prune workers, auto-prune reaper) must invalidate the /disk TTL
@@ -8515,7 +8792,7 @@ async def test_removal_invalidates_disk_cache():
 
 @pytest.mark.asyncio
 async def test_start_run_invokes_on_finish_at_terminal_state():
-    """_start_run's on_finish fires once when the run finishes (#8787)."""
+    """_start_run's on_finish fires once when the run finishes."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
     calls: list[int] = []
@@ -8536,7 +8813,7 @@ async def test_start_run_invokes_on_finish_at_terminal_state():
 @pytest.mark.asyncio
 async def test_pod_provision_registers_disk_invalidation(monkeypatch):
     """Provisioning builds .venv/dist inside the measured worktree, so the
-    provision run must carry the disk-cache invalidation hook (#8787)."""
+    provision run must carry the disk-cache invalidation hook."""
     import kiro_crew.apps.builtins.dev_fleet.worktree_ops as wt_ops
 
     captured: dict = {}
@@ -8600,14 +8877,14 @@ async def test_force_refuse_audit_log_emitted(caplog):
     assert "dirty=True" in msg
 
 
-# --- Regression tests for PR 1840: force guard fail-closed fixes ---
+# --- Regression tests for the force guard fail-closed fixes ---
 
 
 @pytest.mark.asyncio
 async def test_force_remove_refuses_unknown_dirty_state(caplog):
     """Regression (a): _real_dirty returns None (git status failed), force=True,
     PR OPEN — removal must be refused, error names the unverifiable state.
-    Previously fell through (fail-open)."""
+    Without the guard it falls through (fail-open)."""
     import logging
 
     import kiro_crew.apps.builtins.dev_fleet.server as mod
@@ -8649,7 +8926,7 @@ async def test_force_remove_refuses_unknown_dirty_state(caplog):
 async def test_force_remove_refuses_stale_merged_cache(caplog):
     """Regression (b): cached PR status MERGED but fresh _fetch_pr_head_oid
     returns None (stale cache / reused branch name), force=True, dirty=True
-    — must refuse. Previously the guard was bypassed entirely."""
+    — must refuse. Without this fix the guard is bypassed entirely."""
     import logging
 
     import kiro_crew.apps.builtins.dev_fleet.server as mod
@@ -8694,7 +8971,7 @@ async def test_force_remove_refuses_stale_merged_cache(caplog):
 
 @pytest.mark.asyncio
 async def test_force_remove_fresh_merged_refuses_dirty(caplog):
-    """Regression for #1554 round-5: cached MERGED + fresh verdict confirms
+    """Cached MERGED + fresh verdict confirms
     MERGED + dirty=True + force=True → removal REFUSED with audit line
     action=refused_dirty_merged. Containment proves commits are shipped but
     says nothing about working-tree edits."""
@@ -8748,7 +9025,7 @@ async def test_force_remove_fresh_merged_refuses_dirty(caplog):
 
 @pytest.mark.asyncio
 async def test_force_remove_fresh_merged_refuses_unknown_dirty(caplog):
-    """Regression for #1554 round-5: cached MERGED + fresh verdict confirms
+    """Cached MERGED + fresh verdict confirms
     MERGED + dirty=None + force=True → removal REFUSED with audit line
     action=refused_unverifiable_merged."""
     import logging
@@ -8858,7 +9135,7 @@ async def test_force_remove_clean_merged_proceeds():
 @pytest.mark.asyncio
 async def test_squash_merge_ref_deletion():
     """Squash-merge regression: PR merged, ancestry check fails (squash merge),
-    containment check passes → ref IS deleted. Previously squash-merged refs
+    containment check passes → ref IS deleted. Without this, squash-merged refs
     accumulated forever because ancestry is the only gate that passed."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
@@ -8919,7 +9196,7 @@ async def test_squash_merge_ref_deletion():
     ), "ref should be deleted via squash-safe containment fallback"
 
 
-# --- Regression tests for PR 1840 round-3: TOCTOU + containment fixes ---
+# --- Regression tests for the round-3 TOCTOU + containment fixes ---
 
 
 @pytest.mark.asyncio
@@ -8931,8 +9208,8 @@ async def test_toctou_clean_unmerged_force_omits_git_force(caplog):
     became dirty in the window between the guard and the actual removal, git
     itself refuses.
 
-    Regression for round-3 fix (b448aa32): at head 3543d9bc the --force flag
-    leaked through on this path; this test pinpoints the contract that
+    The --force flag can leak through on this path; this test pins the contract
+    that
     force_use_git_force is set to False and the audit action
     'unmerged_clean_no_git_force' is emitted."""
     import logging
@@ -9111,7 +9388,7 @@ async def test_containment_refuses_uncontained_fresh_head(caplog):
 
 @pytest.mark.asyncio
 async def test_containment_allows_when_contained():
-    """Round 5 regression: cached MERGED + fresh head + branch OID IS contained
+    """Cached MERGED + fresh head + branch OID IS contained
     in fresh head BUT worktree is dirty → refused_dirty_merged. Containment
     proves commits are shipped; it cannot vouch for uncommitted working-tree
     edits.
@@ -9158,12 +9435,12 @@ async def test_containment_allows_when_contained():
     assert "uncommitted changes" in result["error"]
 
 
-# --- Round 4 regressions: containment pin fail-closed ---
+# --- Containment pin fail-closed regressions ---
 
 
 @pytest.mark.asyncio
 async def test_containment_pin_falsy_refuses_unpinnable(caplog):
-    """Regression (round 4): cached MERGED + dirty + force=True, the
+    """Regression: cached MERGED + dirty + force=True, the
     verdict_oid rev-parse returns falsy (None/empty) — a transient git
     failure — must REFUSE the forced removal with refused_unpinnable audit
     rather than silently skip containment and let the later removal proceed.
@@ -9247,7 +9524,7 @@ async def test_containment_pin_empty_string_refuses_unpinnable(caplog):
 
 @pytest.mark.asyncio
 async def test_dirty_unmerged_message_does_not_promise_force_override():
-    """Message regression: the non-forced dirty refusal no longer says
+    """Message regression: the non-forced dirty refusal does not say
     'use force to override' since force is also refused for dirty+unmerged."""
     import kiro_crew.apps.builtins.dev_fleet.server as mod
 
@@ -9273,7 +9550,7 @@ async def test_dirty_unmerged_message_does_not_promise_force_override():
 
 
 # =============================================================================
-# Foreground last-resort restart (issue #2566)
+# Foreground last-resort restart
 # =============================================================================
 
 def _mk_kcbin(tmp_path: Path, name: str = "kirocrew") -> Path:
@@ -9676,7 +9953,7 @@ async def test_make_live_artifact_checks_are_executor_offloaded(
     real_run_in_executor = running_loop.run_in_executor
 
     async def _recording_run_in_executor(executor, fn, *args):
-        submitted_qualnames.append(fn.__qualname__)
+        submitted_qualnames.append(getattr(fn, "__qualname__", repr(fn)))
         return await real_run_in_executor(executor, fn, *args)
 
     monkeypatch.setattr(running_loop, "run_in_executor", _recording_run_in_executor)
@@ -9694,10 +9971,175 @@ async def test_make_live_artifact_checks_are_executor_offloaded(
     )
 
 
+@pytest.mark.asyncio
+async def test_make_live_pointer_and_path_probes_are_executor_offloaded(monkeypatch, tmp_path):
+    """The cutover runs on the GATEWAY's loop, which serves the whole dashboard, so
+    none of its filesystem probes may run inline: the worktree existence check,
+    the pointer reads (`_staged_target`, `snapshot`), the path comparisons
+    (`_same_path`), the pod detection (`_in_pod`), the plan (`validate` stats the
+    target) and the pointer write all go through ``run_in_executor``."""
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+    ptr_dir = tmp_path / "ptr"
+    _stub_make_live(monkeypatch, wt, pointer_dir=ptr_dir)
+    monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False)
+    monkeypatch.setattr(live_mod, "_MAKE_LIVE_LOCK", asyncio.Lock())
+
+    submitted: list[str] = []
+    running_loop = asyncio.get_running_loop()
+    real_run_in_executor = running_loop.run_in_executor
+
+    async def _recording_run_in_executor(executor, fn, *args):
+        submitted.append(getattr(fn, "__qualname__", repr(fn)))
+        return await real_run_in_executor(executor, fn, *args)
+
+    monkeypatch.setattr(running_loop, "run_in_executor", _recording_run_in_executor)
+
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True, res
+
+    joined = " ".join(submitted)
+    # `_stub_make_live` replaces `_in_pod` with a lambda and reports no live
+    # checkout (so no `_same_path` comparison runs); the lambda's submission is the
+    # evidence that the pod probe went through the executor.
+    for probe in (
+        "Path.exists",
+        "_plan_sync",
+        "snapshot",
+        "_write_pointer_sync",
+        "stage.<locals>._write",
+    ):
+        assert probe in joined, f"{probe} must be offloaded; submitted: {submitted!r}"
+    assert any(
+        "<lambda>" in name for name in submitted
+    ), f"the (stubbed) _in_pod probe must be offloaded; submitted: {submitted!r}"
+
+
+@pytest.mark.asyncio
+async def test_gateway_pointer_flows_call_no_filesystem_primitive_on_the_loop_thread(
+    monkeypatch, tmp_path
+):
+    """The catch-all the allow-list above cannot be: instead of naming the probes
+    that MUST be offloaded, trap the primitives every probe bottoms out in
+    (``os.stat``/``lstat``, ``readlink``, ``os.path.exists``/``realpath``/
+    ``samefile``, ``shutil.which``) and fail if ANY of them runs on the loop thread
+    while the gateway-side flows run — the live-target read (``pointer_state``), the
+    service-manager resolution behind it and the cutover itself. A primitive nobody
+    enumerated is exactly the one the next review finds."""
+    # Fixture work first: it resolves paths on this very thread, which the traps
+    # below must not count.
+    expected_live = str(tmp_path.resolve())
+    wt = _mk_make_live_wt(tmp_path, venv=True, dist=True)
+
+    which_threads: list[int] = []
+
+    def _which(_name):
+        which_threads.append(threading.get_ident())
+        return "/usr/bin/systemctl"
+
+    async def fake_run_cmd(cmd, **kw):
+        return (0, f"{tmp_path}\n", "")
+
+    monkeypatch.setattr(live_mod, "sys", MagicMock(platform="linux"))
+    monkeypatch.setattr(live_mod, "shutil", MagicMock(which=_which))
+    monkeypatch.setattr(runtime_mod, "_run_cmd", fake_run_cmd)
+    monkeypatch.setattr(live_mod, "_POINTER_PROVIDER", None, raising=False)
+    monkeypatch.setattr(live_mod, "_LIVE_CHECK_AT", 0.0, raising=False)
+    monkeypatch.setattr(live_mod, "_LIVE_WORKTREE", None, raising=False)
+    monkeypatch.setattr(live_mod.live_target, "read_target", lambda: None)
+
+    loop_thread = threading.get_ident()
+    on_loop: list[str] = []
+
+    def _trap(module, name):
+        real = getattr(module, name)
+
+        def _wrapped(*args, **kwargs):
+            if threading.get_ident() == loop_thread:
+                on_loop.append(f"{module.__name__}.{name}{args[:1]!r}")
+            return real(*args, **kwargs)
+
+        monkeypatch.setattr(module, name, _wrapped)
+
+    for name in ("stat", "lstat", "readlink", "listdir", "scandir"):
+        _trap(os, name)
+    for name in ("exists", "realpath", "samefile", "isdir"):
+        _trap(os.path, name)
+    # ``Path.read_text``/``open()`` bottom out in ``io.open`` (``builtins.open`` is
+    # the same callable bound separately, so both names are trapped).
+    import builtins
+    import io
+
+    _trap(io, "open")
+    _trap(builtins, "open")
+
+    # 1. The service-manager fallthrough of ``_live_worktree_path`` (no pointer).
+    assert await mod._live_worktree_path(fresh=True) == expected_live
+    assert which_threads and all(
+        t != loop_thread for t in which_threads
+    ), "shutil.which walks PATH; it must run off the loop"
+
+    # 2. The read broker the GET live-target route awaits.
+    monkeypatch.setattr(live_mod, "_LIVE_WORKTREE", None, raising=False)
+    await live_mod.pointer_state(fresh=True)
+    assert on_loop == [], f"filesystem primitives ran on the loop thread: {on_loop!r}"
+
+    # 3. The cutover. The stub replaces the live-path resolution the first two steps
+    # exercised, so it goes in only now; its own fixture-time path work is not the
+    # production flow and is discounted.
+    _stub_make_live(monkeypatch, wt, pointer_dir=tmp_path / "ptr")
+    monkeypatch.setattr(live_mod, "_MAKE_LIVE_COMMITTED", False)
+    monkeypatch.setattr(live_mod, "_MAKE_LIVE_LOCK", asyncio.Lock())
+    on_loop.clear()
+    res = await mod._make_live(str(wt), dry_run=False)
+    assert res["ok"] is True, res
+
+    assert on_loop == [], f"filesystem primitives ran on the loop thread: {on_loop!r}"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["linux", "darwin"])
+async def test_service_backend_availability_probe_runs_off_the_loop_thread(platform, tmp_path):
+    """Both service backends gate every state read on ``which(<manager>)``. The
+    injected ``which`` is ``shutil.which`` in production — a PATH walk of
+    stat/access calls — so it must hop to the executor like the drop-in and
+    plist work already does; the restart route, the status probe and the
+    restart-gateway handshake all sit behind it on the gateway's loop."""
+    loop_thread = threading.get_ident()
+    which_threads: list[int] = []
+
+    def _which(name):
+        which_threads.append(threading.get_ident())
+        return f"/usr/bin/{name}"
+
+    async def _run(cmd, **kw):
+        return (0, "12345\n", "")
+
+    be = live_mod.gateway_service.backend(
+        _run,
+        unit=lambda: "kirocrew.service",
+        label=lambda: "dev.kirocrew.gateway",
+        platform=platform,
+        which=_which,
+        dropin_path=lambda: tmp_path / "override.conf",
+        dropin_content=lambda _wt, _exe: "",
+    )
+    assert be is not None
+    await be.status()
+    await be.active()
+    await be.start_id()
+    if hasattr(be, "reload"):
+        await be.reload()
+
+    assert len(which_threads) >= 3, which_threads
+    assert all(
+        t != loop_thread for t in which_threads
+    ), "the availability probe walked PATH on the loop thread"
+
+
 # --- Pull+Build: preflight, node_modules transaction, operator repair seam ---
 #
 # `npm ci` deletes node_modules before installing, so a registry that refuses one
-# package used to turn a sync into damage: the tree was emptied, the run aborted
+# package can turn a sync into damage: the tree was emptied, the run aborted
 # mid-reify, and the checkout was left with new source, a new lockfile and no
 # frontend dependencies. These pin the three properties that make that failure a
 # no-op instead.
@@ -9782,7 +10224,7 @@ async def test_npm_ci_step_carries_a_node_modules_stash(monkeypatch):
     # The transaction's BEHAVIOUR — restore on failure only, confirmed
     # deletions, symlink unlinking, lexists gates — is proven by EXECUTION in
     # test_dev_fleet_sync_runner.py against real directory trees; the inline
-    # source-text assertions this test used to carry moved there with it. What
+    # source-text assertions this test once carried moved there with it. What
     # stays here is the composition contract: the stash rides the npm ci step.
 
 

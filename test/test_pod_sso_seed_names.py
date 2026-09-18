@@ -26,18 +26,46 @@ requires_pinned_walk = pytest.mark.skipif(
 def test_the_seeder_refuses_without_pinned_walk(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The platform-honest contract, asserted on EVERY platform.
+    """The platform-honest contract, on every host the refusal still governs.
 
     Building the pod's credential tree by NAME would be exactly the symlink
     redirect the pinning exists to prevent, so a platform without those
     descriptors gets a refusal that aborts the boot -- not a degraded copy.
+
+    ``IS_WINDOWS`` is pinned False alongside the capability probe, because win32
+    is the one host where the absence of ``dir_fd`` has a stated substitute
+    (reparse screening plus ``pin_directory`` on each level) rather than no answer
+    at all. The next test asserts that half, so this one asserts the refusal where
+    it is the whole answer.
     """
     monkeypatch.setattr(pinned_fs, "supports_pinned_walk", lambda: False)
+    monkeypatch.setattr(rt.pinned_fs, "supports_pinned_walk", lambda: False)
+    monkeypatch.setattr(rt, "IS_WINDOWS", False)
     os_home = tmp_path / "pod" / "os-home"
     os_home.mkdir(parents=True)
 
     with pytest.raises(rt.PodError, match="O_DIRECTORY/O_NOFOLLOW"):
         rt._seed_pod_os_home(os_home)
+
+
+def test_windows_builds_the_tree_instead_of_refusing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The other half of the same contract: win32 has a substitute, so it builds.
+
+    Pinned here rather than left to the Windows shards, because the refusal above
+    and this branch are one decision and a reader has to see both to know which
+    hosts get which.
+    """
+    monkeypatch.setattr(rt.pinned_fs, "supports_pinned_walk", lambda: False)
+    monkeypatch.setattr(rt, "IS_WINDOWS", True)
+    monkeypatch.setattr(rt, "_runtime_auth_store_mappings", lambda: [])
+    os_home = tmp_path / "pod" / "os-home"
+
+    rt._seed_pod_os_home(os_home)
+
+    assert (os_home / ".aws" / "sso" / "cache").is_dir()
+    assert list((os_home / ".aws" / "sso" / "cache").iterdir()) == []
 
 
 @requires_pinned_walk

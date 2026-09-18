@@ -1,10 +1,10 @@
 """A stub change is recorded for the next start and never applied in place.
 
-The apply path used to cycle the broker in whichever direction the stub set
-moved. That cost the request up to the daemon's whole shutdown budget, and it
-bought nothing it could keep: a session's MCP toolset is fixed at
+Applying in place would cycle the broker in whichever direction the stub set
+moves. That would cost the request up to the daemon's whole shutdown budget, and
+it buys nothing it could keep: a session's MCP toolset is fixed at
 ``session/new``, so no running session adopts a new stub set however the broker
-is cycled. What the restart did reach was the sessions already attached to the
+is cycled. What a restart does reach is the sessions already attached to the
 broker -- their in-flight tool calls are drained and cancelled, and the stub
 never re-handshakes, so they lose those servers for the rest of their lives.
 
@@ -32,7 +32,7 @@ def _orch(stub: list[str]) -> GatewayOrchestrator:
     orch._mcp_gateway_manager = None
     orch.dashboard_state = SimpleNamespace(_mcp_gateway_manager=None)
     # Real interface, so a call to it would be observable: the apply path must
-    # NOT refresh session defaults, because it no longer rewrites the overlay
+    # NOT refresh session defaults, because it does not rewrite the overlay
     # those defaults capture. Refreshing would advertise routing nobody wrote.
     orch.sessions = SimpleNamespace(refresh_defaults=AsyncMock())
     return orch
@@ -119,7 +119,7 @@ async def test_the_apply_does_not_refresh_session_defaults(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_the_response_names_the_routed_set_not_the_deprecated_key(monkeypatch) -> None:
     """The dashboard reads this payload back; echoing `poolable_servers` would
-    report a key the config no longer drives."""
+    report a key the config does not drive."""
     orch = _orch(["alpha-mcp"])
     _pin_broker_calls(monkeypatch, orch)
 
@@ -132,7 +132,7 @@ async def test_the_response_names_the_routed_set_not_the_deprecated_key(monkeypa
 @pytest.mark.asyncio
 async def test_a_missing_sessions_attribute_is_not_required(monkeypatch) -> None:
     """The callback is wired before the session manager exists on some boots, and
-    it no longer has any reason to reach for it."""
+    it has no reason to reach for it."""
     orch = _orch(["alpha-mcp"])
     orch.sessions = None
     _pin_broker_calls(monkeypatch, orch)

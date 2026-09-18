@@ -1,14 +1,11 @@
 /**
  * Opt-in native OS toast for "a background chat finished".
  *
- * Companion to the turn-complete chime in `notificationEvent.ts`, and
- * deliberately NOT the same gate. `shouldChimeOnTurnDone()` ignores focus and
- * visibility on purpose — every finished turn is audible, active chat or not —
- * so reusing it here would re-litigate that policy. A toast is louder than a
- * chime: it persists in the OS notification centre and it names WHICH session
- * finished, which is the whole point for a user tracking several background
- * threads. So it stays default-OFF and fires only while the user is away from
- * the window.
+ * The caller first checks conversation attention in `notificationEvent.ts`.
+ * This helper applies the separate native-toast preference, permission, and
+ * away checks. Unlike a chime, a toast persists in the OS notification centre
+ * and names WHICH session needs the user, so it stays default-OFF and fires
+ * only while the user is away from the window.
  *
  * The preference lives in localStorage rather than gateway config because it is
  * a per-device browser capability — one machine may have OS notifications muted

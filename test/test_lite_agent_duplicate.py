@@ -19,8 +19,8 @@ def agents_dir(tmp_path: Path) -> Path:
     return d
 
 
-# Legacy package-installed lite-agent filename (companion layout). Core no longer
-# references the package name; the fork must still tolerate such a file if present.
+# Legacy package-installed lite-agent filename (companion layout). Core does not
+# reference the package name; the fork must still tolerate such a file if present.
 AIM_LITE_FILENAME = "KiroCrewAICapabilities-kirocrew-lite.json"
 
 
@@ -31,7 +31,7 @@ class TestLiteAgentDuplicate:
         """Public fallback always writes the bare config.
 
         On the de-Amazoned fork the AIM package manager is neutralized, so the
-        fallback no longer skips when a (legacy) AIM-named file happens to be
+        fallback does not skip when a (legacy) AIM-named file happens to be
         present — the bare ``kirocrew-lite.json`` is always written for the
         claude_code provider's cheap background agent.
         """

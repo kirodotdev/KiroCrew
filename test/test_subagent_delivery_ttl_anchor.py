@@ -1,12 +1,12 @@
 """Retention of a sub-agent's ``result.txt`` is anchored on the parent CONSUMING
-the completion, not on the run finishing (issue #4839).
+the completion, not on the run finishing.
 
 ``agent.subagent_result_ttl_secs`` exists so the parent can read the full
 transcript after the completion event arrives. The clock is the ``died`` stamp on
-the ``delivered`` tombstone, and that used to be written as soon as the gateway
-had ROUTED the completion — including the route that only parks the announce in a
-busy slot's queue. A queue wait is bounded by the turn ceiling, not by the TTL, so
-a wave whose events were delivered two hours later handed the parent result paths
+the ``delivered`` tombstone, and writing it as soon as the gateway has ROUTED the
+completion — including the route that only parks the announce in a busy slot's
+queue — is wrong. A queue wait is bounded by the turn ceiling, not by the TTL, so
+a wave whose events are delivered two hours later hands the parent result paths
 the reaper had already pruned, under the line "Full outputs are on disk".
 
 The fix splits routing from consumption: the gateway records the owed ids on the
@@ -100,7 +100,7 @@ class TestPendingDeliveryLedger:
         assert slot._subagent_delivery_pending == {}
 
     def test_row_that_left_the_queue_keeps_its_entry(self):
-        """The ledger must NOT sweep entries whose row is no longer queued: the
+        """The ledger must NOT sweep entries whose row is not queued: the
         tail-drain at the end of a turn pops the NEXT completion row before this
         turn's settlement callback runs, so a sweep would delete the successor's
         debt and the next start would re-announce its consumed result."""
@@ -428,7 +428,7 @@ class TestTeardownGateOnQueuedSettlement:
         _finished_run(info.id, agent_root)
         gate = asyncio.Event()
         mgr._teardown_gates[info.id] = gate
-        # Evicted exactly as api_spawn_clear does it: both records, together.
+        # Evicted the way a bulk clear would: both records, together.
         mgr._agents.pop(info.id, None)
         mgr._tasks.pop(info.id, None)
 

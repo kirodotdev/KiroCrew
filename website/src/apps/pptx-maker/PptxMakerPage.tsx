@@ -3,8 +3,9 @@
  *
  * A BUILTIN dashboard page (rendered by BuiltinAppRoute inside the main React
  * tree), so it talks to its in-gateway routes with same-origin fetch and the
- * dashboard's session cookie — not the app-sdk hooks, which need
- * `<AppApiProvider>` and only wrap standalone installed apps via AppHost.
+ * dashboard's session cookie — not the app-sdk data hooks, which need the SDK's
+ * scoped-API layer that a builtin page mounts for itself (`AppScopedApiProvider`).
+ * App identity is published for every builtin page by BuiltinAppRoute.
  *
  * Three views behind one segmented control:
  * - **Decks** — the deck list beside the tabbed deliverable viewer. This is where
@@ -66,15 +67,15 @@ type LibraryKind = 'styles' | 'templates'
  * if it ever goes missing (`dynamicKeys.test.ts`).
  */
 const CHAT_AGENT_LABEL_KEY = {
-  'pptx-maker--pptx-maker-spec': 'apps.pptxMaker.pptxMakerPage.mode_spec',
-  'pptx-maker--pptx-maker-vibe': 'apps.pptxMaker.pptxMakerPage.mode_vibe',
-  'pptx-maker--pptx-maker-style': 'apps.pptxMaker.pptxMakerPage.mode_style',
+  'pptx-maker-spec': 'apps.pptxMaker.pptxMakerPage.mode_spec',
+  'pptx-maker-vibe': 'apps.pptxMaker.pptxMakerPage.mode_vibe',
+  'pptx-maker-style': 'apps.pptxMaker.pptxMakerPage.mode_style',
 } as const
 
 const CHAT_AGENT_HINT_KEY = {
-  'pptx-maker--pptx-maker-spec': 'apps.pptxMaker.pptxMakerPage.mode_spec_hint',
-  'pptx-maker--pptx-maker-vibe': 'apps.pptxMaker.pptxMakerPage.mode_vibe_hint',
-  'pptx-maker--pptx-maker-style': 'apps.pptxMaker.pptxMakerPage.mode_style_hint',
+  'pptx-maker-spec': 'apps.pptxMaker.pptxMakerPage.mode_spec_hint',
+  'pptx-maker-vibe': 'apps.pptxMaker.pptxMakerPage.mode_vibe_hint',
+  'pptx-maker-style': 'apps.pptxMaker.pptxMakerPage.mode_style_hint',
 } as const
 
 /**
@@ -85,20 +86,23 @@ const CHAT_AGENT_HINT_KEY = {
  * check. Indexing a keyed map is the pattern that gate names.
  */
 /**
- * The DOUBLE HYPHEN is the registered filename, not a typo.
+ * The DECLARED agent name is the dispatchable identifier.
  *
- * `bridges._safe_link_name` writes each app agent into the kiro agents dir as
- * `{app}--{agent}.json`, and the value here goes straight to `kiro-cli --agent`,
- * which resolves it against that filename. The slash form (`pptx-maker/…`) matches
- * nothing there, and `--agent` FALLS BACK to the default agent rather than failing —
- * so every mode button silently opened a plain chat with none of this app's MCP tools
- * or prompt, and looked like it had worked. `test_pptx_maker_agents.py` derives these
- * three strings from `_safe_link_name` itself so they cannot drift.
+ * These values reach `api.createChatSlot(...)` and from there dispatch runs
+ * `config.loader.resolve_agent_bindings` -> `_materialized_kiro_agent`, whose
+ * snapshot is built by `_scan_materialized_agents` from each registered config's
+ * `name` field. `bridges._register_agents` writes the FILE as
+ * `{app}--{agent}.json`, but that double-hyphen stem is only the on-disk
+ * filename — it is not in the dispatchable set (the stem is used only when a
+ * config declares no name), so sending it makes resolution fall through to the
+ * default agent silently. Same for the slash namespace form.
+ * `test_pptx_maker_agents.py` pins these to the declared names in the app's
+ * shipped agent JSONs so the two cannot drift.
  */
 const CHAT_AGENTS = [
-  'pptx-maker--pptx-maker-spec',
-  'pptx-maker--pptx-maker-vibe',
-  'pptx-maker--pptx-maker-style',
+  'pptx-maker-spec',
+  'pptx-maker-vibe',
+  'pptx-maker-style',
 ] as const
 
 /** Banner shown until the presentation engine has been provisioned. */
@@ -374,7 +378,7 @@ export default function PptxMakerPage() {
                       onClick={() => startChat.mutate(agent)}
                       disabled={startChat.isPending}
                     >
-                      {agent.endsWith('pptx-maker-style') ? (
+                      {agent === 'pptx-maker-style' ? (
                         <Sparkles className="lucide-inline" />
                       ) : (
                         <MessageSquarePlus className="lucide-inline" />

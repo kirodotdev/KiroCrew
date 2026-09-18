@@ -33,16 +33,22 @@ refactor changes the shape of a turn.
 
 ## Recording a fixture
 
-There is no recorder in this repository yet. Every fixture here was written by
-hand from the shapes the parsers accept (see the provenance table below). The
-opt-in recorder — `KIROCREW_ACP_RECORD_FRAMES=<dir>`, appending every inbound
-frame from both transports to `<dir>/<backend>.jsonl` with owner-only file
-permissions — ships in the follow-up PR titled *opt-in ACP frame recorder
-(owner-only perms)*. Until it lands, a live capture means running a backend
-under a wire-level trace of your own and transcribing its stdout lines.
+`src/kiro_crew/acp/_frame_record.py` is the in-product recorder: set
+`KIROCREW_ACP_RECORD_FRAMES=<dir>` and every inbound frame from both transports
+is appended to `<dir>/<backend>.jsonl` with owner-only permissions. It records
+what a running gateway sees, so it is the right tool when the scenario needs
+Crew's own session wiring — its MCP projection, its permission policy, its auth
+callback.
 
-Then split the capture into scenario files, add the `_meta` header, review it
-(below), and generate the snapshot:
+It is not the only route, and for most classes it is not the shortest one. A
+backend that speaks ACP over stdio can be driven directly: spawn it, send
+`initialize`, `session/new` and `session/prompt`, answer
+`session/request_permission`, and keep every agent-to-client line. That reaches
+the seven required classes in one turn without a gateway, and it is how the
+`kiro`, `kas`, `claude` and `opencode` captures here were taken.
+
+Either way, split the capture into scenario files, add the `_meta` header, review
+it (below), and generate the snapshot:
 
 ```
 python3 scripts/update_acp_frame_snapshots.py
@@ -65,12 +71,12 @@ Keep a fixture under 50 frames. The corpus is read by people.
 
 ## Redaction
 
-The follow-up recorder will run each frame through `redact_text` — the same
-credential and exfiltration-URL scrub the dashboard path runs — and replace the
-recording user's home directory with `~`. That is a floor, not a guarantee. It
-does not know an account id, an internal hostname, a customer name or a private
-file path when it sees one, and a hand-transcribed capture has had no scrub at
-all.
+The recorder runs each frame through `redact_text` — the same credential and
+exfiltration-URL scrub the dashboard path runs — and replaces the recording user's
+home directory with `~`. That is a floor, not a guarantee. It does not know an
+account id, an internal hostname, a customer name or a private file path when it
+sees one, and a capture driven by a script of your own has had only the scrub that
+script applied.
 
 So a recording is reviewed by hand before it is committed. Read every line and
 remove:
@@ -79,11 +85,39 @@ remove:
   left recognizable;
 - absolute paths, usernames and machine names;
 - account ids, ARNs and internal endpoints;
-- prompt and tool-output text that was not written for this corpus.
+- prompt and tool-output text that was not written for this corpus;
+- anything that describes what the recording host or account HAS rather than what
+  the product IS: installed agents, skills, MCP servers, steering documents, and
+  model entitlements. This is the class that reads as ordinary product data on a
+  quick look, so read it twice. A model catalog is the trap — it looks like a
+  published price list and is actually a per-account entitlement list carrying
+  internal-only markers and unreleased codenames.
+
+Search for the marker words an internal build uses (`[Internal]`, a fleet name, a
+codename you do not recognise) before committing, and do not rely on
+`internal-content-scan`: it cannot know a codename it has never seen.
+
+`scripts/check_acp_frame_host_data.py` holds the part of that review a machine can:
+twelve marker patterns over every fixture, shrink-only, and baselined per FILE and per
+MARKER CLASS so a new fixture cannot inherit an exemption and an old one cannot acquire
+a second. It is a floor under the hand review, not a replacement for it — it knows the
+markers it was given and nothing about a codename it has never seen either.
 
 Prefer re-recording against throwaway data over editing a capture down: an
 edited frame is no longer evidence of what the wire carried, and the `_meta`
 header claims it is.
+
+Two of the marker classes cannot be re-recorded away, because the value is minted
+by the agent rather than read from the host: a session or request uuid, and a
+scratch run id. The sanctioned remedy for those is normalization AT CAPTURE, in the
+capture script's own reduction step -- the id is replaced with a fixed synthetic
+value (`goose-session-1`, `perm-1`) before the frame is written, the way the goose
+corpus does it, and the `_meta.note` records that the ids are synthetic. A frame
+reduced that way is still evidence: the id was never the fact the fixture pins.
+Until a pre-gate corpus is re-captured through such a step, its uuid and run-id
+entries are an accepted debt, held in the baseline and pinned entry by entry in
+`test_acp_frame_host_data.py`, and paying one down means re-capturing the file,
+not editing the id in place.
 
 ## What the corpus does not pin
 
@@ -106,23 +140,101 @@ not reach all of: an initialize response, a `session/new` response, an
 `agent_message_chunk` turn, a `tool_call`, a `tool_call_update`, a
 `session/request_permission` frame, and a response carrying a `stopReason`.
 
+An initialize response is recognised by its `protocolVersion`, and the agent
+version is a SECOND assertion over that same frame. The two are separate because
+`agentInfo` is optional in ACP and one shipped backend omits it: KAS 0.63.3
+answers with `protocolVersion`, `agentCapabilities` and `authMethods` only. A
+backend that sends no version is named in `_BACKENDS_WITHOUT_AGENT_VERSION` in
+the test, with the evidence, so an omission is a decision someone wrote down
+rather than a signal that quietly decayed for everyone.
+
 This is the second requirement in the host contract enforced by behaviour rather
 than by prose; see `docs/system-specs/modules/agent-host-contract.md`.
 
 ## Provenance of what is committed today
 
-Every fixture in this corpus is currently `synthesized`. Stated plainly because
-it bounds what the corpus proves: it locks the dispatch layer's behaviour against
-refactoring, which is what it was built for, and it does **not** prove that any
-backend really emits these shapes.
+Five of the six backends carry a live capture reaching all seven required
+Four of the six backends carry a live capture reaching all seven required
+classes. `codex/` carries a live capture of four of them beside a synthesized
+file holding the other three, because a corpus is judged per directory and a
+four-class file cannot satisfy the seven-class gate on its own; its row says what
+stopped the rest. `deepseek/` carries live captures reaching six beside a
+synthesized `session/request_permission`, because that harness produced no such
+frame in any capture -- a fact about the harness, recorded in
+`deepseek/README.md` and in the host contract, not a gap in the recording.
+Stated plainly because it
+bounds what the corpus proves: a synthesized fixture locks the dispatch layer's
+behaviour against refactoring, which is what it was built for, and it does
+**not** prove that the backend really emits those shapes. Only a live file
+carries that second proof.
+
+### The rule
+
+**Any host-derived enumeration is unshippable unless every entry in it is
+product-defined or publicly announced.** Everything a capture is allowed to have
+removed follows from that one sentence, and every removal is named in the file's
+own `_meta.note`, so a reader knows the corpus was pruned and on what grounds.
+
+Being real is not the same as being publishable. A live frame is host data until
+you have shown otherwise, and the direction of the trade is worth stating: a
+capture is strictly more faithful than a hand-written fixture AND strictly worse
+on disclosure. Sanitization is how that is resolved. "It is what the wire carried"
+is not.
+
+Prune to the MINIMUM the seven required frame classes need. A corpus exists to pin
+frame TRANSLATION, and translation does not read an inventory — it reads the shape
+around one. Keep the product's own routing entry so the field still parses as a
+list of the right thing, drop the rest, and a reviewer loses nothing: they learn
+no more from 28 model names than from one. A smaller fixture is a smaller
+disclosure surface for as long as the repository exists.
+
+### What that comes to today
+
+The recording home directory reads as `~`.
+
+The recording host's installed-agent inventory is cut back to product-defined
+entries. Not cosmetic: `kiro`'s `session/new` response lists 44 host agents by
+name and description.
+
+The recording ACCOUNT's model entitlements go the same way, keeping only the
+product's routing entry (`auto`, `default`) with its description emptied, because
+that description names the model the entry resolves to. `models.availableModels`
+and the `model` `configOption` are that payload, and they are the sharper case:
+the entries carry internal-only markers, unreleased codenames, internal fleet
+names and rate multipliers. A served-model name anywhere else in a frame goes too
+— including a local model you supplied yourself — so a capture names no model at
+all.
+
+Neither inventory can be avoided by re-recording against a throwaway home,
+because relocating `HOME` moves kiro-cli's credential store with it, so a
+throwaway home cannot authenticate. A bulk notification frame carrying the same
+inventory (`_kiro/mcp/status`, `_kiro/tools/didChange`,
+`_kiro/steering/documents_changed`, `available_commands_update`) is left out of
+the slice instead.
+
+This is not an ordinary tidy-up. These files land in a public repository, and a
+revert cleans HEAD, not history. `internal-content-scan` cannot know a codename it
+has never seen, so it is not a safety net — the review step below is.
 
 | Directory | Backend id | Provenance | Why |
 |---|---|---|---|
-| `kiro/` | `""` | synthesized | kiro-cli 2.21.1 is installed on the recording host but reaching it goes through an interactive sandbox launcher, so no capture was taken. Shapes follow the parsers in `src/kiro_crew/acp/_dispatch.py`. |
-| `kas/` | `kas` | synthesized | Reached through the kiro-cli relay, so same as above. The `_meta.kiro` discriminants follow `src/kiro_crew/acp/kas_wire.py`. |
-| `claude/` | `claude` | synthesized | `claude-agent-acp` was not installed on the recording host. |
-| `codex/` | `codex` | synthesized | `codex-acp` was not installed on the recording host. |
+| `kiro/` | `""` | **live** | `session.jsonl`: a slice of one `kiro-cli acp` 2.21.4 turn reaching all seven classes, plus the `_kiro.dev/session/update` `tool_call_chunk` only kiro-cli sends. `notifications.jsonl` stays synthesized: it pins the whole `_kiro.dev/*` family, and a turn that runs one shell command reaches five of its members (`metadata`, `mcp/server_initialized`, `subagent/list_update`, `commands/available`, `session/update`) but never `compaction/status`, `clear/status`, `agent/switched`, `mcp/server_init_failure` or `mcp/oauth_request` — each needs its own scenario, and the OAuth one needs an MCP server mid-authorization. |
+| `kas/` | `kas` | **live** | `session.jsonl`: a slice of one KAS 0.63.3 turn through `kiro-cli acp --agent-engine v3 --auth-method cli`, the production relay spawn, reaching all seven classes. Its initialize response carries no `agentInfo`, which is why KAS is named in `_BACKENDS_WITHOUT_AGENT_VERSION`. `steering.jsonl` stays synthesized: a mid-turn steer needs a second prompt sent while the first is still running, which the one-shot capture does not do. |
+| `claude/` | `claude` | **live** | `session.jsonl`: a slice of one `@agentclientprotocol/claude-agent-acp` 0.76.0 turn reaching all seven classes, the adapter delegating to the host `claude` executable. Two shapes here differ from what was assumed: it advertises `loadSession: true`, and its `session/request_permission` params carry no `sessionId` and name the tool under `name`. |
+| `codex/` | `codex` | **live** + synthesized | `session-live.jsonl` is a capture off `codex-acp` 1.11.0 reaching four classes: the initialize response with `agentInfo.version`, the `session/new` response with a `sessionId` and its `configOptions`, `agent_message_chunk`, and the `stopReason` response, plus the `_auth/status_update` the adapter sends before `session/new` and the `session_info_update` frames carrying `_meta.codex`. The three tool classes (`tool_call`, `tool_call_update`, `session/request_permission`) stay in the synthesized `session.jsonl`, because reaching them needs a model that emits a tool call and this host has none it can drive. Its configured provider is `amazon-bedrock` reading a host AWS profile, and that turn ends `stream disconnected before completion: failed to load AWS credentials: the credentials provider was not properly configured` — the recording shell cannot read `~/.aws`, and the Codex wrapper cannot mint a config either (`failed to create temporary file for AWS config: Permission denied (os error 13)`). Repointed at the built-in `ollama` provider it authenticates and runs a full turn against a local 3B model, and that model answers a shell request in prose: it writes a `Preamble:` and a fabricated `Command Output:` block containing the expected text instead of calling a tool. So the three tool shapes follow the parsers in `src/kiro_crew/acp/_dispatch.py`. |
+| `opencode/` | `opencode` | **live** | Five captures off `opencode acp` 1.18.30 driving a local Ollama model, all seven required classes reached live, plus a `session/load` result (`session-load-live.jsonl`: replayed conversation, `configOptions`, no `modes`). `session-live.jsonl`: the initialize response, the `session/new` response, an `agent_message_chunk` turn, a `usage_update` and the `stopReason` response, verbatim and in order. `tool-call-live.jsonl`: a `tool_call` and two `tool_call_update` frames from a call the harness rejected against its own argument schema. `permission-request-live.jsonl`: `tool_call`, the `session/request_permission` frame OpenCode sent with `permission: ask` in force, and the `tool_call_update` frames through `completed` with the command's real output. `mcp-directive-call-live.jsonl`: an MCP tool call -- a `kirocrew-core` stdio element on the `session/new` array exposing `monitor_start` -- carrying opencode's own tool naming (`title` = `kirocrew-core_monitor_start`, ONE underscore, no `_meta.kiro`), `rawInput` empty on the `tool_call` and complete on the refinement, and the tool's result text with its directive marker intact. Slices of longer turns, with the home directory redacted to `~`. |
+| `pi/` | `pi` | **live** | Three captures off `pi-acp` 0.0.33 spawning `pi` 0.85.1 driving a local Ollama model, all seven required classes reached live. `session-live.jsonl`: initialize, `session/new` (a `model` select of `provider/model` ids, a `thought_level` select, `modes`), `available_commands_update`, a `tool_call` + two `tool_call_update` frames for a read pi rejected against its own schema, the chunk and the `stopReason` result. `permission-request-live.jsonl`: the `session/request_permission` pi-acp forwards from Kiro Crew's gate extension (pi has no gate of its own; the frame's `toolCall` describes the confirm DIALOG and the real call rides in its message as a JSON envelope), then the updates through `completed`. `session-load-live.jsonl`: a `session/load` from a second process, replayed conversation, and a result that carries `modes`. |
+| `deepseek/` | `deepseek` | **live**, except one frame | Four captures off `dsh --profile acp` 0.0.1 driving a locally served model. `handshake-live.jsonl`: the initialize response, a `session/new` response, the `session/load` **rejection** (`-32601`, the observation `ACP_BACKENDS_RESUME_WITHOUT_LOAD` rests on) and the `session/list` result. `turn-live.jsonl`: one real turn end to end -- `usage_update`, `tool_call`, `tool_call_update`, `agent_message_chunk` and the `stopReason` response. `mcp-stdio-mount-live.jsonl`: a stdio MCP mount completing a ROUND TRIP -- a broker-stub-shaped element pointing at a real server, then the `tool_call` and result for `mcp__crew-probe__crew_probe_echo` -- which is the observation `ACP_BACKENDS_SESSION_MCP_ARRAY` membership rests on. `mcp-stdio-rollback-live.jsonl`: the same element with an unstartable command, which fails `session/new` WHOLE rather than being dropped. `permission-request-synthesized.jsonl` is the exception and is labelled `synthesized`: four live captures across this harness's confined and read-only postures produced no permission request, because its sandbox decides a tool call itself and the permission frame carries only a model-initiated escalation. Host data pruned under a sweep that refuses to finish if any survives; see `deepseek/README.md`. |
 
 Replacing any row with a live capture is a strict improvement and needs no
 change to the test. Record it, set `recorded` to `live`, fill in the real
 `agent_version`, regenerate the snapshot, and update this table.
+
+Read the event diff when you do. Replacing a synthesized fixture is the one
+moment a wrong assumption about a backend becomes visible, and it earns its keep:
+the `kiro` capture showed `_kiro.dev/session/update` carrying the PARENT turn's
+own `tool_call_chunk` under the parent's own `sessionId`, on the same method a
+child's update arrives on. Both dispatch paths read that as a sub-agent, so an
+ordinary turn raised a sub-agent whose id was the session the user was already
+watching, once per tool call. The guard now scopes the activity events to a frame
+naming a different session.

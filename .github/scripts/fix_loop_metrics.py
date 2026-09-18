@@ -270,6 +270,35 @@ def has_harvest_section(body: str) -> bool:
     return bool(HARVEST_HEADING_RE.search(body) and HARVEST_ANSWER_RE.search(body))
 
 
+def _local_pr_evidence(since_iso: str) -> bool | None:
+    """Whether the checkout's own history shows PR-merged commits since *since_iso*.
+
+    Read-only and cheap: a squash merge leaves a '(#N)' subject trailer and a
+    merge commit answers `--merges`; either is proof PRs merged in the window.
+    Returns None when git cannot answer authoritatively (shallow checkout, git
+    unavailable), so the caller falls back to a coarser rule.
+
+    Deliberately scoped to the checked-out branch: the scheduled run checks
+    out the default branch, which is also the harvest's own scope, and
+    scanning every ref would let a feature branch's merge commits manufacture
+    evidence against a legitimately quiet window. Known edge: `--since`
+    filters on committer date, so a backport cherry-picked onto the checked-
+    out branch keeps its '(#N)' subject with a fresh date and reads as
+    evidence -- a dispatch run against a release branch can fail loud on a
+    quiet window, which is the accepted cost of never publishing a false
+    zero on the branch the metric is actually about.
+    """
+    try:
+        if run(["git", "rev-parse", "--is-shallow-repository"]).strip() != "false":
+            return None
+        subjects = run(["git", "log", f"--since={since_iso}", "--format=%s"])
+        if any(PR_TRAILER_RE.search(s) for s in subjects.splitlines()):
+            return True
+        return bool(run(["git", "log", "--merges", f"--since={since_iso}", "--oneline"]).strip())
+    except (OSError, RuntimeError):
+        return None
+
+
 def merged_prs_since(repo: str, since_iso: str) -> list[dict]:
     """Every PR merged at or after since_iso, one search per calendar day.
 
@@ -312,7 +341,32 @@ def merged_prs_since(repo: str, since_iso: str) -> list[dict]:
                 seen.add(key)
                 prs.append(p)
         day += timedelta(days=1)
-    return [p for p in prs if (p.get("mergedAt") or "") >= since_iso]
+    window = [p for p in prs if (p.get("mergedAt") or "") >= since_iso]
+    if not window:
+        # An empty window is legitimate only when the checkout agrees. The
+        # search surface omits nodes the token cannot read instead of
+        # erroring, so a permissions gap looks exactly like a quiet week --
+        # and this metric's whole contract is to never publish that.
+        evidence = _local_pr_evidence(since_iso)
+        if evidence:
+            raise RuntimeError(
+                f"gh pr list returned zero merged PRs since {since_iso}, yet the "
+                "checkout's own history shows commits that merged through PRs. "
+                "The search surface omits nodes the token cannot read instead "
+                "of erroring, so the probable cause is a token without "
+                "`pull-requests: read` -- failing loud rather than publishing "
+                "a false zero."
+            )
+        if evidence is None and (end - start).days >= 1:
+            raise RuntimeError(
+                f"gh pr list returned zero merged PRs since {since_iso} over a "
+                "window of at least one full day, and git cannot confirm the "
+                "window is empty (shallow checkout or git unavailable). Either "
+                "the window is genuinely quiet or the token lacks "
+                "`pull-requests: read`; re-run on a full-depth checkout to tell "
+                "the two apart rather than publishing a possible false zero."
+            )
+    return window
 
 
 def harvest_metrics(repo: str, since_iso: str) -> dict:

@@ -49,8 +49,12 @@ from kiro_crew.acp.types import (
     EVENT_MCP_OAUTH_REQUEST,
     EVENT_MCP_SERVER_INIT_FAILURE,
     EVENT_MCP_SERVER_INITIALIZED,
+    METHOD_KAS_MCP_STATUS,
+    METHOD_KAS_TOOLS_CHANGED,
     JsonRpcMessage,
 )
+from kiro_crew.agent_sdk.mcp_refs import parse_tools_refs
+from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # A server name is config-derived, so an installed app chooses it: it reaches a
@@ -60,6 +64,9 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 # nothing and its row reads "no report" for a server that did report. The bound
 # only has to stop a pathological name, so it sits well above any real one.
 _NAME_CAP = 128
+# Shared with the unresolved-ref guard, whose refs are config-derived in exactly
+# the same way and reach the same three sinks.
+NAME_CAP = _NAME_CAP
 # A failure text comes from the failing server's own startup and can carry a
 # connection string. It is redacted first; this bounds what survives.
 _ERROR_CAP = 240
@@ -85,13 +92,19 @@ _EVENT_ACTIONS = {
 }
 
 
-def _clean(text: str, cap: int) -> str:
+def sanitize_sink_text(text: str, cap: int) -> str:
     """Redact, collapse whitespace, drop control characters, then truncate.
 
     Order matters: redaction runs first so a credential cannot be split across
     the truncation boundary and survive, and the control strip runs after the
     whitespace collapse so a redaction marker cannot reintroduce a line break
     into a log line or a payload.
+
+    Public because it is the ONE cleaner for every config-derived string this
+    package pushes at a sink -- a server name, a startup failure, an unresolved
+    tool ref. :mod:`kiro_crew.acp.mcp_ref_guard` shares it rather than repeating
+    the order above: two sanitizers with the same job are two that can drift, and
+    the one that drifts is the one that stops redacting.
     """
     scrubbed, _ = redact_exfiltration_urls(text)
     scrubbed, _ = redact_credentials(scrubbed)
@@ -106,7 +119,7 @@ def server_name_of(msg: JsonRpcMessage) -> str:
     """
     params = msg.params if isinstance(msg.params, dict) else {}
     raw = params.get("serverName") or params.get("name") or ""
-    return _clean(str(raw), _NAME_CAP)
+    return sanitize_sink_text(str(raw), _NAME_CAP)
 
 
 def roster_names(servers: Any) -> tuple[str, ...]:
@@ -120,10 +133,249 @@ def roster_names(servers: Any) -> tuple[str, ...]:
     for entry in servers if isinstance(servers, list) else []:
         if not isinstance(entry, dict):
             continue
-        name = _clean(str(entry.get("name") or ""), _NAME_CAP)
+        name = sanitize_sink_text(str(entry.get("name") or ""), _NAME_CAP)
         if name and name not in out:
             out.append(name)
     return tuple(out[:_BUCKET_CAP])
+
+
+def active_custom_agent(params: dict[str, Any], agent: str) -> dict[str, Any] | None:
+    """The active descriptor as projected onto this session's outgoing wire."""
+    agents = params.get("_meta", {}).get("kiro", {}).get("customAgents", [])
+    for entry in agents:
+        if entry.get("id") == agent:
+            return entry
+    return None
+
+
+def required_managed_servers(params: dict[str, Any], agent: str) -> tuple[str, ...]:
+    """Managed declarations actually sent for the ACTIVE agent and session."""
+    names = set(roster_names(params.get("mcpServers")))
+    active = active_custom_agent(params, agent)
+    if active is not None:
+        names.update(active.get("mcpServers", {}))
+    return tuple(name for name in KIROCREW_BIN_MCP_SERVERS if name in names)
+
+
+#: Terminal readiness state for a required server that only the ACTIVE AGENT's
+#: ``mcpServers`` block declares, reported ``connected`` by a backend that stamps
+#: no ``_meta.kiro.resource.source`` on any status entry. Released kiro-cli
+#: 2.18.0 is such a backend (captured wire), and on it the two declaration sites
+#: differ: an explicit session-level ``mcpServers`` injection wins over a
+#: same-named global ``~/.kiro/settings/mcp.json`` server on ``session/new`` and
+#: ``session/load`` alike, whereas an agent-block declaration is shadowed by the
+#: global one on ``session/new`` and coexists with it under one name on
+#: ``session/load`` -- all reporting under the session's own ``sessionId``. So an
+#: injected name is positively the session's own; an agent-only name cannot be
+#: told from the global server, and the barrier refuses rather than guess.
+STATE_CONNECTED_WITHOUT_PROVENANCE = "connected without provenance"
+
+_PROVENANCE_LIMIT = (
+    "this kiro-cli reports no MCP server origin, so a server declared only by the "
+    "active agent cannot be told from a same-named global one (a session-level "
+    "injection would be trusted); use a kiro-cli release whose _kiro/mcp/status "
+    "entries carry _meta.kiro.resource.source.origin"
+)
+
+
+def _server_source(server: dict[str, Any]) -> dict[str, Any] | None:
+    """The ``_meta.kiro.resource.source`` block of one status entry, if any."""
+    meta = server.get("_meta")
+    kiro = meta.get("kiro") if isinstance(meta, dict) else None
+    resource = kiro.get("resource") if isinstance(kiro, dict) else None
+    source = resource.get("source") if isinstance(resource, dict) else None
+    return source if isinstance(source, dict) else None
+
+
+@dataclass
+class KasMcpReadiness:
+    """One activation's required servers; global and other-session state cannot satisfy it.
+
+    Status and tool tags are full snapshots. Exposure -- the model can actually
+    reach the connected server's tools -- is established by EITHER a non-empty
+    ``tools`` catalog on the server's own ``connected`` status entry OR an
+    ``@server/tool`` tag in the ``_kiro/tools/didChange`` snapshot. Neither is
+    the callable spelling: ``@server/tool`` need not be the native function ID.
+
+    Both are accepted because released kiro-cli versions differ on which one
+    they send. Captured 2.18.0 / 2.20.0 emit both the catalog and the tags.
+    Captured 2.22.0 (KAS 0.66.0) still lists the full catalog on the connected
+    entry but its ``didChange`` snapshot carries only ``builtin`` tags -- no MCP
+    tag ever arrives, with or without ``tool_search`` in the agent's tools. A
+    barrier that took tags as the only exposure evidence timed out every
+    session start on that release.
+
+    ``injected`` names the required servers Crew put in the session-level
+    ``mcpServers`` array itself (as opposed to the active agent's block). It is
+    consulted only when the backend stamps no provenance at all -- see
+    :data:`STATE_CONNECTED_WITHOUT_PROVENANCE` for the captured behaviour that
+    makes an injected name trustworthy there and an agent-only name not.
+    """
+
+    session_id: str
+    required: tuple[str, ...]
+    tool_policy: dict[str, Any] | None = None
+    injected: frozenset[str] = frozenset()
+    states: dict[str, str] = field(default_factory=dict)
+    errors: dict[str, str] = field(default_factory=dict)
+    #: Exposure evidence, kept per source because each snapshot is authoritative
+    #: only for its own kind: a status snapshot replaces the catalog evidence,
+    #: a tag snapshot replaces the tag evidence, and neither may retract the
+    #: other's. Read the union through :attr:`advertised`.
+    advertised_by_catalog: set[str] = field(default_factory=set)
+    advertised_by_tag: set[str] = field(default_factory=set)
+    intentionally_hidden: set[str] = field(default_factory=set)
+
+    @property
+    def advertised(self) -> set[str]:
+        """Required servers with exposure evidence from either snapshot kind."""
+        return self.advertised_by_catalog | self.advertised_by_tag
+
+    def _needs_exposure(self, name: str, server: dict[str, Any]) -> bool:
+        """Do not demand tags for tools the active agent deliberately hides.
+
+        ``permissions`` controls approval, not exposure. Read only the projected
+        ``tools`` / ``excludedTools`` and the backend's per-tool disabled flags.
+        Missing or empty catalogs alone never establish an intentional restriction.
+        """
+        if self.tool_policy is None or "tools" not in self.tool_policy:
+            return True
+        raw = self.tool_policy["tools"]
+        tools = ["*"] if raw == "*" else raw if isinstance(raw, list) else []
+        excluded = self.tool_policy.get("excludedTools", [])
+        if not isinstance(excluded, list):
+            excluded = []
+        tools = [tool for tool in tools if tool not in excluded]
+        grant_all, refs = parse_tools_refs(tools)
+        if not (grant_all or name in refs) or "*" in excluded or f"@{name}" in excluded:
+            return False
+        catalog = server.get("tools")
+        if not isinstance(catalog, list) or not catalog:
+            return True
+        selected = []
+        for tool in catalog:
+            if not isinstance(tool, dict) or not isinstance(tool.get("name"), str):
+                return True
+            tag = f"@{name}/{tool['name']}"
+            if grant_all or f"@{name}" in tools or tag in tools:
+                selected.append((tag, tool))
+        if not selected:
+            return True
+        return any(
+            tool.get("disabled") is not True and tag not in excluded for tag, tool in selected
+        )
+
+    def record(self, msg: JsonRpcMessage) -> None:
+        params = msg.params if isinstance(msg.params, dict) else {}
+        if msg.id is not None or params.get("sessionId") != self.session_id:
+            return
+        if msg.is_method(METHOD_KAS_MCP_STATUS):
+            servers = params.get("servers")
+            if not isinstance(servers, list):
+                return
+            self.states.clear()
+            self.errors.clear()
+            self.intentionally_hidden.clear()
+            entries = [server for server in servers if isinstance(server, dict)]
+            # Servers whose connected entry carries its catalog: fresh exposure
+            # evidence from this very snapshot (see the class docstring).
+            catalogued: set[str] = set()
+            # Whether this BACKEND speaks provenance at all is read off the whole
+            # snapshot, not one entry: a backend that does (2.20.0 stamps every
+            # entry, connecting included) and leaves one entry unstamped is
+            # reporting a server that is not the client's, while one that stamps
+            # nothing is a release from before the field existed.
+            provenance = any(_server_source(server) is not None for server in entries)
+            for server in entries:
+                name = server.get("name")
+                if not isinstance(name, str) or name not in self.required:
+                    continue
+                source = _server_source(server)
+                if provenance and (source is None or source.get("origin") != "client"):
+                    # A same-named inherited global server is not the private
+                    # declaration Crew sent for this session.
+                    continue
+                state = server.get("status")
+                if state not in ("connecting", "connected", "failed", "disabled"):
+                    state = "unreported"
+                if server.get("failedAuthorization") is True:
+                    state = "authorization failed"
+                elif state == "connected" and not provenance and name not in self.injected:
+                    # Captured 2.18.0 wire: connected, catalog and tag present, no
+                    # origin anywhere, and this name reached the backend only
+                    # through the agent block -- the declaration site the global
+                    # server shadows there. Reading it as ready could hand the
+                    # session a server carrying another identity's session key
+                    # and memory; refuse, naming the limit. A session-level
+                    # injection is exempt because the same capture shows it
+                    # winning over the global server on new and load.
+                    state = STATE_CONNECTED_WITHOUT_PROVENANCE
+                self.states[name] = state
+                if not self._needs_exposure(name, server):
+                    self.intentionally_hidden.add(name)
+                catalog = server.get("tools")
+                if state == "connected" and isinstance(catalog, list) and catalog:
+                    catalogued.add(name)
+                error = server.get("errorMessage")
+                if isinstance(error, str):
+                    self.errors[name] = sanitize_sink_text(error, _ERROR_CAP)
+                if state == STATE_CONNECTED_WITHOUT_PROVENANCE:
+                    self.errors[name] = _PROVENANCE_LIMIT
+            # A reconnect must obtain fresh exposure evidence of either kind; a
+            # connected entry that carries its catalog in this snapshot IS that
+            # evidence.
+            connected = {name for name in self.required if self.states.get(name) == "connected"}
+            self.advertised_by_catalog.intersection_update(connected)
+            self.advertised_by_catalog.update(catalogued)
+            self.advertised_by_tag.intersection_update(connected)
+        elif msg.is_method(METHOD_KAS_TOOLS_CHANGED):
+            tags = params.get("tags")
+            if not isinstance(tags, list):
+                return
+            # A full snapshot: it replaces the TAG evidence, so a tag that
+            # disappears while the server stays connected is retracted as
+            # before. It never touches the catalog evidence -- on a release whose
+            # snapshot lists only builtin tags (2.22.0) that would clear it on the
+            # very next frame and reopen the timeout this path was built to end.
+            self.advertised_by_tag = {
+                name
+                for name in self.required
+                if any(
+                    isinstance(tag, dict)
+                    and tag.get("source") == "mcp"
+                    and isinstance(tag.get("tag"), str)
+                    and tag["tag"].startswith(f"@{name}/")
+                    for tag in tags
+                )
+            }
+
+    @property
+    def failure(self) -> str:
+        for name in self.required:
+            state = self.states.get(name)
+            if state in (
+                "failed",
+                "disabled",
+                "authorization failed",
+                STATE_CONNECTED_WITHOUT_PROVENANCE,
+            ):
+                detail = self.errors.get(name)
+                return f"{name}: {state}" + (f" ({detail})" if detail else "")
+        return ""
+
+    @property
+    def pending(self) -> str:
+        return ", ".join(
+            f"{name}: "
+            + (
+                "tools not advertised"
+                if self.states.get(name) == "connected"
+                else self.states.get(name, "unreported")
+            )
+            for name in self.required
+            if self.states.get(name) != "connected"
+            or (name not in self.advertised and name not in self.intentionally_hidden)
+        )
 
 
 @dataclass
@@ -138,6 +390,13 @@ class McpSessionReport:
     #: Empty means Kiro Crew injected none — NOT that the session has none, since
     #: the backend also starts the agent spec's own servers.
     configured: tuple[str, ...] = ()
+    #: Agent-spec ``@server`` refs that named no server this session receives, as
+    #: :mod:`kiro_crew.acp.mcp_ref_guard` found them. A DIFFERENT claim from every
+    #: bucket below, and the difference is what makes it worth a slot: those say
+    #: what a configured server reported, this says the spec asked for a server
+    #: nothing configured -- so there is no row for it to be missing FROM, which
+    #: is exactly why the defect was invisible three times.
+    unresolved_refs: tuple[str, ...] = ()
     _ready: list[str] = field(default_factory=list)
     _failed: list[str] = field(default_factory=list)
     _awaiting_auth: list[str] = field(default_factory=list)
@@ -161,11 +420,40 @@ class McpSessionReport:
         not at any one of them.
         """
         self.configured = roster_names(servers)
+        self.unresolved_refs = ()
         self._started = True
         self._ready.clear()
         self._failed.clear()
         self._awaiting_auth.clear()
         self._failures.clear()
+
+    def include_configured(self, names: tuple[str, ...]) -> None:
+        """Add active-agent declarations without restarting this session's report."""
+        self.configured = roster_names([{"name": name} for name in (*self.configured, *names)])
+        self._started = True
+
+    def record_unresolved_refs(self, refs: Any) -> None:
+        """Record the spec refs that named no server this session receives.
+
+        Sanitized and capped on the same terms as a server name: a ref is
+        config-derived, so an installed app chooses the text, and it reaches a log
+        line, a JSON payload and a DOM node. Set rather than accumulated -- the
+        guard evaluates the whole spec against the whole wire array in one pass,
+        so a second call is a re-evaluation of the same question and replaces the
+        answer instead of appending to it.
+
+        Only strings are taken. The guard emits nothing else, and stringifying a
+        non-string would put a row reading ``None`` or ``7`` in front of a user as
+        though the spec had asked for a server by that name.
+        """
+        seen: list[str] = []
+        for raw in refs if isinstance(refs, (list, tuple)) else ():
+            if not isinstance(raw, str):
+                continue
+            ref = sanitize_sink_text(raw, _NAME_CAP)
+            if ref and ref not in seen:
+                seen.append(ref)
+        self.unresolved_refs = tuple(seen[:_BUCKET_CAP])
 
     def record_frame(self, msg: JsonRpcMessage, *, owned: bool) -> bool:
         """Fold one notification in. Returns True when the report changed.
@@ -189,6 +477,36 @@ class McpSessionReport:
         """
         if not owned:
             return False
+        if msg.is_method(METHOD_KAS_MCP_STATUS):
+            params = msg.params if isinstance(msg.params, dict) else {}
+            servers = params.get("servers")
+            if not isinstance(servers, list):
+                return False
+            changed = False
+            for server in servers[:_BUCKET_CAP]:
+                if not isinstance(server, dict):
+                    continue
+                name = sanitize_sink_text(str(server.get("name") or ""), _NAME_CAP)
+                if not name:
+                    continue
+                status = server.get("status")
+                if server.get("failedAuthorization") is True:
+                    action = _ACTION_OAUTH
+                elif status in ("failed", "disabled"):
+                    action = _ACTION_INIT_FAILURE
+                elif status == "connected":
+                    action = _ACTION_INITIALIZED
+                else:
+                    # A reconnect is pending, not the old successful connection.
+                    for bucket in (self._ready, self._failed, self._awaiting_auth):
+                        if name in bucket:
+                            bucket.remove(name)
+                            changed = True
+                    changed = self._failures.pop(name, None) is not None or changed
+                    continue
+                error = sanitize_sink_text(str(server.get("errorMessage") or ""), _ERROR_CAP)
+                changed = self._record(action, name, error) or changed
+            return changed
         action = classify_notification(msg)
         if action not in REPORT_ACTIONS:
             return False
@@ -200,7 +518,7 @@ class McpSessionReport:
         error = ""
         if action == _ACTION_INIT_FAILURE:
             params = msg.params if isinstance(msg.params, dict) else {}
-            error = _clean(str(params.get("error") or ""), _ERROR_CAP)
+            error = sanitize_sink_text(str(params.get("error") or ""), _ERROR_CAP)
         return self._record(action, name, error)
 
     def record_event(
@@ -233,10 +551,10 @@ class McpSessionReport:
             # call site so both ownership rules live together — the event path
             # missing the rule the frame path had is exactly the bug this closes.
             return False
-        name = _clean(str(server_name or ""), _NAME_CAP)
+        name = sanitize_sink_text(str(server_name or ""), _NAME_CAP)
         if not name:
             return False
-        return self._record(action, name, _clean(str(error or ""), _ERROR_CAP))
+        return self._record(action, name, sanitize_sink_text(str(error or ""), _ERROR_CAP))
 
     def _record(self, action: str, name: str, error: str = "") -> bool:
         """Move ``name`` into the bucket ``action`` implies, evicting the others."""
@@ -296,7 +614,13 @@ class McpSessionReport:
     @property
     def empty(self) -> bool:
         """True when nothing has been recorded and no roster was sent."""
-        return not (self.configured or self._ready or self._failed or self._awaiting_auth)
+        return not (
+            self.configured
+            or self.unresolved_refs
+            or self._ready
+            or self._failed
+            or self._awaiting_auth
+        )
 
     def payload(self) -> dict[str, Any] | None:
         """The serialized report, or ``None`` when no session has begun.
@@ -318,6 +642,7 @@ class McpSessionReport:
             return None
         return {
             "configured": list(self.configured),
+            "unresolved_refs": list(self.unresolved_refs),
             "ready": list(self._ready),
             "failed": list(self._failed),
             "awaiting_auth": list(self._awaiting_auth),

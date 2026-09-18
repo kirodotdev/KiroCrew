@@ -205,8 +205,8 @@ class TestWorkerThreadDelivery:
         returned = threading.Event()
 
         def _worker() -> None:
-            # No running loop on this thread — the exact condition that used to
-            # drop the notice.
+            # No running loop on this thread — the exact condition that drops
+            # the notice.
             assert not _has_running_loop()
             listener(KEY, LINK, "dashboard_unlink")
             # Set only after the callback returned, so waiting on it proves the
@@ -253,8 +253,8 @@ class TestDelivery:
         but the drop itself must be visible to the operator. The user was NOT told
         their conversation lost its way back, and the SEL event records the
         removal, not the delivery failure, so a fully silent return here is a
-        traceless gap (live incident 2026-08-30: a destroyed binding produced no
-        channel notice and no log line naming why)."""
+        traceless gap (a destroyed binding produces no channel notice and no
+        log line naming why)."""
         state.channel_transports["discord"] = transport or _Transport(proactive=False)
 
         with patch(

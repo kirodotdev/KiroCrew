@@ -340,6 +340,21 @@ class PublishProvider(ABC):
     #: each provider overrides it with its real name.
     display_name: str = "the publishing provider"
     install_hint: str = ""
+    #: Whether a published link serves the content with NO authentication. The
+    #: dashboard's publish flow reads this to decide whether to put the public
+    #: exposure warning and the blocking acknowledgment ("publish publicly") in
+    #: front of the confirm: those two say the content is going onto the open
+    #: internet, which is the truth for a public web destination and a falsehood
+    #: for one that stores content privately behind a login. Shown where it is
+    #: false, the gate trains the user to click past it where it is true.
+    #: The publish flow always requests ``visibility: PUBLIC``, so ``False`` is
+    #: a statement about that request: even a publication the provider files as
+    #: PUBLIC is served only to an authenticated reader. A provider whose PUBLIC
+    #: publications are readable by anyone must leave this ``True``.
+    #: Default ``True`` -- the failure mode of a wrong default is a missing
+    #: warning on a public link, so a provider must DECLARE that it needs
+    #: authentication rather than be assumed to.
+    public_reachable: bool = True
 
     @abstractmethod
     def available(self) -> bool:
@@ -594,5 +609,31 @@ def reset_providers() -> None:
 
 
 def list_providers() -> list[PublishProvider]:
-    """Return all registered providers (lazily instantiated)."""
-    return [get_provider(name) for name in _FACTORIES]
+    """Return each distinct registered provider once, lazily instantiated.
+
+    One provider may hold several registry keys. ``DEFAULT_PROVIDER`` is the
+    documented case: an edition registers its concrete name and aliases the
+    neutral default to the same factory, so the ~seven call sites that resolve an
+    artifact with no recorded provider find one instead of raising
+    ``PublishUnavailableError``. Both keys are needed -- the concrete name keeps
+    an already-published artifact resolving, the alias serves the unnamed
+    default -- so the duplication belongs in the registry.
+
+    It does not belong in the listing. Returning one entry per KEY hands the
+    picker two rows for one destination, identical down to the display name, and
+    a user cannot tell them apart or know which to choose. Keys are therefore
+    collapsed by the factory they name, and ``DEFAULT_PROVIDER`` is ordered last
+    so a concrete name represents the destination: the alias is a resolution
+    fallback, not a place anybody chose to publish to.
+    """
+    providers: list[PublishProvider] = []
+    seen: set[int] = set()
+    # Stable sort on a bool: concrete keys keep their registration order, the
+    # default alias moves to the end without disturbing them.
+    for name in sorted(_FACTORIES, key=lambda n: n == DEFAULT_PROVIDER):
+        factory_id = id(_FACTORIES[name])
+        if factory_id in seen:
+            continue
+        seen.add(factory_id)
+        providers.append(get_provider(name))
+    return providers

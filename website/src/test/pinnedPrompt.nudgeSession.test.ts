@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { groupDisplayItems, applyRunningState, TURN_OPENER_ROLES } from '../pages/chat/groupDisplayItems'
-import { findPinnedPromptIdx, jumpAnchorIdx } from '../utils/pinnedPrompt'
+import { findPinnedPromptIdx, findNextPromptIdx, jumpAnchorIdx } from '../utils/pinnedPrompt'
 import { isSubagentCompletionMessage } from '../pages/chat/subagentCompletion'
 import type { ChatMessage } from '../types'
 
@@ -21,67 +21,91 @@ function nudgeSession(cycles: number): ChatMessage[] {
   return out
 }
 
-describe('pinned prompt in a nudge-driven session', () => {
-  it('pins the nudge that opened the turn being read, not a prompt many cycles above', () => {
-    const items = applyRunningState(groupDisplayItems(nudgeSession(20)), false)
+function subagentSession(completions: number): ChatMessage[] {
+  const out: ChatMessage[] = []
+  const push = (role: string, content: string, meta?: Record<string, unknown>) =>
+    out.push({ role, content, ts: '2026-08-18T05:00:00Z', meta } as unknown as ChatMessage)
+  push('user', 'the last thing the human actually typed')
+  push('assistant', 'reply')
+  for (let c = 1; c <= completions; c++) {
+    push('subagent', `[Subagent completion event] agent-${c}\n\nfindings for ${c}`,
+      { subagentCompletion: { kind: 'single', agentId: `agent-${c}`, outcome: 'ok', task: `task ${c}` } })
+    push('assistant', `synthesis ${c}`)
+  }
+  return out
+}
 
-    // Read position: the last row of the transcript (inside the final cycle).
+function roleAt(items: ReturnType<typeof groupDisplayItems>, idx: number): string | null {
+  const item = items[idx]
+  return item && item.kind === 'single' ? item.msg.role : null
+}
+
+describe('pinned prompt in a nudge-driven session', () => {
+  // The banner answers "what did I ask that this is a reply to". A nudge is
+  // machine-injected on every cycle, so pinning it re-pins the band every few
+  // screens while the user scrolls a babysit session — the defect this pins
+  // against. The walk must skip every nudge and land on the human's prompt,
+  // however far above it is.
+  it('never pins a nudge: the banner lands on the last prompt the user typed', () => {
+    const items = applyRunningState(groupDisplayItems(nudgeSession(20)), false)
     const handoffIdx = items.length - 1
     const pinIdx = findPinnedPromptIdx(items, handoffIdx)
     expect(pinIdx).toBeGreaterThanOrEqual(0)
-
-    // The pinned row must be the nearest turn opener above the read position.
-    // Skipping every nudge makes the banner point at the human's last typed
-    // message — dozens of turns and tens of thousands of pixels away — which is
-    // what makes the jump read as "teleported to the top".
-    const gap = handoffIdx - pinIdx
-    expect(gap).toBeLessThan(8)
-  })
-
-  it('the pinned row is a turn opener', () => {
-    const items = applyRunningState(groupDisplayItems(nudgeSession(20)), false)
-    const pinIdx = findPinnedPromptIdx(items, items.length - 1)
-    const item = items[pinIdx]
-    expect(item.kind).toBe('single')
-    if (item.kind === 'single') {
-      expect(TURN_OPENER_ROLES.has(item.msg.role)).toBe(true)
+    expect(roleAt(items, pinIdx)).toBe('user')
+    const pinItem = items[pinIdx]
+    if (pinItem.kind === 'single') {
+      expect(pinItem.msg.content).toBe('the last thing the human actually typed')
     }
   })
 
-  // A workflow fan-out is the long-transcript twin of a babysit loop: subagent
-  // completions open turns the same way nudges do, so excluding them would
-  // reproduce the identical gap.
-  it('pins a subagent completion that opened the turn being read', () => {
+  it('no display index a nudge row occupies is ever the pinned one', () => {
+    const items = applyRunningState(groupDisplayItems(nudgeSession(20)), false)
+    // Sweep the hand-off line down the whole transcript: whichever row is at the
+    // fold, the pinned candidate must never be a nudge.
+    for (let handoff = 0; handoff < items.length; handoff++) {
+      const pinIdx = findPinnedPromptIdx(items, handoff)
+      if (pinIdx >= 0) expect(roleAt(items, pinIdx), `handoff ${handoff}`).not.toBe('nudge')
+    }
+  })
+
+  it('a nudge does not push the banner out either (it is not the next prompt)', () => {
+    // findNextPromptIdx drives the push geometry: if a nudge counted as the
+    // incoming prompt, the user's banner would be shoved out of the band by the
+    // first cycle and never seen again for the rest of the loop.
+    const items = applyRunningState(groupDisplayItems(nudgeSession(3)), false)
+    const userIdx = items.findIndex(it => it.kind === 'single' && it.msg.role === 'user')
+    expect(userIdx).toBeGreaterThanOrEqual(0)
+    expect(findNextPromptIdx(items, userIdx)).toBe(-1)
+  })
+
+  it('never pins a subagent completion that opened the turn being read', () => {
+    const msgs = subagentSession(12)
+    expect(msgs.filter(m => isSubagentCompletionMessage(m)).length).toBe(12)
+    const items = applyRunningState(groupDisplayItems(msgs), false)
+    const pinIdx = findPinnedPromptIdx(items, items.length - 1)
+    expect(pinIdx).toBeGreaterThanOrEqual(0)
+    expect(roleAt(items, pinIdx)).toBe('user')
+  })
+
+  it('excludes a completion persisted under role user in older scrollback, by shape', () => {
+    // Before the `subagent` role existed the same event was appended as a
+    // `user` row. The role test alone would admit it; the parser must not.
     const out: ChatMessage[] = []
     const push = (role: string, content: string, meta?: Record<string, unknown>) =>
-      out.push({ role, content, ts: '2026-08-18T05:00:00Z', meta } as unknown as ChatMessage)
-    push('user', 'the last thing the human actually typed')
+      out.push({ role, content, ts: 't', meta } as unknown as ChatMessage)
+    push('user', 'typed prompt')
     push('assistant', 'reply')
-    for (let c = 1; c <= 12; c++) {
-      push('subagent', `[Subagent completion event] agent-${c}\n\nfindings for ${c}`,
-        { subagentCompletion: { kind: 'single', agentId: `agent-${c}`, outcome: 'ok', task: `task ${c}` } })
-      push('assistant', `synthesis ${c}`)
-    }
-    expect(out.filter(m => isSubagentCompletionMessage(m)).length).toBe(12)
+    push('user', '[Subagent completion event] agent-1\n\nfindings',
+      { subagentCompletion: { kind: 'single', agentId: 'agent-1', outcome: 'ok', task: 'task' } })
+    push('assistant', 'synthesis')
     const items = applyRunningState(groupDisplayItems(out), false)
-    const handoffIdx = items.length - 1
-    const pinIdx = findPinnedPromptIdx(items, handoffIdx)
-    // Assert IDENTITY, not distance: with subagent excluded the transcript
-    // collapses into few display items, so a gap threshold stays satisfied while
-    // the banner silently points at the human's first message instead.
+    const pinIdx = findPinnedPromptIdx(items, items.length - 1)
     const pinItem = items[pinIdx]
     expect(pinItem.kind).toBe('single')
-    if (pinItem.kind === 'single') {
-      expect(pinItem.msg.role).toBe('subagent')
-      expect(pinItem.msg.content).toContain('agent-12')
-    }
+    if (pinItem.kind === 'single') expect(pinItem.msg.content).toBe('typed prompt')
   })
 
-  it('a run of back-to-back completions groups as adjacent openers and the jump anchors at its head', () => {
-    // Four completions drained consecutively with no reply between them: the
-    // subagent rows are ADJACENT display items — the run shape jumpAnchorIdx's
-    // machine-opener walk exists for. Built through the real grouping pipeline
-    // so the adjacency is a checked fact, not a hand-shaped fixture.
+  it('a run of back-to-back completions is not a prompt run: the jump anchors at the target itself', () => {
     const out: ChatMessage[] = []
     const push = (role: string, content: string, meta?: Record<string, unknown>) =>
       out.push({ role, content, ts: '2026-08-18T05:00:00Z', meta } as unknown as ChatMessage)
@@ -93,38 +117,32 @@ describe('pinned prompt in a nudge-driven session', () => {
     }
     push('assistant', 'synthesis of all four')
     const items = applyRunningState(groupDisplayItems(out), false)
-
-    // The four completions must be consecutive display items.
     const subIdxs = items
       .map((it, i) => (it.kind === 'single' && it.msg.role === 'subagent' ? i : -1))
       .filter(i => i >= 0)
     expect(subIdxs.length).toBe(4)
-    expect(subIdxs[3] - subIdxs[0]).toBe(3)
-
-    // Jumping to the third completion anchors at the first — the head of the
-    // block, with the dispatch that explains it directly above.
-    expect(jumpAnchorIdx(items, subIdxs[2])).toBe(subIdxs[0])
+    // The machine rows above the target are a non-prompt gap, so the anchor walk
+    // does not consume them.
+    expect(jumpAnchorIdx(items, subIdxs[2])).toBe(subIdxs[2])
   })
 
-  it('the pin scan and the grouping agree on the turn-opener roles', () => {
-    // Single-sourced on purpose: a role that opens a turn without being pinnable
-    // is exactly the drift that produced the 61-row gap. Each role needs a row
-    // the grouping actually emits — a `subagent` row that is not a completion is
-    // dropped before it becomes a display item, so it opens nothing.
+  it('the pin scan is narrower than the turn-opener set: only user rows are pinnable', () => {
+    // Grouping and pinning are allowed to disagree here on purpose (see the
+    // TURN_OPENER_ROLES docblock): every opener role still opens a turn, but only
+    // the human's row can take the band.
     const validRow = (role: string): ChatMessage => role === 'subagent'
       ? ({ role, content: '[Subagent completion event] agent-1\n\nfindings', ts: 't',
            meta: { subagentCompletion: { kind: 'single', agentId: 'agent-1', outcome: 'ok', task: 'task' } } } as unknown as ChatMessage)
       : ({ role, content: 'opener', ts: 't' } as unknown as ChatMessage)
 
     for (const role of TURN_OPENER_ROLES) {
-      const opener = validRow(role)
-      if (role === 'subagent') expect(isSubagentCompletionMessage(opener)).toBe(true)
       const items = applyRunningState(groupDisplayItems([
-        opener,
+        validRow(role),
         { role: 'assistant', content: 'body', ts: 't' } as unknown as ChatMessage,
       ]), false)
       const pinIdx = findPinnedPromptIdx(items, items.length - 1)
-      expect(pinIdx, `role ${role} opens a turn but is not pinnable`).toBeGreaterThanOrEqual(0)
+      if (role === 'user') expect(pinIdx, 'a user prompt must be pinnable').toBeGreaterThanOrEqual(0)
+      else expect(pinIdx, `machine opener ${role} must not be pinnable`).toBe(-1)
     }
   })
 })

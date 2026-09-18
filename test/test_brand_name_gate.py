@@ -183,7 +183,7 @@ class TestUrlBoundary:
         # This mirrors the script's own ``--test`` growth check (and reuses its
         # budgets, so tuning one tunes both) because it failed the same way and for
         # the same reason: dividing two measured durations puts the whole burden on
-        # the timer, and the wall-clock form this test used to carry was the single
+        # the timer, and a wall-clock form of this test would be the single
         # largest source of Backend Tests (Windows) flakes.
         #
         # * WRONG CLOCK. ``time.monotonic()`` is ``GetTickCount64()`` on Windows, a
@@ -634,11 +634,11 @@ class TestDiffScopedRun:
     def test_self_test_actually_judges_the_growth_ratio(self, tmp_path) -> None:
         """The repeated-brands check must reach a verdict, not skip itself.
 
-        Its baseline used to be a fixed 20k brands, which costs fast hardware
-        ~19-21ms against a 20ms measurement floor. Landing under the floor made
-        the check print `ok ... ratio not judged` and test nothing, so on a fast
-        machine the quadratic guard was a coin-flip no-op. The workload now grows
-        until the baseline is measurable, so a real ratio is always reported.
+        A fixed 20k-brand baseline costs fast hardware ~19-21ms against a 20ms
+        measurement floor. Landing under the floor makes the check print
+        `ok ... ratio not judged` and test nothing, so on a fast machine the
+        quadratic guard is a coin-flip no-op. The workload grows until the
+        baseline is measurable, so a real ratio is always reported.
         """
         root = self._repo(tmp_path)
         self._commit(root, "doc.md", "clean\n", "base")

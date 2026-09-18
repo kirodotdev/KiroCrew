@@ -182,7 +182,6 @@ function AiSuggestions({
               initial={reduce ? false : { opacity: 0, y: 4 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.25, ease: 'easeOut', delay: reduce ? 0 : i * 0.05 }}
-              whileHover={canWrite && !reduce ? { y: -1 } : undefined}
               onClick={() => onAccept(s.name)}
               disabled={!canWrite || pending}
               title={tip}
@@ -191,7 +190,7 @@ function AiSuggestions({
                 borderColor: hexToRgba(color, 0.5),
                 color: 'var(--text)',
               }}
-              className="group relative inline-flex items-center gap-1 max-w-full rounded-full px-2 py-0.5 text-[12px] border border-dashed cursor-pointer overflow-hidden disabled:cursor-default"
+              className="group relative inline-flex items-center gap-1 max-w-full rounded-full px-2 py-0.5 text-[12px] border border-dashed cursor-pointer overflow-hidden enabled:hover:brightness-125 disabled:cursor-default"
             >
               {/* A gentle drift in the label's OWN colour — subtle, not flashy. */}
               {!reduce && (
@@ -517,16 +516,11 @@ export default function IssueDetail({ issue }: { issue: Issue }) {
   const copyLink = async () => {
     const attempt = ++copyAttemptRef.current
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-    let next: 'copied' | 'failed'
-    try {
-      await copyToClipboard(detail?.url ?? issue.url)
-      next = 'copied'
-    } catch {
-      // Reported, never swallowed: a row that does nothing on press is
-      // indistinguishable from a copy that worked, so the URL is silently
-      // missing from the clipboard at the moment it is about to be pasted.
-      next = 'failed'
-    }
+    const ok = await copyToClipboard(detail?.url ?? issue.url)
+    // Reported, never swallowed: a row that does nothing on press is
+    // indistinguishable from a copy that worked, so the URL is silently
+    // missing from the clipboard at the moment it is about to be pasted.
+    const next = ok ? 'copied' : 'failed'
     if (attempt !== copyAttemptRef.current) return
     setCopyStatus(next)
     copyTimerRef.current = setTimeout(() => setCopyStatus('idle'), 1500)

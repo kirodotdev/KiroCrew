@@ -16,6 +16,7 @@ import { ThemeProvider } from './hooks/useTheme'
 import { UIModeProvider } from './hooks/useUIMode'
 import ThemeExperienceLayer from './components/ThemeExperienceLayer'
 import { NavigationLeaveGuardProvider, NavigationBackGuard } from './components/NavigationLeaveGuard'
+import { RouteHistoryTracker } from './components/NavHistoryArrows'
 import { initRum } from './rum'
 import { isEmbeddedPane } from './lib/embedded'
 // i18n must initialize before the first render — a component rendering ahead of
@@ -30,7 +31,13 @@ import ErrorBoundary from './components/ErrorBoundary'
 import DashboardBootstrap from './components/DashboardBootstrap'
 import { installPageZoomSuppression } from './utils/pageZoom'
 import { installStaleShellHeal } from './lib/staleShellHeal'
-import { hydrateUiPrefs, needsHydrate, startUiPrefsSync } from './lib/uiPrefs'
+import {
+  hasUnreconciledKeys,
+  hydrateUiPrefs,
+  needsHydrate,
+  reconcileNewDurableKeys,
+  startUiPrefsSync,
+} from './lib/uiPrefs'
 import 'katex/dist/katex.min.css'
 import './index.css'
 import './styles/cli-mode.css'
@@ -160,6 +167,11 @@ const appTree = (
                         and stays out of the history stack entirely until a page
                         publishes work at stake. */}
                     <NavigationBackGuard />
+                    {/* Same placement contract as the guard above: inside the
+                        router so it sees every navigation, outside the routes so
+                        no route change unmounts it. Feeds the position store the
+                        top-bar arrows and the ⌘/Ctrl+←/→ chords read. */}
+                    <RouteHistoryTracker />
                     <Routes>
                       <Route path="/worlds-popout" element={<BrandingProvider><ProviderProvider><Suspense fallback={null}><WorldsPopout /></Suspense></ProviderProvider></BrandingProvider>} />
                       <Route
@@ -247,6 +259,22 @@ if (needsHydrate()) {
     (restored) => {
       if (restored > 0) window.location.reload()
       else boot(!needsHydrate())
+    },
+    () => boot(false),
+  )
+} else if (hasUnreconciledKeys()) {
+  // A WARM profile whose build upgrade added keys to DURABLE_PREF_KEYS: read
+  // the host's copy of the new keys before the first flush may run, or a
+  // default a hook persists on mount would overwrite the value another origin
+  // backed up (growth-gap issue 9491). Same shape as the cold path above --
+  // reload when something was written locally (module-scope readers already
+  // captured the pre-restore value), and do NOT sync after a failure (the
+  // next boot retries; flushing unreconciled keys is the clobber itself).
+  // Runs once per allowlist growth, not per boot: success records the roster.
+  void reconcileNewDurableKeys().then(
+    (restored) => {
+      if (restored > 0) window.location.reload()
+      else boot(restored === 0)
     },
     () => boot(false),
   )

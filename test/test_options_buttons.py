@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.slack.format import (
     OPTIONS_CHECKBOXES_ACTION,
     OPTIONS_SUBMIT_ACTION,
@@ -17,6 +18,21 @@ class TestExtractOptions:
         cleaned, choices = extract_options(text)
         assert choices == ["A", "B", "C"]
         assert "[OPTIONS:" not in cleaned
+
+    def test_keeps_text_before_and_after_marker(self):
+        cleaned, choices = extract_options("Pick.\n[OPTIONS: A | B]\nAnytime.")
+        assert cleaned == "Pick.\nAnytime."
+        assert choices == ["A", "B"]
+
+    def test_keeps_text_after_marker_without_prefix(self):
+        cleaned, choices = extract_options("[OPTIONS: A | B]\nAnytime.")
+        assert cleaned == "Anytime."
+        assert choices == ["A", "B"]
+
+    def test_keeps_text_before_marker_without_suffix(self):
+        cleaned, choices = extract_options("Pick.\n[OPTIONS: A | B]")
+        assert cleaned == "Pick."
+        assert choices == ["A", "B"]
 
     def test_no_options_returns_empty(self):
         cleaned, choices = extract_options("Hello world")
@@ -51,20 +67,17 @@ class TestExtractOptions:
         # ``(?:[^[\n]|\[(?!OPTIONS:))*`` forbids only a re-occurring ``[OPTIONS:``,
         # so the body is unambiguous (linear). Two adversarial inputs — a long
         # whitespace-padded unterminated tag, and many repeated ``[OPTIONS:``
-        # prefixes (the real pump) — must both return promptly.
-        import time
-
-        for evil in (
-            "[OPTIONS:" + (" " * 200_000) + "x",
-            "[OPTIONS:" * 100_000 + "x",
-        ):
-            start = time.perf_counter()
-            cleaned, choices = extract_options(evil)
-            elapsed = time.perf_counter() - start
-            assert elapsed < 1.0, f"extract_options took {elapsed:.2f}s (possible ReDoS)"
+        # prefixes (the real pump) — must both be rejected in CPU time linear in
+        # the pump; see conftest.assert_rejected_without_backtracking for why this
+        # is not a 1.0 s wall-clock bound.
+        def reject(text: str) -> None:
+            cleaned, choices = extract_options(text)
             # No terminating ']' → no match, input returned unchanged.
             assert choices == []
-            assert cleaned == evil
+            assert cleaned == text
+
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + (" " * n) + "x")
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" * n + "x")
 
 
 class TestBuildOptionsBlocks:
@@ -92,7 +105,7 @@ class TestBuildOptionsBlocks:
         actions = next(b for b in blocks if b["type"] == "actions")
         opts = actions["elements"][0]["options"]
         assert len(opts) == 10
-        # Overflow no longer vanishes: choices 11-15 degrade to a numbered
+        # Overflow does not vanish: choices 11-15 degrade to a numbered
         # context block the user can answer by typing.
         overflow = next(b for b in blocks if b["type"] == "context")
         assert "11. C10" in overflow["elements"][0]["text"]

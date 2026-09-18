@@ -29,16 +29,25 @@ def _handler_module():
     return importlib.import_module("kiro_crew.dashboard.handlers.onboarding_import")
 
 
-def _make_app(module, state: object | None = None) -> web.Application:
+def _make_app(
+    module, state: object | None = None, *, owner_id: str | None = "owner"
+) -> web.Application:
     @web.middleware
     async def test_auth(request: web.Request, handler):
         caller = request.headers.get("X-Test-User")
         if caller:
             request["user"] = caller
+        request["app"] = request.headers.get("X-Test-App", "")
         return await handler(request)
 
     app = web.Application(middlewares=[test_auth])
-    app["state"] = state or SimpleNamespace()
+    resolved_state = state if state is not None else SimpleNamespace()
+    # The handler tests exercise their own subject through the owner gate, so a
+    # fixture caller of "owner" is paired with the matching configured owner
+    # (the dashboard_owner_helpers.as_owner pattern, inline).
+    if owner_id is not None:
+        resolved_state.owner_id = owner_id
+    app["state"] = resolved_state
     app.router.add_get("/api/onboarding/import/scan", module.api_onboarding_import_scan)
     app.router.add_post("/api/onboarding/import/apply", module.api_onboarding_import_apply)
     app.router.add_put("/api/onboarding/import/state", module.api_onboarding_import_state)
@@ -74,6 +83,85 @@ async def test_all_onboarding_import_endpoints_require_authentication(
     assert response.status == 401
     assert response_body == {"error": "authentication required", "code": "auth_required"}
     assert audit.events[-1]["outcome"] == "denied"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("get", "/api/onboarding/import/scan"),
+        ("post", "/api/onboarding/import/apply"),
+        ("put", "/api/onboarding/import/state"),
+    ],
+)
+async def test_all_onboarding_import_endpoints_refuse_non_owner(
+    monkeypatch, method: str, path: str
+) -> None:
+    """A non-owner dashboard subject is refused on every onboarding import route."""
+    module = _handler_module()
+    audit = _AuditLog()
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+    monkeypatch.setattr(
+        module,
+        "_backend",
+        lambda: SimpleNamespace(
+            preview_import=lambda *args, **kwargs: {"sources": []},
+            apply_import=lambda *args, **kwargs: {},
+        ),
+    )
+
+    async with TestClient(TestServer(_make_app(module))) as client:
+        response = await getattr(client, method)(
+            path, json={}, headers={"X-Test-User": "someone-else"}
+        )
+        response_body = await response.json()
+
+    assert response.status == 403
+    assert response_body["code"] == "owner_only"
+
+
+@pytest.mark.asyncio
+async def test_scan_refuses_a_non_owner_subject_when_no_owner_is_configured(
+    monkeypatch,
+) -> None:
+    """Pre-owner, only the signed local bootstrap subject passes the gate."""
+    module = _handler_module()
+    audit = _AuditLog()
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+    monkeypatch.setattr(
+        module,
+        "_backend",
+        lambda: SimpleNamespace(preview_import=lambda *args, **kwargs: {"sources": []}),
+    )
+
+    async with TestClient(TestServer(_make_app(module, owner_id=None))) as client:
+        response = await client.get(
+            "/api/onboarding/import/scan", headers={"X-Test-User": "slack:U123"}
+        )
+        response_body = await response.json()
+
+    assert response.status == 403
+    assert response_body["code"] == "owner_only"
+
+
+@pytest.mark.asyncio
+async def test_scan_allows_the_pre_owner_local_bootstrap_subject(monkeypatch) -> None:
+    """The local bootstrap subject that runs the real onboarding flow passes."""
+    module = _handler_module()
+    audit = _AuditLog()
+    monkeypatch.setattr(module, "_sel", lambda: audit)
+    monkeypatch.setattr(
+        module,
+        "_backend",
+        lambda: SimpleNamespace(preview_import=lambda *args, **kwargs: {"sources": []}),
+    )
+
+    async with TestClient(TestServer(_make_app(module, owner_id=None))) as client:
+        response = await client.get(
+            "/api/onboarding/import/scan", headers={"X-Test-User": "local-app"}
+        )
+
+    assert response.status == 200
 
 
 @pytest.mark.asyncio
@@ -529,7 +617,7 @@ async def test_state_persists_import_onboarded(monkeypatch, tmp_path) -> None:
 
     def _fake_update_config_locked(*args, **kwargs):
         # The handler persists via a delta mutate through update_config_locked
-        # (#4767): apply it to an empty document and record what it wrote.
+        # Apply it to an empty document and record what it wrote.
         doc = kwargs["mutate"]({})
         saved.write_text(str(doc["dashboard"]["import_onboarded"]), encoding="utf-8")
         return doc
@@ -1041,7 +1129,7 @@ def test_handler_category_tables_match_the_backend() -> None:
     category is hidden" — it raises and the endpoint 500s, breaking the import
     wizard for EVERY source. Pin both tables so the omission fails loudly in CI.
 
-    The SOURCE tables are deliberately absent: the handler no longer keeps a copy
+    The SOURCE tables are deliberately absent: the handler does not keep a copy
     of the source list to drift from. It derives ids from the engine's registry,
     which is what makes an edition-registered source reachable at all.
     """

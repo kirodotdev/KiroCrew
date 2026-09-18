@@ -46,15 +46,11 @@ function CopyBtn({ value, label }: { value: string; label: string }) {
       aria-label={label}
       onClick={async () => {
         // `copyToClipboard` resolves a boolean (false = the legacy fallback
-        // reported failure) and still rejects on a genuine exception — both
-        // must suppress the tick. It carries a textarea fallback for the
-        // non-secure-origin case, which is why it is used instead of touching
-        // `navigator.clipboard` here.
-        try {
-          if ((await copyToClipboard(value)) === false) return
-        } catch {
-          return
-        }
+        // reported failure) and never rejects, so the boolean must suppress the
+        // tick. It carries a textarea fallback for the non-secure-origin case,
+        // which is why it is used instead of touching `navigator.clipboard`
+        // here.
+        if ((await copyToClipboard(value)) === false) return
         setDone(true)
         window.setTimeout(() => setDone(false), 1500)
       }}
@@ -366,7 +362,7 @@ export function TailnetMobileCard() {
         )
       }
 
-      return api.tailnetMobileQr(undefined, mintSessionKey)
+      return api.tailnetMobileQr(mintSessionKey)
     },
     onMutate: () => setActionError(''),
     onSuccess: (res) => {

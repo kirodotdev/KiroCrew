@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Optional, cast
@@ -1070,6 +1072,111 @@ class TestAcquireBackend:
         await pool.shutdown_all(timeout=0.1)
 
     @pytest.mark.asyncio
+    async def test_secret_temp_skips_raw_precheck_and_reaches_spawn_backend(
+        self, monkeypatch, caplog
+    ) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+
+        pool = BackendPool(max_backends=2)
+        key = _pool_key(server="secret-temp-mcp")
+        backend = _fake_backend(key)
+        captured: dict[str, Any] = {}
+
+        async def _spawn_backend(**kwargs: Any) -> Backend:
+            captured.update(kwargs)
+            captured["env"] = dict(kwargs["env"])
+            return backend
+
+        monkeypatch.setattr(gw, "spawn_backend", AsyncMock(side_effect=_spawn_backend))
+        raw_reference = "secret://../../../../run/x\nFORGED"
+        monkeypatch.setattr(
+            gw,
+            "_declared_env_to_forward",
+            lambda _key: {"TMPDIR": raw_reference},
+        )
+        classified: list[str] = []
+
+        def _sealed(path: str) -> str:
+            classified.append(path)
+            return "sealed"
+
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", _sealed)
+
+        def _resolve(env: dict[str, str], _config: Path):
+            if "TMPDIR" not in env:
+                return dict(env), set()
+            return {**env, "TMPDIR": "/resolved/secret"}, {"TMPDIR"}
+
+        monkeypatch.setattr(gw, "resolve_secret_uris", _resolve)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.gatewayd"):
+            await gw._acquire_backend(
+                pool,
+                key,
+                lambda _key: ("demo-bin", [], {}, "/tmp/cov"),
+            )
+
+        assert classified == []
+        assert raw_reference not in caplog.text
+        assert captured["env"]["TMPDIR"] == "/resolved/secret"
+        assert captured["declared_temp_keys"] == ("TMPDIR",)
+        assert captured["secret_env_keys"] == ("TMPDIR",)
+        await _drain_task(backend._stdout_task)
+        await pool.shutdown_all(timeout=0.1)
+
+    @pytest.mark.asyncio
+    async def test_sealed_declared_temp_is_removed_before_spawn(self, monkeypatch, caplog) -> None:
+        from kiro_crew import sandbox as sandbox_mod
+
+        pool = BackendPool(max_backends=2)
+        key = _pool_key(server="sealed-temp-mcp")
+        backend = _fake_backend(key)
+        spawn = AsyncMock(return_value=backend)
+        monkeypatch.setattr(gw, "spawn_backend", spawn)
+        declared = "/sealed/runtime/tmp\nFORGED"
+        monkeypatch.setattr(
+            gw,
+            "_declared_env_to_forward",
+            lambda _key: {"TMPDIR": declared, "A": "declared"},
+        )
+        loop_thread = threading.get_ident()
+        classifier_threads: list[int] = []
+
+        def _sealed(_path: str) -> str:
+            classifier_threads.append(threading.get_ident())
+            return "sealed"
+
+        monkeypatch.setattr(sandbox_mod, "classify_declared_temp_path", _sealed)
+
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.mcp_gateway.gatewayd"):
+            await gw._acquire_backend(
+                pool,
+                key,
+                lambda _key: (
+                    "demo-bin",
+                    [],
+                    {"TMPDIR": "/ambient/tmp", "A": "inherited"},
+                    "/tmp/cov",
+                ),
+            )
+
+        kwargs = _await_kwargs(spawn)
+        assert declared not in kwargs["env"].values()
+        assert not [key for key in kwargs["env"] if key.upper() in ("TMPDIR", "TMP", "TEMP")]
+        assert kwargs["declared_temp_keys"] == ()
+        assert classifier_threads and all(thread != loop_thread for thread in classifier_threads)
+        warning = next(
+            record.getMessage()
+            for record in caplog.records
+            if "ignoring spec-declared" in record.getMessage()
+        )
+        assert f"TMPDIR={declared!r}" in warning
+        assert "\nFORGED" not in warning
+        assert "inside the sandbox-sealed runtime parent" in warning
+        await _drain_task(backend._stdout_task)
+        await pool.shutdown_all(timeout=0.1)
+
+    @pytest.mark.asyncio
     async def test_pool_reuse_reports_was_spawned_false(self, monkeypatch):
         pool = BackendPool(max_backends=2)
         key = _pool_key(server="reuse-mcp")
@@ -1376,7 +1483,7 @@ class TestRespawnBackendForStub:
         _backend, _inbox, task = out
         await _drain_task(task)
 
-    # --- validating the replacement's tool set (#6294) -----------------------
+    # --- validating the replacement's tool set ------------------------------
 
     @staticmethod
     def _surface_pair(*, served, published, stub="stub-r8"):
@@ -1499,7 +1606,7 @@ class TestRespawnBackendForStub:
     async def test_an_owner_rekeyed_mid_respawn_is_not_adopted(self, monkeypatch):
         """A claim can retarget this connection during the probe. Both sides of
         the comparison belong to the CAPTURED caller, so across a rekey it
-        describes a principal that no longer owns the stub — and re-probing would
+        describes a principal that does not own the stub — and re-probing would
         race the same way."""
         pool = BackendPool(max_backends=2)
         pool.unreserve = MagicMock()  # type: ignore[method-assign]
@@ -1840,10 +1947,9 @@ class TestReadRssKb:
         assert got == -1 or got > 0
 
     def test_delegates_to_the_shared_current_rss_reader(self, monkeypatch):
-        # The per-platform duplicate that used to live here read ru_maxrss on
-        # macOS -- a peak that never falls. There is now one reader, and this
-        # pins the delegation (and the bytes -> KB conversion) so a second
-        # implementation cannot quietly reappear.
+        # One shared reader backs this. The macOS ru_maxrss variant (a peak
+        # that never falls) must not reappear, so pin the delegation and the
+        # bytes -> KB conversion against a second implementation.
         monkeypatch.setattr(gw, "_proc_rss_bytes", lambda: 4096)
         assert gw._read_rss_kb() == 4
 
@@ -1976,15 +2082,14 @@ class TestZombieDiagnostic:
 
     @pytest.mark.asyncio
     async def test_zombie_dump_survives_a_windows_sharing_violation(self, monkeypatch, tmp_path):
-        # Regression for the Windows write race: the probe baseline and the
-        # zombie dump used to be two back-to-back open-append-close cycles,
-        # and on Windows the second open can land while the first writer's
-        # handle is still closing, failing with a sharing violation
-        # (a PermissionError) that the never-raises writer swallows — losing
-        # the zombie_detected record. Simulate that deterministically by
-        # failing every open of the diagnostic file after the first: with the
-        # records batched through a single open, the dump still lands; with
-        # the old unserialized double-write, it is dropped and this test reds.
+        # The probe baseline and the zombie dump share one open-append-close
+        # cycle. On Windows two back-to-back cycles can collide: the second
+        # open lands while the first writer's handle is still closing and
+        # fails with a sharing violation (a PermissionError) the never-raises
+        # writer swallows, losing the zombie_detected record. Simulate that
+        # by failing every open of the diagnostic file after the first: with
+        # the records batched through a single open, the dump still lands; an
+        # unserialized double-write drops it and this test reds.
         diag = tmp_path / "diag.jsonl"
         monkeypatch.setattr(gw, "_zombie_diagnostic_path", lambda: diag)
         monkeypatch.setattr(gw, "_ZOMBIE_PROBE_INTERVAL_SECS", 0.01)
@@ -2007,10 +2112,34 @@ class TestZombieDiagnostic:
             return real_open(self, *args, **kwargs)
 
         monkeypatch.setattr(Path, "open", sharing_violation_open)
-        await asyncio.wait_for(
-            gw._zombie_diagnostic(cast(Any, server), BackendPool(max_backends=1), set(), stop),
-            timeout=5,
+        # Wait on the watchdog's own completion signal, not the coroutine: the
+        # watchdog swallows CancelledError, so on Python 3.11+ a timed-out
+        # ``asyncio.wait_for(coro, ...)`` cannot raise TimeoutError -- the
+        # cancellation never propagates, wait_for returns None, and the later
+        # assertions fail in misleading ways (FileNotFoundError on diag.jsonl
+        # or an unset stop event, depending on where the cancel landed). A
+        # genuinely slow runner now fails legibly at the bounded wait below.
+        task = asyncio.create_task(
+            gw._zombie_diagnostic(cast(Any, server), BackendPool(max_backends=1), set(), stop)
         )
+        stop_wait = asyncio.create_task(stop.wait())
+        try:
+            # Waiting on BOTH means a watchdog that raises before setting stop
+            # surfaces its exception immediately instead of hiding behind the
+            # full 30s budget.
+            done, _ = await asyncio.wait(
+                {task, stop_wait}, timeout=30, return_when=asyncio.FIRST_COMPLETED
+            )
+            assert done, "watchdog neither set stop nor finished within 30s"
+            if task in done:
+                await task  # surface any exception the watchdog raised
+        finally:
+            # Never leak the watchdog past monkeypatch teardown: cancel and
+            # drain whatever is still pending (the watchdog swallows
+            # CancelledError, so the drain terminates promptly).
+            task.cancel()
+            stop_wait.cancel()
+            await asyncio.gather(task, stop_wait, return_exceptions=True)
 
         records = [json.loads(line) for line in diag.read_text().strip().splitlines()]
         tags = [record["tag"] for record in records]

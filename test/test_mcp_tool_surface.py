@@ -1,4 +1,4 @@
-"""Tool-set validation for a REPLACED MCP backend (issue #6294).
+"""Tool-set validation for a REPLACED MCP backend.
 
 Two layers, both here so the contract reads in one place:
 
@@ -187,7 +187,7 @@ class TestProjectToolSurface:
     def test_a_tool_withdrawn_from_the_model_reads_as_gone(self) -> None:
         """Visibility is enforced at LIST time only -- nothing re-checks it when a
         model-originated tools/call arrives -- so a frozen client would keep
-        calling a tool the replacement no longer offers it."""
+        calling a tool the replacement does not offer."""
         a = project_tool_surface(_listing(_tool("t", _SCHEMA)))
         b = project_tool_surface(
             _listing(_tool("t", _SCHEMA, _meta={"ui": {"visibility": ["app"]}}))
@@ -492,7 +492,7 @@ class TestServedToolSurfaceRecording:
     @pytest.mark.asyncio
     async def test_a_page_supersedes_an_earlier_complete_listing(self) -> None:
         """A server that starts paginating has stopped telling this session its
-        whole tool set, so an earlier complete claim no longer describes it."""
+        whole tool set, so an earlier complete claim does not describe it."""
         backend = _make_backend()
         await backend._maybe_intercept_ui_result(
             _PendingRequest(stub_uuid="stub-1", original_id=1, method="tools/list"),
@@ -510,7 +510,7 @@ class TestServedToolSurfaceRecording:
     @pytest.mark.asyncio
     async def test_an_unreadable_listing_supersedes_a_readable_one(self) -> None:
         """The client just received a listing this host cannot read, so an
-        earlier readable claim no longer describes what the session holds."""
+        earlier readable claim does not describe what the session holds."""
         backend = _make_backend()
         await backend._maybe_intercept_ui_result(
             _PendingRequest(stub_uuid="stub-1", original_id=1, method="tools/list"),

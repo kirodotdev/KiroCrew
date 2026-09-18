@@ -170,36 +170,58 @@ _REVIEW_DECISIONS = ("APPROVED", "CHANGES_REQUESTED", "REVIEW_REQUIRED", None)
 
 
 class _MatrixRunner:
-    """Answer the provider's three gh calls from one row's fixtures."""
+    """Answer the provider's three batched documents from one row's fixtures.
+
+    Each read is told apart by what its document SELECTS, since all three now go
+    out as ``gh api graphql``. The primary document is the one that selects
+    neither the rollup nor the review threads.
+    """
 
     def __init__(self, primary: dict[str, object], threads: list[dict[str, object]]) -> None:
         self._primary = primary
         self._threads = threads
 
+    @staticmethod
+    def _wire_row(row: dict[str, object]) -> dict[str, object]:
+        """Nest a flat fixture row the way GitHub returns a check run."""
+        if row.get("__typename") != "CheckRun":
+            return row
+        nested = {key: value for key, value in row.items() if key != "workflowName"}
+        if "workflowName" in row:
+            nested["checkSuite"] = {"workflowRun": {"workflow": {"name": row["workflowName"]}}}
+        return nested
+
     def __call__(self, argv: Sequence[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
-        joined = " ".join(str(part) for part in argv)
-        if "graphql" in joined:
-            payload: object = {
-                "data": {
-                    "repository": {
-                        "pullRequest": {
-                            "reviewThreads": {
-                                "nodes": self._threads,
-                                "pageInfo": {"hasNextPage": False, "endCursor": None},
-                            }
-                        }
-                    }
+        document = " ".join(str(part) for part in argv)
+        if "reviewThreads(" in document:
+            node: object = {
+                "reviewThreads": {
+                    "nodes": self._threads,
+                    "pageInfo": {"hasNextPage": False, "endCursor": None},
                 }
             }
-        elif "statusCheckRollup" in joined:
-            payload = {
-                "headRefOid": self._primary["headRefOid"],
-                "statusCheckRollup": self._primary.get("statusCheckRollup"),
+        elif "statusCheckRollup" in document:
+            rows = self._primary.get("statusCheckRollup")
+            rollup: object = None
+            if rows is not None:
+                assert isinstance(rows, list)
+                rollup = {
+                    "contexts": {
+                        "totalCount": len(rows),
+                        "pageInfo": {"hasNextPage": False, "endCursor": None},
+                        "nodes": [self._wire_row(row) for row in rows],
+                    }
+                }
+            head = self._primary["headRefOid"]
+            node = {
+                "headRefOid": head,
+                "commits": {"nodes": [{"commit": {"oid": head, "statusCheckRollup": rollup}}]},
             }
         else:
-            payload = {
+            node = {
                 key: value for key, value in self._primary.items() if key != "statusCheckRollup"
             }
+        payload = {"data": {"s0": {"pullRequest": node}}}
         return subprocess.CompletedProcess(list(argv), 0, stdout=json.dumps(payload), stderr="")
 
 

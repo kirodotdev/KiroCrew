@@ -25,7 +25,11 @@ const SelectTrigger = React.forwardRef<
     className={cn(
       'flex items-center justify-between w-full px-3 py-2 rounded-md text-sm border border-border bg-bg-elevated text-text',
       'hover:border-border-strong transition-all cursor-pointer outline-none',
+      // data-[disabled] fires only via the Radix `disabled` prop; an ancestor
+      // <fieldset disabled> disables the native button without Radix knowing,
+      // so the same look must also hang off the native :disabled state.
       'focus-visible:border-accent data-[disabled]:opacity-40 data-[disabled]:pointer-events-none',
+      'disabled:opacity-40 disabled:pointer-events-none',
       '[&>span]:truncate [&>span]:text-left [&>span]:min-w-0',
       className
     )}

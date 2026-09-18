@@ -157,6 +157,9 @@ async def maybe_start_discord(orch: "GatewayOrchestrator") -> "DiscordClient | N
         # set_message_handler avoids the client<->transport construction cycle.
         client.set_message_handler(transport.receive)
         dispatcher.client = client
+        # Handed to the dispatcher so its config applier can push a reloaded
+        # allow-list at the live transport instead of waiting for a restart.
+        dispatcher.transport = transport
 
         await transport.connect()  # starts the Gateway WebSocket loop
         if orch.dashboard_state is not None:

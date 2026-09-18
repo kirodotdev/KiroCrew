@@ -15,12 +15,12 @@ const CRON_TO_GRID: Record<number, number> = { 1: 0, 2: 1, 3: 2, 4: 3, 5: 4, 6: 
 
 interface Slot { job: CronJob; day: number; hour: number; minute: number }
 
-/** Extract interval seconds from a human-readable schedule string like "every 3600s" or "every 1h". */
+/** Extract interval seconds from an "every <number><s|m|h>" schedule. */
 function parseEveryFromSchedule(s: string): number | null {
-  const m = (s || '').match(/^every\s+(\d+)\s*([sh])/)
+  const m = (s || '').match(/^every\s+(\d+)\s*([smh])/)
   if (!m) return null
   const n = parseInt(m[1])
-  return m[2] === 'h' ? n * 3600 : n
+  return n * (m[2] === 'h' ? 3600 : m[2] === 'm' ? 60 : 1)
 }
 
 /** Parse a cron schedule string into grid slots (day index 0-6, hour, minute).
@@ -249,7 +249,9 @@ export default function WeekGrid({ jobs, selectedId, onSelect, renderTz }: Props
                   {cellSlots.map((s, si) => (
                     <button
                       key={si}
-                      className={`w-2.5 h-2.5 rounded-full ${s.color} cursor-pointer hover:scale-150 transition-transform ${!s.job.enabled ? 'opacity-30' : ''} ${selectedId === s.job.id ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
+                      // Hover cue is a fill-brighten, not a border/ring tint: at 2.5px a
+                      // border tint is invisible, so brighten the coloured dot itself.
+                      className={`w-2.5 h-2.5 rounded-full ${s.color} cursor-pointer hover:brightness-125 ${!s.job.enabled ? 'opacity-30' : ''} ${selectedId === s.job.id ? 'ring-2 ring-accent ring-offset-1 ring-offset-bg' : ''}`}
                       title={`${s.job.name}${!s.job.enabled ? ' (paused)' : ''} — ${s.hour.toString().padStart(2,'0')}:${s.minute.toString().padStart(2,'0')} ${tz}`}
                       aria-label={`${s.job.name} at ${s.hour.toString().padStart(2,'0')}:${s.minute.toString().padStart(2,'0')} ${tz}`}
                       onClick={() => onSelect(s.job)}

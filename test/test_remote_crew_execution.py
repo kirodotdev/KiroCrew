@@ -299,8 +299,7 @@ class TestVersionParity:
         CPython caps ``int(str)`` at 4300 digits, so parsing a version with a
         longer numeric run raises ``ValueError``. That must be caught and turned
         into the ordinary refusal (an unprovable series → strict equality →
-        mismatch), never propagate out of ``ensure_version_parity`` as an HTTP 500
-        (GPT/opus #8543).
+        mismatch), never propagate out of ``ensure_version_parity`` as an HTTP 500.
         """
         mgr = MagicMock()
         mgr.peer_version = AsyncMock(return_value=(True, "9" * 5000 + ".0.0"))
@@ -360,6 +359,36 @@ class TestRelayReplay:
         # LOCAL slot, and a second relayed turn would restart the peer's count.
         assert [c.args[1]["seq"] for c in chunk_calls] == [1, 2]
         assert all(c.args[1]["slot"] == slot.key for c in chunk_calls)
+
+    @pytest.mark.asyncio
+    async def test_a_second_relayed_turn_continues_the_slot_counter(self, tmp_path):
+        """The numbers come from the slot's own counter, so a second relayed
+        turn is numbered above the first (and above any local turn on the same
+        slot): a client's replay floor from the earlier turn orders every chunk
+        of the later one above it without seeing the boundary."""
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _remote_slot()
+
+        def seqs() -> list[int]:
+            return [
+                c.args[1]["seq"]
+                for c in state.broadcast_ws.call_args_list
+                if c.args[0] == "chat_chunk"
+            ]
+
+        for text in ("first", "second"):
+            await relay_remote_turn(
+                state,
+                slot,
+                text,
+                chunks=_stream(
+                    _sse({"type": "chunk", "content": text, "cls": "chunk"}),
+                    b"data: [DONE]\n\n",
+                ),
+            )
+        assert seqs() == [1, 2]
+        assert slot._chunk_seq == 2
 
     @pytest.mark.asyncio
     async def test_a_mirrored_frame_is_rebroadcast_under_the_local_key(self, tmp_path):
@@ -435,7 +464,7 @@ class TestRelayReplay:
         between the trailing chunks and the finalized ``assistant`` row (its dict
         ``cls`` is stripped crossing the relay, so it is a plain ``system`` row).
         The finalize walk must step OVER it and still drop the chunk deltas, or the
-        answer renders twice — once streamed, once finalized (opus #7693).
+        answer renders twice — once streamed, once finalized.
         """
         state = _make_state(tmp_path)
         slot = _remote_slot()
@@ -683,7 +712,7 @@ class TestBindingPersistence:
 
         The old behaviour dropped the marker and came back local — but a local slot
         runs its next turn on THIS machine, which for a session the user bound to a
-        remote crew is silent wrong-host execution (GPT #7693). The marker is kept
+        remote crew is silent wrong-host execution. The marker is kept
         instead, so the incomplete-binding guard in ``api_chat`` (409
         ``remote_binding_incomplete``) and the ``_run_chat`` chokepoint refuse the
         send with a message the user can act on.
@@ -949,10 +978,10 @@ class TestBindingAuthorization:
             ({"mode": "bogus"}, "invalid_mode"),
             ({"memory_mode": "bogus"}, None),
             # A crew-bound create carrying ANY non-plain mode is refused before the
-            # peer write (F3): the mode guard fires ahead of the crew-capable-name
+            # peer write (F3): the mode guard fires ahead of every later name
             # check, so a crew-bound session can never host mode-specific work that
             # would run on THIS machine.
-            ({"name": "...", "mode": "crew"}, "remote_mode_unsupported"),
+            ({"name": "...", "mode": "orchestrator"}, "remote_mode_unsupported"),
         ],
         ids=["mode", "memory_mode", "remote_mode_unsupported"],
     )
@@ -987,7 +1016,7 @@ class TestBindingAuthorization:
         but that check ran AFTER the peer write, so a
         ``{"instance_id": …, "name": "member-…"}`` create opened a peer session
         and only then 409'd locally, orphaning the peer slot with nothing here to
-        release it (opus #7693). The reservation now runs among the pre-peer
+        release it. The reservation now runs among the pre-peer
         gates, so the refusal is reachable without touching the crew.
         """
         from aiohttp.test_utils import TestClient, TestServer
@@ -1114,14 +1143,16 @@ class TestBoundCreateDefaults:
     @pytest.fixture
     def local_default(self, monkeypatch):
         """A config whose default agent exists only on THIS machine."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.memory_stores import provision_member_memory
+
+        config = KiroCrewConfig()
+        config.agents["local-only-crew"] = KiroCrewAgentConfig(kiro_agent="local-only-crew")
+        config.default_agent = "local-only-crew"
+        provision_member_memory(config, "local-only-crew")
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.KiroCrewConfig.load",
-            staticmethod(
-                lambda: SimpleNamespace(
-                    default_agent="local-only-crew",
-                    dashboard=SimpleNamespace(default_project=""),
-                )
-            ),
+            staticmethod(lambda: config),
         )
 
     @pytest.mark.asyncio
@@ -1257,7 +1288,7 @@ class TestRemotePickApplication:
         marking the slot dirty makes the periodic flush retry it. The response
         stays 2xx on purpose — the pick DID apply on the machine that runs the
         turns, so reporting failure would roll the header back to a value the peer
-        no longer holds.
+        does not hold.
         """
         from kiro_crew.dashboard.chat_handlers import _apply_remote_pick
 
@@ -1367,7 +1398,7 @@ class TestRemotePickApplication:
         """The peer committed the value when it answered; the two ends must agree.
 
         Leaving this to the periodic flush opens a window in which a restart
-        restores a local field the crew no longer agrees with — and the crew is the
+        restores a local field the crew does not agree with — and the crew is the
         side that runs the next turn. A purely local pick can only ever disagree
         with itself, which is why the local model/effort/workspace routes can leave
         it to the flush and this one cannot.
@@ -3073,7 +3104,7 @@ class TestRemoteSessionLockedWhileTunnelDown:
         # Nothing queued AND nothing recorded: the guard runs before the user-row
         # append, so a refused send leaves no local row. Were it recorded, the
         # user's retry would append a SECOND row while only the retry reached the
-        # peer, diverging the local and peer transcripts (GPT #7693).
+        # peer, diverging the local and peer transcripts.
         assert slot._queue == []
         assert slot.messages == []
 
@@ -3109,8 +3140,7 @@ class TestInterruptedTurnSurvivesRestart:
         while the peer keeps running detached. Clearing the marker (as the finally
         does on a terminal outcome) would let a reload present the truncated
         transcript as complete; instead the marker stays set so the interruption
-        row is recovered, and no ``chat_done`` unblocks a turn that is not finished
-        (GPT #7693).
+        row is recovered, and no ``chat_done`` unblocks a turn that is not finished.
         """
         state = _make_state(tmp_path)
         state.broadcast_ws = MagicMock()
@@ -3177,7 +3207,7 @@ class TestInterruptedTurnSurvivesRestart:
         The marker is written only while a relay runs and omitted once it ends.
         If ``relay_in_flight`` is not slot-owned, the ``true`` written at relay
         start is carried forward past a clean completion, so a later restart
-        appends a false interruption row every time (GPT #7693). Owning the key
+        appends a false interruption row every time. Owning the key
         makes its absence on the completion save clear the on-disk value.
         """
         from kiro_crew.dashboard.chat_persistence import (
@@ -3266,7 +3296,7 @@ class TestPreStreamRefusalRollsBackTheUserRow:
     ``api_chat`` appends the user row and THEN dispatches the relay. A pre-stream
     refusal (version skew, non-2xx, connection error) means the peer got nothing,
     so the row must be rolled back or a retry duplicates local history the peer
-    never saw (GPT #7693). A mid-stream truncation is different — the peer IS
+    never saw. A mid-stream truncation is different — the peer IS
     running the turn — so that row stays.
     """
 
@@ -3317,7 +3347,7 @@ class TestPreStreamRefusalRollsBackTheUserRow:
         The peer answered 2xx and now owns the turn; the body then closing with
         zero bytes is a truncation of a turn the peer is running, not a
         pre-acceptance refusal. The earlier ``received_bytes`` gate saw no byte
-        and dropped the prompt the peer had accepted (GPT #7693, this round). The
+        and dropped the prompt the peer had accepted. The
         empty acceptance sentinel ``_peer_turn_chunks`` emits right after the 2xx
         is what keeps the row here. This drives the REAL peer path, not an
         injected stream, so it locks the sentinel too.
@@ -3381,7 +3411,7 @@ class TestRelayCarriesToolRowMeta:
                 "cls": "tool",
                 "meta": {"tool": "fs_read", "call_id": "c1", "mid": "peer-mid"},
             },
-            _ChunkSequencer(),
+            _ChunkSequencer(slot),
         )
         row = slot.messages[-1]
         assert row["meta"]["tool"] == "fs_read"
@@ -3399,6 +3429,35 @@ class TestRelayedSendToBusyPeerSlotIsRefused:
     mirror and its answer never reaches the owner. Refusing makes the owner's
     reader raise and surface a reconnect prompt instead.
     """
+
+    @pytest.mark.asyncio
+    async def test_a_relayed_send_never_recreates_a_missing_peer_slot(self, tmp_path, monkeypatch):
+        """`relay=1` targets an existing peer session; it never creates one.
+
+        The owner can validate a row and lose it before the first relayed turn.
+        Without this guard `api_chat` falls through to `get_or_create_slot`, mints
+        an empty ordinary peer slot under the vanished key, and answers against no
+        inherited history — plausible output with the wrong context.
+        """
+        from aiohttp.test_utils import TestClient, TestServer
+
+        state = _make_state(tmp_path)
+        assert "peer-just-closed" not in state._slots
+
+        def _relay_must_not_create(*_args, **_kwargs):
+            raise AssertionError("relay=1 reached get_or_create_slot")
+
+        monkeypatch.setattr(state, "get_or_create_slot", _relay_must_not_create)
+
+        async with TestClient(TestServer(_send_app(state))) as client:
+            resp = await client.post(
+                "/api/chat/send?relay=1",
+                json={"slot": "peer-just-closed", "message": "relayed"},
+            )
+            assert resp.status == 404
+            assert (await resp.json())["code"] == "slot_not_found"
+
+        assert "peer-just-closed" not in state._slots
 
     @pytest.mark.asyncio
     async def test_a_relayed_send_to_a_busy_local_slot_is_refused(self, tmp_path):
@@ -3438,7 +3497,7 @@ class TestRemoteSessionIsPlainChatOnly:
         slot = _remote_slot("chat-1")
         state._slots[slot.key] = slot
         async with TestClient(TestServer(_mode_app(state))) as client:
-            resp = await client.patch("/api/chat/slots/chat-1/mode", json={"mode": "crew"})
+            resp = await client.patch("/api/chat/slots/chat-1/mode", json={"mode": "orchestrator"})
             assert resp.status == 409
             assert (await resp.json())["code"] == "remote_mode_unsupported"
         # The mode is left plain — the switch changed nothing.
@@ -3564,7 +3623,7 @@ class TestBoundSlotRefusesTurnRestartingActions:
         Continue and Rewind gate app ownership with a 404 that is deliberately
         indistinguishable from a missing slot (CWE-204). If the crew-bound 409
         fired first, a foreign app could tell a remote slot apart from a missing
-        one — so the ownership 404 has to win (GPT #7693).
+        one — so the ownership 404 has to win.
         """
         from aiohttp.test_utils import TestClient, TestServer
 
@@ -3590,7 +3649,7 @@ class TestRemoteSlotNeverRunsLocally:
     Every dispatch entry point is supposed to refuse or relay a remote slot before
     reaching the local runner, but they are many; this guard in `_run_chat` itself
     is what makes running a bound slot locally impossible regardless of caller
-    (GPT #7693) — so a new entry point cannot silently reintroduce the divergence.
+    — so a new entry point cannot silently reintroduce the divergence.
     """
 
     @pytest.mark.asyncio

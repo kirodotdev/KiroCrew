@@ -137,11 +137,11 @@ class TestTheSnapshotFailsToUnsetRatherThanToAGuess:
             assert _job_tz(job) == ZoneInfo("UTC")
 
     def test_a_defaults_load_overwrites_a_richer_snapshot(self) -> None:
-        """The degraded path must CLEAR a zone the files no longer name.
+        """The degraded path must CLEAR a zone the files do not name.
 
         A load that falls back to defaults (neither config file readable) is the
         current truth, not a stale read. Leaving the previous zone in force
-        would keep the scheduler honoring a setting that no longer exists.
+        would keep the scheduler honoring a setting that does not exist.
         """
         try:
             first = _dominating_ticket()

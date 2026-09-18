@@ -1,7 +1,7 @@
 """``kirocrew.turn.duration`` is emitted for EVERY dispatch surface.
 
 The metric powers turn latency (p50/p90) and fault rate on the Telemetry page.
-It used to be emitted from one call inside ``chat_runner._run_chat``, which made
+Emitting it from one call inside ``chat_runner._run_chat`` would make
 it structurally unreachable from cron, the heartbeat, memory consolidation,
 subagents, task-runner steps, workflow stages and every messaging channel: those
 surfaces produced no sample at all, so a slow or erroring background turn read as

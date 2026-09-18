@@ -50,14 +50,29 @@ vi.mock('../api/client', () => ({
     updateDashboardConfig: () => Promise.resolve({}),
     tipsStatus: () => Promise.resolve({ enabled_config: true, opted_out: false }),
     tipsFeedback: () => Promise.resolve({ ok: true }),
+    // The panel reads the feature-video cache on mount. Downloads OFF here, so
+    // the readout renders its policy line and no button -- these files measure
+    // other settings, and a live control would put a stray button in their reach.
+    featureVideoStatus: () => Promise.resolve({
+      enabled: true, download_enabled: false, release: 'r1',
+      cached: 0, total: 0, downloading: null,
+    }),
+    featureVideoFetchAll: () => Promise.resolve({ ok: true }),
   },
 }))
 
 import { ChatPanel } from '../pages/settings/ChatPanel'
 
+import { Provider } from 'react-redux'
+
+// ChatPanel reads the active slot from redux to name the session on its
+// feature-video calls, so these renders need a store. A FRESH one per file,
+// not the app singleton: a shared store would carry `activeSlot` across suites.
+import { createTestStore } from './helpers'
+
 function wrap(ui: React.ReactElement) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>)
+  return render(<Provider store={createTestStore()}><QueryClientProvider client={qc}>{ui}</QueryClientProvider></Provider>)
 }
 
 /** The agent block the config mock serves. Reassigned mid-test to stand in for
@@ -247,6 +262,42 @@ describe('ChatPanel — optimistic fallback model', () => {
     reject(new Error('boom'))
     expect(await screen.findByText(/Failed to save fallback model/)).toBeInTheDocument()
     await waitFor(() => expect(trigger).toHaveTextContent('Auto (recommended)'))
+  })
+})
+
+describe('ChatPanel — optimistic refusal fallback model', () => {
+  it('shows the picked model before the PATCH resolves and keeps the refetched value', async () => {
+    seed({ refusal_fallback_model: '' })
+    const { resolve } = deferPatch()
+    wrap(<ChatPanel />)
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    const trigger = await pick('Content-filter fallback model', 'claude-opus-4.8')
+
+    await waitFor(() => expect(trigger).toHaveTextContent('claude-opus-4.8'))
+    expect(patchConfigMock).toHaveBeenCalledWith('agent.refusal_fallback_model', 'claude-opus-4.8')
+    expect(kirocrewConfigMock).toHaveBeenCalledTimes(1)
+
+    serverAgent = { refusal_fallback_model: 'claude-opus-4.8' }
+    resolve({})
+    await waitFor(() => expect(kirocrewConfigMock).toHaveBeenCalledTimes(2))
+    expect(trigger).toHaveTextContent('claude-opus-4.8')
+  })
+
+  it('rolls back to Disabled ("") when the PATCH rejects, beside its own error copy', async () => {
+    // '' is the DEFAULT here (feature off), unlike the throttle picker whose
+    // default is 'auto' — the rollback target and the error line are the
+    // refusal picker's own, not shared with the throttle picker.
+    seed({ refusal_fallback_model: '' })
+    const { reject } = deferPatch()
+    wrap(<ChatPanel />)
+    await waitFor(() => expect(modelsMock).toHaveBeenCalled())
+    const trigger = await pick('Content-filter fallback model', 'Auto (model named in the refusal)')
+    await waitFor(() => expect(trigger).toHaveTextContent('Auto (model named in the refusal)'))
+    expect(patchConfigMock).toHaveBeenCalledWith('agent.refusal_fallback_model', 'auto')
+
+    reject(new Error('boom'))
+    expect(await screen.findByText(/Failed to save content-filter fallback model/)).toBeInTheDocument()
+    await waitFor(() => expect(trigger).toHaveTextContent('Disabled'))
   })
 })
 

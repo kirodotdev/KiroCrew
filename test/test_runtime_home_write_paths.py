@@ -41,10 +41,10 @@ from __future__ import annotations
 
 import functools
 import json
-import os
 import re
-import subprocess
 from pathlib import Path
+
+from source_corpus import repo_files_named
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
@@ -74,71 +74,48 @@ LEGACY_READER_SCRIPTS = frozenset(
 SKIP_DIR_PARTS = frozenset({"node_modules", "_vendor", ".venv", "build", "dist", ".git"})
 
 
+def _in_scope(path: Path) -> bool:
+    """False for a path inside a vendored, generated or dependency tree."""
+    return not SKIP_DIR_PARTS.intersection(path.relative_to(REPO_ROOT).parts)
+
+
 @functools.lru_cache(maxsize=1)
 def _repo_python_files() -> tuple[Path, ...]:
-    """Every repo ``*.py`` outside :data:`SKIP_DIR_PARTS`, pruned DURING the walk.
+    """Every repo ``*.py`` outside :data:`SKIP_DIR_PARTS`.
 
-    ``REPO_ROOT.rglob("*.py")`` enumerates the skipped trees before the caller can
-    filter them out -- measured 4946 files walked in ~4s to keep 665, on a checkout
-    with a ``.venv``. ``os.walk`` lets the skip list prune ``dirnames`` in place, so
-    those subtrees are never descended into. Same file set, same assertions.
+    Enumerated through ``source_corpus.repo_files_named``, which asks git, and not
+    by walking: a filesystem walk also descends GITIGNORED directories, so a
+    developer's local data home (``.kirocrew-dev/``, which legitimately contains
+    installed skill scripts naming the legacy path) or a nested worktree under
+    ``.claude/worktrees/`` puts a second copy of every file in front of this gate,
+    which then reports a path the author cannot edit. Nothing ignored can ship, so
+    nothing ignored is in scope -- a brand-new file that is not yet ``git add``ed
+    still is. Cheaper as well as correct: git answers with ~10k paths where the
+    walk enumerated ~31k to keep the same ~4k.
     """
-    found: list[Path] = []
-    for dirpath, dirnames, filenames in os.walk(REPO_ROOT):
-        dirnames[:] = [d for d in dirnames if d not in SKIP_DIR_PARTS]
-        for name in filenames:
-            if name.endswith(".py"):
-                found.append(Path(dirpath) / name)
-    return tuple(sorted(found))
+    return tuple(p for p in repo_files_named(".py") if _in_scope(p))
 
 
 def _shell_scripts() -> list[Path]:
-    """Every TRACKED shell script in the repo, vendored/generated trees excluded.
-
-    Asks git for the file list rather than walking the filesystem: a bare
-    ``rglob`` also descends GITIGNORED directories, so a developer's local data
-    home (``.kirocrew-dev/``, which legitimately contains installed skill
-    scripts naming the legacy path) or any scratch checkout would fail this gate
-    on their machine while CI stayed green. Only committed files can actually
-    ship, so only committed files are in scope.
-
-    Falls back to the filesystem walk when git is unavailable (e.g. an sdist
-    with no ``.git``), preserving the original behavior there.
-    """
-    try:
-        out = subprocess.run(
-            ["git", "-C", str(REPO_ROOT), "ls-files", "-z", "*.sh"],
-            capture_output=True,
-            check=True,
-            timeout=30,
-        )
-        paths = [REPO_ROOT / n for n in out.stdout.decode().split("\0") if n]
-    except (OSError, subprocess.SubprocessError):
-        paths = sorted(REPO_ROOT.rglob("*.sh"))
-    return [
-        p
-        for p in sorted(paths)
-        if p.is_file() and not SKIP_DIR_PARTS.intersection(p.relative_to(REPO_ROOT).parts)
-    ]
+    """Every shell script the checkout ships, vendored/generated trees excluded."""
+    return [p for p in repo_files_named(".sh") if _in_scope(p)]
 
 
 def _shipped_python() -> list[Path]:
     """Python that ships to users: the package plus the standalone client packages.
 
     ``test/`` is excluded on purpose -- test fixtures legitimately construct the
-    legacy path to assert migration and sensitive-path behavior.
+    legacy path to assert migration and sensitive-path behavior. Filtered by prefix
+    out of :func:`_repo_python_files` rather than enumerated per root, so the
+    ``_vendor`` exclusion is inherited from one place: the vendored tree IS tracked,
+    and git names it exactly as a walk of ``src/kiro_crew`` would.
     """
-    roots = [REPO_ROOT / "src" / "kiro_crew", REPO_ROOT / "packages"]
-    files: list[Path] = []
-    for root in roots:
-        if not root.is_dir():
-            continue
-        files += [
-            p
-            for p in sorted(root.rglob("*.py"))
-            if not SKIP_DIR_PARTS.intersection(p.relative_to(REPO_ROOT).parts)
-        ]
-    return files
+    shipped = (("src", "kiro_crew"), ("packages",))
+    return [
+        p
+        for p in _repo_python_files()
+        if any(p.relative_to(REPO_ROOT).parts[: len(prefix)] == prefix for prefix in shipped)
+    ]
 
 
 def test_default_audit_hook_writes_to_the_current_data_home() -> None:

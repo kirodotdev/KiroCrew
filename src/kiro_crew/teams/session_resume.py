@@ -35,6 +35,7 @@ from kiro_crew.messaging.session_resume import (
     SessionChoice,
     SessionResumeController,
     same_bucket_origin_keys,
+    session_title_of,
 )
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.teams.cards import resolved_card, session_picker_card
@@ -63,7 +64,7 @@ _REPLAY_TRUNCATED = "\n… (truncated)"
 def _safe_teams_text(text: str, max_chars: int) -> str:
     """Redact for Teams' rendering, then budget. Redaction FIRST, always.
 
-    Truncating first can split a credential into a form the scanner no longer matches,
+    Truncating first can split a credential into a form the scanner does not match,
     which is the one ordering that turns a display-safety helper into a leak.
     """
     return _display_safe(text)[:max_chars]
@@ -187,9 +188,22 @@ class TeamsSessionResume:
     def dashboard_state(self) -> object | None:
         return self._controller.dashboard_state
 
+    # ── live config ───────────────────────────────────────────────────────
     @dashboard_state.setter
     def dashboard_state(self, state: object | None) -> None:
         self._controller.dashboard_state = state
+
+    def reconfigure(self, allowed_emails: set[str]) -> None:
+        """Re-derive ``owner_id`` from a reloaded ``teams.allowed_emails``.
+
+        The third copy of the allow-list (transport, dispatcher, here) and the
+        one that decides who may list dashboard sessions, so it has to move with
+        the other two: an operator who adds a second identity must lose
+        ``/sessions`` immediately, not at the next restart. Same one-identity
+        rule as construction -- none or several leaves ``owner_id`` empty and
+        ``is_owner`` refuses everyone.
+        """
+        self.owner_id = next(iter(allowed_emails)) if len(allowed_emails) == 1 else ""
 
     # ── identity + addressing ─────────────────────────────────────────────
     def is_owner(self, identity: str) -> bool:
@@ -232,16 +246,7 @@ class TeamsSessionResume:
 
     async def _title_of(self, session_key: str) -> str:
         """The stored title for *session_key*, read off-loop, with a stable fallback."""
-        title = ""
-        if self.conv_log is not None:
-            try:
-                meta = await asyncio.to_thread(self.conv_log.get_metadata, session_key)
-                title = str((meta or {}).get("title") or "")
-            except Exception:
-                logger.debug("Teams resume: title lookup failed", exc_info=True)
-        # The picker's own fallback for an untitled session, so a bootstrapped record
-        # names the conversation the way the user saw it listed.
-        return title or session_key.removeprefix("dashboard:")
+        return await asyncio.to_thread(session_title_of, self.conv_log, session_key, "teams")
 
     # ── the picker ────────────────────────────────────────────────────────
     async def show_picker(

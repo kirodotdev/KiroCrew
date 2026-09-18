@@ -1,5 +1,6 @@
 import React from 'react'
 import { useLocation, useNavigate, useNavigationType } from 'react-router-dom'
+import { arrivedByFreshNavigation, isTrapEntry, routerEntry, type TrapEntryState } from '../lib/routeHistoryPosition'
 
 /** The mounted page's answer to "may I navigate away from you?". `true` allows
  *  the navigation, `false` keeps the user exactly where they are. */
@@ -191,45 +192,52 @@ export function useGuardedLeave(): (perform: () => void | Promise<void>, to?: st
   }, [mayLeave, isCurrentUrl])
 }
 
-/**
- * The router state a history entry this guard minted carries.
- *
- * The marker is what makes such an entry recognisable when its location is read
- * back — including across a reload, where it is the only thing that survives to
- * identify one. Declared as a TYPE with an identifier key rather than a string
- * constant: the key is a router contract no user ever reads, and spelling it as a
- * quoted literal would make the i18n gate charge it as untranslated copy.
- */
-type TrapEntryState = { __navigationLeaveTrap?: true }
+/* `TrapEntryState` / `isTrapEntry` live in `lib/routeHistoryPosition.ts`: the
+ * arrows' position store must recognise a trap duplicate too (a trap is never a
+ * Forward destination), and the lib is the leaf of this import edge. */
 
-const isTrapEntry = (state: unknown): boolean =>
-  !!(state && typeof state === 'object' && (state as TrapEntryState).__navigationLeaveTrap === true)
-
-/**
- * The router's own per-entry bookkeeping, read straight from the platform.
- *
- * Not from a render: `popstate` fires BEFORE React commits the new location, so
- * a rendered value still describes the entry the user just left. `idx` is
- * react-router's stack position and `usr` the state a navigation carried.
- */
-const routerEntry = (): { idx: number | null; state: unknown } => {
-  const raw = window.history.state as { idx?: unknown; usr?: unknown } | null
-  return { idx: typeof raw?.idx === 'number' ? raw.idx : null, state: raw?.usr }
-}
+/* The per-entry `history.state` reader is shared with the arrows' position
+ * store — `routerEntry` in `lib/routeHistoryPosition.ts` is the one spelling of
+ * that react-router-internal shape. Reads here still happen at event time, not
+ * from a render: `popstate` fires BEFORE React commits the new location, so a
+ * rendered value would describe the entry the user just left. */
 
 /** The whole address, the way this guard compares two entries. */
 const addressOf = (l: { pathname: string; search: string; hash: string }): string =>
   l.pathname + l.search + l.hash
 
-/** Did this document arrive by a plain navigation, rather than a reload or a
- *  Back/Forward into it? Only then is the entry it landed on known to be the TOP
- *  of the stack — a navigation truncates, a reload preserves whatever was above.
- *  Absent timing data answers "unknown", never "yes". */
-const arrivedByFreshNavigation = (): boolean => {
-  try {
-    const entries = performance.getEntriesByType('navigation') as { type?: string }[]
-    return entries[0]?.type === 'navigate'
-  } catch { return false }
+/* `arrivedByFreshNavigation` lives in `lib/routeHistoryPosition.ts` — the arrows'
+ * position store needs the same arrival distinction to decide whether a
+ * persisted Forward watermark is still true. */
+
+/**
+ * Step through the app's own history (the top-bar Back/Forward arrows and the
+ * ⌘/Ctrl+←/→ chords), asking the page on screen first when nothing else will.
+ *
+ * A history step is a POP, and a pop is the one navigation `useGuardedLeave`
+ * must NOT wrap unconditionally: while `NavigationBackGuard` has a trap armed,
+ * the pop lands on the trap's own duplicate entry and the guard asks THERE —
+ * an up-front ask would stack a second confirm on the same click. But the trap
+ * is best-effort by design (it stays out of the stack while the user has a
+ * Forward branch, and after a reload until recalibration — "a gap, not a
+ * loss"), and these controls are in-app surfaces, which are exactly the
+ * callers the provider contract says must ask. So: ask up front precisely when
+ * the current entry is NOT a trap duplicate — when it is, the pop is already
+ * guarded and the ask is deferred to it. Forward pops are never trap-guarded,
+ * but a trap entry can only be the current entry while it is the TOP of the
+ * stack (it is pushed, and a later push replaces it as this guard's concern),
+ * so Forward from one is unreachable and the same predicate serves both
+ * directions.
+ */
+export function useGuardedHistoryStep(): (delta: -1 | 1) => void {
+  const navigate = useNavigate()
+  const mayLeave = useMayLeaveForNavigation()
+  return React.useCallback((delta: -1 | 1) => {
+    // Read at click time, from the platform — the trap is pushed and consumed
+    // outside React's render cycle, so a rendered value could be stale.
+    if (!isTrapEntry(routerEntry().state) && !mayLeave()) return
+    navigate(delta)
+  }, [navigate, mayLeave])
 }
 
 /**

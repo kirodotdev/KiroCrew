@@ -188,7 +188,7 @@ class TestPolicyConfig:
     def test_a_malformed_allow_list_REFUSES_rather_than_failing_open(self, raw):
         """The reviewer-found fail-open: ``()`` means UNRESTRICTED for this field.
 
-        Writing ``"Preview"`` instead of ``["Preview"]`` used to coerce to ``()``,
+        Writing ``"Preview"`` instead of ``["Preview"]`` would coerce to ``()``,
         which ``check_app`` reads as "every app that is not built-in denied" — a
         typo silently converting a restriction into a grant. A present-but-malformed
         allow-list now raises, and the dispatcher turns that into a refusal.

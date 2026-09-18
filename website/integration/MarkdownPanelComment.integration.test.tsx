@@ -1,13 +1,13 @@
 /**
  * Integration tests for MarkdownPanel comment/copy selection flow.
- * Tests the interaction between SelectionToolbar and CommentPopover within the panel.
+ * Tests the interaction between SelectionToolbar's type-first composer and the
+ * panel's pending-comment list.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { render, screen, fireEvent, act, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
-import MarkdownPanel from '../src/components/MarkdownPanel'
 
 // Mock framer-motion (SelectionToolbar uses it)
 vi.mock('framer-motion', () => ({
@@ -22,6 +22,25 @@ vi.mock('@monaco-editor/react', () => ({ default: () => <div data-testid="monaco
 vi.mock('../src/hooks/useFileWatch', () => ({
   useFileWatch: () => ({ status: 'closed' }),
 }))
+
+// CSS Custom Highlight API stub. MarkdownPanel captures these at module load,
+// so the component is imported dynamically after the globals are installed.
+const highlightRegistry = new Map<string, Range[]>()
+class StubHighlight {
+  readonly ranges: Range[]
+  constructor(...ranges: Range[]) { this.ranges = ranges }
+}
+vi.stubGlobal('Highlight', StubHighlight)
+vi.stubGlobal('CSS', {
+  highlights: {
+    set: (name: string, hl: StubHighlight) => { highlightRegistry.set(name, hl.ranges) },
+    delete: (name: string) => highlightRegistry.delete(name),
+  },
+  escape: (s: string) => s,
+  supports: () => false,
+})
+
+const { default: MarkdownPanel } = await import('../src/components/MarkdownPanel')
 
 // Mock clipboard
 const writeText = vi.fn().mockResolvedValue(undefined)
@@ -80,6 +99,7 @@ describe('MarkdownPanel comment/copy flow', () => {
     writeText.mockClear()
     defaultProps.onSubmitComments.mockClear()
     defaultProps.onClose.mockClear()
+    highlightRegistry.clear()
     localStorage.setItem('kirocrew:comment-hint-dismissed', '1')
   })
   afterEach(() => {
@@ -87,24 +107,28 @@ describe('MarkdownPanel comment/copy flow', () => {
     window.getSelection()?.removeAllRanges()
   })
 
-  it('shows Comment and Copy buttons when text is selected', () => {
+  it('opens the annotation input, with Copy beside it, when text is selected', () => {
     render(<Providers><MarkdownPanel {...defaultProps} /></Providers>)
     const preview = document.querySelector('.msg-content')!
     mockSelectionInContainer(preview as HTMLElement, 'test paragraph')
     fireEvent.mouseUp(document, { clientX: 100, clientY: 80 })
     act(() => { vi.advanceTimersByTime(60) })
 
-    expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument()
+    // Type-first: the input is there without a Comment button to click.
+    expect(screen.getByPlaceholderText('Write a comment…')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Comment' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Add comment' })).toBeDisabled()
   })
 
-  it('only shows Copy button when onSubmitComments is not provided', () => {
+  it('only shows Copy button, and no input, when onSubmitComments is not provided', () => {
     render(<Providers><MarkdownPanel {...defaultProps} onSubmitComments={undefined} /></Providers>)
     const preview = document.querySelector('.msg-content')!
     mockSelectionInContainer(preview as HTMLElement, 'test paragraph')
     fireEvent.mouseUp(document, { clientX: 100, clientY: 80 })
     act(() => { vi.advanceTimersByTime(60) })
 
+    expect(screen.queryByPlaceholderText('Write a comment…')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Comment' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Copy' })).toBeInTheDocument()
   })
@@ -120,15 +144,16 @@ describe('MarkdownPanel comment/copy flow', () => {
     expect(writeText).toHaveBeenCalledWith('test paragraph')
   })
 
-  it('shows comment popover when Comment is clicked', () => {
+  it('highlights the selection while the input is open', () => {
     render(<Providers><MarkdownPanel {...defaultProps} /></Providers>)
     const preview = document.querySelector('.msg-content')!
     mockSelectionInContainer(preview as HTMLElement, 'test paragraph')
     fireEvent.mouseUp(document, { clientX: 100, clientY: 80 })
     act(() => { vi.advanceTimersByTime(60) })
 
-    fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
     expect(screen.getByPlaceholderText('Write a comment…')).toBeInTheDocument()
+    expect(highlightRegistry.get('mc-annotate')?.[0]?.toString()).toBe('test paragraph')
+    expect(preview.querySelector('mark')).toBeNull()
   })
 
   it('adds comment and shows pending list after submitting comment text', async () => {
@@ -139,11 +164,6 @@ describe('MarkdownPanel comment/copy flow', () => {
     fireEvent.mouseUp(document, { clientX: 100, clientY: 80 })
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument()
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
-    await waitFor(() => {
       expect(screen.getByPlaceholderText('Write a comment…')).toBeInTheDocument()
     })
 
@@ -152,6 +172,9 @@ describe('MarkdownPanel comment/copy flow', () => {
     await waitFor(() => {
       expect(screen.getByText('1 comment pending')).toBeInTheDocument()
     })
+    // The paint-only highlight is lifted once the comment is recorded.
+    expect(highlightRegistry.has('mc-annotate')).toBe(false)
+    expect(preview.querySelector('mark')).toBeNull()
   })
 
   it('submits all comments to chat when Submit All is clicked', async () => {
@@ -162,11 +185,6 @@ describe('MarkdownPanel comment/copy flow', () => {
     mockSelectionInContainer(preview as HTMLElement, 'test paragraph')
     fireEvent.mouseUp(document, { clientX: 100, clientY: 80 })
 
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Comment' })).toBeInTheDocument()
-    })
-
-    fireEvent.click(screen.getByRole('button', { name: 'Comment' }))
     await waitFor(() => {
       expect(screen.getByPlaceholderText('Write a comment…')).toBeInTheDocument()
     })

@@ -34,6 +34,13 @@ interface UnifiedProvider {
    *  Only a provider knows WHICH action makes it available, so a core row explains
    *  itself here rather than sending the user to a generic setup page. */
   installHint?: string
+  /** Whether the published link is served with no authentication. Decides whether the
+   *  public-exposure warning and the blocking acknowledgment stand in front of the
+   *  confirm: both say the content is going onto the open internet, which is false for
+   *  a destination that stores it privately behind a login -- and a false gate teaches
+   *  the user to click past the true one. App rows are the public-web deploy surface,
+   *  so they are always reachable; a core row declares it via its descriptor. */
+  publicReachable: boolean
 }
 
 const ICONS: Record<string, typeof Globe> = { Globe, Upload, Settings, ExternalLink }
@@ -177,6 +184,7 @@ export function buildProviderList(
       configured: p.configured,
       setupRoute: p.setupRoute,
       app: p,
+      publicReachable: true,
     })
   }
   // Core-registry rows come SECOND, and an id already claimed by an app row is
@@ -200,6 +208,9 @@ export function buildProviderList(
       setupRoute: '',
       core: c,
       installHint: c.install_hint,
+      // Only an explicit `false` turns the gate off. An older gateway omits the
+      // field, and the wrong default there would be a public link with no warning.
+      publicReachable: c.public_reachable !== false,
     })
   }
   return list
@@ -279,11 +290,11 @@ export function PublishHub({
     setPreview(null)
     try {
       if (selected.core) {
-        // A core row does NOT publish here. PublicPublishAckModal is the blocking
-        // acknowledgment in front of every action that creates a publicly accessible
-        // website (#3599), and it is reached from the confirm step -- so posting on this
-        // first click would make content world-readable with no consent shown at all.
-        // The backend has no preview to return for this path, so the confirm step is
+        // A core row does NOT publish here. For a publicly reachable destination,
+        // PublicPublishAckModal is the blocking acknowledgment in front of the publish
+        // (#3599), and it is reached from the confirm step -- so posting on this first
+        // click would make content world-readable with no consent shown at all. The
+        // backend has no preview to return for this path, so the confirm step is
         // entered locally: consent is about what is ABOUT to happen, not about a digest.
         setPreview({ requires_confirm: true, core: true })
         return
@@ -410,6 +421,22 @@ export function PublishHub({
     }
   }
 
+  /** The one place a commit click lands, for BOTH paths (clean confirm and scan
+   *  override). A publicly reachable destination goes through the blocking
+   *  acknowledgment first, and the acknowledgment's confirm is what calls
+   *  `confirmPublish`. A destination that requires authentication publishes on this
+   *  click: the acknowledgment's sentence -- "publish publicly" -- is false there, and
+   *  the same `scanBlocked` reset the acknowledgment performs is done here so the
+   *  override path settles identically whichever way it went. */
+  const commitPublish = (overrideScan: boolean) => {
+    if (selected?.publicReachable !== false) {
+      setAck({ overrideScan })
+      return
+    }
+    if (overrideScan) setScanBlocked(null)
+    void confirmPublish(overrideScan)
+  }
+
   // While EITHER provider source is still loading, hold a skeleton rather than the
   // empty state. `unified.length === 0` is true during that window too, so without
   // this gate a stock build flashes "No publish providers available" before the core
@@ -500,12 +527,14 @@ export function PublishHub({
             {typeof preview.bytes === 'number' && <p>{i18nT('components.publishHub.size')} {(preview.bytes / 1024).toFixed(1)} {i18nT('components.publishHub.kb')}</p>}
             {typeof preview.scan === 'string' && <p>{i18nT('components.publishHub.scan')} {preview.scan}</p>}
           </div>
-          <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
-            <AlertTriangle className="lucide-inline shrink-0" />
-            <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
-          </div>
+          {selected.publicReachable && (
+            <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+              <AlertTriangle className="lucide-inline shrink-0" />
+              <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+            </div>
+          )}
           <div className="flex gap-2">
-            <Btn primary onClick={() => setAck({ overrideScan: false })} disabled={busy}>
+            <Btn primary onClick={() => commitPublish(false)} disabled={busy}>
               {busy ? i18nT('components.publishHub.publishing_2') : <><Upload size={12} /> {i18nT('components.publishHub.confirm_publish')}</>}
             </Btn>
             <Btn onClick={() => { setPreview(null); setSelectedId('') }}>{i18nT('components.publishHub.back')}</Btn>
@@ -536,12 +565,14 @@ export function PublishHub({
               <p className="text-[12px] text-muted">
                 {i18nT('components.publishHub.publishing_is_blocked_until_scan_findings_are_re')}
               </p>
-              <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
-                <AlertTriangle className="lucide-inline shrink-0" />
-                <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
-              </div>
+              {selected.publicReachable && (
+                <div className="flex items-start gap-2 text-[12px] text-warn p-2 rounded border border-warn/30 bg-warn-subtle">
+                  <AlertTriangle className="lucide-inline shrink-0" />
+                  <span>{i18nT('components.publishHub.public_exposure_warning')}</span>
+                </div>
+              )}
               <div className="flex gap-2">
-                <Btn danger onClick={() => setAck({ overrideScan: true })} disabled={busy}>
+                <Btn danger onClick={() => commitPublish(true)} disabled={busy}>
                   {busy ? i18nT('components.publishHub.publishing_2') : i18nT('components.publishHub.override_publish_anyway')}
                 </Btn>
                 <Btn onClick={() => { setScanBlocked(null); setSelectedId('') }}>{i18nT('components.publishHub.cancel')}</Btn>
@@ -641,7 +672,10 @@ export function PublishHub({
       )}
 
       {/* Blocking public-exposure acknowledgment — the last thing between a
-          human and a world-readable URL, for BOTH commit paths. */}
+          human and a world-readable URL, for BOTH commit paths. Opened only by
+          `commitPublish`, which never opens it for a destination that requires
+          authentication: there the URL is not world-readable and the
+          acknowledgment's own words would be untrue. */}
       <PublicPublishAckModal
         open={!!ack}
         target={artifact.slug}

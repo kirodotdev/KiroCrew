@@ -20,6 +20,7 @@ from aiohttp import web
 
 from kiro_crew._sqlite_compat import fts5_segment_for_index, sqlite3
 from kiro_crew.artifacts import get_default_store
+from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, data_home
 from kiro_crew.dashboard import part_stream
 from kiro_crew.dashboard.handlers._shared import read_bounded_json
@@ -50,12 +51,13 @@ from kiro_crew.knowledge.ingestion import (
     ImportChunkBudgetError,
     IngestionPipeline,
     _redact,
+    handoff_gate_context,
     rebuild_embeddings,
     start_rebuild_job,
 )
 from kiro_crew.knowledge.llm_pool import DEFAULT_EXTRACTION_EFFORT, LLMPool
 from kiro_crew.knowledge.readers import FileReader
-from kiro_crew.knowledge.retrieval import HybridRetriever
+from kiro_crew.knowledge.retrieval import HybridRetriever, vector_leg
 from kiro_crew.knowledge.spend import source_spend
 from kiro_crew.knowledge.store import (
     AUTO_REGISTRATION_RETIRED_PROP,
@@ -233,7 +235,7 @@ async def _start_watcher_async(app: web.Application) -> None:
     app["_knowledge_watcher_task"] = task
 
 
-async def _start_artifact_ingest_async(app: web.Application) -> None:
+async def _start_artifact_ingest_async(app: web.Application, cfg: KiroCrewConfig | None = None) -> None:
     """Wire artifact -> Knowledge Library sync when auto-ingest is enabled.
 
     Registers an in-process change-listener on the artifact store: every
@@ -246,8 +248,13 @@ async def _start_artifact_ingest_async(app: web.Application) -> None:
     window in which this was switched off is repaired rather than left permanent.
     Gated on ``knowledge.auto_ingest_artifacts`` (off by default). See
     ``kiro_crew.knowledge.artifact_ingest`` for the full design.
+
+    ``cfg`` is the already-loaded config when the live applier calls this with
+    the document the watcher just adopted; boot passes nothing and the load runs
+    off the loop, because ``KiroCrewConfig.load()`` is filesystem work.
     """
-    cfg = KiroCrewConfig.load()
+    if cfg is None:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if not cfg.knowledge.auto_ingest_artifacts:
         return
     pipeline = app["knowledge_pipeline"]
@@ -263,6 +270,84 @@ async def _start_artifact_ingest_async(app: web.Application) -> None:
     # Hold a reference so the listener binding isn't garbage-collected.
     app["artifact_knowledge_sync"] = sync
     await sync.start()
+
+
+async def _stop_artifact_ingest(app: web.Application) -> None:
+    """Unregister the artifact->Library listener and drop the sync object.
+
+    Detaching the listener is what actually stops the ingest: with it gone, an
+    artifact write does not reach the pipeline. Existing Library items are
+    LEFT in place -- turning auto-ingest off asks for no new ingests, not for a
+    retroactive delete of documents already searchable -- and a later re-enable
+    repairs the gap through the reconcile pass in
+    :func:`_start_artifact_ingest_async`.
+    """
+    sync = app.pop("artifact_knowledge_sync", None)
+    if sync is None:
+        return
+    try:
+        get_default_store().set_change_listener(None)
+    except Exception:
+        logger.warning("artifact auto-ingest: listener detach failed", exc_info=True)
+
+
+async def _apply_knowledge_config(app: web.Application, change: object) -> None:
+    """Apply a live ``knowledge.*`` change to the running ingest stack.
+
+    Three independent effects, each guarded so one failure cannot block the
+    others:
+
+    * ``embed_timeout_secs`` / ``embed_content_budget`` -- rebuild the embedder
+      and swap it into both the app key and the pipeline. The embedder holds no
+      connection, so a swap is a plain object replacement; an embed already in
+      flight finishes against the old one.
+    * ``auto_ingest_artifacts`` -- register or unregister the artifact listener,
+      so the toggle takes effect on the next artifact write.
+    * ``auto_ingest_artifact_kinds`` -- replace the kinds set on the live sync
+      object, which is the only thing the change gates.
+    """
+    new = getattr(change, "new")
+    touched = getattr(change, "touched")
+    if touched("knowledge.embed_timeout_secs", "knowledge.embed_content_budget"):
+        try:
+            embedder = await asyncio.to_thread(_create_embedder, app)
+            app["knowledge_embedder"] = embedder
+            pipeline = app.get("knowledge_pipeline")
+            if pipeline is not None:
+                pipeline.embedder = embedder
+        except Exception:
+            logger.warning("knowledge embedder rebuild failed; keeping the old one", exc_info=True)
+    if touched("knowledge.auto_ingest_artifacts"):
+        try:
+            if new.knowledge.auto_ingest_artifacts:
+                if app.get("artifact_knowledge_sync") is None:
+                    await _start_artifact_ingest_async(app, new)
+            else:
+                await _stop_artifact_ingest(app)
+        except Exception:
+            logger.warning("knowledge artifact auto-ingest rewire failed", exc_info=True)
+    if touched("knowledge.auto_ingest_artifact_kinds"):
+        sync = app.get("artifact_knowledge_sync")
+        if sync is not None:
+            sync.kinds = set(new.knowledge.auto_ingest_artifact_kinds)
+
+
+async def _watch_knowledge_config(app: web.Application) -> None:
+    """Register the knowledge appliers once the loop is running.
+
+    An ``on_startup`` hook rather than a call from ``setup_knowledge_routes``,
+    because the applier needs a running loop to re-register the artifact listener
+    and the subscription must outlive the setup call. The Subscription is held on
+    ``app`` so the watcher's weak reference to the bound closure stays alive for
+    the app's lifetime.
+    """
+
+    async def _applier(change: object) -> None:
+        await _apply_knowledge_config(app, change)
+
+    app["_knowledge_config_sub"] = live.subscribe(
+        "knowledge", callback=_applier, name="knowledge-routes"
+    )
 
 
 # ---------- Items ----------
@@ -422,13 +507,14 @@ async def list_items(request: web.Request) -> web.Response:
 
     if q:
         # Use hybrid search: FTS5 keyword + graph traversal + optional vector + RRF fusion.
-        # The availability probe and retriever.search (blocking query embed to
-        # Ollama) both do synchronous network I/O — run off-loop, mirroring
+        # The availability probe and retriever.search (its blocking query embed)
+        # both occupy the shared in-process model — run off-loop, mirroring
         # search_for_context below.
         embedder = request.app.get("knowledge_embedder")
-        embed_fn = embedder.embed if embedder and await embedder.is_available_async() else None
-        retriever = HybridRetriever(store, embedder=embed_fn)
-        # mc-embed bulkhead: the search's query embed blocks on Ollama.
+        available = bool(embedder) and await embedder.is_available_async()
+        embed_fn, embed_sig = vector_leg(embedder if available else None)
+        retriever = HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
+        # mc-embed bulkhead: the search's query embed blocks on the shared model.
         # The retriever ranks globally, so post-retrieval filtering can discard
         # an unbounded share of any fixed window: if enough higher-ranked hits
         # belong to other sources, a scoped search would report zero matches and
@@ -906,6 +992,72 @@ def _set_sync_status(store, source_id: str, status: str) -> None:
     store.db.commit()
 
 
+def _finalize_sync_status_write(
+    store, source_id: str, status: str, from_statuses: tuple[str, ...] = ("syncing",)  # type: ignore[no-untyped-def]
+) -> bool:
+    """CAS a terminal state over a row still mid-sync, in one off-loop take.
+
+    Compare-and-set for the reason ``_finalize_job`` documents: the terminal
+    paths race. A shutdown cancel can be delivered to the coroutine after the
+    success write's worker already committed 'synced', and a blind second
+    write would stamp 'error' over the state the work actually reached. Only
+    a row still in one of *from_statuses* is moved, so the loser's write
+    lands on nothing. The upload path passes ('syncing', 'pending') because a
+    cancel can land before its best-effort 'syncing' stamp, while the freshly
+    inserted row still reads the INSERT default 'pending'.
+    """
+    marks = ", ".join("?" for _ in from_statuses)
+    cur = store.db.execute(
+        f"UPDATE sources SET sync_status = ? WHERE id = ? AND sync_status IN ({marks})",
+        (status, source_id, *from_statuses))
+    store.db.commit()
+    return cur.rowcount > 0
+
+
+async def _finalize_sync_status(
+    store, source_id: str, status: str, from_statuses: tuple[str, ...] = ("syncing",)  # type: ignore[no-untyped-def]
+) -> None:
+    """Write a terminal ``sync_status`` from a finalizer, and never raise.
+
+    Runs inside an ``except BaseException`` arm, so an exception escaping here
+    would mask the original one -- a failed DB write is logged and dropped
+    instead. A re-cancel can interrupt the ``await`` before the worker returns;
+    a worker already RUNNING completes, so a write in flight still lands (only
+    a re-cancel that arrives before the executor picks the item up can drop
+    it). Suppressing the re-cancel keeps the caller's original exception
+    current for its bare ``raise`` (the same shape as
+    ``_rebuild_embeddings_job``'s finalize).
+    """
+    try:
+        with contextlib.suppress(asyncio.CancelledError):
+            await asyncio.to_thread(
+                _finalize_sync_status_write, store, source_id, status, from_statuses)
+    except Exception:
+        logger.exception(
+            "Could not finalize sync_status=%r for source %s", status, source_id)
+
+
+async def _write_status_cancel_safe(store, source_id: str, status: str) -> None:  # type: ignore[no-untyped-def]
+    """Write *status* so that a cancel cannot strand the row at 'syncing'.
+
+    An exception raised INSIDE an ``except`` arm is not caught by its sibling
+    arms, so a cancel delivered during a status write made from one (the
+    budget-deferral 'pending' writes) would otherwise propagate with the row
+    still 'syncing'. The worker also outlives the cancel, so it is drained
+    first; whatever it landed, the CAS finalize then moves only a row still
+    'syncing' -- a landed write leaves it nothing to do -- and the cancel is
+    re-raised.
+    """
+    write = asyncio.ensure_future(asyncio.to_thread(_set_sync_status, store, source_id, status))
+    try:
+        await asyncio.shield(write)
+    except asyncio.CancelledError:
+        with contextlib.suppress(BaseException):
+            await write
+        await _finalize_sync_status(store, source_id, "error")
+        raise
+
+
 def _claim_sync(store, source_id: str) -> bool:
     """Move a source into 'syncing' and report whether THIS call won it.
 
@@ -1250,14 +1402,16 @@ async def add_source(request: web.Request) -> web.Response:
         pipeline = request.app.get("knowledge_pipeline")
         if pipeline:
             task = asyncio.create_task(_ingest_local_file_task(pipeline, store, uri, sid))
-            app_tasks = request.app.setdefault("_bg_tasks", set())
+            app_tasks = _task_registry(request.app, "_bg_tasks")
             app_tasks.add(task)
             task.add_done_callback(app_tasks.discard)
 
     return web.json_response({"id": sid, "status": "created"}, status=201)
 
 
-async def _ingest_local_file_task(pipeline, store, path: str, source_id: str) -> None:  # type: ignore[no-untyped-def]
+async def _ingest_local_file_task(  # type: ignore[no-untyped-def]
+    pipeline, store, path: str, source_id: str, *, claim_settled: asyncio.Event | None = None
+) -> None:
     """Re-ingest a local_file source via the FileReader pipeline.
 
     Shared by add_source (initial ingest) and sync_source (manual re-sync) so both
@@ -1270,19 +1424,40 @@ async def _ingest_local_file_task(pipeline, store, path: str, source_id: str) ->
     leaving a row 'syncing' with no work behind it. It returns without touching
     the row at all in two cases: another sync already holds the claim, or the
     claim could not be taken -- neither is this source failing to sync.
+
+    *claim_settled* is set once the claim has been decided either way: a
+    scheduling caller that holds the ingestion gate across this task's claim
+    (``sync_source``) waits on it, so the orphan sweep cannot take an itemless
+    row in a terminal status between that caller's read and the claim here.
     """
+    claim = asyncio.ensure_future(asyncio.to_thread(_claim_sync, store, source_id))
     try:
-        claimed = await asyncio.to_thread(_claim_sync, store, source_id)
-    except Exception:
-        # Failing to TAKE the work is not the work failing. 'error' is terminal --
-        # sync_all skips an errored row on every sweep -- so stamping it for a
-        # transient writer-lock timeout would quiesce a healthy source until
-        # someone re-syncs by hand. Leave the row as it was and let the next sweep
-        # retry it. Caught rather than left to propagate: these tasks carry
-        # `add_done_callback(set.discard)`, which never retrieves an exception.
-        logger.exception(
-            "Could not claim sync for source %s; leaving its status untouched", source_id)
-        return
+        try:
+            claimed = await asyncio.shield(claim)
+        except asyncio.CancelledError:
+            # A cancel here does not stop the worker: the thread runs to
+            # completion and can still commit 'syncing' after this task is
+            # gone -- the same strand the work sites below close. Wait for the
+            # thread's answer and finalize only a claim THIS task won; a lost
+            # claim is a sibling sync's row. Everything is suppressed because
+            # a finalizer must never replace the cancellation.
+            with contextlib.suppress(BaseException):
+                if await claim:
+                    await _finalize_sync_status(store, source_id, "error")
+            raise
+        except Exception:
+            # Failing to TAKE the work is not the work failing. 'error' is terminal --
+            # sync_all skips an errored row on every sweep -- so stamping it for a
+            # transient writer-lock timeout would quiesce a healthy source until
+            # someone re-syncs by hand. Leave the row as it was and let the next sweep
+            # retry it. Caught rather than left to propagate: these tasks carry
+            # `add_done_callback(set.discard)`, which never retrieves an exception.
+            logger.exception(
+                "Could not claim sync for source %s; leaving its status untouched", source_id)
+            return
+    finally:
+        if claim_settled is not None:
+            claim_settled.set()
     if not claimed:
         return
     try:
@@ -1301,14 +1476,70 @@ async def _ingest_local_file_task(pipeline, store, path: str, source_id: str) ->
         # keeps 'pending' off an upload, whose only copy is the unlinked temp file.
         # SyncScheduler.sync_source treats this exception the same way.
         logger.warning("Ingestion deferred by import budget for %s: %s", path, exc)
-        await asyncio.to_thread(_set_sync_status, store, source_id, "pending")
-    except Exception:
-        logger.exception("Background ingestion failed for %s", path)
-        await asyncio.to_thread(_set_sync_status, store, source_id, "error")
+        await _write_status_cancel_safe(store, source_id, "pending")
+    except BaseException as exc:
+        # CancelledError is a BaseException in 3.8+, so an ``except Exception``
+        # arm lets a shutdown cancel skip finalization and strand the row at
+        # 'syncing' -- every later sync then answers 409 with no recovery. A
+        # cancelled sync lands in 'error' like any other incomplete sync (no
+        # new status value: the settings UI and the watcher read this column),
+        # and the cancellation is re-raised so task semantics are preserved --
+        # shutdown drains ``_bg_tasks`` by cancelling them. The shape follows
+        # ``_rebuild_embeddings_job``, this file's precedent.
+        is_cancel = isinstance(exc, asyncio.CancelledError)
+        if is_cancel:
+            logger.debug("Background ingestion cancelled for %s", path)
+        else:
+            logger.exception("Background ingestion failed for %s", path)
+        await _finalize_sync_status(store, source_id, "error")
+        if is_cancel:
+            raise
+
+
+async def _hand_off_under_gate(  # type: ignore[no-untyped-def]
+    request: web.Request, pipeline, make_task
+) -> asyncio.Task[None]:
+    """Start a background task while the ingestion gate is held, and keep the
+    hold until the task reports the row is protected.
+
+    The handler's own row read happens before the task exists, and an itemless
+    row in a terminal status is what the post-bind orphan sweep reclaims, so
+    without the hold the sweep could delete the row in that gap -- the client
+    told "syncing" / "processing" for a source that is gone. *make_task*
+    receives an event the task sets once the row is safe from the sweep: a
+    sync task once its 'syncing' claim is decided (``_claim_sync``), an upload
+    task once it holds its own gate. The caller enters the gate BEFORE this
+    call so its own lookup is covered too, and the gate's per-task re-entrancy
+    makes that outer hold the one that counts. The task is created in a
+    hand-off context: it takes a real hold of its own, admitted past any
+    maintenance window that began waiting while this hold is open, so the
+    wait below cannot deadlock against that window (``handoff_gate_context``).
+    """
+    settled: asyncio.Event = asyncio.Event()
+    async with pipeline.ingestion_in_flight():
+        # The task takes its own hold for its ingest, so it must not inherit
+        # this one through the copied context (it would read as nested).
+        task = asyncio.create_task(make_task(settled), context=handoff_gate_context())
+        app_tasks = _task_registry(request.app, "_bg_tasks")
+        app_tasks.add(task)
+        task.add_done_callback(app_tasks.discard)
+        await settled.wait()
+    return task
 
 
 async def sync_source(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/sync -- trigger sync for a source."""
+    pipeline = _pipeline(request)
+    if pipeline is None:
+        return await _sync_source_body(request)
+    # The gate is held from the row read through the task hand-off: an itemless
+    # row in a terminal status is what the post-bind orphan sweep reclaims, and
+    # the read here is what the branches below act on.
+    async with pipeline.ingestion_in_flight():
+        return await _sync_source_body(request)
+
+
+async def _sync_source_body(request: web.Request) -> web.Response:
     source_id = request.match_info["id"]
     store = _store(request)
     source = await asyncio.to_thread(_source_row, store, source_id)
@@ -1338,10 +1569,11 @@ async def sync_source(request: web.Request) -> web.Response:
             return web.json_response({"error": "pipeline not configured"}, status=503)
         # The task claims the row; this read is only the fast 409 for the common
         # case, so a lost claim ends the task rather than double-starting a sync.
-        task = asyncio.create_task(_ingest_local_file_task(pipeline, store, file_uri, source_id))
-        app_tasks = request.app.setdefault("_bg_tasks", set())
-        app_tasks.add(task)
-        task.add_done_callback(app_tasks.discard)
+        await _hand_off_under_gate(
+            request, pipeline,
+            lambda settled: _ingest_local_file_task(
+                pipeline, store, file_uri, source_id, claim_settled=settled),
+        )
         _sel_log("source.sync.local_file", source_id=source_id)
         return web.json_response({"synced": False, "status": "syncing", "source_id": source_id})
 
@@ -1362,34 +1594,53 @@ async def sync_source(request: web.Request) -> web.Response:
     if pool is None:
         # Compatibility for minimal callers that predate workload-isolated pools.
         pool = request.app["knowledge_llm_pool"]
-    task = asyncio.create_task(_background_agent_sync(source_id, url, source["name"], store, pipeline, pool))
-    app_tasks = request.app.setdefault("_bg_tasks", set())
-    app_tasks.add(task)
-    task.add_done_callback(app_tasks.discard)
+    await _hand_off_under_gate(
+        request, pipeline,
+        lambda settled: _background_agent_sync(
+            source_id, url, source["name"], store, pipeline, pool, claim_settled=settled),
+    )
     _sel_log("source.sync.agent", source_id=source_id, url=url)
     return web.json_response({"synced": False, "status": "syncing", "source_id": source_id})
 
 
 async def _background_agent_sync(  # type: ignore[no-untyped-def]
-    source_id: str, url: str, name: str, store, pipeline, pool: LLMPool
+    source_id: str, url: str, name: str, store, pipeline, pool: LLMPool,
+    *, claim_settled: asyncio.Event | None = None,
 ) -> None:
     """Background task: fetch content via agent, then ingest.
 
     Claims 'syncing' first, for the reason ``_ingest_local_file_task`` documents:
     the claim is atomic and the task owns both ends of the row's lifecycle.
+    *claim_settled* is set once the claim is decided (see that task).
     """
+    claim = asyncio.ensure_future(asyncio.to_thread(_claim_sync, store, source_id))
     try:
-        claimed = await asyncio.to_thread(_claim_sync, store, source_id)
-    except Exception:
-        # Failing to TAKE the work is not the work failing. 'error' is terminal --
-        # sync_all skips an errored row on every sweep -- so stamping it for a
-        # transient writer-lock timeout would quiesce a healthy source until
-        # someone re-syncs by hand. Leave the row as it was and let the next sweep
-        # retry it. Caught rather than left to propagate: these tasks carry
-        # `add_done_callback(set.discard)`, which never retrieves an exception.
-        logger.exception(
-            "Could not claim sync for source %s; leaving its status untouched", source_id)
-        return
+        try:
+            claimed = await asyncio.shield(claim)
+        except asyncio.CancelledError:
+            # A cancel here does not stop the worker: the thread runs to
+            # completion and can still commit 'syncing' after this task is
+            # gone -- the same strand the work sites below close. Wait for the
+            # thread's answer and finalize only a claim THIS task won; a lost
+            # claim is a sibling sync's row. Everything is suppressed because
+            # a finalizer must never replace the cancellation.
+            with contextlib.suppress(BaseException):
+                if await claim:
+                    await _finalize_sync_status(store, source_id, "error")
+            raise
+        except Exception:
+            # Failing to TAKE the work is not the work failing. 'error' is terminal --
+            # sync_all skips an errored row on every sweep -- so stamping it for a
+            # transient writer-lock timeout would quiesce a healthy source until
+            # someone re-syncs by hand. Leave the row as it was and let the next sweep
+            # retry it. Caught rather than left to propagate: these tasks carry
+            # `add_done_callback(set.discard)`, which never retrieves an exception.
+            logger.exception(
+                "Could not claim sync for source %s; leaving its status untouched", source_id)
+            return
+    finally:
+        if claim_settled is not None:
+            claim_settled.set()
     if not claimed:
         return
     try:
@@ -1412,10 +1663,18 @@ async def _background_agent_sync(  # type: ignore[no-untyped-def]
         logger.warning(
             "Agent sync deferred by import budget: source=%s url=%s: %s", source_id, url, exc
         )
-        await asyncio.to_thread(_set_sync_status, store, source_id, "pending")
-    except Exception:
-        logger.exception("Agent sync failed: source=%s url=%s", source_id, url)
-        await asyncio.to_thread(_set_sync_status, store, source_id, "error")
+        await _write_status_cancel_safe(store, source_id, "pending")
+    except BaseException as exc:
+        # ``except BaseException`` for the reason _ingest_local_file_task
+        # documents: a cancel must not strand the row at 'syncing'.
+        is_cancel = isinstance(exc, asyncio.CancelledError)
+        if is_cancel:
+            logger.debug("Agent sync cancelled: source=%s url=%s", source_id, url)
+        else:
+            logger.exception("Agent sync failed: source=%s url=%s", source_id, url)
+        await _finalize_sync_status(store, source_id, "error")
+        if is_cancel:
+            raise
 
 
 async def delete_source(request: web.Request) -> web.Response:
@@ -1531,9 +1790,26 @@ def _pause_source_row(store, source_id: str) -> bool:
     return True
 
 
+def _task_registry(app: web.Application, key: str) -> set:  # type: ignore[type-arg]
+    """The strong-reference set that keeps detached tasks alive under *key*.
+
+    ``setup_knowledge_routes`` seeds both registries while the app is still
+    mutable, so on a running server this is a plain read. The create branch
+    exists for an ``Application`` that skipped registration (a handler driven
+    directly, before any runner froze it); on a frozen app it would be the
+    deprecated post-start write, which is exactly what seeding at registration
+    avoids.
+    """
+    tasks = app.get(key)
+    if tasks is None:
+        tasks = set()
+        app[key] = tasks
+    return tasks
+
+
 def _track_scan_task(app: web.Application, task: asyncio.Task) -> None:  # type: ignore[type-arg]
     """Keep strong reference to scan task and log exceptions."""
-    tasks = app.setdefault("_scan_tasks", set())
+    tasks = _task_registry(app, "_scan_tasks")
     tasks.add(task)
     task.add_done_callback(tasks.discard)
     task.add_done_callback(lambda t: logger.exception("scan_source failed", exc_info=t.exception()) if not t.cancelled() and t.exception() else None)
@@ -1667,47 +1943,67 @@ async def ingest_text(request: web.Request) -> web.Response:
     """POST /api/knowledge/sources/{id}/ingest-text -- agent submits fetched text."""
     source_id = request.match_info["id"]
     store = _store(request)
-    source = await asyncio.to_thread(_source_row, store, source_id)
-    if not source:
-        return web.json_response({"error": "source not found"}, status=404)
     pipeline = _pipeline(request)
     if not pipeline:
         return web.json_response({"error": "pipeline not configured"}, status=503)
-    body, body_err = await read_bounded_json(request, max_bytes=None)
-    if body_err is not None:
-        return body_err
-    assert body is not None  # read_bounded_json returns (dict, None) on success
-    text = body.get("text", "")
-    if not text:
-        return web.json_response({"error": "no text provided"}, status=400)
-    redacted = _redact(text)
-    text = redacted if redacted is not None else text
-    name = body.get("name", source["name"])
-    namespace = body.get("namespace", "default")
-    # Write to temp file and ingest
-    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".md", prefix="agent_sync_")
-    try:
-        tmp.write(text.encode())
-        tmp.close()
-        job_id = await pipeline.ingest_file(tmp.name, original_name=name,
-                                            namespace=namespace, source_id=source_id)
-        # Update source status
-        await _audited_write(
-            partial(_set_sync_status, store, source_id, "synced"),
-            event="source.ingest_text", fields={"source_id": source_id, "name": name})
-        return web.json_response({"ok": True, "job_id": job_id})
-    except ImportChunkBudgetError as exc:
-        # The cross-file import budget deferred this ingest. Surface the reasoned
-        # refusal (429, not a generic 500) so the caller learns it is a transient
-        # budget deferral it can retry, not a server fault. Nothing was written.
-        return web.json_response(
-            {"error": str(exc), "code": "import_budget_exceeded"},
-            status=429)
-    except Exception:
-        logger.exception("Agent ingest_text failed for source %s", source_id)
-        return web.json_response({"error": "internal server error"}, status=500)
-    finally:
-        Path(tmp.name).unlink(missing_ok=True)
+    # The gate is held from the source lookup through the ingest: the orphan
+    # sweep reclaims an itemless source with a terminal status, and the body
+    # read below is an await between the two, so the whole span is one hold.
+    async with pipeline.ingestion_in_flight():
+        source = await asyncio.to_thread(_source_row, store, source_id)
+        if not source:
+            return web.json_response({"error": "source not found"}, status=404)
+        body, body_err = await read_bounded_json(request, max_bytes=None)
+        if body_err is not None:
+            return body_err
+        assert body is not None  # read_bounded_json returns (dict, None) on success
+        text = body.get("text", "")
+        if not text:
+            return web.json_response({"error": "no text provided"}, status=400)
+        redacted = _redact(text)
+        text = redacted if redacted is not None else text
+        name = body.get("name", source["name"])
+        namespace = body.get("namespace", "default")
+        # Write to temp file and ingest
+        tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".md", prefix="agent_sync_")
+        try:
+            tmp.write(text.encode())
+            tmp.close()
+            job_id = await pipeline.ingest_file(tmp.name, original_name=name,
+                                                namespace=namespace, source_id=source_id)
+            # Update source status. INVARIANT: the 'synced' write and the
+            # source.ingest_text audit ride in ONE worker take (_audited_write),
+            # with no await between them -- that is what makes the audit
+            # un-skippable by a cancellation. Do not split them or move one
+            # off-loop on its own.
+            await _audited_write(
+                partial(_set_sync_status, store, source_id, "synced"),
+                event="source.ingest_text", fields={"source_id": source_id, "name": name})
+            return web.json_response({"ok": True, "job_id": job_id})
+        except ImportChunkBudgetError as exc:
+            # The cross-file import budget deferred this ingest. Surface the reasoned
+            # refusal (429, not a generic 500) so the caller learns it is a transient
+            # budget deferral it can retry, not a server fault. Nothing was written.
+            return web.json_response(
+                {"error": str(exc), "code": "import_budget_exceeded"},
+                status=429)
+        except BaseException as exc:
+            # ``except BaseException`` so a cancel is seen and re-raised (task
+            # semantics), but this handler writes NO terminal status: it holds
+            # no claim, so a row reading 'syncing' here belongs to the sync
+            # task that requested this text, and that task's own finalizer
+            # clears it (a shutdown cancels every ``_bg_tasks`` member, this
+            # handler's caller included). Stamping 'error' from here would
+            # steal a live sibling claim and admit a concurrent replacement
+            # ingest. Non-cancel failures keep the existing 500 body.
+            is_cancel = isinstance(exc, asyncio.CancelledError)
+            if is_cancel:
+                logger.debug("Agent ingest_text cancelled for source %s", source_id)
+                raise
+            logger.exception("Agent ingest_text failed for source %s", source_id)
+            return web.json_response({"error": "internal server error"}, status=500)
+        finally:
+            Path(tmp.name).unlink(missing_ok=True)
 
 
 # ---------- Config ----------
@@ -1900,47 +2196,71 @@ async def ingest_file(request: web.Request) -> web.Response:
         # Create source record immediately so it appears in the UI
         store = _store(request)
         uri = f"upload://{filename}"
-        # One take: the UNIQUE uri decides, so a repeated upload of the same
-        # filename cannot race two inserts, and nothing is stamped here that a
-        # disconnect could commit before the extraction is scheduled.
-        source_id, _created = await asyncio.to_thread(
-            _add_source_unique, store,
-            name=filename, source_type='local_file', uri=uri, properties={},
-        )
 
-        # Run extraction in background so response returns immediately. The
-        # stamp lives here rather than in the handler so a disconnect cannot
-        # commit 'syncing' and then fail to schedule the work that clears it.
-        # A plain stamp, not a claim: an upload has no single-flight rule, and
-        # refusing the second one would drop a file the user just handed over.
-        async def _bg_ingest(tmp_path: str, src_id: str) -> None:
+        # Run extraction in background so response returns immediately. For a
+        # created row the stamp lives here rather than in the handler so a
+        # disconnect cannot commit 'syncing' and then fail to schedule the work
+        # that clears it. A plain stamp, not a claim: an upload has no
+        # single-flight rule, and refusing the second one would drop a file the
+        # user just handed over.
+        async def _bg_ingest(tmp_path: str, src_id: str, gate_taken: asyncio.Event) -> None:
+            # The task holds the ingestion gate from its own re-read through the
+            # ingest, so the deferred orphan sweep never reads the row's items,
+            # entities and mentions half-written. The handler keeps its own
+            # hold until `gate_taken` fires, so the two holds overlap and the
+            # sweep never sees the row unprotected. The re-read guards the one
+            # way the row can be gone by now -- a delete that landed between
+            # the response and this task -- and then the ingest is skipped:
+            # nothing is re-created behind a delete, and the client already
+            # holds an id that the delete answered for.
             try:
-                # A progress marker, never a precondition. The staged temp file is
-                # this upload's only server-side copy and the finally below unlinks
-                # it, so a contended writer lock on a cosmetic status write must
-                # not reach the except arm and take the file with it -- the client
-                # was already told 'processing'. ingest_file stamps the terminal
-                # status itself on both its paths (ingestion.py:1128 / 1144), so a
-                # skipped stamp costs a UI hint and heals on its own.
-                try:
-                    await asyncio.to_thread(_set_sync_status, store, src_id, "syncing")
-                except Exception:
-                    # The row id, not the filename: an upload's name is
-                    # client-supplied and can carry a secret, and the row is what
-                    # a reader needs to correlate a status write that did not land.
-                    logger.exception(
-                        "Could not stamp 'syncing' for source %s; ingesting anyway",
-                        src_id)
-                await pipeline.ingest_file(
-                    tmp_path, original_name=filename, namespace=namespace,
-                    source_id=src_id,
-                    # Admission was settled above, so this call must not enter the
-                    # budget again -- including when the reservation returned None
-                    # because the budget is disabled, which is the default.
-                    count_toward_import_budget=False,
-                    import_budget_token=budget_token,
-                )
-            except Exception:
+                async with pipeline.ingestion_in_flight():
+                    gate_taken.set()
+                    # Off-loop: the store hands out one connection per thread.
+                    if await asyncio.to_thread(_source_row, store, src_id) is None:
+                        logger.info("Upload: source %s removed before ingest; skipping", src_id)
+                        # ingest_file's finally is what returns the admission
+                        # otherwise; on this path nothing else will.
+                        pipeline.release_import_budget(budget_token)
+                        return
+                    # A progress marker, never a precondition. The staged temp file is
+                    # this upload's only server-side copy and the finally below unlinks
+                    # it, so a contended writer lock on a cosmetic status write must
+                    # not reach the except arm and take the file with it -- the client
+                    # was already told 'processing'. ingest_file stamps the terminal
+                    # status itself on both its paths (ingestion.py:1128 / 1144), so a
+                    # skipped stamp costs a UI hint and heals on its own.
+                    stamp = asyncio.ensure_future(
+                        asyncio.to_thread(_set_sync_status, store, src_id, "syncing"))
+                    try:
+                        await asyncio.shield(stamp)
+                    except asyncio.CancelledError:
+                        # The stamp's worker outlives a cancel and can commit
+                        # 'syncing' AFTER the outer arm's CAS finalize ran,
+                        # which would re-strand the row. Drain it, then
+                        # re-raise so the outer arm finalizes a stamp that has
+                        # actually landed -- the same shield-and-drain the
+                        # claim takes use.
+                        with contextlib.suppress(BaseException):
+                            await stamp
+                        raise
+                    except Exception:
+                        # The row id, not the filename: an upload's name is
+                        # client-supplied and can carry a secret, and the row is what
+                        # a reader needs to correlate a status write that did not land.
+                        logger.exception(
+                            "Could not stamp 'syncing' for source %s; ingesting anyway",
+                            src_id)
+                    await pipeline.ingest_file(
+                        tmp_path, original_name=filename, namespace=namespace,
+                        source_id=src_id,
+                        # Admission was settled above, so this call must not enter the
+                        # budget again -- including when the reservation returned None
+                        # because the budget is disabled, which is the default.
+                        count_toward_import_budget=False,
+                        import_budget_token=budget_token,
+                    )
+            except BaseException as exc:
                 # No dedicated ImportChunkBudgetError branch here, and none is
                 # reachable from the front door: admission was reserved above, so
                 # an exhausted window answered 429 before this task existed and
@@ -1950,15 +2270,73 @@ async def ingest_file(request: web.Request) -> web.Response:
                 # unlinks, and an upload:// source has no re-fetchable URI, so
                 # unlike the local_file / agent-url paths there is nothing to
                 # retry from and 'pending' would promise one.
-                logger.exception("Background ingestion failed for %s", filename)
+                # ``except BaseException`` for the reason _ingest_local_file_task
+                # documents: a cancel must not strand the row at 'syncing'.
+                is_cancel = isinstance(exc, asyncio.CancelledError)
+                if is_cancel:
+                    logger.debug("Background ingestion cancelled for %s", src_id)
+                else:
+                    logger.exception("Background ingestion failed for %s", filename)
+                # ('syncing', 'pending'): a cancel can land before this path's
+                # best-effort 'syncing' stamp -- during the source re-read --
+                # while a freshly inserted row still reads the INSERT default
+                # 'pending'. A committed 'synced' is still never overwritten.
+                # The re-read above sits between reserving the admission and
+                # handing it to ingest_file, so a failure there leaves the
+                # reservation open and its placeholder stranded in the window
+                # for the process lifetime. Release is a no-op once ingest_file
+                # has taken the token (its own finally settles or releases it),
+                # so this is safe on every path through the try -- the cancel
+                # path included. First, before the status write: that write
+                # must not skip the reclaim.
+                pipeline.release_import_budget(budget_token)
+                if is_cancel:
+                    await _finalize_sync_status(
+                        store, src_id, "error", from_statuses=("syncing", "pending"))
+                    raise
+                # Unconditional, NOT the CAS: this path's 'syncing' stamp is
+                # best-effort, so a failed stamp co-occurring with a failed
+                # ingest would leave the CAS nothing to move and the row
+                # holding a stale prior status over a deleted upload.
                 await asyncio.to_thread(_set_sync_status, store, src_id, "error")
             finally:
                 Path(tmp_path).unlink(missing_ok=True)
 
-        task = asyncio.create_task(_bg_ingest(str(staged), source_id))
-        app_tasks = request.app.setdefault("_bg_tasks", set())
-        app_tasks.add(task)
-        task.add_done_callback(app_tasks.discard)
+        # The gate is held from the lookup, through the re-used row's 'syncing'
+        # stamp, until the task holds its own gate: an itemless row in a
+        # terminal status from an earlier upload of this name is what the
+        # sweep reclaims, and the id goes back to the client in this response.
+        async with pipeline.ingestion_in_flight():
+            # One take: the UNIQUE uri decides, so a repeated upload of the same
+            # filename cannot race two inserts. A row this call CREATES is
+            # stamped by nothing here: the INSERT's own status keeps it out of
+            # the orphan sweep until its ingest ends, and a disconnect cannot
+            # commit a 'syncing' the scheduled work then never clears.
+            source_id, created = await asyncio.to_thread(
+                _add_source_unique, store,
+                name=filename, source_type='local_file', uri=uri, properties={},
+            )
+            if not created:
+                # Marking a re-used row owed an ingest keeps the id the client
+                # receives the row the ingest fills; a disconnect in between
+                # leaves a pre-existing row reading 'syncing', a hint the next
+                # upload of the name clears.
+                # A hint, never a precondition: this write sits inside the outer
+                # try, whose except unlinks the staged file -- the upload's only
+                # copy -- so a contended writer lock here must not turn a
+                # re-upload into a 500 with nothing ingested. The gate is held
+                # across the gap, and the task re-stamps under its own hold.
+                try:
+                    await asyncio.to_thread(_set_sync_status, store, source_id, "syncing")
+                except Exception:
+                    logger.exception(
+                        "Could not stamp 'syncing' for re-used source %s; ingesting anyway",
+                        source_id)
+            staged_path = str(staged)
+            await _hand_off_under_gate(
+                request, pipeline,
+                lambda gate_taken: _bg_ingest(staged_path, source_id, gate_taken),
+            )
 
         _sel_log("ingest", filename=filename)
         return web.json_response({"source_id": source_id, "status": "processing"})
@@ -2235,6 +2613,11 @@ async def _rebuild_embeddings_job(app: web.Application, store, embedder, job_id:
     the watcher self-heal path shares one implementation. Vectors are overwritten
     one item at a time, so existing vectors stay queryable throughout -- search
     degrades gracefully during the rebuild instead of going dark.
+
+    PRIORITY_NORMAL, stated rather than defaulted: this is the ATTENDED rebuild --
+    a user clicked it and is polling the job row for progress -- so it keeps the
+    full interactive pool. The watcher's unattended twin passes PRIORITY_BULK, and
+    the difference is the point.
     """
     try:
         # pace=False: this job exists because a human clicked Rebuild and is
@@ -2310,7 +2693,7 @@ async def batch_embed_items(request: web.Request) -> web.Response:
             )
         task = asyncio.create_task(
             _rebuild_embeddings_job(request.app, store, embedder, job_id, force=force))
-        app_tasks = request.app.setdefault("_bg_tasks", set())
+        app_tasks = _task_registry(request.app, "_bg_tasks")
         app_tasks.add(task)
         task.add_done_callback(app_tasks.discard)
         return web.json_response({"job_id": job_id, "status": "processing"})
@@ -2401,12 +2784,13 @@ async def search_for_context(request: web.Request) -> web.Response:
         limit = top_n
 
     embedder = request.app.get("knowledge_embedder")
-    embed_fn = embedder.embed if embedder and await embedder.is_available_async() else None
-    retriever = HybridRetriever(store, embedder=embed_fn)
+    available = bool(embedder) and await embedder.is_available_async()
+    embed_fn, embed_sig = vector_leg(embedder if available else None)
+    retriever = HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
     # HybridRetriever.search runs on an mc-embed worker thread; KnowledgeStore
     # hands each thread its own sqlite connection, so all sqlite
-    # access is thread-safe here. mc-embed bulkhead: the query embed
-    # blocks on Ollama.
+    # access is thread-safe here. mc-embed bulkhead: the query embed occupies
+    # the shared model.
     results = await run_in_embed_pool(retriever.search, q, limit=limit)
 
     cards = []
@@ -2489,6 +2873,14 @@ async def _shutdown_knowledge_pools(app: web.Application) -> None:
 
 
 def setup_knowledge_routes(app: web.Application) -> None:
+    # The detached-task registries are created here, while the app is still
+    # mutable: aiohttp freezes the application when its runner starts, and a
+    # first-use ``setdefault`` from a request handler is then a write to a
+    # frozen app (deprecated today, an error in a later aiohttp). Other route
+    # sets on the same app share ``_bg_tasks``, hence setdefault rather than
+    # assignment.
+    app.setdefault("_bg_tasks", set())
+    app.setdefault("_scan_tasks", set())
     # Initialize pipeline and sync scheduler if not already set
     if "knowledge_pipeline" not in app:
         store = app["state"].knowledge_store
@@ -2497,6 +2889,9 @@ def setup_knowledge_routes(app: web.Application) -> None:
             pool_size=cfg.knowledge.extraction_pool_size,
             effort=DEFAULT_EXTRACTION_EFFORT,
             use_config_pool_size=False,
+            # Seeded from knowledge.extraction_pool_size above, so it follows a
+            # later write to that key (applied at the next idle boundary).
+            track_config_pool_size=True,
         )
         fetch_pool = LLMPool(
             pool_size=1,
@@ -2551,6 +2946,9 @@ def setup_knowledge_routes(app: web.Application) -> None:
         app.on_startup.append(_start_watcher_async)
         # Start artifact ingest watcher (no-op unless auto-ingest is enabled)
         app.on_startup.append(_start_artifact_ingest_async)
+        # Follow knowledge.* live: embedder tuning, artifact auto-ingest on/off,
+        # and the eligible artifact kinds.
+        app.on_startup.append(_watch_knowledge_config)
 
     app.router.add_get("/api/knowledge/config", get_config)
     app.router.add_get("/api/knowledge/items", list_items)

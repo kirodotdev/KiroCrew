@@ -40,6 +40,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections.abc import Iterable, Mapping
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.loader import (
@@ -47,6 +48,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     _coerce_session_folder,
 )
+from kiro_crew.config.schema import requires_restart
 from kiro_crew.sel import sel
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -73,11 +75,31 @@ CHANNEL_CONFIG_SECTIONS: dict[str, str] = {
 }
 
 
-#: Channel config fields the runtime re-reads live, so changing one alone does
-#: NOT require a gateway restart (unlike the boot-read credential and allow-list
-#: fields). ``session_folder`` is re-read on every reconcile pass, so a new value
-#: applies to the next conversation surfaced.
-LIVE_RELOAD_FIELDS = frozenset({"session_folder"})
+def channel_restart_required(
+    section: str,
+    fields: Iterable[str],
+    *,
+    env_updates: Mapping[str, object] | None = None,
+) -> bool:
+    """Whether a channel save needs a gateway restart to take effect.
+
+    Answers from the config SCHEMA -- ``kiro_crew.config.schema.requires_restart``
+    marks the fields that genuinely cannot be applied to a running gateway
+    (``restart=True`` in the field's metadata) -- so one declaration serves the
+    save handler, the dashboard hint and the schema endpoint instead of three
+    hand-maintained lists that drift apart. There is deliberately no per-channel
+    table here to fall back on: a second list is a second place to drift.
+
+    A credential write always requires a restart: credentials are hoisted at
+    connect time from the environment, and the config watcher does not watch
+    ``.env``.
+    """
+    if env_updates:
+        return True
+    staged = {str(f) for f in fields}
+    if not staged:
+        return False
+    return any(requires_restart(f"{section}.{field}") for field in sorted(staged))
 
 
 def clean_session_folder(raw: object) -> str:

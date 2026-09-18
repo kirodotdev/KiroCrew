@@ -1,4 +1,4 @@
-"""Acceptance tests for the leaked tool-call notice (#6112).
+"""Acceptance tests for the leaked tool-call notice.
 
 The bug: the model emits an invoke-block tool invocation into its TEXT channel
 instead of executing it (observed when the target is a deferred MCP tool whose

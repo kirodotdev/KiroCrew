@@ -1,4 +1,4 @@
-"""Tests for :mod:`kiro_crew.agent_scratch` (issue #5063).
+"""Tests for :mod:`kiro_crew.agent_scratch`.
 
 Everything runs against a monkeypatched data home under ``tmp_path``; the
 real ``<data home>/scratch`` is never touched.
@@ -138,3 +138,57 @@ class TestLivenessSweep:
 
         assert removed == 0
         assert victim.exists() and (victim / "keep").exists()
+
+    #: Large enough that a capped walk would misread the tree as active;
+    #: a local constant so the test stands on its own.
+    LARGE_TREE_ENTRIES = 10_001
+
+    @classmethod
+    def _build_large_tree(cls, path: Path) -> Path:
+        """Populate *path* with an over-cap ``target/`` tree; return one deep file."""
+        target = path / "target"
+        deep = target / "debug" / "deps"
+        deep.mkdir(parents=True)
+        for i in range(cls.LARGE_TREE_ENTRIES):
+            (target / f"unit-{i}.o").touch()
+        deep_file = deep / "artifact.rlib"
+        deep_file.touch()
+        return deep_file
+
+    def test_dead_idle_tree_larger_than_former_scan_cap_is_reclaimed(
+        self, scratch_root: Path
+    ) -> None:
+        # A capped walk bails to the sweep-timestamp fallback on a tree this
+        # large and misreads it as permanently active; the uncapped walk must
+        # reclaim a dead owner's cargo-target-sized residue.
+        path = sc.allocate_scratch("bigdead")
+        sc.record_owner(path, 2**22 - 1)  # almost surely dead
+        self._build_large_tree(path)
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+
+        assert sc.sweep_dead_scratch(now=now) == 1
+        assert not path.exists()
+
+    def test_live_owner_large_tree_is_kept(self, scratch_root: Path) -> None:
+        # Size must not cause deletion: a live owner keeps its tree however
+        # large and however idle.
+        path = sc.allocate_scratch("biglive")
+        live_ref = os.getpid() if sys.platform == "win32" else os.getpgrp()
+        sc.record_owner(path, live_ref)
+        self._build_large_tree(path)
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+
+        assert sc.sweep_dead_scratch(now=now) == 0
+        assert path.exists()
+
+    def test_fresh_deep_write_in_large_dead_tree_keeps_it(self, scratch_root: Path) -> None:
+        # The uncapped walk must still see a fresh write deep inside a large
+        # dead-owner tree: one recent file anywhere reads as in-use.
+        path = sc.allocate_scratch("bigfresh")
+        sc.record_owner(path, 2**22 - 1)  # dead owner
+        deep_file = self._build_large_tree(path)
+        now = time.time() + 2 * sc._UNOWNED_GRACE_SECONDS
+        os.utime(deep_file, (now, now))  # the one fresh entry
+
+        assert sc.sweep_dead_scratch(now=now) == 0
+        assert path.exists()

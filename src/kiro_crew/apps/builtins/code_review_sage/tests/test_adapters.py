@@ -215,7 +215,7 @@ class TestGithubParse(unittest.TestCase):
     def test_metadata(self):
         self.assertEqual(self.t.author, "zejiangg")
         self.assertEqual(self.t.target_branch, "main")
-        # head SHA is the commit_id used to anchor draft comments.
+        # head SHA is the commit_id that anchors draft comments.
         self.assertEqual(self.t.revision, "fb58081a1c0ffee0000000000000000000000000")
         self.assertTrue(self.t.is_fix)
         self.assertEqual(self.t.linked_issue, "#3250")

@@ -142,9 +142,9 @@ def _inject(state, job, result_text, **kw):
     """The injection, with the transcript read its async callers now prefetch.
 
     ``history`` is a required parameter in production so that no async caller can
-    leave the whole-transcript parse on the event loop (issue #7408). These tests
+    leave the whole-transcript parse on the event loop. These tests
     drive the function synchronously, where a blocking read is the caller's own
-    cost, so the read that used to live inside the injection lives here instead.
+    cost, so the read the injection performs in production lives here instead.
     """
     kw.setdefault(
         "history",
@@ -166,8 +166,8 @@ class TestInjectCronResultToDashboard:
     def test_history_is_required_so_the_read_cannot_land_on_the_loop(self):
         """Omitting the prefetch is a TypeError at the call, not a production stall.
 
-        Four of the five defects issue #7408 fixed were async callers that simply
-        did not pass ``history=``, leaving this synchronous function to parse the
+        The failure mode is an async caller that simply
+        does not pass ``history=``, leaving this synchronous function to parse the
         whole transcript on the event loop. The parameter has no default so that
         omission cannot compile, rather than being caught by a convention in a
         spec file.
@@ -178,7 +178,7 @@ class TestInjectCronResultToDashboard:
     def test_slot_is_tagged_cron_not_user(self):
         """A cron result is the job's output, not something the person typed.
 
-        The slot used to be created untagged and then labelled USER by
+        An untagged slot would be labelled USER by
         get_or_create_slot's default, which put private cron content inside the
         ``slots:user`` WS scope -- so any app holding that scope received it.
         """
@@ -263,7 +263,7 @@ class TestInjectCronResultToDashboard:
     def test_two_runs_with_identical_text_stay_two_rows(self):
         """Different runs must not collapse into one undated row.
 
-        A daily job whose output repeats used to dedup the second day away, so
+        A daily job whose output repeats would dedup the second day away, so
         the tab showed one row for N runs and a follow-up turn could not tell
         which run it was answering. The per-run stamp keeps them distinct.
         """
@@ -456,7 +456,7 @@ class TestInjectCronResultToDashboard:
         # A long A, so suppression is in scope at all; the placeholder run is
         # short (below the reference threshold) and so is always stored verbatim,
         # exactly as a real such message would be -- which is what plants the
-        # collision the scan used to trip on.
+        # collision the scan would trip on.
         placeholder = _UNCHANGED_PROMPT_BODY
         assert len(placeholder) < _MIN_PROMPT_CHARS_TO_REFERENCE
         row_a = (
@@ -1137,7 +1137,7 @@ class TestPersistsResultToConversationLog:
         # The log-level duplicate check is now performed ATOMICALLY inside
         # append_if_absent (under the per-session lock), not as a separate
         # unlocked read_messages probe at the inject layer. The inject path must
-        # delegate to append_if_absent and no longer do its own log-persist.
+        # delegate to append_if_absent and not do its own log-persist.
         # (append_if_absent's own skip-on-duplicate behavior is covered by
         # test_history_locking_remediation::TestAppendIfAbsent.)
         state = _make_state()

@@ -138,11 +138,7 @@ def environment_vars(cfg: PodConfig) -> dict[str, str]:
         ("KIROCREW_POD_UNIT_PREFIX", cfg.unit_prefix, DEFAULT_UNIT_PREFIX),
         ("KIROCREW_POD_PATH", cfg.gateway_path, None),  # always pin PATH
     ]
-    out = {
-        key: val
-        for key, val, default in candidates
-        if default is None or val != default
-    }
+    out = {key: val for key, val, default in candidates if default is None or val != default}
     # Optional resolvers — pinned only when set. boot() normally reads the pinned
     # CHECKOUT= from the per-pod env file directly, so these are belt-and-braces
     # so a booted service can still resolve the same repo/root the CLI used.
@@ -150,6 +146,12 @@ def environment_vars(cfg: PodConfig) -> dict[str, str]:
         out["KIROCREW_POD_REPO"] = str(cfg.repo_hint)
     if cfg.worktrees_root is not None:
         out["KIROCREW_POD_WORKTREES_ROOT"] = str(cfg.worktrees_root)
+    # Named for what the GATEWAY reads, not for the knob that set it: the pod's
+    # gateway resolves its agent backend from KIROCREW_KIRO_BIN, so pinning any
+    # other key would land in the service definition and change nothing. Emitted
+    # only when the plane asked for it, so a default plane is byte-identical.
+    if cfg.kiro_bin is not None:
+        out["KIROCREW_KIRO_BIN"] = str(cfg.kiro_bin)
     return out
 
 
@@ -182,6 +184,21 @@ class PodConfig:
     # Optional: last-resort name->path root used only when git resolution can't
     # be used (hermetic test/CI planes). Unset by default — git is primary.
     worktrees_root: Path | None
+    # Optional: the agent backend a booted pod's gateway spawns, pinned into the
+    # service definition as KIROCREW_KIRO_BIN. Unset by default, so an ordinary
+    # pod resolves the host's real kiro-cli exactly as before.
+    #
+    # Exists because a booted pod starts from the service manager's clean
+    # environment, so nothing a caller exports reaches it: `pod up` could not
+    # hand a pod the packaged fake ACP backend, and an offline CI runner had no
+    # way to drive a real agent turn inside a pod at all. Pinned through
+    # `environment_vars` rather than either backend directly, so the systemd unit
+    # and the launchd plist cannot drift on it.
+    #
+    # Defaulted, unlike its optional siblings above, so an existing
+    # ``PodConfig(...)`` call site keeps compiling: this knob adds a capability
+    # and every plane that does not ask for it must stay byte-identical.
+    kiro_bin: Path | None = None
 
     @classmethod
     def load(cls) -> "PodConfig":
@@ -211,6 +228,7 @@ class PodConfig:
             gateway_path=os.environ.get("KIROCREW_POD_PATH", default_path),
             repo_hint=_env_path_opt("KIROCREW_POD_REPO"),
             worktrees_root=_env_path_opt("KIROCREW_POD_WORKTREES_ROOT"),
+            kiro_bin=_env_path_opt("KIROCREW_POD_KIRO_BIN"),
         )
 
     # ---- derived locations -------------------------------------------------

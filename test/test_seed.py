@@ -8,7 +8,6 @@ regression guard for unknown fixture names. Non-empty target, main-home guardrai
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -16,13 +15,8 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conftest import make_dir_link, requires_symlinks
-from kiro_crew import pinned_fs
+from kiro_crew import cli, pinned_fs, platform_compat
 from kiro_crew import seed as seed_mod
-
-# A test here spawns a real `python -m kiro_crew gateway --help` child interpreter;
-# pin the module to a dedicated xdist worker so concurrent cold-starts under -n auto
-# don't starve each other / blow the 30s timeout. Requires --dist loadgroup.
-pytestmark = pytest.mark.xdist_group(name="subprocess_spawn")
 
 
 def test_seed_empty_happy_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -82,9 +76,7 @@ def test_seed_unset_home_raises(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "KIROCREW_HOME" in str(excinfo.value)
 
 
-def test_seed_unknown_fixture_raises(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_unknown_fixture_raises(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """Unknown fixture name raises SeedError with exit code 2.
 
     Regression guard for ``_resolve_fixture`` — if fixture dir lookup ever
@@ -164,13 +156,13 @@ def test_seed_path_traversal_rejected(
     # char names (``"foo\x00bar"``, ``"foo\nbar"``) also hit gate 1 via
     # the ``ord(c) < 0x20`` check (SEC-1 regression guard).
     if name in ("", ".", "./") or any(ord(c) < 0x20 for c in name):
-        assert "empty or refers to the root" in str(excinfo.value), (
-            f"expected empty-or-root gate to reject {name!r}, got: {excinfo.value}"
-        )
+        assert "empty or refers to the root" in str(
+            excinfo.value
+        ), f"expected empty-or-root gate to reject {name!r}, got: {excinfo.value}"
     else:
-        assert "path separators or '..'" in str(excinfo.value), (
-            f"expected path-separator gate to reject {name!r}, got: {excinfo.value}"
-        )
+        assert "path separators or '..'" in str(
+            excinfo.value
+        ), f"expected path-separator gate to reject {name!r}, got: {excinfo.value}"
 
 
 @patch("kiro_crew.seed.sel")
@@ -196,56 +188,45 @@ def test_seed_cmd_exit_code_on_unset(
     assert err.startswith("seed: error:")
 
 
-def test_seed_cli_flag_registered(tmp_path: Path) -> None:
-    """``kirocrew gateway --help`` mentions ``--seed FIXTURE``.
+def test_seed_cli_flag_registered(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """``kirocrew gateway --help`` documents ``--seed FIXTURE``.
 
-    Tracer-bullet acceptance from the ticket: prove the CLI
-    wiring end-to-end. In Phase 1.A the seed primitive is invoked as
-    ``kirocrew gateway --seed <fixture>`` (it seeds ``$KIROCREW_HOME``
-    and THEN continues into the gateway event loop) — we can't let the
-    subprocess actually run because ``run_gateway`` is a long-lived
-    server. ``--help`` exits 0 after printing usage, which is enough to
-    verify the flag is registered and the seed_cmd wiring imports clean.
+    The seed primitive is invoked as ``kirocrew gateway --seed <fixture>``: it
+    seeds ``$KIROCREW_HOME`` and THEN continues into the gateway event loop, so
+    the flag has to be registered on the ``gateway`` subparser specifically.
+    ``--seed`` is registered TWICE in the CLI — once here and once on ``pod
+    up`` — so this renders the gateway subcommand's own help rather than
+    searching the whole parser, which would still pass if this registration
+    were deleted.
+
+    ``cli.main()`` builds the parser and argparse answers ``--help`` by printing
+    usage and raising ``SystemExit(0)``, which is the in-process equivalent of
+    the exit code a child process would report. The environment is pinned
+    because ``main()`` reads it before parsing: ``KIROCREW_PORT`` is validated
+    (and exits 1 when unparseable), ``KIROCREW_PROJECT_DIR`` short-circuits a
+    filesystem probe for the project root, and the two sandbox markers are
+    popped outright. ``ensure_utf8_console`` is stubbed because it reconfigures
+    the interpreter's stdout on Windows, which would disturb pytest's capture.
     """
-    repo_root = Path(__file__).resolve().parent.parent
-    import os as _os
+    monkeypatch.setattr(cli.platform_compat, "ensure_utf8_console", lambda: None)
+    monkeypatch.delenv("KIROCREW_PORT", raising=False)
+    monkeypatch.setenv("KIROCREW_PROJECT_DIR", str(Path(__file__).resolve().parent.parent))
+    # main() pops these; let monkeypatch own them so the caller's values return.
+    monkeypatch.setenv("KIROCREW_SANDBOX_ACTIVE", "")
+    monkeypatch.setenv("KIROCREW_SANDBOX_LEVEL", "")
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.setattr(sys, "argv", ["kirocrew", "gateway", "--help"])
 
-    env = {**_os.environ, "HOME": str(tmp_path)}
-    # Preserve user site-packages: overriding HOME loses ~/.local/lib/pythonX.Y
-    # where deps like croniter/cron_descriptor live when not system-installed.
-    real_home = _os.environ.get("HOME", "")
-    if real_home:
-        import site
-        user_site = site.getusersitepackages()
-        if isinstance(user_site, str) and _os.path.isdir(user_site):
-            existing_pp = env.get("PYTHONPATH", "")
-            if existing_pp:
-                env["PYTHONPATH"] = user_site + _os.pathsep + existing_pp
-            else:
-                env["PYTHONPATH"] = user_site
-    # Guard against trailing separator when PYTHONPATH is unset — a trailing
-    # ":" on POSIX adds CWD to sys.path, which would import unexpected
-    # modules depending on where pytest runs.
-    existing_pypath = env.get("PYTHONPATH", "")
-    env["PYTHONPATH"] = str(repo_root / "src") + (
-        _os.pathsep + existing_pypath if existing_pypath else ""
-    )
-    env["KIROCREW_PROJECT_DIR"] = str(repo_root)
+    with pytest.raises(SystemExit) as exit_info:
+        cli.main()
 
-    result = subprocess.run(
-        [sys.executable, "-m", "kiro_crew", "gateway", "--help"],
-        env=env,
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert result.returncode == 0, (
-        f"expected exit 0 from --help, got {result.returncode}\n"
-        f"stdout: {result.stdout}\nstderr: {result.stderr}"
-    )
+    assert exit_info.value.code == 0, f"expected exit 0 from --help, got {exit_info.value.code}"
+    help_text = capsys.readouterr().out
     # The flag must be registered and documented.
-    assert "--seed" in result.stdout
-    assert "FIXTURE" in result.stdout
+    assert "--seed" in help_text
+    assert "FIXTURE" in help_text
 
 
 # ------------------------------------------------------------------
@@ -359,10 +340,9 @@ def test_seed_cmd_emits_sel_audit_on_copytree_oserror(
        ternary in ``seed_cmd`` had no coverage of the ``error`` branch.
 
     Triggers the failure by patching ``shutil.copytree`` to raise a disk-
-    full-style ``OSError``. 1.A's ``FileExistsError`` trigger (pre-creating
-    ``dst``) no longer works after 1.B because empty-dir targets are
-    accepted — and populated targets hit the non-empty guardrail (``denied``,
-    not ``error``).
+    full-style ``OSError``. Pre-creating ``dst`` cannot reach this branch: an
+    empty-dir target is accepted, and a populated target hits the non-empty
+    guardrail (``denied``, not ``error``).
     """
     target = tmp_path / "home"
     monkeypatch.setenv("KIROCREW_HOME", str(target))
@@ -378,9 +358,7 @@ def test_seed_cmd_emits_sel_audit_on_copytree_oserror(
     assert rc == seed_mod.EXIT_IO_ERROR
     # ``seed: error:`` prefix contract: plain-ASCII, never a traceback.
     err = capsys.readouterr().err
-    assert err.startswith("seed: error:"), (
-        f"expected ASCII error prefix, got: {err!r}"
-    )
+    assert err.startswith("seed: error:"), f"expected ASCII error prefix, got: {err!r}"
     # SEL audit event fires with outcome="error".
     kw = mock_sel().log_api_access.call_args.kwargs
     assert kw["outcome"] == "error"
@@ -427,9 +405,7 @@ def test_seed_cmd_safe_audit_logs_warning_on_swallowed_failure(
     assert rc == seed_mod.EXIT_OK
     # Exactly one WARNING record from our audit handler.
     audit_records = [
-        r
-        for r in caplog.records
-        if r.name == "kiro_crew.seed" and r.levelno == logging.WARNING
+        r for r in caplog.records if r.name == "kiro_crew.seed" and r.levelno == logging.WARNING
     ]
     assert len(audit_records) == 1, (
         f"expected exactly one WARNING log from _safe_audit on sel() failure; "
@@ -447,9 +423,7 @@ def test_seed_cmd_safe_audit_logs_warning_on_swallowed_failure(
 # ------------------------------------------------------------------
 
 
-def test_seed_main_home_rail_refuses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_main_home_rail_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``$KIROCREW_HOME=~/.kirocrew`` exits 2 with 'refusing to seed main
     gateway home' message, even when the path doesn't exist yet.
 
@@ -473,9 +447,7 @@ def test_seed_main_home_rail_refuses(
     assert not target.exists()
 
 
-def test_seed_new_home_rail_refuses(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_new_home_rail_refuses(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``$KIROCREW_HOME=~/.kiro/crew`` (the post-move default home) is refused
     too — the guardrail protects the CURRENT main gateway home, not just the
     pre-move legacy ``~/.kirocrew``.
@@ -517,9 +489,9 @@ def test_seed_main_home_rail_refuses_even_with_replace(
     assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
     assert "refusing to seed main gateway home" in str(excinfo.value)
     # The main-home guardrail MUST fire before rmtree runs.
-    assert (target / "real_user_data.txt").exists(), (
-        "CRITICAL: --seed-replace wiped main gateway home despite guardrail"
-    )
+    assert (
+        target / "real_user_data.txt"
+    ).exists(), "CRITICAL: --seed-replace wiped main gateway home despite guardrail"
     assert (target / "real_user_data.txt").read_text(encoding="utf-8") == "don't delete me"
 
 
@@ -737,9 +709,7 @@ def test_seed_cmd_missing_seed_replace_attr_defaults_false(
 # ------------------------------------------------------------------
 
 
-def test_seed_resolve_failure_fails_closed(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_resolve_failure_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``resolve()`` raising ``OSError`` in the main-home check denies, not allows.
 
     Regression guard for review-bot rev 11 post #31 (security-controls,
@@ -826,7 +796,12 @@ def test_seed_cmd_empty_seed_routes_to_seed_cmd(
         # (setup_fn, expected guardrail, replace flag)
         ("main_home", "main_home", False),
         ("non_empty", "non_empty", False),
-        ("symlinked_target", "symlink_replace", True),
+        # Marked on the CASE, not the test: this is the only branch that creates a
+        # symlink, and creating one on Windows needs SeCreateSymbolicLinkPrivilege --
+        # held by CI's runner and by an elevated shell, not by an ordinary one. The
+        # two branches above need no privilege and must keep running everywhere, so
+        # skipping the whole test would give up coverage to satisfy one case.
+        pytest.param("symlinked_target", "symlink_replace", True, marks=requires_symlinks),
     ],
 )
 def test_seed_audit_uses_rail_tag_not_raw_path(
@@ -879,20 +854,20 @@ def test_seed_audit_uses_rail_tag_not_raw_path(
 
         kw = mock_sel().log_api_access.call_args.kwargs
         # Guardrail constant present.
-        assert f"guardrail={expected_rail}" in kw["resources"], (
-            f"expected guardrail={expected_rail} in audit, got: {kw['resources']!r}"
-        )
+        assert (
+            f"guardrail={expected_rail}" in kw["resources"]
+        ), f"expected guardrail={expected_rail} in audit, got: {kw['resources']!r}"
         # Resolved target path must NOT leak into the audit stream —
         # that's the point of the guardrail-tag refactor.
-        resolved = target.resolve(strict=False) if target.exists() or target.is_symlink() else target
-        assert str(resolved) not in kw["resources"], (
-            f"audit leaked resolved path {resolved!r}: {kw['resources']!r}"
+        resolved = (
+            target.resolve(strict=False) if target.exists() or target.is_symlink() else target
         )
+        assert (
+            str(resolved) not in kw["resources"]
+        ), f"audit leaked resolved path {resolved!r}: {kw['resources']!r}"
 
 
-def test_seed_regular_file_target_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_regular_file_target_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``$KIROCREW_HOME`` pointing at a regular file raises GUARDRAIL_NOT_A_DIRECTORY.
 
     Regression guard (review nit #43): before this fix, a
@@ -1055,16 +1030,12 @@ def test_seed_double_resolve_target_called_once_per_role(
     monkeypatch.setattr(seed_mod, "_resolve_target", _spy)
     seed_mod.seed("empty")
 
-    assert calls == [True, False], (
-        f"expected [for_main_home_check=True, False] got {calls!r}"
-    )
+    assert calls == [True, False], f"expected [for_main_home_check=True, False] got {calls!r}"
     assert (target / "fixture.yaml").is_file()
 
 
 @requires_symlinks
-def test_seed_symlink_to_file_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_symlink_to_file_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``$KIROCREW_HOME`` as a symlink pointing at a regular file raises
     GUARDRAIL_NOT_A_DIRECTORY.
 
@@ -1099,9 +1070,7 @@ def test_seed_symlink_to_file_rejected(
 
 
 @requires_symlinks
-def test_seed_dangling_symlink_rejected(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_seed_dangling_symlink_rejected(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     """``$KIROCREW_HOME`` as a symlink to a nonexistent target raises
     GUARDRAIL_DANGLING_SYMLINK.
 
@@ -1137,3 +1106,75 @@ def test_seed_dangling_symlink_rejected(
     assert link.is_symlink()
     # Target must still not exist (no side-effect creation).
     assert not missing_target.exists()
+
+
+def test_seed_dangling_junction_shaped_link_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The dangling-link guard must use the reparse-point oracle, not ``is_symlink()``.
+
+    ``$KIROCREW_HOME`` can be published by ``platform_compat.symlink_or_junction``
+    (or by any unelevated Windows writer), which produces a directory JUNCTION on
+    Windows. A junction answers False to ``is_symlink()`` and, once dangling, to
+    ``exists()`` as well — so a guard spelled ``is_symlink() and not exists()``
+    skipped it, every ``exists()``-gated guardrail below skipped it too, and
+    ``shutil.copytree`` crashed on the surviving entry with a raw
+    ``FileExistsError``. Built with the product's own link helper, so each
+    platform exercises the shape it actually produces (a symlink on POSIX, a
+    junction on an unelevated Windows shard — which is where the old guard was
+    blind).
+    """
+    target = tmp_path / "removed-target"
+    target.mkdir()
+    link = tmp_path / "dangling"
+    platform_compat.symlink_or_junction(str(target), str(link))
+    target.rmdir()
+    # Guard the guard, through oracles OUTSIDE the module under test: the entry
+    # is a link, and it does not resolve.
+    assert platform_compat.is_link_or_junction(link)
+    assert not link.exists(), "precondition: link must resolve to a missing target"
+
+    monkeypatch.setenv("KIROCREW_HOME", str(link))
+
+    with pytest.raises(seed_mod.SeedError) as excinfo:
+        seed_mod.seed("empty")
+
+    assert excinfo.value.code == seed_mod.EXIT_GUARDRAIL
+    assert excinfo.value.guardrail == seed_mod.SeedError.GUARDRAIL_DANGLING_SYMLINK
+    assert "dangling symlink or junction" in str(excinfo.value)
+    # The link is left in place, and nothing was created behind it.
+    assert platform_compat.is_link_or_junction(link)
+    assert not target.exists()
+
+
+def test_seed_dangling_guard_consults_the_reparse_oracle_not_is_symlink(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Same guard, with the junction SHAPE simulated so every platform pins it.
+
+    A junction cannot be created on POSIX, so this stands one in through the
+    oracle the module uses for its sibling guardrails: ``pinned_fs.is_reparse_point``
+    is made to answer True for the target path while every ``pathlib`` predicate
+    keeps its real answer — ``is_symlink()`` False (nothing is linked), ``exists()``
+    False (nothing is there). That is exactly the answer set a dangling junction
+    gives. The old ``is_symlink()`` guard falls through and ``seed`` proceeds to
+    copy; the fixed guard refuses with the dangling guardrail. A monkeypatched
+    oracle is the accepted stand-in here; the test above exercises the real shape
+    on the Windows shards.
+    """
+    dst = tmp_path / "junction-shaped"
+    assert not dst.exists() and not dst.is_symlink()
+    real_oracle = pinned_fs.is_reparse_point
+
+    def fake_oracle(path: str | Path) -> bool:
+        return Path(path) == dst or real_oracle(path)
+
+    monkeypatch.setattr(seed_mod.pinned_fs, "is_reparse_point", fake_oracle)
+    monkeypatch.setenv("KIROCREW_HOME", str(dst))
+
+    with pytest.raises(seed_mod.SeedError) as excinfo:
+        seed_mod.seed("empty")
+
+    assert excinfo.value.guardrail == seed_mod.SeedError.GUARDRAIL_DANGLING_SYMLINK
+    # Refused BEFORE copytree: nothing was created at the name.
+    assert not dst.exists()

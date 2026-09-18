@@ -6,7 +6,7 @@ branch on ``has node`` alone, so that system node matched, EVERY install branch
 unsupported interpreter -- emitting only ``EBADENGINE`` warnings and no usable
 ``dist/``. The launch still reported success (the Python gateway answers
 ``/api/health`` without a frontend), so the first symptom a user saw was
-"Dashboard HTML not found" (#3220).
+"Dashboard HTML not found".
 
 The floor is now consulted at DETECTION time via ``node_supported()``. These
 tests extract that helper from the real ``install.sh`` and run it against fake
@@ -125,7 +125,7 @@ class TestNodeFloorIsAuthoritative:
 class TestFrontendBuildHeadroom:
     def test_the_build_raises_the_v8_heap_ceiling(self) -> None:
         """V8's ~2 GB default is not enough for this bundle; the OOM shows up
-        as a build that dies with no clear cause and no dist/ (#3220)."""
+        as a build that dies with no clear cause and no dist/."""
         text = INSTALL_SH.read_text(encoding="utf-8")
         assert "--max-old-space-size" in text
         # Set only as a default so an operator can still override it.

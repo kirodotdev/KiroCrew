@@ -5,6 +5,7 @@ import { CornerDownRight } from 'lucide-react'
 import FolderGlyph from './FolderGlyph'
 import { i18nT } from '../i18n/t'
 import { isMac, platformShortcut } from '../utils/platform'
+import { isEditableTarget } from '../utils/editableTarget'
 
 /**
  * How long a drag-move stays undoable.
@@ -155,8 +156,7 @@ export default function MoveUndoBar({
       // Typing surfaces own the chord: ChatInput keeps its own undo history,
       // and hijacking it would silently revert a folder move while the user
       // was only trying to un-type a word.
-      const el = e.target as HTMLElement | null
-      if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return
+      if (isEditableTarget(e)) return
       e.preventDefault()
       onUndo()
     }

@@ -11,7 +11,7 @@ Locks two joints:
 
     ``triggers`` is deliberately NOT asserted here. ``skills/README.md`` documents it
     as optional, and whether a skill should auto-inject is a per-skill judgement
-    about trigger overlap (see the PR #353 arbiter note in ``skills.py``) rather than
+    about trigger overlap (see the arbiter note in ``skills.py``) rather than
     something a blanket test should force.
 
 (2) image-authoring names the ``excalidraw`` fence. The dashboard renders it

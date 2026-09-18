@@ -25,6 +25,7 @@ const { app, BrowserWindow, ipcMain, screen, shell } = require("electron");
 const path = require("path");
 const fs = require("fs");
 const { mochiPageUrl } = require("./pageUrl");
+const { registerCaptureSurface } = require("../capture-trust");
 
 // Returns the dashboard main window (a BaseWindow owned by main.js) or null.
 // Wired at init via setMainWindowGetter so the panel-close path can keep the
@@ -237,6 +238,11 @@ function createPanelWindow(baseUrl, token = "") {
     },
   });
 
+  // MochiSnipHost captures from this window when no crop window is available,
+  // so it is one of the app's capture surfaces. The will-navigate guard below
+  // keeps it on baseUrl; registering the origin is what makes that checkable
+  // at capture time rather than assumed.
+  registerCaptureSurface(win.webContents, baseUrl);
   win.loadURL(mochiPageUrl(baseUrl, "panel.html", token));
   win.setVisibleOnAllWorkspaces(true);
   // "floating" (not "screen-saver"): the panel should sit above ordinary

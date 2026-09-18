@@ -108,7 +108,9 @@ Two properties are load-bearing and worth knowing before you touch that lane:
 
 - **Linux is built natively per arch, never cross-compiled.** `build-desktop.sh`
   provisions a python-build-standalone interpreter and then *runs* it (pip
-  install, plus the `python -m kiro_crew --version` self-containment gate), so a
+  install, plus the `python -m kiro_crew --version` self-containment gate and
+  its companion `import kiro_crew.cli` chain probe — bare `--version` answers
+  before the heavy imports, so the probe carries the gate's meaning), so a
   host that cannot execute the target architecture cannot build it. macOS gets
   away with one host only because Rosetta 2 executes the x86_64 slice.
 - **The runner's glibc is the ceiling on what the artifacts may require.** The
@@ -329,8 +331,11 @@ same way). Key details:
   drifted probe list breaks the build instead of every user's launch (see
   [How the app finds and launches the backend](#how-the-app-finds-and-launches-the-backend)).
 - **Self-containment verified** — the build script runs
-  `PYTHONNOUSERSITE=1 bin/python3.12 -m kiro_crew --version` to catch any
-  missing dependency before packaging.
+  `PYTHONNOUSERSITE=1 bin/python3.12 -m kiro_crew --version` followed by
+  `PYTHONNOUSERSITE=1 bin/python3.12 -c 'import kiro_crew.cli'` to catch any
+  missing dependency before packaging. Bare `--version` is a pre-dispatch
+  fast-path (see `docs/system-specs/modules/cli.md`), so the import probe is
+  the half that resolves the chain.
 - **Local dictation runtime bundled** — supported desktop builds include
   `pywhispercpp`, the platform `imageio-ffmpeg` executable used for compressed
   recordings, and all transitive runtime dependencies. The build imports the

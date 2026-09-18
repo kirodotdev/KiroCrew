@@ -602,7 +602,7 @@ class TestScaffoldSelectionRederivation:
         assert status == 400
         assert body["code"] == "folder_scaffold_selection_stale"
         assert body["unknown"] == [str(root / "notes")]
-        # Refused wholesale: the selection the user confirmed no longer describes
+        # Refused wholesale: the selection the user confirmed does not describe
         # the tree, so none of it is acted on.
         assert state._folders == []
 

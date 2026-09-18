@@ -2,18 +2,28 @@
 
 Covers the schema-introspection helpers, the ``validate_config_data`` entry
 point, and — most importantly — the new ``ConfigCache`` object, whose explicit
-``clear()`` replaces the previously-untestable bare ``_CONFIG_CACHE`` module
+``clear()`` replaces the untestable bare ``_CONFIG_CACHE`` module
 global.
 """
 
 from __future__ import annotations
 
 import logging
+from importlib import metadata
 
 import pytest
 
 from kiro_crew.config import loader as _loader_module
 from kiro_crew.config import validation
+
+
+def test_published_metadata_requires_config_validator() -> None:
+    """A base install must declare the validator used by the config loader."""
+    requirements = metadata.requires("kirocrew") or []
+    assert any(
+        req.lower().startswith("jsonschema") and "extra" not in req.partition(";")[2].lower()
+        for req in requirements
+    ), requirements
 
 
 class TestConfigCache:
@@ -122,7 +132,7 @@ class TestSchemaIntrospectionHelpers:
         assert data == {"agent": {"keep": "ok"}}
 
     def test_apply_field_default_never_repairs_a_fail_closed_path(self) -> None:
-        """Repairing `publish` to defaults IS the #4057 widening: a popped
+        """Repairing `publish` to defaults IS the widening: a popped
         section reads as "operator configured nothing" and the allowlist
         silently reopens. The malformed value must survive validation so the
         loader records the degradation and the gate denies — on jsonschema
@@ -157,6 +167,20 @@ class TestSchemaIntrospectionHelpers:
                 props = node.get("properties", {})
                 assert part in props, f"_FAIL_CLOSED_PATHS entry {dot_path!r} not in schema"
                 node = props[part]
+
+
+class TestHoldsNothing:
+    """The deprecation notice's 'nothing to migrate' predicate."""
+
+    @pytest.mark.parametrize("value", [None, "", {}, []])
+    def test_empty_containers_and_null_hold_nothing(self, value: object) -> None:
+        assert validation._holds_nothing(value) is True
+
+    @pytest.mark.parametrize("value", [False, 0, 0.0, "x", {"k": 1}, [0], True, 7])
+    def test_chosen_values_hold_something(self, value: object) -> None:
+        # ``False``/``0`` are settings an operator picked, not absence -- a
+        # deprecated flag set to False still gets its deprecation notice.
+        assert validation._holds_nothing(value) is False
 
 
 class TestValidateConfigData:

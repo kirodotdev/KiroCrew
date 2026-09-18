@@ -47,6 +47,39 @@ describe('BusySendButton menu keyboard contract', () => {
     expect(rows[1]).toHaveFocus()
   })
 
+  it('remeasures the open menu when the visual viewport changes', async () => {
+    const originalViewport = Object.getOwnPropertyDescriptor(window, 'visualViewport')
+    const viewport = new EventTarget()
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: viewport as unknown as VisualViewport,
+    })
+
+    try {
+      renderButton()
+      const trigger = screen.getByTestId('busy-send-caret')
+      const split = trigger.parentElement?.parentElement
+      expect(split).toBeInstanceOf(HTMLElement)
+
+      let anchor = DOMRect.fromRect({ x: 100, y: 600, width: 56, height: 32 })
+      vi.spyOn(split as HTMLElement, 'getBoundingClientRect').mockImplementation(() => anchor)
+
+      fireEvent.click(trigger)
+      const menu = await screen.findByRole('menu')
+      expect(menu.style.bottom).toBe(`${window.innerHeight - anchor.top + 8}px`)
+
+      anchor = DOMRect.fromRect({ x: 100, y: 760, width: 56, height: 32 })
+      fireEvent(viewport, new Event('resize'))
+
+      await waitFor(() => {
+        expect(menu.style.bottom).toBe(`${window.innerHeight - anchor.top + 8}px`)
+      })
+    } finally {
+      if (originalViewport) Object.defineProperty(window, 'visualViewport', originalViewport)
+      else delete (window as { visualViewport?: VisualViewport }).visualViewport
+    }
+  })
+
   it('closes on Escape and restores focus to the trigger', async () => {
     const { rows, trigger } = await openMenu()
 

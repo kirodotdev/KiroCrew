@@ -556,6 +556,84 @@ describe('terminalRegistry', () => {
     })
   })
 
+  describe('displacement by a newer window', () => {
+    // The server closes a displaced socket on purpose after one
+    // `{type:'error', code:'displaced'}` frame. Redialing would take the PTY
+    // straight back from the window that just claimed it, so the session parks.
+    it('parks as disconnected without a redial when the server reports displacement', () => {
+      const id = session('displaced-park')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+      const ws = WS_INSTANCES[0]
+      act(() => { ws.simulateOpen(); ws.simulateJson({ type: 'ready' }) })
+      expect(result.current).toBe('connected')
+
+      act(() => {
+        ws.simulateJson({ type: 'error', code: 'displaced', message: 'Another connection owns this terminal session' })
+        ws.simulateClose()
+      })
+      expect(result.current).toBe('disconnected')
+      act(() => { vi.advanceTimersByTime(120_000) })
+      expect(WS_INSTANCES).toHaveLength(1)
+      expect(getTerminalWs(id)).toBeNull()
+    })
+
+    it('ignores online and visibility revives while displaced', () => {
+      const id = session('displaced-revive')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'error', code: 'displaced' })
+      ws.simulateClose()
+
+      window.dispatchEvent(new Event('online'))
+      Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
+      document.dispatchEvent(new Event('visibilitychange'))
+      vi.advanceTimersByTime(60_000)
+      expect(WS_INSTANCES).toHaveLength(1)
+    })
+
+    it('lets a manual Reconnect take the terminal back and clears the parked state', () => {
+      const id = session('displaced-manual')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const { result } = renderHook(() => useTerminalConnStatus(id))
+      const ws = WS_INSTANCES[0]
+      act(() => {
+        ws.simulateOpen()
+        ws.simulateJson({ type: 'error', code: 'displaced' })
+        ws.simulateClose()
+      })
+      expect(result.current).toBe('disconnected')
+
+      act(() => { retryTerminalConnection(id) })
+      expect(WS_INSTANCES).toHaveLength(2)
+      act(() => { WS_INSTANCES[1].simulateOpen() })
+      expect(result.current).toBe('connected')
+
+      // An ordinary drop afterwards redials normally again: the parked state
+      // did not outlive the manual retry.
+      act(() => { WS_INSTANCES[1].simulateClose() })
+      expect(result.current).toBe('reconnecting')
+      act(() => { vi.advanceTimersByTime(1000) })
+      expect(WS_INSTANCES).toHaveLength(3)
+    })
+
+    it('treats an error frame without the displaced code as an ordinary drop', () => {
+      const id = session('displaced-other-error')
+      vi.useFakeTimers()
+      ensureTerminalConnection(id, new FakeTerm().asTerminal(), new FakeFit().asFitAddon())
+      const ws = WS_INSTANCES[0]
+      ws.simulateOpen()
+      ws.simulateJson({ type: 'error', message: 'Terminal reconnect failed' })
+      ws.simulateClose()
+      vi.advanceTimersByTime(1000)
+      expect(WS_INSTANCES).toHaveLength(2)
+    })
+  })
+
   describe('disposeTerminalConnection', () => {
     it('tears down the socket, the timer and every per-session record', () => {
       const id = session('dispose')

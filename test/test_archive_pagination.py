@@ -1,7 +1,7 @@
 """Rotated-archive pagination: the corpus behind `before`/`next_before` cursors.
 
 A size rotation moves a transcript's HEAD into ``sessions/archive/`` — and the
-plain chained read never looks there, so pagination used to declare the
+plain chained read never looks there, so pagination would declare the
 transcript complete at the rotation boundary: the reader's oldest messages
 became permanently unreachable from the UI (observed live: a session's true
 first message sat in ``archive/…__20260901-043212.jsonl`` while "load previous"

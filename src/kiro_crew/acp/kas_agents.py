@@ -29,7 +29,11 @@ kiro-cli does not have this problem: it reads the spec off disk itself via
 Filtering by the stub set keeps the no-double-registration guarantee (a stubbed
 server is still declared exactly once, by the injection that outranks this block)
 while never leaving the session with nothing. Two fields are dropped on the way
-through — see :func:`_project_mcp_servers`.
+through — see :func:`_project_mcp_servers`. The runtime then carries the ACTIVE
+agent's projected managed entries in the session-level array itself
+(:func:`hoist_managed_servers`), the declaration site the captured 2.18.0 release
+honours over a same-named global or workspace server and every probed release
+reports as the session's own.
 
 ``model`` is deliberately NOT projected: the model is set through its own
 protocol verb, so it has exactly one owner rather than being pinned in two places
@@ -49,12 +53,18 @@ auto-approve input Crew's governance ceiling has filtered.
 
 from __future__ import annotations
 
-import json
 import logging
+import os
 from pathlib import Path
 from typing import Any
 
 from kiro_crew.acp.kas_permissions import allowed_tools_to_permissions
+from kiro_crew.agent_discovery import (
+    AmbiguousAgentSpecError,
+    read_agent_spec_strict,
+    spec_by_declared_name,
+)
+from kiro_crew.agent_spec_format import agent_spec_candidates
 from kiro_crew.mcp_cleanup import KIROCREW_BIN_MCP_SERVERS
 from kiro_crew.platform.governance import may_skip_gate_now
 from kiro_crew.security import is_sensitive_path
@@ -325,6 +335,7 @@ def _project_mcp_servers(
     spec: dict[str, Any],
     agent_id: str,
     stub_server_names: frozenset[str],
+    session_key: str = "",
 ) -> dict[str, dict[str, Any]]:
     """The spec's ``mcpServers``, minus stubbed names and minus two field classes.
 
@@ -377,6 +388,20 @@ def _project_mcp_servers(
         projected.pop("autoApprove", None)
         managed = name in MANAGED_MCP_SERVER_NAMES
         withheld = _withhold_credential_fields(projected, managed=managed)
+        if managed:
+            # Native MCP children do not inherit the gateway's environment.
+            # Take the live listener from the gateway, never from an editable
+            # spec: private sandboxes cannot discover it through host PIDs.
+            bound_port = os.environ.get("KIROCREW_BOUND_PORT", "")
+            if (
+                1 <= len(bound_port) <= 5
+                and bound_port.isascii()
+                and bound_port.isdecimal()
+                and 0 < int(bound_port) < 65536
+            ):
+                projected.setdefault("env", {})["KIROCREW_PORT"] = bound_port
+            if session_key:
+                projected.setdefault("env", {})["KIROCREW_SESSION_KEY"] = session_key
         if withheld:
             logger.info(
                 "agent %r: not relaying %s for MCP server %r — the field can carry "
@@ -438,6 +463,7 @@ def to_client_custom_agent(
     *,
     stub_server_names: frozenset[str] = frozenset(),
     member_dispatch: bool = False,
+    session_key: str = "",
 ) -> dict[str, Any]:
     """Project one Crew agent spec onto a KAS ``ClientCustomAgent`` descriptor.
 
@@ -534,7 +560,7 @@ def to_client_custom_agent(
         if entries:
             out["resources"] = entries
 
-    mcp_servers = _project_mcp_servers(spec, agent_id, stub_server_names)
+    mcp_servers = _project_mcp_servers(spec, agent_id, stub_server_names, session_key)
     if mcp_servers:
         out["mcpServers"] = mcp_servers
 
@@ -547,14 +573,65 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
     Takes the directory explicitly rather than resolving it here so this module
     stays free of :mod:`kiro_crew.agent`, which imports the config loader and
     would form an import cycle.
+
+    A spec that DECLARES ``name == agent_id`` wins, found through
+    :func:`kiro_crew.agent_discovery.spec_by_declared_name`, and
+    ``<agent_id>.json`` or ``<agent_id>.md`` (the markdown form, frontmatter
+    plus a body that is the prompt -- see :mod:`kiro_crew.agent_spec_format`)
+    is read only when no spec declares the id. That is the
+    order :func:`kiro_crew.agent.agent_spec_path` and the documented resolution
+    convention use, and it is what keeps a misnamed ``<agent_id>.json`` that
+    declares some other agent from being projected under this id, with that
+    other agent's tools and prompt, while the spec that does declare the id
+    sits beside it unread. Two specs declaring *agent_id* are refused, as
+    :func:`kiro_crew.agent.agent_spec_path` refuses them: which is live is
+    undefined, and picking either would project an agent the operator did not
+    name.
+
+    The scan's parsed spec is returned as is: it was read under the hardened
+    reader's guards, labelled ``kas_agent_projection`` so a denial is
+    attributed to the projection, and reopening the file it came from would
+    read it a second time with none of them. The fallback read of
+    ``<agent_id>.json`` (or ``.md``) goes through
+    :func:`kiro_crew.agent_discovery.read_agent_spec_strict`, the same guards
+    with the failure class kept; a spec declaring no name at all, or a name
+    other than its stem, reaches the projection only through it.
+
+    The scan and the fallback read raise :class:`KasAgentTranslationError` on
+    an ``OSError`` for the same reason: every caller of this module handles the
+    translation error, not an ``OSError``. On 3.12 ``Path.glob`` propagates one
+    from the ``is_dir`` probe it runs on the directory itself (3.13 and 3.14
+    run no such probe), and the strict reader raises one for a file it cannot
+    resolve or open on every supported version, so an unsearchable agents dir
+    reaches this function as an ``OSError`` and the conversion is what makes
+    the failure uniform.
     """
-    path = agents_dir / f"{agent_id}.json"
+    candidates = agent_spec_candidates(agents_dir, agent_id)
+    path = candidates[0]
     try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
+        declared = spec_by_declared_name(
+            agents_dir, agent_id, operation="kas_agent_projection", source="unknown"
+        )
+    except AmbiguousAgentSpecError as exc:
+        raise KasAgentTranslationError(str(exc)) from exc
+    except OSError as exc:
+        raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
+    if declared is not None:
+        return declared
+    # ``<id>.json`` first: beside an ``<id>.md`` twin the JSON wins, the same
+    # rule the directory scan applies (see ``agent_spec_format``).
+    present = [p for p in candidates if p.is_file()]
+    if present:
+        path = present[0]
+    try:
+        # The hardened reader, not a bare ``read_text``: the agents directory is
+        # user-writable, so a symlink here must not be followed to a sensitive
+        # target or an oversized file slurped into the projection.
+        raw = read_agent_spec_strict(path, operation="kas_agent_projection", source="unknown")
     except OSError as exc:
         raise KasAgentTranslationError(f"agent spec {path} is unreadable: {exc}") from exc
     except ValueError as exc:
-        raise KasAgentTranslationError(f"agent spec {path} is not valid JSON: {exc}") from exc
+        raise KasAgentTranslationError(f"agent spec {path} is not a valid spec: {exc}") from exc
     if not isinstance(raw, dict):
         raise KasAgentTranslationError(f"agent spec {path} is not an object")
     return raw
@@ -563,9 +640,11 @@ def load_agent_spec(agents_dir: Path, agent_id: str) -> dict[str, Any]:
 def build_kas_custom_agents(
     agents_dir: Path,
     agent_id: str,
+    spec: dict[str, Any],
     *,
     stub_server_names: frozenset[str] = frozenset(),
     member_dispatch: bool = False,
+    session_key: str = "",
 ) -> list[dict[str, Any]]:
     """Build the ``_meta.kiro.customAgents`` batch that binds *agent_id* on KAS.
 
@@ -581,8 +660,17 @@ def build_kas_custom_agents(
     *stub_server_names* is forwarded to :func:`_project_mcp_servers`; the caller
     holds the gateway overlay this session will inject from, so it is the only
     layer that can answer which names are stubbed.
+
+    *spec* is REQUIRED and positional, and this function performs no read of its
+    own. Its answer becomes the session's whole tool surface, so it has to be
+    built from the spec the caller verified under the freshness gate -- reading the
+    file here would be a SECOND read, milliseconds later, and a revocation landing
+    in between would be projected as though it had been checked. A defaulted
+    parameter that fell back to :func:`load_agent_spec` would restore exactly that
+    hole for any caller that forgot to pass one, which is why there is no default.
+    *agents_dir* stays for :func:`resolve_prompt`, which anchors a ``file://``
+    prompt URI and reads a different artifact than the spec.
     """
-    spec = load_agent_spec(agents_dir, agent_id)
     prompt = resolve_prompt(spec, agent_id=agent_id, agents_dir=agents_dir)
     return [
         to_client_custom_agent(
@@ -591,5 +679,105 @@ def build_kas_custom_agents(
             prompt,
             stub_server_names=stub_server_names,
             member_dispatch=member_dispatch,
+            session_key=session_key,
         )
     ]
+
+
+#: The keys a projected stdio declaration may carry and still be reproduced
+#: exactly by :func:`kiro_crew.acp.session_mcp.acp_server_element`. Anything
+#: else on a managed entry is a user customization with no session-level
+#: carrier -- ``disabled`` (must not launch), ``disabledTools`` (a user guard),
+#: ``timeout`` -- so an entry carrying one stays where that field is honoured.
+_HOISTABLE_ENTRY_KEYS = frozenset({"command", "args", "env", "type"})
+
+
+def hoist_managed_servers(
+    custom_agents: list[dict[str, Any]] | None,
+    agent_id: str,
+    session_servers: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]] | None, list[dict[str, Any]]]:
+    """Carry the ACTIVE agent's managed declarations in the session-level array.
+
+    Captured released kiro-cli 2.18.0 honours a session-level ``mcpServers``
+    entry over a same-named global or workspace ``mcp.json`` server on
+    ``session/new`` and ``session/load`` alike, while an agent-block declaration
+    loses to the global one there, and it stamps no status provenance. The
+    retained 2.20.0 capture proves a session-level injection reports
+    ``origin: client`` and reaches readiness; its same-name collision behaviour
+    was not probed. The session-level array is therefore the one declaration site
+    whose connected report is positively the session's own on both, and Crew's
+    managed servers -- the ones whose env carries this session's key -- belong
+    there rather than in the block, exactly as the member dispatch server already
+    travels.
+
+    Pure and non-mutating: returns a new agents list (the active descriptor
+    shallow-copied with the hoisted names removed from ``mcpServers``) and a new
+    array (the caller's entries first, then the hoisted elements by name). The
+    entries hoisted are the ALREADY projected ones -- credential fields withheld,
+    ``autoApprove`` dropped, ``KIROCREW_PORT``/``KIROCREW_SESSION_KEY`` applied
+    -- so no spec is re-read and the source snapshot is untouched.
+
+    What is NOT hoisted, each deliberately:
+
+    * a name the caller's array already carries -- a broker stub or the member
+      dispatch entry is authoritative and a name must appear once;
+    * a non-managed server -- third-party declarations are not this seam's;
+    * an inactive agent's block -- it must not widen the active session's tool
+      surface or carry another identity's key;
+    * an entry with a key outside :data:`_HOISTABLE_ENTRY_KEYS`, a ``type``
+      other than ``stdio``, or no usable command -- a restriction, a registry
+      marker or a malformed entry keeps the block path, where it is honoured.
+
+    The agent's ``tools`` / ``excludedTools`` / ``permissions`` are untouched:
+    ``@server`` refs resolve wherever the server was declared, which is the same
+    property ``member_dispatch`` already relies on for ``@kirocrew-dashboard``.
+    """
+    if not custom_agents:
+        # The kiro path (no wire payload) returns here without importing the
+        # agent/config translation machinery below as a side effect.
+        return custom_agents, session_servers
+    from kiro_crew.acp.session_mcp import acp_server_element
+
+    taken = {
+        str(entry.get("name"))
+        for entry in session_servers
+        if isinstance(entry, dict) and entry.get("name")
+    }
+    hoisted: list[dict[str, Any]] = []
+    out_agents: list[dict[str, Any]] = []
+    for descriptor in custom_agents:
+        declared = descriptor.get("mcpServers") if descriptor.get("id") == agent_id else None
+        if not isinstance(declared, dict):
+            out_agents.append(descriptor)
+            continue
+        remaining: dict[str, Any] = {}
+        for name, entry in declared.items():
+            keep = True
+            if (
+                name in MANAGED_MCP_SERVER_NAMES
+                and name not in taken
+                and isinstance(entry, dict)
+                and set(entry) <= _HOISTABLE_ENTRY_KEYS
+                and entry.get("type", "stdio") == "stdio"
+            ):
+                element = acp_server_element(name, entry)
+                if element is not None:
+                    hoisted.append(element)
+                    taken.add(name)
+                    keep = False
+            if keep:
+                remaining[name] = entry
+        if len(remaining) == len(declared):
+            out_agents.append(descriptor)
+            continue
+        copied = dict(descriptor)
+        if remaining:
+            copied["mcpServers"] = remaining
+        else:
+            del copied["mcpServers"]
+        out_agents.append(copied)
+    if not hoisted:
+        return custom_agents, session_servers
+    hoisted.sort(key=lambda element: element["name"])
+    return out_agents, [*session_servers, *hoisted]

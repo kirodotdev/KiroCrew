@@ -1,6 +1,9 @@
 # CI and review gates
 
-Everything that gates a pull request.
+Everything that gates a pull request, plus the one lane that gates the nightly
+PUBLISH instead: `platform-tests.yml` runs the backend suite on real Darwin and
+holds publication when it is red (see `ci-and-reviews.md`, "macOS is not a
+pull-request gate any more").
 
 | Document | Covers |
 |---|---|

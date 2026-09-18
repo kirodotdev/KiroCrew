@@ -18,17 +18,15 @@ from __future__ import annotations
 
 import argparse
 import importlib
-import os
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
 
-from kiro_crew import cli_help, platform_compat
+from kiro_crew import cli_help, gateway_lock
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
-from kiro_crew.gateway_lock import LOCK_FILENAME
 from kiro_crew.perf_sampler import (
     DEFAULT_INTERVAL_SECONDS,
     MAX_INTERVAL_SECONDS,
@@ -53,62 +51,21 @@ MAX_SECONDS = 300
 def _read_gateway_pid() -> int | None:
     """PID of a **live** gateway from ``$KIROCREW_HOME/gateway.lock``, or None.
 
-    Two steps, because the recorded PID alone is not evidence. The gateway stamps
-    its PID on acquire but nothing clears it on exit, so a stopped gateway leaves
-    a stale number behind — and PIDs are reused, so attaching to a stale one would
-    profile an unrelated process and label the artifact as the gateway's.
-
-    The authoritative check is the lock itself: try to take it non-blockingly. If
-    we get it, nothing holds it and there is no live gateway, so we release it
-    immediately and report None. If we cannot, a live holder exists and the
-    recorded PID names it. Any error reads as "cannot confirm" and returns None —
-    fail closed, since the failure mode is profiling the wrong process.
+    Delegates the lock-owner resolution to :func:`gateway_lock.lock_holder`
+    (the ``/proc/locks`` oracle, falling back to the recorded pid), and adds
+    the one thing this call site needs beyond that: liveness has to be TRUE,
+    since profiling a dead pid is worse than refusing. An indeterminate probe
+    (:class:`gateway_lock.LockProbeError`) reads as "cannot confirm" and
+    returns None -- fail closed, since the failure mode is profiling the wrong
+    process.
     """
-    lock_path = config_dir() / LOCK_FILENAME
     try:
-        recorded = lock_path.read_text(encoding="utf-8").strip()
-    except (OSError, UnicodeDecodeError):
+        holder = gateway_lock.lock_holder(config_dir())
+    except gateway_lock.LockProbeError:
         return None
-    try:
-        pid = int(recorded.splitlines()[0]) if recorded else 0
-    except (ValueError, IndexError):
+    if holder.pid is None or not holder.alive:
         return None
-    if pid <= 0:
-        return None
-    if not _gateway_lock_is_held(lock_path):
-        return None
-    # A live holder exists and the file names this pid. Confirm the process is
-    # actually there: on a torn write the recorded pid can disagree with the
-    # holder, and attaching to a dead pid should read as "no gateway".
-    if not platform_compat.pid_exists(pid):
-        return None
-    return pid
-
-
-def _gateway_lock_is_held(lock_path: Path) -> bool:
-    """True when something holds the gateway lock (i.e. a gateway is running).
-
-    Non-destructive: acquiring is only used as a probe and released at once, so a
-    real gateway is never disturbed. Errors read as held, so an unreadable lock
-    never gets mistaken for "no gateway running".
-    """
-    if not lock_path.exists():
-        return False
-    fd = None
-    try:
-        fd = os.open(str(lock_path), os.O_RDWR)
-        if platform_compat.try_acquire_lock(fd, exclusive=True):
-            platform_compat.release_lock(fd)
-            return False
-        return True
-    except OSError:
-        return True
-    finally:
-        if fd is not None:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+    return holder.pid
 
 
 def _resolve_callable(spec: str) -> object:
@@ -319,7 +276,7 @@ def _perf_sample(args: argparse.Namespace) -> int:
     if pid is None:
         print(
             "No running gateway found (no pid recorded in "
-            f"{config_dir() / LOCK_FILENAME}). Pass --pid explicitly, or use "
+            f"{config_dir() / gateway_lock.LOCK_FILENAME}). Pass --pid explicitly, or use "
             "--call to profile a code path in this process.",
             file=sys.stderr,
         )

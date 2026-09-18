@@ -73,7 +73,7 @@ except Exception:  # pragma: no cover - autonudge always present in prod
 
 logger = logging.getLogger("kirocrew.app.spec-builder")
 # The autonomous nudge loop is capped rather than infinite. There is no trust
-# TTL any more because this app no longer grants trust — see the create handler.
+# TTL because this app does not grant trust — see the create handler.
 _EXEC_MAX_CYCLES = 60
 
 # Bound recovery on a fire callback whose history storage or provider ignores
@@ -500,7 +500,7 @@ async def _restore_worker_transcript(state: Any, name: str, *, adopt_closed: boo
     belongs to the spec, and idle-slot cleanup marks it closed on idleness alone.
     For a spec being CREATED it must be False -- a delete leaves the archived
     transcript on disk under a key derived from the name, so creating a new spec
-    with a previously used name would hand the fresh agent the deleted spec's
+    with an already-used name would hand the fresh agent the deleted spec's
     conversation.
 
     Best-effort by design. A missing, malformed or foreign transcript must leave
@@ -520,7 +520,7 @@ async def _restore_worker_transcript(state: Any, name: str, *, adopt_closed: boo
 
 
 def _slot_identity_moved(name: str, slot_key: str) -> bool:
-    """True when ``name`` no longer resolves to the key this request captured.
+    """True when ``name`` does not resolve to the key this request captured.
 
     ``_slot_key`` reads the module-global ``_SLOT_KEYS``, which a delete +
     same-name recreate rewrites to a fresh per-creation key. Any resolution taken
@@ -615,8 +615,8 @@ async def _ensure_worker_slot(
     # index entry would become the worker's cwd on the next message, and relative
     # reads from a credential directory would sidestep every per-path check this
     # app makes. Re-validate through the same chokepoint every caller-supplied
-    # directory passes, off the event loop, and REFUSE the slot if it no longer
-    # holds: a spec whose working dir is unusable must not run at all.
+    # directory passes, off the event loop, and REFUSE the slot if it does not
+    # hold: a spec whose working dir is unusable must not run at all.
     #
     # ABSENT counts as unusable, which is why this is not gated on `wd` being
     # truthy. `create` rejects an empty or relative working_dir with a 400 and
@@ -1116,7 +1116,7 @@ def _alias_slots_locked(
 
     ``None`` is an alias whose persisted slot identity is not ownership-valid.
     Such an alias is occupied: its worker may still be running under the
-    per-creation key that the agent-writable index no longer reveals.
+    per-creation key that the agent-writable index does not reveal.
 
     BLOCKING -- call via ``asyncio.to_thread`` (``_alias_slots`` is the only caller). It
     reads the index and resolves each entry's directory, both filesystem work, which is
@@ -1452,7 +1452,7 @@ async def _halt_execution(
 ) -> None:
     """Stop an autonomous run: sentinel the loop, then remove it.
 
-    Deliberately does NOT touch ``slot._trust``. This app no longer grants
+    Deliberately does NOT touch ``slot._trust``. This app does not grant
     trust, so there is nothing of ours to revoke — and if the USER trusted the
     session from the approval card, Stop must not silently undo their decision.
     """

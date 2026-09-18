@@ -1,9 +1,9 @@
 """Behavioural tests for pr-readiness.yml's evaluate-step transport resilience.
 
-Issue #2753: every read-only ``gh`` call in the readiness evaluation was
-single-shot inside a fail-fast shell step, so one transient network/TLS error
-aborted the job before the publish step could run -- the same commit was
-observed evaluating green then red 39 seconds apart with nothing pushed.
+Every read-only ``gh`` call in the readiness evaluation must survive a transient
+network/TLS error: a single-shot call inside a fail-fast shell step aborts the
+job before the publish step can run, so one flake can make the same commit
+evaluate green then red with nothing pushed.
 
 These tests extract the real "Evaluate current revision" script (plus the
 retry-helper install step it sources) and execute them with ``gh`` replaced by
@@ -190,7 +190,7 @@ def _runs_json(name: str, runs: list[dict]) -> str:
 
 def _lane_log(proc: subprocess.CompletedProcess[str]) -> str:
     """The step's own diagnostic lane-state line (the only place the arrays are
-    readable from a `gh run view --log`, per #3550)."""
+    readable from a `gh run view --log`)."""
     return next(
         line for line in proc.stdout.splitlines() if line.startswith("pr-readiness: lane state")
     )
@@ -252,7 +252,12 @@ class Runner:
             json.dumps(
                 {
                     "check_runs": [
-                        {"status": "completed", "conclusion": "success"}
+                        {
+                            "id": 88001,
+                            "status": "completed",
+                            "conclusion": "success",
+                            "app": {"slug": "github-advanced-security"},
+                        }
                     ]
                 }
             )
@@ -317,9 +322,81 @@ def runner(tmp_path: Path) -> Runner:
     return Runner(tmp_path)
 
 
+class TestPendingLanesAreNamedInTheStatus:
+    """A monitored lane can produce ZERO runs for an immutable head when
+    GitHub does not create the run, and no event creates one on an unchanged
+    commit. Such a lane sits `(not started)` and the required "PR Readiness"
+    status stays `pending`. The status description names the waiting lane(s),
+    bounded to the commit-status API's 140-char limit, so the culprit is
+    legible at a glance and a human can re-run that lane instead of pushing an
+    empty commit."""
+
+    @staticmethod
+    def _empty(name: str) -> str:
+        return json.dumps({"workflow_runs": []})
+
+    def test_a_never_started_lane_is_named_not_just_counted(self, runner: Runner):
+        # One monitored lane produces no run for this head, everything else
+        # green. The description names the stuck lane, not just its count.
+        (runner.fixtures / "ci_runs.json").write_text(self._empty("ci.yml"))
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        # The classification is unchanged -- still pending, still checking.
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+        # ...but the description now NAMES the lane instead of only counting it.
+        assert "1 readiness check(s) still pending" in outputs["description"]
+        assert "CI (not started)" in outputs["description"]
+        # The lane-state log line names it; the status a human sees on the PR
+        # names it too.
+        assert "CI (not started)" in _lane_log(proc)
+
+    def test_the_named_description_never_exceeds_the_api_limit(self, runner: Runner):
+        # Every lane empty -> the widest possible waiting list. The commit-status
+        # POST silently truncates past 140 chars, so the named list must be
+        # capped with "+N more" rather than run past the limit.
+        (runner.fixtures / "ci_runs.json").write_text(self._empty("ci.yml"))
+        (runner.fixtures / "green_runs.json").write_text(self._empty("x.yml"))
+        (runner.fixtures / "codeql_runs.json").write_text(self._empty("codeql"))
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert len(outputs["description"]) <= 140
+        # It still leads with the full count, and it named at least the first
+        # lane before spending its character budget.
+        assert outputs["description"].startswith("")
+        assert "readiness check(s) still pending" in outputs["description"]
+        assert "waiting on" in outputs["description"]
+        # A wide overflow is reported, not silently dropped.
+        assert "+" in outputs["description"] and "more)" in outputs["description"]
+
+    def test_a_single_pending_lane_needs_no_overflow_suffix(self, runner: Runner):
+        # One waiting lane fits comfortably, so the "(+N more)" suffix must not
+        # appear -- it is only for a list the budget could not hold.
+        (runner.fixtures / "codeql_runs.json").write_text(
+            _run_json("codeql", status="queued", conclusion="")
+        )
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert "CodeQL (queued)" in outputs["description"]
+        assert "more)" not in outputs["description"]
+        assert len(outputs["description"]) <= 140
+
+    def test_a_green_revision_description_is_unchanged(self, runner: Runner):
+        # The naming touches only the checking branch: a fully-green revision's
+        # passed description must be byte-for-byte what it was.
+        proc, outputs = runner.evaluate()
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "success"
+        assert outputs["description"] == (
+            "Eligible automated validation passed for this revision"
+        )
+
+
 class TestTransientFailureIsRetried:
     def test_one_flake_still_reaches_the_real_verdict(self, runner: Runner):
-        # The observed #2753 failure site: the per-workflow runs read. One
+        # The failure site this guards: the per-workflow runs read. One
         # transient failure, then success -- the retry must absorb it and the
         # evaluation must land on the REAL verdict, not the fallback.
         proc, outputs = runner.evaluate(
@@ -568,10 +645,10 @@ class TestGenuineFailureStaysRed:
 
 
 class TestLaneStateIsLoggedNotOnlySummarized:
-    """#3550: a run that publishes a wrong verdict (e.g. a lane invisible
-    under GITHUB_TOKEN but visible under a user token) could previously only
-    be diagnosed by opening the $GITHUB_STEP_SUMMARY UI by hand --
-    `gh run view --log` cannot query it. The evaluate step must also echo the
+    """A run that publishes a wrong verdict (e.g. a lane invisible under
+    GITHUB_TOKEN but visible under a user token) is diagnosable only from the
+    $GITHUB_STEP_SUMMARY UI unless the arrays are echoed too --
+    `gh run view --log` cannot query the summary. The evaluate step must echo the
     lane arrays to the job's own stdout log."""
 
     def test_all_green_run_logs_every_lane_as_passed(self, runner: Runner):
@@ -589,7 +666,7 @@ class TestLaneStateIsLoggedNotOnlySummarized:
         assert "Opus 4.8 Review" in log_line
 
     def test_a_stuck_lane_is_named_in_the_log_line(self, runner: Runner):
-        # The exact #3550 shape: one lane never completes (still queued),
+        # The shape this guards: one lane never completes (still queued),
         # everything else green. The diagnostic line must name it so a
         # stuck-pending PR is diagnosable from `gh run view --log` alone,
         # without opening the step-summary UI.
@@ -604,6 +681,138 @@ class TestLaneStateIsLoggedNotOnlySummarized:
         )
         assert "CodeQL" in log_line
         assert "pending=[CodeQL" in log_line
+
+
+class TestCodeQLSecurityResultIsPartOfTheVerdict:
+    """A green analyzer workflow is not the CodeQL security verdict.
+
+    GitHub default setup publishes the alert result as a separate exact-commit
+    check-run. PR Readiness is the repository's sole required status, so it must
+    read that result instead of allowing a successful analysis workflow to mask
+    high-severity alerts.
+    """
+
+    @staticmethod
+    def _results(runner: Runner, rows: list[dict]) -> None:
+        (runner.fixtures / "check_runs.json").write_text(
+            json.dumps({"check_runs": rows})
+        )
+
+    def test_a_failed_security_result_blocks_a_green_analysis(self, runner: Runner):
+        self._results(
+            runner,
+            [
+                {
+                    "id": 91,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "app": {"slug": "github-advanced-security"},
+                }
+            ],
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert outputs["label"] == "readiness: action required"
+        assert "CodeQL (failure)" in _lane_log(proc)
+
+    @pytest.mark.parametrize(
+        ("rows", "detail"),
+        [
+            ([], "results not reported"),
+            (
+                [
+                    {
+                        "id": 92,
+                        "status": "completed",
+                        "conclusion": "neutral",
+                        "app": {"slug": "github-advanced-security"},
+                    }
+                ],
+                "results pending",
+            ),
+            (
+                [
+                    {
+                        "id": 93,
+                        "status": "in_progress",
+                        "conclusion": "",
+                        "app": {"slug": "github-advanced-security"},
+                    }
+                ],
+                "results in_progress",
+            ),
+        ],
+    )
+    def test_an_absent_or_interim_default_setup_result_stays_pending(
+        self, runner: Runner, rows: list[dict], detail: str
+    ):
+        self._results(runner, rows)
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+        assert f"CodeQL ({detail})" in _lane_log(proc)
+
+    def test_an_unrelated_apps_success_cannot_answer_for_codeql(self, runner: Runner):
+        self._results(
+            runner,
+            [
+                {
+                    "id": 94,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"slug": "another-app"},
+                }
+            ],
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert "CodeQL (results not reported)" in _lane_log(proc)
+
+    def test_an_unreadable_security_result_uses_the_nonterminal_fallback(
+        self, runner: Runner
+    ):
+        proc, outputs = runner.evaluate(
+            flaky_substr="check-runs", flaky_fails=99
+        )
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "pending"
+        assert outputs["label"] == "readiness: checking"
+        assert "could not be evaluated" in outputs["description"]
+
+    def test_the_newest_security_result_is_authoritative(self, runner: Runner):
+        self._results(
+            runner,
+            [
+                {
+                    "id": 96,
+                    "status": "completed",
+                    "conclusion": "failure",
+                    "app": {"slug": "github-advanced-security"},
+                },
+                {
+                    "id": 95,
+                    "status": "completed",
+                    "conclusion": "success",
+                    "app": {"slug": "github-advanced-security"},
+                },
+            ],
+        )
+
+        proc, outputs = runner.evaluate()
+
+        assert proc.returncode == 0, proc.stderr
+        assert outputs["status_state"] == "failure"
+        assert "CodeQL (failure)" in _lane_log(proc)
 
 
 class TestSameSecondRunCollapse:
@@ -757,12 +966,13 @@ class TestSameSecondRunCollapse:
         assert outputs["label"] == "readiness: passed"
 
     def test_every_collapse_site_carries_identical_logic(self):
-        # The workflow resolves runs at four separately-written sites: the
+        # The workflow resolves runs/results at five separately-written sites: the
         # monitored-workflow loop, the dynamic CodeQL read, the trigger-run read
         # that dates an attempt-bound fork check-run, and the fork check-run
         # read itself (collapsing to the newest row sharing a trigger-bound id,
         # so a human-override rerun of the lane cannot have its stale failure
-        # outvote a fresh success). Behavioral tests exercise one shape each;
+        # outvote a fresh success), plus the exact-SHA CodeQL security result.
+        # Behavioral tests exercise one shape each;
         # this pins the collapse FRAGMENT itself so an edit to one site cannot
         # drift from the others for shapes no fixture covers. The fragment
         # starts after the site-specific select() line and runs to the terminal
@@ -771,9 +981,10 @@ class TestSameSecondRunCollapse:
         fragment = "| max_by(.id) // empty"
         lines = [ln.strip() for ln in script.splitlines()]
         count = lines.count(fragment)
-        assert count == 4, (
-            "expected exactly the four run-collapse sites (monitored"
-            " workflows + dynamic CodeQL + fork trigger run + fork check-run),"
+        assert count == 5, (
+            "expected exactly the five result-collapse sites (monitored"
+            " workflows + dynamic CodeQL + CodeQL security result + fork"
+            " trigger run + fork check-run),"
             f" found {count}"
         )
         # No site may re-grow a filter stage between the select() and the
@@ -1280,9 +1491,9 @@ class TestAwaitingApprovalIsAttributedToTheMaintainer:
 
 
 class TestDispositionViolationsBlockTheVerdict:
-    """Issue #6658: the disposition rule was mechanical only for a writer
-    running the prepare-pr loop. Readiness publishes the repository's sole
-    required status, so folding the violation list in here is what binds every
+    """The disposition rule binds only a writer running the prepare-pr loop
+    unless readiness enforces it too. Readiness publishes the repository's sole
+    required status, so folding the violation list in here binds every
     writer -- including one who never runs that loop."""
 
     def test_a_violation_turns_an_otherwise_green_revision_red(self, runner: Runner):
@@ -1318,8 +1529,7 @@ class TestDispositionViolationsBlockTheVerdict:
 
     def test_an_unreadable_record_set_waits_instead_of_going_red(self, runner: Runner):
         """A transient comments/permission API failure must never red the
-        required status -- that is issue #2753's class of bug. UNKNOWN is
-        pending, which a later event recomputes."""
+        required status. UNKNOWN is pending, which a later event recomputes."""
         proc, outputs = runner.evaluate(disposition_ok="false")
         assert proc.returncode == 0, proc.stderr
         assert outputs["status_state"] == "pending"

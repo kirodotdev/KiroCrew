@@ -1594,7 +1594,7 @@ class TestKnowledgeRoutes:
 
     @pytest.mark.asyncio
     async def test_ingest_store_statements_run_off_the_event_loop(self, _isolate: Path):
-        """Issue #7020's loop-stall class: every store statement for the
+        """Every store statement for the
         to-knowledge flow must run in a worker thread, so a lock wait on the
         store's busy timeout stalls a thread instead of the event loop (which
         the watchdog would kill). Pins add_source, the syncing/synced UPDATEs,

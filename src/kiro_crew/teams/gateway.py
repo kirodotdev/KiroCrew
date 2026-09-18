@@ -103,6 +103,10 @@ async def maybe_start_teams(orch: "GatewayOrchestrator") -> "TeamsClient | None"
         transport = TeamsTransport(
             client, allowed_emails=allowed_emails, dispatch=dispatcher.handle_message
         )
+        # The dispatcher's config applier pushes a reloaded allow-list at the
+        # transport, so it needs the handle the construction cycle above stopped
+        # it from receiving as a constructor argument.
+        dispatcher.transport = transport
         # Inbound: pre-registered webhook route -> state.teams_on_activity ->
         # client.on_activity (JWT validate) -> transport.receive (scope gate +
         # authorize + normalize) -> dispatcher.handle_message (shared TurnDriver).

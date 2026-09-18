@@ -48,14 +48,26 @@ const DIR = '/repo/my-project'
  *  scoped to the header rather than the whole panel. */
 const header = () => screen.getByText('Files').parentElement as HTMLElement
 
-function mount(dir = DIR, onFileOpen: (p: string, d: boolean) => void = vi.fn()) {
+function mount(
+  dir = DIR,
+  onFileOpen: (p: string, d: boolean) => void = vi.fn(),
+  onOpenTerminal?: () => void,
+) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   const utils = render(
     <QueryClientProvider client={qc}>
-      <FilesHomePanel projectDir={dir} onFileOpen={onFileOpen} />
+      <FilesHomePanel projectDir={dir} onFileOpen={onFileOpen} onOpenTerminal={onOpenTerminal} />
     </QueryClientProvider>,
   )
   return { qc, onFileOpen, ...utils }
+}
+
+/** Open the header's `Project actions` overflow. Radix opens on keyboard
+ *  activation — the path jsdom handles, unlike the PointerEvent mouse open. */
+function openProjectActions() {
+  const trigger = within(header()).getByLabelText('Project actions')
+  fireEvent.keyDown(trigger, { key: 'Enter' })
+  return trigger
 }
 
 beforeEach(() => {
@@ -128,6 +140,73 @@ describe('FilesHomePanel header', () => {
     brandingEnv.directLocal = false
     mount()
     expect(within(header()).queryByLabelText('Show in file manager')).toBeNull()
+  })
+})
+
+describe('FilesHomePanel per-project quick actions', () => {
+  it('spawns a terminal in the project directory from the actions menu', async () => {
+    // The point of the affordance: a shell already `cd`'d into the project,
+    // reachable without knowing that a side-panel tab kind spawns one.
+    const onOpenTerminal = vi.fn()
+    mount(DIR, vi.fn(), onOpenTerminal)
+    openProjectActions()
+    fireEvent.click(await screen.findByText('Open terminal in the project directory'))
+    expect(onOpenTerminal).toHaveBeenCalledTimes(1)
+  })
+
+  it('withholds the terminal action when the host serves no terminal', async () => {
+    // No callback = the terminal feature is off or the host withdrew the view.
+    // Offering the row anyway would promise a shell that never starts, and with
+    // nothing left to hold the trigger goes too rather than opening an empty menu.
+    mount(DIR)
+    await waitFor(() => expect(screen.getByTestId('tree')).toBeInTheDocument())
+    expect(within(header()).queryByLabelText('Project actions')).toBeNull()
+  })
+
+  it('says what the action IS, in the menu, not what it avoids', async () => {
+    // A first-time reader identified the terminal row correctly and would not
+    // click it, so the row has to answer "what is this" without being clicked.
+    // The wording states the value: an earlier attempt reassured instead
+    // ("Nothing runs until you type") and the same reader read the reassurance
+    // as a warning, so the negative framing is pinned OUT here, not just the
+    // positive one in.
+    mount(DIR, vi.fn(), vi.fn())
+    openProjectActions()
+    expect(await screen.findByText('A command line that starts in this project’s folder.')).toBeInTheDocument()
+    expect(screen.queryByText(/Nothing runs until you type/)).toBeNull()
+  })
+
+  it('keeps the header at two controls, with the action inside the menu', async () => {
+    // `max-two-buttons-per-row` caps the row. The action is a menu ROW rather
+    // than a second button because it carries a one-line explanation, and a 26px
+    // icon button has nowhere to put one. Held pending as well as settled, so the
+    // assertion covers the in-flight state the old (unreachable) Refresh branch
+    // claimed for itself.
+    H.api.projectTree.mockReturnValue(new Promise(() => {}))
+    mount(DIR, vi.fn(), vi.fn())
+    expect(within(header()).getAllByRole('button').map(b => b.getAttribute('aria-label'))).toEqual([
+      'Show in file manager', 'Project actions',
+    ])
+    openProjectActions()
+    expect(await screen.findByText('Open terminal in the project directory')).toBeInTheDocument()
+  })
+
+  it('offers no header Refresh, whose branch could never render', async () => {
+    // With a project directory set, `useTreeState` answers only `ready` or
+    // `error` (`ready` covers in-flight on purpose), so the header's old
+    // `!treeAvailable && treeState !== 'error'` Refresh was dead in every state.
+    // The reachable refreshes are the rail's own and the tree-error state's.
+    H.api.projectTree.mockReturnValue(new Promise(() => {}))
+    mount(DIR, vi.fn(), vi.fn())
+    expect(within(header()).queryByLabelText('Refresh')).toBeNull()
+    openProjectActions()
+    expect(await screen.findByText('Open terminal in the project directory')).toBeInTheDocument()
+    expect(screen.queryByText('Refresh')).toBeNull()
+  })
+
+  it('drops the actions menu entirely when no directory is set', () => {
+    mount('', vi.fn(), vi.fn())
+    expect(within(header()).queryByLabelText('Project actions')).toBeNull()
   })
 })
 

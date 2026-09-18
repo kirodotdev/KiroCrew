@@ -45,7 +45,7 @@ def test_return_address_validation_accepts_runtime_callback_shape(host):
 
 @pytest.mark.parametrize("host", ["127.0.0.1", "localhost", "[::1]"])
 def test_return_address_validation_defaults_missing_scheme_to_http(host):
-    """#7406: iOS Safari copies address-bar URLs without the scheme; the
+    """iOS Safari copies address-bar URLs without the scheme; the
     scheme-less paste must validate as if it carried http://."""
     value = f"{host}:43123/callback?code=one-time&state=opaque"
     callback = connections._validated_loopback_return_address(value)
@@ -142,7 +142,7 @@ async def test_relay_rejects_valid_non_object_json(body):
 async def test_relay_rejects_malformed_slug_before_network(monkeypatch, slug):
     """The server name is still shape/length-bounded so it stays a safe SEL audit label.
 
-    The Connections-registry membership gate is gone (issue #4491: user-added and
+    The Connections-registry membership gate is gone (user-added and
     self-hosted MCP servers must relay too), and the accepted shape is now the SAME
     one user-added servers pass at add time (_is_valid_mcp_name: uppercase, ``_``,
     ``.``, ``:``, ``@`` allowed, ≤128 chars) so a name the add path accepted can
@@ -177,13 +177,13 @@ async def test_relay_accepts_user_added_name_shapes(monkeypatch, name):
 
     The Design review on this PR found the relay kept the registry's
     lowercase-hyphen slug regex, so ``myServer`` / ``@org/tools`` — valid
-    user-added server names, the exact population issue #4491 targets — 400ed as
+    user-added server names, exactly the population that must relay — 400ed as
     ``invalid_server`` before the relay could run. These names must now clear
     the name check; the request then proceeds to return-address validation.
     The address deliberately uses a sub-1024 port, which the validator rejects
     BEFORE any socket dial — so this test can never contact a real local
     service, and reaching ``invalid_loopback_return_address`` proves the
-    failure is no longer the name.
+    failure is not the name.
     """
     relay_app = web.Application()
     relay_app.router.add_post("/api/mcp/oauth/relay", connections.api_mcp_oauth_relay)
@@ -211,7 +211,7 @@ async def test_relay_accepts_user_added_name_shapes(monkeypatch, name):
 async def test_relay_delivers_for_a_user_added_non_registry_server(monkeypatch):
     """A user-added / self-hosted server (not in the Connections registry) relays.
 
-    This is the fix for issue #4491: the relay is no longer gated on get_provider,
+    The relay is not gated on get_provider,
     so a well-formed slug the registry has never heard of reaches the loopback
     listener and its code is delivered, exactly as a curated provider's would be.
     """

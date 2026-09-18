@@ -33,9 +33,9 @@ _VALID = {
 def test_pool_key_field_set_is_exactly_the_twelve_dimensions() -> None:
     """The key's field set is asserted EXPLICITLY so adding or removing a
     pool dimension has to be a deliberate test change, never a silent one.
-    ``user_identity`` was deleted (issue #3604): nothing ever populated its
-    ``KIROCREW_PRINCIPAL`` source, so it always collapsed to the OS user and
-    never isolated anything — re-adding it must come with a real
+    ``user_identity`` is intentionally absent: nothing populates its
+    ``KIROCREW_PRINCIPAL`` source, so it always collapses to the OS user and
+    never isolates anything — adding it must come with a real
     multi-principal design, not just a field.
     """
     assert set(PoolKey.__dataclass_fields__) == {
@@ -103,8 +103,8 @@ class TestChannelIsNotAPoolDimension:
         assert with_chan.stable_hash() == without.stable_hash()
 
     def test_payload_without_channel_id_is_accepted(self) -> None:
-        """It is no longer a special-cased optional field — it is simply not a
-        field, so a payload omitting it is complete rather than tolerated."""
+        """It is not a field at all — not a special-cased optional one — so a
+        payload omitting it is complete rather than tolerated."""
         payload = {k: v for k, v in _VALID.items() if k != "channel_id"}
         key = PoolKey.from_register(payload)
         assert key.stable_hash() == PoolKey.from_register(dict(_VALID)).stable_hash()
@@ -112,7 +112,7 @@ class TestChannelIsNotAPoolDimension:
     def test_unknown_channel_id_shape_does_not_break_register(self) -> None:
         """Forward/backward compat: an older stub still reports ``channel_id``
         (gatewayd threads it into caller identity), and a malformed value must
-        not fail a register that no longer depends on it."""
+        not fail a register that does not depend on it."""
         for bogus in (123, {"a": 1}, ["x"], ""):
             key = PoolKey.from_register({**_VALID, "channel_id": bogus})
             assert key.stable_hash() == PoolKey.from_register(dict(_VALID)).stable_hash()

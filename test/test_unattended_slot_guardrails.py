@@ -204,6 +204,19 @@ class TestUnattendedApprovalWindow:
 
 
 class TestBackgroundTurnCap:
+    """Every await below is bounded at 5s, because the cap IS what satisfies it.
+
+    What makes each ``started.wait()`` return, and each queued
+    ``run_background_turn`` finish, is the gate under test — so a reverted fix
+    (a permit never granted, the attended fast path removed, the ``finally``
+    that releases dropped, the queue wait unbounded again) parks the await on
+    the production 1800s ceiling ``_BACKGROUND_QUEUE_WAIT_SECS`` instead of
+    reaching the assertion that would have named the defect. Past
+    ``--timeout`` that is a killed xdist worker and a lost run on Windows, not
+    a failed test. 5s is generous for work that is entirely in-loop with no
+    I/O, so the bound can only fire when the property is genuinely broken.
+    """
+
     @pytest.mark.asyncio
     async def test_cap_queues_the_extra_unattended_turn(self, tmp_path) -> None:
         """The named FIX 2 test: at the cap a turn QUEUES and the wait is visible.
@@ -231,7 +244,7 @@ class TestBackgroundTurnCap:
             order.append("second-start")
 
         t1 = asyncio.ensure_future(state.run_background_turn(w1, _first()))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), 5.0)
         t2 = asyncio.ensure_future(state.run_background_turn(w2, _second()))
         await asyncio.sleep(0)  # let t2 reach the semaphore and block
 
@@ -242,7 +255,7 @@ class TestBackgroundTurnCap:
         assert order == ["first-start"], "the second turn ran despite the cap"
 
         release.set()
-        await asyncio.gather(t1, t2)
+        await asyncio.wait_for(asyncio.gather(t1, t2), 5.0)
 
         assert order == ["first-start", "first-end", "second-start"]
         assert state.background_turn_stats() == {"cap": 1, "running": 0, "waiting": 0}
@@ -267,10 +280,10 @@ class TestBackgroundTurnCap:
             return "ran"
 
         t1 = asyncio.ensure_future(state.run_background_turn(worker, _held()))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), 5.0)
 
         # Cap is full, yet the human turn completes immediately.
-        assert await state.run_background_turn(human, _human_turn()) == "ran"
+        assert await asyncio.wait_for(state.run_background_turn(human, _human_turn()), 5.0) == "ran"
         assert state.background_turn_stats()["waiting"] == 0
 
         release.set()
@@ -326,13 +339,16 @@ class TestBackgroundTurnCap:
             ran = True
 
         t1 = asyncio.ensure_future(state.run_background_turn(w1, _held()))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), 5.0)
         queued = _never()
         t2 = asyncio.ensure_future(state.run_background_turn(w2, queued))
         await asyncio.sleep(0)
         t2.cancel()
         with pytest.raises(asyncio.CancelledError):
-            await t2
+            # Bounded for the same reason: a regression that swallows the cancel
+            # while queued leaves t2 waiting out the 1800s permit ceiling, so the
+            # raises-block above would never get to report the miss.
+            await asyncio.wait_for(t2, 5.0)
 
         assert ran is False
         assert queued.cr_running is False and queued.cr_frame is None, "coroutine left open"
@@ -370,10 +386,13 @@ class TestBackgroundTurnCap:
             ran = True
 
         t1 = asyncio.ensure_future(state.run_background_turn(w1, _held()))
-        await started.wait()
+        await asyncio.wait_for(started.wait(), 5.0)
 
+        # The inner bound is 0.05s (set above), so the 5s ceiling cannot mask the
+        # real TimeoutError; it only converts "the wait is not bounded any more"
+        # from a dead worker into a raises-match failure at this line.
         with pytest.raises(TimeoutError, match="background-turn cap"):
-            await state.run_background_turn(w2, _never())
+            await asyncio.wait_for(state.run_background_turn(w2, _never()), 5.0)
 
         assert ran is False
         assert state.background_turn_stats()["waiting"] == 0
@@ -419,6 +438,9 @@ class _Loop:
         self.max_cycles = 24
         self.cycle_count = 3
         self.stop_sentinel_path = ""
+        # Read by the fire path when it snapshots the loop's config generation
+        # at fire time (for the structural-terminal (id, generation) fence).
+        self.config_generation = 0
         # Read by the fire path to decide whether the transcript row shows a
         # short banner instead of the full message. "" keeps the historical
         # verbose row, which is what these tests assert on.
@@ -577,8 +599,8 @@ class TestIdleCleanupSparesArmedLoops:
     async def test_the_users_close_still_retires_the_loop(self, tmp_path, monkeypatch) -> None:
         """"Respect the close" survives adopt_closed=True.
 
-        The rule used to be an emergent property of the fire path's rehydrate
-        miss. Now that the fire path adopts a closed session, the ✕ handler has
+        The rule is not an emergent property of the fire path's rehydrate
+        miss: since the fire path adopts a closed session, the ✕ handler has
         to retire the loop itself — otherwise a dismissed tab would be
         resurrected by its own loop on the next cycle.
         """
@@ -667,9 +689,9 @@ class TestIdleCleanupSparesArmedLoops:
     ) -> None:
         """The app learns of the ✕ even when tearing the ACP session down throws.
 
-        REGRESSION: the notification used to run AFTER ``sessions.remove``. An ACP
-        teardown error therefore propagated out of the handler with the app never
-        told, leaving a live crew whose watchdog re-armed the very tab the user had
+        The notification must not run AFTER ``sessions.remove``: an ACP
+        teardown error would then propagate out of the handler with the app never
+        told, leaving a live crew whose watchdog re-arms the very tab the user had
         just closed — the resurrection this hook exists to prevent, reachable by an
         error in an unrelated subsystem.
         """

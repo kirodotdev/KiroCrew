@@ -733,6 +733,14 @@ export function useVirtualChat<T>(
   // hardware events and by the smooth-pin grab interrupts, never by scroll
   // events themselves.
   const lastHardInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
+  // UPWARD-only sibling of lastHardInputAtRef: stamped when the input's own
+  // direction was up (wheel up / upward key / upward touch drag), or when a
+  // smooth-glide grab moved scrollTop backward (confirmed upward by motion).
+  // resolveUserScrollStick's clamp branch keys its release on THIS stamp, not
+  // the direction-blind one: a wheel-down at the bottom is an ordinary input
+  // during streaming, and a content-shrink clamp inside its settle window must
+  // keep follow armed rather than releasing the reader who asked for the end.
+  const lastUpwardInputAtRef = useRef<number>(Number.NEGATIVE_INFINITY)
   // When WE last established the reader's bottom position: a pin write, or a
   // re-baseline of `lastWriteTopRef` onto a layout clamp / an already-at-bottom
   // observation. Compared against the hard-input stamp above it answers "has the
@@ -2287,6 +2295,9 @@ export function useVirtualChat<T>(
           smoothPinActiveRef.current = false
           lastUserScrollAtRef.current = performance.now()
           lastHardInputAtRef.current = lastUserScrollAtRef.current
+          // scrollTop moving backward against the animation IS a confirmed
+          // upward gesture, so it also arms the clamp-release stamp.
+          lastUpwardInputAtRef.current = lastUserScrollAtRef.current
           stickRef.current = false
           detachSmoothAbort()
         }
@@ -2320,6 +2331,15 @@ export function useVirtualChat<T>(
             lastScrollClientHRef.current > 0
               ? geom.clientHeight - lastScrollClientHRef.current
               : 0,
+          // An UPWARD hardware input stamped within the settle window is proof
+          // the reader scrolled up. The intent listeners stamp its direction
+          // BEFORE this scroll event dispatches, so a landing at the bottom
+          // under a fresh upward stamp is the reader's own scroll-up coinciding
+          // with a content shrink, not the engine's clamp — release follow
+          // instead of holding the reader at the end. A downward or
+          // directionless input leaves the clamp guard in place.
+          upwardInputWithinSettle:
+            performance.now() - lastUpwardInputAtRef.current < SCROLL_SETTLE_MS,
         })
         if (wasStick && !stickRef.current) releaseFollowBaseline()
         const layoutClamp = stickRef.current && clampedAtBottom
@@ -2392,9 +2412,13 @@ export function useVirtualChat<T>(
     // the gesture (fighting a trackpad fling frame by frame). Suppression is
     // harmless when the input does not scroll (a click, a wheel at the bottom):
     // follow resumes SCROLL_SETTLE_MS later.
-    const detachIntent = attachUserScrollIntent(el, () => {
+    const detachIntent = attachUserScrollIntent(el, (dir) => {
       lastUserScrollAtRef.current = performance.now()
       lastHardInputAtRef.current = performance.now()
+      // Only a confirmed upward input arms the clamp-release stamp — a
+      // directionless grab or a downward input must not disable the clamp
+      // guard (see lastUpwardInputAtRef).
+      if (dir === 'up') lastUpwardInputAtRef.current = performance.now()
     })
     onScroll()
     return () => {
@@ -2574,6 +2598,21 @@ export function useVirtualChat<T>(
               prevHeight: prevH,
               newHeight: newH,
               foldTop: el.getBoundingClientRect().top,
+              // The streaming row (and the row in its post-stream settle grace)
+              // grows by APPENDING at its bottom. Same identity the immediate
+              // sync below keys on; a straddling row growing this way moves
+              // nothing above the fold, so the predicate must not compensate
+              // it (#10810 -- the "pushed up while reading the middle" drift).
+              //
+              // EXCEPT during the rail's collapse animation: for those ~150ms
+              // the content column's width changes every frame and the row
+              // RE-WRAPS, so its height change is a reprice distributed over
+              // the whole row -- including the part above the fold -- not an
+              // append. Keep the straddling-row compensation for that window
+              // (WebKit has no native anchor to fall back on); the per-token
+              // drift it re-admits is bounded by RAIL_SETTLE_MS.
+              appendsAtBottom:
+                (idx === streamingIndexRef.current || idx === graceIndexRef.current) && !isRailSettling(),
             })
             // Which row grew decides whether growth is FOLLOWABLE. Streaming
             // and widget-load growth happens at the TAIL, where following it
@@ -3791,13 +3830,18 @@ export function useVirtualChat<T>(
   // off-window target. Near targets union with the current window (no flash);
   // far targets jump (replace) to avoid mounting thousands of rows in between.
   //
-  // Returns `true` when it took the FAR path (window replaced, leaving an
-  // unmounted gap between the old viewport and the target). Callers use this
-  // to pick scroll behavior: a smooth glide across a far jump would scrub the
-  // scroller through blank spacer (visible flicker), so callers should
-  // teleport (instant) on a far jump and only glide on a near one.
+  // Returns `true` when the target is FAR. By default the window is then
+  // REPLACED, leaving an unmounted gap between the old viewport and the target,
+  // and callers should teleport (instant) rather than glide a native smooth
+  // scroll through blank spacer. With `unionOnly` a far target is left alone —
+  // nothing is mounted and the window stays where the reader is — for a caller
+  // that drives the scroll itself frame by frame (a converging glide): the
+  // scroll listener's `recomputeWindow` then follows each write, mounting rows
+  // as the viewport reaches them, exactly as it does under a fling. Replacing
+  // the window first would blank the rows under the reader for the frame before
+  // the first write pulls the window back.
   const mountIndex = useCallback(
-    (index: number): boolean => {
+    (index: number, opts?: { unionOnly?: boolean }): boolean => {
       const count = itemsRef.current.length
       if (count === 0) return false
       const t = Math.max(0, Math.min(count - 1, Math.floor(index)))
@@ -3806,6 +3850,7 @@ export function useVirtualChat<T>(
       // we can return the decision synchronously to the caller.
       const cur = windowRangeRef.current
       const far = !(jump.start <= cur.end + overscan * NEAR_JUMP_OVERSCAN_MULT && jump.end >= cur.start - overscan * NEAR_JUMP_OVERSCAN_MULT)
+      if (far && opts?.unionOnly) return true
       setWindowRange((prev) => {
         const near = jump.start <= prev.end + overscan * NEAR_JUMP_OVERSCAN_MULT && jump.end >= prev.start - overscan * NEAR_JUMP_OVERSCAN_MULT
         if (near) return { start: Math.min(prev.start, jump.start), end: Math.max(prev.end, jump.end) }
@@ -3814,6 +3859,26 @@ export function useVirtualChat<T>(
       return far
     },
     [overscan],
+  )
+
+  // Scroller-coordinate top of row `index` from the height index alone, so a
+  // caller can steer toward a row that is NOT mounted. Rows above it that are
+  // still unmeasured contribute their estimate, so the value refines as the
+  // viewport passes them and they measure in — a caller that re-reads it every
+  // frame converges on the true position; one that reads it once lands on the
+  // estimate. `leadingOffset` is the chrome between the scroller's content
+  // origin and the list's first row, which the index does not know about.
+  const estimateRowTop = useCallback(
+    (index: number): number | null => {
+      const el = scrollerRef.current
+      const count = itemsRef.current.length
+      if (!el || count === 0) return null
+      const t = Math.max(0, Math.min(count - 1, Math.floor(index)))
+      const idxTree = heightIndexRef.current
+      const off = idxTree ? idxTree.offsetOf(t) : getOffsetFn(t, count, getH)
+      return leadingOffset(el) + off
+    },
+    [getH, leadingOffset, scrollerRef],
   )
 
   // ---- Build virtualItems list ----
@@ -4022,6 +4087,7 @@ export function useVirtualChat<T>(
     scrollToIndex,
     scrollToBottom,
     mountIndex,
+    estimateRowTop,
     measureRef,
     /** True while an anchored entry is still waiting for its row to hydrate.
      *  The caller should cover the transcript with a skeleton for exactly this

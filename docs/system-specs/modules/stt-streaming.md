@@ -141,7 +141,7 @@ transcript delivery; explicit cancel and unmount remain discard-only and do not 
 | Worklet | `website/public/pcm-worklet.js` | Float32-to-16 kHz mono Int16 PCM downsampler |
 | Streaming hook | `website/src/hooks/useStreamingStt.ts` | Opens the WS, wires the worklet, emits partial and final |
 | Voice hook | `website/src/hooks/useVoiceInput.ts` | Chooses streaming or batch, owns mic and device selection |
-| Composer wiring | `website/src/pages/ChatPage.tsx` | Splices the live region into the input box |
+| Composer wiring | `website/src/chat-core/composer/useComposerVoice.ts` | The `Composer` root's Voice atom: splices the live region into the input box, owns the one-mic mutex and the frozen-prefix snapshot; `ChatPage.tsx` and `ChatPane.tsx` mount the root and supply only host options |
 | Recording UI | `website/src/components/VoiceDictationPanel.tsx`, `VoiceStatusBar.tsx` | The animated panel, and the thin bar it falls back to |
 | Settings UI | `website/src/pages/settings/SttSettings.tsx` | Enable, provider, model, language, and the streaming knobs |
 
@@ -157,13 +157,19 @@ Server to client, JSON. `stt.session.SttEvent.kind` supplies the local provider'
 
 - `{"type":"ready"}`: the session is live and the client may send audio. Capture begins before this arrives, so `useStreamingStt` buffers PCM locally and flushes it in order after readiness. Reaching 60 seconds of buffered PCM stops capture and drains the retained audio after readiness instead of discarding the recording's beginning; the worklet's short flushed tail is retained too. Local sessions additionally advertise `final_timeout_ms`, the browser's stop-to-close allowance: `stt.timeout_secs` plus the native abort grace and a wire grace. Readiness keeps its separate 60-second client timeout. For older servers without a valid allowance, the client uses 315 seconds.
 - `{"type":"status","stage":...,"downloaded_bytes":N,"total_bytes":N,"code":...}`
-  where `stage` is `downloading` or `ready`. A first-ever local session has to
+  where `stage` is `downloading`, `preparing` or `ready`. A first-ever local session has to
   fetch weights before it can recognise anything, and a silent transfer is
   indistinguishable from a hang, so the transport emits the notice itself *before*
   starting the fetch and `LocalSession.prepare()`'s own copy of it is dropped on
   return: re-sending it with a zero byte count would walk a progress reading
   backwards. Live byte progress is polled from `GET /api/stt/status` rather than
-  pushed. A session with nothing to report emits no status frame at all.
+  pushed. `preparing` covers the sibling case where the weights are already on disk
+  but not yet resident, so `prepare()` must load them (and re-hash them against the
+  pin) before the first `ready`: that load emits no `downloading` status and is
+  otherwise silent to the client, so the transport announces it with a single
+  `preparing` frame (zero byte counts, empty `code`) before starting the load. A
+  session with nothing to report -- neither a download nor a load, because the model
+  is already resident -- emits no status frame at all and goes straight to `ready`.
 - `{"type":"partial","text":"..."}`: an in-progress hypothesis that replaces the
   previous one.
 - `{"type":"final","text":"..."}`: the committed transcript for the utterance. An empty final explicitly retracts the previous partial, including a hypothesis removed by hallucination filtering or redaction. It contributes no text to semantic endpointing. The client clears that live hypothesis so disconnect recovery cannot restore it.
@@ -539,7 +545,8 @@ either one is a race.
 
 ## Frozen-prefix behaviour
 
-`ChatPage.tsx` snapshots the composer's contents and the caret on the first
+`useComposerVoice.ts` (the `Composer` root's Voice atom, mounted by `ChatPage.tsx`
+and `ChatPane.tsx`) snapshots the composer's contents and the caret on the first
 `partial` of an utterance. Later partials replace only the live region after that
 snapshot, so anything the user typed before speaking survives, and the caret does
 not jump. The snapshot clears on the final, so the next utterance starts from the

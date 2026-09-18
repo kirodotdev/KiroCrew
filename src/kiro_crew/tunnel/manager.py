@@ -81,8 +81,8 @@ class TunnelManager:
 
     Precedence: an explicit local lifecycle write WINS over the provider
     snapshot.  ``stop()`` (STOPPED) and the OSS-disabled ``start()`` (DISABLED)
-    pin the local status so a stale/lagging snapshot can no longer resurrect a
-    "connected" state after the tunnel was torn down; a subsequent ``start()``
+    pin the local status so a stale/lagging snapshot cannot resurrect a
+    "connected" state after the tunnel is torn down; a subsequent ``start()``
     that a live provider actually drives clears the pin so the snapshot flows
     again.
     """

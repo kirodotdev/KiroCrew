@@ -9,7 +9,7 @@ verbatim while the backend redacted them.
 
 Behavioural tests alone do not close that failure mode. Each copy is tested
 against its own samples, so a backend-only change leaves every mirror green
-while the mirrors no longer match the pattern they mirror. The planned
+while the mirrors do not match the pattern they mirror. The planned
 follow-up (decode segment one as a JOSE header, require `alg`/`enc`) lands in
 `security.py` FIRST by design, which is precisely when that would happen.
 
@@ -52,7 +52,7 @@ from kiro_crew.security import _CREDENTIAL_PATTERNS
 
 ROOT = Path(__file__).resolve().parents[1]
 
-# The security PACKAGE, not one module: #9183 split `security.py` into
+# The security PACKAGE, not one module: `security.py` is split into
 # vocabulary / helpers / shell_normalizer / paths / denied_rules / redaction /
 # exfil / argv_floor / diagnostics behind a facade, and a waiver reintroduced in
 # any of them — or in `__init__.py` — would be just as live. Scanning the whole
@@ -197,10 +197,10 @@ class TestDeliberateNonMirrors:
 class TestPrefilledIssueCarveOutParity:
     """NEITHER half may carve out the issue-prefill shape, and this pins the absence.
 
-    A carve-out landed on the frontend first (#7824) and a backend twin followed;
-    both are gone. Two spellings were tried — one keyed to the prefill SHAPE, one
-    additionally pinned to this project's own tracker — and both are exfiltration
-    primitives, because what these functions sanitize is MODEL-AUTHORED text.
+    Neither a frontend nor a backend carve-out for this shape may exist. Two
+    spellings are both exfiltration primitives — one keyed to the prefill SHAPE, one
+    additionally pinned to this project's own tracker — because what these functions
+    sanitize is MODEL-AUTHORED text.
     Injected content steers the model into emitting a prefill URL whose ``body``
     carries percent-encoded private context, the waiver skips aggregate query
     length, and the user submits it into a PUBLIC issue the attacker reads. Pinning

@@ -119,8 +119,8 @@ class TestTokenPersistence:
 
         The parse guard only covers bytes that will not decode. A file that
         decodes cleanly but holds a mapping where the list belongs, or a row
-        with no hash, used to be filtered to nothing — and every mutating call
-        writes the loaded list back, so the filtered rows were deleted on the
+        with no hash, must not be filtered to nothing — every mutating call
+        writes the loaded list back, so filtered rows would be deleted on the
         next create. The kill switch shares this file, so the disabled state
         could go with them.
         """
@@ -447,7 +447,7 @@ class TestCrossOsPermissions:
         the moment the lockdown is applied — zero means no payload byte existed
         yet. That is observable on every OS and does not depend on which write
         API the writer uses, which is what earlier attempts at this test got
-        wrong (they watched ``os.write``, no longer on this path, and the POSIX
+        wrong (they watched ``os.write``, not on this path, and the POSIX
         mode, which ``mkstemp`` already sets to 0600).
         """
         sizes: list[int] = []

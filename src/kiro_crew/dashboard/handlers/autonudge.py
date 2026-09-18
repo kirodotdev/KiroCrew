@@ -9,8 +9,9 @@ from typing import Any
 
 from aiohttp import web
 
+from kiro_crew.autonudge import binding_key_for
 from kiro_crew.autonudge import get_instance as _autonudge_get
-from kiro_crew.autonudge import is_structured_monitor_loop, structured_monitor_binding_key_for
+from kiro_crew.autonudge import is_structured_monitor_loop
 
 # The security chokepoint lives in the transport-agnostic module (see its
 # docstring); re-exported here so existing importers keep working. This file
@@ -23,6 +24,7 @@ from kiro_crew.autonudge_authz import (  # noqa: F401 - re-exported
     authorize_and_update_nudge,
     resolve_stop_sentinel,
 )
+from kiro_crew.dashboard.handlers import source_providers
 from kiro_crew.dashboard.handlers.source_providers import (
     is_owner_dashboard_request,
     stale_owner_session_response,
@@ -44,11 +46,11 @@ from kiro_crew.monitoring.models import (
     MONITOR_STATE_VERSION,
     MONITOR_STOP_UNSUPPORTED_VERSION,
     MonitorBudgets,
+    MonitorOutcome,
     MonitorState,
     monitor_state_public_dict,
 )
 from kiro_crew.monitoring.registry import (
-    GITHUB_PULL_REQUEST,
     REVIEW_READY,
     kind_supports_objective,
     publicly_armable_kinds,
@@ -61,6 +63,11 @@ logger = logging.getLogger(__name__)
 
 _CODE_DASHBOARD_OWNER_REQUIRED = "dashboard_owner_required"
 _CODE_INTERNAL_SECRET_REQUIRED = "internal_secret_required"
+
+
+async def ensure_gitlab_hosts_loaded() -> frozenset[str]:
+    """Load provider host policy only when a monitor mutation needs it."""
+    return await source_providers.ensure_gitlab_hosts_loaded()
 
 
 def render_nudge_message(message: str, stop_sentinel_path: str | None) -> str:
@@ -160,15 +167,25 @@ def _serialize_monitor(loop: Any) -> dict[str, Any]:
 #: branch of ``_timer`` returns before the sentinel is ever tested, and a
 #: filesystem path is owner-scoped regardless.
 #:
+#: ``config_generation`` is internal fence bookkeeping -- the token the
+#: structural-terminal stop compares against to refuse a stale completion. It is
+#: the automation's own private counter, carries no legacy-panel meaning, and has
+#: no truthful structured equivalent to MAP, so it is withheld like
+#: ``stop_sentinel_path`` rather than published or faked.
+#:
 #: A GATED prompt loop is in NEITHER case: it carries probe state but still
 #: delivers down the legacy path, so its message and its cycle accounting are
 #: real, and ``is_structured_monitor_loop`` already excludes it.
+#:
+#: ``goal_token`` is an authorisation a client sends back, not a fact about the subject.
 _MONITOR_WITHHELD_LEGACY_FIELDS = frozenset(
     {
         "monitor",
         "message",
         "banner",
         "stop_sentinel_path",
+        "config_generation",
+        "goal_token",
         "max_cycles",
         "cycle_count",
         "last_fire_ts",
@@ -367,17 +384,51 @@ def _bounded_int(body: dict[str, Any], name: str, default: int, minimum: int, ma
     return raw
 
 
-def _monitor_config(body: dict[str, Any]) -> MonitorState:
-    from kiro_crew.monitoring.github_pull_request import parse_github_pull_request_target
+def _monitor_config(
+    body: dict[str, Any],
+    *,
+    gitlab_hosts: frozenset[str],
+    normalize_target: bool = True,
+) -> MonitorState:
+    # Target parsing imports provider runtime; disabled gateways must not load it.
+    from kiro_crew.monitoring.targets import (
+        GitLabHostNotAllowed,
+        InvalidPullRequestTarget,
+        infer_pull_request_kind,
+        normalize_pull_request_target,
+    )
 
-    kind = body.get("kind", GITHUB_PULL_REQUEST)
+    raw_target = body.get("target", "")
+    kind = body.get("kind")
+    allowed_gitlab_hosts = tuple(gitlab_hosts)
+    if kind is None:
+        try:
+            kind = infer_pull_request_kind(
+                raw_target,
+                gitlab_hosts=allowed_gitlab_hosts,
+            )
+        except GitLabHostNotAllowed:
+            raise
+        except ValueError as exc:
+            raise InvalidPullRequestTarget(str(exc)) from exc
     objective = body.get("objective", REVIEW_READY)
     # Both halves: a caller may only name a PUBLICLY ARMABLE kind, and that kind must
     # itself declare the objective. The flat allowlists upstream cannot express the
     # pairing, so this is where it is checked.
     if kind not in publicly_armable_kinds() or not kind_supports_objective(kind, objective):
         raise ValueError(f"no monitored kind {kind!r} supports objective {objective!r}")
-    target = parse_github_pull_request_target(body.get("target", "")).url
+    target = raw_target
+    if normalize_target:
+        try:
+            target = normalize_pull_request_target(
+                kind,
+                raw_target,
+                gitlab_hosts=allowed_gitlab_hosts,
+            )
+        except GitLabHostNotAllowed:
+            raise
+        except ValueError as exc:
+            raise InvalidPullRequestTarget(str(exc)) from exc
     wake = body.get("wake_instructions", "")
     if not isinstance(wake, str) or len(wake) > MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS:
         raise ValueError(
@@ -465,12 +516,19 @@ async def api_autonudge_get(request: web.Request) -> web.Response:
 
 
 async def api_session_monitor_get(request: web.Request) -> web.Response:
-    """Return only the structured monitor owned by the authenticated session."""
+    """Return the monitor owned by the authenticated session, whatever its shape.
+
+    Resolves the GENERAL binding so a legacy timer loop (including a Webex
+    session, which hosts one but no structured monitor) reports too. A structured
+    monitor comes back under ``monitor``; a legacy loop comes back under
+    ``autonudge_loop`` as a presence and cadence reading. The full structured
+    record still lives behind the owner-gated ``/api/monitors`` routes.
+    """
     denied = await _require_monitor_internal(request)
     if denied is not None:
         return denied
     session_key = request.headers.get("X-Session-Key", "")
-    binding = structured_monitor_binding_key_for(session_key)
+    binding = binding_key_for(session_key)
     if not binding:
         await _audit_monitor_access(
             request,
@@ -557,11 +615,18 @@ async def api_monitor_create(request: web.Request) -> web.Response:
     svc = _autonudge_get()
     if svc is None:
         return _monitor_error("monitoring disabled", "monitoring_disabled", status=503)
+    from kiro_crew.monitoring.targets import GitLabHostNotAllowed, InvalidPullRequestTarget
+
     try:
         body = await request.json()
         if not isinstance(body, dict):
             raise ValueError("request body must be an object")
-        config = _monitor_config(body)
+        gitlab_hosts = await ensure_gitlab_hosts_loaded()
+        config = _monitor_config(body, gitlab_hosts=gitlab_hosts)
+    except GitLabHostNotAllowed as exc:
+        return _monitor_error(str(exc), "gitlab_host_not_allowed")
+    except InvalidPullRequestTarget as exc:
+        return _monitor_error(str(exc), "invalid_pull_request_url")
     except Exception as exc:
         return _monitor_error(str(exc), "invalid_monitor")
     slot_key = str(body.get("slot_key") or "")
@@ -582,6 +647,7 @@ async def api_monitor_create(request: web.Request) -> web.Response:
         caller=request.remote or "",
         monitor=config,
         replace_existing=False,
+        grant_owner_provider_credentials=True,
     )
     if error is not None:
         return _monitor_error(error, "monitor_create_denied", status=status)
@@ -597,6 +663,8 @@ async def api_monitor_update(request: web.Request) -> web.Response:
     loop = svc.get_by_id(request.match_info["monitor_id"]) if svc is not None else None
     if loop is None or not is_structured_monitor_loop(loop):
         return _monitor_error("structured monitor not found", "monitor_not_found", status=404)
+    from kiro_crew.monitoring.targets import GitLabHostNotAllowed, InvalidPullRequestTarget
+
     try:
         body = await request.json()
         if not isinstance(body, dict):
@@ -616,7 +684,16 @@ async def api_monitor_update(request: web.Request) -> web.Response:
             ),
             "wake_instructions": body.get("wake_instructions", current.wake_instructions),
         }
-        config = _monitor_config(merged)
+        gitlab_hosts = await ensure_gitlab_hosts_loaded()
+        config = _monitor_config(
+            merged,
+            gitlab_hosts=gitlab_hosts,
+            normalize_target="target" in body,
+        )
+    except GitLabHostNotAllowed as exc:
+        return _monitor_error(str(exc), "gitlab_host_not_allowed")
+    except InvalidPullRequestTarget as exc:
+        return _monitor_error(str(exc), "invalid_pull_request_url")
     except Exception as exc:
         return _monitor_error(str(exc), "invalid_monitor")
     patch: dict[str, Any] = {}
@@ -643,6 +720,7 @@ async def api_monitor_update(request: web.Request) -> web.Response:
         patch=patch,
         source="dashboard",
         caller=request.remote or "",
+        grant_owner_provider_credentials=True,
     )
     if error is not None:
         return _monitor_error(error, "monitor_update_denied", status=status)
@@ -724,6 +802,12 @@ async def api_monitor_restart(request: web.Request) -> web.Response:
             MONITOR_STOP_UNSUPPORTED_VERSION,
             status=409,
         )
+    if monitor.outcome is MonitorOutcome.SESSION_CLOSE:
+        return _monitor_error(
+            "session-close monitors cannot be restarted",
+            "monitor_not_restartable",
+            status=409,
+        )
     if monitor.outcome is None:
         return _monitor_error("only terminal monitors can restart", "monitor_not_terminal")
     state: DashboardState = request.app["state"]
@@ -740,6 +824,8 @@ async def api_monitor_restart(request: web.Request) -> web.Response:
         monitor=monitor,
         expected_existing_monitor_id=loop.id,
         expected_existing_config_generation=monitor.config_generation,
+        creation_surface=monitor.creation_surface,
+        grant_owner_provider_credentials=True,
     )
     if error is not None:
         return _monitor_error(error, "monitor_restart_denied", status=status)

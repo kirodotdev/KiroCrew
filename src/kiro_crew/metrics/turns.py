@@ -11,8 +11,8 @@ The duration instrument powers two readings on the Telemetry page: turn latency
 Both are only as honest as the population they sample, which is why this
 module exists at all.
 
-**Why this is not in ``chat_runner``.** It used to be. The emit lived beside
-the dashboard turn loop, which made it structurally reachable from exactly one
+**Why this is not in ``chat_runner``.** An emit beside the dashboard turn
+loop is structurally reachable from exactly one
 surface: a cron job, a heartbeat task, a memory consolidation pass, a subagent,
 a task-runner step, a workflow stage and every messaging channel each run agent
 turns that never pass through that loop, so none of them produced a sample. The
@@ -142,9 +142,9 @@ def turn_outcome(stop_reason: str | None, *, exhausted: bool = False) -> str:
     computation. Only the dashboard turn loop maintains such a budget; a
     background surface has no recovery loop, so it never passes this.
 
-    A user cancel is its own outcome, NOT ``error``. It used to fold into the
-    error branch, which put every press of Stop into the ``fault_rate``
-    numerator: the one turn outcome the operator caused deliberately was being
+    A user cancel is its own outcome, NOT ``error``. Folding it into the
+    error branch would put every press of Stop into the ``fault_rate``
+    numerator: the one turn outcome the operator causes deliberately would be
     reported as the system failing. It is matched by EXACT equality against
     :data:`_STOP_CANCELLED` rather than a substring, because the watchdog's
     unacked-cancel reason (``"error: cancel unacked"``) is a genuine fault and

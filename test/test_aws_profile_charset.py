@@ -1,10 +1,9 @@
-"""Regression tests for the AWS-profile character class (#6055, #6063).
+"""Regression tests for the AWS-profile character class.
 
 IAM Identity Center derives profile names shaped ``<account>+<permission-set>``
-(e.g. ``AdminAccess+dev``), so ``+`` must be accepted. The SSM/instances pair
-was fixed by #6051 and four more hand copies by #6055; #6063 consolidated the
-shape into ``kiro_crew.constants.AWS_PROFILE_NAME_RE`` as the single source of
-truth. These tests pin every consumer:
+(e.g. ``AdminAccess+dev``), so ``+`` must be accepted. The accepted shape lives
+in ``kiro_crew.constants.AWS_PROFILE_NAME_RE`` as the single source of truth.
+These tests pin every consumer:
 
 * ``kiro_crew.cloud.ec2._PROFILE_SPEC`` (EC2 wizard — aliases
   ``profiles.PROFILE_SPEC``)
@@ -195,7 +194,7 @@ class TestWorkspaceManagerProfile:
 
 class TestPatternLengthBound:
     """The quantifier bounds length to 128 inside the pattern itself, matching
-    the max_len=128 caps the FieldSpec sites enforce (and #6051's sibling)."""
+    the max_len=128 caps the FieldSpec sites enforce."""
 
     @pytest.mark.parametrize("site", sorted(_PATTERNS))
     def test_128_chars_accepted_129_rejected(self, site: str) -> None:
@@ -218,7 +217,7 @@ class TestDiscreteArgvIntegration:
 
 
 class TestSharedConstantAdoption:
-    """#6063: one shared shape. Every in-package alias site must bind the SAME
+    """One shared shape. Every in-package alias site must bind the SAME
     compiled object, so a re-spelled local copy fails here immediately."""
 
     def test_all_alias_sites_share_one_compiled_pattern(self) -> None:
@@ -282,7 +281,7 @@ def _scripts_with_profile_pattern() -> list[str]:
 class TestStandaloneScriptDriftGuard:
     """The artifact-deploy scripts run standalone (no package import), so they
     embed AWS_PROFILE_NAME_PATTERN verbatim. Byte-equality against the shared
-    source is what stops a new hand copy from diverging (#6063), mirroring the
+    source is what stops a new hand copy from diverging, mirroring the
     repo's other verbatim-copy guards."""
 
     def test_roster_discovers_the_known_copies(self) -> None:
@@ -304,7 +303,7 @@ class TestStandaloneScriptDriftGuard:
         )
 
     def test_shared_semantics_close_the_scripts_old_gaps(self) -> None:
-        # The pre-#6063 script class was ^[a-zA-Z0-9._:/+-]+$ — unbounded,
+        # The shared class replaces a looser shape ^[a-zA-Z0-9._:/+-]+$ — unbounded,
         # option-shaped values admitted, ':' and '/' admitted, $-anchored.
         pat = re.compile(constants.AWS_PROFILE_NAME_PATTERN)
         assert pat.match("AdminAccess+dev")
@@ -317,7 +316,7 @@ class TestAwsConsentProfileShape:
     '@'/'=' admitted for existing configs) but derives its class from the
     shared fragments and anchors with \\Z. There is deliberately NO
     probe-local strip: the probe must judge the same raw value the paid
-    consumers use (#6063)."""
+    consumers use."""
 
     @pytest.fixture(autouse=True)
     def _clean_probe_cache(self):
@@ -356,7 +355,7 @@ class TestAwsConsentProfileShape:
     def test_probe_tolerates_none_profile_without_crashing(self, monkeypatch) -> None:
         # A JSON null in config reaches the probe as None; the falsy skip in
         # _inputs_are_safe has always tolerated it ("use the default
-        # credential chain") and #6063 must not turn it into a crash.
+        # credential chain") and the shared regex must not turn it into a crash.
         def _fake_run_aws(args: list, profile, region):
             return 0, '{"Account": "111122223333", "Arn": "arn:aws:iam::1:x"}', ""
 

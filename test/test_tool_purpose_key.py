@@ -252,7 +252,7 @@ class TestGenericShellTitleAcrossBothEvents:
 
     The refinement overwrites the pill, so the command rule has to hold there as
     well — and a refinement frame commonly omits ``kind``, which is exactly the
-    input that used to fall through to the generic title.
+    input that would otherwise fall through to the generic title.
     """
 
     @staticmethod

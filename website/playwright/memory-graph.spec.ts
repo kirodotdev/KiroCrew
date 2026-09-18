@@ -15,7 +15,8 @@ test.describe('Memory surfaces E2E Tests', () => {
     const drill = page.getByRole('button', { name: 'View details' }).nth(2)
     await drill.waitFor({ state: 'visible' })
     await drill.click()
-    await expect(page.getByRole('heading', { name: /memory settings/i })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('heading', { name: 'Memory store', exact: true })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('combobox', { name: 'Memory store', exact: true })).toContainText('Global Memory V1')
     // Back returns to the mission-control hero.
     await page.getByRole('button', { name: 'Back to Overview' }).click()
     await expect(page.getByText('All systems running')).toBeVisible({ timeout: 5000 })
@@ -23,7 +24,11 @@ test.describe('Memory surfaces E2E Tests', () => {
 
   test('memory browser exposes the manual summarize action', async ({ page }) => {
     await page.goto('/settings/overview?view=memory', { waitUntil: 'domcontentloaded' })
-    await expect(page.getByRole('button', { name: /summarize now/i })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('heading', { name: /memory settings/i })).toBeVisible({ timeout: 5000 })
+    await expect(page.getByRole('button', { name: 'Semantic', exact: true })).toBeVisible({ timeout: 5000 })
+    const summarize = page.getByRole('button', { name: /summarize now/i })
+    await expect(summarize).toBeVisible({ timeout: 5000 })
+    await expect(summarize).toBeEnabled()
   })
 
   test('Developer page Memory tab renders the graph explorer', async ({ page }) => {

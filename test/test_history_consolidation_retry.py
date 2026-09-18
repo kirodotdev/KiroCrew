@@ -10,6 +10,7 @@ and that no entry point bypasses them.
 """
 
 import asyncio
+import json
 import time
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,95 @@ from kiro_crew.history import (
 )
 
 KEY = "dashboard:chat-retry"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("version", "seed_source", "assistant_value"),
+    (
+        (1, "user_explicit", "old@example.com"),
+        (1, f"consolidation:{KEY}", "new@example.com"),
+        (2, "user_explicit", "new@example.com"),
+    ),
+    ids=("v1-owner", "v1-automatic", "v2-verified-correction"),
+)
+@pytest.mark.parametrize("mutation", ("edit", "delete", "withdraw", "assistant"))
+async def test_pending_extraction_rechecks_its_actual_transcript(
+    tmp_path, monkeypatch, version, seed_source, assistant_value, mutation
+):
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.history_consolidation import _CONSOLIDATION_REFUSED
+    from kiro_crew.memory_stores import memory_store_dir_for, provision_member_memory
+    from kiro_crew.vector_memory import VectorMemoryStore
+
+    store_name = None
+    directory = tmp_path / "global"
+    if version == 2:
+        cfg = KiroCrewConfig.load()
+        cfg.agents["writer"] = KiroCrewAgentConfig()
+        store_name = provision_member_memory(cfg, "writer")
+        cfg.save()
+        directory = memory_store_dir_for(store_name)
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.require_private_memory_execution", lambda: None
+        )
+    vectors = VectorMemoryStore(db_path=directory / "memory.db")
+    vectors.init()
+    try:
+        assert vectors.set_semantic("user.email", "old@example.com", 1, seed_source) is None
+        log = _seed_log(tmp_path, count=0)
+        quote = "Please replace old@example.com with new@example.com."
+        with history_mod.allow_on_loop_persist():
+            log.append(KEY, "user", quote)
+        c = _make_consolidator(log, vector_store=vectors)
+        monkeypatch.setattr("kiro_crew.context.store_of_session", lambda *_: store_name)
+        monkeypatch.setattr(ContextBuilder, "ensure_store", AsyncMock(return_value=vectors))
+        monkeypatch.setattr(ContextBuilder, "get_memory_for", lambda *a, **kw: c._memory)
+        monkeypatch.setattr(ContextBuilder, "get_lessons_for", lambda *a, **kw: None)
+
+        async def response(_prompt, **_kwargs):
+            with history_mod.allow_on_loop_persist():
+                if mutation == "edit":
+                    rows = log.read_messages(KEY)
+                    rows[-1]["content"] = "That replacement was only a hypothetical example."
+                    log.rewrite_session(KEY, rows)
+                elif mutation == "delete":
+                    assert log.delete_session(KEY)
+                elif mutation == "withdraw":
+                    log.append(KEY, "user", "Do not change my email after all.")
+                else:
+                    log.append(KEY, "assistant", "Understood.")
+            return {
+                "history_entry": "The user changed their email.",
+                "semantic": [
+                    {
+                        "key": "user.email",
+                        "value": "new@example.com",
+                        "confidence": 1,
+                        "correction_quote": quote,
+                    }
+                ],
+            }
+
+        with patch.object(c, "_call_llm", AsyncMock(side_effect=response)):
+            outcome = await c._consolidate(KEY, include_history=True)
+        row = vectors.get_semantic("user.email")
+        assert row is not None
+        if mutation == "assistant":
+            assert outcome is None
+            # An assistant append preserves eligibility, not extra write authority.
+            assert json.loads(row["value_json"]) == assistant_value
+            c._memory.append_history.assert_called_once()
+            assert log.consolidation_counts(KEY)[1] == 1
+        else:
+            assert outcome is _CONSOLIDATION_REFUSED
+            assert json.loads(row["value_json"]) == "old@example.com"
+            c._memory.append_history.assert_not_called()
+            assert int(log.get_metadata(KEY).get("last_consolidated", 0)) == 0
+    finally:
+        vectors.close()
+
 
 # A row big enough that five of them exceed the rotation byte budget whatever it
 # is set to. Rotation on a handful of huge rows is driven by the byte-shrink loop,
@@ -121,12 +211,15 @@ def _plant_raw_meta(log: ConversationLog, key: str, raw_fields: str) -> None:
     log._invalidate_cache(key)
 
 
-class _FakeRequest:
+class _FakeRequest(dict):
     """Minimal aiohttp request stand-in for the manual consolidate handler."""
 
     def __init__(self, state: Any, body: dict) -> None:
+        super().__init__()
         self.app = {"state": state}
-        self.headers: dict[str, str] = {}
+        # The handler's session-recognition gate refuses a request with no
+        # X-Session-Key; the browser UI's static key is the recognised caller.
+        self.headers: dict[str, str] = {"X-Session-Key": "dashboard:ui"}
         self._body = body
 
     async def json(self) -> dict:
@@ -458,6 +551,7 @@ class TestHostileMetadataDoesNotBreakTheGate:
 
         state = MagicMock()
         state.consolidator = c
+        state.conversation_log = log
         state._restricted_keys = set()
         state._slots = {}
         request = _FakeRequest(state, {"key": KEY})
@@ -492,6 +586,26 @@ class TestOnlyASentTurnConsumesTheCap:
     failures write the durable marker over messages no LLM has ever read — the
     exact false abandonment this accounting exists to prevent.
     """
+
+    @pytest.mark.asyncio
+    async def test_memory_binding_failure_arms_durable_backoff_without_spending(self, tmp_path):
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
+        log = _seed_log(tmp_path)
+        c = _make_consolidator(log)
+        with (
+            patch("kiro_crew.context.store_of_session", side_effect=UnknownMemoryStore("missing")),
+            patch.object(c, "_call_llm", AsyncMock()) as call,
+            pytest.raises(UnknownMemoryStore, match="missing"),
+        ):
+            await c._consolidate(KEY, include_history=True)
+        call.assert_not_called()
+        attempts, retry_at = log.consolidation_retry_state(KEY)
+        assert attempts == 0
+        assert retry_at > time.time()
+        assert log.unconsolidated_count(KEY) == 3
+        restarted = _make_consolidator(log)
+        assert restarted.retry_eligible(KEY) is False
 
     @pytest.mark.asyncio
     async def test_a_pre_dispatch_failure_does_not_consume_an_attempt(self, tmp_path):
@@ -687,7 +801,7 @@ class TestRotationDoesNotClearACappedBudget:
                     "rotation_generation": 4,
                 },
             )
-            # The caller's snapshot generation (2) no longer matches, so
+            # The caller's snapshot generation (2) does not match, so
             # mark_consolidated resets the offset to 0 instead of applying it.
             log.mark_consolidated(KEY, 3, 2)
 
@@ -795,7 +909,7 @@ class TestRotationReleasesTheBudgetForNewContent:
 
     @pytest.mark.asyncio
     async def test_the_same_span_stays_capped(self, tmp_path):
-        """Round 2's invariant: no free attempt while the span is unchanged."""
+        """No free attempt while the span is unchanged."""
         log = _seed_log(tmp_path)
         with history_mod.allow_on_loop_persist():
             log.update_metadata(
@@ -1338,14 +1452,14 @@ class TestTheCapDoesNotOutliveTheSpanItMeasured:
             "the mid-turn message was recorded as attempted, so growth can never "
             "release it"
         )
-        # It reads as growth, so the counter no longer describes this span. (The
+        # It reads as growth, so the counter does not describe this span. (The
         # armed deadline still applies — a fresh budget is not a free turn.)
         assert log.consolidation_retry_state(KEY, _total(log))[0] == 0
         assert _total(log) == 4
 
     @pytest.mark.asyncio
     async def test_a_capped_span_with_no_growth_stays_ineligible(self, tmp_path):
-        """Round 2's guarantee: an unchanged failing span cannot burn forever."""
+        """An unchanged failing span cannot burn forever."""
         log = _seed_log(tmp_path)
         self._plant_capped(log)
 
@@ -1520,6 +1634,7 @@ class TestEveryEntryPointRespectsTheAccounting:
 
         state = MagicMock()
         state.consolidator = c
+        state.conversation_log = log
         state._restricted_keys = set()
         state._slots = {}
         request = _FakeRequest(state, {"key": KEY})
@@ -1552,6 +1667,7 @@ class TestTheManualTriggerClaimsAtomically:
 
         state = MagicMock()
         state.consolidator = c
+        state.conversation_log = log
         state._restricted_keys = set()
         state._slots = {}
 
@@ -1589,6 +1705,7 @@ class TestTheManualTriggerClaimsAtomically:
 
         state = MagicMock()
         state.consolidator = c
+        state.conversation_log = log
         state._restricted_keys = set()
         state._slots = {}
         request = _FakeRequest(state, {"key": KEY})
@@ -1787,7 +1904,7 @@ class TestConsolidateIsTheEligibilityChokePoint:
 
     @pytest.mark.asyncio
     async def test_consolidate_now_reports_a_refusal(self, tmp_path):
-        """consolidate_now's only caller is the CLI, which used to print
+        """consolidate_now's only caller is the CLI, which would otherwise print
         'done ✓' unconditionally; the returned False is what lets it report
         the backoff skip instead of a false success."""
         log = _seed_log(tmp_path)

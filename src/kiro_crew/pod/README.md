@@ -24,7 +24,7 @@ a child pod.
 ## Interface
 
 ```bash
-kirocrew pod install              # lay down the systemd --user template unit (once per machine)
+kirocrew pod install              # lay down the systemd --user template unit (Linux only; a no-op elsewhere)
 kirocrew pod provision <wt>       # build the worktree's venv + SPA dist (the on-ramp)
 kirocrew pod up   <wt> [--json]   # bring up an isolated pod → {base_url, token, port}
 kirocrew pod up   <wt> --provision# provision (if needed) then bring it up
@@ -194,8 +194,12 @@ and it refuses *before* minting, so an undeliverable request never pays for a
 credential. The refusal is expected while a pod is starting, after it crashed
 without a `down`, and on a checkout whose gateway predates the socket; a
 `pod down` plus `pod up` clears all three. Requiring the socket costs no
-capability: `pod api` is Linux-only like every systemd-touching pod verb, and on
-Linux the gateway binds the socket unconditionally.
+capability on Linux, where the gateway binds it unconditionally. On **Windows** it
+costs the verb: CPython there has no `AF_UNIX`, so `pod api` always refuses
+through the envelope. That is deliberate rather than a gap to close with a TCP
+fallback — the fallback is exactly what would hand a token to whatever answered
+the pod's released port. Use `pod token` plus your own client against the
+loopback port when you need an authenticated request on that platform.
 
 Before minting, the control plane reads the gateway PID sidecar from the pod's
 isolated home and requires it to equal the service manager's current MainPID.
@@ -321,9 +325,21 @@ worktree build, and pinning a colliding pod's own `PORT=` remains the manual way
 | `KIROCREW_POD_LIVE_PORT` | `5476` | the port a pod must never bind |
 | `KIROCREW_POD_UNIT_PREFIX` | `kirocrew-pod` | systemd unit prefix |
 | `KIROCREW_POD_BIN` | (auto) | the `kirocrew` binary the unit boots |
+| `KIROCREW_POD_KIRO_BIN` | (unset) | agent backend pinned into the service definition as `KIROCREW_KIRO_BIN` |
 
 Overriding the prefix + roots + base port yields a fully **hermetic pod plane**
 that can't collide with a developer's live pods — used by the test suite.
+
+`KIROCREW_POD_KIRO_BIN` is the offline seam. A booted pod starts from the service
+manager's clean environment, so nothing the caller exports reaches its gateway —
+including `KIROCREW_KIRO_BIN`, the pin `kiro_cli.py` reads to override the agent
+binary. Without a plane-level knob there was no way to give a pod the packaged
+fake ACP backend, so an agent turn inside a pod needed a real signed-in
+`kiro-cli` and could not run on an offline CI runner. Set it to
+`kiro_crew.testing.fake_acp_backend`'s file and both backends pin it: the systemd
+unit gets an `Environment=` line, the launchd plist an `EnvironmentVariables`
+entry, from the one `environment_vars` selection. Unset, nothing is emitted and a
+pod resolves the host's real `kiro-cli` exactly as before.
 
 ## Safety
 
@@ -338,20 +354,270 @@ that can't collide with a developer's live pods — used by the test suite.
 
 ## Platform
 
-Linux `systemd --user` only. On hosts without `systemctl --user` (macOS, Windows,
-or a Linux box with no systemd on PATH), the verbs that touch systemd **refuse
-with a single actionable line** — `pod: pods require Linux systemctl --user; this
-host is darwin. Use ./dev-backend.sh to preview a worktree on this platform.` —
-and exit 1. They never raise a traceback, and `pod install` writes **no** unit
-file when the host can't load it.
+Three backends, one platform-neutral core. Name validation, port derivation and
+allocation, checkout resolution and pinning, env scrubbing, seeding, token
+minting, `boot` and the `cleanup_home` teardown check are shared; only the
+service-manager mechanics differ.
 
-The gate is `runtime.require_systemd()`, called from the single `systemctl()`
-chokepoint plus the two siblings that shell out directly (`recent_journal` and
-`_logs`, which run `journalctl`). `pod url` is pure port arithmetic and works
+| | Linux | macOS | Windows |
+|---|---|---|---|
+| Manager | `systemd --user` | `launchd` | Task Scheduler (`schtasks.exe`) |
+| Definition | one template unit + per-pod drop-in | one plist per pod | one task per pod + a generated `.cmd` wrapper |
+| Elevation | none | none | none |
+| Logs | `journalctl --user` | files | files |
+| Restart on crash | `Restart=on-failure` | `KeepAlive` | **none** |
+| Memory / CPU ceiling | `MemoryMax` + `CPUQuota` (cgroup) | **not enforced** | memory + process cap (Job object); **no CPU cap** |
+| `pod api` / `pod token` | yes | yes | `token` yes, `api` **no** (needs an AF_UNIX dashboard socket) |
+
+On a host with none of the three — a Linux box with no systemd on PATH, or any
+other platform — the verbs that touch a service manager **refuse with a single
+actionable line** and exit 1. They never raise a traceback, and `pod install`
+writes **no** definition when the host cannot load it.
+
+The gate is `runtime.require_backend()`, which dispatches to
+`launchd.require_backend()` on darwin, `windows.require_backend()` on win32, and
+`require_systemd()` everywhere else. `pod url` is pure port arithmetic and works
 anywhere; `pod up` / `provision` fail earlier on their own preconditions
-(worktree resolution, venv/dist) before reaching systemd.
+(worktree resolution, venv/dist) before reaching the service manager.
 
-### Session bus
+### Windows (Task Scheduler)
+
+A pod is per-user, disposable, and must never need administrator rights.
+`sc.exe create` needs `SeCreateServiceNamePrivilege` and installs a machine-wide
+LocalSystem service, so it fails that on both counts. `schtasks.exe` creates a
+task in the calling user's own namespace with no elevation, which is the same
+shape as `systemd --user` and launchd's `gui/<uid>`. So the Windows backend is
+Task Scheduler, and `kiro_crew.pod.windows` states the five consequences:
+
+- **No task-level env vars.** A task carries one command line and the user's
+  profile environment, so the pod plane the CLI resolved would be lost. The
+  task's action is therefore a generated `.cmd` under `KIROCREW_POD_ENV_DIR`
+  that sets the plane from the same `config.environment_vars` selection the other
+  two backends serialise, then re-enters `kirocrew pod _run <name>`. Boot logic
+  stays in Python; the wrapper is data. A pod-plane path containing a double
+  quote or a newline is refused at `pod up`, because cmd.exe cannot express it.
+- **No restart policy.** A crashed pod stays down, which removes launchd's
+  restart-loop hazard entirely (a terminal refusal keeps its honest exit code —
+  no exit-0 translation) but means the crash signal has to be recorded: the
+  wrapper writes the boot's exit code to `<prefix>.<name>.winresult`, and
+  `unit_state` reports `failed` when that code is non-zero and the supervised
+  process is gone.
+- **No PID from the service manager, and no `exec`.** `schtasks /Query` reports
+  no pid at any verbosity, and CPython's `os.execve` on Windows spawns a new
+  process and terminates the caller — which would change the pid and orphan the
+  gateway while Task Scheduler reported the task finished. So `boot` supervises
+  the gateway as the wrapper's child, records its pid plus its creation-time
+  identity in `<prefix>.<name>.winpid`, and waits. That restores the invariant
+  `port_owner` rests on: the recorded pid IS the process that bound the port.
+  It stays an independent fact from the gateway's own PID sidecar (different
+  file, different directory, different writer).
+- **Restart adoption and reclamation use different evidence.** The supervisor
+  keeps the gateway PID sidecar and handoff marker for restart visibility. Stop
+  does not use their absence, expiry or polling history as proof of writer death.
+  Before scheduling, the CLI reserves a unique run in `<prefix>.<name>.winrun`.
+  The supervisor claims it once, attaches a mandatory owner-only lifetime Job to
+  its suspended child, and publishes the plane, name, generation, publisher and
+  initial-process identities before resume. All ordinary restart descendants
+  remain in this Job even when an intermediary exits between observations.
+  Stop opens the existing Job before `/End`, pins the publisher by exact identity,
+  retires it, and requires a successful kernel zero count before task deletion.
+  A durable drain receipt survives cleanup failures and is removed only after
+  all HOME cleanup sweeps and handoff/PID/result sidecar deletions succeed. A
+  sidecar deletion failure reports failure and retains the same-generation receipt,
+  so another `pod down` can finish without reopening a vanished Job. A
+  missing/unreadable descriptor, incomplete
+  publication or an inaccessible Job refuses rather than fabricating an empty
+  replacement. Old uncontained pods require verified retirement before another
+  start; merely updating their task definition does not establish containment.
+- **`schtasks` output is localized, so this backend never parses it.** Both the
+  CSV headers and the `Status` values are translated on a non-English Windows, so
+  a reader keyed on `Status == "Running"` would report every pod down on a German
+  host — the fail-open direction, where teardown deletes a live pod's HOME.
+  Liveness, the pid and the last result come from the two files above.
+  `schtasks` is used only where the **exit code** is the answer: `/Create`,
+  `/Run`, `/End`, `/Delete`, and `/Query` as an existence probe.
+- **No cgroups, so the ceiling is a Job object — and it IS enforced when it can be attached, and LOUD when it cannot.**  `supervise_gateway` creates the gateway `CREATE_SUSPENDED`, attaches a Job
+  object through `sandbox.apply_windows_resource_ceiling` (the same seam and the
+  same `resource_limits` config the agent-subprocess path uses), then resumes it.
+  The suspended handshake is what makes it airtight: job membership covers a
+  member's future descendants but not ones it already spawned, and a suspended
+  child has executed no instructions. Two honest gaps: the process row is looser
+  than the cgroup row (`ActiveProcessLimit` counts processes, `TasksMax` counts
+  threads), and there is no CPU row, so this is a fork-bomb and memory ceiling
+  rather than parity with `MemoryMax` plus `CPUQuota`. A ceiling that cannot be
+  installed logs a SECURITY warning and does not fail the boot, matching how an
+  unavailable cgroup scope is handled. macOS still has no ceiling at all.
+- **No `dir_fd`, so `--seed` is witnessed rather than descriptor-pinned.** The
+  Linux and macOS seed copies every fixture entry through a held pod-home
+  descriptor, which Windows cannot do at all: `os.open` and `os.mkdir` accept no
+  `dir_fd` there, so `pinned_fs.supports_pinned_tree_walk()` is False and a
+  destination cannot be addressed relative to a descriptor. `_seed_home_windows`
+  is the branch that runs instead, and its guarantee is narrower and stated:
+  every component of the home and its ancestors is screened with
+  `pinned_fs.is_reparse_point` (which catches a junction, where `os.path.islink`
+  does not) before anything is written, the home is created by that call, and a
+  handle plus a `pinned_fs.fd_real_path` witness — `GetFinalPathNameByHandleW`,
+  the kernel's own name for the inode already open — is taken on it. Each fixture
+  file is copied from a pinned source descriptor (`copy_file_pinned`'s `src_fd`
+  form, the only pinned source form on this platform) into an
+  `O_CREAT | O_EXCL` destination under that witnessed home, so the branch can
+  only add entries it created and can never overwrite one. The witness is re-read
+  before the completion manifest is published, so a home that changed identity
+  mid-seed is refused rather than booted, and the manifest stays the last write.
+  The home handle comes from `platform_compat.pin_directory`, which opens it
+  through `CreateFileW` without `FILE_SHARE_DELETE`: while the seed runs, the
+  home and every directory above it can be neither renamed nor deleted, so an
+  ancestor swap is refused by the kernel rather than detected afterwards.
+  **Residual, stated rather than claimed closed:** the home's CONTENTS are still
+  reached by name under that pinned handle, so a process running as this same
+  user could plant a reparse point at a not-yet-written child name; `O_EXCL`
+  refuses a planted leaf and the subdirectory screen covers the two directories
+  the seed creates, but Windows offers no `dir_fd` to close the rest of that
+  window. A pod home lives under a plane root only this user can write, so that
+  residual is the same trust domain the OS already grants that user, and the
+  same operational-isolation boundary this document records above. Every OTHER
+  host without a pinned tree walk keeps the outright refusal; the relaxation is
+  win32-only by construction.
+
+`require_backend()` on Windows has three stages: this is win32, `schtasks.exe`
+resolves through `platform_compat.trusted_system_bin`, and **the current user can
+really create a task**. The third is a create-and-delete probe of a throwaway
+task rather than an inspection, because there is nothing to inspect — Group
+Policy, a disabled `Schedule` service and a principal without `TASK_CREATE` all
+refuse invisibly from the client side, and without the probe each surfaces as a
+failed `pod up` blaming the worktree build. The probe result is cached per
+process, since the gate sits on the chokepoint every `schtasks` call funnels
+through.
+
+Teardown is `stop`'s job here as on the other two. A separate mandatory lifetime
+Job supplies the whole-run proof, independent of the optional resource-ceiling
+Job and its existing settings. The kernel preserves descendant membership across
+parent exit. The controller retires the exact publisher before spending the
+zero-count proof, so asynchronous `/End` and disappearing handoff records cannot
+release HOME reclamation early. This is operational containment of ordinary
+process descendants, not isolation from arbitrary same-user external launch brokers.
+
+`pod api` does not work on Windows, and that is a fail-closed refusal rather than
+a gap in this backend: the authenticated request travels over the pod's private
+AF_UNIX dashboard socket with no TCP fallback (see above for why), and CPython on
+Windows has no `AF_UNIX`. A missing socket refuses through the envelope
+(`status: 0`, `ok: false`) before minting, so no credential is ever paid for.
+`pod token`, `up`, `down`, `ls`, `status`, `url`, `logs`, `prune`, `provision`
+and `scenarios` all work.
+
+The per-pod `.cmd` wrapper is written in the console's OEM code page, because
+that is what `cmd.exe` reads a batch file with (never UTF-8), and the encode is
+strict: a plane path with a character that page cannot represent is refused at
+`pod up` with the offending text named, rather than handed to `cmd.exe` as
+different bytes. Keep `KIROCREW_HOME` and the `KIROCREW_POD_*` roots on paths
+the console code page can spell.
+
+The backend is exercised on a real windows-latest runner by the CI job **Pod
+Boot Canary (Windows)** (`test/test_pod_windows_boot.py`), which proves task
+creation is permitted for the runner's user, round-trips a trivial task through
+create, run and delete, then registers a real task on a per-run plane, boots the
+pod, mints `pod token` against it, and asserts `pod down` leaves no task, home
+or env file behind. The module is opt-in: it skips unless
+`KIROCREW_E2E_POD_WINDOWS=1` is set, because a bare `pytest` on a developer's
+Windows box must not register scheduled tasks. It is also one of the two entries
+on the root `conftest.py` host-service allowlist, whose guard otherwise refuses
+any test that spawns `kirocrew pod up`, `down`, `install`, `prune` or `restart`
+as a child process, or `schtasks` with a `/Create`, `/Delete`, `/Run`, `/End` or
+`/Change` switch.
+
+### Retiring a legacy Windows pod
+
+A pod started by a build without the lifetime-Job protocol has no `.winrun`
+proof. Updating the build cannot retroactively contain that process tree.
+`pod down` and a new `pod up` deliberately refuse its remaining task, HOME or
+sidecars. This also applies to an unresolved reservation after an uncertain
+`/Run`, or when startup cancellation could not be persisted. A scheduled boot
+that refuses a missing checkout, venv or built dist also leaves `reserved`:
+those checks run before the publisher claims the generation. The producer can
+still be writing its refusal note, and the outer wrapper writes `.winresult`
+after Python returns. Neither file proves generation-bound producer retirement.
+These failed boots still require the verified retirement below; deleting only
+`.winrun` is neither safe retirement nor sufficient to clear the other evidence.
+By contrast, a persisted `cancelled` start has never attempted `/Run`: fix the
+reported cleanup error and repeat `pod up` to finish its generation-checked
+cleanup and retry.
+
+For an uncontained or otherwise unprovable run, use this conservative manual
+procedure. It deletes the disposable pod's data, not the checkout. Save anything
+you need first. Do not run these steps concurrently with any pod controller,
+Dev Fleet action, `pod up`, or manually launched wrapper.
+
+1. In the same Windows account and with the **same `KIROCREW_POD_*` overrides**
+   that created the pod, resolve the exact paths in PowerShell. Replace the
+   example name with the canonical pod name (not a checkout path):
+
+   ```powershell
+   $name = 'my-worktree'
+   $p = python -c 'import json,sys; from kiro_crew.pod.config import PodConfig; from kiro_crew.pod import windows as w; from kiro_crew.pod import _windows_run as r; c=PodConfig.load(); n=sys.argv[1]; print(json.dumps(dict(task=w.task_name(c,n), home=str(c.home_dir(n)), sidecars=[str(f(c,n)) for f in (w.task_script_path,w.pid_record_path,w.result_path,w.handoff_marker_path,r.path)]+[str(c.env_file(n)),str(c.refusal_file(n))])))' $name | ConvertFrom-Json
+   $p | Format-List
+   ```
+
+   Defaults are task `\KiroCrew\pods\kirocrew-pod\my-worktree`, HOME
+   `%USERPROFILE%\.kirocrew-pods\my-worktree`, and sidecars under
+   `%USERPROFILE%\.kiro\crew\pods`: `kirocrew-pod.my-worktree.cmd`, `.winpid`,
+   `.winresult`, `.handoff`, `.winrun`, plus `my-worktree.env` and
+   `my-worktree.refused`. The isolated OS home is inside the pod HOME; do not
+   delete the host's `%USERPROFILE%\.kiro\crew` or the checkout. Overrides
+   replace these defaults; inspect the resolved values and the task action.
+
+2. In Task Scheduler, locate that exact task and disable it. Equivalently, for
+   a task confirmed present:
+
+   ```powershell
+   & "$env:SystemRoot\System32\schtasks.exe" /Change /TN $p.task /Disable
+   if ($LASTEXITCODE -ne 0) { throw 'Task disable failed; preserve all pod data' }
+   & "$env:SystemRoot\System32\schtasks.exe" /End /TN $p.task
+   ```
+
+   `/End` is only a stop request, not proof that every descendant exited.
+   Verify the task is disabled in Task Scheduler; if it is absent, verify that
+   absence there rather than interpreting an arbitrary query error as absence.
+   Keep the data if Task Scheduler cannot be inspected or the task cannot be
+   disabled. Ensure no other launcher will restart this pod.
+
+3. Save other work and perform a full Windows **Restart**. This retires the
+   unknown process tree without a PID-based kill. Sign-out, a missing PID file,
+   an empty process snapshot, or a stopped task is not equivalent evidence.
+   After the machine has restarted, before running any pod action, re-establish
+   the same overrides and repeat step 1. Verify the task remains disabled (or
+   absent) and no launcher has restarted the pod. If any of this is uncertain,
+   stop here and preserve its files.
+
+4. Only after that verified retirement, delete the exact disabled task, if
+   present, and verify its absence in Task Scheduler:
+
+   ```powershell
+   & "$env:SystemRoot\System32\schtasks.exe" /Delete /TN $p.task /F
+   if ($LASTEXITCODE -ne 0) { throw 'Task deletion failed; preserve all pod data' }
+   ```
+
+   If the task was already verified absent, skip that command. Then remove only
+   the resolved pod HOME and the listed per-pod sidecars:
+
+   ```powershell
+   if (Test-Path -LiteralPath $p.home) {
+       Remove-Item -LiteralPath $p.home -Recurse -Force -ErrorAction Stop
+   }
+   foreach ($file in $p.sidecars) {
+       if (Test-Path -LiteralPath $file) {
+           Remove-Item -LiteralPath $file -Force -ErrorAction Stop
+       }
+   }
+   ```
+
+   Stop on any access/sharing error and retry only after resolving it. Do not
+   remove plane-wide directories or lock files, and never use a wildcard or
+   `taskkill /PID ... /T` as a substitute for the retirement proof. Pod logs in
+   `KIROCREW_POD_ARTIFACTS_DIR` are not admission evidence and can be retained.
+   With the task and listed evidence gone, `kirocrew pod up my-worktree` may
+   create a fresh, contained generation.
+
+### Session bus (Linux only)
 
 `systemctl --user` locates the per-user systemd instance through
 `XDG_RUNTIME_DIR` + `DBUS_SESSION_BUS_ADDRESS`. A process descended from a
@@ -366,3 +632,16 @@ session and `Linger=no` — `require_systemd()` refuses with the fix
 (`loginctl enable-linger <user>`) instead of letting systemctl emit a message
 that names neither cause nor remedy. `kirocrew doctor` reports the same three
 states (present / absent / present-but-no-linger).
+
+An explicitly-set `DBUS_SESSION_BUS_ADDRESS` stays trusted as an availability
+hint, because a stale address is never proof that no backend exists and that
+proof is what authorizes destructive Dev Fleet worktree removal. What changes is
+the **remedy**: when the socket the address names holds nothing, the failure is
+reported as a stale address with the stopped-manager fix, rather than an
+instruction to rerun the command that just failed. A login session exports the
+address and a `Linger=no` manager then stops at logout and deletes the socket,
+which is the usual state on a Cloud Dev Desktop. `USER_BUS_NO_SESSION` and that
+stale case share one remedy naming `loginctl enable-linger <user>`, the
+privileged `sudo loginctl enable-linger <uid>` form, and `./dev-backend.sh`,
+because `loginctl` needs the system bus and so is not self-service on a host that
+cannot reach one. Refusals name the path actually judged.

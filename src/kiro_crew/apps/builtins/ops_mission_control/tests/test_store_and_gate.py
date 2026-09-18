@@ -278,9 +278,9 @@ class TestTransition(_HomeIsolated):
         # Back to unclaimed is not legal: an incident that exists has been claimed by
         # definition, and "release it" is `stale`, not a rewind.
         #
-        # This used to assert dispatched -> resolved, which is now a REQUIRED edge —
-        # reconcile must close an incident whose signal cleared before the agent's
-        # first turn. Note same-status is deliberately a no-op update (see
+        # ``dispatched -> resolved`` is NOT a usable example here: it is a REQUIRED edge,
+        # because reconcile must close an incident whose signal cleared before the
+        # agent's first turn. Same-status is deliberately a no-op update (see
         # store.transition), so it is not a usable example of illegality either.
         with self.assertRaises(ValueError):
             store.transition(inc.incident_id, models.STATUS_UNCLAIMED)
@@ -659,11 +659,11 @@ class TestAutonomyGate(_HomeIsolated):
     def _write_config(self, payload: dict) -> None:
         """Seed the ceiling on the KEYSTONE floor, the way the dashboard PUT does.
 
-        These tests used to write `mode`/`autonomy_rules` into `data/config.json` and rely on
-        the read path picking them up. That path is gone on purpose: `config.json` is
-        agent-writable, so honouring a ceiling found there let the constrained party set its
-        own ceiling (see `policy_store` — the migration that did this was deleted). Seeding via
-        `policy_store` keeps these tests exercising the gate rather than the hole.
+        Writing `mode`/`autonomy_rules` into `data/config.json` and relying on the read path
+        to pick them up does not work, on purpose: `config.json` is agent-writable, so
+        honouring a ceiling found there would let the constrained party set its own ceiling
+        (see `policy_store`). Seeding via `policy_store` keeps these tests exercising the
+        gate rather than the hole.
 
         Non-ceiling keys still go to `config.json`, which is where the app legitimately reads
         them, so a test that mixes both still lands each value in its real home.
@@ -865,14 +865,13 @@ class TestTierArming(_HomeIsolated):
     def test_a_failing_rotation_api_still_arms_the_tier(self):
         """Fail-open is preserved — but the SOURCE decides it, not the gate.
 
-        This test used to construct ``on_shift=False, unknown=True`` and assert the tier
-        armed anyway, which encoded ``on_shift or unknown`` into the gate. That silently
-        defeated strict gating: a committed schedule that cannot say whether this operator
-        is on call returns exactly that shape, and the ``or`` re-armed every teammate —
-        verified before the fix (``on_shift=False`` yet ``dispatch armed=True``).
+        Asserting that ``on_shift=False, unknown=True`` arms the tier would encode
+        ``on_shift or unknown`` into the gate, which silently defeats strict gating: a
+        committed schedule that cannot say whether this operator is on call returns exactly
+        that shape, and the ``or`` re-arms every teammate.
 
-        The intent was always "an unreachable API must not disable response", and that is
-        still true: ``pagerduty.on_shift`` returns ``on_shift=True, unknown=True`` on any
+        The intent is "an unreachable API must not disable response", and it holds:
+        ``pagerduty.on_shift`` returns ``on_shift=True, unknown=True`` on any
         failure, which is the shape asserted here. Two sources, two policies for "cannot
         tell", one gate that just reads ``on_shift``.
         """
@@ -946,12 +945,12 @@ class TestTierArming(_HomeIsolated):
     def test_arming_is_server_side_not_agent_held(self):
         """The app must not hold `cron_pause`/`cron_resume`.
 
-        Tier arming used to be the agent's job, and the only thing stopping it pausing
+        With tier arming as the agent's job, the only thing stopping it pausing
         `rotation-check` — the sole always-tier job, so the only one that can re-arm a
-        gated instance — was a sentence of SOP prose. Prose is not enforcement, and
+        gated instance — is a sentence of SOP prose. Prose is not enforcement, and
         `mcpTools` is declarative only (nothing calls `check_tool_permission` at runtime),
-        so the manifest entry was never a gate either. Arming moved into
-        `rotation.apply_tiers`; the capability must be gone from the manifest with it, or
+        so the manifest entry is not a gate either. Arming lives in
+        `rotation.apply_tiers`; the capability must be absent from the manifest, or
         a future SOP edit can quietly hand the loaded gun back.
         """
         import json
@@ -1301,7 +1300,7 @@ class TestLedgerGitMerge(_HomeIsolated):
         """Two people hit the same failure on different resources.
 
         Losing one branch's fingerprint means that recurrence stops matching — the
-        ledger keeps working while silently no longer recognizing half its own history.
+        ledger keeps working while silently failing to recognize half its own history.
         """
         import json
 
@@ -2712,12 +2711,11 @@ class TestTheWriteGateConsultsEveryRotation(_HomeIsolated):
     def test_no_configured_rotation_allows_the_write(self):
         """A solo install has no rotation to be off.
 
-        Expressed as `unknown`, NOT as `configured=False`. This test used to install a source
-        that reported `on_shift=False, configured=False` and assert the write was allowed — it
-        was asserting that the gate SKIPS an unconfigured source, which turned out to be the
-        hole below rather than the property. A source that cannot answer says so with
-        `unknown=True`; that is the contract every shipped source already implements, and it is
-        the one the gate reads now.
+        Expressed as `unknown`, NOT as `configured=False`. A source reporting
+        `on_shift=False, configured=False` with the write allowed would assert that the gate
+        SKIPS an unconfigured source, which is the hole below rather than the property. A
+        source that cannot answer says so with `unknown=True`; that is the contract every
+        shipped source implements, and the one the gate reads.
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
 
@@ -2729,17 +2727,16 @@ class TestTheWriteGateConsultsEveryRotation(_HomeIsolated):
 
         `configured()` reads `providers.<id>.enabled` from `data/config.json` for every adapter
         except the schedule file — and that file is agent-writable and served unauthenticated.
-        The gate used to skip any source where `configured()` was false, so ONE flag flip made
-        a rotation source abstain, no real source answered, and the off-shift refusal stopped
-        firing without anything changing about who was actually on call.
+        A gate that skips any source where `configured()` is false lets ONE flag flip make a
+        rotation source abstain, so no real source answers and the off-shift refusal stops
+        firing without anything changing about who is actually on call.
 
-        Reproduced end to end before fixing: PagerDuty reporting `on_shift=False` refused the
-        write; with `enabled: false` the same signal returned "granted by rule on cloudwatch".
+        Reproduced end to end: PagerDuty reporting `on_shift=False` refuses the write; with
+        `enabled: false` the same signal returns "granted by rule on cloudwatch".
 
-        Fourth instance of one class in a single review round — the rotation login, strict
-        gating, `config_fields` still advertising the login to the generic provider route, and
-        this. The gate now asks EVERY non-fallback source and lets each report its own
-        inability to answer as `unknown`, which is both safer and simpler.
+        One instance of a general class — a security refusal must not read an input the
+        constrained party can write. The gate asks EVERY non-fallback source and lets each
+        report its own inability to answer as `unknown`, which is both safer and simpler.
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import rotation
 
@@ -3241,7 +3238,7 @@ class TestTheIndexIsNeverPublishedOverAFailedRead(_HomeIsolated):
     investigation of each — and in ``act`` mode a duplicate investigation is a
     second real write against the operator's production paging. The per-incident
     markdown logs survive on disk with nothing indexing them, and an open incident
-    that is no longer listed is never swept, resolved, or answered.
+    that is not listed is never swept, resolved, or answered.
     """
 
     def _unreadable_index(self):
@@ -3330,16 +3327,16 @@ class TestTheIndexIsNeverPublishedOverAFailedRead(_HomeIsolated):
         self.assertIn(inc.incident_id, store.read_index())
 
     def test_a_corrupt_index_refuses_the_mutation_instead_of_replacing_it(self):
-        """Inverted deliberately: this used to assert repair-on-write.
+        """Refusal, not repair-on-write.
 
         The four merged siblings of this idiom (`library.py`, `shares.py`,
-        `secrets.py`, `policy_store.py`) used to read an unparseable document as
-        empty (their reasoning was real -- nothing parsed, so there is nothing to
-        merge into), until #7805 gave them this same refusal. "Cannot merge into"
-        is not "safe to destroy": a truncated index still holds most of its records
+        `secrets.py`, `policy_store.py`) answer corruption the same way. Reading an
+        unparseable document as empty has a real argument behind it -- nothing
+        parsed, so there is nothing to merge into -- but "cannot merge into" is not
+        "safe to destroy": a truncated index still holds most of its records
         verbatim, and the mutation would replace the file and take them with it.
-        Refusing costs one skipped mutation and a visible error; the old behaviour
-        cost the records, silently. Found in review (GPT 5.6).
+        Refusing costs one skipped mutation and a visible error; replacing costs
+        the records, silently.
 
         The fixture writes malformed JSON to the real index path, so the corruption
         is reached by the update reader itself rather than simulated -- and `claim`

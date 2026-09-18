@@ -80,7 +80,7 @@ export interface CrewFabricItem {
    * the crew recorded none. Kept distinct from `title` so a view can show either
    * without one masquerading as the other. */
   next: string
-  /** Null when the item has no PR (a plain rect rather than a chamfered chip). */
+  /** Null when the item has no PR (no PR pill is drawn). */
   pr_number: number | null
   phase: CrewPhase
   timeline: CrewFabricTimelineEntry[]
@@ -485,6 +485,27 @@ export function isUnsupportedForge(err: unknown): boolean {
  */
 export function isQueueMigrationPending(err: unknown): boolean {
   return (err as ApiError | null)?.code === 'queue_migration_pending'
+}
+
+/** True when any step reports a non-zero counter -- the board would show
+ * something other than zeros. The complement is what both the view gate and the
+ * flow's zero-board disclosure need, so it lives here beside the type it reads
+ * rather than being spelled twice. `routed` outcomes count as activity: a
+ * field-routed step can move items without its scalar counters seeing them. */
+export function stepsHaveActivity(steps: OverviewStep[]): boolean {
+  return steps.some(
+    (s) =>
+      s.entered > 0 ||
+      s.done > 0 ||
+      s.skipped > 0 ||
+      s.churn > 0 ||
+      s.recentEntered > 0 ||
+      s.recentDone > 0 ||
+      s.inFlight > 0 ||
+      s.distinctEntered > 0 ||
+      s.distinctDone > 0 ||
+      s.routed.some((r) => r.count > 0),
+  )
 }
 
 function coerceOverviewStep(v: unknown): OverviewStep | null {

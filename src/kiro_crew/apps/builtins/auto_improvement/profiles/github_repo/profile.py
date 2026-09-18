@@ -211,7 +211,7 @@ _ADDABLE_TEST_GLOBS = (
 # ── shared helpers ───────────────────────────────────────────────────────────
 
 
-#: Directory names that hold a pytest suite. Used to locate the RUN ROOT, which is
+#: Directory names that hold a pytest suite. They locate the RUN ROOT, which is
 #: not always the directory the spine hands us — see :func:`_repo_root`.
 _TEST_DIRS = ("tests", "test")
 
@@ -468,7 +468,7 @@ def _xdist_argv() -> tuple[str, ...]:
 _XDIST_ARGV: tuple[str, ...] = _xdist_argv()
 
 #: Substrings that mean xdist itself failed to run, as opposed to tests failing.
-#: Used to retry the suite serially so the gate still gets a real verdict.
+#: They trigger a serial retry of the suite so the gate still gets a real verdict.
 _XDIST_FAILURE_MARKERS = (
     "unrecognized arguments: -n",
     "error: unrecognized arguments",
@@ -698,7 +698,7 @@ class SuiteRuler:
             "runner": self.benchmark_cmd or "python -m pytest -q",
             "timer": "time.perf_counter around the subprocess",
         }
-        #: Baseline medians captured during calibration, used to DERIVE the guardrail
+        #: Baseline medians captured during calibration; they DERIVE the guardrail
         #: tolerance the driver adopts (see :meth:`guardrail_tolerances`).
         self._baseline_median: float | None = None
         #: Duck-typed by the driver so a Stop click interrupts the calibration loop
@@ -1306,12 +1306,12 @@ class RepoEditAllowlist:
         # denylist — the BUG track's one carve-out, and only for additions. Modifying an
         # existing test always falls through to off_limits.
         #
-        # Gated on the track, which it previously was not: the class docstring promised "the
-        # perf track may not touch tests/** AT ALL" while the code granted the carve-out to
-        # both. That is the gaming the fence exists to stop — the RH guard compares collected
-        # test COUNTS, so adding one cheap test while an expensive one stops being collected
-        # keeps the count equal while measured suite time drops, and a purely artifactual
-        # "win" gets drafted as a real perf PR. Raised by the GPT review.
+        # Gated on the track: the class docstring promises "the perf track may not touch
+        # tests/** AT ALL", so granting the carve-out to both tracks is the gaming the
+        # fence exists to stop — the RH guard compares collected test COUNTS, so adding one
+        # cheap test while an expensive one stops being collected keeps the count equal
+        # while measured suite time drops, and a purely artifactual "win" gets drafted as a
+        # real perf PR.
         if added and self.track == TRACK_BUG and self._is_addable_test(path):
             return False
         if self._matches(path, self.off_limits):
@@ -1385,15 +1385,15 @@ class RepoIsolation:
         BOTH urls, not just the push url: a live FETCH url is a live push target
         (``git push "$(git remote get-url origin)" HEAD`` ignores the push url entirely
         and writes to the fetch url — see ``clone_setup._disable_push``). Checking only
-        the push url reported "disabled" for a clone that could still write to the remote;
-        `_ok` checks both, and this drifted from it. Raised by the GPT review of this branch.
+        the push url reports "disabled" for a clone that can still write to the remote;
+        `_ok` checks both, and this predicate must not drift from it.
 
         One nonzero probe exit is NOT read as a live remote: when the probe's own
         sandbox launcher crashed before git executed, this propagates
         ``clone_setup.IsolationProbeError`` instead of returning ``False``. The run
         still refuses to start either way — the exception exists so the surfaced
         reason names the sandbox failure rather than the misleading
-        "push is not disabled" (#8151).
+        "push is not disabled".
         """
 
         from ...backend.clone_setup import _repository_is_isolated
@@ -1493,26 +1493,25 @@ class GitHubRepoProfile(ProfileFieldAliases):
         #: narrowed to the change set this branch introduced.
         self.scope_base = (scope_base or "").strip()
         self._scope = scope_util.scoped_relpaths(self.clone_path, self.scope_base)
-        # `scoped_relpaths` used to return None for THREE different situations — a blank ref, a
-        # git FAILURE (bad/unresolvable ref), and a valid-but-EMPTY diff (base == HEAD) — and
-        # the caller could not tell them apart. Treating all three as "no scope" means a
-        # misconfigured `scopeDiffBase` silently widens the edit fence from "what this branch
-        # changed" to the WHOLE REPOSITORY, the opposite of what setting a scope is for.
+        # `scoped_relpaths` separates THREE situations a bare None would conflate — a blank
+        # ref, a git FAILURE (bad/unresolvable ref), and a valid-but-EMPTY diff
+        # (base == HEAD). Treating all three as "no scope" means a misconfigured
+        # `scopeDiffBase` silently widens the edit fence from "what this branch changed" to
+        # the WHOLE REPOSITORY, the opposite of what setting a scope is for.
         #
-        # Two fixes, in two review rounds. First: an unresolvable ref REFUSES here rather than
-        # running unscoped. Then the remaining hole — `scopeDiffBase=HEAD` RESOLVES fine and
-        # yields an empty diff, so it still fell through to unscoped. `scoped_relpaths` now
-        # returns `set()` for a successful-but-empty diff (None only for blank/error), and the
-        # allowlist checks `scope is not None`, so an empty scope enforces "no file may be
-        # edited" — a run that keeps nothing beats a run that may edit anything.
+        # So an unresolvable ref REFUSES here rather than running unscoped, and
+        # `scopeDiffBase=HEAD` — which RESOLVES fine and yields an empty diff — must not
+        # fall through to unscoped either: `scoped_relpaths` returns `set()` for a
+        # successful-but-empty diff (None only for blank/error), and the allowlist checks
+        # `scope is not None`, so an empty scope enforces "no file may be edited" — a run
+        # that keeps nothing beats a run that may edit anything.
         # The condition is simply "a scope was configured but could not be computed". The
-        # REASON is deliberately not consulted: this guard was previously gated on
-        # a ref-resolvability check, which only covered a base that does not exist. A base
-        # that RESOLVES but whose diff fails left `_scope is None` and nothing refused —
-        # reproduced with two unrelated histories, where `rev-parse --verify` succeeds while
-        # `diff <ref>...HEAD` exits 128 "no merge base". Third variant of one bug on this
-        # branch (unresolvable ref, empty diff, git error), so the guard now keys on the
-        # CONSEQUENCE rather than enumerating causes. Raised by the GPT review.
+        # REASON is deliberately not consulted: a ref-resolvability check covers only a base
+        # that does not exist, while a base that RESOLVES but whose diff FAILS leaves
+        # `_scope is None` with nothing refusing — two unrelated histories make
+        # `rev-parse --verify` succeed while `diff <ref>...HEAD` exits 128 "no merge base".
+        # Keying on the CONSEQUENCE covers all three causes (unresolvable ref, empty diff,
+        # git error) instead of enumerating them.
         if self.scope_base and self._scope is None:
             raise ValueError(
                 f"scopeDiffBase {self.scope_base!r} could not be resolved to a file set in "

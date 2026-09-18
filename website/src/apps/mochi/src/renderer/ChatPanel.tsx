@@ -37,8 +37,10 @@ import Markdown from 'react-markdown'
 import type { Components } from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import rehypeRaw from 'rehype-raw'
-import { rehypeSanitize, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
+import { rehypeSanitize, rehypeStableRootKeys, remarkVerbatimUnknownTags } from '../../../../components/MarkdownRenderer'
+import { capWhitespaceRuns, remarkBoundDepth, rehypeBoundRawDepth } from '../../../../utils/markdownDepthBound'
 import { mdImageDestToPath } from '../../../../utils/fileTokens'
+import { copyToClipboard } from '../../../../utils/clipboard'
 import { classifyPlatform } from '../../../../hooks/useGatewayPlatform'
 import { useImeGuard } from '../../../../hooks/useImeGuard'
 import type { ChatMessage } from '../shared/types'
@@ -1670,6 +1672,9 @@ const LocalImage: React.FC<{ path: string; onClickImage?: (src: string) => void 
  */
 const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
   useLanguageGeneration() // memo() bails out of the provider-level repaint; subscribe directly
+  // The whitespace-run cap (see markdownDepthBound) is applied per TEXT
+  // segment below, after widget extraction, so a widget body reaches
+  // WidgetFrame byte-identical -- its <pre> indentation included.
   const cleaned = content.replace(/^\n+/, '')
   // If there's a complete widget in the stream, render it
   if (hasWidgets(cleaned)) {
@@ -1683,20 +1688,20 @@ const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
           // Last text segment after final widget — still streaming
           if (i > lastWidget) {
             const stripped = seg.content.replace(/<mcwidget[\s\S]*$/, '')
-            const prepared = fixStreamingFences(stripped)
+            const prepared = fixStreamingFences(capWhitespaceRuns(stripped))
             return <React.Fragment key={i}>
               <Markdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{prepared}</Markdown>
               <span style={{ animation: 'blink 1s step-end infinite', display: 'inline-flex', verticalAlign: 'middle' }}><PawPrint size={11} /></span>
             </React.Fragment>
           }
-          return <Markdown key={i} remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{seg.content}</Markdown>
+          return <Markdown key={i} remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{capWhitespaceRuns(seg.content)}</Markdown>
         })}
       </>
     )
   }
   // Strip any partial/unclosed <mcwidget tag during streaming
   const stripped = cleaned.replace(/<mcwidget[\s\S]*$/, '')
-  const prepared = fixStreamingFences(stripped)
+  const prepared = fixStreamingFences(capWhitespaceRuns(stripped))
   return (
     <>
       <Markdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{prepared}</Markdown>
@@ -1707,8 +1712,9 @@ const StreamingMarkdown = React.memo<{ content: string }>(({ content }) => {
 
 /** Ensure blank line before fences glued to text, and close any unclosed fence. */
 function fixStreamingFences(s: string): string {
-  // Ensure blank line before opening fences glued to preceding text
-  s = s.replace(/([^\n])(\n?)(```\w*\n)/g, (_, pre, nl, fence) =>
+  // The info string is the whole backtick-free line, including attributes and
+  // a leading space, matching the dashboard's FENCE_OPEN.
+  s = s.replace(/([^\n])(\n?)(```[^`\n]*\n)/g, (_, pre, nl, fence) =>
     nl ? pre + nl + fence : pre + '\n\n' + fence
   )
   // If there's an odd number of ``` fences, the last one is unclosed — close it
@@ -1717,7 +1723,11 @@ function fixStreamingFences(s: string): string {
   return s
 }
 
-const MD_REMARK = [remarkGfm, remarkVerbatimUnknownTags]
+// `remarkBoundDepth` first: it bounds the parsed tree's depth inside parse(),
+// ahead of remark-gfm's recursive post-parse transform. Shared with the
+// core renderer, for the same reason the sanitizer is: this panel parses
+// the same untrusted message content through the same kind of pipeline.
+const MD_REMARK = [remarkBoundDepth, remarkGfm, remarkVerbatimUnknownTags]
 /**
  * Raw HTML must be ADMITTED, then SANITIZED — in that order.
  *
@@ -1727,7 +1737,13 @@ const MD_REMARK = [remarkGfm, remarkVerbatimUnknownTags]
  * The sanitizer is the core's, imported rather than copied: admitting raw HTML
  * is exactly the point where a second, drifting allowlist would become a hole.
  */
-const MD_REHYPE = [rehypeRaw, rehypeSanitize]
+// ``rehypeStableRootKeys`` goes LAST, after ``rehypeSanitize``, and the order is
+// load-bearing rather than cosmetic: the sanitizer keeps only allowlisted
+// attributes, and ``style`` is on neither the global list nor any list for
+// ``div``. Ahead of it the wrapper would lose ``display: contents`` and become a
+// real layout box around every block, which is a visible regression that the
+// keys it stabilises would not reveal.
+const MD_REHYPE = [rehypeBoundRawDepth, rehypeRaw, rehypeSanitize, rehypeStableRootKeys]
 
 /**
  * Typed against react-markdown's own `Components`, so each override receives the
@@ -1735,20 +1751,29 @@ const MD_REHYPE = [rehypeRaw, rehypeSanitize]
  * MarkdownRenderer uses) instead of an `any` that hides a misspelled prop.
  */
 const mdComponents: Components = {
-  // `href` and the children are restated after the spread — both already arrive in
-  // `p`, so this is the same anchor at runtime — because an <a> whose href is only
-  // ever supplied by a spread is indistinguishable from a bare <a onClick>: it is
-  // not focusable and Enter does not fire it, and neither a reader nor the linter
-  // can tell it apart from a real link.
-  a: (p) => <a {...p} href={p.href} style={{ color: 'var(--accent)', textDecoration: 'none', cursor: 'pointer' }}
+  // react-markdown's defaultUrlTransform rewrites a destination whose scheme is
+  // outside its allowlist (and an empty `[x]()` destination) to href="". An
+  // anchor with an empty href still paints as a live link and its "Copy Link
+  // Address" resolves to the current page URL, so a refused destination renders
+  // as inert text instead -- same degradation as md-notebook's Preview.
+  //
+  // On the anchor path, `href` and the children are restated after the spread --
+  // both already arrive in `p`, so this is the same anchor at runtime -- because
+  // an <a> whose href is only ever supplied by a spread is indistinguishable
+  // from a bare <a onClick>: it is not focusable and Enter does not fire it, and
+  // neither a reader nor the linter can tell it apart from a real link.
+  a: (p) => p.href ? <a {...p} href={p.href} style={{ color: 'var(--accent)', textDecoration: 'none', cursor: 'pointer' }}
     onMouseEnter={(e) => (e.currentTarget.style.textDecoration = 'underline')}
     onMouseLeave={(e) => (e.currentTarget.style.textDecoration = 'none')}
-    onClick={(e) => { e.preventDefault(); const href = p.href; if (href) api?.openExternal?.(href) }}>{p.children}</a>,
+    onClick={(e) => { e.preventDefault(); const href = p.href; if (href) api?.openExternal?.(href) }}>{p.children}</a>
+    : <span>{p.children}</span>,
   table: (p) => <table style={{ borderCollapse: 'collapse', fontSize: 11, width: '100%', margin: '4px 0' }} {...p} />,
   th: (p) => <th style={{ border: '1px solid var(--border)', padding: '3px 6px', textAlign: 'left', fontWeight: 600 }} {...p} />,
   td: (p) => <td style={{ border: '1px solid var(--border)', padding: '3px 6px' }} {...p} />,
   code: (p) => {
-    const match = /language-(\w+)/.exec(p.className || '')
+    // Whole class token, not its leading `\w+` run: `language-error-report`
+    // labels as `error-report`, not `error` (same rule as MarkdownRenderer).
+    const match = /language-(\S+)/.exec(p.className || '')
     if (match) {
       return <MochiCodeBlock lang={match[1]} code={String(p.children).replace(/\n$/, '')} />
     }
@@ -2188,14 +2213,14 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
                     return <>
                       {segments.map((seg, i) => seg.type === 'widget'
                         ? <WidgetFrame key={i} html={seg.content} title={seg.title} />
-                        : <Markdown key={i} remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{seg.content}</Markdown>
+                        : <Markdown key={i} remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{capWhitespaceRuns(seg.content)}</Markdown>
                       )}
                       {images.map((p, i) => <LocalImage key={`img-${i}`} path={p} onClickImage={onImageClick} />)}
                     </>
                   }
 
                   return <>
-                    {cleanText && <Markdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{cleanText}</Markdown>}
+                    {cleanText && <Markdown remarkPlugins={MD_REMARK} rehypePlugins={MD_REHYPE} components={mdComponents}>{capWhitespaceRuns(cleanText)}</Markdown>}
                     {images.map((p, i) => <LocalImage key={i} path={p} onClickImage={onImageClick} />)}
                   </>
                 })()
@@ -2244,9 +2269,11 @@ export const Bubble = React.memo<{ message: ChatMessage; onOption?: (text: strin
             <button
               className="copy-md-btn"
               onClick={() => {
-                navigator.clipboard.writeText(text)
-                setCopied(true)
-                setTimeout(() => setCopied(false), 1500)
+                copyToClipboard(text).then((ok) => {
+                  if (!ok) return
+                  setCopied(true)
+                  setTimeout(() => setCopied(false), 1500)
+                })
               }}
               title={copied ? i18nT('apps.mochi.chatPanel.copied') : i18nT('apps.mochi.chatPanel.copy_markdown')}
               aria-label={copied ? i18nT('apps.mochi.chatPanel.copied') : i18nT('apps.mochi.chatPanel.copy_markdown')}

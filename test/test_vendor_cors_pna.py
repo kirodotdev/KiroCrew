@@ -14,7 +14,7 @@ vendored Tailwind runtime unless BOTH halves of the contract hold:
 
 Without them the runtime never loads: Tailwind-classed widgets render
 unstyled and the widget loading overlay sits on its 15s hang backstop as a
-blank box (issue #6181). These tests pin both halves.
+blank box. These tests pin both halves.
 """
 
 from __future__ import annotations

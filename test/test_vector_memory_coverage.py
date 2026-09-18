@@ -633,7 +633,7 @@ class TestKeywordFallback:
 
 
 class TestCosineSimDimensionGuard:
-    """Regression for #3466: `_cosine_sim` used to silently truncate a
+    """`_cosine_sim` must not silently truncate a
     dimension-mismatched pair via `zip` instead of rejecting it, so a row
     embedded at a different dimensionality (e.g. a leftover from a previous
     embedding-model generation) returned a plausible-looking partial-overlap
@@ -654,7 +654,7 @@ class TestCosineSimDimensionGuard:
 
 
 class TestStoredSimilarityScorer:
-    """Regression for #3466: the scorer built by `_stored_similarity_scorer`
+    """The scorer built by `_stored_similarity_scorer`
     backs the two threshold callers (semantic dedup, contradiction detection)
     as well as the two ranking callers, so it must (1) reject a mismatched
     dimension the same way `_cosine_sim` now does, (2) return the raw
@@ -1206,6 +1206,27 @@ class TestLessonDedupPaths:
         assert len(texts) == 1
         assert "never merge upward" in texts[0]
 
+    def test_a_terse_lesson_does_not_supersede_a_detailed_one(self, tmp_path: Path) -> None:
+        """The overlap ratio is measured against the LARGER keyword set.
+
+        Against the smaller one it reads "how much of the shorter rule the longer one
+        covers", which is ~1.0 for any terse near-truism — so a three-word rule scored
+        past the 50% threshold and DELETED eighteen words of real guidance, reporting
+        success. Neither rule here is a substring of the other and the store has no
+        embedder, so the topic-overlap branch is the only one that can fire.
+        """
+        detailed = (
+            "Shell arguments must always be quoted when you interpolate them into a "
+            "bash command, because unquoted globbing silently rewrites every "
+            "filesystem path"
+        )
+        store = _store(tmp_path)
+        assert store.write_lesson(detailed)
+        assert store.write_lesson("Quote shell arguments")
+        texts = _lesson_texts(store)
+        assert detailed in texts
+        assert "Quote shell arguments" in texts
+
     def test_a_negative_example_is_stored_as_its_own_field(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         assert store.write_lesson("Quote shell arguments", negative="bare interpolation")
@@ -1271,6 +1292,39 @@ class TestLessonDedupPaths:
         assert result.reason == "semantic_similarity"
         assert result.superseded == ()
         assert _lesson_texts(store) == [taught]
+
+    def test_small_keyword_subset_cannot_bypass_semantic_source_authority(
+        self, tmp_path: Path
+    ) -> None:
+        """The authority pre-pass and mutating topic branch classify the same pair."""
+        taught = (
+            "Shell arguments must always be quoted when you interpolate them into a "
+            "bash command, because unquoted globbing silently rewrites every "
+            "filesystem path"
+        )
+        inferred = "Quote shell arguments"
+        store = _store(tmp_path)
+        try:
+            store.embed_fn = _TableEmbedder({taught: _unit(0), inferred: _unit(0)})
+            taught_words = store._lesson_keywords(taught.lower())
+            inferred_words = store._lesson_keywords(inferred.lower())
+            overlap = len(taught_words & inferred_words)
+            assert overlap / min(len(taught_words), len(inferred_words)) >= 0.5
+            assert overlap / max(len(taught_words), len(inferred_words)) < 0.5
+            assert taught.lower() not in inferred.lower() and inferred.lower() not in taught.lower()
+            assert store.write_lesson(taught, source="user_explicit")
+            before = store.get_lessons()
+            events = store.get_events()
+
+            result = store.write_lesson(inferred, source="consolidation")
+
+            assert result.outcome is LessonWriteOutcome.DEDUPED
+            assert result.reason == "semantic_similarity" and result.superseded == ()
+            assert store.get_lessons() == before
+            assert store.get_events() == events
+            assert _lesson_texts(store) == [taught]
+        finally:
+            store.close()
 
     def test_semantic_supersede_lets_a_user_explicit_correction_replace_an_inferred_lesson(
         self, tmp_path: Path
@@ -1406,6 +1460,118 @@ class TestLessonDedupPaths:
         assert result.superseded == ()
         assert sorted(_lesson_texts(store)) == sorted([superset, near_dup])
 
+    def test_a_substring_covered_refusal_deletes_no_topic_overlap_row(self, tmp_path: Path) -> None:
+        """A declined write must not cost a row the LEXICAL branches claimed.
+
+        No embedder here, so only the substring and topic-overlap branches can
+        fire. Rows are scanned newest-first: the newer row overlaps the
+        submission on keywords and the older one CONTAINS it, so an eager
+        delete tombstones the overlapping row and then the superset declines
+        the write via ``substring_covered``. The overlapping lesson is gone,
+        the submission was never stored, and the result reports a decline
+        alongside the deletion -- one stored lesson lost to a call the store
+        refused to honour. Assert the stored rows, not the return string: the
+        old code returned a plausible ``deduped`` verdict for exactly this.
+        """
+        superset = "Quokkas patrol the western observation deck at dawn every single morning"
+        overlapping = "Quokkas patrol the deck"
+        submitted = "Quokkas patrol the western observation deck at dawn"
+        store = _store(tmp_path)
+        assert store.write_lesson(superset, source="consolidation")  # older
+        assert store.write_lesson(overlapping, source="consolidation")  # newer
+        before = sorted(_lesson_texts(store))
+        result = store.write_lesson(submitted, source="consolidation")
+        assert not result
+        assert result.outcome is LessonWriteOutcome.DEDUPED
+        assert result.reason == "substring_covered"
+        assert result.superseded == ()
+        assert sorted(_lesson_texts(store)) == before
+
+    def test_a_store_refusal_after_the_scan_deletes_nothing(self, tmp_path: Path) -> None:
+        """The same guarantee for a value the STORE rejects, not a dedup rule.
+
+        ``write_lesson``'s preflight screens the values it can, so this route
+        is reached by a rejection the preflight cannot predict. It must cost no
+        stored row either: the queue drains after ``set_semantic`` commits, so
+        a rejection there returns with the store untouched rather than naming
+        rows it destroyed for a lesson it did not keep.
+        """
+        stored = "Quokkas patrol the deck"
+        submitted = "Quokkas patrol the western observation deck at dawn"
+        store = _store(tmp_path)
+        assert store.write_lesson(stored, source="consolidation")
+        before = sorted(_lesson_texts(store))
+        store.set_semantic = (  # type: ignore[method-assign]
+            lambda *a, **k: (vm.SemanticRejectCode.INJECTION, "blocked")
+        )
+        result = store.write_lesson(submitted, source="consolidation")
+        assert not result
+        assert result.outcome is LessonWriteOutcome.REFUSED
+        assert result.reason == "injection_blocked"
+        assert result.superseded == ()
+        assert sorted(_lesson_texts(store)) == before
+
+    def test_a_committed_write_still_executes_its_lexical_supersedes(self, tmp_path: Path) -> None:
+        """Deferring must not disable dedup: a write that LANDS still replaces.
+
+        The counterpart to the two refusals above -- same overlapping row, no
+        superset to decline the write -- so the queued deletion runs and is
+        reported.
+        """
+        overlapping = "Quokkas patrol the deck"
+        submitted = "Quokkas patrol the western observation deck at dawn"
+        store = _store(tmp_path)
+        assert store.write_lesson(overlapping, source="consolidation")
+        result = store.write_lesson(submitted, source="consolidation")
+        assert result
+        assert result.outcome is LessonWriteOutcome.INSERTED
+        assert result.superseded == (overlapping,)
+        assert _lesson_texts(store) == [submitted]
+
+    def test_a_concurrent_write_on_a_queued_key_is_not_superseded(self, tmp_path: Path) -> None:
+        """The drain deletes the version it SCANNED, never whatever is there now.
+
+        Nothing holds the store lock across scan -> ``set_semantic`` -> drain, and
+        ``_lesson_key`` keys on the rule and scope alone, so another writer can
+        commit onto a queued key inside that window -- a user enriching the very
+        rule a consolidation pass is retiring lands on it exactly. Deleting blind
+        tombstones that write: the user is told their lesson was saved, and it is
+        gone with no recovery.
+
+        The concurrent writer is injected through ``set_semantic`` because that is
+        the window: the queue is already built and the drain has not run.
+        """
+        retired = "Quokkas patrol the deck"
+        submitted = "Quokkas patrol the western observation deck at dawn"
+        store = _store(tmp_path)
+        assert store.write_lesson(retired, source="consolidation")
+        retired_key = store.get_lessons()[0]["key"]
+
+        real_set_semantic = store.set_semantic
+
+        def _set_semantic_then_a_concurrent_write(*args: object, **kwargs: object) -> object:
+            err = real_set_semantic(*args, **kwargs)
+            # Lands on the queued key while the drain is still pending.
+            real_set_semantic(
+                retired_key,
+                {"rule": retired, "category": "tool", "negative": "guard the gate"},
+                1.0,
+                "user_explicit",
+            )
+            return err
+
+        store.set_semantic = _set_semantic_then_a_concurrent_write  # type: ignore[method-assign]
+        result = store.write_lesson(submitted, source="consolidation")
+        store.set_semantic = real_set_semantic  # type: ignore[method-assign]
+
+        assert result
+        assert result.outcome is LessonWriteOutcome.INSERTED
+        # The queued row moved under the write, so it is neither deleted nor claimed.
+        assert result.superseded == ()
+        stored = sorted(_lesson_texts(store))
+        assert submitted in stored
+        assert any(text.startswith(retired) for text in stored), stored
+
     def test_the_rule_vector_is_persisted(self, tmp_path: Path) -> None:
         store = _store(tmp_path)
         store.embed_fn = _TableEmbedder()
@@ -1482,7 +1648,7 @@ class TestLessonDedupPaths:
 
         The onboarding import stores a mapping rather than the string
         ``learn_add`` writes, and both shapes land in the same prompt block. The
-        formatter used to interpolate the decoded value directly, so an imported
+        formatter must not interpolate the decoded value directly, or an imported
         row reached the model as ``{'rule': ..., 'category': ...}`` — the
         instruction buried inside punctuation and field names.
         """

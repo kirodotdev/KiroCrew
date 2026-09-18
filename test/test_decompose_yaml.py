@@ -174,6 +174,28 @@ def test_empty_agents():
         decompose_yaml("agents: {}")
 
 
+@pytest.mark.parametrize(
+    "body",
+    [
+        "agents:\n  first: [unterminated\n",  # flow sequence never closed
+        "agents:\n\tfirst: {}\n",  # tab indentation
+        'agents: "unterminated\n',  # quoted scalar never closed
+    ],
+)
+def test_unparseable_yaml_is_a_value_error(body):
+    """A document YAML cannot parse is a REJECTED SPEC, same class as a bad shape.
+
+    ``safe_load`` raises out of its own hierarchy (``yaml.YAMLError``), and
+    callers select behaviour on the class: ``taskrunner`` gives an attended
+    caller the LLM fallback for a ``ValueError`` and fails the run for anything
+    else. Leaking the parser class would put the single most common authoring
+    mistake — a syntax error — on the failure path while every semantic mistake
+    took the fallback.
+    """
+    with pytest.raises(ValueError, match="not parseable"):
+        decompose_yaml(body)
+
+
 # ── Size limits ──
 
 

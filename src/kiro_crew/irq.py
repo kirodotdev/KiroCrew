@@ -21,7 +21,7 @@ Interrupt source             a :class:`Probe`, polled once per cron tick
 ISR                          the agent turn the gateway schedules on a wake
 Masking                      time-bounded dedupe, so one condition wakes once
 Coalescing                   several anomalies folded into a single wake
-NMI                          :attr:`Severity.NMI` — never delayed by coalescing
+NMI                          :attr:`Severity.IMMEDIATE` — never delayed by coalescing
 Clearing a pending bit       epoch reset, when the subject becomes another one
 Stuck / spurious IRQ         the consecutive-error backstop
 Unregistering an IRQ line    :attr:`Severity.TERMINAL` — the job removes itself
@@ -82,6 +82,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Observation",
     "Probe",
+    "ResetsOn",
     "Severity",
     "Tick",
     "run",
@@ -120,18 +121,29 @@ DEFAULT_COALESCE_MAX_SECS = 1800.0
 _MAX_LIST = 8
 
 #: Every dedupe key the kernel stores carries exactly one of these sentinels,
-#: so an epoch reset can keep the epoch-independent half without inspecting the
-#: probe's key text. A probe never writes the sentinel itself and its keys are
-#: opaque to the kernel, so prefixing unconditionally is what makes the two
-#: spaces impossible to confuse -- a scheme that only prefixed the sticky half
-#: could be spoofed by a probe whose own key happened to start with it.
+#: so an epoch reset can keep the ``NEVER`` half without inspecting the probe's
+#: key text. A probe never writes the sentinel itself and its keys are opaque to
+#: the kernel, so prefixing unconditionally is what makes the two spaces
+#: impossible to confuse -- a scheme that only prefixed the sticky half could be
+#: spoofed by a probe whose own key happened to start with it.
+#:
+#: These two characters are the PERSISTED encoding of the distinction, which is
+#: why they are named after the kernel's own storage spaces rather than after the
+#: field a probe sets: :attr:`Observation.resets_on` was renamed without touching
+#: them, because every state document already on disk is keyed with them.
 _EPOCH_SENTINEL = "="
 _STICKY_SENTINEL = "~"
 
 
 def _dedupe_key(obs: "Observation") -> str:
-    """The key an observation is remembered under, sentinel included."""
-    return (_EPOCH_SENTINEL if obs.epoch_scoped else _STICKY_SENTINEL) + obs.key
+    """The key an observation is remembered under, sentinel included.
+
+    ``REVISION`` lands in the epoch space and ``NEVER`` in the sticky one. This
+    is the only place the field is read: everything downstream asks the KEY which
+    space it is in, so the two spellings never have to agree twice.
+    """
+    space = _EPOCH_SENTINEL if obs.resets_on is ResetsOn.REVISION else _STICKY_SENTINEL
+    return space + obs.key
 
 
 def _migrate_key(key: str) -> str:
@@ -140,8 +152,9 @@ def _migrate_key(key: str) -> str:
     State persisted by an earlier version carries bare probe keys. Read as-is
     they would never match a key this version computes, so every armed watch
     would wake once more for anomalies it had already reported -- a small but
-    entirely avoidable upgrade blip. A bare key is adopted as epoch scoped,
-    which is what every pre-sentinel key was: the sticky space did not exist.
+    entirely avoidable upgrade blip. A bare key is adopted into the epoch space,
+    the space ``REVISION`` maps to, which is what every pre-sentinel key was: the
+    sticky space did not exist.
 
     ``blind`` is the kernel's own error-backstop marker rather than a probe key,
     and it is looked up by that literal name, so it must stay unprefixed.
@@ -184,9 +197,35 @@ class Severity(Enum):
     #:
     #: It bypasses the DELAY, not the mask. A persisting condition still wakes
     #: at most once per re-alert window, because the alternative -- an unmasked
-    #: NMI -- would wake the operator on every single tick for as long as the
+    #: one -- would wake the operator on every single tick for as long as the
     #: condition lasts, which is a worse failure than a bounded delay.
-    NMI = 3
+    IMMEDIATE = 3
+
+
+class ResetsOn(Enum):
+    """What clears an observation, and so how long its dedupe memory is worth.
+
+    Two values, not a boolean, because the field answers *what clears this* and a
+    boolean can only answer *yes or no*. Spelled as a flag, ``resets_on=False``
+    would have to be read as "does not reset on -- nothing", which states the
+    opposite of what :attr:`NEVER` means. The kernel already stores the
+    distinction as one of two named spaces (:data:`_EPOCH_SENTINEL` /
+    :data:`_STICKY_SENTINEL`), so a two-member enum is also what makes the
+    in-memory type and the persisted encoding the same shape.
+    """
+
+    #: A new revision of the subject clears it. This is the check-rollup shape:
+    #: the anomaly is a property of the thing the epoch names, so a new epoch
+    #: leaves the observation describing a thing that is gone, and its dedupe
+    #: memory is correctly wiped.
+    REVISION = 1
+    #: No revision clears it, because it belongs to the subject rather than to the
+    #: revision -- a comment on a pull request belongs to the conversation, not to
+    #: the commit under review. Scoped to a revision instead, every such signal
+    #: would be re-reported in full the tick after any epoch change: a force-push
+    #: would replay every comment ever seen as though it had just arrived. The
+    #: kernel keeps these keys across an epoch reset instead.
+    NEVER = 2
 
 
 @dataclass(frozen=True)
@@ -205,26 +244,20 @@ class Observation:
             at most once per re-alert window.
         severity: See :class:`Severity`.
         brief: Operator-facing text delivered if this observation wakes.
-        epoch_scoped: Whether this observation describes the CURRENT epoch.
+        resets_on: What clears this observation, and therefore whether a new
+            revision of the subject wipes its dedupe memory or it outlives one.
+            See :class:`ResetsOn`. Defaults to :attr:`ResetsOn.REVISION`, the
+            check-rollup shape most observations have.
 
-            True (the default) is the check-rollup shape: the anomaly is a
-            property of the thing the epoch names, so when the epoch changes
-            the observation is about something that no longer exists and its
-            dedupe memory is correctly wiped.
-
-            False is for a signal observed through the same probe that is
-            NOT a property of the epoch -- a comment on a pull request belongs
-            to the conversation, not to the commit under review. Left epoch
-            scoped, every such signal would be re-reported in full the tick
-            after any epoch change: a force-push would replay every comment
-            ever seen as though it had just arrived. The kernel keeps these
-            keys across an epoch reset instead.
+            ``brief`` stays ahead of it positionally. Reordering the parameters
+            would silently redirect every existing three-positional call, and
+            this field has a default, so nothing is gained by moving it.
     """
 
     key: str
     severity: Severity
     brief: str = ""
-    epoch_scoped: bool = True
+    resets_on: ResetsOn = ResetsOn.REVISION
 
 
 @dataclass
@@ -542,10 +575,10 @@ def run(
     current epoch and every entry carries its own open time. An entry TRIGGERS a
     wake when::
 
-        age >= coalesce_secs and (pending == 0 or the entry is epoch-independent)
+        age >= coalesce_secs and (pending == 0 or the entry resets on NEVER)
 
     and the wake then carries every entry the same population gate admits, aged
-    or not. ``pending`` gates epoch-scoped entries only, because it counts CHECKS
+    or not. ``pending`` gates ``REVISION`` entries only, because it counts CHECKS
     and a comment is complete the moment it is posted. Separately, when the OLDEST
     entry's age passes ``coalesce_max_secs`` the whole window flushes: that cap is
     an absolute wall and is not gated behind the floor.
@@ -731,14 +764,14 @@ def run(
         # `coalescing` window is a signal that has NOT been delivered yet, and
         # dropping it destroys the wake outright: the probe may no longer report
         # that observation (a comment ages past its horizon), so nothing puts it
-        # back. Epoch-scoped window entries ARE dropped -- they describe checks
+        # back. ``REVISION`` window entries ARE dropped -- they describe checks
         # on a commit that is no longer under review.
         #
         # Keep each carried entry's own stamp so a force-push does not make an
         # already-settled comment pay the floor again. A freshly pushed commit
         # briefly shows an almost-empty rollup, so ``pending == 0`` can be true
         # while nothing has run. Per-entry ages keep that case separate: a new
-        # epoch-scoped ``ready`` observation gets a new stamp and therefore its
+        # ``REVISION`` ``ready`` observation gets a new stamp and therefore its
         # own full floor, regardless of the carried comment's age.
         carried = {
             key: value
@@ -760,7 +793,7 @@ def run(
     alerted = state.setdefault("alerted", {})
     now = time.time()
 
-    # Epoch-scoped keys are bounded by the epoch reset that wipes them. Sticky
+    # ``REVISION`` keys are bounded by the epoch reset that wipes them. Sticky
     # keys have no such bound, so a long-lived watch on a busy subject would
     # accumulate them forever. Drop the ones already past the re-alert window:
     # they no longer suppress anything (``should_alert`` would return True for
@@ -802,7 +835,7 @@ def run(
         raise done
 
     for obs in tick.observations:
-        if obs.severity is Severity.NMI and should_alert(_dedupe_key(obs)):
+        if obs.severity is Severity.IMMEDIATE and should_alert(_dedupe_key(obs)):
             alerted[_dedupe_key(obs)] = now
             persist()
             raise Report(with_warning(body([obs.brief])))
@@ -834,13 +867,13 @@ def run(
     # disable coalescing.
     #
     # STICKY entries are exempt from the prune, and the asymmetry is the point.
-    # For an epoch-scoped observation, "the probe stopped reporting it" means the
-    # condition cleared, which is what makes pruning correct. For an
-    # epoch-independent one it means the probe stopped LOOKING -- a comment ages
-    # out of the pull-request probe's horizon while remaining just as true -- so
-    # pruning on that DESTROYS a wake rather than delaying it. A signal first
-    # observed shortly before its horizon expires is exactly the case that hits
-    # this, and it is reachable on the shipped defaults.
+    # For a ``REVISION`` observation, "the probe stopped reporting it" means the
+    # condition cleared, which is what makes pruning correct. For a ``NEVER`` one
+    # it means the probe stopped LOOKING -- a comment ages out of the
+    # pull-request probe's horizon while remaining just as true -- so pruning on
+    # that DESTROYS a wake rather than delaying it. A signal first observed
+    # shortly before its horizon expires is exactly the case that hits this, and
+    # it is reachable on the shipped defaults.
     #
     # The cost accepted is staleness instead of loss: a decision-style sticky key
     # superseded inside one window (CHANGES_REQUESTED, then APPROVED) now fires
@@ -942,15 +975,15 @@ def run(
         #     entry back would guarantee another one later, so the answer here has
         #     to stay generous or coalescing stops coalescing.
         #
-        # The population gate: past the floor, an epoch-scoped entry additionally
-        # waits for ``pending`` to drain and a STICKY one does not. ``pending``
-        # counts CHECKS, which makes it the right gate for an epoch-scoped anomaly
+        # The population gate: past the floor, a ``REVISION`` entry additionally
+        # waits for ``pending`` to drain and a ``NEVER`` one does not. ``pending``
+        # counts CHECKS, which makes it the right gate for a ``REVISION`` anomaly
         # -- a draining check is exactly what can still resolve one -- and the
         # wrong gate for a comment, which is complete the moment it is posted and
         # does not become truer when a check finishes. Measured on a real pull
         # request with 18 checks in flight, a fresh review comment was held the
         # full 30 minutes for no observation it could have gained. Admitting the
-        # epoch-scoped half on a sticky signal's readiness instead would announce
+        # ``REVISION`` half on a sticky signal's readiness instead would announce
         # a `ready` before the new head's checks existed -- the
         # convergence-that-never-happened the floor was added to prevent.
         fire = {}
@@ -969,7 +1002,7 @@ def run(
         if not triggered:
             fire = {}
     # `persist_ok` gates the partial fire, and the reason is the fallback below.
-    # Withholding the epoch-scoped half is only a DELAY while the window can be
+    # Withholding the ``REVISION`` half is only a DELAY while the window can be
     # remembered; with an unwritable state directory the next tick reloads an
     # empty window, so withholding becomes a LOSS -- the exact hazard the
     # persistence fallback exists to close, reintroduced for the half this branch

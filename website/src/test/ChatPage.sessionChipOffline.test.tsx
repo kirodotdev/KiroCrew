@@ -141,8 +141,8 @@ const SLOT_A = { key: 'chat-1', title: 'one', messages: 1, running: false, mode:
 const SLOT_B = { key: 'chat-2', title: 'two', messages: 1, running: false, mode: '', created: '', last_ts: '' }
 /** A surface ChatPage does not render, so it must never reach the chip roster. */
 const SLOT_DC = { key: 'chat-99-1700000000', title: 'dc-run', messages: 1, running: false, mode: 'design-critique', created: '', last_ts: '' }
-/** `crew` IS a chat surface, so it pins the filter against over-narrowing. */
-const SLOT_CREW = { key: 'chat-77-1700000001', title: 'crew run', messages: 1, running: false, mode: 'crew', created: '', last_ts: '' }
+/** `orchestrator` IS a chat surface, so it pins the filter against over-narrowing. */
+const SLOT_ORCH = { key: 'chat-77-1700000001', title: 'autopilot run', messages: 1, running: false, mode: 'orchestrator', created: '', last_ts: '' }
 
 const renderChatPage = (connected: boolean, extraSlots: typeof SLOT_A[] = []) => {
   const allSlots = [SLOT_A, SLOT_B, ...extraSlots]
@@ -276,14 +276,14 @@ describe('chip roster carries only surfaces ChatPage can show', () => {
     expect(lastAssistantProps.sessions?.has(SLOT_DC.key)).toBe(false)
   })
 
-  it('keeps a crew session, so the filter is not simply narrowed to the default', async () => {
+  it('keeps an autopilot session, so the filter is not simply narrowed to the default', async () => {
     // Positive control: excluding every non-empty surface would pass the test
     // above while silently dropping two surfaces the chat view does show.
-    const { store } = renderChatPage(true, [SLOT_CREW])
+    const { store } = renderChatPage(true, [SLOT_ORCH])
     seedMessage(store)
     await screen.findByTestId('chip')
 
-    expect(lastAssistantProps.sessions?.has(SLOT_CREW.key)).toBe(true)
+    expect(lastAssistantProps.sessions?.has(SLOT_ORCH.key)).toBe(true)
   })
 })
 

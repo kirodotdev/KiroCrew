@@ -185,6 +185,20 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
 
   const displayElapsed = isRunning ? elapsed : Math.round(a.elapsed || 0)
   const fmtElapsed = displayElapsed >= 60 ? `${Math.floor(displayElapsed / 60)}m ${displayElapsed % 60}s` : `${displayElapsed}s`
+  // A running card whose start time was only ASSUMED has no elapsed figure to
+  // show: the agent may have been running long before the frame that minted its
+  // entry, so a number here would be wrong rather than merely imprecise. A
+  // `subagent_done` or snapshot frame supplies real timing and this resolves.
+  // Withheld HERE rather than inside the line above so that line stays exactly
+  // as it was: its `m`/`s` concatenation is frozen i18n debt, and rewriting the
+  // line would move that debt onto a line this change wrote.
+  const shownElapsed = isRunning && a.startedAtAssumed ? '--' : fmtElapsed
+  // What the header calls this agent. An entry recovered from an incremental
+  // frame has no agent name, and showing nothing left two such cards reading as
+  // the same "Running Tool" with no way to tell them apart -- the same complaint
+  // the progress row had, so the same fallback answers it. This is not a redesign
+  // of the header, only a refusal to leave the recovered state anonymous.
+  const identity = a.agent || (a.id ? `agent #${a.id.slice(-6)}` : '')
 
   // Inside the Subagents tab the "Subagent" prefix is redundant, and in a
   // narrow rail it was the part that survived truncation while the actual
@@ -221,7 +235,7 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
       >
         <span className="shrink-0 flex items-center">{STATUS[a.status]}</span>
         <span className="text-[13px] font-semibold text-text truncate min-w-0" title={i18nT('pages.chat.activityViewer.subagent', { label: statusLabel })}>{statusLabel}</span>
-        {a.agent && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={a.agent}>{a.agent}</code>}
+        {identity && <code className="text-[11px] text-muted/50 bg-bg-hover px-1.5 py-0.5 rounded shrink-[3] min-w-0 max-w-[6.5rem] truncate inline-block align-middle" title={identity}>{identity}</code>}
         {(() => {
           const resolvedKnown = !!a.model
           const display = a.model || a.requestedModel || ''
@@ -260,12 +274,14 @@ function SubagentPane({ a, slot, onClick, selected }: { a: SubagentActivity; slo
             </code>
           )
         })()}
-        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{fmtElapsed}</span>}
+        {!isPending && <span className="text-[11px] text-muted/40 ml-auto font-mono shrink-0 whitespace-nowrap tabular-nums">{shownElapsed}</span>}
         {isRunning && <button data-testid="subagent-cancel-btn" className="text-[11px] px-1.5 py-0.5 rounded border border-danger/40 text-danger/70 hover:bg-danger-subtle hover:text-danger cursor-pointer transition-all shrink-0 whitespace-nowrap inline-flex items-center" onClick={onCancel}><X className="lucide-inline" /> {i18nT('pages.chat.activityViewer.cancel')}</button>}
         {isDone && <span className="text-[14px] text-muted bg-bg-hover px-1.5 py-0.5 rounded shrink-0 ml-1">{collapsed ? '▸' : '▾'}</span>}
       </div>
-      {/* Input (task) */}
-      {!collapsed && (
+      {/* Input (task). Gated on the task itself: an entry recovered from an
+          incremental frame has none, and the header over an empty block reads as
+          a task that is blank rather than one not yet known. */}
+      {!collapsed && a.task && (
         <div className="px-3 pt-1 pb-2">
           <div className="text-[10px] text-muted/40 uppercase tracking-wider mb-1">{i18nT('pages.chat.activityViewer.input')}</div>
           <pre className="px-2.5 py-2 bg-bg rounded-md text-[12px] font-mono whitespace-pre-wrap break-all max-h-[120px] overflow-y-auto text-muted/80 leading-relaxed">{a.task}</pre>
@@ -919,8 +935,8 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   }, [failedRetryableIds])
   const dismissDone = useCallback(() => {
     // Slot-scoped by construction: delete exactly this slot's terminal cards
-    // by id — the global DELETE /api/spawn clear would nuke other sessions'
-    // completed agents too (their cards would 404 on status/output).
+    // by id via DELETE /api/spawn/{id}. There is no global clear route, so a
+    // cross-session wipe is not reachable from here.
     // The local clear stays optimistic; a refused delete is reported so the
     // user knows the card still exists server-side.
     setBatchError(null)
@@ -944,8 +960,6 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
   const wfRunsForSlot = wfRuns.filter(r => runBelongsToSlot(r.session_key, slot))
   const wfRunningCount = wfRunsForSlot.filter(r => r.status === 'running').length
 
-  const visibleLog = toolLog.filter(e => e.type !== 'reasoning')
-
   // Subagent events are subscribed eagerly at WS connect time — no need to toggle here.
 
   useEffect(() => { setTab(reduxTab === ('nav' as string) ? 'changes' : reduxTab); explicitTab.current = true }, [reduxTab])
@@ -963,7 +977,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
 
   // Auto-switch to subagents tab when subagents or spawn approvals first appear
   const hadSubagents = useRef(false)
-  const hasSpawnApprovals = visibleLog.some(e => e.type === 'approval' && isSpawnApproval(e))
+  const hasSpawnApprovals = toolLog.some(e => e.type === 'approval' && isSpawnApproval(e))
   const hasSubagentActivity = hasSubagents || hasSpawnApprovals
   useEffect(() => {
     if (hasSubagentActivity && !hadSubagents.current && !explicitTab.current) setTab('subagents')
@@ -991,7 +1005,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
     ...(hasIssues ? [{ key: 'issues' as const, label: i18nT('pages.chat.activityViewer.issues'), icon: <CircleDot size={13} />, count: issues!.length }] : []),
     { key: 'links', label: i18nT('pages.chat.activityViewer.links'), icon: <LinkIcon size={13} />, count: navLinks?.length || 0 },
     { key: 'artifacts', label: i18nT('pages.chat.activityViewer.artifacts'), icon: <Component size={13} /> },
-    { key: 'subagents', label: i18nT('pages.chat.activityViewer.subagents'), icon: <Bot size={13} />, count: ids.length + visibleLog.filter(isSpawnApproval).length },
+    { key: 'subagents', label: i18nT('pages.chat.activityViewer.subagents'), icon: <Bot size={13} />, count: ids.length + toolLog.filter(isSpawnApproval).length },
     { key: 'workflows', label: i18nT('pages.chat.activityViewer.workflows'), icon: <Workflow size={13} />, count: wfRunningCount },
     { key: 'logs', label: i18nT('pages.chat.activityViewer.logs'), icon: <ScrollText size={13} /> },
     { key: 'side', label: i18nT('pages.chat.activityViewer.side'), icon: <MessageCircleQuestionMark size={13} /> },
@@ -1100,7 +1114,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
             </div>
           )}
           {/* Pending approvals */}
-          {visibleLog.filter(isSpawnApproval).map((entry, i) => (
+          {toolLog.filter(isSpawnApproval).map((entry, i) => (
             <ApprovalEntry key={`a${i}`} entry={entry} />
           ))}
           {/* Accepted-but-not-started banner: the only signal for a wave still
@@ -1139,7 +1153,7 @@ export default function ActivityViewer({ subagents, toolLog, open, onToggle, slo
                 </button>
               )}
             </>
-          ) : visibleLog.filter(isSpawnApproval).length === 0 && queuedCount === 0 && (
+          ) : toolLog.filter(isSpawnApproval).length === 0 && queuedCount === 0 && (
             <div className="flex flex-col items-center justify-center h-full text-muted/30 gap-2">
               <span className="text-[24px]"><Bot className="lucide-inline" /></span>
               <span className="text-[13px]">{i18nT('pages.chat.activityViewer.no_subagents_running')}</span>

@@ -137,7 +137,7 @@ class TestClassifySourceDisposableFirst:
 class TestNoExternalRootNomination:
     """Nothing outside the filesystem itself can nominate an authorizing root.
 
-    A caller-supplied project-root branch used to live here. It was removed: the
+    No caller-supplied project-root branch lives here, by design: the
     recents list it drew on lives in the agent-writable data home, so an agent
     could write ["/"] into it and then forge an artifact naming source_root="/",
     turning re-verification into a rubber stamp for its own input. A LINK is now

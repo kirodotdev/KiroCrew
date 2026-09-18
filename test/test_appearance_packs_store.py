@@ -125,9 +125,9 @@ class TestPathSafety:
         assert "drop" not in ids
 
     def test_a_spoofed_manifest_id_cannot_impersonate_another_pack(self, tmp_path, store):
-        """The DIRECTORY is the identity. Listing used to trust the manifest's
-        self-declared meta.id, so a hand-edited pack could list itself under
-        ANOTHER pack's id — and deleting/selecting that gallery entry hit the
+        """The DIRECTORY is the identity. Listing must NOT trust the manifest's
+        self-declared meta.id: a hand-edited pack could then list itself under
+        ANOTHER pack's id -- and deleting/selecting that gallery entry hits the
         victim's directory. Same identity-spoof class as the import-path fix."""
         _write_pack(tmp_path, "victim")
         _write_pack(tmp_path, "impostor")
@@ -251,11 +251,11 @@ class TestColours:
         assert store.colour_map("cat") == {}
 
     def test_a_failed_colour_write_rolls_back_and_raises(self, tmp_path, monkeypatch):
-        """A disk-full recolour used to be acknowledged as SUCCESS: the write
-        failure was swallowed, the route returned 200, the UI showed the new
-        colour -- and a restart silently reloaded the old map. The failure must
-        surface (route wrapper maps OSError to 503) and memory must roll back
-        so the UI never shows a colour that disk doesn't have."""
+        """A disk-full recolour must NOT be acknowledged as SUCCESS: a swallowed
+        write failure returns 200, shows the new colour in the UI, and a restart
+        reloads the old map. The failure must surface (route wrapper maps OSError
+        to 503) and memory must roll back so the UI never shows a colour that disk
+        doesn't have."""
         s = AppearanceStore(tmp_path)
         s.load()
         assert s.set_colour_map(DEFAULT_PACK, {"#fff": "#f0f"}) is True

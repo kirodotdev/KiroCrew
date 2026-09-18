@@ -370,7 +370,7 @@ class _Client:
 class _Sessions:
     """The slice a card click touches, plus the slice ONE real turn touches.
 
-    The turn is only used to capture the ``auto_approve_session`` predicate the
+    The turn only captures the ``auto_approve_session`` predicate the
     driver would read, so the provider never streams anything.
     """
 

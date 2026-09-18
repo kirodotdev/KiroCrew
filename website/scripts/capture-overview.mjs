@@ -88,7 +88,7 @@ await page.route('**/api/**', async route => {
     default_workspace: 'default',
     memory_stores: { default: { description: 'Workspace memory', embedding_provider: 'local' } },
     default_memory_store: 'default',
-    agent: { default_agent: 'kirocrew', provider: 'kiroacp', model: 'auto', approval_mode: 'reads', sandbox: 'auto', subagent_max_turns: 60, max_subagents: 8, subagent_auto_max: 4, conductor_skill: false, tool_search: true, max_channels: 5, max_channel_agents: 2, enforce_denied_commands: 'on' },
+    agent: { default_agent: 'kirocrew', provider: 'kiroacp', model: 'auto', approval_mode: 'reads', sandbox: 'auto', subagent_max_turns: 60, max_subagents: 8, subagent_auto_max: 4, tool_search: true, max_channels: 5, max_channel_agents: 2 },
     session: { timeout_secs: 900, pool_size: 2, pool_agent: 'kirocrew', pool_ttl_secs: 900 },
     memory: { embedding_provider: 'local' },
     auto_update: true,

@@ -88,7 +88,7 @@ generation, so none may authorize a deletion.
 Row 9 is the orphaned committed record: the transaction completed, then the spec
 it described was deleted or rewritten by something that is not this pass. The
 record is intact and internally consistent, so only the EQUALITY gate can tell
-that it no longer describes anything on disk. Without that gate it would claim
+that it does not describe anything on disk. Without that gate it would claim
 triples the current map may hold from another source -- a user's own alias -- and
 strip them.
 
@@ -121,7 +121,7 @@ INVARIANTS
    fingerprint is what enforces that across a crash: a record is consulted only
    as a description of a specific spec generation, and a description that cannot
    be matched to the map on disk claims nothing. This holds for BOTH statuses --
-   a committed record that no longer matches the map on disk has outlived its
+   a committed record that does not match the map on disk has outlived its
    spec (row 9) and claims nothing either.
 
 3. **Membership IS the byte-equality test.** The alias is part of the key, so a
@@ -165,7 +165,7 @@ INVARIANTS
 7. **The fingerprint is taken over the AUTHORITATIVE on-disk map.** Resolution
    compares against the spec generation that is really on disk, read inside the
    same critical section that writes it. A fingerprint taken over a stale
-   in-memory snapshot would match a generation that is no longer there, which is
+   in-memory snapshot would match a generation that is not there, which is
    the one way the fingerprint could certify a claim it should have rejected.
 
 The record is process-wide rather than per-spec because

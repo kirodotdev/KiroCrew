@@ -193,7 +193,7 @@ class TestUnverifiedInventory:
         fx = load_fixture("weixin", "get_bot_qrcode", root=CHANNEL_FIXTURES)
         assert fx.is_verified
         assert fx.provenance.source is Source.LIVE_PROBE
-        # The shape claim that PR #711 established.
+        # The qrcode image content is an https URL.
         assert fx.payload["qrcode_img_content"].startswith("https://")
 
 

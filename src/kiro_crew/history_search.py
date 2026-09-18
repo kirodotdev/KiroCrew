@@ -894,7 +894,7 @@ def _facade_search_scan_window() -> int:
     """Read the facade's live scan limit without creating an import cycle.
 
     The import happens only when a search runs.  Keeping this as a getter is
-    intentional: tests and callers historically patch
+    intentional: tests and callers patch
     ``kiro_crew.history._SEARCH_SCAN_WINDOW`` after construction.
     """
     from kiro_crew import history as history_facade

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest'
-import { render, screen, fireEvent } from '@testing-library/react'
+import { render, screen, fireEvent, within } from '@testing-library/react'
 import SimpleSelect from '../components/SimpleSelect'
 
 /**
@@ -9,6 +9,19 @@ import SimpleSelect from '../components/SimpleSelect'
  * jsdom (unlike DropdownMenu), so no mock is needed here.
  */
 describe('SimpleSelect', () => {
+  it('keeps identity icons in the selected value and options without changing their text names', async () => {
+    const onChange = vi.fn()
+    render(<SimpleSelect options={['reviewer', 'writer']} optionLabels={['Code review', 'Writing']} optionIcons={[<img key="reviewer" src="/reviewer.png" alt="" />, <img key="writer" src="/writer.png" alt="" />]} value="reviewer" onChange={onChange} aria-label="Member" />)
+    const trigger = screen.getByRole('combobox', { name: 'Member' })
+    expect(trigger.querySelector('img')).toHaveAttribute('src', '/reviewer.png')
+    fireEvent.click(trigger)
+    const writer = await screen.findByRole('option', { name: 'Writing' })
+    expect(writer.querySelector('img')).toHaveAttribute('src', '/writer.png')
+    expect(within(writer).queryByRole('img')).toBeNull()
+    fireEvent.click(writer)
+    expect(onChange).toHaveBeenCalledWith('writer')
+  })
+
   it('fires onChange with the selected value and shows it in the trigger', async () => {
     const onChange = vi.fn()
     const { rerender } = render(

@@ -22,6 +22,11 @@ import logging
 from dataclasses import dataclass, field
 
 from kiro_crew.cloud import ssm as cloud_ssm
+
+# `_send_over_ssm` is imported rather than re-spelled so this rung's SSM dispatch
+# cannot drift from the mint path's on the inner/outer timeout pair -- the same
+# reason `_build_ssh_argv` is shared with the SSH rung rather than rebuilt here.
+from kiro_crew.instances.ssm_token_mint import _send_over_ssm
 from kiro_crew.instances.token_mint import _build_ssh_argv
 from kiro_crew.instances.validation import (
     SshValidationError,
@@ -310,17 +315,13 @@ async def _probe_remote_dashboard_ssm(
     # into the "no answer" verdict below.
     remote_cmd = _remote_status_probe_command(remote_port)
     try:
-        result = await asyncio.wait_for(
-            asyncio.to_thread(
-                cloud_ssm.run_command,
-                ssm_target,
-                remote_cmd,
-                profile,
-                region,
-                run_as=validate_ssm_run_as(run_as),
-                total_wait=int(_SSM_REMOTE_PROBE_TIMEOUT_SECS),
-            ),
-            timeout=_SSM_REMOTE_PROBE_TIMEOUT_SECS + 15,
+        result = await _send_over_ssm(
+            ssm_target,
+            remote_cmd,
+            profile,
+            region,
+            validate_ssm_run_as(run_as),
+            _SSM_REMOTE_PROBE_TIMEOUT_SECS,
         )
     except Exception:  # timeout, AWSError, dispatch failure — treat as no answer
         return False

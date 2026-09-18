@@ -67,6 +67,14 @@ src/kiro_crew/static/dist
 src/kiro_crew/static/.dist.staging.*
 src/kiro_crew/static/.dist.previous.*
 
+# Disposable scratch for Dev Fleet's Pull+Build installability probe
+# (npm_preflight). It lives in the checkout rather than TMPDIR so the rehearsal
+# runs on the filesystem the real `npm ci` writes to; probe() removes it in a
+# `finally`, and this rule covers the one a killed process leaves. Same
+# consequence as the staging entries above: an untracked leftover makes the
+# checkout read as dirty and fail-closes "Prune merged".
+/.kirocrew-npm-preflight-*
+
 # Build-time provenance stamp (scripts/stamp-distribution.sh). Generated per
 # packaging path; a committed copy would mislabel every other build's beacon.
 src/kiro_crew/_build_info.py
@@ -93,10 +101,18 @@ kirocrew-data.tar.gz
 # forget to remove: a PR body fed to `gh pr create --body-file`, and review-round
 # build/test log dirs (e.g. .r29-logs/). Ignoring them keeps `git status` clean so
 # Dev Fleet "Prune merged" can reap merged worktrees (a dirty tree fail-closes the
-# prune as merged_dirty). Prefer writing scratch under `mktemp -d`; committed
-# deliverables (e.g. temp-screenshots/) are unaffected. (`*.log` is already ignored above.)
+# prune as merged_dirty). Prefer writing scratch under `mktemp -d`.
+# (`*.log` is already ignored above.)
 .pr-body.md
 .r*-logs/
+# PR review evidence (screenshots, GIFs, recordings) is uploaded as a GitHub
+# attachment with `gh pr create|edit --attach`, never committed; non-media
+# evidence goes in a PR comment -- text (JSON provenance, perf baselines) as a
+# fenced block, a document (PDF, docx, zip) dragged in via the web UI. The
+# capture scripts under website/scripts/ and website/capture/ still write here
+# locally.
+temp-screenshots/
+.github/screenshots/
 # Staged blind-review artifacts (prepare-pr review lanes point subagents at
 # .review-<n>.diff files) and the autofix work-dir heartbeat — scratch, never
 # a deliverable, and a `git add -A` would otherwise sweep them into the PR.
@@ -159,3 +175,9 @@ evals/*/iteration-*/
 # A distribution stamps its build number here at packaging time (see
 # kiro_crew/__init__.py); never committed -- a dev checkout runs the bare core.
 src/kiro_crew/BUILD_VERSION
+
+# The crew image's wheel, staged by scripts/build_crew_base_image.sh for the
+# context bind mount. `vendor/` is a TRACKED directory (its .gitkeep ships in the
+# sdist so the image can be built from an installed copy), so without this rule a
+# ~27MB build artifact sits in a tracked path waiting for a `git add -A`.
+src/kiro_crew/apps/builtins/aws_control/crew/runtime/vendor/*.whl

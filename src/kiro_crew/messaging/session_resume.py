@@ -31,7 +31,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, Awaitable, Callable, Protocol
 
 from kiro_crew.history import (
     is_incognito_transcript,
@@ -85,6 +85,37 @@ _MAX_ROUTE_ATTEMPTS = 3
 _AGENT_SENTINELS = frozenset({"default", "auto"})
 
 
+def session_agent_from_metadata(meta: dict) -> str:
+    """Return a provider template, translating a positively owned member alias.
+
+    Dashboard history records the member alias in ``agent``. Channel-native
+    history records a provider template there instead. Only private memory's
+    declared owner disambiguates these namespaces; unowned V1 remains unchanged.
+    The execution path separately validates the actual memory before acquisition.
+    """
+    recorded = str((meta or {}).get("agent") or "").strip()
+    store = (meta or {}).get("memory_store")
+    if isinstance(store, str) and store not in ("", "default"):
+        try:
+            from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
+
+            cfg = KiroCrewConfig.load()
+            record = cfg.memory_stores.get(store)
+            owner = getattr(record, "owner_member", "")
+            if (
+                owner
+                and getattr(record, "memory_version", 1) == 2
+                and (recorded == owner or not recorded or recorded.casefold() in _AGENT_SENTINELS)
+            ):
+                binding = resolve_agent_bindings(cfg, owner, validate_memory_files=False)
+                return binding.kiro_agent or cfg.agent.default_agent or "kirocrew"
+        except Exception:
+            # The strict session-memory check refuses broken private bindings
+            # before a provider starts. Hydration alone never repairs/rebinds it.
+            logger.debug("resume: member template lookup failed", exc_info=True)
+    return "" if recorded.casefold() in _AGENT_SENTINELS else recorded
+
+
 def persisted_session_agent(conv_log: Any | None, session_key: str) -> str:
     """Return a resumed session's recorded agent, or ``""`` to use the route agent.
 
@@ -99,10 +130,32 @@ def persisted_session_agent(conv_log: Any | None, session_key: str) -> str:
     except Exception:
         logger.debug("resume: could not read persisted agent for %s", session_key, exc_info=True)
         return ""
-    recorded = str((meta or {}).get("agent") or "").strip()
-    if recorded.casefold() in _AGENT_SENTINELS:
-        return ""
-    return recorded
+    return session_agent_from_metadata(meta)
+
+
+def session_title_of(conv_log: Any | None, session_key: str, channel: str = "") -> str:
+    """The stored title for *session_key*, or the bare key as a stable fallback.
+
+    Discord, Teams and Telegram each grew their own copy of this read, so a fix
+    to the unwrap or the fallback landed in one and missed the others. The read
+    shape lives here for the same reason ``persisted_session_agent`` does: the
+    three adapters differ in addressing and wording, not in how they name a
+    resumed conversation.
+
+    Metadata access is blocking; async callers run this helper off the event loop
+    (see ``persisted_session_agent``). *channel* only names the caller in its
+    debug line, so a channel's log attribution survives the consolidation.
+    """
+    title = ""
+    if conv_log is not None:
+        try:
+            meta = conv_log.get_metadata(session_key)
+            title = str((meta or {}).get("title") or "")
+        except Exception:
+            logger.debug("%s resume: title lookup failed", channel or "session", exc_info=True)
+    # The picker's fallback for an untitled session, so a bootstrapped record
+    # names the conversation the way the user saw it listed.
+    return title or session_key.removeprefix("dashboard:")
 
 
 class ResumeReleaseError(RuntimeError):
@@ -146,6 +199,47 @@ class RoutingDecision:
     observed: InboundResolution | None = None
     adopt_key: str = ""
     adopt_title: str = ""
+
+
+async def refused_resume_is_restricted(
+    native_session_key: str,
+    *,
+    resolve: Callable[[], Awaitable[RoutingDecision]],
+    is_restricted: Callable[[str], Awaitable[bool]],
+) -> bool:
+    """Resolve every possible resume target before persisting a refused message.
+
+    A routing refusal can carry the expected, observed, or adopted session even
+    when ``resumed_key`` is empty. Check all of them plus the native key so an
+    update-pause spool cannot persist content belonging to a temporary or
+    incognito conversation. Any resolution failure denies persistence: losing
+    one restart notice is reversible, while writing restricted content is not.
+    """
+    try:
+        decision = await resolve()
+        if decision.observed is not None and decision.observed.ambiguous:
+            return True
+        candidates = (
+            native_session_key,
+            decision.resumed_key,
+            decision.adopt_key,
+            decision.described.key if decision.described is not None else None,
+            decision.observed.key if decision.observed is not None else None,
+        )
+        seen: set[str] = set()
+        for candidate in candidates:
+            if not candidate or candidate in seen:
+                continue
+            seen.add(candidate)
+            if await is_restricted(candidate):
+                return True
+    except Exception:
+        logger.warning(
+            "resume: could not resolve refused callback privacy; denying persistence",
+            exc_info=True,
+        )
+        return True
+    return False
 
 
 @dataclass(frozen=True)
@@ -935,8 +1029,8 @@ class SessionResumeController:
 
             # Snapshot what this pick is about to overwrite. ``record`` replaces the
             # channel's expectation outright, so on a failed bind, retiring the
-            # replacement is not a rollback: it leaves a DETACHED marker where an
-            # ACTIVE record used to be, and that record was the evidence a lost
+            # replacement is not a rollback: it leaves a DETACHED marker in place of the
+            # ACTIVE record, and that record was the evidence a lost
             # link owes the user a notice. The next message would then route
             # natively and the notice would never be delivered.
             #

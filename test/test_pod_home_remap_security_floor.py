@@ -46,13 +46,6 @@ def _pin_home(monkeypatch: pytest.MonkeyPatch, home: Path) -> Path:
     ``test_security.py`` already clears by hand, which is the established seam this
     follows.
 
-    An earlier revision also reset ``_SENSITIVE_RE``, the fast-path regex global
-    that ``is_sensitive_bash_command`` built once from ``Path.home()`` with no
-    invalidation hook; a stale copy of it was what made these tests fail on the
-    Windows shard alone. #9183 deleted that pass along with the whole path-matching
-    layer, so there is no such global left to drop and the asymmetry it caused is
-    gone with it.
-
     Nothing in production depends on the reset -- the gateway's own HOME does not
     move under it, and ``_apply_pod_home_remap`` changes only a CHILD's environment
     -- so this is a test-pinning helper, not a gate fix.
@@ -170,11 +163,8 @@ class TestGatewayHomeIsIndependentOfAChildsRemappedHome:
     ) -> None:
         """The pinned home reaches the gate that still fences paths.
 
-        This pair of tests used to assert the same thing about
-        ``is_sensitive_bash_command`` -- one for its target-set pass, one for its
-        fast-path ``_SENSITIVE_RE`` global. #9183 deleted both, so the bash
-        assertions are retired (see
-        ``test_the_command_matcher_fences_no_path_after_9183``) and what remains is
+        ``is_sensitive_bash_command`` fences no path spelling (see
+        ``test_the_command_matcher_fences_no_path_after_9183``); what remains is
         the property that still has a mechanism behind it: the gateway's OWN home
         anchors the resolving fence, whatever ``HOME`` a spawned child was handed.
 
@@ -206,11 +196,9 @@ class TestPodMintedGrantsAreFencedFromToolCalls:
     # reach Bedrock auth). A pod denies the pod-local tree at the gate on top of
     # that. Red-first on the target set and on both separators.
     #
-    # WHICH gate, after #9089 and #9183: `is_sensitive_path`, the layer that
-    # RESOLVES. #9089 removed the leg that routed each command token through it,
-    # and #9183 then dropped the literal path regex that leg had left behind, so
-    # the command matcher now fences NO path spelling at all -- the real $HOME's
-    # credential files included, not merely the relocated roots. Pinned by
+    # WHICH gate: `is_sensitive_path`, the layer that RESOLVES. The command
+    # matcher fences NO path spelling at all -- the real $HOME's credential files
+    # included, not merely the relocated roots. Pinned by
     # test_the_command_matcher_fences_no_path_after_9183 below.
 
     @staticmethod
@@ -234,14 +222,10 @@ class TestPodMintedGrantsAreFencedFromToolCalls:
     ) -> None:
         """The text layer is out of the path business -- universally, not per-root.
 
-        Two rounds of main's own work moved this. #9089 deleted the pass that
-        tokenized a command and routed each token through ``is_sensitive_path``,
-        which left a literal regex anchored on the real ``$HOME``; this test then
-        asserted a PARITY, with the pod root uncovered "like ``KIROCREW_HOME``" and
-        the real home still covered. #9183 ("split security.py into a package and
-        drop path regex") deleted that literal matcher too, so
-        ``is_sensitive_bash_command`` now keeps only a size ceiling, an IMDS check
-        and an environment-credential exfiltration check.
+        ``is_sensitive_bash_command`` keeps only a size ceiling, an IMDS check
+        and an environment-credential exfiltration check. It does not tokenize a
+        command and route each token through ``is_sensitive_path``, so it fences
+        no path spelling -- neither a relocated root nor the real ``$HOME``.
 
         The parity framing is therefore retired rather than restated: measured, the
         matcher allows EVERY path spelling, the real home's own credential files
@@ -287,12 +271,11 @@ class TestPodMintedGrantsAreFencedFromToolCalls:
     def test_the_target_set_carries_both_separator_joins(self, tmp_path: Path, monkeypatch) -> None:
         """The Windows fix, pinned at the BUILDER where it is platform-independent.
 
-        The os-home targets used to be joined with the RUNNING OS's separator only.
-        That is not enough on the bash surface: ``_shape_path_token`` normalises a
-        token's backslashes to forward slashes before comparing, so on Windows the
-        target was ``<os-home>\\.aws`` while every candidate form was
-        ``<os-home>/.aws`` -- they never compared equal, and shard 3 failed there
-        while passing on POSIX. The re-anchor now emits BOTH joins.
+        Joining the os-home targets with the RUNNING OS's separator only is not
+        enough on the bash surface: ``_shape_path_token`` normalises a token's
+        backslashes to forward slashes before comparing, so on Windows a target
+        of ``<os-home>\\.aws`` never compares equal to the candidate form
+        ``<os-home>/.aws``. The re-anchor therefore emits BOTH joins.
 
         Asserted on the target set rather than through a hand-backslashed absolute
         path: the ROOT's own separators are whatever the platform produced, and
@@ -319,12 +302,11 @@ class TestPodMintedGrantsAreFencedFromToolCalls:
     ) -> None:
         """Widening must not disturb the form that already worked.
 
-        The bash half of this assertion was dropped when the branch rebased over
-        #9089 -- see
-        ``test_the_bash_text_layer_covers_no_relocated_home_after_9089`` for why no
-        relocated home is covered at that layer any more. What the both-separator
-        widening owns is the TARGET SET, and this is its running-platform spelling
-        reached through the caller the resolving fence serves.
+        The bash text layer covers no relocated home (see
+        ``test_the_bash_text_layer_covers_no_relocated_home_after_9089``). What
+        the both-separator widening owns is the TARGET SET, and this is its
+        running-platform spelling reached through the caller the resolving fence
+        serves.
         """
         os_home = tmp_path / "pod-os-home"
         monkeypatch.setenv("KIROCREW_POD", "1")
@@ -385,13 +367,11 @@ class TestTheStagedIdentityStoreIsFencedFromToolCalls:
     ) -> None:
         """Every spelling a tool can OPEN, including the verbs that read a sqlite db.
 
-        This was a bash-command assertion (``cat``/``cp``/``sqlite3 … .dump``) until
-        the branch rebased over #9089, which deleted the bash leg that routed a
-        token through ``is_sensitive_path``; no relocated home is covered there any
-        more (see the grant store's parity test). The property that matters is
-        unchanged and is asserted where it now lives: every path under the staged
-        store resolves to a fenced target, whichever verb names it, so the refusal
-        does not depend on a command spelling being recognised.
+        The bash text layer covers no relocated home (see the grant store's
+        parity test), so the property is asserted where it lives: every path
+        under the staged store resolves to a fenced target, whichever verb names
+        it, so the refusal does not depend on a command spelling being
+        recognised.
         """
         os_home = tmp_path / "pod-os-home"
         monkeypatch.setenv("KIROCREW_POD", "1")
@@ -442,17 +422,15 @@ class TestTheStagedIdentityStoreIsFencedFromToolCalls:
             assert not covering, f"{tier_name} masks the identity store: {covering}"
 
 
-# The Windows-native bash-tokenization class that used to close this file was
-# removed when this branch rebased over #9089 ("move the path fence to the layer
-# that can hold it"). It pinned the bash-text normalizer second pass
+# This file pins no Windows-native bash-tokenization pass. A path fenced only in
+# command TEXT is still readable through an ``open()`` that never routes through
+# the tool gate, so the bash-text normalizer helpers
 # (``_windows_native_path_tokens`` / ``_check_sensitive_via_normalizer`` /
-# ``_win_anchor_roots``), and #9089 deleted that whole leg on the stated grounds
-# that a path fenced only in command TEXT is still readable through an ``open()``
-# that never routes through the tool gate. ``test_security.py``'s
-# ``TestTraversalSimulationIsGone`` now asserts those helpers are ABSENT by name.
+# ``_win_anchor_roots``) do not exist; ``test_security.py``'s
+# ``TestTraversalSimulationIsGone`` asserts they are ABSENT by name.
 #
-# The pod grant store's fence is therefore carried by the two layers #9089 keeps,
-# both of which this file still pins above: ``is_sensitive_path`` on every
+# The pod grant store's fence is carried by two layers, both pinned above:
+# ``is_sensitive_path`` on every
 # resolved path (``KIROCREW_OS_HOME`` re-anchors every ``home_dirs`` entry in
 # ``security._home_dir_targets_uncached``), and the OS mask
 # (``sandbox._pod_os_home_targets``), covered by

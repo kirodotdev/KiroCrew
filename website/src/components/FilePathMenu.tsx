@@ -30,7 +30,7 @@
  * so the backend degrades an `open` to a clipboard copy), which would make the
  * row promise a launch it can never perform. Reveal still works on Windows.
  */
-import { type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
+import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
 import { ExternalLink, FolderOpen, Copy, Check, AlertCircle, PenLine } from 'lucide-react'
 import {
   ContextMenu,
@@ -38,7 +38,7 @@ import {
   ContextMenuContent,
   ContextMenuItem,
 } from './ui/context-menu'
-import ErrorNotice from './ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 import { useBranding } from '../hooks/useBranding'
 import { useGatewayPlatform } from '../hooks/useGatewayPlatform'
 import { api, ApiError } from '../api/client'
@@ -261,6 +261,8 @@ export function useCopyAck(filePath: string) {
  * ContextMenu items. Drop these into any ContextMenuContent.
  */
 function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
+  const revealErrorId = useId()
+  const editorErrorId = useId()
   const isLocal = useBranding().directLocal
   // Shared owner of the platform-aware reveal label (see useRevealLabel) — the
   // same wording MarkdownPanel's overflow and FileViewer's overflow use.
@@ -309,10 +311,10 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
       {revealError && (
         <div className="px-2 py-1.5 max-w-[260px]">
           <ErrorNotice
+            id={revealErrorId}
             variant="inline"
             className="whitespace-normal"
             message={revealError}
-            askAgent
             onDismiss={clearRevealError}
             testId="file-path-menu-error"
           />
@@ -321,10 +323,10 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
       {editorError && (
         <div className="px-2 py-1.5 max-w-[260px]">
           <ErrorNotice
+            id={editorErrorId}
             variant="inline"
             className="whitespace-normal"
             message={editorError}
-            askAgent
             onDismiss={() => setEditorError(null)}
             testId="file-path-menu-editor-error"
           />
@@ -340,6 +342,13 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
           <PenLine size={14} className="lucide-inline" />
           {openInEditorLabel}
         </ContextMenuItem>
+      )}
+      {editorError && (
+        <ErrorNoticeMenuItem
+          Item={ContextMenuItem}
+          message={editorError}
+          describedBy={editorErrorId}
+        />
       )}
       {canOpen && (
         <ContextMenuItem
@@ -362,6 +371,13 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
           <FolderOpen size={14} className="lucide-inline" />
           {revealLabel}
         </ContextMenuItem>
+      )}
+      {revealError && (
+        <ErrorNoticeMenuItem
+          Item={ContextMenuItem}
+          message={revealError}
+          describedBy={revealErrorId}
+        />
       )}
       <ContextMenuItem
         onSelect={(e) => { e.preventDefault(); void copyPath() }}

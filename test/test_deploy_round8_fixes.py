@@ -1,4 +1,4 @@
-"""Tests for deploy Round 8 fixes: F1 (staleness checks), F2 (redaction), F3 (OAC ETag)."""
+"""Tests for deploy fixes: F1 (staleness checks), F2 (redaction), F3 (OAC ETag)."""
 from __future__ import annotations
 
 import asyncio
@@ -77,7 +77,7 @@ class _FakeReq:
 
 
 class TestF1ProfileStaleness:
-    """Confirm rejects if the stored profile no longer resolves to the same values."""
+    """Confirm rejects if the stored profile does not resolve to the same values."""
 
     def test_confirm_rejects_changed_profile(self, tmp_path, monkeypatch):
         """If profile resolution changes between preview and confirm, 409."""

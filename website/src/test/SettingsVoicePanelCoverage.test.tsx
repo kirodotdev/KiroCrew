@@ -453,6 +453,54 @@ describe('VoicePanel polly fields', () => {
   })
 })
 
+/* ── consent-gate re-probe on credential change ───────────────────────────── */
+
+describe('VoicePanel polly consent-gate invalidation', () => {
+  // The AwsConsentGate reads its resolved account from ['awsConsent','polly'].
+  // Saving a new profile/region must re-probe it, or the gate keeps showing the
+  // old account and Confirm 409s on the stale value.
+  const consentKey = ['awsConsent', 'polly']
+  const seedPolly = () => {
+    vi.spyOn(api, 'awsConsent').mockResolvedValue({
+      service: 'polly', serviceLabel: 'Amazon Polly', profile: '', credentialSource: '',
+      region: '', account: '', arn: '', identityResolved: false, identityDetail: '',
+      granted: false, reason: '', revokedOnAccountChange: false, grant: null,
+    })
+    return seed({ provider: 'polly' })
+  }
+  const invalidatedKeys = (spy: ReturnType<typeof vi.spyOn>) =>
+    spy.mock.calls.map(c => JSON.stringify((c[0] as { queryKey?: unknown[] })?.queryKey))
+
+  it('re-probes the consent gate when the profile changes', async () => {
+    const view = seedPolly()
+    await field('AWS Profile (Amazon Polly)')
+    const spy = vi.spyOn(view.queryClient, 'invalidateQueries')
+    const profile = screen.getByPlaceholderText('default')
+    fireEvent.change(profile, { target: { value: 'work' } })
+    fireEvent.blur(profile)
+    await waitFor(() => expect(invalidatedKeys(spy)).toContain(JSON.stringify(consentKey)))
+  })
+
+  it('re-probes the consent gate when the region changes', async () => {
+    const view = seedPolly()
+    await field('AWS Profile (Amazon Polly)')
+    const spy = vi.spyOn(view.queryClient, 'invalidateQueries')
+    const region = screen.getByPlaceholderText('us-east-1')
+    fireEvent.change(region, { target: { value: 'us-west-2' } })
+    fireEvent.blur(region)
+    await waitFor(() => expect(invalidatedKeys(spy)).toContain(JSON.stringify(consentKey)))
+  })
+
+  it('does not re-probe the consent gate on an unrelated save', async () => {
+    const view = seedPolly()
+    await field('AWS Profile (Amazon Polly)')
+    const spy = vi.spyOn(view.queryClient, 'invalidateQueries')
+    await pick(/^Speed$/, '120%')
+    await waitFor(() => expect(view.save).toHaveBeenCalledWith({ rate: '120%' }))
+    expect(invalidatedKeys(spy)).not.toContain(JSON.stringify(consentKey))
+  })
+})
+
 /* ── save failure ─────────────────────────────────────────────────────────── */
 
 describe('VoicePanel save failure', () => {

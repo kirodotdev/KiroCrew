@@ -1,4 +1,4 @@
-"""The host-mutation floor guards itself (issue #1722).
+"""The host-mutation floor guards itself.
 
 Two jobs:
 
@@ -174,7 +174,7 @@ class TestRatchet:
         """A new service-control tool in production must be a conscious decision.
 
         Without this, someone adding an ``initctl`` or ``pkexec`` call site would
-        land a spawn the floor does not recognise, and the next #1722 would look
+        land a spawn the floor does not recognise, and the next such regression would look
         exactly like the first one.
         """
         accounted = (
@@ -217,9 +217,35 @@ class TestRatchet:
         assert "systemctl" in referenced
         assert "launchctl" in referenced
 
-    def test_exec_allowlist_is_empty(self) -> None:
-        """No test may drive a real service today, and adding one needs review."""
-        assert _root._HOST_SERVICE_EXEC_ALLOWED_MODULES == frozenset()
+    #: The only modules allowed to drive a real service manager: the opt-in
+    #: end-to-end suites. Pinned as an exact set so an addition is a reviewed
+    #: change to this file, not a silent widening.
+    EXPECTED_ALLOWLIST = frozenset(
+        {
+            "e2e.scenarios.test_cron_fire",
+            "e2e.scenarios.test_service_install_dry_run",
+            "e2e.scenarios.test_settings_save",
+            "e2e.scenarios.test_subagent_spawn",
+            "e2e.scenarios.test_wheel_install",
+            "test_pod_windows_boot",
+        }
+    )
+
+    def test_exec_allowlist_names_only_the_opt_in_e2e_suites(self) -> None:
+        """Adding a real-service test needs review, and every entry must exist."""
+        assert _root._HOST_SERVICE_EXEC_ALLOWED_MODULES == self.EXPECTED_ALLOWLIST
+        test_dir = pathlib.Path(__file__).resolve().parent
+        for name in self.EXPECTED_ALLOWLIST:
+            path = test_dir.joinpath(*name.split(".")).with_suffix(".py")
+            assert path.exists(), f"allowlisted module has no file: {path}"
+
+    def test_every_allowlisted_suite_is_opt_in(self) -> None:
+        """A listed module skips itself unless its operator variable is set."""
+        test_dir = pathlib.Path(__file__).resolve().parent
+        scenarios_conftest = (test_dir / "e2e" / "scenarios" / "conftest.py").read_text()
+        assert "KIROCREW_E2E_SCENARIOS" in scenarios_conftest
+        canary = (test_dir / "test_pod_windows_boot.py").read_text()
+        assert 'os.environ.get("KIROCREW_E2E_POD_WINDOWS") != "1"' in canary
 
     def test_live_target_reexecs_through_the_guarded_funnel(self) -> None:
         """The guard traps ``execve`` only; pin that this is still the funnel used.
@@ -321,6 +347,31 @@ class TestRefusalReason:
     def test_a_verb_before_the_manager_is_ignored(self) -> None:
         """Only the tail is scanned, so a wrapper's own flags cannot be the action."""
         assert _root._refusal_reason(["restart-helper", "--", "systemctl", "show", "x"]) is None
+
+    def test_the_pod_cli_mutating_verbs_are_refused(self) -> None:
+        """A child ``kirocrew pod up`` reaches a service manager one process away."""
+        assert _root._refusal_reason(["python", "-m", "kiro_crew", "pod", "up", "wt", "--json"])
+        assert _root._refusal_reason(["/x/.venv/bin/kirocrew", "pod", "down", "wt"])
+        assert _root._refusal_reason(["C:\\v\\Scripts\\kirocrew.exe", "pod", "install"])
+        assert _root._refusal_reason(["kirocrew", "pod", "prune", "--all"])
+
+    def test_the_pod_cli_read_only_verbs_are_allowed(self) -> None:
+        assert _root._refusal_reason(["kirocrew", "pod", "ls", "--json"]) is None
+        assert _root._refusal_reason(["python", "-m", "kiro_crew", "pod", "status", "wt"]) is None
+        assert _root._refusal_reason(["kirocrew", "pod", "api", "wt", "GET", "health"]) is None
+
+    def test_pod_as_an_argument_to_another_program_is_ignored(self) -> None:
+        assert _root._refusal_reason(["git", "pod", "up"]) is None
+        assert _root._refusal_reason(["python", "-m", "other", "pod", "up"]) is None
+
+    def test_schtasks_mutating_switches_are_refused(self) -> None:
+        """Task Scheduler is a service manager too; its verbs are `/Create`-style."""
+        assert _root._refusal_reason(["schtasks", "/Create", "/F", "/TN", "x", "/TR", "y"])
+        assert _root._refusal_reason(["C:\\Windows\\System32\\schtasks.exe", "/Run", "/TN", "x"])
+        assert _root._refusal_reason(["schtasks", "/delete", "/TN", "x", "/F"])
+
+    def test_schtasks_query_is_allowed(self) -> None:
+        assert _root._refusal_reason(["schtasks", "/Query", "/TN", "x"]) is None
 
     def test_an_ordinary_spawn_is_allowed(self) -> None:
         assert _root._refusal_reason(["git", "status", "--porcelain"]) is None
@@ -471,10 +522,10 @@ class TestXdgRedirect:
         assert pathlib.Path(xdg).resolve() != (pathlib.Path.home() / ".config").resolve()
 
     def test_the_dropin_path_lands_outside_the_real_config_dir(self) -> None:
-        """The exact call that caused #1722, now provably harmless.
+        """The exact call that caused the incident, now provably harmless.
 
         ``_dropin_path()`` is unstubbed here on purpose -- that is the whole point.
-        A test that forgets to stub it must no longer be able to name the
+        A test that forgets to stub it must not be able to name the
         operator's real unit directory.
         """
         from kiro_crew.apps.builtins.dev_fleet import server as mod

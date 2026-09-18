@@ -96,7 +96,7 @@ class PinsCorruptError(Exception):
     first one just refused to touch.
 
     Modelled on ops-mission-control's ``CorruptDocumentError`` rather than the
-    bare ``json.JSONDecodeError`` the aws-control readers raise (#7805): that
+    bare ``json.JSONDecodeError`` the aws-control readers raise: that
     app reached for the plain type only because the named one lived in another
     app, which does not apply to a type declared in the module both writers
     already import.
@@ -137,12 +137,11 @@ def read_pins_for_update(file_path: str) -> list[Any] | None:
     it becomes U+FFFD, ``json.loads`` SUCCEEDS, and the whole-file rewrite then
     persists the mangled text. That is the same irreversible loss as the three
     refusals above, reached without any parse failure to catch it, so an
-    undecodable byte is a fourth refusal rather than a repair. Found in review
-    (GPT 5.6).
+    undecodable byte is a fourth refusal rather than a repair.
 
     ``load`` keeps the lenient decode: it does not write, and a corrupt file it
     accepts is preserved as a ``.bak.<now_ms>`` sidecar first. A mangled label
-    read at startup can therefore reach memory, but it can no longer reach DISK,
+    read at startup can therefore reach memory, but it cannot reach DISK,
     because every write path first re-reads through this reader and refuses.
     """
     try:

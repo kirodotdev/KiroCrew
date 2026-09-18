@@ -393,7 +393,7 @@ class TestClear:
 
         assert resp.code == 200
         assert resp.payload["ok"] is True
-        # No longer in queue
+        # Not in queue
         assert not server._request_file(isolated_queue, "req1").exists()
         # Present in handled
         assert server._request_file(handled, "req1").exists()

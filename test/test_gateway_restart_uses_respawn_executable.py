@@ -24,6 +24,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.dashboard.handlers import updates as dashboard_updates
 from kiro_crew.slack import gateway as gw
 from kiro_crew.slack.gateway import GatewayOrchestrator
 
@@ -190,6 +191,36 @@ class TestResolverIsLoadedBeforeTheApply:
         )
 
 
+class TestDashboardResolverIsLoadedBeforeTheApply:
+    @pytest.mark.parametrize(
+        ("method", "apply_names"),
+        [
+            ("api_update_apply", {"apply_policy_update", "_venv_pip_install"}),
+            ("api_update_approve", {"apply_wheel_update"}),
+        ],
+    )
+    def test_import_precedes_every_apply(self, method, apply_names):
+        tree = ast.parse(inspect.getsource(dashboard_updates))
+        fn = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.AsyncFunctionDef) and node.name == method
+        )
+        imports = TestResolverIsLoadedBeforeTheApply._resolver_import_lines(fn)
+        assert len(imports) == 1, f"{method}: expected one resolver import, got {imports}"
+        applies = [
+            node.lineno
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in apply_names
+        ]
+        assert applies, f"{method}: no apply reference found"
+        assert imports[0] < min(
+            applies
+        ), f"{method}: resolver import at line {imports[0]} follows apply at {min(applies)}"
+
+
 class TestAutoApplyWheelUpdate:
     @pytest.mark.asyncio
     async def test_successful_install_execs_the_respawn_interpreter(
@@ -293,6 +324,9 @@ class TestAutoApplyGitUpdate:
         )
         monkeypatch.setattr(gw, "commits_ahead", lambda _proj, _target: 0)
         monkeypatch.setattr(gw, "hidden_worktree_edits", lambda _proj: [])
+        # The floor gate reads the pinned commit with a real `git show`, which
+        # fails against this non-repo, and a failed read refuses.
+        monkeypatch.setattr(gw.dep_sync, "incoming_python_floor_breach", lambda *a, **k: None)
         spawn = self._scripted_git(monkeypatch)
         # Post-reset rebuild steps: no optional backend, frontend and deps sync
         # come back clean, and the package reload is a no-op (reloading the real

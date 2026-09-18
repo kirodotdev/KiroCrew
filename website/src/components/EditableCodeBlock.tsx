@@ -29,8 +29,8 @@ const EditableCodeBlock = memo(function EditableCodeBlock(
   }, [code, editing])
   useEffect(() => () => clearTimeout(timerRef.current), [])
 
-  const copy = useCallback(() => {
-    copyCode(valueRef.current)
+  const copy = useCallback(async () => {
+    if (!(await copyCode(valueRef.current))) return
     setCopied(true)
     clearTimeout(timerRef.current)
     timerRef.current = setTimeout(() => setCopied(false), 1500)

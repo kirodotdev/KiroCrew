@@ -544,7 +544,7 @@ def test_the_signing_gate_also_requires_the_prod_environment() -> None:
 
 
 def test_the_pairing_guard_runs_before_the_upload_and_fails_hard() -> None:
-    """An orphaned installer must never be uploaded (#4301).
+    """An orphaned installer must never be uploaded.
 
     The guard exists so an .exe with no .blockmap beside it fails the build
     BEFORE the artifact is produced: the publish lane then takes its

@@ -72,7 +72,7 @@ vi.mock('../api/client', () => ({
 // active item off dnd-kit's internal store (which the stub doesn't provide),
 // so it passes children through — the mounting under test is done by the REAL
 // createPortal in the component, not by this stub.
-const dnd = vi.hoisted(() => ({ starts: [] as Array<(e: unknown) => void> }))
+const dnd = vi.hoisted(() => ({ starts: [] as Array<(e: unknown) => void>, active: null as { id: string } | null }))
 vi.mock('@dnd-kit/core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@dnd-kit/core')>()
   return {
@@ -84,6 +84,9 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
       if (props.onDragStart && !dnd.starts.includes(props.onDragStart)) dnd.starts.push(props.onDragStart)
       return props.children as never
     },
+    // The sidebar reconciles its drag mirror against dnd-kit's store; the stub
+    // has none, so the scripted store stands in for it.
+    useDndContext: () => ({ ...actual.useDndContext(), active: dnd.active }),
     DragOverlay: (props: { children?: unknown }) => props.children as never,
   }
 })
@@ -144,6 +147,7 @@ function renderSidebar() {
 beforeEach(() => {
   localStorage.clear()
   dnd.starts.length = 0
+  dnd.active = null
   mocks.chatFolders.mockResolvedValue(folders)
   mocks.tagColumns.mockResolvedValue(columns)
   mocks.chatTags.mockResolvedValue(tags)
@@ -153,6 +157,7 @@ afterEach(() => vi.clearAllMocks())
 /** Put a folder drag in flight through the column DndContext's own handler. */
 function startFolderDrag() {
   expect(dnd.starts.length).toBeGreaterThan(0)
+  dnd.active = { id: FOLDER_A }
   act(() => {
     for (const start of dnd.starts) {
       start({ active: { id: FOLDER_A, data: { current: { type: 'folder' } } } })

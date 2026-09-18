@@ -197,3 +197,85 @@ def test_tool_registered_and_rejects_stray_args() -> None:
     assert validate_tool_args({}, schema) == {}          # zero-arg call is valid
     with pytest.raises(ValidationError):
         validate_tool_args({"bogus": 1}, schema)          # stray arg rejected
+
+
+# ── prewarm_allowance: host-derived cap on idle pre-warmed sessions ─────────
+
+
+@pytest.mark.parametrize(
+    "avail,expected",
+    [
+        (0.5, 0),   # critical band: no idle agent process at all
+        (2.0, 0),   # inclusive, like _classify
+        (2.01, 1),  # tight band: one
+        (4.0, 1),
+        (4.01, 3),  # ample: the historical fixed cap
+        (64.0, 3),
+    ],
+)
+def test_prewarm_allowance_bands(avail: float, expected: int) -> None:
+    assert rs.prewarm_allowance(avail, _cfg(4.0, 2.0)) == expected
+
+
+@pytest.mark.parametrize(
+    "avail,expected",
+    [
+        (6.0, 0),    # under the tuned critical band
+        (8.0, 0),    # inclusive, like _classify
+        (8.01, 1),   # tuned tight band
+        (16.0, 1),
+        (16.01, 3),  # ample on the tuned scale
+        (64.0, 3),
+    ],
+)
+def test_prewarm_allowance_follows_tuned_thresholds(avail: float, expected: int) -> None:
+    """A host tuned via ``agent.resource_pressure_gb`` / ``resource_critical_gb``
+    gets an allowance on the SAME scale as its posture: the bands come from
+    ``_resolve_thresholds(cfg)``, not from the shipped defaults."""
+    tuned = _cfg(16.0, 8.0)
+    assert rs.prewarm_allowance(avail, tuned) == expected
+    # Cross-check against the posture for the same reading and config.
+    posture = rs._classify(avail, *rs._resolve_thresholds(tuned))
+    assert rs.prewarm_allowance(avail, tuned) == rs._PREWARM_BY_POSTURE[posture]
+
+
+def test_prewarm_allowance_disabled_pressure_keeps_the_cap() -> None:
+    """``pressure_gb == 0`` is the documented off switch for the posture line;
+    the allowance honours it the same way and never shrinks the population."""
+    off = _cfg(0.0, 0.0)
+    for avail in (0.5, 2.0, 4.0, 64.0):
+        assert rs.prewarm_allowance(avail, off) == rs.PREWARM_MAX_LIVE
+
+
+def test_prewarm_allowance_loads_config_when_omitted(monkeypatch) -> None:
+    """Omitting *cfg* resolves the bands through the same loader ``probe`` uses."""
+    monkeypatch.setattr(rs, "_load_config", lambda: _cfg(16.0, 8.0))
+    assert rs.prewarm_allowance(6.0) == 0
+    assert rs.prewarm_allowance(12.0) == 1
+    assert rs.prewarm_allowance(20.0) == rs.PREWARM_MAX_LIVE
+
+
+def test_prewarm_allowance_unreadable_probe_keeps_the_fixed_cap(monkeypatch) -> None:
+    """A host the probe cannot measure is never made worse by the allowance."""
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: -1.0)
+    assert rs.prewarm_allowance() == rs.PREWARM_MAX_LIVE
+    assert rs.prewarm_allowance(-1.0) == rs.PREWARM_MAX_LIVE
+
+
+def test_prewarm_allowance_reads_the_shared_probe(monkeypatch) -> None:
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 1.0)
+    assert rs.prewarm_allowance(cfg=_cfg(4.0, 2.0)) == 0
+    monkeypatch.setattr(rs, "_read_available_gb", lambda: 3.0)
+    assert rs.prewarm_allowance(cfg=_cfg(4.0, 2.0)) == 1
+
+
+def test_prewarm_allowance_tracks_the_advisory_thresholds() -> None:
+    """The bands are the posture thresholds, not a second scale: a host that
+    reads CRITICAL pre-warms nothing and one that reads TIGHT pre-warms one."""
+    defaults = _cfg(rs._DEFAULT_PRESSURE_GB, rs._DEFAULT_CRITICAL_GB)
+    assert rs.prewarm_allowance(rs._DEFAULT_CRITICAL_GB - 0.01, defaults) == 0
+    assert rs._classify(rs._DEFAULT_CRITICAL_GB - 0.01, rs._DEFAULT_PRESSURE_GB,
+                        rs._DEFAULT_CRITICAL_GB) == rs.POSTURE_CRITICAL
+    assert rs.prewarm_allowance(rs._DEFAULT_PRESSURE_GB - 0.01, defaults) == 1
+    assert rs._classify(rs._DEFAULT_PRESSURE_GB - 0.01, rs._DEFAULT_PRESSURE_GB,
+                        rs._DEFAULT_CRITICAL_GB) == rs.POSTURE_TIGHT

@@ -1,10 +1,10 @@
 """Malformed-entry preservation across the sibling JSON stores in state.py.
 
-Regression coverage for #5792: ``load_*`` drops rows the active list cannot
+The ``load_*`` functions drop rows the active list cannot
 use but must keep them verbatim in an ``_unparsed_*`` list so the next
 ``save_*`` round-trips them back to disk, rather than the previous behaviour
 where a dropped row's bytes were erased on the next write. Mirrors the
-cron-folder contract landed in #5768 across ``chat_pins``, ``tags`` and
+cron-folder contract shared across ``chat_pins``, ``tags`` and
 ``tag_boards`` — the ``tags`` case is the worst because its save runs DURING
 load (seed / back-fill), so a hand-edited typo was wiped at boot with no user
 action.
@@ -197,6 +197,10 @@ class TestTagsPreservation:
                     "not-a-dict",
                     {"name": "no id"},
                     {"id": "", "name": "empty id"},
+                    # An id every reader keys on must be a string: a list is
+                    # unhashable in the set/dict lookups the tag routes build.
+                    {"id": ["t9"], "name": "list id"},
+                    {"id": 7, "name": "int id"},
                     {"id": "t2", "name": "Also keep", "status": False},
                 ]
             ),
@@ -205,8 +209,25 @@ class TestTagsPreservation:
         st = self._fresh()
         st.load_tags()
         assert [t["id"] for t in st._tags] == ["t1", "t2"]
-        assert len(st._unparsed_tag_entries) == 3
+        assert len(st._unparsed_tag_entries) == 5
         assert "not-a-dict" in st._unparsed_tag_entries
+        assert {"id": ["t9"], "name": "list id"} in st._unparsed_tag_entries
+
+    def test_load_keeps_non_string_column_ids_inactive(self, cfg):
+        (cfg / "tags.json").write_text(json.dumps([{"id": "t1", "name": "K"}]), encoding="utf-8")
+        (cfg / "tag_boards.json").write_text(
+            json.dumps(
+                [
+                    {"id": "c1", "name": "Col", "tag_ids": [], "mode": "any", "order": 0},
+                    {"id": ["c9"], "name": "list id", "tag_ids": [], "mode": "any"},
+                ]
+            ),
+            encoding="utf-8",
+        )
+        st = self._fresh()
+        st.load_tags()
+        assert [c["id"] for c in st._tag_boards] == ["c1"]
+        assert len(st._unparsed_tag_board_entries) == 1
 
     def test_malformed_tag_survives_the_boot_save(self, cfg):
         """The regression: load_tags back-fills the ``status`` flag and calls
@@ -320,7 +341,7 @@ class TestTagBoardsPreservation:
 
 
 # --------------------------------------------------------------------------- #
-# Shared helpers (#6326) — the partition/append mechanics all four stores share
+# Shared helpers — the partition/append mechanics all four stores share
 # --------------------------------------------------------------------------- #
 class TestPartitionPreserving:
     """Direct coverage of the extracted ``_partition_preserving`` helper.

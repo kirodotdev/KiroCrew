@@ -45,7 +45,7 @@ class TestCronExprMatching:
         assert not cron_expr_matches("*/5 * * * *", dt2)
 
     def test_range(self) -> None:
-        # 2026-02-16 is Monday, 2026-02-15 is Sunday
+        # Feb 16 is Monday, Feb 15 is Sunday
         dt_mon = datetime(2026, 2, 16, 9, 0, tzinfo=timezone.utc)  # Monday
         assert cron_expr_matches("0 9 * * 1-5", dt_mon)  # cron: 1=Mon..5=Fri
         dt_sun = datetime(2026, 2, 15, 9, 0, tzinfo=timezone.utc)  # Sunday
@@ -282,7 +282,7 @@ class TestCronService:
 
     @staticmethod
     def _keeper_record() -> dict:
-        """One real, loadable job record, used to prove survival on disk."""
+        """One real, loadable job record that proves survival on disk."""
         return {
             "id": "j-keep",
             "name": "keep-me",
@@ -871,10 +871,9 @@ class TestJobCompletionRearmsTimer:
     async def test_completed_job_replaces_a_longer_sleeping_timer_task(
         self, tmp_path: Path
     ) -> None:
-        """Regression for the reported bug: before this fix, nothing called
-        _arm_timer() on job completion, so a job that became due again
-        sooner than the CURRENTLY armed (long) sleep had to wait out that
-        stale wake -- up to _TIMER_POLL_SECS late. Simulates that exact
+        """_arm_timer() must run on job completion, or a job that becomes due
+        again sooner than the CURRENTLY armed (long) sleep waits out that stale
+        wake -- up to _TIMER_POLL_SECS late. Simulates that exact
         situation: a timer task already sleeping for a long time is armed
         when the job finishes; completion must cancel it and arm a fresh,
         shorter one instead of leaving the stale one in place."""
@@ -1035,22 +1034,32 @@ class TestFormatSchedule:
         assert "PDT" in result or "PST" in result
         assert "3:00 AM" in result
 
-    def test_every_secs(self) -> None:
+    @pytest.mark.parametrize(
+        ("every_secs", "expected"),
+        [
+            (60, "every 1m"),
+            (90, "every 90s"),
+            (300, "every 5m"),
+            (3599, "every 3599s"),
+            (3600, "every 1h"),
+            (3601, "every 3601s"),
+            (3660, "every 61m"),
+            (5400, "every 90m"),
+            (5401, "every 5401s"),
+            (7200, "every 2h"),
+            (9000, "every 150m"),
+        ],
+    )
+    def test_every_preserves_interval(self, every_secs: int, expected: str) -> None:
         from kiro_crew.cron import CronSchedule, format_schedule
 
-        s = CronSchedule(kind="every", every_secs=300)
-        assert format_schedule(s) == "every 300s"
-
-    def test_every_hours(self) -> None:
-        from kiro_crew.cron import CronSchedule, format_schedule
-
-        s = CronSchedule(kind="every", every_secs=7200)
-        assert format_schedule(s) == "every 2h"
+        s = CronSchedule(kind="every", every_secs=every_secs)
+        assert format_schedule(s) == expected
 
     def test_at_timestamp_today(self, monkeypatch, _utc_tz) -> None:
         from kiro_crew.cron import CronSchedule, format_schedule
 
-        # Mock "now" to 2026-04-10, job at 3PM same day
+        # Mock "now" to Apr 10, job at 3PM same day
         fake_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
         # Mock only covers now() and fromtimestamp() — extend if format_schedule evolves.
         monkeypatch.setattr("kiro_crew.cron.datetime", type("D", (datetime,), {
@@ -1065,7 +1074,7 @@ class TestFormatSchedule:
     def test_at_timestamp_future_date(self, monkeypatch, _utc_tz) -> None:
         from kiro_crew.cron import CronSchedule, format_schedule
 
-        # Mock "now" to 2026-04-10, job on Apr 17
+        # Mock "now" to Apr 10, job on Apr 17
         fake_now = datetime(2026, 4, 10, 12, 0, tzinfo=timezone.utc)
         # Mock only covers now() and fromtimestamp() — extend if format_schedule evolves.
         monkeypatch.setattr("kiro_crew.cron.datetime", type("D", (datetime,), {
@@ -1425,7 +1434,7 @@ class TestTimezoneScheduling:
     def test_is_due_spring_forward_skipped_hour(self) -> None:
         """During spring forward, a job targeting the skipped hour still fires.
 
-        2025-03-09: Toronto clocks jump 2:00 AM EST -> 3:00 AM EDT at 07:00 UTC,
+        On the spring-forward day, Toronto clocks jump 2:00 AM EST -> 3:00 AM EDT at 07:00 UTC,
         so the wall-clock 2:30 AM never occurs. The invariant we care about is
         that the daily job is NOT silently lost for the day: it still fires, in
         the resumed hour, and never before the jump. We assert that invariant

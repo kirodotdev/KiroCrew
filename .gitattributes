@@ -9,11 +9,16 @@
 # file non-text disables newline conversion entirely.
 *.pem -text
 
-# Screenshots and other PNG assets are binary even when their compressed prefix
-# happens not to contain a NUL byte. Git's heuristic otherwise renders some PNGs
+# Retired generated-skill fixtures pin exact bytes across checkout platforms.
+test/fixtures/retired_conductor_skill/*.md -text
+
+# Screenshots and other image assets are binary even when their compressed prefix
+# happens not to contain a NUL byte. Git's heuristic otherwise renders some images
 # as text and applies whitespace/newline checks to compressed image bytes.
 *.png binary
 *.gif binary
+*.jpg binary -diff
+*.jpeg binary -diff
 
 # Shell scripts and the data files they parse must keep LF on every checkout.
 # `core.autocrlf=true` is the Git-for-Windows default, so without this a Windows
@@ -38,3 +43,22 @@
 src/kiro_crew/_vendor/**/*.py text eol=lf
 src/kiro_crew/_vendor/**/*.md text eol=lf
 src/kiro_crew/_vendor/**/*.typed text eol=lf
+
+# The generated config snapshot is compared byte-for-byte with UTF-8/LF output.
+# Keep checkout conversion from changing it under core.autocrlf=true.
+/config-baseline.json text eol=lf
+
+# The ACP frame corpus is line-oriented data on both sides: a `.jsonl` fixture is read
+# ONE LINE AT A TIME as a separate JSON document, and its `.expected.json` snapshot is
+# compared against output written with an explicit LF. The snapshot writer and the host
+# data gate both read these files, so a CRLF checkout would give the Windows shards a
+# corpus that differs from the one every other shard sees -- the failure this section's
+# worked example above describes, on the files a reviewer is least likely to suspect.
+test/fixtures/acp_frames/**/*.jsonl text eol=lf
+test/fixtures/acp_frames/**/*.json text eol=lf
+
+# The pi gate extension is loaded only after its SHA-256 matches the digest this
+# build pinned (acp/client.py PI_GATE_EXTENSION_SHA256). The digest is over the
+# checkout bytes, so a CRLF rewrite on a Windows clone would refuse every pi
+# session there and only there. Pin LF like the vendor manifest above.
+src/kiro_crew/agent_sdk/gate_extensions/**/*.ts text eol=lf

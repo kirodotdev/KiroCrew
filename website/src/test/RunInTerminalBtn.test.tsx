@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { screen, fireEvent, act, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import RunInTerminalBtn from '../components/RunInTerminalBtn'
+import { RUN_IN_TERMINAL_RESULT_FALLBACK_MS } from '../utils/fenceShell'
 
 // "Run in terminal" dispatches a `mc:run-in-terminal` request on window;
 // ChatPage opens a terminal tab in the active chat, runs it, and replies with a
@@ -139,7 +140,7 @@ describe('RunInTerminalBtn', () => {
   it('shows error when no result arrives (timeout)', () => {
     renderWithProviders(<RunInTerminalBtn code="ls" />)
     clickAndConfirm()
-    act(() => { vi.advanceTimersByTime(8000) })
+    act(() => { vi.advanceTimersByTime(RUN_IN_TERMINAL_RESULT_FALLBACK_MS) })
     expect(screen.getByLabelText("Couldn't run in terminal")).toBeInTheDocument()
   })
 

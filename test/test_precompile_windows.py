@@ -18,7 +18,7 @@ finally:
     sys.dont_write_bytecode = _PREVIOUS_DONT_WRITE_BYTECODE
 
 
-def test_precompiles_import_closure_as_relocatable_checked_hash_pyc(
+def test_precompiles_import_closure_as_relocatable_unchecked_hash_pyc(
     tmp_path: Path, monkeypatch
 ) -> None:
     root = tmp_path / "runtime"
@@ -37,7 +37,16 @@ def test_precompiles_import_closure_as_relocatable_checked_hash_pyc(
     for source in package.glob("*.py"):
         cache = Path(importlib.util.cache_from_source(str(source)))
         payload = cache.read_bytes()
-        assert struct.unpack("<I", payload[4:8])[0] == 3  # checked-hash pyc
+        flags = struct.unpack("<I", payload[4:8])[0]
+        # Bit 0 = hash-based, which is what survives extraction restamping the
+        # sources; a TIMESTAMP pyc would look stale on the user's machine and be
+        # rewritten in place. Bit 1 = check_source, which must stay CLEAR: with
+        # it set the loader reads and hashes every .py in addition to the .pyc,
+        # measured at 43.55 MB and 1639 extra cold file opens per Windows boot
+        # (median 16718 ms vs 4192 ms, n=5 per arm) for byte-identical code.
+        assert flags & 0b01, "pyc must be hash-based to survive extraction restamping"
+        assert not flags & 0b10, "source-check must be off: it costs ~12.5s per cold boot"
+        assert flags == 0b01  # UNCHECKED_HASH exactly, not some future third mode
         code = importlib.machinery.SourcelessFileLoader(source.stem, str(cache)).get_code(
             source.stem
         )

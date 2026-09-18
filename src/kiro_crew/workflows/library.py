@@ -14,6 +14,7 @@ from typing import Any, List, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.slugs import slug_hash_fallback
 from kiro_crew.workflows.store import default_workflow_library_dir
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ def _redact(value: Any) -> Any:
 def _slugify(value: str) -> str:
     words = _WORD_RE.findall(value.lower())
     slug = "-".join(words)[:_MAX_SLUG_LENGTH].strip("-")
-    return slug or "workflow"
+    return slug or slug_hash_fallback(value, "workflow")
 
 
 def _source_hash(source: str) -> str:

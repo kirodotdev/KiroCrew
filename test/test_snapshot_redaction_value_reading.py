@@ -73,13 +73,13 @@ class TestAByteValuedCredentialIsRedacted:
     def test_binary_around_a_credential_refuses_instead_of_shifting_it(
         self, tmp_path: Path
     ) -> None:
-        """This used to assert the blob was REWRITTEN with its surrounding bytes intact.
+        """A structurally binary value around a credential is refused, not rewritten.
 
-        Both assertions it made were true and neither could see the defect: replacement is
-        variable-length, so the head and tail bytes were still present and still at the two
-        ends while everything between them had MOVED. A length prefix or an offset table in
-        such a value is silently invalidated, and the corrupted database went off-host
-        reported as clean. Structurally binary values are refused now.
+        Rewriting it in place is a trap the naive assertions cannot catch: replacement is
+        variable-length, so the head and tail bytes stay present and at the two
+        ends while everything between them MOVES. A length prefix or an offset table in
+        such a value is then silently invalidated, and a corrupted database goes off-host
+        reported as clean. So structurally binary values are refused.
         """
         stage = _stage(tmp_path)
         db = stage / "memory.db"

@@ -4,7 +4,7 @@ Raising ``requires-python`` is only half a floor bump. Every host-facing entry p
 carries its OWN copy of two decisions -- "is this interpreter good enough" and "is
 this venv still reusable" -- and each one fails differently when it is missed:
 
-* A probe that ends in ``die``/``exit`` turns a host that used to install into one
+* A probe that ends in ``die``/``exit`` turns a host that would install into one
   that aborts. Under the old >= 3.10 floor the distro's own ``python3`` satisfied
   every probe on Ubuntu 22.04, so the package-manager branch was always sufficient;
   under >= 3.12 it is not.

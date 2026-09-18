@@ -54,8 +54,8 @@ def test_browser_skills_name_the_settings_toggle_not_only_a_cli() -> None:
     The failure this locks: a skill that offers only a raw `npm install -g ...`
     line (or nothing at all) leaves a user believing the feature is broken. The
     Settings Browser panel carries a one-click Install button, and it must be
-    named wherever a skill reports the browser missing. The toggle it used to
-    name is gone; the install card that replaced it is not.
+    named wherever a skill reports the browser missing. The current surface is
+    the install card, not a toggle.
     """
     for skill in (WEB_VERIFY, WEB_BROWSE):
         assert "Settings → Browser" in _flat(skill), f"{skill.name} must name the Settings path"

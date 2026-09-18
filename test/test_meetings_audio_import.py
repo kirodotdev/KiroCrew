@@ -445,7 +445,7 @@ class TestRefusals:
             ) -> str:
                 # Stop, start the replacement, then close its ingress the same way
                 # the start handler does mid-initialization: session installed,
-                # dispatches held, exactly the window the 409 used to leak from.
+                # dispatches held, exactly the window a 409 can leak from.
                 resp = await client.post(f"{BASE}/meetings/standup/stop", json={})
                 assert resp.status == 200, await resp.text()
                 await _start(client)
@@ -830,7 +830,7 @@ class TestRefusals:
     ):
         """GPT review: the vetted path can be swapped before it is opened. The
         pinned snapshot copy is what closes that window, so a source it refuses
-        (no longer the validated inode) is denied like any unreadable path —
+        (not the validated inode) is denied like any unreadable path —
         never probed, never transcribed."""
         log = _patch(monkeypatch, snapshot_refused=True)
         async with client_for(app) as client:

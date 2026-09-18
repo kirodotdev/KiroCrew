@@ -39,11 +39,13 @@ from kiro_crew.jsonl_util import (
     rotate_jsonl_at,
     strict_records,
 )
+from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
 from kiro_crew.pinned_fs import (
     PinnedPathRefusal,
     open_in_pinned_parent,
     supports_pinned_walk,
 )
+from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
 
@@ -185,7 +187,9 @@ def select_provider_backend(
 MEMBER_DISPATCH_SERVER = "kirocrew-dashboard"
 
 
-def member_dispatch_session_server(session_key: str) -> dict[str, object] | None:
+def member_dispatch_session_server(
+    session_key: str, session_token: str = ""
+) -> dict[str, object] | None:
     """ACP ``session/new`` ``mcpServers`` element mounting session control.
 
     The entry carries ``KIROCREW_SESSION_KEY`` so the server's strict identity
@@ -194,6 +198,15 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     which the KAS projection's credential stripping never touches (that filter
     applies to the agent-declared ``mcpServers`` block, not to what the host
     itself injects per session).
+
+    ``session_token`` is this ACP session's own name, and it rides BESIDE the key
+    rather than replacing it (see
+    :func:`~kiro_crew.providers.mirrors.identity.control_plane_identity_env` for
+    the full argument). It matters most on a SHARED runtime, where the key baked
+    into this element names the session that was claiming when it was built while
+    the token's mapping is republished on every rekey — so a member thread on a
+    recycled process resolves to itself rather than to its predecessor. Empty
+    leaves the entry byte-identical to the pre-token shape.
 
     The env also carries ``KIROCREW_BOUND_PORT`` — the port this gateway is
     actually serving. Unlike a chat session's MCP child, which inherits the
@@ -240,7 +253,11 @@ def member_dispatch_session_server(session_key: str) -> dict[str, object] | None
     # DEFAULT home's gateway — where the member slot does not exist and every
     # verb is refused as ``caller_unidentified``. Empty on a default install.
     env: list[dict[str, str]] = [{"name": k, "value": v} for k, v in _managed_mcp_env().items()]
-    # Then the identity key.
+    # Then the identity: the signed per-session token first (the resolver reads it
+    # first, because it cannot go stale across a rekey), then the key as fallback
+    # for the one case the token cannot cover — no SEL trust root to sign with.
+    if session_token:
+        env.append({"name": STUB_SESSION_TOKEN_ENV, "value": session_token})
     env.append({"name": "KIROCREW_SESSION_KEY", "value": session_key})
     # resolve_serving_port() reads KIROCREW_BOUND_PORT first and only then falls
     # through the client order, so one call covers both "the gateway exported the
@@ -326,8 +343,11 @@ def slug_for_name(name: str) -> str:
     entirely in punctuation still yields something addressable.
     """
     base = slugify(name)
-    # slugify falls back to its own module's noun; ours should read as a member.
-    if base == "artifact":
+    # slugify hash-falls-back under its own module's noun; a member's stored
+    # activity, rules, and DM bindings are addressed by this slug, so keep the
+    # documented "member" fallback rather than adopting the artifact-prefixed
+    # hash (which would also strand data recorded under "member").
+    if base == slug_hash_fallback(name, "artifact"):
         base = "member"
     return validate_slug(base)
 
@@ -347,19 +367,28 @@ def member_dir(slug: str) -> Path:
     return target
 
 
-def member_slot_key(slug: str) -> str:
+def member_slot_key(slug: str, memory_store: str = "") -> str:
     """Derived, stable chat-slot key for a member's pinned DM thread.
 
-    One slot per member, reused forever. Purely a derivation — nothing is read
-    or written. The dashboard's slot layer normalizes keys to a filename-safe
+    V1 uses the slug; a V2 opt-in uses its private store generation. Nothing is
+    read or written. The dashboard's slot layer normalizes keys to a filename-safe
     charset, but a validated slug is already inside that charset, so the
     derived key survives ``_normalize_slot_key`` unchanged; callers must still
     use the slot layer's RETURNED key as the source of truth.
     """
-    return DM_SLOT_KEY_PREFIX + validate_slug(slug)
+    key = DM_SLOT_KEY_PREFIX + validate_slug(slug)
+    if memory_store:
+        from kiro_crew.memory_stores import validate_memory_store_name
+
+        validate_memory_store_name(memory_store)
+        if memory_store == "default":
+            raise ValueError("Global memory has no private conversation generation")
+        # The complete store name is already a unique, bounded generation ID.
+        key += ".memory-" + memory_store
+    return key
 
 
-def member_thread_session_alias(slug: str) -> str:
+def member_thread_session_alias(slug: str, memory_store: str = "") -> str:
     """Canonical session-map alias for a member's pinned DM thread.
 
     ``dashboard:<slot key>`` — the spelling the session manager and the
@@ -371,7 +400,7 @@ def member_thread_session_alias(slug: str) -> str:
     format lives here rather than being hand-built at each site, where one
     divergent spelling would silently orphan the invariant it serves.
     """
-    return f"dashboard:{member_slot_key(slug)}"
+    return f"dashboard:{member_slot_key(slug, memory_store)}"
 
 
 class MemberLifecycle(str, Enum):
@@ -563,7 +592,14 @@ def read_dm_binding(slug: str) -> dict | None:
     # roster (and the page, which trusts `bound` rows enough to skip the
     # create POST) at an arbitrary unrelated session. Treat non-canonical as
     # absent — the thread endpoint then repairs it to the derived key.
-    if data["slot_key"] != member_slot_key(slug):
+    generation = data.get("memory_store", "")
+    if not isinstance(generation, str):
+        return None
+    try:
+        canonical = member_slot_key(slug, generation)
+    except ValueError:
+        return None
+    if data["slot_key"] != canonical:
         return None
     # And the member must actually BELONG to this slug: a tampered dm.json in
     # slug A's directory naming crew B (a real, registered crew whose slug
@@ -575,7 +611,7 @@ def read_dm_binding(slug: str) -> dict | None:
     return data
 
 
-def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
+def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str = "") -> dict:
     """Persist a member's DM-thread binding atomically; return the record.
 
     ``slot_key`` must be the slug's own derivation — the same canonicality
@@ -598,10 +634,10 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
     permission tightening.
     """
     path = dm_binding_path(slug)
-    if slot_key != member_slot_key(slug):
+    if slot_key != member_slot_key(slug, memory_store):
         raise ValueError(
             f"non-canonical dm binding slot_key {slot_key!r} for slug {slug!r} "
-            f"(expected {member_slot_key(slug)!r}); such a binding always reads back as absent"
+            f"(expected {member_slot_key(slug, memory_store)!r}); such a binding always reads back as absent"
         )
     binding = {
         "member": member,
@@ -609,6 +645,8 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
         "slot_key": slot_key,
         "created_ts": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
+    if memory_store:
+        binding["memory_store"] = memory_store
     path.parent.mkdir(parents=True, exist_ok=True)
     # The trust subtree is owner-only everywhere else (sel.py creates it 0o700);
     # a parents=True mkdir would otherwise leave a default-mode directory chain.
@@ -626,6 +664,15 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str) -> dict:
     # must be at least as durable as the transcript it attributes.
     atomic_write(path, json.dumps(binding, ensure_ascii=False), fsync=True)
     return binding
+
+
+def read_dm_binding_for_slot(slot_key: str) -> dict | None:
+    """Resolve a member slot without letting a newer generation adopt its history."""
+    if not slot_key.startswith(DM_SLOT_KEY_PREFIX):
+        return None
+    slug = slot_key[len(DM_SLOT_KEY_PREFIX) :].split(".memory-", 1)[0]
+    binding = read_dm_binding(slug)
+    return binding if binding is not None and binding["slot_key"] == slot_key else None
 
 
 def member_rules_path(slug: str) -> Path:
@@ -832,7 +879,7 @@ def read_member_briefing(slug: str) -> str:
       alone is not enough, because the member's own directory
       (``members/<slug>/``) is agent-writable too, and swapping IT for a link
       redirects the whole traversal while the leaf open still finds an
-      ordinary file (the same ancestor-swap shape that closed #2446).
+      ordinary file (the same ancestor-swap shape the pinned walk exists to close).
       ``O_NONBLOCK`` makes a FIFO open return immediately instead of waiting
       for a writer (both at open time — no check-then-open race); ``fstat``
       then rejects anything that is not a regular file. Where the pinned walk

@@ -1553,7 +1553,7 @@ def test_a_write_that_does_not_move_the_item_leaves_phase_off_the_event_line(tmp
     must not carry one.
 
     The fabric measures an open dwell from the MOST RECENT entry into the current
-    phase, which is what a review round-trip legitimately restarts. Stamping the
+    phase, which is what a review pass legitimately restarts. Stamping the
     phase on every write makes each CI round -- which lands `ci_state` while the
     item sits still in `awaiting-ci` -- look like a fresh entry, so an item parked
     for hours reads as minutes old and never surfaces as stalled. The item polled

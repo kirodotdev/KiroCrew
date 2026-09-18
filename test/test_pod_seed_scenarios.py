@@ -14,6 +14,7 @@ import yaml  # type: ignore[import-untyped]
 
 from conftest import requires_symlinks
 from kiro_crew import seed as seed_mod
+from kiro_crew.platform_compat import IS_POSIX
 from kiro_crew.pod import cli as pod_cli
 from kiro_crew.pod import runtime as rt
 from kiro_crew.pod.config import PodConfig
@@ -138,7 +139,7 @@ class TestScenarioClassification:
         assert "--seed ./richh" in msg
 
 
-@pytest.mark.skipif(not rt.IS_POSIX, reason="pods require POSIX descriptor traversal")
+@pytest.mark.skipif(not IS_POSIX, reason="pods require POSIX descriptor traversal")
 class TestSeedHomeFromScenario:
     def test_populates_an_absent_home(self, tmp_path: Path, monkeypatch) -> None:
         monkeypatch.setenv("KIROCREW_POD_ROOT", str(tmp_path / "pods"))
@@ -246,7 +247,7 @@ class TestSeedHomeFromScenario:
             rt.seed_home_from_scenario(cfg, "wt", "no-such-fixture")
 
 
-@pytest.mark.skipif(not rt.IS_POSIX, reason="pods require POSIX descriptor traversal")
+@pytest.mark.skipif(not IS_POSIX, reason="pods require POSIX descriptor traversal")
 class TestSeededScenarioInHome:
     """The sentinel ``pod up`` judges a seed against. Every fixture ships a
     ``fixture.yaml`` at its root and ``copytree`` lands it in the pod's home, so
@@ -346,7 +347,7 @@ class TestSeededScenarioInHome:
             os.close(home_fd)
 
 
-@pytest.mark.skipif(not rt.IS_POSIX, reason="pods require POSIX descriptor traversal")
+@pytest.mark.skipif(not IS_POSIX, reason="pods require POSIX descriptor traversal")
 class TestBootAppliesTheScenario:
     """``boot`` is where the seed has to land: after the HOME exists, before the
     gateway is exec'd. These drive the real function with the exec stubbed, so the

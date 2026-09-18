@@ -31,6 +31,7 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Iterator, Optional
 
 from kiro_crew import platform_compat
+from kiro_crew.git_worktree_scope import worktree_probe_failure_is_empty_scope
 
 logger = logging.getLogger(__name__)
 
@@ -403,10 +404,16 @@ async def run_git(
     pat: Optional[str] = None,
     check: bool = True,
     timeout: int = GIT_TIMEOUT_SEC,
+    errors: str = "replace",
 ) -> tuple[int, str, str]:
     """Run a git command. Returns (returncode, stdout, stderr).
 
     Never runs through a shell, so no argument can be interpreted as one.
+
+    ``errors`` is ``"replace"`` for display-bound output. A caller whose
+    stdout names a filesystem path fed to an ``os`` call passes
+    ``"surrogateescape"`` so non-UTF-8 path bytes round-trip through
+    ``os.fsencode`` (see :func:`kiro_crew.subprocess_utf8.utf8_path_stdout`).
     """
     env = {
         **os.environ,
@@ -441,7 +448,7 @@ async def run_git(
         # into an unbounded wait for a surviving helper's EOF.
         await platform_compat.kill_and_reap(proc)
         raise GitError(f"git {args[0]} timed out after {timeout}s") from None
-    stdout = out.decode("utf-8", "replace")
+    stdout = out.decode("utf-8", errors)
     stderr = err.decode("utf-8", "replace")
     if check and proc.returncode != 0:
         tail = " ".join(stderr.strip().splitlines()[-3:])
@@ -482,7 +489,13 @@ async def _git_dir(dir_: str) -> Optional[str]:
     at the real git dir; an agent could rewrite it to redirect sync into an
     unrelated same-origin checkout. Persisting this at attach/clone time and
     re-checking before sync detects that redirection."""
-    code, out, _ = await run_git(["rev-parse", "--absolute-git-dir"], dir_, check=False)
+    # surrogateescape: this answer is handed to ``os.path.realpath`` and later
+    # compared against the persisted trusted git dir, so a non-UTF-8 byte in the
+    # real path must survive as a PEP 383 surrogate ``os.fsencode`` restores
+    # byte-exactly -- a U+FFFD from the display decode names no real path.
+    code, out, _ = await run_git(
+        ["rev-parse", "--absolute-git-dir"], dir_, check=False, errors="surrogateescape"
+    )
     if code != 0 or not out.strip():
         return None
     try:
@@ -721,8 +734,8 @@ async def status(dir_: str, subfolder: Optional[str] = None) -> list[FileChange]
     # transaction. Everything else is filesystem content and stays visible.
     #
     # The consequence is deliberate: an orphan left behind when a cleanup unlink
-    # lost the race becomes VISIBLE once its transaction ends and ownership can
-    # no longer be evidenced. That is the safe direction to fail. Reaping an
+    # lost the race becomes VISIBLE once its transaction ends and nothing can
+    # evidence ownership. That is the safe direction to fail. Reaping an
     # aged orphan is a lifecycle problem with its own answer; a permanent
     # filename-shape exclusion is not that answer, because it cannot tell an
     # orphan from a file the user put there.
@@ -893,12 +906,16 @@ async def repo_supplied_driver(dir_: str) -> str:
     driver-free, so the caller must not proceed.
     """
     scopes = ["--local"]
+    # --bool folds every git-true spelling (yes/on/1/valueless) to "true"; a
+    # raw string compare misses those spellings and skips the scope git still
+    # honors. A garbled value exits non-zero here AND kills the guarded git
+    # command itself with the same parse error, so skipping the scope is safe.
     code, out, _ = await run_git(
-        ["config", "--local", "--includes", "--get", "extensions.worktreeConfig"],
+        ["config", "--local", "--includes", "--bool", "--get", "extensions.worktreeConfig"],
         dir_,
         check=False,
     )
-    if code == 0 and out.strip().lower() == "true":
+    if code == 0 and out.strip() == "true":
         scopes.append("--worktree")
 
     for scope in scopes:
@@ -910,6 +927,27 @@ async def repo_supplied_driver(dir_: str) -> str:
             # the probe itself failed and we cannot clear the repo.
             if out.strip() == "" and err.strip() == "":
                 continue
+            if scope == "--worktree":
+                # Probe-first, classify after: git creates config.worktree
+                # lazily, so a probe that failed on a genuinely ABSENT file is
+                # the empty scope, not an unreadable one (the shared decision
+                # in kiro_crew.git_worktree_scope). The classification stats
+                # the filesystem, so it runs off the event loop.
+                # surrogateescape: this answer is handed to the classifier's
+                # ``os.lstat``, so a non-UTF-8 byte in the real path must
+                # survive as a PEP 383 surrogate ``os.fsencode`` restores
+                # byte-exactly -- a U+FFFD from the display decode would miss
+                # an existing ``config.worktree`` and clear a scope git reads.
+                gd_code, gd_out, _ = await run_git(
+                    ["rev-parse", "--absolute-git-dir"], dir_, check=False,
+                    errors="surrogateescape",
+                )
+                if await asyncio.to_thread(
+                    worktree_probe_failure_is_empty_scope,
+                    gd_out if gd_code == 0 else "",
+                    dir_,
+                ):
+                    continue
             return "unprobeable config"
         for key in out.splitlines():
             k = key.strip().lower()
@@ -1041,7 +1079,7 @@ async def sync(
         elif not origin_urls:
             raise GitError(f"No remote.origin.url configured for {dir_}")
 
-        # Refuse to sync if the vault's git remote no longer matches the URL it
+        # Refuse to sync if the vault's git remote does not match the URL it
         # was created/attached with. A vault's `.git/config` is agent-writable,
         # so a prompt-injected agent could repoint `remote.origin.url` (or
         # `pushurl`) at an attacker and have auto-sync upload the note history

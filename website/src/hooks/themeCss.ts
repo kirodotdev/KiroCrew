@@ -21,6 +21,7 @@
  */
 
 import { sanitizeCssValue } from '../lib/cssSanitize'
+import { parseCssColor, relativeLuminance } from '../lib/iconContrast'
 import type { CustomThemeData } from './useTheme'
 
 // Allowlist of allowed CSS custom property names for themes.
@@ -55,6 +56,225 @@ const ALLOWED_CSS_VARS = new Set([
  * filter. See that file for the security rationale.
  */
 const escapeCssValue = sanitizeCssValue
+
+/**
+ * The syntax/diff colours an omitted-token pack falls back to, per polarity:
+ * `token: [light-palette value, dark-palette value]`.
+ *
+ * These are a SECOND spelling of the built-in kiro palette — the first is
+ * `src/index.css`, whose default dark block and `[data-theme="light"]` block
+ * carry the same eleven pairs. This module cannot read a stylesheet (nothing
+ * here touches the DOM, see the file header), so the copy is unavoidable; what
+ * is avoidable is the copy going stale. `themePackTokenFallback.test.ts` parses
+ * those two `index.css` blocks at test time and fails if any pair here disagrees,
+ * so retuning a default in the CSS cannot silently strand every sparse pack on
+ * the old set. Change one, the test names the other.
+ */
+export const DESIGNED_TOKEN_FALLBACKS: Record<string, [string, string]> = {
+  '--json-key': ['#001080', '#9CDCFE'],
+  '--json-str': ['#A31515', '#CE9178'],
+  '--json-num': ['#098658', '#B5CEA8'],
+  '--json-bool': ['#0000FF', '#569CD6'],
+  '--diff-add': ['rgba(22,163,74,.12)', 'rgba(46,160,67,.15)'],
+  '--diff-add-text': ['#1a7f37', '#7ee787'],
+  '--diff-del': ['rgba(220,38,38,.12)', 'rgba(248,81,73,.15)'],
+  '--diff-del-text': ['#cf222e', '#ffa198'],
+  '--diff-hunk': ['rgba(4,117,88,.12)', 'rgba(4,117,88,.2)'],
+  '--diff-hunk-text': ['#065f46', '#6ee7b7'],
+  '--diff-meta-text': ['#1f2328', '#e6edf3'],
+}
+
+/**
+ * Colour parsing and luminance come from `lib/iconContrast`, which already
+ * handles every form that reaches us (3/4/6/8-digit hex, `rgb()`/`rgba()`,
+ * `color(srgb …)`, `transparent`) and is already consumed elsewhere in the tree.
+ * A private parser here would have been the fourth. Only the opacity gate and the
+ * mixing are local, because only this module needs them.
+ *
+ * Importing it does not break this module's no-DOM boundary: `iconContrast` has
+ * no module-level side effects, and every DOM call inside it lives in a function
+ * this file never calls.
+ */
+type Rgb = { r: number; g: number; b: number }
+
+/**
+ * The parsed colour, but only when it is fully opaque.
+ *
+ * A translucent colour's rendered appearance depends on whatever is behind it,
+ * which is not knowable here: reading `rgba(0,0,0,.15)` as opaque black would
+ * pick a white foreground for a fill that actually renders pale, i.e. invisible
+ * text. Refusing is the only honest answer.
+ */
+function opaque(value: string): Rgb | null {
+  const c = parseCssColor(value)
+  if (!c || c.a < 1) return null
+  // A browser clamps an out-of-gamut channel; `parseCssColor` hands back the raw
+  // number, and `rgb(300 300 300)` passes the value sanitizer (char allowlist +
+  // function denylist). Unclamped, `mixHex`'s `.toString(16)` yields a THREE-digit
+  // chunk — `(300).toString(16)` === '12c' — so `--card:#12c12c12c` is emitted: a
+  // valid hash-token that is not a colour, which every surface reading it silently
+  // drops back to its inherited (dark) value. A negative channel breaks the same
+  // way, with a `-` inside the hex. Clamp at the one place both the mixing and the
+  // luminance paths read.
+  const clamp = (n: number) => Math.min(255, Math.max(0, n))
+  return { r: clamp(c.r), g: clamp(c.g), b: clamp(c.b) }
+}
+
+/** WCAG relative luminance of an OPAQUE colour, or `null` for anything else. */
+function hexLuminance(value: string): number | null {
+  const c = opaque(value)
+  return c ? relativeLuminance(c.r, c.g, c.b) : null
+}
+
+/**
+ * `pct`% of `a` mixed into `b`, in sRGB, as `#rrggbb`.
+ *
+ * Both ends must be opaque: mixing a translucent `--bg` would bake in a colour
+ * the pack never actually renders.
+ */
+function mixHex(a: string, b: string, pct: number): string | null {
+  const [x, y] = [opaque(a), opaque(b)]
+  if (!x || !y) return null
+  const w = pct / 100
+  const ch = (p: number, q: number) =>
+    Math.round(p * w + q * (1 - w)).toString(16).padStart(2, '0')
+  return `#${ch(x.r, y.r)}${ch(x.g, y.g)}${ch(x.b, y.b)}`
+}
+
+/**
+ * `variables.json` requires only `--bg`, `--text` and `--accent` per block, so a
+ * pack may legitimately declare three of the 56 allowlisted tokens. Every token
+ * it leaves out inherits from `index.css`'s bare `:root`, and that selector
+ * carries the DARK palette (`:root,[data-theme="dark"],[data-theme="amber-dark"]`)
+ * — there is no light counterpart. A pack with a light `--bg` therefore renders
+ * dark-mode surfaces and secondary text under its own light palette: `--card`
+ * inherits `#181b22`, so its own dark `--text` lands on a dark card at 1.22:1,
+ * and `--muted-fg` inherits `#fff`.
+ *
+ * So fill the gaps HERE, where the pack's own palette is known, rather than
+ * leaving a mode-blind inherit. Only tokens the pack omitted are emitted, so a
+ * pack that declares a value always keeps it, and only `custom-*` selectors are
+ * ever written — no built-in theme's palette is touched.
+ *
+ * Surfaces and borders are small steps from `--bg` TOWARD `--text`. That
+ * direction is what makes them polarity-safe: a step lands between the two in
+ * either polarity, so text keeps nearly the full `--text`-on-`--bg` contrast on
+ * every one of them. A foreground that sits on a saturated fill is chosen by
+ * that fill's luminance.
+ *
+ * The mixing is done HERE, in TypeScript, and emitted as concrete hex rather
+ * than as a `color-mix()` expression. Tailwind wraps a token in its own
+ * `color-mix(in oklab, …)` to build the `/40`-style alpha utilities, and a
+ * nested `color-mix` argument does not survive that — the utility drops back to
+ * an inherited colour, which is the very failure being fixed. See
+ * `test/ThemeAlphaModifiers.test.tsx` for the same hazard from the other side.
+ */
+function derivedDefaults(vars: Record<string, string>): string {
+  const has = (k: string) => typeof vars[k] === 'string' && escapeCssValue(vars[k]) !== ''
+  const out: string[] = []
+  const put = (k: string, v: string | null) => { if (v && !has(k)) out.push(`${k}:${v}`) }
+
+  // SANITIZE ONCE, HERE. `buildVars` runs every value it emits through
+  // `escapeCssValue`, and these two are the same untrusted pack input: a
+  // `themes/<slug>.json` can be written to disk directly, bypassing install
+  // validation, and the theme-detail route hands the raw file back. Copying
+  // `--text` verbatim into `--text-strong` would let a value like
+  // `#000;}html{filter:invert(1)` close the `[data-theme="custom-…"]` block and
+  // apply page-wide, because every custom theme's CSS is injected into
+  // `document.head` on boot regardless of which theme is selected.
+  //
+  // The sanitizer returns '' for a rejected value, so a hostile pack loses the
+  // derived ramp instead of gaining an injection point: `step()` cannot parse ''
+  // and every `put` below is skipped. Fail-closed is the right end state — the
+  // pack still renders, just on the pre-existing inherit.
+  const bg = escapeCssValue(vars['--bg'] ?? '')
+  const text = escapeCssValue(vars['--text'] ?? '')
+  // The three tokens below COPY --bg/--text rather than mixing them, so they need
+  // the opacity check the mixing path gets for free from `mixHex`. Copying a
+  // translucent --bg into --muted-fg would put a see-through foreground on a
+  // --muted fill that - its own ramp having been skipped - is still the inherited
+  // dark one: the same invisible-text outcome, one step removed.
+  const bgSolid = opaque(bg) ? bg : ''
+  const textSolid = opaque(text) ? text : ''
+  // A --bg/--text in a form parseHex rejects cannot be mixed arithmetically.
+  // Emitting a guess would be worse than the inherit, so the ramp is skipped and
+  // only the luminance picks below (which need just the one fill) still apply.
+  const step = (pct: number) => mixHex(text, bg, pct)
+
+  put('--card', step(4))
+  put('--bg-elevated', step(6))
+  put('--chrome', step(6))
+  put('--bg-accent', step(8))
+  put('--panel', step(8))
+  put('--bg-hover', step(10))
+  put('--card-hl', step(10))
+  put('--panel-strong', step(12))
+  put('--border', step(14))
+  put('--border-strong', step(22))
+  put('--border-hover', step(30))
+
+  // Secondary/tertiary text, and the emphasis step above --text. 75% is the
+  // floor that still clears AA against the `--card` step above; a lighter mix
+  // reads as better hierarchy and fails the contrast it exists to carry.
+  put('--muted', step(75))
+  put('--muted-strong', step(85))
+  put('--text-strong', textSolid || null)
+  put('--card-fg', textSolid || null)
+  // Text ON a --muted fill. --muted is a mix biased toward --text, so --bg is the
+  // contrasting end in either polarity — but only when that mix actually happened.
+  // With an unparseable --text the ramp above is skipped and --muted stays the
+  // inherited DARK fill, so copying the pack's own --bg onto it would be a
+  // light-on-light guess. Gate on the same value the ramp needs.
+  put('--muted-fg', textSolid ? bgSolid || null : null)
+
+  // Text on a saturated fill: black or white, whichever the fill can carry.
+  for (const [fg, fill] of [    ['--accent-fg', '--accent'],
+    ['--ok-fg', '--ok'],
+    ['--warn-fg', '--warn'],
+    ['--danger-fg', '--danger'],
+    ['--info-fg', '--info'],
+    ['--aim-fg', '--aim'],
+  ]) {
+    if (has(fg) || !has(fill)) continue
+    const lum = hexLuminance(escapeCssValue(vars[fill]))
+    if (lum === null) continue
+    // 0.179 is where black and white meet: (L+.05)/.05 == 1.05/(L+.05) at
+    // L = sqrt(1.05*0.05) - 0.05, and both sides are then 4.58:1. Picking the
+    // midpoint 0.5 instead would hand white to a mid-tone fill it cannot carry
+    // (#e67e22 is 2.85:1 against white but 7.37:1 against black).
+    out.push(`${fg}:${lum > 0.179 ? '#000' : '#fff'}`)
+  }
+
+  // Syntax, diff and search-highlight colours cannot be mixed from the palette —
+  // they are a designed set, not a ramp. But leaving them to inherit re-creates
+  // the bug one layer up: they are DARK-theme values, and the surfaces above are
+  // now derived light, so JSON and diff text would render light-pastel on light.
+  // Before this function existed, an inherited dark card made them readable; the
+  // surface fix alone would make those two views worse, not better.
+  //
+  // So fall back to the built-in theme's own set for the matching polarity. That
+  // needs no computation — the same eleven pairs are spelled in `index.css` for
+  // both modes, and `DESIGNED_TOKEN_FALLBACKS` below is a second spelling of them
+  // kept honest by a parity test rather than by trust — and it keeps the
+  // omitted-only rule: a pack that declares any of these keeps its own. Polarity
+  // is read from the pack's `--bg`, not from which block we are building, because
+  // a pack may legitimately ship a dark `light` block.
+  //
+  // Gated on `textSolid` as well: with an unparseable `--text` the ramp above was
+  // skipped, so `--card`/`--panel` stay the inherited DARK values and emitting the
+  // LIGHT designed set would land dark syntax and diff text on dark surfaces —
+  // strictly worse than the pre-derivation inherit, which at least matched. The
+  // palette is therefore either uniformly derived or uniformly inherited.
+  const bgLum = textSolid ? hexLuminance(bg) : null
+  if (bgLum !== null) {
+    const lightSide = bgLum > 0.179
+    for (const [token, [onLight, onDark]] of Object.entries(DESIGNED_TOKEN_FALLBACKS)) {
+      put(token, lightSide ? onLight : onDark)
+    }
+  }
+
+  return out.length ? out.join(';') + ';' : ''
+}
 
 /**
  * Build a custom theme's dark + light CSS variable blocks.
@@ -92,9 +312,14 @@ export function buildCustomThemeCss(slug: string, theme: CustomThemeData): strin
   const darkCss = buildVars(theme.dark)
   const lightCss = buildVars(theme.light)
 
+  // Gap-fill sits BETWEEN the pack's own vars and the static defaults. It only
+  // emits tokens the pack omitted, so ordering cannot shadow a declared value.
+  const darkDerived = derivedDefaults(theme.dark)
+  const lightDerived = derivedDefaults(theme.light)
+
   return (
-    `[data-theme="custom-${slug}-dark"]{${darkCss};${darkDefaults}}\n` +
-    `[data-theme="custom-${slug}-light"]{${lightCss};${lightDefaults}}`
+    `[data-theme="custom-${slug}-dark"]{${darkCss};${darkDerived}${darkDefaults}}\n` +
+    `[data-theme="custom-${slug}-light"]{${lightCss};${lightDerived}${lightDefaults}}`
   )
 }
 

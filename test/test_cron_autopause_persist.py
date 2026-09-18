@@ -10,6 +10,7 @@ The fix adds an execution-owned `auto_paused` flag, persists it for every job,
 and folds it into the effective-enabled derivation on load. These tests pin the
 whole round-trip.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -22,7 +23,9 @@ from kiro_crew.cron import _AUTO_PAUSE_THRESHOLD, CronJob, CronSchedule, CronSer
 
 class TestRecordFailureSuccess:
     def test_record_failure_auto_pauses_at_threshold(self) -> None:
-        job = CronJob(id="j", name="n", message="m", schedule=CronSchedule(kind="every", every_secs=60))
+        job = CronJob(
+            id="j", name="n", message="m", schedule=CronSchedule(kind="every", every_secs=60)
+        )
         for _ in range(_AUTO_PAUSE_THRESHOLD - 1):
             job.record_failure()
             assert job.enabled is True
@@ -33,7 +36,9 @@ class TestRecordFailureSuccess:
         assert job.auto_paused is True
 
     def test_record_success_lifts_auto_pause_but_not_user_pause(self) -> None:
-        job = CronJob(id="j", name="n", message="m", schedule=CronSchedule(kind="every", every_secs=60))
+        job = CronJob(
+            id="j", name="n", message="m", schedule=CronSchedule(kind="every", every_secs=60)
+        )
         for _ in range(_AUTO_PAUSE_THRESHOLD):
             job.record_failure()
         assert job.auto_paused is True
@@ -50,14 +55,21 @@ class TestRecordFailureSuccess:
     def test_auto_pause_transition_emits_sel_audit_event(self) -> None:
         # The pause/unpause is a permission decision (revokes/restores execute
         # ability), so it must emit a SEL audit event exactly once per transition.
-        job = CronJob(id="j", name="n", message="m", schedule=CronSchedule(kind="every", every_secs=60), script="x.py:run")
+        job = CronJob(
+            id="j",
+            name="n",
+            message="m",
+            schedule=CronSchedule(kind="every", every_secs=60),
+            script="x.py:run",
+        )
         with patch("kiro_crew.sel.sel") as mock_sel:
             for _ in range(_AUTO_PAUSE_THRESHOLD):
                 job.record_failure()
             # Extra failures past the threshold must NOT re-audit (already paused).
             job.record_failure()
             pause_calls = [
-                c for c in mock_sel.return_value.log_tool_invocation.call_args_list
+                c
+                for c in mock_sel.return_value.log_tool_invocation.call_args_list
                 if c.kwargs.get("outcome") == "auto_paused"
             ]
             assert len(pause_calls) == 1
@@ -65,7 +77,8 @@ class TestRecordFailureSuccess:
 
             job.record_success()
             clear_calls = [
-                c for c in mock_sel.return_value.log_tool_invocation.call_args_list
+                c
+                for c in mock_sel.return_value.log_tool_invocation.call_args_list
                 if c.kwargs.get("outcome") == "auto_pause_cleared"
             ]
             assert len(clear_calls) == 1
@@ -92,7 +105,9 @@ class TestAutoPausePersistence:
         # The bug: the job reappears enabled. list_jobs() (enabled-only) hid it.
         assert svc2.get_job(job_id).enabled is False
         assert svc2.get_job(job_id).auto_paused is True
-        assert all(j.id != job_id for j in svc2.list_jobs()), "auto-paused job must not be scheduled"
+        assert all(
+            j.id != job_id for j in svc2.list_jobs()
+        ), "auto-paused job must not be scheduled"
 
     def test_auto_pause_persisted_to_disk(self, tmp_path: Path) -> None:
         self._paused_job_service(tmp_path)
@@ -100,6 +115,174 @@ class TestAutoPausePersistence:
         stored = raw["jobs"][0]
         assert stored["auto_paused"] is True
         assert stored["enabled"] is False
+
+    def test_retry_telemetry_survives_reload(self, tmp_path: Path) -> None:
+        """the field this store schema exists to add.
+
+        `_merge_job_result` must copy `last_retry_count` from
+        the in-memory job or nothing a run set on them ever reaches disk --
+        the same silent-drop shape every OTHER per-run field on this call
+        guards against.
+        """
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="flaky", message="boom", every_secs=60)
+        job.last_retry_count = 2
+        svc._merge_job_result(job)
+
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        reloaded = svc2.get_job(job.id)
+        assert reloaded.last_retry_count == 2
+
+    def test_the_retry_count_carries_the_run_stamp_it_describes(self, tmp_path: Path) -> None:
+        """The count alone cannot say WHICH run it describes.
+
+        A cancelled run advances `last_run_ts` (the `every` scheduler needs it to
+        or the schedule drifts) while deliberately not overwriting the count, so
+        without a stamp binding the two the Schedule page reads a completed run's
+        retries as the cancelled run's. Displays compare the pair.
+        """
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="flaky", message="boom", every_secs=60)
+        job.last_retry_count = 3
+        job.last_retry_run_ts = 1770000000.0
+        svc._merge_job_result(job)
+
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        reloaded = svc2.get_job(job.id)
+        assert reloaded.last_retry_count == 3
+        assert reloaded.last_retry_run_ts == 1770000000.0
+
+    def test_a_legacy_record_without_the_retry_stamp_loads_at_zero(self, tmp_path: Path) -> None:
+        """A record written before the stamp existed must load unchanged, and its
+        zero stamp cannot match any real `last_run_ts` — so the count is withheld
+        rather than misattributed."""
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="old", message="hi", every_secs=60)
+        job.last_retry_count = 2
+        svc._merge_job_result(job)
+        store_path = tmp_path / "crons.json"
+        raw = json.loads(store_path.read_text(encoding="utf-8"))
+        del raw["jobs"][0]["last_retry_run_ts"]
+        store_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        assert svc2.get_job(job.id).last_retry_run_ts == 0.0
+
+    def test_a_cancelled_run_does_not_overwrite_the_last_completed_count(
+        self, tmp_path: Path
+    ) -> None:
+        """A run cancelled mid-callback owes no retry telemetry.
+
+        ``_execute`` stamps both retry fields only after the callback returns.
+        A cancellation lands inside the callback, so the stamp is never reached
+        and the merge copies the values the last COMPLETED run left -- the only
+        number the Schedule page can honestly show. The spent attempt counter
+        is still cleared, or the next run would start with a smaller budget.
+        """
+        job_id = self._store_a_completed_run_with_three_retries(tmp_path)
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.get_job(job_id)
+
+        async def cancelled_mid_retry(j: CronJob) -> str | None:
+            j._transient_attempts = 1  # type: ignore[attr-defined]
+            raise asyncio.CancelledError
+
+        svc._on_job = cancelled_mid_retry
+        try:
+            asyncio.run(svc._execute(job))
+        except asyncio.CancelledError:
+            pass
+        svc._merge_job_result(job)
+
+        assert getattr(job, "_transient_attempts", 0) == 0
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        assert svc2.get_job(job_id).last_retry_count == 3
+
+    def test_a_completed_run_still_records_zero_retries(self, tmp_path: Path) -> None:
+        """A run that finishes without retrying legitimately reports 0, and that
+        has to overwrite a previous run's count -- otherwise a single flaky run
+        would pin a stale number on the job forever."""
+        job_id = self._store_a_completed_run_with_three_retries(tmp_path)
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.get_job(job_id)
+
+        async def clean(j: CronJob) -> str | None:
+            return "ok"
+
+        svc._on_job = clean
+        asyncio.run(svc._execute(job))
+        svc._merge_job_result(job)
+
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        assert svc2.get_job(job_id).last_retry_count == 0
+
+    def test_a_retried_run_lands_on_disk_bound_to_its_own_last_run_ts(self, tmp_path: Path) -> None:
+        """End to end through ``_run_job_isolated``: the count a retried run took
+        reaches disk stamped with THAT run's ``last_run_ts``.
+
+        The Schedule page renders the note only when ``last_retry_run_ts ==
+        last_run_ts``. Stamping the pair from inside the callback bound the count
+        to the PREVIOUS run's ``last_run_ts`` (``_execute`` writes this run's only
+        after the callback returns) so the two never matched and the note never
+        rendered. Pinned here on the reloaded record, not the in-memory job.
+        """
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="flaky", message="boom", every_secs=60)
+        job.last_run_ts = 1_700_000_000.0  # a previous run's stamp
+
+        async def retried_twice(j: CronJob) -> str | None:
+            # What the gateway callback leaves behind after two transient retries.
+            j._transient_attempts = 2  # type: ignore[attr-defined]
+            return "ok"
+
+        svc._on_job = retried_twice
+        svc._jobs = [job]
+        asyncio.run(svc._run_job_isolated(job))  # every=60s: sub-hourly, no jitter sleep
+
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        reloaded = svc2.get_job(job.id)
+        assert reloaded.last_retry_count == 2
+        assert reloaded.last_retry_run_ts == reloaded.last_run_ts
+        assert reloaded.last_run_ts > 1_700_000_000.0  # this run's, not the previous one's
+
+    @staticmethod
+    def _store_a_completed_run_with_three_retries(tmp_path: Path) -> str:
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="flaky", message="boom", every_secs=60)
+        job.last_retry_count = 3
+        svc._merge_job_result(job)
+        assert svc.get_job(job.id).last_retry_count == 3
+        return job.id
+
+    def test_legacy_record_without_retry_keys_loads_at_the_default(self, tmp_path: Path) -> None:
+        """A record that lacks this field must load unchanged."""
+        svc = CronService(base_dir=tmp_path)
+        svc._load()
+        job = svc.add_job(name="old", message="hi", every_secs=60)
+        svc._merge_job_result(job)
+
+        store_path = tmp_path / "crons.json"
+        raw = json.loads(store_path.read_text(encoding="utf-8"))
+        del raw["jobs"][0]["last_retry_count"]
+        store_path.write_text(json.dumps(raw), encoding="utf-8")
+
+        svc2 = CronService(base_dir=tmp_path)
+        svc2._load()
+        reloaded = svc2.get_job(job.id)
+        assert reloaded.last_retry_count == 0
 
     def test_reenable_clears_auto_pause_and_persists(self, tmp_path: Path) -> None:
         svc, job_id = self._paused_job_service(tmp_path)
@@ -156,7 +339,7 @@ class TestAutoPausePersistence:
 
 
 class TestExecuteSuccessResetsCounter:
-    """CronService._execute must reset the auto-pause budget on success (#3428).
+    """CronService._execute must reset the auto-pause budget on success.
 
     Before the fix, record_failure() fired on the error/timeout paths but
     record_success() was only ever called from the gateway callback's own

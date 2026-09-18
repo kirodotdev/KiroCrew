@@ -67,3 +67,22 @@ describe('parseJobDefaults interval unit selection', () => {
     expect(parsed.intVal).toBeGreaterThanOrEqual(1)
   })
 })
+
+describe.each([undefined, null])('interval schedule fallback with every_secs=%s', every_secs => {
+  it.each([
+    ['every 90m', 5400],
+    ['every 5m', 300],
+    ['every 900s', 900],
+    ['every 2h', 7200],
+  ])('preserves %s when saving the editor', (schedule, seconds) => {
+    const parsed = parseJobDefaults({ ...makeJob(seconds), schedule, every_secs })
+    const body = buildBody(parsed, 'UTC', noopError, true)
+    expect(body?.every).toBe(seconds)
+  })
+})
+
+it('prefers every_secs over the displayed interval when saving the editor', () => {
+  const parsed = parseJobDefaults({ ...makeJob(7200), schedule: 'every 90m' })
+  const body = buildBody(parsed, 'UTC', noopError, true)
+  expect(body?.every).toBe(7200)
+})

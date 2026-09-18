@@ -18,25 +18,32 @@ export default function SessionGridLayout({
   node,
   renderLeaf,
   onResize,
+  ownsTopLeft = true,
 }: {
   node: GridNode
-  renderLeaf: (leaf: GridLeaf) => ReactNode
+  renderLeaf: (leaf: GridLeaf, ownsTopLeft: boolean) => ReactNode
   onResize: (splitId: string, index: number, deltaFrac: number) => void
+  /** Whether this subtree reaches the surface's top-left corner. Exactly one
+   *  leaf inherits it: the pane that hosts the shell's leading control (the
+   *  sessions-sidebar toggle) or reserves its space. */
+  ownsTopLeft?: boolean
 }) {
   if (node.type === 'leaf') {
-    return <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">{renderLeaf(node)}</div>
+    return <div className="h-full w-full min-w-0 min-h-0 overflow-hidden">{renderLeaf(node, ownsTopLeft)}</div>
   }
-  return <SplitContainer node={node} renderLeaf={renderLeaf} onResize={onResize} />
+  return <SplitContainer node={node} renderLeaf={renderLeaf} onResize={onResize} ownsTopLeft={ownsTopLeft} />
 }
 
 function SplitContainer({
   node,
   renderLeaf,
   onResize,
+  ownsTopLeft,
 }: {
   node: GridSplit
-  renderLeaf: (leaf: GridLeaf) => ReactNode
+  renderLeaf: (leaf: GridLeaf, ownsTopLeft: boolean) => ReactNode
   onResize: (splitId: string, index: number, deltaFrac: number) => void
+  ownsTopLeft: boolean
 }) {
   const ref = useRef<HTMLDivElement>(null)
   // Teardown for an in-progress divider drag, invoked on unmount so closing a
@@ -89,7 +96,13 @@ function SplitContainer({
             className="min-w-0 min-h-0 overflow-hidden"
             style={{ flexGrow: node.sizes[i] ?? 1, flexBasis: 0, flexShrink: 1 }}
           >
-            <SessionGridLayout node={child} renderLeaf={renderLeaf} onResize={onResize} />
+            <SessionGridLayout
+              node={child}
+              renderLeaf={renderLeaf}
+              onResize={onResize}
+              // Top-left is the first child along either axis.
+              ownsTopLeft={ownsTopLeft && i === 0}
+            />
           </div>
           {i < node.children.length - 1 && (
             <div

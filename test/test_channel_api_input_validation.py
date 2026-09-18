@@ -1,4 +1,4 @@
-"""Input-contract regressions for the dashboard Channels write API."""
+"""The input contract the dashboard Channels write API enforces."""
 
 from __future__ import annotations
 

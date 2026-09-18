@@ -32,7 +32,7 @@ import {
   type GraphNode, type NodeState, type FrontierItem,
 } from '../lib/deps'
 import { i18nT } from '../../../i18n/t'
-import { splitOnPlaceholder } from '../../crew-companion/splitOnPlaceholder'
+import { splitOnPlaceholder } from '../../../lib/splitOnPlaceholder'
 
 /** The theme token a node state paints with. `open`/`done` are drawn muted. */
 function stateColor(state: NodeState): string {

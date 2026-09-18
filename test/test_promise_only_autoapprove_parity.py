@@ -1,4 +1,4 @@
-"""The promise-only downgrade must cover EVERY auto-approve grant source (#2696).
+"""The promise-only downgrade must cover EVERY auto-approve grant source.
 
 The recovery arm injects a continuation that the model then acts on. That is only
 safe while a human approves the resulting tool call, which is why the arm
@@ -6,10 +6,9 @@ downgrades to a notice when approval is gone: a detector false-accept then costs
 a notice instead of an unrequested action.
 
 Approval is granted by ``slot_trusted or yolo_active`` in the tool-event branch,
-so gating the downgrade on yolo ALONE left every trusted-but-not-yolo session on
-the auto-continue path with its approval gate already removed -- the exact state
-the downgrade exists to refuse. Blocking finding from the #2696 GPT round,
-anchored on the ``backend-security-controls`` AUTOSDE rule.
+so gating the downgrade on yolo ALONE would leave every trusted-but-not-yolo
+session on the auto-continue path with its approval gate already removed -- the
+exact state the downgrade exists to refuse.
 
 Both tests are here rather than in ``test_promise_only_recovery.py`` because that
 file covers the pure detector and gating predicate; this defect lives at the CALL

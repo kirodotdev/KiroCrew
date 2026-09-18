@@ -8,6 +8,7 @@ fresh processes — and that fallback to legacy path works correctly.
 from __future__ import annotations
 
 import asyncio
+import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -74,6 +75,7 @@ def _mock_sessions(*, sharing_eligible: bool = True) -> MagicMock:
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
     sessions.get_agent = MagicMock(return_value="kirocrew")
+    sessions.get_agent_selection = MagicMock(return_value=("template", "kirocrew"))
     sessions.get_approval_policy = MagicMock(return_value="auto")
     sessions.has_session = MagicMock(return_value=True)
     sessions.is_session_sharing_eligible = MagicMock(return_value=sharing_eligible)
@@ -141,6 +143,14 @@ def _cfg_patch(session_sharing: bool = True):
 
 class TestSessionSharingDecision:
     """Tests for _should_use_session_sharing decision logic."""
+
+    def test_private_crew_target_cannot_share_a_global_parent(self):
+        sessions = _mock_sessions(sharing_eligible=True)
+        manager = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder_auto(), is_yolo=lambda: True)
+        info = SubagentInfo(id="private-review", task="review", parent_session_key="dashboard:global", memory_store="member-review")
+        with _cfg_patch(session_sharing=True):
+            assert manager._should_use_session_sharing(info) is False
+        sessions.is_session_sharing_eligible.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_session_sharing_on_eligible_parent(self):
@@ -237,6 +247,53 @@ class TestSessionSharingSpawn:
     """Tests for session-sharing subagent spawn and cleanup."""
 
     @pytest.mark.asyncio
+    async def test_private_dedicated_worker_publishes_identity_before_first_tool(self, monkeypatch):
+        from test_subagent import _mock_ctx_builder_auto_spawn
+        from test_subagent import _mock_sessions as dedicated_sessions
+
+        from kiro_crew import context, member_memory_auth
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.memory_stores import provision_member_memory
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+        store = await asyncio.to_thread(provision_member_memory, cfg, "reviewer")
+        await asyncio.to_thread(cfg.save)
+        parent = "dashboard:private-parent"
+        await asyncio.to_thread(member_memory_auth.bind_private_session_store, parent, store)
+        sessions = dedicated_sessions()
+        sessions.get_pid.return_value = os.getpid()
+        sessions.get_approval_policy.return_value = "auto"
+        provider = sessions.get_or_create.return_value[0]
+        provider.context_window_tokens = lambda: 0
+        provider.context_used_tokens = lambda: 0
+        ctx = _mock_ctx_builder_auto_spawn()
+        ctx.conversation_log = None
+        manager = SubagentManager(sessions=sessions, ctx_builder=ctx)
+        monkeypatch.setattr(context, "prepare_store_vectors", AsyncMock())
+        observed = []
+
+        async def stream(*args, **kwargs):
+            worker = sessions.get_or_create.call_args.args[0]
+            published = await asyncio.to_thread(
+                member_memory_auth.protected_member_session_for_pid, os.getpid()
+            )
+            assert published == worker
+            observed.append(worker)
+            if False:
+                yield
+
+        provider.stream.side_effect = stream
+        try:
+            info = manager.spawn("Read private context", parent_session_key=parent, memory_store=store)
+            assert info is not None
+            await asyncio.wait_for(asyncio.gather(*list(manager._tasks.values())), timeout=10)
+            assert info.done and not info.error, info.error
+            assert observed == [f"subagent:{info.id}"]
+        finally:
+            await manager.cancel_all()
+
+    @pytest.mark.asyncio
     async def test_shared_session_creates_on_runtime(self):
         """When session sharing is used, create_session is called on the runtime."""
         sessions = _mock_sessions(sharing_eligible=True)
@@ -273,13 +330,15 @@ class TestSessionSharingSpawn:
 
         with _cfg_patch(session_sharing=True), \
              patch("kiro_crew.subagent.Stats"), \
-             patch("kiro_crew.subagent.sel"):
+             patch("kiro_crew.subagent.sel"), \
+             patch("kiro_crew.messaging.identity.publish_turn_identity", new_callable=AsyncMock) as publish:
             info = manager.spawn("test task", parent_session_key="dashboard:slot1")
             await _wait_until_done(info)
 
         assert info._session_sharing is True
         assert info._shared_provider is not None
         assert isinstance(info._shared_provider, AcpSessionProvider)
+        publish.assert_not_awaited()
 
     @pytest.mark.asyncio
     @pytest.mark.parametrize(
@@ -305,9 +364,14 @@ class TestSessionSharingSpawn:
             parent_session_key="dashboard:slot1",
         )
 
+        async def fail_identity_write(func, /, *args, **kwargs):
+            if func.__name__ == "private_memory_store_for_session":
+                return ""
+            raise identity_error
+
         with patch(
             "kiro_crew.subagent.asyncio.to_thread",
-            AsyncMock(side_effect=identity_error),
+            AsyncMock(side_effect=fail_identity_write),
         ), patch("kiro_crew.subagent.update_state", side_effect=OSError("disk full")):
             provider = await manager._create_shared_session(
                 info,
@@ -353,6 +417,8 @@ class TestSessionSharingSpawn:
         release = asyncio.Event()
 
         async def gated_to_thread(func, /, *args, **kwargs):  # type: ignore[no-untyped-def]
+            if func.__name__ == "private_memory_store_for_session":
+                return ""
             entered.set()
             await release.wait()
             return func(*args, **kwargs)
@@ -738,8 +804,8 @@ class TestSessionSharingParentReset:
     async def test_get_subagent_runtime_retries_once_on_spawn_failure(self, monkeypatch):
         """get_subagent_runtime retries spawn once on AcpRuntimeDead (parity with
         get_bg_session): the first spawn dies, the second succeeds -> live runtime.
-        Regression guard: the retry loop was previously dead code (spawn raised
-        straight through without being caught, so max_retries had no effect)."""
+        The retry loop must catch the failure: a spawn that raised straight
+        through without being caught would leave max_retries with no effect."""
         from kiro_crew.acp.runtime import AcpRuntimeDead
         from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.session import SessionManager

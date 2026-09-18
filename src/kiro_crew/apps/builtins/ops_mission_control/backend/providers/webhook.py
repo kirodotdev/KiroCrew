@@ -209,18 +209,18 @@ def _suppression_attribution(status: dict[str, Any]) -> tuple[str, str]:
 def _alert_status(raw: dict[str, Any]) -> tuple[str, str, str]:
     """Read one alert's status as ``(state_text, suppressed_by, suppressed_reason)``.
 
-    Two real shapes, and only one of them used to work:
+    Two real shapes, and a scalar-only read handles only one:
 
     - **v4 webhook envelope** — ``status`` is the scalar ``"firing"``/``"resolved"``.
     - **v2 ``gettableAlert``** — ``status`` is the OBJECT
       ``{"state": "suppressed", "silencedBy": [...], "inhibitedBy": [...]}``, which is
       what anything relaying ``GET /api/v2/alerts`` forwards.
 
-    The previous scalar-only read (``str(raw.get("status") or ...)``) stringified that
-    object, so it normalized to ``unknown`` — the suppression became "we could not parse
-    the state" and ``silencedBy`` was dropped on the floor entirely. The caller then had
-    a signal indistinguishable from a garbage one from a sender that was being perfectly
-    explicit about a human having parked the alert.
+    A scalar-only read (``str(raw.get("status") or ...)``) stringifies that object, so it
+    normalizes to ``unknown`` — the suppression reads as "we could not parse the state"
+    and ``silencedBy`` is dropped on the floor entirely, leaving the caller a signal
+    indistinguishable from a garbage one from a sender that is being perfectly explicit
+    about a human having parked the alert.
     """
     status = raw.get("status")
     if isinstance(status, dict):

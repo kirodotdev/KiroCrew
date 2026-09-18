@@ -116,7 +116,7 @@ function PanelToggleConfig() {
                 bindings), so the trade is disclosed here, at the moment it is
                 made, rather than left to be discovered by a broken Ctrl+C. */}
             {PANEL_TOGGLES_SKIPPING_SHELL.has(id) && (
-              <div className="text-[12px] text-muted px-2 pb-1">{i18nT('pages.settings.shortcutsPanel.skips_shell_hint')}</div>
+              <div className="text-[12px] text-muted px-2 pb-1">{i18nT(IS_MAC ? 'pages.settings.shortcutsPanel.skips_shell_hint_mac' : 'pages.settings.shortcutsPanel.skips_shell_hint')}</div>
             )}
           </div>
         )

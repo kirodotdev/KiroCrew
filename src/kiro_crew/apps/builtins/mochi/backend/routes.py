@@ -294,9 +294,8 @@ async def _handle_bg_usage(request: web.Request) -> web.Response:
 def _pins_corrupt() -> web.Response:
     """Map the pin store's corruption refusal to a coded response.
 
-    The update reader refuses a corrupt pin list rather than replacing it
-    (#8088, mirroring #7805), so these handlers can now see a
-    ``PinsCorruptError`` that previously could not happen. Letting it escape
+    The update reader refuses a corrupt pin list rather than replacing it, so
+    these handlers can see a ``PinsCorruptError``. Letting it escape
     gives aiohttp's bare 500 with no ``code`` for the UI to branch on, and
     reporting ``{"ok": false}`` instead would be read as "no such pin" -- for
     mark-seen, as outright success. 500 rather than 503: corruption does not
@@ -922,7 +921,7 @@ async def _handle_pack_delete(request: web.Request) -> web.Response:
     except PackError as exc:
         return web.json_response({"error": str(exc), "code": "invalid_pack_delete"}, status=400)
     # Deleting the ACTIVE pack must also clear the pointer, or the pet keeps
-    # trying to render a pack that no longer exists.
+    # trying to render a pack that is gone.
     active = (await asyncio.to_thread(load_settings, _rt().data_dir)).get("activeAppearance")
     if removed and active == pack_id:
         updated = await asyncio.to_thread(save_settings, _rt().data_dir, {"activeAppearance": ""})
@@ -1153,8 +1152,8 @@ async def _handle_displays(request: web.Request) -> web.Response:
 
 def _write_displays_cache(data_dir: Any, displays: list[Any], active_id: Any) -> None:
 
-    # Keep the GEOMETRY, not just the size. This projection used to reduce each
-    # monitor to {id, width, height}, which left the pet unable to answer the one
+    # Keep the GEOMETRY, not just the size. Reducing each monitor to
+    # {id, width, height} leaves the pet unable to answer the one
     # question the cache exists for: which screen am I on, and where is it. With
     # no ordinal, no primary flag and no origin, an agent asked "which display?"
     # has nothing to reason from and guesses — usually "display 1". `index` is

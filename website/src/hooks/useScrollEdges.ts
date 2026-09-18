@@ -100,3 +100,87 @@ export function useScrollEdges<T extends HTMLElement>(): [
 
   return [attach, edges, remeasure, attachContent]
 }
+
+export interface ScrollEdgesY {
+  /** Content is hidden past the scroller's top edge. */
+  top: boolean
+  /** Content is hidden past the scroller's bottom edge. */
+  bottom: boolean
+}
+
+/**
+ * The vertical twin of `useScrollEdges`, for a column that scrolls inside a
+ * fixed-height box. It exists for the same reason the horizontal one does: a
+ * fixed-height panel that scrolls internally reads as COMPLETE — the content
+ * simply ends at the box, and an overlay scrollbar that fades when idle leaves
+ * no standing sign that more sits below the fold. The caller paints a top/bottom
+ * edge cue from these flags so the clipping stays visible.
+ *
+ * Same mechanics as the horizontal hook, deliberately duplicated rather than
+ * abstracted: ~40 lines that read as obviously correct beat a shared generic
+ * whose axis is a parameter. A callback ref (the scroller can mount after this
+ * component — a tall state appears only for one status), a passive scroll
+ * listener, a ResizeObserver on the box, `remeasure` for content changes no
+ * observer reports, and `attachContent` for the auto-sized case where the
+ * content's own border-box is the overflow driver (the panel body swaps with
+ * the gate's state).
+ */
+export function useScrollEdgesY<T extends HTMLElement>(): [
+  (node: T | null) => void,
+  ScrollEdgesY,
+  () => void,
+  (node: HTMLElement | null) => void,
+] {
+  const elRef = useRef<T | null>(null)
+  const detachRef = useRef<(() => void) | null>(null)
+  const detachContentRef = useRef<(() => void) | null>(null)
+  const [edges, setEdges] = useState<ScrollEdgesY>({ top: false, bottom: false })
+
+  const remeasure = useCallback(() => {
+    const el = elRef.current
+    if (!el) return
+    const hidden = el.scrollHeight - el.clientHeight
+    const scrolled = el.scrollTop
+    // 1px of slack: fractional layout heights leave scrollHeight a hair above
+    // clientHeight on a column that is not actually scrollable, and a permanent
+    // cue on content that fits is its own lie.
+    const next = { top: scrolled > 1, bottom: hidden - scrolled > 1 }
+    // Same-value writes are dropped so a scroll event per frame does not
+    // re-render the whole page shell while the column is being scrolled.
+    setEdges(prev => (prev.top === next.top && prev.bottom === next.bottom ? prev : next))
+  }, [])
+
+  // Stable, so React does not detach and re-attach on every render.
+  const attach = useCallback((node: T | null) => {
+    detachRef.current?.()
+    detachRef.current = null
+    elRef.current = node
+    if (!node) {
+      // No scroller means nothing is clipped; a surviving cue would point at
+      // content that is not there.
+      setEdges({ top: false, bottom: false })
+      return
+    }
+    remeasure()
+    node.addEventListener('scroll', remeasure, { passive: true })
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure)
+    ro?.observe(node)
+    detachRef.current = () => {
+      node.removeEventListener('scroll', remeasure)
+      ro?.disconnect()
+    }
+  }, [remeasure])
+
+  // Stable, so React does not detach and re-attach on every render.
+  const attachContent = useCallback((node: HTMLElement | null) => {
+    detachContentRef.current?.()
+    detachContentRef.current = null
+    if (!node) return
+    remeasure()
+    const ro = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(remeasure)
+    ro?.observe(node)
+    detachContentRef.current = () => ro?.disconnect()
+  }, [remeasure])
+
+  return [attach, edges, remeasure, attachContent]
+}

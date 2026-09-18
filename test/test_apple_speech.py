@@ -13,6 +13,7 @@ import inspect
 import json
 import os
 import platform
+import stat
 import sys
 import threading
 from contextlib import ExitStack
@@ -245,14 +246,121 @@ class TestHelperBuild:
         resolved = apple_speech._swiftc_fast()
         assert resolved is None or resolved in apple_speech._SWIFTC_FIXED_PATHS
 
+    def test_a_versioned_xcode_bundle_is_a_trusted_prefix(self):
+        """`Xcode.app` is a SYMLINK to the versioned bundle on a real install.
+
+        Every GitHub macOS runner, and any machine holding more than one Xcode,
+        spells the bundle `Xcode_<version>.app`, so `realpath` of a genuine
+        toolchain never starts with `/Applications/Xcode.app/`. This is a pure
+        string rule and grants nothing on its own -- the ownership walk still has
+        to reach root at every level up to the bundle root.
+        """
+        assert (
+            apple_speech._xcode_bundle_prefix(
+                "/Applications/Xcode_16.4.app/Contents/Developer/Toolchains/"
+                "XcodeDefault.xctoolchain/usr/bin/swiftc"
+            )
+            == "/Applications/Xcode_16.4.app/"
+        )
+        assert (
+            apple_speech._xcode_bundle_prefix("/Applications/Xcode-beta.app/Contents/x")
+            == "/Applications/Xcode-beta.app/"
+        )
+        assert (
+            apple_speech._xcode_bundle_prefix("/Applications/Xcode.app/Contents/x")
+            == "/Applications/Xcode.app/"
+        )
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            # Not under /Applications at all.
+            "/opt/planted/Xcode.app/Contents/x",
+            # Not an app bundle, so not one path component.
+            "/Applications/Xcodex/Contents/x",
+            # A DEEPER component named like a bundle cannot widen the rule.
+            "/Applications/Other.app/Xcode_1.app/Contents/x",
+            # The bundle root itself, with nothing under it, is not a toolchain path.
+            "/Applications/Xcode_16.4.app",
+            # A different vendor's app.
+            "/Applications/Safari.app/Contents/x",
+        ],
+    )
+    def test_the_xcode_bundle_rule_stays_one_component_under_applications(self, path):
+        assert apple_speech._xcode_bundle_prefix(path) is None
+
+    @pytest.mark.skipif(
+        os.name == "nt",
+        reason="the bundle rule is a POSIX path prefix and the refusal is a POSIX "
+        "ownership walk (st_uid, mode bits); apple_speech never runs on Windows",
+    )
+    def test_a_planted_bundle_is_still_refused_by_ownership(self, tmp_path, monkeypatch):
+        """The bundle-name rule is a prefix, not a grant.
+
+        `/Applications` is `775 root:admin`, so an admin-group user can create a
+        bundle beside a real Xcode. It is owned by that user, and the walk from the
+        compiler up to the bundle root is what refuses it -- so widening the NAME
+        cannot widen the trust.
+        """
+        planted = tmp_path / "Applications" / "Xcode_99.app" / "usr" / "bin"
+        planted.mkdir(parents=True)
+        swiftc = planted / "swiftc"
+        swiftc.write_text("#!/bin/sh\n")
+        monkeypatch.setattr(apple_speech, "_APPLICATIONS_DIR", f"{tmp_path}/Applications/")
+        monkeypatch.setattr(apple_speech, "_TRUSTED_TOOLCHAIN_PREFIXES", ())
+
+        # The name matches, so the prefix resolves...
+        assert apple_speech._xcode_bundle_prefix(str(swiftc)) is not None
+        # ...and the ownership walk still refuses it, because this tree is ours.
+        assert not apple_speech._is_trusted_toolchain(str(swiftc))
+
     def test_trusted_toolchain_accepts_a_real_install(self):
-        """The tightened check must not refuse a genuine toolchain."""
+        """Ownership decides, in BOTH directions, on whatever toolchain the host has.
+
+        A genuine root-owned install (Command Line Tools, a root-owned Xcode) must
+        be accepted. A toolchain the invoking user can write must be refused even
+        when it is a complete, working Xcode: a hosted CI runner's Xcode is
+        installed by the runner account, so it is exactly the agent-writable
+        compiler the check exists to refuse, and asserting acceptance there would
+        pin the wrong contract. The expectation is derived from the ownership walk
+        the check is specified as, and the test names which case it ran.
+        """
         real = [p for p in apple_speech._SWIFTC_FIXED_PATHS if os.path.isfile(p)]
         if not real:
             pytest.skip("no Swift toolchain on this host")
+
+        def _root_owned_up_to_prefix(path: str) -> bool | None:
+            resolved = os.path.realpath(path)
+            prefix = next(
+                (p for p in apple_speech._TRUSTED_TOOLCHAIN_PREFIXES if resolved.startswith(p)),
+                None,
+            ) or apple_speech._xcode_bundle_prefix(resolved)
+            if prefix is None:
+                return None
+            stop = prefix.rstrip("/")
+            probe = resolved
+            while True:
+                st = os.lstat(probe)
+                if st.st_uid != 0 or (st.st_mode & (stat.S_IWGRP | stat.S_IWOTH)):
+                    return False
+                if probe == stop:
+                    return True
+                probe = os.path.dirname(probe)
+
+        accepted = []
         for path in real:
-            assert apple_speech._is_trusted_toolchain(path), path
-        assert apple_speech._swiftc_fast() in real
+            expected = _root_owned_up_to_prefix(path)
+            assert expected is not None, f"{path} resolves outside every trusted prefix"
+            assert apple_speech._is_trusted_toolchain(path) is expected, (
+                f"{path}: root-owned-to-prefix={expected}, "
+                f"trusted={apple_speech._is_trusted_toolchain(path)}"
+            )
+            if expected:
+                accepted.append(path)
+        if accepted:
+            assert apple_speech._swiftc_fast() in accepted
+        else:
+            assert apple_speech._swiftc_fast() is None
 
     @pytest.mark.skipif(
         not platform_compat.IS_POSIX,
@@ -690,7 +798,7 @@ class TestTranscodeTempOwnership:
     async def test_transcode_closes_authenticated_decoder_after_child_exit(
         self, tmp_path, monkeypatch
     ):
-        """Regression guard for #8918 at this call site: the staged decoder
+        """Cleanup at this call site: the staged decoder
         handle outlives the spawn (the macOS syspolicy assessment resolves the
         staged path asynchronously after ``create_subprocess_exec`` returns) and
         is released exactly once, after the child has exited, by the invocation
@@ -750,7 +858,7 @@ class TestTranscodeTempOwnership:
         """A cancellation landing exactly on the deferred close await -- the
         only suspension point between the child exiting and the success return
         transferring the temp to the caller -- must not propagate with the
-        invocation-owned ``.wav`` still on disk (#8918 round 2)."""
+        invocation-owned ``.wav`` still on disk."""
         _stub_probe_under_cap(monkeypatch)
         owned = self._owned_temp(tmp_path, monkeypatch)
         src = tmp_path / "voice.webm"
@@ -899,7 +1007,7 @@ class TestTranscodeTempOwnership:
     @pytest.mark.asyncio
     async def test_sandbox_rejection_removes_the_owned_native_temp(self, tmp_path, monkeypatch):
         """The fail-closed sandbox refusal returns after `transcribe` received an
-        owned temp but used to exit before the cleanup `finally` was armed."""
+        owned temp, before the cleanup `finally` is armed, and must still remove it."""
         from kiro_crew import sandbox as sb
 
         owned = tmp_path / "native.wav"
@@ -1002,7 +1110,7 @@ class TestStreamingSession:
 
 
 class TestHelperArgvPinsFast:
-    """Pin the ``--fast`` flag in the STREAMING helper argv (#5896).
+    """Pin the ``--fast`` flag in the STREAMING helper argv.
 
     ``--fast`` inserts ``.frequentFinalization`` into the transcriber's reporting
     options; without it the helper emits only volatile partials for the whole open
@@ -1074,7 +1182,7 @@ class TestHelperArgvPinsFast:
 
 
 class TestSandboxCleanupPathIsDropped:
-    """Every `_sandboxed` call site must unlink the returned cleanup path (#5776).
+    """Every `_sandboxed` call site must unlink the returned cleanup path.
 
     The third tuple element is a real temp file on any host with a sandbox
     backend (Linux namespace launcher / macOS ``.sb`` profile), and the
@@ -1635,7 +1743,13 @@ class TestEndToEndMacOS:
             pytest.skip("no `say` to synthesize a fixture")
 
         audio = tmp_path / "sample.aiff"
-        proc = await asyncio.create_subprocess_exec("say", "-o", str(audio), "the build is green")
+        # ``-o`` makes ``say`` write the AIFF instead of playing it through the
+        # sound output, so the fixture is silent on the developer's machine. The
+        # child runs from tmp_path so any file it creates lands there, not in
+        # the checkout it would otherwise inherit as CWD.
+        proc = await asyncio.create_subprocess_exec(
+            "say", "-o", str(audio), "the build is green", cwd=tmp_path
+        )
         await proc.wait()
         assert audio.is_file()
 
@@ -1666,17 +1780,29 @@ class TestEndToEndMacOS:
                 pytest.skip(f"no `{tool}` to build a 16 kHz fixture")
 
         aiff = tmp_path / "s.aiff"
+        # ``-o`` writes the AIFF instead of playing it; cwd=tmp_path keeps any
+        # stray output out of the checkout (see test_round_trip).
         proc = await asyncio.create_subprocess_exec(
             "say",
             "-o",
             str(aiff),
             "the continuous integration build is green and the tests all pass",
+            cwd=tmp_path,
         )
         await proc.wait()
         wav = tmp_path / "s.wav"
         # LEI16 @ 16 kHz mono — the format the dashboard's audio worklet produces.
         proc = await asyncio.create_subprocess_exec(
-            "afconvert", str(aiff), str(wav), "-f", "WAVE", "-d", "LEI16@16000", "-c", "1"
+            "afconvert",
+            str(aiff),
+            str(wav),
+            "-f",
+            "WAVE",
+            "-d",
+            "LEI16@16000",
+            "-c",
+            "1",
+            cwd=tmp_path,
         )
         await proc.wait()
         if not wav.is_file():

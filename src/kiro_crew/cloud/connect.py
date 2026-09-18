@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from kiro_crew.cloud import ssm
+from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,9 @@ def connect(
             # false positive (`exc` is an AWSError/permission message, never the
             # JWT — the token is never logged; see redact_token()), but the
             # neutral wording keeps the SAST gate green without a nosemgrep.
-            logger.warning("dashboard sign-in provisioning failed on local port %d: %s", local_port, exc)
+            logger.warning(
+                "dashboard sign-in provisioning failed on local port %d: %s", local_port, exc
+            )
             error = (
                 "connected the SSM tunnel but minting a dashboard token failed "
                 f"({exc}) — check `kirocrew cloud status` / your IAM permissions, "
@@ -286,6 +289,7 @@ def register_instance(
                     aws_profile=profile,
                     aws_region=region,
                     remote_port=remote_port,
+                    provisioner_id=BUILTIN_PROVISIONER_ID,
                 )
                 return existing.id
         inst = reg.add(
@@ -295,6 +299,7 @@ def register_instance(
             aws_profile=profile,
             aws_region=region,
             remote_port=remote_port,
+            provisioner_id=BUILTIN_PROVISIONER_ID,
         )
         return inst.id
     except Exception as exc:  # pragma: no cover - non-fatal
@@ -307,7 +312,7 @@ def is_launched_instance(ssm_target: str) -> bool:
     cloud launch, per the launch job store — i.e. it is a *correlated* instance,
     not a hand-added SSM record that merely happens to use the same transport.
 
-    Used to protect a correlated instance's addressing fields
+    Protects a correlated instance's addressing fields
     (``connection_method``/``ssm_target``/``aws_profile``/``aws_region``) from
     being rewritten via the generic ``PATCH /api/instances/{id}`` endpoint:
     doing so would leave Stop/Start/Delete unable to resolve the real EC2 stack,

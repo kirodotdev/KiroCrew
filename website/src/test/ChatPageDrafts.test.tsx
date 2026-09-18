@@ -20,7 +20,7 @@ import {
   sendErrorToChat,
   __resetNavSeamForTests,
 } from '../utils/errorReport'
-import { PREFILL_STORAGE_KEY } from '../utils/navIntent'
+import { PREFILL_STORAGE_KEY, writePrefill } from '../utils/navIntent'
 
 vi.mock('react-virtuoso', () => ({
   Virtuoso: ({ data, itemContent }: { data?: unknown[]; itemContent: (index: number, item: unknown) => ReactNode }) => (
@@ -148,6 +148,10 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
     await waitFor(() => {
       expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(prompt)
     })
+    // The seed raises the prefill hint: it is what lifts the composer to the
+    // prefill height cap and says the box was pre-filled. Without it a 13-line
+    // error report sat in the ~6-line typing box, showing only its tail.
+    expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
     expect(JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')['slot-a']).toBe('keep this draft')
     expect(store.getState().chat.slotMessages['slot-a']).toEqual(originalMessages)
   })
@@ -166,6 +170,9 @@ describe('ChatPage error handoff', { timeout: 15_000 }, () => {
     await waitFor(() => {
       expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe(prompt)
     })
+    // Same hint on the in-chat path (an error surface inside chat hands off
+    // with no route change).
+    expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
     expect(JSON.parse(localStorage.getItem('mc-chat-drafts') || '{}')['slot-a']).toBe('question in progress')
   })
 
@@ -456,6 +463,81 @@ describe('ChatPage composerSlotRef effect ordering', () => {
 })
 
 describe('ChatPage draft persistence', { timeout: 15_000 }, () => {
+  it('leaves the draft alone when a staged prefill belongs to another slot', async () => {
+    // A prefill is addressed to ONE slot. Landing on a different slot must not
+    // seed the composer with it, and must not consume it either — the slot it
+    // was written for may become active next.
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'slot-a': 'mine, still here' }))
+    writePrefill('slot-b', 'prompt for B')
+    const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
+    await renderAndWaitForInput(store)
+
+    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('mine, still here'))
+    expect(JSON.parse(sessionStorage.getItem(PREFILL_STORAGE_KEY)!).slotKey).toBe('slot-b')
+  })
+
+  it('discards an unreadable prefill and restores the persisted draft', async () => {
+    localStorage.setItem('mc-chat-drafts', JSON.stringify({ 'slot-a': 'mine, still here' }))
+    sessionStorage.setItem(PREFILL_STORAGE_KEY, '{not json')
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+
+    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('mine, still here'))
+    expect(sessionStorage.getItem(PREFILL_STORAGE_KEY)).toBeNull()
+  })
+
+  it('stops the browser navigating away when files are dragged over the page', async () => {
+    // Chrome opens a dropped file as a new document unless dragover/drop are
+    // cancelled at the document level; the page installs that guard on mount.
+    // Fired on `document` directly — the composer's own drop target stops
+    // propagation, so a drop there never reaches this listener.
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    await renderAndWaitForInput(store)
+
+    // fireEvent returns dispatchEvent's verdict: false once preventDefault ran.
+    expect(fireEvent.dragOver(document, { dataTransfer: { types: ['Files'] } })).toBe(false)
+    // A text drag is not a file: nothing to guard, the default stays.
+    expect(fireEvent.dragOver(document, { dataTransfer: { types: ['text/plain'] } })).toBe(true)
+  })
+
+  it('holds the prefill hint until the user edits the seed, then lets it expire', async () => {
+    // A seeded error report is a dozen lines the user reads before typing. The
+    // hint (and the taller cap it drives) must not collapse on a clock started at
+    // the seed; the first edit is what arms the 10s expiry.
+    const store = makeStore('slot-a', [{ key: 'slot-a' }])
+    writePrefill('slot-a', 'seeded report')
+    await renderAndWaitForInput(store)
+    await waitFor(() => expect((screen.getByLabelText('Message input') as HTMLTextAreaElement).value).toBe('seeded report'))
+    expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
+
+    vi.useFakeTimers()
+    try {
+      act(() => { vi.advanceTimersByTime(30_000) })
+      // Untouched for 30s: still up.
+      expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
+
+      fireEvent.change(screen.getByLabelText('Message input'), { target: { value: 'seeded report\nplus context' } })
+      act(() => { vi.advanceTimersByTime(9_000) })
+      expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument()
+      act(() => { vi.advanceTimersByTime(1_500) })
+      expect(screen.queryByText(/Prompt pre-filled/)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops the prefill hint when the user switches to a session with a plain draft', async () => {
+    // The hint describes the seeded composer. It no longer expires on its own,
+    // so a switch that restores an ordinary draft has to take it down.
+    const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
+    writePrefill('slot-a', 'seeded report')
+    await renderAndWaitForInput(store)
+    await waitFor(() => expect(screen.getByText(/Prompt pre-filled/)).toBeInTheDocument())
+
+    act(() => { store.dispatch(setActiveSlot('slot-b')) })
+    expect(screen.queryByText(/Prompt pre-filled/)).not.toBeInTheDocument()
+  })
+
   it('preserves draft when switching sessions', async () => {
     const store = makeStore('slot-a', [{ key: 'slot-a' }, { key: 'slot-b' }])
     await renderAndWaitForInput(store)

@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 
 # [[Target]] or [[Target|alias]] — target may not contain ] [ | or newline.
 WIKILINK_RE = re.compile(r"\[\[([^\]\[|\n]+?)(?:\|([^\]\n]+?))?\]\]")
-# Inline #tag at a word boundary: must start with alphanumeric.
-TAG_RE = re.compile(r"(?:^|[\s(])#([A-Za-z0-9][\w/-]*)", re.MULTILINE)
+# Inline #tag at a word boundary: must start with alphanumeric, in any script.
+TAG_RE = re.compile(r"(?:^|[\s(])#([^\W_][\w/-]*)", re.MULTILINE)
 # YAML frontmatter fenced by --- at the very top of the file.
 FRONTMATTER_RE = re.compile(r"^---\r?\n(.*?)\r?\n---[ \t]*(?:\r?\n|$)", re.DOTALL)
 _FENCED_RE = re.compile(r"```.*?(?:```|$)", re.DOTALL)
@@ -62,7 +62,7 @@ def _json_safe(value: Any, _seen: Optional[set[int]] = None) -> Any:
     """Coerce YAML-parsed values that JSON cannot serialize into safe forms.
 
     ``yaml.safe_load`` resolves the YAML core schema, so an unquoted frontmatter
-    date (``date: 2026-08-01`` — routine in Obsidian) becomes a ``datetime.date``,
+    date (``date:`` with a bare ISO day — routine in Obsidian) becomes a ``datetime.date``,
     a ``!!binary`` becomes ``bytes``, a ``!!set`` becomes ``set`` and ``.nan`` /
     ``.inf`` become non-finite floats — none of which round-trips as valid JSON,
     so the note read would 500 (or emit bare ``NaN``, which the browser's

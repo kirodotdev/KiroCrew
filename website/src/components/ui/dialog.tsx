@@ -97,6 +97,14 @@ const DialogContent = React.forwardRef<
         // keyframe that declares a bare `transform: scale(...)` would drop the
         // centering for the animation's whole duration, parking the dialog with
         // its top-left corner at the viewport centre until the animation ends.
+        //
+        // These classes must stay on THIS element (the one the forwarded `ref`
+        // and role="dialog" land on), not on a wrapper: SketchDialog's placement
+        // gate calls `getAnimations()` on the ref'd element and holds its
+        // measurement-dependent pad back until the enter animation has finished.
+        // Moving the animation up a level makes that call return `[]`, the gate
+        // waves the pad through mid-flight, and the ~7px pointer offset returns
+        // with no CI signal beyond src/test/DialogEnterAnimation.test.tsx.
         'duration-200 data-[state=open]:animate-in data-[state=closed]:animate-out',
         'data-[state=open]:fade-in-0 data-[state=closed]:fade-out-0',
         'data-[state=open]:zoom-in-95 data-[state=closed]:zoom-out-95',

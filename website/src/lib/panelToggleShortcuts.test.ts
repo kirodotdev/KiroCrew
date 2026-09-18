@@ -159,4 +159,13 @@ describe('matchPanelToggleEvent', () => {
     // A Mac ⌃B must not satisfy a mod chord meant as ⌘B.
     expect(matchPanelToggleEvent(ke({ code: 'KeyB', ctrlKey: true }), {}, true)).toBeNull()
   })
+
+  it('accepts and resolves a ctrl chord — literal Ctrl+` on a Mac', () => {
+    expect(setPanelToggleBinding('terminal', { key: '`', ctrl: true })).toBe(true)
+    const overrides = loadPanelToggleOverrides()
+    expect(overrides['terminal']).toEqual({ key: '`', ctrl: true })
+    expect(matchPanelToggleEvent(ke({ code: 'Backquote', key: '`', ctrlKey: true }), overrides, true)).toBe('terminal')
+    // ⌘` is the macOS window cycler, not this binding.
+    expect(matchPanelToggleEvent(ke({ code: 'Backquote', key: '`', metaKey: true }), overrides, true)).toBeNull()
+  })
 })

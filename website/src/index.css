@@ -1563,9 +1563,10 @@ button:hover .app-icon{--ico-a:var(--accent);--ico-b:var(--text)}
 [data-theme="kiro-light"] .nav-active,[data-theme="kiro-light"] .session-row.session-active,[data-theme="kiro-light"] .list-selected{background:#d8d2e0;color:#723acc;border-color:#c4bcd0}
 [data-theme="kiro-light"] .nav-active .text-accent{color:#723acc}
 /* Kiro light: the canvas is white and the app shell steps back. --bg is #ffffff so the chat
-   transcript and every page read as the primary surface; the nav rail and sessions list take
-   --panel (#fafafa) instead of the elevated white they use elsewhere, which is the only thing
-   separating them from the canvas — a white card on a white page has no edge but its border.
+   transcript and every page read as the primary surface; the nav rail and the list cards (the
+   sessions list and the Crew Members roster, both built from components/listShell) take --panel
+   (#fafafa) instead of the elevated white they use elsewhere, which is the only thing separating
+   them from the canvas — a white card on a white page has no edge but its border.
    The user bubble is a borderless bg-card fill, so on a white canvas it needs a tint or it
    disappears entirely; --bg-hover (#f0f0f0) keeps it in the same grey family as the shell. The
    edit-mode box that replaces a bubble in place carries the same hook, so editing does not flip
@@ -1975,6 +1976,14 @@ file-tree-container{
    and a display:none row measures as zero-width chips at offset zero -- read as
    "on screen", which would silently swallow their unread. */
 @container (max-width:152px){ .tb-left .tb-drop-crew-name{display:none} }
+/* The route-history arrows drop before either chip rung fires: they are the one
+   redundant control in the group (⌘/Ctrl+←/→, the mouse buttons and browser
+   chrome all reach the same history), while the crew chips are the identity of
+   the tab. Two 28px buttons = 56px on top of the 139px chip cluster the 152px
+   rung protects, so this rung fires 56px above it. Under a plain browser
+   dashboard with no remote instances the group holds only the arrows and never
+   comes near the rung. */
+@container (max-width:208px){ .tb-left .tb-drop-navhistory{display:none} }
 /* Terminal rung for the identity group, the counterpart of the capsule's
    dot-only one: below this the active-crew chip goes too and the group keeps just
    the nav button and the dropdown -- which still names the crew on screen, with a
@@ -2034,7 +2043,8 @@ file-tree-container{
    and mark the header as a drag region so the integrated menu row still moves
    the window — with an explicit no-drag opt-out for every interactive control,
    including the titlebar app-menu triggers below.
-   Keep 142px in sync with WIN_CAPTION_OVERLAY_WIDTH in src/lib/electron.ts. */
+   Keep 142px in sync with WIN_CAPTION_RESERVE_PX in src/lib/electron.ts
+   (the 138px overlay plus 4px clearance). */
 .win-electron header.topbar-glass{
   padding-right:142px;
   -webkit-app-region:drag;
@@ -2079,6 +2089,23 @@ body.mc-focus-mode .linux-electron .focus-caption-reserve{padding-right:112px}
    of the parent window's native traffic lights.
    Keep 84px in sync with TRAFFIC_LIGHT_INSET_PX in src/lib/electron.ts. */
 .embedded-mac-inset header.topbar-glass{padding-left:84px}
+/* Windows counterpart: the parent relays whether it is a Windows Electron
+   frameless window (`winInset` in mc-host-model); the bridge toggles
+   `.embedded-win-inset` on <html> so the pane's now-topmost header insets its
+   RIGHT side clear of the parent window's native caption buttons.
+   Keep 142px in sync with WIN_CAPTION_RESERVE_PX in src/lib/electron.ts and
+   with the `.win-electron` rule above. Deliberately NO -webkit-app-region:drag
+   here: draggable regions are only collected from the host document, never
+   from a cross-origin iframe (see InstancesViewport), and the host's drag
+   strips already clip at the caption zone. */
+.embedded-win-inset header.topbar-glass{padding-right:142px}
+/* Focus mode inside an embedded pane under a Windows frameless host: same
+   caption reserve as the local `.win-electron` rule further up — focus mode
+   takes the pane's header out of flow, so the peeked surface at that corner
+   must clear the caption band too. `.mc-focus-mode` (the body class) instead
+   of `body.mc-focus-mode` because `.embedded-win-inset` sits on <html>, the
+   body's parent. Keep 142px in sync as above. */
+.embedded-win-inset .mc-focus-mode .focus-caption-reserve{padding-right:142px}
 /* The injected #electron-drag-bar (electron/main.js) marks the top 42px as a
    window drag region and only exempts native controls (button/a/input/
    [role="button"]/[tabindex]). The side panel's tab strip lives in that zone
@@ -2223,6 +2250,41 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 .focus-ring:focus-visible{outline:none;border-color:var(--ring);
   box-shadow:0 0 0 3px var(--accent-subtle),0 0 20px color-mix(in srgb,var(--accent) 8%,transparent)}
 
+/* ── Colour-swatch hover cue ── */
+/* The colour swatches (session colours, folder/tag colours) carry no built-in
+   hover feedback once the enlarge-on-hover was removed, and they cannot borrow
+   the usual ones: the two darkest swatches set `borderColor` inline so a
+   `hover:border-*` class is dead (an inline style beats a utility), and
+   `brightness` alone cannot lift the near-black fills (multiplicative, so a
+   +56% relative move is only 0.042→0.066 absolute). So the cue is an `outline`,
+   paired with `hover:brightness-125` for the lighter fills.
+   COLOUR — the outline must not speak SELECTION. This family says "selected" in
+   two colours: `--text-strong` (a near-white border on the session swatches)
+   and `--accent` (a border or `ring-1 ring-accent` on the display/folder/tag/
+   library swatches). A cue in either — or a dimmer shade of one — reads as
+   "selected", not "hovered" (a bright/accent mark is read as selection at a
+   glance whatever its exact lightness). So the cue paints in a NEUTRAL
+   structural token that belongs to neither selection colour in every theme; it
+   differs in colour, not merely in strength.
+   `--border-hover` was the first pick but MEASURED too weak: on the darkest
+   swatch fill it is only 2.2:1 (mean luminance moved just 0.021→0.033), below
+   the 3:1 non-text bar and near the illegible floor. `--muted` is the lightest
+   NEUTRAL token that clears it (~4.7:1 on that fill) without being either
+   selection colour, so no new token is needed.
+   GEOMETRY — `outline-offset:-3px` insets the line, so it sits inside the fill,
+   clear of BOTH selection bands: an accent `ring-*` lives OUTSIDE the box (an
+   outset hover outline would overlap and mask it) and an edge selection border
+   lives AT the box, while the inset line is 3px within. This is structural, so
+   it cannot mask a selected swatch's ring at ANY site — unlike an
+   `:not([aria-pressed])` guard, which silently misses the swatches that mark
+   selection with a conditional class and no aria attribute.
+   Gated on `:not(:focus-visible)` because the cue is itself an `outline`, and a
+   hover UTILITY outspecifies the bare global `:focus-visible` rule — so on a
+   swatch that is both keyboard-focused and hovered the neutral line would mask
+   the 2px accent focus ring. Yielding here lets the focus ring win whenever
+   focus is present. */
+.swatch-cue:hover:not(:focus-visible){outline:1px solid var(--muted);outline-offset:-3px}
+
 /* ── Syntax highlighting (highlight.js) ── */
 .hljs{color:var(--text)}
 .hljs-keyword,.hljs-selector-tag,.hljs-built_in,.hljs-name,.hljs-tag{color:#c678dd}
@@ -2292,8 +2354,8 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
    (not an animation), so the global reduced-motion animation kill-switch
    above leaves the confirmation visible. JS removes the classes after the
    fade completes (REVEAL_FLASH_FADE_MS in ChatSidebar.tsx covers it). */
-.session-row.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
-.session-row.session-reveal-flash-fade{outline-color:transparent}
+.session-row.session-reveal-flash,.folder-row.session-reveal-flash,.folder-col.session-reveal-flash{outline:2px solid var(--accent);outline-offset:-2px}
+.session-row.session-reveal-flash-fade,.folder-row.session-reveal-flash-fade,.folder-col.session-reveal-flash-fade{outline-color:transparent}
 /* Stalled goal loop (ChatSidebar `goalLoopStalled`): the loop is armed but its
    last turn died and nothing is executing — the whole card flashes danger-red
    until the user resumes. Two-class specificity outranks the Tailwind
@@ -2365,6 +2427,14 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 }
 
 /* ── Search highlights ── */
+/* `.search-match` / `.search-current` style the <mark> elements React renders
+   itself (highlightText). The transcript find bar paints matched text through
+   the CSS Custom Highlight API instead (utils/domHighlight): the bubbles are
+   react-markdown output, and wrapping a match there would split text nodes
+   React owns. `::highlight()` honors background-color and color everywhere the
+   API exists, while text-decoration is not painted by every engine, so the
+   current match is told apart by its stronger fill alone rather than the
+   outline the <mark> variant carries. */
 .search-match {
   background-color: var(--search-highlight);
   border-radius: 2px;
@@ -2377,15 +2447,26 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   outline: 2px solid var(--search-highlight-current-border);
   outline-offset: 1px;
 }
+::highlight(mc-chat-match) {
+  background-color: var(--search-highlight);
+}
+::highlight(mc-chat-current) {
+  background-color: var(--search-highlight-current);
+}
 
 /* Preview find (MarkdownPanel) uses the CSS Custom Highlight API — paints over
-   Range objects without mutating the react-markdown DOM. Only color /
-   background-color are honored by ::highlight(); box properties are ignored. */
+   Range objects without mutating the react-markdown DOM. Only color and
+   background-color are used; box properties such as border-radius are ignored. */
 ::highlight(mc-find) {
   background-color: var(--search-highlight);
 }
 ::highlight(mc-find-current) {
   background-color: var(--search-highlight-current);
+}
+
+/* The passage a comment composer is open over (MarkdownPanel annotation). */
+::highlight(mc-annotate) {
+  background-color: var(--accent-subtle, rgba(99, 102, 241, 0.15));
 }
 
 /* Anchored-comment highlights on the markdown / text artifact body are drawn
@@ -2421,9 +2502,13 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
   border: 1.5px solid var(--warn); border-radius: 10px 10px 10px 2px;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
   cursor: pointer; padding: 0;
-  transition: background-color 0.12s ease, transform 0.12s ease, color 0.12s ease;
+  transition: background-color 0.12s ease, color 0.12s ease, box-shadow 0.12s ease;
 }
-.mc-cmt-bubble:hover { transform: scale(1.1); }
+/* Hover PAINTS (deepens the drop shadow), matching the sibling .mc-cmt-rect:hover
+   idiom, since the removed scale(1.1) was the bubble's only hover cue. Shadow-only:
+   no size or position change, and distinct from .active (which recolours to accent
+   with an accent ring). */
+.mc-cmt-bubble:hover { box-shadow: 0 2px 6px rgba(0, 0, 0, 0.45); }
 .mc-cmt-bubble.unread { background-color: var(--warn); color: var(--warn-fg, #1a1a1a); }
 .mc-cmt-bubble.active { background-color: var(--accent); color: var(--accent-fg); border-color: var(--accent); }
 
@@ -2637,7 +2722,35 @@ body.mc-focus-mode.mc-focus-rail .focus-chrome-rail{
 
 /* ── TIER1 a11y: reduced motion / transparency / contrast ── */
 @media (prefers-reduced-motion: reduce){
-  *,*::before,*::after{ transition-duration:0.01ms !important; scroll-behavior:auto !important }
+  /* 0s, NOT the widely-copied 0.01ms. `transition-property` defaults to `all`,
+     so a NON-ZERO duration on `*` MANUFACTURES a transition on every animatable
+     property of every element — including elements that declare none. A
+     transition samples the OLD value on its first frame, so from then on the
+     USED value trails the SPECIFIED value by one frame.
+
+     That cost the chat transcript its stability. The virtualizer writes a
+     spacer height in the SAME commit that mounts a row, so with a manufactured
+     height transition the new row and the space still reserved for it both
+     counted for one frame: `scrollHeight` jumped by that row's own height
+     (measured 160-2228px) and Chromium's scroll anchoring — the scroller is
+     `overflow-anchor:auto`, the spacers are `none` — shoved `scrollTop` by up
+     to 602px before releasing it the next frame. Users reported it as the
+     transcript "jumping between two locations" and as a mid-transcript
+     "gravity well" that rubber-bands a reader back. A frame-resolution probe
+     measured 0 such events with motion enabled and 4-6 per scroll gesture
+     under reduce, and neutralising ONLY `.vc-spacer-skeleton`'s transition
+     took it to 0 with reduce still on.
+
+     A combined duration of 0s means no transition starts, so `transitionend`
+     never fires. Nothing here depends on that: PinnedPrompt owns the app's
+     only `transitionend` listener and it returns before installing one under
+     reduced motion. The repo's own screenshot harnesses already freeze motion
+     with `transition-duration: 0s !important`.
+
+     The `animation-duration:0.01ms` rule further up is NOT the same hazard and
+     stays as it is: `animation-name` defaults to `none`, so a duration alone
+     cannot create an animation where none was declared. */
+  *,*::before,*::after{ transition-duration:0s !important; scroll-behavior:auto !important }
 }
 @media (prefers-reduced-transparency: reduce){
   .topbar-glass,.glass-surface{ backdrop-filter:none !important; -webkit-backdrop-filter:none !important; background:var(--bg) !important }
@@ -2810,4 +2923,13 @@ html[data-font-family="opendyslexic"] .nav-item {
   background-size: 62% 102px, 84% 102px, 44% 102px;
   background-position: 24px 12px, 24px 46px, 24px 80px;
   contain: layout paint style;
+}
+
+:root {
+  /* Unfocused split-view panes: opacity of the background-coloured overlay
+     PaneDim lays over them (0 = no dimming). Ghostty dims unfocused splits at
+     0.3 of background; a chat pane is mostly empty background, on which the
+     overlay is invisible, so only its text carries the cue and it needs more
+     to read at a glance. 0.4 was chosen by eye on the dogfood build. */
+  --pane-dim-opacity: 0.4;
 }

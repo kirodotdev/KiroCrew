@@ -20,7 +20,9 @@ function failureMessage(e: unknown): string {
   return e instanceof Error && e.message ? e.message : ''
 }
 
-const SIDE_RE = /^\/side(?:\s+([\s\S]+))?$/
+// `/btw` is a pure alias for `/side` — same capture group, same handling —
+// so a quick "by the way" question reads naturally at the composer.
+const SIDE_RE = /^\/(?:side|btw)(?:\s+([\s\S]+))?$/
 
 /** Sync predicate for the commands interceptSlashCommand handles. The steer
  *  path needs a cheap synchronous check before deciding not to steer — see

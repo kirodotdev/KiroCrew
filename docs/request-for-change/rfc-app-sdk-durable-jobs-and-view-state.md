@@ -1,22 +1,26 @@
 ---
 title: App SDK durable jobs and view state
-status: draft
+status: in-progress
 revision: v1
 author: Kiro Crew
 created: 2026-09-06
 last-audited: 2026-09-06
 audited-at: 424efa423
 doc-pr:
-implementation-prs: []
+implementation-prs: [8403]
 tracking-issues: []
 supersedes: []
 superseded-by: []
 ---
 # RFC: App SDK durable jobs and view state
 
-Neither surface exists: `useAppJob` and `useAppViewState` appear nowhere in
-`src/kiro_crew` or `website/src`. The run-lifecycle question this shares a boundary
-with is argued in
+This RFC covers two surfaces on different tracks. The view-state record and the
+host-owned cache retention it depends on are an accepted decision, implemented in
+PR #8403 (`useAppViewState` in `website/src/app-sdk/viewState.ts`, with AWS Control
+as its first consumer); until that PR lands, neither `useAppViewState` nor the
+retention default is on the base branch. The durable-job surface stays proposed:
+`useAppJob` appears nowhere in `src/kiro_crew` or `website/src`, and the
+run-lifecycle question it shares a boundary with is argued in
 [`rfc-durable-run-coordinator.md`](rfc-durable-run-coordinator.md).
 
 ## Current SDK boundary

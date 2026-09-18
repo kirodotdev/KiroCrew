@@ -68,6 +68,25 @@ class WeComSendError(RuntimeError):
     """An outbound WeCom send did not reach the platform."""
 
 
+def allowed_userids_from_config(entries: object) -> list[str] | None:
+    """Flatten ``wecom.allowed_users`` (``[{userid, name}, ...]``) to userids.
+
+    The ONE reading of that field's shape, shared by the boot factory and the
+    live reconfigure path so the two can never disagree about who is on the
+    roster. Entries that are not a dict, or carry no ``userid``, are skipped.
+    Returns ``None`` when the whole value is not a list -- the caller decides
+    what a malformed roster means (boot: nobody; reload: keep the old set).
+    """
+    if not isinstance(entries, list):
+        return None
+    out: list[str] = []
+    for u in entries:
+        uid = u.get("userid") if isinstance(u, dict) else None
+        if isinstance(uid, str) and uid:
+            out.append(uid)
+    return out
+
+
 # A dispatch callback consumes an authorized WeCom inbound (carrying the WS
 # routing keys ``req_id`` / ``response_url`` that the neutral InboundMessage
 # cannot hold) and drives a turn. The gateway supplies the real implementation.
@@ -148,6 +167,62 @@ class WeComTransport(MessagingTransport):
     def client(self) -> WeComClient:
         """The underlying WeCom WS client (held + exposed, not hidden)."""
         return self._client
+
+    # -- Live config ---------------------------------------------------------
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``wecom`` config section's authorization fields.
+
+        Called by the dispatcher's config applier when ``config.json`` changes
+        under ``wecom``, so an allow-list edit from the dashboard, the CLI or
+        ``$EDITOR`` takes effect on the next frame instead of the next restart.
+        The roster is rebuilt with the same dict->userid flattening the boot
+        factory uses, and the frozenset is REPLACED wholesale (never mutated) so
+        an in-flight ``authorize`` keeps reading one consistent set.
+
+        Fails closed on shape: a roster that is not a list, or an ``allow_all``
+        that is not a bool, keeps the PREVIOUS value and logs at WARNING --
+        never widens to "everybody" and never silently empties the list. The
+        allow-all flip is the widest grant this channel has (the whole org
+        tenant), so each flip and each roster change is SEL-audited by count,
+        not by id.
+        """
+        userids = allowed_userids_from_config(getattr(section, "allowed_users", None))
+        if userids is None:
+            logger.warning(
+                "wecom: allowed_users is not a list in the reloaded config; keeping the "
+                "previous allow-list (%d userid(s))",
+                len(self._allowed),
+            )
+        else:
+            new_allowed = frozenset(userids)
+            if new_allowed != self._allowed:
+                added = len(new_allowed - self._allowed)
+                removed = len(self._allowed - new_allowed)
+                self._allowed = new_allowed
+                logger.info("wecom: allow-list reloaded (+%d/-%d userid(s))", added, removed)
+                sel().log_api_access(
+                    caller="config",
+                    operation="wecom_transport.reconfigure",
+                    outcome="allow_list_changed",
+                    source="wecom",
+                    resources=f"added={added} removed={removed} size={len(new_allowed)}",
+                )
+        allow_all = getattr(section, "allow_all_users", None)
+        if not isinstance(allow_all, bool):
+            logger.warning(
+                "wecom: allow_all_users is not a bool in the reloaded config; keeping %r",
+                self._allow_all,
+            )
+        elif allow_all != self._allow_all:
+            self._allow_all = allow_all
+            outcome = "allow_all_enabled" if allow_all else "allow_all_disabled"
+            logger.warning("wecom: allow_all_users flipped to %r via config reload", allow_all)
+            sel().log_api_access(
+                caller="config",
+                operation="wecom_transport.reconfigure",
+                outcome=outcome,
+                source="wecom",
+            )
 
     # -- Tier-1 core --------------------------------------------------------
     async def send_message(
@@ -270,8 +345,8 @@ class WeComTransport(MessagingTransport):
     def _may_push(self, chat_id: str) -> bool:
         """Whether *chat_id* is AUTHORIZED to be pushed to right now.
 
-        Deny-by-default and evaluated fresh, so neither a persisted binding nor a
-        previously-advertised target can outlive the permission behind it: a userid
+        Deny-by-default and evaluated fresh, so neither a persisted binding nor an
+        already-advertised target can outlive the permission behind it: a userid
         removed from the allow-list stops receiving this session's replies.
 
         Deliberately does NOT require process-local warmth. ``_warm_chats`` is

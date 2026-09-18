@@ -253,9 +253,42 @@ class TestSpawnAdmissionGate:
             max_concurrent=3,
         )
 
-    def test_spawn_refused_when_critical(self) -> None:
-        """spawn() returns a done SubagentInfo with a retry-later error."""
+    def test_spawn_deferred_when_critical(self) -> None:
+        """spawn() keeps the accepted row queued (next_run_at set) instead of refusing.
+
+        The durable task queue turns the posture gate from a verdict into a
+        scheduling fact: the caller gets a queued id, nothing is registered or
+        started, and the pump re-checks after the admit wait.
+        """
         mgr = self._mgr()
+        assert mgr._taskq is not None
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
+        ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        assert info is not None
+        assert info.done is False and info.queued is True and info.error == ""
+        assert info.id not in mgr._agents and mgr._running_count == 0
+        row = mgr._taskq.get(info.id)
+        assert row is not None and row.state == "queued"
+        assert row.next_run_at is not None and row.next_run_at > mgr._taskq.now()
+        call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
+        assert call_kwargs["outcome"] == "deferred_memory_critical"
+        assert call_kwargs["metadata"]["posture"] == rs.POSTURE_CRITICAL
+
+    def test_spawn_refused_when_critical_without_durable_queue(self) -> None:
+        """Legacy path (agent.task_queue_enabled=false): still a done info with a
+        retry-later error, because there is nothing durable to park the row in."""
+        mgr = self._mgr()
+        mgr._taskq = None
         with patch(
             "kiro_crew.subagent.check_memory_available", return_value=(True, 8.0)
         ), patch("kiro_crew.subagent.KiroCrewConfig") as mock_cfg, patch(
@@ -298,6 +331,48 @@ class TestSpawnAdmissionGate:
         assert info.done is True
         call_kwargs = mock_sel.return_value.log_tool_invocation.call_args[1]
         assert call_kwargs["outcome"] == "rejected_invalid_cwd"
+
+    def test_unmeasurable_memory_proceeds_but_is_logged(self) -> None:
+        """(True, -1.0) means the guard did not run: spawn proceeds, SEL logs it.
+
+        The cwd gate runs BEFORE the memory guard here (a bad path is refused
+        before a row is persisted), so the guard's fall-through is observed at
+        the next gate after it: the posture gate, which defers the row.
+        """
+        mgr = self._mgr()
+        with patch(
+            "kiro_crew.subagent.check_memory_available", return_value=(True, -1.0)
+        ), patch("kiro_crew.platform_compat.IS_LINUX", True), patch(
+            "kiro_crew.subagent.KiroCrewConfig"
+        ) as mock_cfg, patch(
+            "kiro_crew.subagent.cached_admission_check", return_value=_refused()
+        ), patch(
+            "kiro_crew.subagent.sel"
+        ) as mock_sel:
+            mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
+            mock_sel.return_value.log_tool_invocation = MagicMock()
+
+            info = mgr.spawn(task="test task", parent_session_key="sess-1")
+
+        # The spawn proceeded past the memory guard (it reached the posture
+        # gate, which parked the row), so the fail-open contract held...
+        assert info is not None
+        assert info.done is False and info.queued is True
+        outcomes = [
+            c[1]["outcome"]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+        ]
+        assert outcomes[-1] == "deferred_memory_critical"
+        # ...and the guard-did-not-run case was made observable.
+        assert "memory_check_unavailable" in outcomes
+        unavailable = next(
+            c[1]
+            for c in mock_sel.return_value.log_tool_invocation.call_args_list
+            if c[1]["outcome"] == "memory_check_unavailable"
+        )
+        assert unavailable["tool_name"] == "spawn_run"
+        assert unavailable["metadata"]["min_gb"] == 4.0
+        assert unavailable["metadata"]["task"] == "test task"
 
 
 # ── config key ───────────────────────────────────────────────────────────────
@@ -413,7 +488,7 @@ class TestCronExprPassthrough:
         self, tmp_path: Path
     ) -> None:
         # Harder variant: the manual run starts AND FINISHES during the
-        # admission await, so the job is no longer in _executing. An id-only
+        # admission await, so the job is not in _executing. An id-only
         # revalidation would double-fire; the live-object _is_due re-check
         # (advanced last_run_ts) must catch it.
         executed: list[str] = []
@@ -624,7 +699,9 @@ class TestCronExprPassthrough:
         ) as mock_sel:
             mock_cfg.load.return_value.agent.spawn_min_memory_gb = 4.0
             mock_sel.return_value.log_tool_invocation = MagicMock()
-            mgr._drain_queue()
+            # On a running loop the pump is a coroutine (its store reads run
+            # off-loop); await one pass directly.
+            await mgr._drain_queue_async()
             # Flush every announce coroutine scheduled via ensure_future —
             # a duplicate would surface as a second on_done call here.
             for _ in range(5):

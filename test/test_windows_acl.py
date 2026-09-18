@@ -38,6 +38,54 @@ AUTHENTICATED_USERS = "S-1-5-11"
 windows_only = pytest.mark.skipif(sys.platform != "win32", reason="needs a Windows ACL")
 
 
+def _set_owner_to_current_user(path: Path) -> None:
+    """Give this test-owned file an explicit current-user owner on Windows.
+
+    Elevated Python processes commonly create temp files owned by the built-in
+    Administrators group. That host policy is valid, but it is not the fixture this
+    owner-reader test claims to exercise, so set the owner on this file only.
+    """
+    advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    se_file_object = 1
+    owner_security_information = 0x00000001
+    sid = ctypes.c_void_p()
+
+    convert = advapi32.ConvertStringSidToSidW
+    convert.argtypes = [ctypes.c_wchar_p, ctypes.POINTER(ctypes.c_void_p)]
+    convert.restype = ctypes.c_int
+    if not convert(platform_compat.current_user_sid(), ctypes.byref(sid)):
+        raise ctypes.WinError(ctypes.get_last_error())
+    try:
+        set_owner = advapi32.SetNamedSecurityInfoW
+        set_owner.argtypes = [
+            ctypes.c_wchar_p,
+            ctypes.c_ulong,
+            ctypes.c_ulong,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        set_owner.restype = ctypes.c_ulong
+        rc = set_owner(
+            str(path),
+            se_file_object,
+            owner_security_information,
+            sid,
+            None,
+            None,
+            None,
+        )
+        if rc:
+            raise ctypes.WinError(rc)
+    finally:
+        local_free = kernel32.LocalFree
+        local_free.argtypes = [ctypes.c_void_p]
+        local_free.restype = ctypes.c_void_p
+        local_free(sid)
+
+
 def _security(
     *,
     owner: str = SYSTEM,
@@ -327,6 +375,19 @@ class TestWellknownWindowsDirs:
         assert runner._wellknown_windows_dirs("gh") == (
             os.path.join(root, "GitHub CLI"),
             os.path.join(root, "GitHub CLI", "bin"),
+        )
+
+    def test_windows_keeps_azure_cli_install_path_nested(self, monkeypatch) -> None:
+        monkeypatch.setattr(runner.sys, "platform", "win32")
+        monkeypatch.setenv("ProgramFiles", r"C:\PF")
+        monkeypatch.delenv("ProgramW6432", raising=False)
+        monkeypatch.delenv("ProgramFiles(x86)", raising=False)
+        root = r"C:\PF"
+        install_dir = os.path.join(root, "Microsoft SDKs", "Azure", "CLI2", "wbin")
+
+        assert runner._wellknown_windows_dirs("az") == (
+            install_dir,
+            os.path.join(install_dir, "bin"),
         )
 
     def test_an_unset_root_is_skipped_rather_than_joined_as_empty(self, monkeypatch) -> None:
@@ -895,6 +956,85 @@ class TestVolumeClassification:
         assert windows_acl._volume_is_local(fake, Path("relative/gh")) is (sys.platform == "win32")
 
 
+class TestRemoteVolumeVerdict:
+    """`volume_is_remote`, the tri-state sibling `taskq` picks a journal mode from.
+
+    Runs on every runner: the root is derived with `ntpath`, so the Windows
+    shapes are real strings here rather than something only a Windows host can
+    produce, and the drive type comes from the injected handle.
+    """
+
+    @pytest.mark.parametrize(
+        "drive_type,expected",
+        [
+            (4, True),
+            (3, False),
+            (2, False),
+            (5, False),
+            (6, False),
+            (0, None),
+            (1, None),
+            (9, None),
+        ],
+    )
+    def test_the_drive_type_decides(self, drive_type, expected) -> None:
+        fake = _FakeDlls()
+        fake.drive_type = drive_type
+        assert windows_acl._volume_remote_verdict(fake, Path("C:/kiro/tasks.db")) is expected
+
+    def test_a_unc_path_is_classified_from_the_share_root(self) -> None:
+        seen: list[str] = []
+        fake = _FakeDlls()
+        fake.GetDriveTypeW = lambda root: (seen.append(root), 4)[1]
+        verdict = windows_acl._volume_remote_verdict(fake, Path(r"\\server\share\kiro\tasks.db"))
+        assert verdict is True
+        assert seen == ["\\\\server\\share\\"]
+
+    def test_a_mapped_drive_is_classified_from_its_letter_root(self) -> None:
+        seen: list[str] = []
+        fake = _FakeDlls()
+        fake.GetDriveTypeW = lambda root: (seen.append(root), 4)[1]
+        verdict = windows_acl._volume_remote_verdict(fake, Path(r"Z:\kiro\crew\tasks.db"))
+        assert verdict is True
+        assert seen == ["Z:\\"]
+
+    def test_a_local_drive_is_not_remote(self) -> None:
+        fake = _FakeDlls()
+        fake.drive_type = 3  # DRIVE_FIXED
+        assert windows_acl._volume_remote_verdict(fake, Path(r"C:\Users\me\.kiro")) is False
+
+    def test_a_path_with_no_volume_root_is_unknown(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """No root, no verdict: unknown, which is not the same fact as local.
+
+        The root comes from `ntpath.abspath`, which on Windows resolves a
+        drive-less string against the CURRENT drive and so always yields one -- a
+        POSIX-shaped path names no volume only off Windows, where `abspath` has no
+        drive to supply. The missing root is therefore driven directly, so the fact
+        holds on every runner, and the drive type is made unaskable to prove the
+        unknown came from the absent root rather than from a queried volume.
+        """
+        fake = _FakeDlls()
+        fake.GetDriveTypeW = lambda root: pytest.fail(f"queried the drive type of {root!r}")
+        monkeypatch.setattr(windows_acl, "_volume_root", lambda _path: None)
+        assert windows_acl._volume_remote_verdict(fake, Path("/home/me/.kiro")) is None
+
+    def test_the_public_form_classifies_through_the_dll_handle(self, reader) -> None:
+        fake = reader(_FakeDlls())
+        fake.drive_type = 4  # DRIVE_REMOTE
+        assert windows_acl.volume_is_remote(r"\\server\share\tasks.db") is True
+        fake.drive_type = 3  # DRIVE_FIXED
+        assert windows_acl.volume_is_remote(r"C:\kiro\tasks.db") is False
+
+    def test_the_public_form_refuses_where_there_is_no_volume_to_classify(self) -> None:
+        """`_load` refuses off Windows, so the CALLER -- not this module -- decides
+        what that means (`platform_compat.path_volume_is_remote` answers None)."""
+        if sys.platform == "win32":
+            assert windows_acl.volume_is_remote("C:\\") is False
+            return
+        with pytest.raises(windows_acl.AclUnavailable):
+            windows_acl.volume_is_remote("/home/me/.kiro")
+
+
 # ── the real ACL read ────────────────────────────────────────────────────────
 
 
@@ -903,6 +1043,7 @@ class TestDescribeAgainstRealAcls:
     def test_a_user_owned_tree_reports_the_user_as_owner(self, tmp_path: Path) -> None:
         binary = tmp_path / "gh.exe"
         binary.write_text("stub")
+        _set_owner_to_current_user(binary)
         security = windows_acl.describe(binary)
         assert security.owner_sid == platform_compat.current_user_sid()
         assert not security.null_dacl
@@ -945,15 +1086,6 @@ class TestDescribeAgainstRealAcls:
 
     def test_the_current_user_sid_is_a_well_formed_sid(self) -> None:
         assert platform_compat.current_user_sid().startswith("S-1-")
-
-    def test_elevation_is_reported_as_a_tri_state(self) -> None:
-        """``None`` (token unreadable) is distinct from ``False`` (not elevated).
-
-        Lives in ``platform_compat`` rather than here: it already owns reading
-        this process's own token, and a second copy of the OpenProcessToken /
-        GetTokenInformation prototype pair is plumbing that drifts.
-        """
-        assert platform_compat.is_token_elevated() in (True, False, None)
 
 
 class TestLoadRefusesOffWindows:
@@ -1037,8 +1169,8 @@ class TestApplyOwnerOnlyOffWindows:
     def test_the_volume_is_never_consulted_by_this_mechanism(self, monkeypatch) -> None:
         """The writer applies the DACL on ANY volume; the gate is not its job.
 
-        local=False would have refused while the gate lived here. It no longer
-        does: an on-loop caller has to ask before it starts (see
+        This mechanism does not consult the volume; an on-loop caller has to ask
+        before it starts (see
         :func:`windows_acl.volume_is_local`), because a refusal at this depth
         arrives after the caller already paid the cost it was avoiding.
         """

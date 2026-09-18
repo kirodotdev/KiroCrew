@@ -4,6 +4,53 @@
 
 Persistent conversation history with provenance tracking and LLM-driven consolidation. Conversations survive session expiry and gateway restarts.
 
+Private essential-context receipts are not transcript metadata and are never
+restored as authority. A resumed provider gets a current complete snapshot even
+when native history contains the previous copy. User/history replay identity and
+current-request exclusion remain independent of essential-envelope deduplication.
+
+Consolidation resolves its destination through the same strict recorded memory
+binding as interactive turns, before starting an extraction provider. A named
+member store must be declared, readable and prepared; malformed or unavailable
+identity aborts the pass without writing to Global Memory V1. Sessions with no
+memory binding retain the V1 consolidation path.
+
+Owned V2 consolidation never publishes or refines shared auto-skills and does
+not run the global skill lifecycle. Member experience remains in that member's
+store; the existing V1 auto-skill behavior is unchanged.
+
+The extraction pass freezes its original transcript and rechecks it after the
+model returns, before writing memory. A generation change, edit/deletion or new
+user turn leaves that pass pending; an appended assistant acknowledgment can
+remain for the next pass. Revision checks additionally prevent a stale proposal
+from overwriting a newer fact. V2 preference/project Markdown is read-only to
+the consolidator even when the global legacy migration flag is false; new facts
+and corrections use structured records. The full policy is owned by
+[memory-skills-hooks](memory-skills-hooks.md#consolidation-historypy-historyconsolidator).
+
+Metadata readability is part of this contract: invalid JSON or invalid text
+encoding in an existing transcript returns an unreadable status. Identity-aware
+consumers refuse the operation; the legacy `get_metadata()` projection still
+returns an empty dictionary for callers that only display history.
+
+Template-versus-member selection survives recent-session restore, explicit
+resume and dormant-slot rehydration through the protected, exact-session record
+owned by `session_agent_selection.py`; transcript fields cannot manufacture that
+provenance. Restoring a template conversation after discovery imports a member
+with the same name keeps its original namespace. This record is separate from
+the protected private-store assignment and cannot authorize V2 memory. Old
+conversations without it keep strict legacy resolution rather than guessing
+from missing private bindings. See [session](session.md#agent-selection-provenance).
+
+Bulk clear excludes transcripts whose metadata cannot be read, including Global
+V1 transcripts. Their owner and pinned state cannot safely be inferred. An exact
+sidebar delete (`DELETE /api/sessions/{key}`) still bypasses bulk identity and
+pin selection, but it now reads `linked_session_key` while holding the transcript
+lock because that field may be the only exact cron owner key. Unreadable metadata
+therefore returns `409 cron_ownership_unknown` with the row intact; the operator
+must release any candidate jobs, repair the metadata, and retry. A readable exact
+delete leaves every other session untouched.
+
 ### Composition and source ownership
 
 `kiro_crew.history` remains the compatibility facade and defines the real
@@ -54,13 +101,26 @@ Per-thread JSONL files at `~/.kiro/crew/sessions/{safe_key}.jsonl`. First line i
 - `recent_with_provenance(key)` — entries with source citations
 - `list_sessions()` — lists all sessions with title (first user message or LLM-generated). Sort key uses ISO `created` string consistently (defaults to ISO from `st_mtime` if no metadata `created` field, ensuring string-only comparisons). Each returned session's meta dict also carries `folder_id` when present in the persisted metadata line, so sessions can be grouped by the folder they were filed in.
 - `agent_usage()` — returns `{agent_name: (session_count, last_used_mtime)}`; built on `list_sessions()` so it inherits canonical-session dedup + symlink-skip (counts per logical conversation). Used by `GET /api/agents` to order the roster most-used-first, degrading to config order on failure.
+- `history_index.py` stores file freshness identities without truncation: signed-64-bit
+  `st_dev`/`st_ino` values remain SQLite INTEGERs; wider values use prefixed decimal
+  TEXT (`i:<value>`) to avoid INTEGER-affinity conversion to floating point. Sync,
+  freshness checks, shortlist validation and snippet reads use the same encoding.
+  Existing integer rows and schema version 2 remain compatible; unsigned Windows
+  device IDs and 128-bit inode IDs do not require an index migration.
 - `search_sessions(query, limit=50)` — case-insensitive substring content search over the newest `_SEARCH_SCAN_WINDOW` session JSONL files; the ONE ranking shared by the dashboard history filter, the `search_chat_history` MCP tool, and Discord session resume. The query is parsed by `parse_search_query` into needles: non-CJK terms are required substrings (AND over the document); a spaceless-script run (Han ideographs + kana; NOT Hangul, since modern Korean is space-separated) gates on its individual characters (required, down-weighted) plus an adjacency floor — at least one of the run's character bigrams must hit somewhere, so a spaceless multi-word CJK query matches documents containing the words apart (each word is a bigram hit) while scatter-only character noise is excluded, and adjacency dominates the ranking; the floor is waived when the query's bigram set exceeds its cap (a partial set cannot prove no-adjacency-anywhere, so truncation only ever loosens). Occurrence counts are weighted per needle, length-normalized, title-boosted, phrase-bonused, then multiplied by a bounded recency boost (×2.5 for a session modified now, decaying toward ×1 with a 30-day half-weight — never a penalty; sized so a year-old double mention loses to today's single mention while a decisively better old match still wins), and capped to `limit` results. Exposed via `GET /api/sessions/search?q=<q>&limit=<n>` (min 2 chars); used by the dashboard history filter to find sessions by content (CR ids, error messages, file paths) rather than title alone. Returns the same meta dicts as `list_sessions()`, so each search hit likewise carries `folder_id` (when present), letting the sidebar group results by folder. Snippet builders (`_content_snippet`, mcp_core's `_extract_history_snippet`) derive their needles from the same parse via `snippet_needles` (phrase first, then whole terms/bigrams, lone CJK characters last) so match and excerpt cannot drift apart. The fold/snippet memos backing the search are keyed by the sanitized `path.stem` (from `list_sessions`' meta dicts) while writers invalidate under the logical session key; `_invalidate_cache`'s identity-wide pops are what connect the two spellings, so a housekeeping rewrite that restores the file's mtime still drops the memo and search stops matching text the transcript no longer contains.
 - `needles_match_text(needles, folded_text)` — the single-string form of `search_sessions`' match gate (required needles as substrings + the CJK adjacency floor), for callers filtering one text field; Discord session resume's zero-hit title fallback uses it so title matching cannot grow a second spelling of tokenization.
 - `read_file_change_messages(key)` — a lightweight Artifacts projection that streams one transcript as bytes, skips lines without the serialized `"file_changes"` key before JSON parsing, and retains only `ts` plus `meta.file_changes` in its own bounded, file-stamped cache. It never warms `_msg_cache`, so scanning the session-document firehose cannot retain the full parsed transcript corpus.
 - Forge references (pull requests, merge requests, issues) are a query dimension of their own, because one item has several written spellings and a transcript carries whichever one its author used. A term naming an item — `#4411`, `PR #4411`, `pr 4411`, `pull request 4411`, `pr4411`, `pull/4411`, a full PR/MR URL, `owner/repo#4411` — becomes ONE required needle carrying every spelling of that item (`SearchNeedle.alts`, counted by the shared `count_needle`), so any spelling finds every spelling. The words that introduce the number are dropped from the gate: they are not part of the reference, and requiring the literal "pr" would disqualify a transcript that names the item only by URL. Spellings are `digit_bounded` on both sides, so `#4411` matches neither `#44110` nor the run id `1544110293`. The TYPED sigil decides the family, never a word before it: `mr#12` is read as `#12`, because letting the word win produced a reference none of whose spellings was the string the user typed. Coverage of every accepted shape is pinned by a property test that drives each one against a transcript quoting it verbatim, rather than by inspection of the spelling list. GitHub's pull/issue sequence is shared (`#4411` ≡ `/pull/4411` ≡ `/issues/4411`) while GitLab numbers merge requests separately, so `!12` and `#12` stay distinct families and never match each other; bare `merge` is not a GitLab word (GitLab is `MR 12` / `merge request 12` / `!12`). Plain digits remain one of the spellings exactly when the QUERY typed no sigil (`issue 42`, `PR 4411`, `pr4411`): such a query previously gated on the digits, so dropping them would HIDE the transcript that says "we hit issue 42 in prod", and keeping them makes the recall of the literal AND it replaces hold with ONE intended exception — a session whose only claim to the old match was the digits sitting inside a longer number, which is what the boundary exists to exclude. The LEFT edge of that boundary applies only to a spelling that starts with a digit: for a delimited spelling the character before it says nothing about the number's length, and demanding a non-digit there would refuse `#4411` inside `owner/repo2#4411` — a repo whose name ends in a digit, matched against the very reference the query named. Only a lead-in run that actually NAMES a type turns a following number into a reference: `pr 4411`, `issue 42`, `pull request 4411` and `merge request 12` (the two-word GitLab form) do; `requests 12` and `merge 1234` do NOT and stay literal terms, since dropping such a word from the gate would trade a real term for every session mentioning that number. A query that DID type a sigil never gated on bare digits, so it keeps them out and stays precise (a standalone "12" is ordinary prose). A BARE number with no naming word is not a reference at all: it keeps its plain substring needle — numeric content search (ports, error codes, run ids) is unchanged — and gains the spellings as scoring-only needles at `_FORGE_REF_WEIGHT`, so the session that references the pull request outranks one that merely contains those digits. Those ranking needles are NOT adjacency evidence (`SearchNeedle.adjacency`, which only CJK bigrams set), or they would arm the adjacency floor and turn a ranking hint into a hidden gate. Two limitations are accepted rather than special-cased, both needing a query nobody writes and both only widening the result set: a chain-only word wedged between the type word and the number (`issue merge 42`) is swallowed, and because the gate is keyed by term text a query repeating a suffix word as its own term (`pull the pull request 12`) loses that term. Closing either means keying the gate by token position instead of by text. Expansions per query are capped at `_SEARCH_MAX_FORGE_REFS`, each costing one scan per spelling per scanned session (up to eight for a named reference, up to thirteen for a bare number's both-families ranking needle, plus up to eight more for a registered provider's own prefixed id — see below); a token past the cap degrades to a plain needle.
 - A REGISTERED source provider contributes its OWN id spellings through the same machinery, so an edition whose reviews are written `REV-987654321` is searchable without any provider vocabulary in core. The seam is one optional plugin hook, `search_ref(token) -> (canonical, alts) | None` on `SourceProviderPlugin`, discovered with `getattr` exactly like `path_markers()`; `source_search_ref()` fans out across the registered plugins (asking each registered plugin until one answers, then handing that answer through unjudged — shape is the normalizer's job, and skipping a malformed answer would only serve the same two-registrant case the merge below is declined for), and `register_source_provider()` publishes that collector DOWNWARD into `history_search.register_search_ref_resolver` at registration time — never from a route handler, because `parse_search_query` is also reached from paths that serve no HTTP (the Discord title-only resume gate, the `kirocrew memory search` CLI) and a process that never ran a route would otherwise answer the same query differently. One slot holds the resolver, not a list: the per-plugin fan-out already lives in the collector. The FIRST plugin to recognize a token WINS, for every token shape: a prefixed id names ONE item, so merging would conflate distinct items, and a cross-plugin merge for a bare number would exist only to serve two registrants holding a real item at the same number — which this repo, registering no provider at all, cannot produce. Cost stays bounded in ONE place: `_MAX_SEARCH_REF_SPELLINGS` (8, sized to the sibling per-plugin `_MAX_PLUGIN_PATH_MARKERS` because it bounds the same kind of thing — what ONE plugin hands core for one lookup) bounds the single answer that arrives, with no collector-side ceiling to drift from it. A bare number is NOT a provider token at all: a provider's ids are prefixed, so a run of digits names nothing it owns and the resolver is not consulted for one. `_provider_search_ref` is the single normalizer — it casefolds every spelling (the query is casefolded before parsing and `count_needle` requires already-folded needles, so a capitalized spelling produces a needle that matches NOTHING, silently), de-duplicates, drops empties, applies the fan-in ceiling, and DROPS an answer none of whose spellings carries the typed token, since such an answer describes some other item and would otherwise rank a query on text it never named. Every way a resolver can fail is contained and costs no more than a debug log — carrying a traceback where an exception was raised, and the offending value where a shape was merely wrong, so none of them is silent: raising when called, returning a malformed answer, and raising while its `alts` are READ — the hook promises a `Sequence`, which cannot do that, but a resolver ignoring the contract can, so the read sits inside the same boundary and the answer is dropped WHOLE rather than half-read, since an exception there would otherwise escape the parse as a 500 on every search. A provider is consulted only for a token no built-in shape recognized (built-ins always win), contributes SPELLINGS ONLY and never lead-in vocabulary (the words a provider would want — "review", "cr" — are common English, so admitting them would trade a real search term for every session mentioning that number), and can never gate a BARE all-digit token, which it is never even asked about — so no number of registered providers can spend the `_SEARCH_MAX_FORGE_REFS` budget on one numeric token. The purity contract — pure, allocation-cheap, no I/O — is documented and not enforced: a resolver is consulted for every term of every query and the parse runs at least twice per search, so a blocking resolver becomes per-keystroke latency in the search box.
 - `_read_messages` — mtime-guarded message cache with the same double-checked, miss-only locking `_folded_content` uses for this identical race. A warm hit is served lock-free; only a MISS takes the session's in-process writer lock (`_file_lock`) and re-checks mtime + cache under it, so a cache fill cannot publish a pre-rewrite parse after an mtime-restoring rewrite (`_restore_mtime`) invalidated the cache. ON the event loop the lock is acquired non-blockingly and a busy lock falls back to an unlocked fill, so an on-loop read never stalls behind a writer holding the RLock across its cross-process flock wait (`_FLOCK_ACQUIRE_TIMEOUT_S`). An unlocked fill publishes through two witnesses, one per writer class: a per-key invalidation **generation** covering local writers (`_invalidate_cache` bumps the counter BEFORE dropping entries; the fill snapshots it before its stat and publishes only while it is unmoved, re-checked after the store), and a cross-process **flock-hold witness** covering external processes (`_flock_hold_witness`: publish only while this process provably held the sidecar flock for the whole fill window — an external writer's invalidation bumps a table in its own process, invisible here, so the flock is what excludes it; the witness carries a release epoch so a broken-and-reacquired hold never passes as continuous). A fill that races no rewrite is kept instead of re-parsed on the next read; one that cannot prove its window clean is discarded. Every published entry also records the generation it was stored under, and a warm HIT requires both the mtime and the generation to match: `_invalidate_cache`'s pops reach only its own instance's caches, so the process-wide bump is what unhits an entry when the rewrite was performed through a different `ConversationLog` instance. The generation guards `_msg_cache` specifically — the derived `_meta_cache`/`_recent_cache`/`_folded_cache`/`_snippet_cache` memos keep mtime-plus-instance-local-pop guards, so the cross-instance preserved-mtime case is a knowingly accepted residual gap for those (they back bounded views and search memos, not the authoritative transcript) — and lives in a process-wide class-level table keyed by `(transcript dir, sanitized filename stem)` — the same scope as the per-path lock table, because the writer forcing a reader onto the unlocked fill may be a different `ConversationLog` instance — with the legacy/canonical Slack spellings closed over bidirectionally (`_cache_key_identities`), because one session is reachable under both its logical key and its sanitized `path.stem` spelling and the writer and reader do not always use the same one.
-- `delete_session(key)` — permanently removes a session JSONL file
+- `delete_session(key)` — permanently removes a session JSONL file. Dashboard
+  deletion may tear down the exact live slot and idle SessionManager generation
+  captured before unlink, but it preserves chat pins, work ledgers, and
+  autocompact overrides. Those stores can be claimed by a transcript created or
+  restored in another process after any catalog scan; stale sidecars are
+  reversible, while deleting a successor's state is not. The teardown contract
+  is specified in [session.md](session.md) under **Permanent history deletion
+  keeps ownership exact**.
 
 ### MCP chat-history tools (`mcp_core.py`)
 
@@ -162,6 +222,14 @@ the same provenance ledger entry.
 
 ## Dashboard History Persistence — Frozen Prefix + Live Window (`dashboard/chat_persistence.py`)
 
+Dashboard restoration reads an existing protected agent selection before applying
+the transcript's agent field. A provisional history write left by an interrupted
+switch therefore cannot replace the committed choice, even if its rollback could
+not acquire the history lock. Missing selection records retain legacy resolution;
+unreadable records remain execution refusals. Private-store authority is still
+checked independently. Async restore prefetches this record off-loop alongside
+the transcript and applies the resulting name on the event loop.
+
 `_save_slot_to_history` persists dashboard chat slots. It models the session
 file as a **frozen prefix + live window** so on-disk history is never
 overwritten or truncated — a slot that restored only the last ~500 messages can
@@ -238,6 +306,17 @@ no longer destroy older turns.
   value outside the allowlist on a live parent, and passing it through would
   raise out of the slot constructor as a 500. The fork instead answers 409
   `fork_source_memory_mode_invalid` (SEL `denied`), and no child exists.
+- **Private-member fork identity**: a V2 fork also inherits the parent's
+  protected memory assignment before the child receives copied history. The
+  parent assignment must match the currently configured member and store;
+  missing, damaged or mismatched evidence refuses. Transcript metadata cannot
+  authorize that inheritance. Persistent, incognito and temporary forks keep
+  their existing mode guarantees, and Global or named V1 history is never
+  relabeled as private V2 by forking it.
+  Cancellation waits for an in-flight binding publication before removing the
+  empty child. Any published assignment remains attached to that unique key,
+  including after a later save failure, so partial private history cannot become
+  unprotected. This can leave an unused protected identity record.
 - **Concurrency**: `_flush_dirty_slots` runs the save in an executor thread while
   `_run_chat` mutates `slot.messages` on the event loop. `slot._lock` is an
   asyncio lock (unusable from the thread), so the save instead takes a
@@ -301,12 +380,18 @@ no longer destroy older turns.
 - **Cross-process lock (`_locked`)**: `_save_slot_to_history` holds the session's
   cross-process `_locked` (the SAME lock `append` / `append_off_loop` / rotate /
   rewrite / metadata edits take) across its metadata read, frozen-prefix read,
-  archive diff, and `atomic_write`. Without it a concurrent `append_off_loop`
-  (e.g. a workflow/cron result appended to the originating dashboard session)
-  could land between the save's file snapshot and its file-replacing
-  `atomic_write`, silently deleting the acknowledged append. On the event loop
-  `_locked` makes ONE non-blocking acquire and raises `HistoryLockTimeout` under
-  contention rather than blocking the loop — so **on-loop callers MUST offload**:
+  archive diff, and `atomic_write`. `_locked` expands every Slack spelling through
+  `transcript_lock_stems` and delegates to `ConversationLog.locked_stems`, which
+  acquires the exact physical stems in sorted order; canonical `slack_<ts>` and
+  pre-migration bare `<ts>` writers therefore cannot synchronize on different
+  sidecars. Writers resolve `_path` only after that complete set is held, so a
+  waiter cannot publish a filename choice made before restore created the other
+  alias. Without the lock a concurrent `append_off_loop` (e.g. a workflow/cron
+  result appended to the originating dashboard session) could land between the
+  save's file snapshot and its file-replacing `atomic_write`, silently deleting
+  the acknowledged append. On the event loop `_locked` makes ONE non-blocking
+  acquire per physical stem and raises `HistoryLockTimeout` under contention
+  rather than blocking the loop — so **on-loop callers MUST offload**:
   `save_slot_off_loop(state, slot, …)` dispatches the save to a worker thread so
   it takes the patient off-loop acquire path. It is `best_effort=True` by default
   (a lock timeout / I/O error is logged, not raised — the in-memory slot is the
@@ -612,6 +697,18 @@ archived instead of being permanently deleted:
   days; `-1` or `null` disables cleanup so the user manages deletion manually).
   `_cleanup_old_archives()` reads the value from config when called with no
   explicit `retention_days`, and is rate-limited to once per hour.
+- **The same pass expires closed SESSION LEDGERS**, on that same setting and
+  inside that same throttle: `_cleanup_expired_ledgers()` hands the resolved
+  window to `ledger.store.sweep_expired()`. One switch governs both halves
+  because a session's message bodies live in its ledger — expiring the transcript
+  archive while the ledger it points into grew forever would keep the larger half
+  of the same history indefinitely, and a second setting for it would be a second
+  thing to find and turn off. The ledger half is imported lazily and contained: it
+  runs on the ARCHIVE path, where raising would turn "a ledger tree that could not
+  be swept" into "a transcript that could not be archived", trading a disk-space
+  problem for a loss of history. An absent `archive/` directory no longer returns
+  early, since a session holds a ledger long before anything of its transcript is
+  archived.
 - **API**: `GET /api/session/archive` (list), `GET /api/session/archive/{name}` (read with path traversal protection)
 - **Rotated history stays pageable.** `read_messages_chained_full(key)` returns,
   per chain key, that key's `reason="rotate"` archive segments (filename-stamp
@@ -787,12 +884,128 @@ soft-cancel success) gates the one-shot re-injection.
 
 ## Session Lifecycle
 
+Cold-start prompt replay merges the on-disk chained transcript with a frozen
+live-window snapshot before applying role quotas, a tail-first model-window
+budget and redaction. Message identity is `meta.mid`, falling back to a delivery
+`sendId` or an exact legacy timestamp/role/content tuple. Only object-valued
+metadata supplies delivery IDs; scalar and list metadata use the legacy identity
+without changing the persisted row. Cross-source matching
+is one-to-one, so repeated text with distinct IDs and repeated id-less rows are
+retained. The triggering request's captured identity is excluded whether or not
+that row was flushed. Queue drain passes its appended row directly to the runner,
+including `inject` rows with `cron`, `recovery` and `user_replay` kinds. Other
+entry points capture the latest user, nudge, subagent or inject row before any
+await. Same-text older deliveries remain history because exclusion uses the
+captured row's identity. There is no additional whole-slot prefix after this replay.
+An explicit replay, including an empty replay, suppresses `ContextBuilder`'s
+inner JSONL fallback; only an absent replay requests fallback construction.
+
 1. New session → full context injected (memory + skills + lessons + last 20 messages)
 2. Messages saved to JSONL with provenance after each response
 3. Context ≥ configured threshold (`session.autocompact_pct`, default 70%) → compaction via kiro-cli `/compact` (fire-and-forget)
 4. Session expires (30min idle) → provider killed
 5. User returns → new session with history re-injected
 6. After 10+ messages → background consolidation → structured memory updated
+
+## Inline Image Attachments (`chat_attachments.py`)
+
+A message's inline images are session-scoped content and are stored with its
+transcript. `![alt](/abs/path.png)` is resolved off disk by the dashboard at VIEW
+time (`/api/file-raw`), and the path an agent writes normally points into its own
+per-process scratch directory (`agent_scratch.py`), which is reclaimed when the
+agent process dies — so the reference outlives the bytes and the transcript
+renders a missing-file chip.
+
+At each write boundary the referenced image is copied into
+`<sessions dir>/<transcript stem>.attachments/<sha256[:16]>-<basename>` and the
+**persisted** destination is rewritten to point there. Two boundaries share the
+one helper, `persist_inline_images`:
+
+| Boundary | Covers |
+|---|---|
+| `ConversationLog.append` / `append_if_absent` | agent, channel, cron and workflow rows |
+| `chat_persistence._build_message_entry` | the dashboard slot save's window re-serialization |
+
+Contract:
+
+- **Copy, never move.** The original file stays where the agent put it. The
+  dashboard slot save COMMITS the rewritten destination back into its in-memory
+  row: the save re-serializes the whole window on every flush, so a row still
+  naming the scratch file would be re-resolved each time and, once scratch is
+  reclaimed, overwrite the good persisted path with the dead one. The live UI
+  reads the image from disk at view time either way.
+- **Content-addressed**, so one image referenced by many messages is stored once.
+- **Idempotent**: a destination already inside the attachments directory is left
+  alone, which lets the two boundaries compose and lets the slot save
+  re-serialize its window on every flush without re-copying.
+- **A preserved image corroborates an id match.** The two boundaries can meet
+  one message at different times: the slot save (or an injector's
+  `append_if_absent`) lands it with the image rewritten to its stored copy, and
+  by the time the other writer runs the agent's scratch file can be gone, so
+  that writer's rewrite fails open to the original path and the bodies disagree.
+  Both id-aware dedup sites — `append_if_absent`'s same-`meta.mid` check and the
+  slot save's pass-0 fold in `_frozen_prefix_and_foreign_appends` — therefore
+  accept `same_text_modulo_images` (equal text, image destinations compared by
+  the stored copy's own naming, at least one already inside this transcript's
+  attachments directory) as corroboration alongside equal body or equal `ts`.
+  Corroboration stays required, because `meta.mid` is caller-suppliable; body
+  equality stays the rule for id-less callers.
+- **`role != "user"`**, the same gate the redaction boundary uses: an inline image
+  is agent output, and a path the user typed names a file of their own.
+- **Bounded scan.** A row with more than `MAX_IMAGE_OPENERS_PER_MESSAGE` (256)
+  `![` openers is left as written without scanning: the reference scanner is
+  quadratic in the opener count and this runs under the session lock on
+  LLM-authored text. The Storage page's empty-shell `rmdir` of a drained
+  attachments directory re-takes the transcript lock, because a resuming writer
+  creates that directory and lands its first image under the same lock.
+- **Fail-open per image**, at debug level. Skipped: remote and `data:`
+  destinations, relative paths, non-image extensions, anything over 25 MiB,
+  sensitive paths, and non-regular files — **symlinks are refused, never
+  followed**, because the copy lands where the dashboard serves it.
+- `delete_session` takes the attachments with the transcript in three
+  all-or-nothing steps: rename the directory aside (one atomic rename — a failure
+  aborts with transcript and images intact), unlink the transcript (a failure
+  renames the directory back, so the retained rows still resolve), then purge the
+  staged copy. A purge residue (Windows: a file still open in a viewer) is an
+  orphan under a `.attachments.trash-*` name that nothing serves, logged at
+  WARNING for the operator; it never fails the delete and never leaves a
+  transcript pointing at missing pictures.
+- The Storage page's reclaim (`session_storage.py`) treats the directory as the
+  session's third half: `_unit_paths` lists its files, so they are measured with
+  the session, moved to the trash batch under `crew/<stem>.attachments/`, restored
+  with it, and emptied with it; an image written recently keeps the session
+  fresh. The drained directory is removed after the batch is durable and
+  recreated by restore. Only regular files are taken -- a foreign entry stays,
+  and so does the directory holding it.
+
+Reads go through `hooks.safe_read_file_bytes_nolink`, the house chokepoint: it
+opens the final component as itself on every platform and validates the
+descriptor it opened (regular, not hardlinked, not sensitive), so no
+check-to-use window remains.
+
+**Reclamation is delete-only, by decision.** Rotation moves old rows to
+`archive/`, and those rows still name their attachments — so rotation orphans
+nothing and must not sweep; sweeping against the live transcript alone would
+break the references the archive keeps. An attachment becomes genuinely
+unreferenced only when archive retention expires its last row. The ceilings are
+**per message** (12 images, 64 MiB, 25 MiB each); across messages a session's
+attachments grow with every distinct image it posts until the session is
+deleted — content-addressing dedups repeats, not a stream of unique pictures. A
+per-session byte ceiling, or a sweep coupled to archive-retention expiry, is a
+follow-up ([issue #10437](https://github.com/kirodotdev/KiroCrew/issues/10437)), not part of the write
+boundary.
+
+**Known limitation:** the rewritten destination is the absolute path of the
+attachments directory. Relocating or restoring the data home under a different
+path breaks every persisted image reference the same way the original scratch
+path did; a home-relative encoding belongs with the next renderer change. For
+the same reason attachments do not travel with a session transfer or export
+(`session_transfer.py` carries the transcript text and drops host-local
+references by design), exactly as the scratch path they replace never did.
+
+`sessions/` is write-protected but deliberately not read-sensitive
+(`security/paths.py`), so `/api/file-raw` serves an attachment under the existing
+sensitive-path policy.
 
 ## Source Provenance
 

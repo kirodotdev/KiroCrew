@@ -22,7 +22,7 @@ from kiro_crew.session import _MAX_CONCURRENT_COLD_STARTS as _MAX_COLD_STARTS_FO
 
 @pytest.fixture(autouse=True)
 def _private_sel_root_per_test(sel_private_root):
-    """Every test in this module gets its OWN SEL root (issue #7029).
+    """Every test in this module gets its OWN SEL root.
 
     ``identity_fingerprint`` is audit-or-deny: it returns "absent" unless a
     CRITICAL SEL event lands first. On the event-loop thread the chain-lock

@@ -51,7 +51,6 @@ function topbarTracks(): { sides: string[]; search: string } {
 // Mock all page components to isolate routing
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => <div data-testid="system-page">SystemPage</div> }))
-vi.mock('../pages/AgentsPage', () => ({ default: () => <div data-testid="agents-page">AgentsPage</div> }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => <div data-testid="projects-page">ProjectsPage</div> }))
 vi.mock('../pages/LogsPage', () => ({ default: () => <div data-testid="logs-page">LogsPage</div> }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => <div data-testid="mc-agents-page">MCAgentsPage</div> }))
@@ -1353,7 +1352,9 @@ describe('App routing', () => {
     renderWithProviders(<App />, { route: '/chat' })
     // Connection is a colored dot in the unified readout capsule ("Offline"
     // text was removed -- the capsule's red tint is the disconnected signal).
-    expect(screen.getByLabelText('Gateway offline')).toBeInTheDocument()
+    // The dot's accessible name carries the cause; with no auth banner up it
+    // is the reconnecting variant (see #9692).
+    expect(screen.getByLabelText(/Gateway offline/i)).toBeInTheDocument()
   })
 
   it('keeps theme controls available from Settings', () => {

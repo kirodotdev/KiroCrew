@@ -18,6 +18,7 @@ vi.mock('../api/client', () => {
     api: {
       featureVideoNext: vi.fn(),
       featureVideoFeedback: vi.fn(),
+      featureVideoProbe: vi.fn(),
     },
   }
 })
@@ -71,6 +72,17 @@ const clip: FeatureVideo = {
   // The real shape: `feature_videos.CATALOG` stores a bare docs filename, not a
   // URL, and ships no resolved `doc_link` beside it.
   doc: 'feature-tips.md',
+  // Cached on this machine, which is the ordinary case: a same-origin path under
+  // the release folder, and no network cost to open it.
+  source: 'local',
+}
+
+/** The same clip still on the CDN: an absolute URL, and streamed to play. */
+const remoteClip: FeatureVideo = {
+  ...clip,
+  src: 'https://cdn.example.invalid/feature-videos/2026.09.1/placeholder.mp4',
+  poster: 'https://cdn.example.invalid/feature-videos/2026.09.1/placeholder.jpg',
+  source: 'remote',
 }
 
 const dialog = () => screen.queryByRole('dialog')
@@ -93,21 +105,27 @@ async function mount(props: Partial<React.ComponentProps<typeof StartupVideoModa
 }
 
 /**
- * The HEAD probe goes straight through `fetch`, not `api` -- the clip is a static
- * asset, not an API route -- so it is stubbed at the global. The default answers
- * 2xx so every existing "opens" case still opens; the probe cases below override
- * it per test.
+ * A stray `fetch` must not reach the network from a test. Nothing in the component
+ * calls it any more -- reachability is asked of the server through `api` -- so this
+ * stub exists to FAIL LOUDLY if something starts doing so again, rather than
+ * silently answering it.
  */
-const probeFetch = vi.fn<typeof fetch>()
+const strayFetch = vi.fn<typeof fetch>()
 
 beforeEach(() => {
   mockedApi.featureVideoNext.mockReset()
   mockedApi.featureVideoFeedback.mockReset()
+  mockedApi.featureVideoProbe.mockReset()
   mockedApi.featureVideoFeedback.mockResolvedValue({ ok: true } as never)
-  mockedApi.featureVideoNext.mockResolvedValue({ video: clip, enabled: true } as never)
-  probeFetch.mockReset()
-  probeFetch.mockResolvedValue(new Response(null, { status: 200 }))
-  vi.stubGlobal('fetch', probeFetch)
+  // Downloads permitted by default: it is what makes the remote cases below
+  // openable at all, and it is irrelevant to a local clip.
+  mockedApi.featureVideoNext.mockResolvedValue({
+    video: clip, enabled: true, download_enabled: true,
+  } as never)
+  mockedApi.featureVideoProbe.mockResolvedValue({ ok: true } as never)
+  strayFetch.mockReset()
+  strayFetch.mockRejectedValue(new Error('no test may reach the network'))
+  vi.stubGlobal('fetch', strayFetch)
   resetStartupVideoLaunchGuardForTests()
 })
 
@@ -147,31 +165,55 @@ describe('StartupVideoModal — when it renders nothing', () => {
   })
 })
 
-describe('StartupVideoModal — the HEAD probe', () => {
-  const headCalls = () => probeFetch.mock.calls.filter(([, init]) => init?.method === 'HEAD')
+describe('StartupVideoModal — the reachability probe (remote clips only)', () => {
+  /** Every case here is about a streamed clip; a local one never probes. */
+  const mountRemote = (props = {}) => {
+    mockedApi.featureVideoNext.mockResolvedValue({
+      video: remoteClip, enabled: true, download_enabled: true,
+    } as never)
+    return mount(props)
+  }
 
-  it('probes the clip once, same-origin, and opens on 2xx', async () => {
+  it('does not probe a CACHED clip at all', async () => {
+    // The backend's `offerable()` only offers a clip whose files `_asset_exists`
+    // found on disk, in the same request that offered this one. A probe here would
+    // re-run that check and learn nothing, so it is not asked -- and the dialog
+    // opens on the offer alone, exactly as it did before the route existed.
     await mount()
     await waitFor(() => expect(dialog()).toBeInTheDocument())
-    const calls = headCalls()
-    expect(calls).toHaveLength(1)
-    expect(calls[0][0]).toBe(clip.src)
-    expect(calls[0][1]).toMatchObject({ method: 'HEAD', credentials: 'same-origin' })
+    expect(mockedApi.featureVideoProbe).not.toHaveBeenCalled()
+    expect(video()).toHaveAttribute('src', clip.src)
+  })
+
+  it('asks the SERVER once, by clip id, and opens a streamed clip on ok', async () => {
+    await mountRemote()
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(mockedApi.featureVideoProbe).toHaveBeenCalledTimes(1)
+    expect(mockedApi.featureVideoProbe).toHaveBeenCalledWith(remoteClip.id, undefined)
     expect(video()).toBeInTheDocument()
   })
 
-  it('does not probe when the gate would not open the dialog anyway', async () => {
-    // The probe is the price of a launch that WOULD show a clip. The common launch
-    // -- nothing to offer -- must stay at one JSON round trip and no media request.
-    mockedApi.featureVideoNext.mockResolvedValue({ video: null, enabled: true } as never)
-    await mount()
-    expect(headCalls()).toHaveLength(0)
+  it('never probes the asset from the page', async () => {
+    // The regression guard for the whole change. A HEAD from the page cannot answer
+    // this question for a CDN clip -- it is cross-origin, so the browser reports a
+    // network failure for a perfectly healthy file.
+    await mountRemote()
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(strayFetch).not.toHaveBeenCalled()
   })
 
-  it('on 404: no dialog, no verdict, error journaled, launch spent', async () => {
+  it('does not probe when the gate would not open the dialog anyway', async () => {
+    // The probe is the price of a launch that WOULD show a streamed clip. The
+    // common launch -- nothing to offer -- must stay at one JSON round trip.
+    mockedApi.featureVideoNext.mockResolvedValue({ video: null, enabled: true } as never)
+    await mount()
+    expect(mockedApi.featureVideoProbe).not.toHaveBeenCalled()
+  })
+
+  it('on `ok: false`: no dialog, no verdict, error journaled, launch spent', async () => {
     __resetErrorJournalForTests()
-    probeFetch.mockResolvedValue(new Response(null, { status: 404 }))
-    const { onClose } = await mount()
+    mockedApi.featureVideoProbe.mockResolvedValue({ ok: false } as never)
+    const { onClose } = await mountRemote()
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
     expect(dialog()).not.toBeInTheDocument()
@@ -180,21 +222,24 @@ describe('StartupVideoModal — the HEAD probe', () => {
     expect(video()).not.toBeInTheDocument()
     // Neither verdict. `dismissed` is permanent and the user never saw the clip.
     expect(mockedApi.featureVideoFeedback).not.toHaveBeenCalled()
-    // Same journal entry shape as the mid-playback `onError` path, plus the HTTP
-    // status a HEAD can carry and a media error cannot.
+    // Same journal entry as the mid-playback `onError` path, and `endpoint` names
+    // the CLIP rather than the probe route -- the route worked; the asset did not.
     const report = findReport(i18nT('components.startupVideoModal.media_failed'))
     expect(report).toBeDefined()
-    expect(report?.endpoint).toBe(clip.src)
+    expect(report?.endpoint).toBe(remoteClip.src)
     expect(report?.source).toBe('api')
-    expect(report?.status).toBe(404)
+    expect(report?.code).toBe('probe_not_ok')
     // The launch is claimed, so a host that re-mounted would not probe again.
     expect(startupVideoHandledThisLaunch()).toBe(true)
   })
 
-  it('on a network failure: same as 404, with the reason in `detail`', async () => {
+  it('on a probe that cannot be asked: same outcome, reason in `detail`', async () => {
+    // The network, or a gateway with no such route. Either way this clip streams
+    // from somewhere the page cannot verify, and an unanswerable question is not
+    // permission to open a player.
     __resetErrorJournalForTests()
-    probeFetch.mockRejectedValue(new TypeError('Failed to fetch'))
-    const { onClose } = await mount()
+    mockedApi.featureVideoProbe.mockRejectedValue(new Error('HTTP 503'))
+    const { onClose } = await mountRemote()
 
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1))
     expect(dialog()).not.toBeInTheDocument()
@@ -202,18 +247,135 @@ describe('StartupVideoModal — the HEAD probe', () => {
     expect(mockedApi.featureVideoFeedback).not.toHaveBeenCalled()
     const report = findReport(i18nT('components.startupVideoModal.media_failed'))
     expect(report).toBeDefined()
-    expect(report?.endpoint).toBe(clip.src)
-    expect(report?.status).toBeUndefined()
-    expect(report?.detail).toContain('Failed to fetch')
+    expect(report?.endpoint).toBe(remoteClip.src)
+    expect(report?.code).toBe('probe_failed')
+    expect(report?.detail).toContain('HTTP 503')
     expect(startupVideoHandledThisLaunch()).toBe(true)
   })
 
   it('probes exactly once per mount, even across re-renders', async () => {
-    const { rerender } = await mount()
+    const { rerender } = await mountRemote()
     await waitFor(() => expect(dialog()).toBeInTheDocument())
     rerender(<StartupVideoModal shareEnabled onClose={vi.fn()} />)
     await act(async () => { await new Promise(r => setTimeout(r, 10)) })
-    expect(headCalls()).toHaveLength(1)
+    expect(mockedApi.featureVideoProbe).toHaveBeenCalledTimes(1)
+  })
+
+  it('carries the active slot key on the probe', async () => {
+    // The probe reads per-session state on the server the same way the metadata
+    // read does, so it must name the same session.
+    mockedApi.featureVideoNext.mockResolvedValue({
+      video: remoteClip, enabled: true, download_enabled: true,
+    } as never)
+    const store = createTestStore()
+    store.dispatch(setActiveSlot('slot-9'))
+    renderWithProviders(<StartupVideoModal onClose={vi.fn()} />, { store })
+    for (let i = 0; i < 6; i++) {
+      await act(async () => { await new Promise(r => setTimeout(r, 5)) })
+    }
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(mockedApi.featureVideoProbe).toHaveBeenCalledWith(remoteClip.id, 'dashboard:slot-9')
+  })
+})
+
+describe('StartupVideoModal — a clip that streams from the CDN', () => {
+  const streamingHint = () => screen.queryByTestId('startup-video-streaming')
+
+  beforeEach(() => {
+    mockedApi.featureVideoNext.mockResolvedValue({
+      video: remoteClip, enabled: true, download_enabled: true,
+    } as never)
+  })
+
+  it('plays the URL the backend gave it, unchanged', async () => {
+    // The client composes no URL, ever. It is the single rule that keeps a config
+    // value from pointing the player at a host nobody chose.
+    await mount()
+    await waitFor(() => expect(video()).toBeInTheDocument())
+    expect(video()).toHaveAttribute('src', remoteClip.src)
+    expect(video()).toHaveAttribute('poster', remoteClip.poster)
+  })
+
+  it('preloads NOTHING, so the chip discloses a cost not yet spent', async () => {
+    // MUTATION-VERIFIED: set `preload="metadata"` for a remote clip and this
+    // fails. Reading the header would spend CDN bytes on a launch nobody pressed
+    // play on, which is both the invariant this component documents and the thing
+    // the "Plays online" chip promises has not happened yet. The cost of holding
+    // the line is a streamed clip showing no duration until it plays.
+    await mount()
+    await waitFor(() => expect(video()).toBeInTheDocument())
+    expect(video()).toHaveAttribute('preload', 'none')
+    expect(video()).not.toHaveAttribute('autoplay')
+  })
+
+  it('says on the card that the clip streams', async () => {
+    await mount()
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(streamingHint()).toBeInTheDocument()
+    expect(streamingHint()).toHaveTextContent(i18nT('components.startupVideoModal.streaming'))
+  })
+
+  it('says nothing of the sort for a cached clip', async () => {
+    // There is no cost to disclose, so there is no hint. A badge on every clip
+    // would carry no information at all.
+    mockedApi.featureVideoNext.mockResolvedValue({
+      video: clip, enabled: true, download_enabled: true,
+    } as never)
+    await mount()
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(streamingHint()).not.toBeInTheDocument()
+    expect(video()).toHaveAttribute('preload', 'none')
+  })
+
+  it('does not probe a cached clip even while remote clips do', async () => {
+    // The asymmetry stated as its own guard: which source is probed is decided by
+    // `source`, not by whether a probe happens to be mocked.
+    mockedApi.featureVideoNext.mockResolvedValue({
+      video: clip, enabled: true, download_enabled: true,
+    } as never)
+    await mount()
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(mockedApi.featureVideoProbe).not.toHaveBeenCalled()
+  })
+
+  it('does not open, and does not probe, when downloads are forbidden', async () => {
+    // Fail closed. With downloads off there is no route to the bytes, so opening
+    // would hand the user a player that can never fill -- and the probe would be
+    // spent asking about a clip that cannot be shown either way.
+    mockedApi.featureVideoNext.mockResolvedValue({
+      video: remoteClip, enabled: true, download_enabled: false,
+    } as never)
+    const { onClose } = await mount()
+    expect(dialog()).not.toBeInTheDocument()
+    expect(video()).not.toBeInTheDocument()
+    expect(mockedApi.featureVideoProbe).not.toHaveBeenCalled()
+    // Not a decision about the clip: no verdict, so it is offered again once the
+    // policy allows it.
+    expect(mockedApi.featureVideoFeedback).not.toHaveBeenCalled()
+    expect(onClose).not.toHaveBeenCalled()
+  })
+
+  it('treats an ABSENT download answer as no, not as yes', async () => {
+    // A gateway that predates the field, or a read that failed. Fail-closed means
+    // `=== true`, so silence must not read as permission.
+    mockedApi.featureVideoNext.mockResolvedValue({
+      video: remoteClip, enabled: true,
+    } as never)
+    await mount()
+    expect(dialog()).not.toBeInTheDocument()
+    expect(mockedApi.featureVideoProbe).not.toHaveBeenCalled()
+  })
+
+  it('still shows a CACHED clip when downloads are forbidden', async () => {
+    // The gate is about fetching bytes over the network. A file already on disk
+    // needs none, so the policy has nothing to say about it -- and blocking it
+    // would retire the whole feature on a locked-down install.
+    mockedApi.featureVideoNext.mockResolvedValue({
+      video: clip, enabled: true, download_enabled: false,
+    } as never)
+    await mount()
+    await waitFor(() => expect(dialog()).toBeInTheDocument())
+    expect(video()).toHaveAttribute('src', clip.src)
   })
 })
 
@@ -357,10 +519,10 @@ describe('StartupVideoModal — the clip', () => {
     expect(header).not.toBe(i18nT('app.what_s_new'))
   })
 
-  it('never fetches the clip bytes before the user asks for them', async () => {
+  it('never fetches a cached clip\'s bytes before the user asks for them', async () => {
     // The whole cost argument for showing this at startup: the poster is drawn
-    // and the media waits. `preload` must be "none" and there must be no
-    // autoplay, or every launch downloads a video nobody watched.
+    // and the media waits. For a clip on disk `preload` must be "none" and there
+    // must be no autoplay, or every launch reads a video nobody watched.
     await mount()
     await waitFor(() => expect(video()).toBeInTheDocument())
     expect(video()).toHaveAttribute('preload', 'none')

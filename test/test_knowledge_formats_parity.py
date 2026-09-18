@@ -106,5 +106,5 @@ def test_max_file_size_copy_matches_backend_limit() -> None:
             "/api/knowledge/config and interpolate it."
         )
     # en.manual.json + 11 translations + generated en-XA; a lower count means
-    # the key moved and this guard is no longer checking anything.
+    # the key moved and this guard checks nothing.
     assert checked >= 12, f"only {checked} catalogs carried max_file_size"

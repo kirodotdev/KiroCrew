@@ -17,7 +17,7 @@ pin the contract:
 * the loader accepts values up to ``CHAT_TURN_TIMEOUT_MAX`` (86400) and still
   clamps above it;
 * end-to-end, a raised ceiling reaches ``chat_turn_timeout_secs`` unclamped —
-  the honesty clamp stays but no longer fires in normal operation;
+  the honesty clamp stays but does not fire in normal operation;
 * the ceiling card names day-scale limits correctly.
 """
 

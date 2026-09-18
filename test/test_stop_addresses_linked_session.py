@@ -470,7 +470,7 @@ class TestTheRunningTurnOwnsTheTarget:
 
     @pytest.mark.asyncio
     async def test_a_turn_that_started_on_the_link_is_still_stopped_there(self):
-        """The #2462 fix, restated on the stronger rule.
+        """A turn that started on the link is still stopped there.
 
         A channel-born slot is bound before its turn starts, so the turn's own
         identity IS the channel session — the cancel reaches it because that is

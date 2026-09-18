@@ -1,6 +1,7 @@
 import { memo, useRef, useState, useEffect, useCallback } from 'react'
 import { useScrollEdges } from '../hooks/useScrollEdges'
 import { ChevronLeft, ChevronRight, ArrowUp } from 'lucide-react'
+import { InstantTip, useInstantTip as useSharedInstantTip } from './InstantTip'
 
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -186,27 +187,35 @@ function ChipLabel({ option }: { option: string }) {
 }
 
 /**
- * Hover text for a chip: the full option, then the gesture hint on its own line.
+ * Instant hover/focus tooltip carrying the full option text and the gesture
+ * hint. This was a native `title` attribute, and the OS hover delay (about a
+ * second, not configurable) is what killed it: a clamped label's only readable
+ * form sat behind a pause long enough that scanning a row of chips read as
+ * "there is no tooltip". The shared `InstantTip` module replaces it and owns
+ * the gesture semantics (~100ms hover-intent so a pointer passing through to
+ * the composer paints nothing, synchronous show on keyboard focus, Escape and
+ * any scroll dismiss, portal past the scroll strip's clipping); this wrapper
+ * owns only the chip's content — the full option text, gesture hint below.
  *
  * The full label is unconditional. A character-count threshold was the obvious
  * proxy for "is this clamped" and it is the wrong one — truncation depends on the
  * rendered width, the font and the chip's own box, so any fixed number leaves a
  * band of labels visibly cut with no way to read them (at one clamped line the
  * cut starts around 44 characters, so a 60-char threshold missed everything
- * between). `title` takes a `U+000A` per line break, so both fit with no
- * measurement and no component.
+ * between).
  *
  * The DOM keeps the whole string either way, so a screen reader's accessible
  * name is never truncated regardless of this.
- *
- * Joined rather than built as a template literal: with `should-validate-template`
- * the i18n lint reports at the whole template node, so `` `${option}\n\n${hint}` ``
- * counts as an untranslated literal even though both halves are already
- * localized. A bare separator trims to empty and is skipped, which is the
- * accurate outcome — a line break is not copy.
  */
-function chipTooltip(option: string, hint: string) {
-  return [option, hint].join('\n\n')
+function useInstantTip(option: string, hint: string) {
+  const { tip, tipHandlers, tipId } = useSharedInstantTip()
+  const tipNode = (
+    <InstantTip tip={tip} tipId={tipId} className="w-max max-w-[min(26rem,calc(100vw-1rem))] whitespace-pre-wrap break-words">
+      <div className="text-text text-[12px]">{option}</div>
+      <div className="text-muted text-[11px] mt-1">{hint}</div>
+    </InstantTip>
+  )
+  return { tipHandlers, tipNode }
 }
 /** Right-hand "send now" segment class — same palette as the chip body, divided by a border. */
 function sendSegmentClassName(isPicked: boolean) {
@@ -267,7 +276,14 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
   useEffect(() => () => { if (timerRef.current) clearTimeout(timerRef.current) }, [])
 
   const useDebouncedClick = !!onSend && !(quickSend && !isPicked && picked.size === 0)
-  const title = chipTooltip(option, chipTitle(isPicked, quickSend, picked, !!onSend))
+  // The visible ↑ segment gets its own hint fragment: the blind-read found the
+  // click/double-click sentence never names the arrow, so a first-time user
+  // "could not tell where the safe click ends and the send click begins". The
+  // fragment exists only when the segment does (same condition, see
+  // showSendSegment below).
+  const hint = chipTitle(isPicked, quickSend, picked, !!onSend)
+    + (useDebouncedClick ? ` · ${i18nT('components.followUpBar.tooltip_arrow_sends_now')}` : '')
+  const { tipHandlers, tipNode } = useInstantTip(option, hint)
   // The entrance belongs on whichever element is this chip's flex item — the
   // button when the chip is standalone, the wrapper when it is a split button.
   // On the inner button of a split chip it would animate the label away from
@@ -282,22 +298,25 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
 
   if (!useDebouncedClick) {
     return (
-      <button
-        type="button"
-        onMouseDown={(e) => e.preventDefault()}
-        // No third argument here on purpose: this path calls onSelect
-        // SYNCHRONOUSLY from the click, so there is no window in which the row
-        // could advance and nothing for the callee to compare against. Passing
-        // `undefined` (i.e. "no key supplied") keeps this path's behaviour
-        // exactly as it was — see `sourceKeyAtClick` in the debounced handler,
-        // which is where the race actually lives.
-        onClick={(e) => onSelect(option, e)}
-        className={`${className} ${entrance.className}`}
-        style={entrance.style}
-        title={title}
-      >
-        <ChipLabel option={option} />
-      </button>
+      <>
+        <button
+          type="button"
+          onMouseDown={(e) => e.preventDefault()}
+          // No third argument here on purpose: this path calls onSelect
+          // SYNCHRONOUSLY from the click, so there is no window in which the row
+          // could advance and nothing for the callee to compare against. Passing
+          // `undefined` (i.e. "no key supplied") keeps this path's behaviour
+          // exactly as it was — see `sourceKeyAtClick` in the debounced handler,
+          // which is where the race actually lives.
+          onClick={(e) => onSelect(option, e)}
+          className={`${className} ${entrance.className}`}
+          style={entrance.style}
+          {...tipHandlers}
+        >
+          <ChipLabel option={option} />
+        </button>
+        {tipNode}
+      </>
     )
   }
 
@@ -352,13 +371,13 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       onDoubleClick={handleImmediateSend}
       className={mainChipClassName}
       style={showSendSegment ? undefined : entrance.style}
-      title={title}
+      {...tipHandlers}
     >
       <ChipLabel option={option} />
     </button>
   )
 
-  if (!showSendSegment) return mainChip
+  if (!showSendSegment) return <>{mainChip}{tipNode}</>
 
   return (
     // The cap is repeated on the wrapper because the wrapper — not the button —
@@ -379,6 +398,7 @@ function Chip({ option, isPicked, picked, quickSend, onSelect, onSend, className
       >
         <ArrowUp size={13} />
       </button>
+      {tipNode}
     </span>
   )
 }
@@ -467,7 +487,7 @@ function ScrollLayout({ options, picked, onSelect, onSend, quickSend, animating,
           icon, a badge, a second line). Bottom, not centre: the strip sits
           directly above the composer, so that is the edge the row is read
           against. */}
-      <div ref={setScroller} className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+      <div ref={setScroller} data-tip-boundary className={`flex ${CHIP_ROW_GAP} overflow-x-auto items-end`} style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
         {options.map((o, i) => {
           const isPicked = picked.has(o)
           return (
@@ -498,7 +518,10 @@ function MultilineLayout({ options, picked, onSelect, onSend, quickSend, animati
     // one-line clamp every chip is already the same height, so this only
     // decides where a taller chip would sit, and the edge shared with the
     // composer below is the bottom.
-    <div className={`flex ${CHIP_ROW_GAP} flex-wrap pt-1 items-end`}>
+    // data-tip-boundary: the tooltip lifts above this whole wrap, so hovering
+    // a chip in row 2+ never hides the row above it (the rows are exactly
+    // what the user is scanning; the message area above is transient-safe).
+    <div data-tip-boundary className={`flex ${CHIP_ROW_GAP} flex-wrap pt-1 items-end`}>
       {options.map((o, i) => {
         const isPicked = picked.has(o)
         return (

@@ -228,6 +228,7 @@ SKIP_SUFFIXES = (
     ".ttf",
     ".otf",
     ".mp4",
+    ".webm",
     ".pdf",
     ".zip",
     ".gz",

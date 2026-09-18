@@ -180,8 +180,8 @@ _SCHEMA: dict[str, dict[str, str]] = {
 _SCALAR_DEFAULTS: dict[str, Any] = {"str": "", "int": 0, "bool": False, "float": 0.0}
 
 #: Carrier fields as the FAKE schema declares them, derived independently of the
-#: module under test: a field whose type carries a ``Message``. Used to drive the
-#: per-carrier test and to catch a typo in the module's own floor list.
+#: module under test: a field whose type carries a ``Message``. Drives the
+#: per-carrier test and catches a typo in the module's own floor list.
 _SCHEMA_CARRIERS: dict[str, str] = {
     name: inner
     for name, spec in _SCHEMA["Message"].items()

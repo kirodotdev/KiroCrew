@@ -506,7 +506,7 @@ def policy_document() -> dict[str, Any]:
             # is a first-write race, but now for AVAILABILITY only — the launcher
             # verifies the existing boundary's content and FAILS CLOSED on a
             # mismatch, so a permissive boundary seeded at this name is refused
-            # (never used to under-cap a role), it can only block launches (a DoS).
+            # (it can never under-cap a role), it can only block launches (a DoS).
             # Operators who want to eliminate even that pre-create the boundary as an
             # admin (kirocrew cloud iam-boundary) and drop this statement — the
             # launcher then only *references* the boundary ARN.

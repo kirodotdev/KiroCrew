@@ -30,6 +30,9 @@ on:
       - Design Review
       - UX Review
       - First Principles Review
+      # Blocking and fail-closed: a script-confirmed newly-refused operation reds
+      # it, and so does a run that measured nothing.
+      - Security Scope Review
       - CodeQL
       # Stage-2 fork AI reviewers. They run from the default branch via
       # `workflow_run` (on CI's completion), so their own completion must
@@ -40,6 +43,7 @@ on:
       - Fork Design Review
       - Fork UX Review
       - Fork First Principles Review
+      - Fork Security Scope Review
       # Without these two, a finished scan never re-triggers readiness and the
       # lane sits at "(not started)" with no event able to clear it.
       - Internal Content Scan Gate
@@ -590,6 +594,7 @@ jobs:
               "checkrun:Design Review|Design Review|design-pr-|fast-gate.yml"
               "checkrun:UX Review|UX Review|ux-pr-|fast-gate.yml"
               "checkrun:First Principles Review|First Principles Review|first-principles-pr-|fast-gate.yml"
+              "checkrun:Security Scope Review|Security Scope Review|scope-pr-|fast-gate.yml"
             )
           else
             if [ "$stacked" = "true" ]; then
@@ -609,6 +614,7 @@ jobs:
               "design-review.yml|Design Review"
               "ux-review.yml|UX Review"
               "first-principles-review.yml|First Principles Review"
+              "security-scope-review.yml|Security Scope Review"
             )
           fi
           passed=()
@@ -763,8 +769,12 @@ jobs:
                 # judged unjustified. Safe to treat a failure as a blocker
                 # because each fork-*-review.yml fails the check ONLY on BLOCK
                 # -- an errored, throttled or verdict-less run resolves NEUTRAL
-                # and exits 0 -- so `failure` here can only mean a judged-wrong
-                # verdict, never infrastructure noise. NOTE: `/ai-review
+                # and exits 0 -- so `failure` here means a judged-wrong
+                # verdict, never infrastructure noise, with one deliberate
+                # exception: the fork UX lane completes as `failure` when an
+                # attachment download from the description failed for a
+                # transport reason, a `cannot evaluate` that a re-run of that
+                # lane clears. NOTE: `/ai-review
                 # override` records the judgment and re-runs the Stage-2 fork
                 # lane (located via the run URL its check-run carries), but the
                 # fork lanes consume no override marker, so the re-run is a
@@ -779,6 +789,16 @@ jobs:
                 else
                   pending+=("$label (not started)")
                 fi
+              # Security Scope Review is deliberately NOT in the branch above.
+              # That branch exists for lanes that resolve NEUTRAL when the run
+              # itself errored, so a `failure` there can only be a judged-wrong
+              # verdict. This lane fails CLOSED instead: an unreadable report, a
+              # missing head marker and a stage that never ran all red it, and
+              # each of those means the tightening went unmeasured. Relabeling
+              # its failure as "(BLOCK)" would claim a verdict was reached, and
+              # moving it out of `failed[]` would let an unmeasured tightening
+              # merge. The default branch below already attributes it as a plain
+              # blocker, which is true of both of its failing causes.
               elif [ "$fail" -gt 0 ]; then
                 failed+=("$label (failure)")
               elif [ "$pass" -gt 0 ]; then
@@ -852,7 +872,49 @@ jobs:
             else
               if [ "$file" = "dynamic/github-code-scanning/codeql" ]; then
                 case "$conclusion" in
-                  success|skipped) passed+=("$label") ;;
+                  success)
+                    # A successful managed workflow says the language analyses
+                    # ran. It does NOT say their security results passed: GitHub
+                    # publishes that verdict as a separate exact-SHA check-run
+                    # owned by github-advanced-security. Requiring only the
+                    # workflow conclusion let a revision with high alerts pass
+                    # this repository's sole required aggregate.
+                    codeql_checks="$(gh_retry gh api --method GET \
+                      "repos/$REPO/commits/$SHA/check-runs?check_name=CodeQL&per_page=100")" || {
+                      rc=$?
+                      if [ "$rc" -eq 22 ]; then exit 1; fi
+                      transport_failed=true
+                      break
+                    }
+                    # Bind by app as well as name and SHA. Another app is free
+                    # to publish a check called CodeQL; it must not answer for
+                    # GitHub's security result. Check-run ids are monotonic, so
+                    # an updated result supersedes an earlier interim row.
+                    codeql_check="$(jq -c '
+                      [.check_runs[]?
+                       | select((.app.slug // "") == "github-advanced-security")]
+                      | max_by(.id) // empty
+                    ' <<<"$codeql_checks")"
+                    if [ -z "$codeql_check" ]; then
+                      pending+=("$label (results not reported)")
+                      continue
+                    fi
+                    codeql_status="$(jq -r '.status // ""' <<<"$codeql_check")"
+                    codeql_conclusion="$(jq -r '.conclusion // ""' <<<"$codeql_check")"
+                    if [ "$codeql_status" != "completed" ]; then
+                      pending+=("$label (results $codeql_status)")
+                    else
+                      case "$codeql_conclusion" in
+                        success) passed+=("$label") ;;
+                        # Default setup publishes an interim neutral result while
+                        # one or more configured languages have not reported.
+                        # It is absence of a final result, not a clean verdict.
+                        neutral|"") pending+=("$label (results pending)") ;;
+                        *) failed+=("$label ($codeql_conclusion)") ;;
+                      esac
+                    fi
+                    ;;
+                  skipped) passed+=("$label") ;;
                   *) failed+=("$label ($conclusion)") ;;
                 esac
               elif [ "$label" = "Design Review" ] || [ "$label" = "UX Review" ] || [ "$label" = "First Principles Review" ]; then
@@ -867,12 +929,19 @@ jobs:
                 # not read as green), identical to the Design / Opus / GPT
                 # lanes, and cleared by a one-comment `/ai-review override`
                 # (current-SHA scoped) -- so treating a `failure` as a blocker
-                # is safe. (The fork reader below never sees this: fork
-                # *-review.yml maps a hard error to a NEUTRAL check-run.)
+                # is safe. (The fork reader above sees one counterpart: the
+                # fork UX lane completes its check-run as `failure` when an
+                # attachment download failed for a transport reason; every
+                # other fork hard error maps to NEUTRAL.)
                 case "$conclusion" in
                   success|neutral|skipped) passed+=("$label") ;;
                   *) failed+=("$label (BLOCK)") ;;
                 esac
+              # Security Scope Review is deliberately absent here too, for the
+              # same reason as in the fork reader above: it is fail-closed, so a
+              # `failure` conclusion covers both a confirmed regression and a run
+              # that measured nothing, and only the default branch's plain
+              # "(failure)" attribution is true of both.
               else
                 case "$conclusion" in
                   success|neutral) passed+=("$label") ;;
@@ -1001,7 +1070,7 @@ jobs:
 
           # (The long-term "Arbiter — judge from comments" gate was retired: its
           # one-way-door / long-term-reversibility lens now lives in Design
-          # Review. Readiness no longer waits on any API-owned external check.)
+          # Review. Readiness no longer waits on that retired Arbiter check.)
 
           # Disposition-rule enforcement (issue #6658). A violation is a
           # condition waiting cannot fix -- only the author editing or deleting
@@ -1051,7 +1120,46 @@ jobs:
             state="checking"
             label="readiness: checking"
             status_state="pending"
-            description="${#waiting[@]} readiness check(s) still pending"
+            # Name the pending lanes, not just their count. A lane that has
+            # produced zero runs for an immutable head can never produce one
+            # without a new commit, so naming it (e.g. "Internal Content Scan
+            # (not started)") lets a human re-run THAT lane instead of pushing
+            # an empty commit that forces a full re-review. The commit-status
+            # description has a hard 140-char API limit (the POST silently
+            # truncates past it), so the list is capped: names until the budget
+            # is spent, then "+N more", with the count kept as the prefix. This
+            # is diagnostic only -- it changes no lane's pass/pending/fail
+            # classification and no state that resolves or blocks; the same
+            # `waiting[]` that sets the count sets the names.
+            count="${#waiting[@]}"
+            names=""
+            shown=0
+            for item in "${waiting[@]}"; do
+              candidate="$names"
+              if [ -n "$candidate" ]; then
+                candidate="$candidate, $item"
+              else
+                candidate="$item"
+              fi
+              # Reserve room for the count prefix, the "; waiting on " joiner
+              # and a possible " (+N more)" suffix so the final string cannot
+              # exceed the 140-char commit-status limit. The count prefix runs
+              # to ~35 chars and the suffix to ~11, so a 70-char names budget
+              # leaves margin for both.
+              if [ "${#candidate}" -gt 70 ]; then
+                break
+              fi
+              names="$candidate"
+              shown=$(( shown + 1 ))
+            done
+            description="$count readiness check(s) still pending"
+            if [ -n "$names" ]; then
+              description="$description; waiting on $names"
+              remaining=$(( count - shown ))
+              if [ "$remaining" -gt 0 ]; then
+                description="$description (+$remaining more)"
+              fi
+            fi
           else
             # Fork PRs reach this branch too: the AI code reviews run on forks
             # via the Stage-2 fork-*-review.yml pipeline and are evaluated above

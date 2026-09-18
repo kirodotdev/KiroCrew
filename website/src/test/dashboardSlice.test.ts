@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest'
 import reducer, {
   sseStatus,
+  setYoloDuration,
   sseConnected,
   sseDisconnected,
   sseSlots,
@@ -57,6 +58,55 @@ describe('dashboardSlice', () => {
       const status = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo: false } as StatusData
       const state = reducer(yoloState, sseStatus(status))
       expect(state.approvalMode).toBe('normal')
+    })
+
+    it('carries the config-derived grant keys across a WebSocket frame that omits them', () => {
+      const http = {
+        uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
+        yolo_duration: '1h', yolo_until_shutdown_permitted: false,
+      } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 3, messages: 5, cron_jobs: 1, subagents: 0, lessons: 2 } as StatusData
+      const state = reducer(reducer(initial, sseStatus(http)), sseStatus(wsFrame))
+      expect(state.status).toEqual({ ...wsFrame, yolo_duration: '1h', yolo_until_shutdown_permitted: false })
+    })
+
+    it('still replaces every other key a frame omits (an omitted key is an answer)', () => {
+      const http = {
+        uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0,
+        version_display: '0.4.0', yolo_expires_at: '2026-01-01T00:00:00Z', yolo_until_shutdown: true,
+      } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      const state = reducer(reducer(initial, sseStatus(http)), sseStatus(wsFrame))
+      expect(state.status).toEqual(wsFrame)
+    })
+
+    it('lets a frame that carries a grant key overwrite the retained value', () => {
+      const first = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo_duration: '1h' } as StatusData
+      const second = { ...first, yolo_duration: '24h' } as StatusData
+      const state = reducer(reducer(initial, sseStatus(first)), sseStatus(second))
+      expect(state.status?.yolo_duration).toBe('24h')
+    })
+
+    it('setYoloDuration writes the saved value and it outranks later frames and replies', () => {
+      const http = { uptime: '1h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0, yolo_duration: '30m' } as StatusData
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      let state = reducer(initial, sseStatus(http))
+      state = reducer(state, setYoloDuration('24h'))
+      expect(state.status?.yolo_duration).toBe('24h')
+      // A frame without the key carries the save; a stale reply WITH the old
+      // key (a request that began before the save) does not roll it back.
+      state = reducer(state, sseStatus(wsFrame))
+      expect(state.status?.yolo_duration).toBe('24h')
+      state = reducer(state, sseStatus(http))
+      expect(state.status?.yolo_duration).toBe('24h')
+    })
+
+    it('a save recorded before any status arrives is applied to the first status', () => {
+      const wsFrame = { uptime: '2h', sessions: 0, messages: 0, cron_jobs: 0, subagents: 0, lessons: 0 } as StatusData
+      let state = reducer(initial, setYoloDuration('1h'))
+      expect(state.status).toBeNull()
+      state = reducer(state, sseStatus(wsFrame))
+      expect(state.status?.yolo_duration).toBe('1h')
     })
   })
 
@@ -198,6 +248,101 @@ describe('dashboardSlice', () => {
     it('markSlotRead is a no-op for unknown key', () => {
       const state = reducer(initial, markSlotRead('nonexistent'))
       expect(state.unreadSlots).toEqual([])
+    })
+
+    // The shared unread record is written by an ordinary arrival, and that write
+    // is on the websocket `onmessage` -> Redux dispatch -> re-render path. A
+    // QuotaExceededError raised there is swallowed by the surrounding try/catch,
+    // so the record is silently lost while megabytes of re-derivable cache sit
+    // next to it. `safeSetItem` reclaims a disposable tier and retries; the raw
+    // write does not. This pins the reclaim so the record survives a full quota.
+    it('markSlotUnread reclaims disposable cache and still persists when the quota is full', () => {
+      const quota = () => {
+        const e = new DOMException('quota', 'QuotaExceededError')
+        Object.defineProperty(e, 'code', { value: 22, configurable: true })
+        return e
+      }
+      // Disposable cache the reclaim tiers are allowed to drop.
+      localStorage.setItem('vc_heights_session-A', '{"a":1}')
+      localStorage.setItem('keep-me', 'important')
+
+      const real = Storage.prototype.setItem
+      const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        // Fail only while the reclaimable cache is still present, so a retry
+        // after reclaim succeeds and a non-reclaiming writer never does.
+        if (this.getItem('vc_heights_session-A') !== null && !key.startsWith('vc_heights_')) {
+          throw quota()
+        }
+        real.call(this, key, value)
+      })
+
+      try {
+        reducer(initial, markSlotUnread({ slot: 'chat-1', ts: '2026-01-01T00:00:00Z' }))
+      } finally {
+        spy.mockRestore()
+      }
+
+      // The shared record survived because the write reclaimed space first.
+      expect(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}')).toEqual({
+        'chat-1': '2026-01-01T00:00:00Z',
+      })
+      // Disposable cache was the thing sacrificed, not the record.
+      expect(localStorage.getItem('vc_heights_session-A')).toBeNull()
+      expect(localStorage.getItem('keep-me')).toBe('important')
+    })
+
+    // `mc-unread-slots` is a PROJECTION of the shared record's keys, so the two
+    // must not disagree. The projection is strictly smaller than the record
+    // (keys only, no timestamps), so writing it can free space and succeed on a
+    // quota where the record's own write just failed. The old code could not
+    // reach that state: the raw setItem THREW, the surrounding catch swallowed
+    // it, and the projection line never ran. A helper that reports failure by
+    // return value instead of throwing silently removed that protection, which
+    // is the whole risk of converting a throwing call in a try/catch body.
+    it('leaves the projection alone when the shared record write fails', () => {
+      const quota = () => {
+        const e = new DOMException('quota', 'QuotaExceededError')
+        Object.defineProperty(e, 'code', { value: 22, configurable: true })
+        return e
+      }
+      // This file has no storage-clearing beforeEach, so start from a known
+      // state rather than whatever the previous case left behind.
+      localStorage.clear()
+      // A stale, larger projection than the one this dispatch would write, so a
+      // projection write would shrink it and find room.
+      localStorage.setItem('mc-unread-slots', JSON.stringify(['chat-1', 'chat-2', 'chat-3']))
+
+      const real = Storage.prototype.setItem
+      const spy = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        key: string,
+        value: string,
+      ) {
+        // The authoritative record cannot be written; the projection still can.
+        if (key === 'mc-unread-shared') throw quota()
+        real.call(this, key, value)
+      })
+
+      try {
+        reducer(initial, markSlotUnread({ slot: 'chat-1', ts: '2026-01-01T00:00:00Z' }))
+      } finally {
+        spy.mockRestore()
+      }
+
+      // The record did not land, so the projection must not have been advanced
+      // past it. Two persisted records that disagree is worse than neither
+      // being written: `restoreUnreadSince` trusts the record while older tabs
+      // and the hub relay read the projection.
+      expect(localStorage.getItem('mc-unread-shared')).toBeNull()
+      expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toEqual([
+        'chat-1',
+        'chat-2',
+        'chat-3',
+      ])
     })
   })
 
@@ -385,11 +530,15 @@ describe('dashboardSlice per-slot sub-agent teardown', () => {
   }
 
   it('drains unread state for a slot that vanished from the authoritative list', () => {
+    // Persisted state lives in the ONE shared record; 'mc-unread-slots' is a
+    // write-only projection of its keys. Seed the record the way arrivals do.
+    localStorage.setItem('mc-unread-shared', JSON.stringify({ 'chat-1': '', 'chat-2': '' }))
     const before = { ...seeded(), unreadSlots: ['chat-1', 'chat-2'] }
 
     const next = reducer(before, sseSlots([{ key: 'chat-1', messages: 0, running: false }] as ChatSlot[]))
 
     expect(next.unreadSlots).toEqual(['chat-1'])
+    expect(Object.keys(JSON.parse(localStorage.getItem('mc-unread-shared') ?? '{}'))).toEqual(['chat-1'])
     expect(JSON.parse(localStorage.getItem('mc-unread-slots') ?? '[]')).toEqual(['chat-1'])
   })
 

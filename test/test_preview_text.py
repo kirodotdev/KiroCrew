@@ -39,7 +39,7 @@ class TestStripMarkdownPreview:
         assert strip_markdown_preview("run `npm ci` first") == "run npm ci first"
 
     def test_keep_visible_marker_stripped(self):
-        # #7948: the collapse-exemption marker is emitted "as its final line"
+        # the collapse-exemption marker is emitted "as its final line"
         # (prompt contract) — a trailing tag LINE is stripped from previews.
         assert (
             strip_markdown_preview("Fleet synthesis banked.\n<!-- keep-visible -->")
@@ -253,7 +253,9 @@ class TestHistoryLastMessagePreviewStripsMarkdown:
             json.dumps({"role": "assistant", "content": "\u200b", "ts": "2026-01-02T00:00:00Z"}),
         ]
         log._path(key).write_text("\n".join(lines) + "\n")
-        preview, epoch = log.last_message_info(key)
+        preview, epoch, stopped = log.last_message_info(key)
         assert preview == "the real answer"
         # The timestamp travels with the row the preview came from.
         assert epoch == datetime.fromisoformat("2026-01-01T00:00:00+00:00").timestamp()
+        # Newest real row is the quiet reply, not a stop.
+        assert stopped is False

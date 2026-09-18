@@ -223,8 +223,8 @@ def test_pinned_caller_gets_a_descriptor_even_without_xattrs(tmp_path, monkeypat
     re-resolution the pin exists to prevent. The Windows open-handle caveat
     does not apply: pinning needs ``O_DIRECTORY``, which Windows lacks, so a
     pinned caller is on POSIX where ``renameat`` publishes past open handles.
-    Issue #9060 group 1: the handler tests used to conflate "no xattr
-    syscalls" with "no descriptor" and reported this contract as a failure.
+    The handler tests must not conflate "no xattr
+    syscalls" with "no descriptor" and report this contract as a failure.
     """
     if not hasattr(os, "O_DIRECTORY") or os.open not in os.supports_dir_fd:
         pytest.skip("platform cannot pin a parent directory")

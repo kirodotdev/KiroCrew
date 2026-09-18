@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import random
 import stat
 import sys
 import threading
@@ -16,6 +17,7 @@ import pytest
 from body_stream_helpers import attach_body
 
 from kiro_crew import feature_videos as fv
+from kiro_crew import feature_videos_cache as cache_mod
 
 
 def _request(method: str, path: str, *, session_key: str = "dashboard:ui") -> MagicMock:
@@ -49,6 +51,29 @@ def _entry(video_id: str, **kwargs: object) -> fv.VideoEntry:
     }
     defaults.update(kwargs)
     return fv.VideoEntry(id=video_id, **defaults)  # type: ignore[arg-type]
+
+
+@pytest.fixture(autouse=True)
+def _fresh_video_cache() -> "object":
+    """Drop the process-wide cache singleton around every test.
+
+    The singleton memoizes the manifest, so one test loading a manifest into it
+    would silently put every later test on the hosted path.
+    """
+    cache_mod.reset_feature_video_cache()
+    yield None
+    cache_mod.reset_feature_video_cache()
+
+
+@pytest.fixture(autouse=True)
+def _deterministic_pick(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin the selector's RNG so a uniform pick is reproducible.
+
+    Seeded rather than stubbed to "always the first": the tests that assert WHICH
+    entry comes back must still go through the real ``random.choice``, or they
+    would stop covering it.
+    """
+    monkeypatch.setattr(fv, "_rng", random.Random(1234))
 
 
 @pytest.fixture(autouse=True)
@@ -157,10 +182,20 @@ class TestShippedCatalog:
         with patch.object(fv, "CATALOG", (bad,)):
             assert fv.catalog() == ()
 
-    def test_payload_withholds_used_when(self) -> None:
-        payload = fv.CATALOG[0].payload()
+    def test_the_client_payload_withholds_used_when(self, tmp_path: Path) -> None:
+        """``used_when`` names local state the frontend has no business reading.
+
+        Asserted on the OFFER, which is the only shape that is serialized: a
+        catalog entry has no payload builder of its own precisely so the hosted
+        and bundled shapes cannot drift.
+        """
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            picked = fv.select_next("9.9.9")
+        assert picked is not None
+        payload = picked.payload()
         assert "used_when" not in payload
-        assert payload["id"] == "feature-tips"
+        assert payload["id"] in {e.id for e in fv.CATALOG}
+        assert "source" not in payload
 
 
 class TestAssetExistenceGate:
@@ -529,11 +564,17 @@ class TestVersionGate:
 
 
 class TestSelectNext:
-    def test_returns_the_first_eligible_entry_in_catalog_order(self, tmp_path: Path) -> None:
+    def test_returns_an_eligible_entry(self, tmp_path: Path) -> None:
+        """The pick is one of the eligible entries, drawn at random.
+
+        Catalog order is publication order, so it says nothing about the user (see
+        the module docstring): under a first-in-order rule the first entry always
+        wins and the rest is reachable only by retiring it.
+        """
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             with patch.object(fv, "CATALOG", (_entry("first"), _entry("second"))):
                 picked = fv.select_next("9.9.9")
-        assert picked is not None and picked.id == "first"
+        assert picked is not None and picked.id in {"first", "second"}
 
     def test_skips_seen_and_dismissed(self, tmp_path: Path) -> None:
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
@@ -605,11 +646,32 @@ class TestSelectNext:
             with patch.object(fv, "CATALOG", (_entry("only"),)):
                 assert fv.select_next("9.9.9") is None
 
-    def test_selection_is_stable_across_calls(self, tmp_path: Path) -> None:
+    def test_every_eligible_entry_is_reachable(self, tmp_path: Path) -> None:
+        """Repeated calls reach the WHOLE eligible set, not just its first member.
+
+        This is the property that replaced stability: a user's first launch must
+        be able to show any of the eligible clips, which a fixed order cannot do.
+        Eligibility itself is unchanged and still deterministic — every other test
+        in this class pins one of its rules.
+        """
         with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
             with patch.object(fv, "CATALOG", (_entry("a"), _entry("b"), _entry("c"))):
-                picks = {(fv.select_next("9.9.9") or _entry("x")).id for _ in range(5)}
-        assert picks == {"a"}
+                picks = {(fv.select_next("9.9.9") or _entry("x")).id for _ in range(60)}
+        assert picks == {"a", "b", "c"}
+
+    def test_the_draw_is_roughly_uniform(self, tmp_path: Path) -> None:
+        """No entry is starved. Seeded, so this is a fact rather than a coin flip."""
+        counts: dict[str, int] = {"a": 0, "b": 0, "c": 0}
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            with patch.object(fv, "CATALOG", (_entry("a"), _entry("b"), _entry("c"))):
+                for _ in range(300):
+                    picked = fv.select_next("9.9.9")
+                    assert picked is not None
+                    counts[picked.id] += 1
+        # 300 draws over 3 entries: 100 each in expectation. A band this wide
+        # passes for any sane uniform generator and fails for order-biased
+        # selection (which would put 300 in one bucket and 0 in the others).
+        assert all(40 <= n <= 180 for n in counts.values()), counts
 
 
 class TestNextRoute:
@@ -678,7 +740,8 @@ class TestNextRoute:
                     )
             return json.loads(resp.body)  # type: ignore[arg-type]
 
-        assert asyncio.run(run()) == {"video": None, "enabled": True}
+        body = asyncio.run(run())
+        assert body == {"video": None, "enabled": True}
 
 
 class TestStatusRoute:
@@ -721,7 +784,11 @@ class TestStatusRoute:
 
         body = asyncio.run(run())
         # enabled stays truthful -- the kill switch is config, not history.
-        assert body == {"enabled": True, "state": {}}
+        assert body["enabled"] is True
+        assert body["state"] == {}
+        # Only `state` is history. The cache fields are instance bookkeeping and
+        # are reported to a read-blocking session like `enabled` is.
+        assert body["cached"] == 0 and body["total"] == 0 and body["release"] == ""
 
     def test_an_incognito_session_still_reads_its_own_panel(self, tmp_path: Path) -> None:
         """Incognito withholds WRITES; only a read-blocking session loses the map."""
@@ -800,9 +867,10 @@ class TestFeedbackRoute:
                             )
                         ).body  # type: ignore[arg-type]
                     )
-                    assert first["video"]["id"] == "first"
+                    shown = first["video"]["id"]
+                    assert shown in {"first", "second"}
                     await fv.api_feature_videos_feedback(
-                        _feedback_request({"id": "first", "status": "dismissed"})
+                        _feedback_request({"id": shown, "status": "dismissed"})
                     )
                     second = json.loads(
                         (
@@ -811,9 +879,11 @@ class TestFeedbackRoute:
                             )
                         ).body  # type: ignore[arg-type]
                     )
-            return second["video"]["id"]
+            return (shown, second["video"]["id"])
 
-        assert asyncio.run(run()) == "second"
+        first_id, second_id = asyncio.run(run())  # type: ignore[misc]
+        assert second_id != first_id
+        assert {first_id, second_id} == {"first", "second"}
 
     def test_state_file_written_by_feedback_is_owner_only(self, tmp_path: Path) -> None:
         if sys.platform.startswith("win"):
@@ -903,6 +973,83 @@ class TestFeedbackRoute:
             return resp.status
 
         assert asyncio.run(run()) == 400
+
+
+class TestIssuedIdSurvivesACatalogChange:
+    """A verdict on the clip in front of the user must not be thrown away.
+
+    The catalog can change under an open dialog: a background manifest refresh
+    replaces it. Without the issued-id ledger the feedback POST 400s,
+    the permanent verdict is lost, and the clip comes back -- the one thing a
+    permanent verdict promises it will not do.
+    """
+
+    def test_feedback_is_accepted_for_a_clip_that_left_the_catalog(self, tmp_path: Path) -> None:
+        async def run() -> tuple[int, object]:
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+                with (
+                    patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls,
+                    patch.object(fv, "CATALOG", (_entry("about-to-vanish"),)),
+                ):
+                    cfg_cls.load.return_value = _cfg()
+                    offered = json.loads(
+                        (
+                            await fv.api_feature_videos_next(
+                                _request("GET", "/api/feature-videos/next")
+                            )
+                        ).body  # type: ignore[arg-type]
+                    )
+                    assert offered["video"]["id"] == "about-to-vanish"
+                # The catalog changes under the open dialog.
+                with patch.object(fv, "CATALOG", ()):
+                    resp = await fv.api_feature_videos_feedback(
+                        _feedback_request({"id": "about-to-vanish", "status": "dismissed"})
+                    )
+                    return resp.status, fv.load_state().status_of("about-to-vanish")
+
+        status, recorded = asyncio.run(run())
+        assert status == 200
+        assert recorded == "dismissed"
+
+    def test_an_id_never_offered_is_still_refused(self, tmp_path: Path) -> None:
+        """The ledger widens the accepted set by what was OFFERED, not by anything."""
+
+        async def run() -> int:
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+                with patch.object(fv, "CATALOG", ()):
+                    resp = await fv.api_feature_videos_feedback(
+                        _feedback_request({"id": "never-offered", "status": "seen"})
+                    )
+                    return resp.status
+
+        assert asyncio.run(run()) == 400
+
+    def test_the_ledger_is_bounded(self, tmp_path: Path) -> None:
+        """It is the only thing keeping the state file's key set closed."""
+        for i in range(fv._ISSUED_ID_LIMIT * 3):
+            fv._remember_issued(f"clip-{i}")
+        assert len(fv._issued_ids) == fv._ISSUED_ID_LIMIT
+        # Newest kept, oldest evicted.
+        assert fv._was_issued(f"clip-{fv._ISSUED_ID_LIMIT * 3 - 1}") is True
+        assert fv._was_issued("clip-0") is False
+
+    def test_a_recorded_verdict_drops_the_id_from_the_ledger(self, tmp_path: Path) -> None:
+        """The persisted row supersedes the offer, so the id need not stay acceptable."""
+
+        async def run() -> None:
+            with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+                with patch.object(fv, "CATALOG", (_entry("recorded-once"),)):
+                    with patch("kiro_crew.feature_videos.KiroCrewConfig") as cfg_cls:
+                        cfg_cls.load.return_value = _cfg()
+                        await fv.api_feature_videos_next(
+                            _request("GET", "/api/feature-videos/next")
+                        )
+                    await fv.api_feature_videos_feedback(
+                        _feedback_request({"id": "recorded-once", "status": "seen"})
+                    )
+
+        asyncio.run(run())
+        assert fv._was_issued("recorded-once") is False
 
 
 class TestRouteRegistration:

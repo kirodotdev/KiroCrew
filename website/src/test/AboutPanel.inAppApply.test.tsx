@@ -98,10 +98,15 @@ describe('AboutPanel in-app update (arm + approve)', () => {
     const flow = await screen.findByTestId('in-app-update')
     expect(flow).toBeTruthy()
     const btn = screen.getByRole('button', { name: /update to v9\.9\.9/i })
+    expect(btn).toBe(screen.getByTestId('in-app-update-action'))
     fireEvent.click(btn)
 
     const armed = await screen.findByTestId('in-app-update-armed')
     expect(armed).toBeTruthy()
+    const armedAction = screen.getByTestId('in-app-update-action')
+    expect(armedAction).toBe(btn)
+    expect(armedAction).toHaveTextContent(/copy command/i)
+    expect(armed).toHaveTextContent(/gateway host/i)
     expect(screen.getByTestId('approve-command').textContent).toContain('kirocrew update approve')
     // The countdown renders from expires_in.
     expect(screen.getByTestId('arm-countdown').textContent).toMatch(/10:00|9:5\d/)

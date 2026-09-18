@@ -40,6 +40,7 @@ def _lessons_request(body: object) -> MagicMock:
     # the response body -- so the mocked store has to answer with the string its real
     # counterpart returns rather than a MagicMock.
     mock_state.lessons.save_or_enrich.return_value = "inserted"
+    mock_state.conversation_log.get_metadata_status.return_value = ({}, True)
     request = MagicMock()
     request.app = {"state": mock_state}
     request.headers = {"X-Session-Key": "dashboard:ui"}

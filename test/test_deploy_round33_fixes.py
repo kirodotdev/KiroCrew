@@ -131,7 +131,7 @@ class TestWindowsFdPinnedContainment:
         monkeypatch.setattr(
             hooks_mod.platform_compat,
             "open_file_no_reparse",
-            lambda path: real_open(os.fspath(path), os.O_RDONLY),
+            lambda path, **_kwargs: real_open(os.fspath(path), os.O_RDONLY),
         )
 
         assert safe_read_file_bytes_nolink(str(inside), within_root=str(root)) == b"ok"

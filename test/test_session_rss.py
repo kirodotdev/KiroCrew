@@ -6,7 +6,9 @@ Covers:
     exercised against a fake /proc tree rather than mocked away
   * per-PID sub-MiB accumulation (pages summed, truncated to MiB once)
   * _rss_threshold_check: disabled by default, busy-skip, threshold trigger,
-    persistent- and channel-key protection, the collect->reset race guard,
+    persistent- and channel-key protection, the attached-sub-agent guard
+    (kept when attached, recycled when not, kept when the probe raises),
+    the collect->reset race guard,
     gating of the recycle notification on an actual reset, and a single
     per-tick /proc child-map scan (not one scan per candidate)
   * reset()'s atomic identity (expect_session) + not-busy (skip_if_busy) guards
@@ -141,7 +143,7 @@ class TestGetSessionRssMb:
             assert session_pid.get_session_rss_mb(100) == _mib_of_pages(10)
 
     def test_sub_mib_per_pid_not_truncated_away(self) -> None:
-        # Regression for the per-PID MiB-truncation bug: two sibling processes
+        # Two sibling processes
         # each just over half a MiB. A per-PID ``// MiB`` truncates each to 0
         # (the old behaviour reported 0 for the tree); summing pages first and
         # truncating once yields >= 1 MiB.
@@ -173,7 +175,7 @@ class TestGetSessionRssMb:
 
 
 class TestProcParsingPrimitives:
-    """Exercise the REAL /proc parsing (previously fully mocked) against a fake
+    """Exercise the REAL /proc parsing against a fake
     /proc tree under tmp_path via the proc_root seam."""
 
     def test_read_rss_pages_parses_statm_resident_field(self, tmp_path) -> None:
@@ -266,8 +268,17 @@ class TestRssThresholdCheck:
         """
         monkeypatch.setattr(session.platform_compat, "IS_WINDOWS", False)
 
+    def test_shipped_default_reaches_the_enforcement_point(self) -> None:
+        """The ceiling is on by default: a manager built from the shipped
+        SessionConfig default arms ``_rss_threshold_check`` at 1536 MiB, so the
+        watchdog bounds a runaway tree without any config.json edit."""
+        from kiro_crew.config.sections import DEFAULT_WATCHDOG_RSS_MAX_MB, SessionConfig
+
+        manager = _make_manager(rss_max_mb=SessionConfig().watchdog_rss_max_mb)
+        assert manager._rss_max_mb == DEFAULT_WATCHDOG_RSS_MAX_MB == 1536
+
     @pytest.mark.asyncio
-    async def test_disabled_by_default_is_noop(self) -> None:
+    async def test_explicit_zero_disables(self) -> None:
         manager = _make_manager(rss_max_mb=0)
         manager._sessions["dashboard:x"] = _session_stub(busy=False)
         manager.reset = AsyncMock()
@@ -489,6 +500,72 @@ class TestRssThresholdCheck:
             await manager._rss_threshold_check()
         g.assert_not_called()
         manager.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_attached_subagents_protect_the_parent(self) -> None:
+        """An idle parent over the ceiling is kept while children are attached.
+
+        With session sharing on, a parent's sub-agents run on the parent's
+        runtime after its own turn ended, so the semaphore is free and the
+        RSS sweep would otherwise reset the runtime under them.
+        """
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        probe = MagicMock(return_value=True)
+        manager.set_subagent_probe(probe)
+        with patch("kiro_crew.session._build_child_map", return_value={}), patch(
+            "kiro_crew.session._rss_mb_from_tree", return_value=2048
+        ):
+            await manager._rss_threshold_check()
+        probe.assert_called_once_with("dashboard:x")
+        manager.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_parent_without_subagents_is_reset(self) -> None:
+        manager = _make_manager(rss_max_mb=1000)
+        stub = _session_stub(busy=False)
+        manager._sessions["dashboard:x"] = stub
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        probe = MagicMock(return_value=False)
+        manager.set_subagent_probe(probe)
+        with patch("kiro_crew.session._build_child_map", return_value={}), patch(
+            "kiro_crew.session._rss_mb_from_tree", return_value=2048
+        ):
+            await manager._rss_threshold_check()
+        probe.assert_called_once_with("dashboard:x")
+        manager.reset.assert_awaited_once()
+        assert manager.reset.await_args.args[0] == "dashboard:x"
+
+    @pytest.mark.asyncio
+    async def test_raising_subagent_probe_counts_as_attached(self) -> None:
+        """A probe that cannot see the children keeps the session (fail closed)."""
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        manager.set_subagent_probe(MagicMock(side_effect=RuntimeError("registry gone")))
+        with patch("kiro_crew.session._build_child_map", return_value={}), patch(
+            "kiro_crew.session._rss_mb_from_tree", return_value=2048
+        ):
+            await manager._rss_threshold_check()  # must not raise
+        manager.reset.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_no_probe_installed_recycles_as_before(self) -> None:
+        """A manager with no dashboard has no children: the ceiling still applies."""
+        manager = _make_manager(rss_max_mb=1000)
+        manager._sessions["dashboard:x"] = _session_stub(busy=False)
+        manager.reset = AsyncMock(return_value=True)
+        manager.get_pid = MagicMock(return_value=4242)
+        assert manager._subagent_probe is None
+        with patch("kiro_crew.session._build_child_map", return_value={}), patch(
+            "kiro_crew.session._rss_mb_from_tree", return_value=2048
+        ):
+            await manager._rss_threshold_check()
+        manager.reset.assert_awaited_once()
 
 
 class TestResetGuards:

@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import TOOL_DENY
+from kiro_crew.hooks import TOOL_DENY, hook_gate_kwargs
 from kiro_crew.llm_helpers import _extract_json_of_type
 from kiro_crew.platform.context import redact_log_via_context
 from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_PERMISSION_REQUEST, EVENT_TEXT_CHUNK
@@ -192,7 +192,7 @@ def parse_tasks(text: str) -> list[Task]:
             # The `_log_` spelling because this is a diagnostic path: it must not
             # raise, and on a process with no composed context it keeps the
             # baseline rather than blanking the snippet. It also subsumes the
-            # URL-before-credential ordering this site used to spell out by
+            # URL-before-credential ordering this site would otherwise spell out by
             # hand -- `security.redact` runs the exfil pass first for exactly
             # that reason (replacing a credential inside a URL would split it so
             # the URL redactor no longer matches).
@@ -284,6 +284,9 @@ async def decompose(
     # Route onto the run's shared AcpRuntime (one process per run), keyed by the
     # run's task_id. get_or_create would cold-start a dedicated process instead.
     parent_key = f"{SESSION_PREFIX}:{task_id}:runtime" if task_id else f"{SESSION_PREFIX}:runtime"
+    from kiro_crew.context import inherit_session_memory
+
+    memory_store = await inherit_session_memory(ctx, parent_key, session_key)
     try:
         client, is_new, _resumed = await sessions.open_task_session(
             parent_key, session_key, agent=agent or None, cwd=work_dir or None
@@ -297,6 +300,9 @@ async def decompose(
                 session_key,
                 agent=agent or None,
                 project=work_dir or None,
+                memory_store=memory_store,
+                context_provider=client,
+                resumed=_resumed,
             )
         else:
             full_prompt = prompt
@@ -316,14 +322,7 @@ async def decompose(
                         event.title,
                         session_key=session_key,
                         agent=agent,
-                        tool_kind=event.tool_kind,
-                        raw_params=event.raw_tool_params,
-                        diff_path=event.diff_path,
-                        command=event.shell_command,
-                        is_shell=event.is_shell,
-                        mcp_server_name=event.mcp_server_name,
-                        mcp_tool_name=event.tool_name,
-                        mcp_identity_trusted=event.mcp_identity_trusted,
+                        **hook_gate_kwargs(event),
                     )
                     if hook_result.action == TOOL_DENY:
                         await client.reject_tool(event.request_id)
@@ -529,6 +528,14 @@ def decompose_yaml(yaml_content: str) -> list[Task]:
     """Parse a YAML workflow definition directly into Task objects.
 
     Bypasses the LLM decomposer entirely — depends_on is enforced as-is.
+
+    Every "this is not a valid workflow spec" outcome leaves here as
+    ``ValueError``, INCLUDING an unparseable document. Callers distinguish a
+    rejected spec from a broken runtime by that class alone (``taskrunner``
+    decides between the LLM fallback and a hard failure on it), so leaking
+    ``yaml``'s own exception hierarchy through would make a syntax error — the
+    most ordinary way for a hand-written spec to be wrong — take the runtime
+    path instead.
     """
     if len(yaml_content) > _MAX_YAML_SIZE:
         raise ValueError(f"YAML too large ({len(yaml_content)} bytes, max {_MAX_YAML_SIZE})")
@@ -538,7 +545,10 @@ def decompose_yaml(yaml_content: str) -> list[Task]:
         raise ImportError(
             "PyYAML is required for YAML workflow decomposition: pip install PyYAML"
         ) from exc
-    wf = _yaml.safe_load(yaml_content)
+    try:
+        wf = _yaml.safe_load(yaml_content)
+    except _yaml.YAMLError as exc:
+        raise ValueError(f"YAML is not parseable: {exc}") from exc
     if not wf or not isinstance(wf, dict) or "agents" not in wf:
         raise ValueError("YAML must have an 'agents' key with agent definitions")
 

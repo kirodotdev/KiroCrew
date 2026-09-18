@@ -71,14 +71,28 @@ describe('Connections UI gate', () => {
 })
 
 describe('the launched card set', () => {
-  it('withholds GitHub, whose launch gate has not passed', () => {
-    expect(CONNECTION_PROVIDERS.map(provider => provider.slug)).not.toContain('github')
+  it('withholds a vendor-approval-pending provider whatever its gate says', () => {
+    // Figma is tier 3: the vendor admits clients from a waitlist, so no
+    // per-install action can make its card useful. Hidden, not instructed.
+    expect(CONNECTION_PROVIDERS.map(provider => provider.slug)).not.toContain('figma')
   })
 
-  it('offers only providers that passed the launch gate and clear vendor approval', () => {
+  it('shows a pre-registered provider even before its launch gate passes', () => {
+    // GitHub is launch-gated AND pre-registered. Its card is an instruction
+    // ("configure an OAuth app") until an operator enters a client, and hiding
+    // an instruction is how nobody learns the step exists -- so the gate does
+    // not govern visibility for this class. The backend's
+    // get_visible_providers applies the same rule.
+    const github = CONNECTION_PROVIDERS.find(provider => provider.slug === 'github')
+    expect(github).toBeDefined()
+    expect(github?.launch_gate_passed).toBe(false)
+    expect(github?.auth?.mode).toBe('preregistered')
+  })
+
+  it('offers only providers that passed the launch gate or are pre-registered, and clear vendor approval', () => {
     expect(CONNECTION_PROVIDERS.length).toBeGreaterThan(0)
     for (const provider of CONNECTION_PROVIDERS) {
-      expect(provider.launch_gate_passed).toBe(true)
+      expect(provider.launch_gate_passed || provider.auth?.mode === 'preregistered').toBe(true)
       expect(provider.vendor_approval_pending).toBe(false)
     }
   })

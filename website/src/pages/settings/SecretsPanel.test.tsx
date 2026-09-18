@@ -159,8 +159,8 @@ describe('SecretsPanel', () => {
 
     expect(await screen.findByText('MY_API_KEY')).toBeInTheDocument()
     expect(screen.getByText('DB_PASSWORD')).toBeInTheDocument()
-    expect(screen.getByText('Stored secrets')).toBeInTheDocument()
-    expect(screen.getByText(/MCP server configuration or \.env/)).toBeInTheDocument()
+    expect(screen.getByText('Custom secrets')).toBeInTheDocument()
+    expect(screen.getByText(/Reference one as secret:\/\/YOUR_KEY from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
     // The plaintext is never rendered — only the mask is.
     expect(screen.getAllByText('••••••••')).toHaveLength(2)
     expect(screen.queryByText('No secrets stored yet.')).not.toBeInTheDocument()
@@ -189,7 +189,7 @@ describe('SecretsPanel', () => {
     expect(screen.getByText('Jira API token')).toBeInTheDocument()
     expect(screen.getByText(/Authenticates Jira issue lookups/)).toBeInTheDocument()
     expect(screen.getByText('JIRA_API_TOKEN')).toBeInTheDocument()
-    expect(screen.getByText('Other stored secrets')).toBeInTheDocument()
+    expect(screen.getByText('Custom secrets')).toBeInTheDocument()
     expect(screen.getByText('WEATHER_API_KEY')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Replace' })).toBeInTheDocument()
     expect(screen.queryByText('test-value-123')).not.toBeInTheDocument()
@@ -382,7 +382,10 @@ describe('SecretsPanel', () => {
 
     expect(await screen.findByText('WakaTime API key')).toBeInTheDocument()
     expect(screen.getByText(/coding-activity sync/)).toBeInTheDocument()
-    expect(screen.queryByText('Other stored secrets')).not.toBeInTheDocument()
+    // The Custom secrets card is always shown (it explains the MCP contract), but
+    // with no non-managed entries it shows its empty state rather than a row.
+    expect(screen.getByText('Custom secrets')).toBeInTheDocument()
+    expect(screen.getByText(/No custom secrets stored yet/)).toBeInTheDocument()
     expect(screen.getByLabelText('WakaTime API key')).toHaveAttribute('type', 'password')
     expect(screen.getByRole('button', { name: 'Save WAKATIME_API_KEY' })).toBeDisabled()
     expect(screen.getByLabelText('WakaTime API key')).toHaveAttribute('placeholder', 'Paste secret value')
@@ -663,6 +666,91 @@ describe('SecretsPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Add secret' }))
     expect(screen.getByLabelText('Secret name')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /ask the agent/i })).not.toBeInTheDocument()
+  })
+})
+
+describe('SecretsPanel custom secrets card', () => {
+  it('always renders the Custom secrets card with the MCP disclaimer, even when empty', async () => {
+    // The card and its consumption contract must be visible up front so users
+    // understand how a custom secret is referenced, before storing anything.
+    mount()
+    expect(await screen.findByText('Custom secrets')).toBeInTheDocument()
+    // The disclaimer names BOTH supported consumers — MCP server env AND .env
+    // credential settings — so an owner whose entry came from `secrets import`
+    // is not told it is MCP-only.
+    expect(screen.getByText(/stored encrypted for use by MCP servers and \.env credential settings/)).toBeInTheDocument()
+    expect(screen.getByText(/from an MCP server's environment or a \.env credential setting/)).toBeInTheDocument()
+    // The token appears in both the disclaimer and the empty-state line.
+    expect(screen.getAllByText(/secret:\/\/YOUR_KEY/).length).toBeGreaterThanOrEqual(1)
+    expect(screen.getByText(/it is never exposed in chat/)).toBeInTheDocument()
+    // Empty state, not a row.
+    expect(screen.getByText(/No custom secrets stored yet/)).toBeInTheDocument()
+    expect(screen.queryByText('••••••••')).not.toBeInTheDocument()
+  })
+
+  it('keeps the disclaimer visible while custom entries are populated', async () => {
+    listNames = ['WEATHER_API_KEY']
+    mount()
+    expect(await screen.findByText('WEATHER_API_KEY')).toBeInTheDocument()
+    // Disclaimer persists alongside populated rows, and the empty line is gone.
+    expect(screen.getByText(/stored encrypted for use by MCP servers/)).toBeInTheDocument()
+    expect(screen.queryByText(/No custom secrets stored yet/)).not.toBeInTheDocument()
+    // Value is masked, never rendered in plaintext.
+    expect(screen.getByText('••••••••')).toBeInTheDocument()
+  })
+
+  it('adds a custom secret through the write-only vault contract', async () => {
+    const user = userEvent.setup()
+    mount()
+    await screen.findByText(/No custom secrets stored yet/)
+
+    await user.click(screen.getByRole('button', { name: 'Add secret' }))
+    await user.type(screen.getByLabelText('Secret name'), 'WEATHER_API_KEY')
+    await user.type(screen.getByLabelText('Secret value'), 'wk-secret-value')
+
+    // The refetch after the mutation sees the new custom name.
+    listNames = ['WEATHER_API_KEY']
+    await user.click(screen.getByRole('button', { name: 'Save' }))
+
+    await waitFor(() => {
+      const post = calls.find(c => c.method === 'POST')
+      expect(post?.url).toBe('/api/secrets')
+      expect(post?.body).toEqual({ name: 'WEATHER_API_KEY', value: 'wk-secret-value' })
+    })
+    // The typed value is never echoed back into the DOM.
+    expect(screen.queryByText('wk-secret-value')).not.toBeInTheDocument()
+  })
+
+  it('deletes a custom secret only after confirmation', async () => {
+    const user = userEvent.setup()
+    listNames = ['WEATHER_API_KEY']
+    mount()
+    await screen.findByText('WEATHER_API_KEY')
+
+    await user.click(screen.getByRole('button', { name: 'Delete secret WEATHER_API_KEY' }))
+    // A confirmation step gates the destructive action.
+    expect(screen.getByText(/Permanently delete/)).toBeInTheDocument()
+    expect(calls.some(c => c.method === 'DELETE')).toBe(false)
+
+    await user.click(screen.getByRole('button', { name: 'Delete', exact: true }))
+    await waitFor(() => {
+      const del = calls.find(c => c.method === 'DELETE')
+      expect(del?.url).toBe('/api/secrets/WEATHER_API_KEY')
+    })
+  })
+
+  it('does not present an empty vault when the list load fails', async () => {
+    // Regression: the Custom secrets card always renders, but on a failed list
+    // GET otherNames is empty for lack of data — showing "no custom secrets"
+    // there would invite re-adding an existing key and overwriting its value.
+    // The empty-state line must be suppressed; the error notice explains it.
+    listShouldFail = true
+    mount()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Could not load secrets')
+    // The card still renders its title + disclaimer, but NOT the empty-state line.
+    expect(screen.getByText('Custom secrets')).toBeInTheDocument()
+    expect(screen.queryByText(/No custom secrets stored yet/)).not.toBeInTheDocument()
   })
 })
 

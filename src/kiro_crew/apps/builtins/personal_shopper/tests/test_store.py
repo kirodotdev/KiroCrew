@@ -235,7 +235,7 @@ class TestVectorStaleness(PreferenceStoreTestCase):
 
 class TestFtsIndexSync(PreferenceStoreTestCase):
     def test_update_replaces_the_indexed_text(self) -> None:
-        """After an edit the OLD wording must no longer be findable."""
+        """After an edit the OLD wording must not be findable."""
         with _no_embedder():
             store = self._store()
             entry_id = store.add("prefers wool coats")

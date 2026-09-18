@@ -95,7 +95,7 @@ _T = TypeVar("_T")
 #: module existed.
 #:
 #: The reason is not that the drive is unfinished but that one question it depends on
-#: is: what proves a publication exists, or no longer exists, and which paths may act
+#: is: what proves a publication exists, or does not, and which paths may act
 #: on that. Answering it needs agreement across the publish engine, the artifact store
 #: and the folder store -- three lock domains that do not nest -- and that contract is
 #: being built separately. Until it lands, every window that depends on it is reachable
@@ -135,7 +135,7 @@ _BUCKET_RE = re.compile(rf"^{re.escape(BUCKET_PREFIX)}[0-9a-f]{{12}}$")
 #: Objects under this prefix are the only ones the distribution may read.
 PUBLIC_PREFIX = "public/"
 
-#: A published-then-made-private object moves here: still stored, no longer served.
+#: A published-then-made-private object moves here: still stored, not served.
 PRIVATE_PREFIX = "private/"
 
 #: ``external_id`` is ``<random>~<profile>``. The RANDOM half comes first so a profile
@@ -178,7 +178,7 @@ _SANDBOX_POLICY_NAME = "kirocrew-publish-drive-sandbox"
 #: THE sandbox CSP directive -- one source of truth. It is spelled ONCE here so the create
 #: path and the reuse-verification path cannot drift: if a second literal existed in the
 #: verify path, a future edit to one copy would let the verifier accept (or a create
-#: emit) a policy whose CSP no longer matches, silently defeating the isolation. Delivered
+#: emit) a policy whose CSP does not match, silently defeating the isolation. Delivered
 #: as a HEADER (a ``<meta>`` CSP ignores ``sandbox`` by spec), it gives each served
 #: document an OPAQUE origin so origin-keyed storage (localStorage/IndexedDB/cookies) is
 #: simply unreachable and cannot be shared between mutually-untrusted published documents.
@@ -233,10 +233,10 @@ def _sandbox_policy_config() -> dict[str, Any]:
 
 # One lock per published artifact, so two mutations of the SAME object cannot interleave.
 # Every mutating path is read-then-write against S3 (head to decide, then copy/put/delete),
-# and the seam does not serialize per artifact -- its only lock covers cloning -- so a push
-# landing between a move's copy and its delete used to have its bytes deleted with the
-# source, leaving the record naming a version the drive no longer held and, since the
-# stored digest then matched nothing, every later push in permanent conflict.
+# and the seam does not serialize per artifact -- its only lock covers cloning -- so without
+# it a push landing between a move's copy and its delete has its bytes deleted with the
+# source, leaving the record naming a version the drive does not hold and, since the
+# stored digest then matches nothing, every later push in permanent conflict.
 #
 # Keyed on the artifact's own id at this destination, so unrelated artifacts never contend.
 # Entries are never evicted: one small lock per artifact touched in this process is cheaper
@@ -1837,9 +1837,9 @@ class PersonalDriveProvider(PublishProvider):
         """A blob store serves any bytes the seam renders for it -- but the seam cannot
         render every kind.
 
-        This used to answer NATIVE for everything, which was true about the DESTINATION
-        and false about what a publish would do: the share-panel picker only offers a
-        provider whose answer is not UNSUPPORTED, so an image artifact was offered a
+        Answering NATIVE for everything is true about the DESTINATION
+        but false about what a publish would do: the share-panel picker only offers a
+        provider whose answer is not UNSUPPORTED, so an image artifact would be offered a
         publish that the seam then refuses with a 400. Advertising a capability the
         request cannot deliver is worse than declining it up front, so the kinds the seam
         cannot carry are declined here, read from the same set the refusal uses.

@@ -9,4 +9,7 @@ described in ``docs/build/gui-user-test.md``:
 * ``scenarios`` -- the YAML scenario DSL loader and validator.
 * ``harness``   -- the Bedrock Messages API loop with step / time / budget gates.
 * ``report``    -- renders ``summary.json`` into the PR comment / issue body.
+* ``features_catalog`` -- validates ``features.json`` (the scenario backlog: one
+                   record per user-visible feature) and renders ``FEATURES.md``
+                   from it, so the two files cannot drift.
 """

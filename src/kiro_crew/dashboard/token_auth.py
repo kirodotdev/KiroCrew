@@ -80,6 +80,7 @@ from kiro_crew.dashboard.token_secret import (  # noqa: F401  # re-exports
 )
 from kiro_crew.executors import subprocess_executor
 from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
+from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.peer_resolve import resolve_peer_identity
 from kiro_crew.sel import sel as _sel_fn
 
@@ -259,9 +260,12 @@ class TokenStateManager:
         self._nonces: OrderedDict[str, float] = OrderedDict()
         # Observation latches for the Security Posture surface only — never read
         # by an auth decision. See bind_peer() / proxied_pin_observed().
-        # token → (peer key, exp, proxied). The peer key is "ip:<addr>" for the
-        # default address pin and "ts:node:<login>@<node>" / "ts:login:<login>" for a
-        # daemon-verified tailnet peer (RFC §3) — in-memory only, regenerated on restart.
+        # _token_pin_key(token) → (peer key, exp, proxied). The key comes from
+        # the signed payload rather than the token string, so every string that
+        # authenticates as a session finds that session's pin. The peer key is
+        # "ip:<addr>" for the default address pin and "ts:node:<login>@<node>" /
+        # "ts:login:<login>" for a daemon-verified tailnet peer (RFC §3) —
+        # in-memory only, regenerated on restart.
         self._peer_bindings: dict[str, tuple[str, float, bool]] = {}
         self._consumed: dict[str, float] = {}  # token → exp
 
@@ -303,8 +307,9 @@ class TokenStateManager:
         Security Posture surface only — it does not change the binding or how
         :meth:`check_peer` compares it.
         """
+        key = _token_pin_key(token)
         with self._lock:
-            self._peer_bindings[token] = (peer_key, session_exp, proxied)
+            self._peer_bindings[key] = (peer_key, session_exp, proxied)
 
     def proxied_pin_observed(self, now: float) -> bool | None:
         """Report the pin scope of the sessions that are LIVE at *now*.
@@ -340,8 +345,9 @@ class TokenStateManager:
         (Tailscale re-enroll), and reporting it as "IP mismatch" would send
         them chasing the wrong thing.
         """
+        key = _token_pin_key(token)
         with self._lock:
-            entry = self._peer_bindings.get(token)
+            entry = self._peer_bindings.get(key)
         if entry is None or entry[0] == peer_key:
             return True, ""
         stored = entry[0]
@@ -353,8 +359,9 @@ class TokenStateManager:
 
     def has_binding(self, token: str) -> bool:
         """Whether *token* currently has a peer binding (live or not)."""
+        key = _token_pin_key(token)
         with self._lock:
-            return token in self._peer_bindings
+            return key in self._peer_bindings
 
     def mark_consumed(self, token: str, session_exp: float) -> None:
         """Mark a token as consumed (used for one-time token patterns)."""
@@ -607,6 +614,12 @@ SPA_FALLBACK_EXCLUDED_PREFIXES = (
     "/app-assets/",
     "/artifact-app/",
     "/sandbox-doc/",
+    # Cached feature-video clips and posters (feature_videos_cache.py). A data
+    # route: a GET with no session must be refused, never answered with the
+    # shell — the browser's <video> would otherwise receive index.html with a
+    # 200 and render nothing, and a future non-/api GET registered beside it in
+    # routes/realtime.py would inherit the same silent fallback.
+    "/feature-videos/",
 )
 
 # App window entries (`/app-windows/<app>/<name>.html`) are their own Vite bundles, served
@@ -749,6 +762,35 @@ def _b64url_encode(data: bytes) -> str:
 def _b64url_decode(s: str) -> bytes:
     padding = 4 - len(s) % 4
     return base64.urlsafe_b64decode(s + "=" * (padding % 4))
+
+
+def _token_pin_key(token: str) -> str:
+    """The identity a token's peer pin is stored under.
+
+    Derived from the signed payload bytes, not from the token string, because
+    the two are not one-to-one: :func:`_b64url_decode` uses the stdlib decoder's
+    default ``validate=False``, which discards characters outside the base64
+    alphabet, so a cosmetically re-encoded copy of a token is a different string
+    carrying byte-identical payload bytes -- and :func:`validate_token` verifies
+    the signature over those bytes, so it accepts both as the same session.
+
+    Keyed on the string, such a copy authenticates as the session while missing
+    its binding, and :meth:`TokenStateManager.check_peer` treats an absent entry
+    as unbound. Keyed on the payload, every string that can authenticate as a
+    session resolves to that session's pin, so the pin cannot be shed by
+    re-spelling the cookie. The signed payload carries a per-mint nonce and
+    ``iat``, so two separate mints never share a key.
+
+    A token whose payload cannot be decoded keeps the raw string as its key. It
+    cannot authenticate at all (:func:`validate_token` rejects it as invalid
+    encoding), and folding every undecodable string into one shared key would
+    alias unrelated tokens onto one another's pins.
+    """
+    try:
+        payload = _b64url_decode(token.split(".", 1)[0])
+    except Exception:
+        return token
+    return hashlib.sha256(payload).hexdigest()
 
 
 def _sign(payload: bytes) -> str:
@@ -1685,7 +1727,7 @@ async def _verify_unix_peer(
             error=_reason,
         )
         _log_auth(request, "internal", "denied", _reason)
-        return _deny(request, "Forbidden")
+        return _deny(request, "Forbidden", "unix_peer_unverified")
     peer_pid = get_peer_pid(sock)
     if peer_pid is None:
         return None
@@ -1720,7 +1762,7 @@ async def _verify_unix_peer(
             "denied",
             f"peer identity mismatch (peer_pid={peer_pid})",
         )
-        return _deny(request, "Forbidden")
+        return _deny(request, "Forbidden", "peer_session_mismatch")
     # Positive kernel attestation. Debug-level on purpose — this fires on
     # every internal call from a claimed session; the SEL trail records the
     # deny arm, which is the permission decision that changes anything.
@@ -1839,21 +1881,41 @@ def _key_segment(session_key: str) -> str:
 def _subagent_owner(subagents: object, agent_id: str) -> str:
     """The app that spawned a subagent, or ``""`` (person-spawned, or no record).
 
-    Reads the live registry mapping directly, which is a plain dict lookup -- no
-    lock and no I/O, so it is safe on the event loop for the same reason the slot
-    lookup is.
+    Uses the same canonical conversation lookup as the missing-record gate.
+    """
+    info = _subagent_caller_record(subagents, agent_id)
+    return str(getattr(info, "app", "") or "") if info is not None else ""
+
+
+def _subagent_caller_record(subagents: object, agent_id: str) -> object | None:
+    """Resolve a run or its unique active continuation from the live registry.
+
+    A continuation registers under a new run id but calls tools under its
+    original conversation key. After eviction or restart that original run
+    can be absent. Only an executing continuation with the exact canonical key
+    can establish the caller; retained files and queued work confer no authority.
+    The original record, when present, keeps its ownership precedence.
     """
     if subagents is None or not agent_id:
-        # An empty id identifies nothing (see ``_cron_job_owner``).
-        return ""
+        return None
     lookup = getattr(subagents, "get", None)
     if lookup is None:
-        return ""
+        return None
     try:
         info = lookup(agent_id)
+        if info is not None:
+            return info
+        conversation_key = f"subagent:{agent_id}"
+        matches = [
+            candidate
+            for candidate in getattr(subagents, "values")()
+            if getattr(candidate, "conversation_key", "") == conversation_key
+            and getattr(candidate, "done", None) is False
+            and getattr(candidate, "queued", None) is False
+        ]
+        return matches[0] if len(matches) == 1 else None
     except Exception:  # noqa: BLE001 - an auth path must never 500 on this
-        return ""
-    return str(getattr(info, "app", "") or "") if info is not None else ""
+        return None
 
 
 def caller_record_is_missing(
@@ -1867,10 +1929,10 @@ def caller_record_is_missing(
     runs for is gone", which is the same thing
     :func:`caller_names_a_missing_slot` says about a ``dashboard:`` key.
 
-    Reachable, and narrowly: a live subagent is always in the registry (only
-    ``done`` records are ever evicted, by ``evict_completed_agents``), and a cron
-    job stays until it is removed -- so this fires when a job is DELETED while its
-    run is still making calls, and the deleted job's app reach must not survive it.
+    A live subagent is registered by run id; an active continuation can establish
+    its canonical conversation key when the original run was evicted or predates
+    this gateway process. A cron job stays until it is removed, and its deleted
+    record's app reach must not survive removal.
 
     Requires the registry to be PRESENT. A surface wired without one (the
     ``--slack-only`` API server) must not have every delegated caller refused
@@ -1913,19 +1975,12 @@ def _cron_job_exists(jobs: object, job_id: str) -> bool:
 
 
 def _subagent_record_exists(subagents: object, agent_id: str) -> bool:
-    """Whether a subagent id is in the registry (plain dict lookup).
+    """Whether the live registry establishes this canonical subagent caller.
 
-    Fails CLOSED on an unreadable registry (no ``get`` / lookup raises): returns
-    ``False`` so the delegated caller is denied rather than escalated. See
-    ``_cron_job_exists`` for the SAX-04 fail-closed rationale.
+    The owner and existence decisions share a resolver, including its refusal
+    of ambiguous continuations and unreadable registries.
     """
-    lookup = getattr(subagents, "get", None)
-    if lookup is None:
-        return False  # unreadable registry: fail closed, see ``_cron_job_exists``
-    try:
-        return lookup(agent_id) is not None
-    except Exception:  # noqa: BLE001 - an auth path must never 500 on this
-        return False
+    return _subagent_caller_record(subagents, agent_id) is not None
 
 
 def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:
@@ -1960,6 +2015,167 @@ def caller_names_a_missing_slot(slots: object, session_key: str) -> bool:
     if lookup(sk.split(":", 1)[1]) is not None:
         return False
     return _slot_by_linked_key(slots, sk) is None
+
+
+#: The internal callers the dashboard routes recognize on ``X-Internal-Caller``.
+#: Exact-listed and ratcheted in ``test_chat_folder_audit_origin.py``: adding a
+#: caller here must be a conscious edit paired with a test, never a silent
+#: widen — the point of the header is that a NEW internal caller surfaces as
+#: ``unknown-internal`` in the audit until someone decides what to call it,
+#: instead of silently inheriting another component's label.
+KNOWN_INTERNAL_CALLERS = frozenset({"kirocrew-dashboard"})
+
+
+def request_origin(
+    request: web.Request, *, what: str = "write", log: logging.Logger | None = None
+) -> tuple[str, str]:
+    """SEL ``(source, caller)`` for a route driven by both the browser and MCP.
+
+    ``source`` stays in SEL's documented *interface* vocabulary (``dashboard``,
+    ``mcp``, ...) so operator queries like ``source == "mcp"`` keep matching
+    every MCP-driven event uniformly; the validated component identity rides
+    in ``caller``, which SEL already carries for exactly this purpose.
+
+    A request without ``X-Internal-Secret`` is the browser:
+    ``("dashboard", "dashboard")``. An internal request names its component in
+    ``X-Internal-Caller`` (attached by the MCP stdio servers' shared loopback
+    request helpers — see ``mcp_shared.set_internal_caller``), validated against
+    :data:`KNOWN_INTERNAL_CALLERS`. Inferring the identity from the secret alone
+    was correct only while exactly one internal caller existed, and would
+    silently mislabel every write the moment a second one is added.
+
+    Trust model: the secret is verified by the token-auth middleware before the
+    handler runs, so authentication is settled here. The caller header is
+    ATTRIBUTION on top of that — it grants nothing (a browser sending the header
+    without the secret still audits as ``dashboard``), and an unrecognized or
+    missing value on an authenticated internal request is recorded as
+    ``caller="unknown-internal"`` with a warning rather than trusted into the
+    audit log. ``what`` names the route class in that warning and ``log`` is the
+    logger it is emitted under (the calling route module's, so its tests can
+    listen for it).
+    """
+    if request.headers.get("X-Internal-Secret") is None:
+        return "dashboard", "dashboard"
+    caller = (request.headers.get("X-Internal-Caller") or "").strip()
+    if caller in KNOWN_INTERNAL_CALLERS:
+        return "mcp", caller
+    (log or logger).warning(
+        "internal %s without a recognized X-Internal-Caller (got %r) — audited as "
+        "unknown-internal; a new internal caller must be added to "
+        "KNOWN_INTERNAL_CALLERS alongside its ratchet test",
+        what,
+        caller[:64],
+    )
+    return "mcp", "unknown-internal"
+
+
+def refuse_unattributable_caller(
+    state: object, request: web.Request, operation: str
+) -> web.Response | None:
+    """403 when the caller NAMES a dashboard slot that is gone, else ``None``.
+
+    ``effective_request_app`` answers ``""`` both for the person and for a
+    caller it cannot place, and every app-isolation rule reads ``""`` as the
+    person's full authority. That is sound for a caller that never had a slot —
+    a Slack thread, a channel session, the person's own cron — but not for a
+    ``dashboard:`` key, which NAMES a slot: absence there is not "nothing to
+    confine me to", it is "the app I would have been confined to is exactly what
+    got popped". A tab closing while one of its tool calls is still in flight
+    produces precisely that, because the slot is popped synchronously without
+    draining in-flight MCP calls.
+
+    Deliberately NOT in the middleware: a popped slot cannot say whose tab
+    it was, so refusing there would also refuse the person's own in-flight calls
+    on every internal route at once. Each route that could not attribute a write
+    decides for itself and names its ``operation`` for the audit line.
+    """
+    if caller_names_a_missing_slot(
+        getattr(state, "_slots", None), request.headers.get("X-Session-Key", "")
+    ):
+        _sel_fn().log_api_access(
+            caller="unattributable",
+            operation=operation,
+            outcome="denied",
+            source="app_isolation",
+            resources=request.path,
+            error="caller names a dashboard slot that is gone",
+        )
+        return web.json_response(
+            {
+                "error": "the calling session is gone, so this write cannot be attributed",
+                "code": "caller_unattributable",
+            },
+            status=403,
+        )
+    return None
+
+
+def app_owns_transcript(slots: object, request_app: str, history_key: str) -> bool:
+    """Whether *request_app* owns the TRANSCRIPT a slot write would land on.
+
+    A slot carries two identities: ``_app``, stamped at creation, and the
+    transcript it currently writes to (``slot_history_key`` — its own
+    ``dashboard:<key>`` file, or the session named by ``linked_session_key``).
+    An ownership check on ``_app`` alone answers "does this app own the slot
+    object", not "does it own the conversation the write persists into"; a slot
+    linked to another owner's session would pass the first and fail the second.
+
+    So a per-slot write on behalf of an app checks both: the slot's ``_app``
+    (at the route) and, here, that EVERY slot whose conversation is that
+    transcript — its own ``dashboard:<key>`` file, or a slot linked to that
+    session — belongs to the same app. Unanimity is the point: two slots can be
+    bound to one session, and resolving the key to "whichever slot matches
+    first" would let the caller's own slot vouch for a transcript another
+    owner's slot also writes. A transcript NO slot claims is refused too: that
+    is the unbound channel-origin slot, whose ``slot_history_key`` is a channel
+    transcript nothing in the registry is bound to, and an app is never granted
+    reach into a conversation it cannot be shown to own. A CHANNEL transcript is
+    refused outright: a Slack, Discord or other channel thread is the person's
+    conversation, so no set of app-owned slots bound to it makes it the app's —
+    the claim would be the app's own slots vouching for themselves. Pure and
+    registry-only, like :func:`derive_caller_app`.
+    """
+    if not request_app:
+        return True
+    key = (history_key or "").strip()
+    if not key or is_channel_session_key(key):
+        return False
+    owners: set[str] = set()
+    values = getattr(slots, "values", None) if slots is not None else None
+    for slot in values() if values is not None else ():
+        own_file = f"dashboard:{getattr(slot, 'key', '')}"
+        linked = str(getattr(slot, "linked_session_key", "") or "")
+        if key == own_file or (linked and key == linked):
+            owners.add(str(getattr(slot, "_app", "") or ""))
+    return owners == {request_app}
+
+
+def effective_request_app(state: object, request: web.Request) -> str:
+    """App identity to enforce ownership against, or "" for the dashboard user.
+
+    Reads the claim ``token_auth_middleware`` publishes, and re-derives through
+    the SAME shared rule (:func:`derive_caller_app`) when it is absent.
+
+    The internal-secret transport (the managed MCP set) carries no app claim of
+    its own, so the middleware derives one for every route on that transport.
+    The re-derivation here is defense-in-depth for a caller that reaches the
+    handler without having passed that branch, and it calls the shared function
+    rather than restating the rule so the two can never disagree.
+
+    Never read from request BODY or tool arguments — a caller that could name
+    its own scope could name someone else's.
+
+    Lives here, beside the rule it wraps, so every route module (folders, tags)
+    imports one authorization-identity helper instead of one feature module
+    re-exporting another's.
+    """
+    declared = request.get("app", "")
+    if declared:
+        return str(declared)
+    return derive_caller_app(
+        getattr(state, "_slots", None),
+        request.headers.get("X-Session-Key", ""),
+    )
 
 
 def _cron_job_owner(jobs: object, job_id: str) -> str:
@@ -2341,6 +2557,12 @@ def token_auth_middleware(
                     # loopback caller (kiro-cli / MCP) authenticated" from "no
                     # auth ran at all".
                     request["internal_auth"] = True
+                    if path == "/api/chat" or path.startswith("/api/chat/"):
+                        from kiro_crew.dashboard.handlers._shared import private_chat_route_refusal
+
+                        memory_refusal = await private_chat_route_refusal(request)
+                        if memory_refusal is not None:
+                            return memory_refusal
                     # Derive the app identity ONCE, here, so every ownership
                     # check downstream sees it. The secret proves
                     # the call came from inside, not who made it, so identity

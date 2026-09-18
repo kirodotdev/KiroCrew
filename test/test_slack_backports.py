@@ -4,8 +4,8 @@ Each class pins one of them, and each is a defect Slack shipped rather than a
 refinement:
 
 * ``TestOutboundUploads``: an agent that writes ``![chart](/tmp/chart.png)``
-  used to ship the raw path to Slack as text while ``files_outbound=True``
-  claimed the renderer extracted and uploaded it. The flag is what the capability
+  must not ship the raw path to Slack as text while ``files_outbound=True``
+  claims the renderer extracted and uploaded it. The flag is what the capability
   ledger defines as ENFORCED, so these tests exercise the gate from both sides.
 * ``TestFenceSafeSplitting``: the renderer's final no-stream render truncated an
   over-limit answer through ``_safe_update``, and everything it did split, Slack's
@@ -23,6 +23,7 @@ import os
 import stat
 import threading
 from dataclasses import replace
+from types import SimpleNamespace
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -701,15 +702,69 @@ class TestVoiceMemoRejections:
         )
         assert unavailable.rejections == [VOICE_MEMO_UNAVAILABLE]
 
-        async def _no_words(path: str) -> str:
+        async def _no_words(path: str, _cfg) -> str:
             return ""
 
         monkeypatch.setattr(transcribe, "is_available", lambda *a, **k: True)
+        monkeypatch.setattr(transcribe, "load_stt_config", lambda: object())
+        monkeypatch.setattr(transcribe, "batch_duration_cap_secs", lambda _cfg: None)
         monkeypatch.setattr(transcribe, "transcribe_audio", _no_words)
         failed = await transcribe_audio_attachments(
             IngestResult(audio_paths=["/tmp/memo.webm"]), "Slack"
         )
         assert failed.rejections == [VOICE_MEMO_FAILED]
+
+    @pytest.mark.asyncio
+    async def test_over_duration_attachment_is_refused_before_transcription(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew import transcribe
+        from kiro_crew.messaging.attachments import IngestResult, transcribe_audio_attachments
+
+        monkeypatch.setattr(transcribe, "is_available", lambda: True)
+        cfg = SimpleNamespace(timeout_secs=900)
+        monkeypatch.setattr(transcribe, "load_stt_config", lambda: cfg)
+        monkeypatch.setattr(transcribe, "batch_duration_cap_secs", lambda _cfg: 3600)
+
+        async def _too_long(path: str, max_secs: int, *, timeout_secs: int) -> bool:
+            assert path == "/tmp/memo.webm"
+            assert max_secs == 3600
+            assert timeout_secs == 900
+            return True
+
+        transcribe_call = AsyncMock()
+        monkeypatch.setattr(transcribe, "audio_exceeds_secs", _too_long)
+        monkeypatch.setattr(transcribe, "transcribe_audio", transcribe_call)
+
+        result = await transcribe_audio_attachments(
+            IngestResult(audio_paths=["/tmp/memo.webm"]), "Slack"
+        )
+
+        assert result.rejections == [
+            "[Audio attachment — exceeds the 60-minute transcription limit]"
+        ]
+        transcribe_call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_unverified_attachment_duration_is_refused(self, monkeypatch) -> None:
+        from kiro_crew import transcribe
+        from kiro_crew.messaging.attachments import IngestResult, transcribe_audio_attachments
+
+        monkeypatch.setattr(transcribe, "is_available", lambda: True)
+        monkeypatch.setattr(
+            transcribe, "load_stt_config", lambda: SimpleNamespace(timeout_secs=900)
+        )
+        monkeypatch.setattr(transcribe, "batch_duration_cap_secs", lambda _cfg: 3600)
+        monkeypatch.setattr(transcribe, "audio_exceeds_secs", AsyncMock(return_value=None))
+        transcribe_call = AsyncMock()
+        monkeypatch.setattr(transcribe, "transcribe_audio", transcribe_call)
+
+        result = await transcribe_audio_attachments(
+            IngestResult(audio_paths=["/tmp/memo.webm"]), "Slack"
+        )
+
+        assert result.rejections == ["[Audio attachment — duration could not be verified]"]
+        transcribe_call.assert_not_awaited()
 
 
 class TestReleasedTailIsRedacted:

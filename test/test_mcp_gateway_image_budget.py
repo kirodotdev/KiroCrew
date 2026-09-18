@@ -159,7 +159,7 @@ class TestOversizedImageDownscaled:
     def test_unknown_source_mime_relabels_to_the_written_format(self):
         """An oversized image whose mime has no dedicated save format (TIFF)
         re-encodes as PNG -- the emitted mimeType must say so, not repeat the
-        source mime on bytes that are no longer that format."""
+        source mime, which does not describe the re-encoded bytes."""
         pil = pytest.importorskip("PIL.Image")
         buf = io.BytesIO()
         pil.new("RGB", (4000, 3000), (10, 20, 30)).save(buf, format="TIFF")

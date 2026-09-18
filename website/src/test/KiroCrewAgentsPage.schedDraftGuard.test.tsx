@@ -167,7 +167,7 @@ describe('crew editor — schedule-draft discard guard', () => {
     // it routes through the same confirm as every other destruction path.
     await openDraft()
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'half-typed' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Chat with this agent' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Chat with this member' }))
     expect(await screen.findByText('Discard the new schedule?')).toBeTruthy()
     // No navigation happened: the sheet and the intact draft are still here.
     fireEvent.click(screen.getByTestId('crew-sched-discard-keep'))

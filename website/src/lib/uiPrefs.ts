@@ -47,12 +47,17 @@ import { safeGetItem, safeSetItem } from '../utils/safeStorage'
  * it out: a missing backup degrades to today's behaviour, while backing up
  * session-scoped state resurrects stale UI on an unrelated profile.
  *
- * Adding a member is NOT a safe no-op. A warm profile never hydrates
- * (`needsHydrate` is false once `SYNCED_KEYS_KEY` exists), so a newly added
- * key's local DEFAULT is flushed to the host before the host's own value is
- * ever read, overwriting a value another origin saved. The list reads like an
- * ordinary allowlist, but growing it safely needs the sync path to hydrate a
- * newly added key before its first flush — see the growth-gap issue 9491.
+ * Growing this list is safe ONLY because of the reconcile pass. A warm profile
+ * never cold-hydrates (`needsHydrate` is false once `SYNCED_KEYS_KEY` exists),
+ * so without it a newly added key's local DEFAULT -- often written by a hook on
+ * mount -- would be flushed to the host before the host's own value was ever
+ * read, overwriting a value another origin saved (growth-gap issue 9491).
+ * `reconcileNewDurableKeys` runs before the first flush and reads the host copy
+ * for keys this profile has never synced: an absent local key adopts the host
+ * value, a present one is baselined so the first flush does not upload it. A
+ * key counts as "new" when it is in neither the synced fingerprints nor the
+ * reconciled roster (see `ROSTER_ENTRY`), so the pass costs one GET per
+ * allowlist growth, not per boot.
  */
 export const DURABLE_PREF_KEYS: readonly string[] = [
   // Chat preferences — one JSON blob holding ~16 settings (send-key mode,
@@ -67,8 +72,15 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   // factor and then DELETES them, so backing them up would restore them on the
   // next cold profile and re-run the migration forever.
   'mc-font-family',
+  // Chat reading width (md | full) -- hooks/useReadingWidth.ts.
+  'mc-reading-width',
   // Navigation and shell layout the user arranged by hand.
   'mc-nav',
+  // Interface paradigm (chat | cli) -- hooks/useUIMode.tsx. Its provider
+  // persists the current mode on MOUNT, so on a warm origin this key is always
+  // present locally; the reconcile pass below is what keeps that mount-written
+  // default from overwriting another origin's backup.
+  'mc-ui',
   'mc-app-nav-order',
   'mc-apps-expanded',
   'mc-bottom-terminal',
@@ -103,6 +115,9 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-dev-mode',
   'mc-agent-scene',
   'mc-kb-graph-physics',
+  // Notification sound settings (enabled/volume/per-category presets) --
+  // hooks/useNotificationSound.ts. JSON blob, written only on an explicit save.
+  'mc-notification-sound',
   'mc:notif:activeKinds:v2',
   'kirocrew:account-email-hidden',
   'kirocrew:comment-hint-dismissed',
@@ -111,6 +126,73 @@ export const DURABLE_PREF_KEYS: readonly string[] = [
   'mc-cloud-region',
   'mc-cloud-size',
   // Per-app preferences.
+  'kc-cron-folders-collapsed',
+  'kc:file-explorer:state:v2',
+  'kc:issue-radar:ui-state',
+  'telemetry:tab',
+  'telemetry:spend-group',
+  'mdnb-view',
+  'mdnb-sort',
+  'mdnb-list-view',
+  'mdnb-full-width',
+  'mdnb-panel-width',
+  'mdnb-panel-open',
+  'mdnb-auto-commit',
+  'mdnb-auto-sync',
+  'mdnb-auto-sync-mins',
+  'mdnb-sync-shortcut',
+  'ste_rail_w',
+]
+
+/**
+ * The allowlist as it stood BEFORE the reconcile mechanism shipped, frozen
+ * forever -- never append to this list; new keys go in `DURABLE_PREF_KEYS`
+ * only.
+ *
+ * This is the reconcile baseline for a profile that carries no roster entry: a
+ * legacy profile predates the roster, and every key its builds ever knew is in
+ * this list, so "durable now but not in here" is exactly "added after this
+ * profile could have known it". Without the frozen baseline, "no fingerprint"
+ * had to stand in for "newly added", and the two are not the same: a key the
+ * profile simply NEVER HELD (most of them, for most users) has no fingerprint
+ * either, and reconciling those would bulk-import another origin's layout onto
+ * a warm profile -- the cross-origin sync that design decision 1 above rules
+ * out.
+ */
+const PRE_ROSTER_KEYS: readonly string[] = [
+  'mc-chat-config',
+  'mc-busy-send-mode',
+  'mc-font-family',
+  'mc-nav',
+  'mc-app-nav-order',
+  'mc-apps-expanded',
+  'mc-bottom-terminal',
+  'mc-files-rail-open',
+  'mc-crews-view',
+  'mc-crew-switcher-pinned',
+  'mc-crew-switcher-stable-order',
+  'mc-filter-folders-shelved',
+  'mc-flat-hidden-folders',
+  'mc-input-height',
+  'mc-diff-plain',
+  'mc-diff-split',
+  'mc-file-linenums',
+  'mc-file-wordwrap',
+  'mc-file-collapse-unchanged',
+  'mc-artifacts-view',
+  'mc-artifacts-sort',
+  'mc-artifacts-pinned-only',
+  'mc-artifacts-session-docs-collapsed',
+  'mc-artifact-folders-expanded',
+  'mc-dev-mode',
+  'mc-agent-scene',
+  'mc-kb-graph-physics',
+  'mc:notif:activeKinds:v2',
+  'kirocrew:account-email-hidden',
+  'kirocrew:comment-hint-dismissed',
+  'mc-cloud-profile',
+  'mc-cloud-region',
+  'mc-cloud-size',
   'kc-cron-folders-collapsed',
   'kc:file-explorer:state:v2',
   'kc:issue-radar:ui-state',
@@ -181,6 +263,29 @@ const SYNCED_KEYS_KEY = 'mc-ui-prefs-synced'
  * its first GET finds an empty host, succeeds, and there is nothing to override.
  */
 const HYDRATE_PENDING_KEY = 'mc-ui-prefs-hydrate-pending'
+/**
+ * Reserved entry INSIDE the `SYNCED_KEYS_KEY` document holding the durable-key
+ * roster this profile last reconciled, as a JSON string array. It can never be
+ * mistaken for a fingerprint: `readSyncedPrints` only admits keys in
+ * `DURABLE_PREF_KEYS`, and the allowlist test pins this name out of that list.
+ *
+ * A key in `DURABLE_PREF_KEYS` but in neither this roster nor the synced
+ * fingerprints was added to the allowlist AFTER this profile last talked to
+ * the host, and `reconcileNewDurableKeys` must read the host's copy of it
+ * before the first flush may run (see the allowlist doc). A profile with no
+ * roster predates the mechanism, so its baseline is the frozen
+ * `PRE_ROSTER_KEYS` -- every key its builds could have known.
+ *
+ * Living inside the synced document is what makes a DOWNGRADE shed it: a
+ * pre-roster build's `readSyncedPrints` ignores the entry and its next
+ * `commitSent` rewrites the document without it, so after a re-upgrade the
+ * key is reconciled AGAIN instead of trusted from a stale roster -- the old
+ * build also dropped the key's fingerprint, and roster-without-fingerprint
+ * would upload the stale local value over a backup another origin refreshed
+ * meanwhile. A separate localStorage key could not have this property: no
+ * shipped build would ever rewrite or delete it.
+ */
+const ROSTER_ENTRY = 'mc:ui-prefs:roster'
 
 /** Keys the profile held when its first restore failed, or null if it never failed. */
 function ownedAtFailure(): Set<string> | null {
@@ -198,6 +303,185 @@ function markHydrateFailed(): void {
   if (safeGetItem(HYDRATE_PENDING_KEY) !== null) return
   const owned = DURABLE_PREF_KEYS.filter((k) => safeGetItem(k) !== null)
   safeSetItem(HYDRATE_PENDING_KEY, JSON.stringify(owned))
+}
+
+/** The raw roster entry in the synced document, or null when absent/unreadable. */
+function currentRosterEntry(): string | null {
+  const raw = safeGetItem(SYNCED_KEYS_KEY)
+  if (raw === null) return null
+  try {
+    const parsed: unknown = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+    const entry = (parsed as Record<string, unknown>)[ROSTER_ENTRY]
+    return typeof entry === 'string' ? entry : null
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The roster this profile last reconciled, or null when it predates the
+ * mechanism (or the entry is unreadable) -- the caller then falls back to the
+ * frozen `PRE_ROSTER_KEYS`, which can only ever treat MORE keys as new, never
+ * import ones the profile might have chosen not to sync.
+ */
+function readRoster(): Set<string> | null {
+  const entry = currentRosterEntry()
+  if (entry === null) return null
+  try {
+    const list: unknown = JSON.parse(entry)
+    if (!Array.isArray(list)) return null
+    return new Set(list.filter((k): k is string => typeof k === 'string'))
+  } catch {
+    return null
+  }
+}
+
+/** Record the CURRENT build's roster inside the synced document. */
+function markReconciled(): void {
+  const out: Record<string, string> = { [ROSTER_ENTRY]: JSON.stringify(DURABLE_PREF_KEYS) }
+  for (const [k, v] of readSyncedPrints()) out[k] = v
+  safeSetItem(SYNCED_KEYS_KEY, JSON.stringify(out))
+}
+
+/**
+ * Durable keys this profile has neither synced nor reconciled -- the ones a
+ * build upgrade just added to the allowlist. In the synced fingerprints means
+ * the profile has exchanged the key with the host; in the roster means a
+ * reconcile already read the host's copy and decided. Either clears it. NOT
+ * "no fingerprint" alone: a key the profile simply never held has no
+ * fingerprint either, and treating those as new would bulk-import another
+ * origin's values onto a warm profile (the cross-origin sync design decision 1
+ * rules out).
+ */
+function unreconciledKeys(): string[] {
+  const prints = readSyncedPrints()
+  const known = readRoster() ?? new Set(PRE_ROSTER_KEYS)
+  return DURABLE_PREF_KEYS.filter((k) => !prints.has(k) && !known.has(k))
+}
+
+/**
+ * True when this WARM profile must reconcile newly added durable keys with the
+ * host before the sync may start. Synchronous, so the usual boot (nothing new)
+ * pays one localStorage read. Meaningless on a cold profile -- the full hydrate
+ * covers it there.
+ */
+export function hasUnreconciledKeys(): boolean {
+  return unreconciledKeys().length > 0
+}
+
+/**
+ * Hydrate-before-flush for keys added to `DURABLE_PREF_KEYS` after this
+ * profile last talked to the host (growth-gap issue 9491).
+ *
+ * A warm profile never runs the cold hydrate, so without this pass a newly
+ * added key's local value -- typically a DEFAULT a hook persisted on mount --
+ * would read as "changed" on the first flush and overwrite the value another
+ * origin already backed up. The rules mirror `hydrateUiPrefs`, applied only to
+ * the new keys:
+ *
+ *   * host has a value, local absent: adopt the host value (this origin never
+ *     chose one). Counts as restored, so the caller reloads for the same
+ *     module-scope-reader reason as the cold path.
+ *   * host has a value, local present: keep local IN USE here but baseline it,
+ *     so the first flush does not upload it; it goes up when the user changes
+ *     it. Exception: after a FAILED reconcile, a key the profile did not hold
+ *     at the failure was written by a settings-less render, so the HOST wins
+ *     (the shared `HYDRATE_PENDING_KEY` contract -- a warm profile can only
+ *     carry that marker from a failed reconcile, since a failed cold hydrate
+ *     leaves the profile cold).
+ *   * host has no value, local present: left out of the baseline on purpose,
+ *     so the first flush uploads it and seeds the backup.
+ *
+ * Returns the number of keys written locally; rejects never (a failure returns
+ * -1 so the caller can decline to start the sync, exactly like a failed cold
+ * hydrate -- flushing without the reconcile is the clobber this exists to
+ * prevent). Success writes the roster, so the pass costs one GET per
+ * allowlist growth, not per boot.
+ */
+export async function reconcileNewDurableKeys(): Promise<number> {
+  const fresh = unreconciledKeys()
+  if (fresh.length === 0) {
+    markReconciled()
+    return 0
+  }
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), HYDRATE_TIMEOUT_MS)
+  const owned = ownedAtFailure()
+  try {
+    const res = await fetch(ENDPOINT, { signal: controller.signal })
+    if (!res.ok) {
+      markHydrateFailed()
+      return -1
+    }
+    const body: unknown = await res.json()
+    const prefs = (body as { prefs?: unknown } | null)?.prefs
+    if (!prefs || typeof prefs !== 'object' || Array.isArray(prefs)) {
+      // A 200 whose body is not a backup is NOT an empty backup. Recording the
+      // roster here would start the sync and flush the unreconciled keys'
+      // local defaults over whatever the host really holds -- fail instead,
+      // and the next boot retries against a healthy gateway. Like every other
+      // failure path, record the ownership snapshot: without it the retry
+      // would read ownedAtFailure() as null and trust a default a hook mounts
+      // AFTER this failure, keeping it over the host's real value forever.
+      markHydrateFailed()
+      return -1
+    }
+    const hostValues = prefs as Record<string, unknown>
+    const updates = new Map<string, string>()
+    let restored = 0
+    for (const key of fresh) {
+      const value = hostValues[key]
+      if (typeof value !== 'string') continue // host has nothing: local (if any) seeds it
+      const local = safeGetItem(key)
+      const keepLocal = local !== null && (owned === null || owned.has(key))
+      if (keepLocal) {
+        updates.set(key, local)
+        continue
+      }
+      if (local === value) {
+        updates.set(key, local)
+        continue
+      }
+      if (safeSetItem(key, value)) {
+        updates.set(key, value)
+        restored += 1
+      }
+      // Dropped by quota: NOT baselined, or the first flush would read the
+      // missing key as a deletion and null out a good host backup.
+    }
+    // Commit baselines and roster in ONE verified write. Two separate writes
+    // opened a real clobber: the baseline write could be dropped by quota while
+    // the roster write landed, and a roster without baselines starts the sync
+    // whose first flush uploads the unreconciled keys' local values over the
+    // host backup. One write cannot half-land, and a dropped write fails the
+    // reconcile below, so the sync never starts on an uncommitted baseline.
+    const prints = readSyncedPrints()
+    for (const [k, v] of updates) prints.set(k, fingerprint(v))
+    const doc: Record<string, string> = { [ROSTER_ENTRY]: JSON.stringify(DURABLE_PREF_KEYS) }
+    for (const [k, v] of prints) doc[k] = v
+    if (!safeSetItem(SYNCED_KEYS_KEY, JSON.stringify(doc))) {
+      // The keys already restored above stay in localStorage: the next boot's
+      // retry finds them present, keeps them, and baselines them then. Record
+      // the ownership snapshot like every failure path (the restored keys hold
+      // host values, so trusting them on retry is correct), or a default a
+      // hook mounts after this point would be kept over the host's value.
+      markHydrateFailed()
+      return -1
+    }
+    try {
+      localStorage.removeItem(HYDRATE_PENDING_KEY)
+    } catch {
+      /* best-effort */
+    }
+    if (restored > 0) window.dispatchEvent(new Event('mc-config-changed'))
+    return restored
+  } catch {
+    markHydrateFailed()
+    return -1
+  } finally {
+    clearTimeout(timer)
+  }
 }
 /** Debounce for a change-triggered flush. Long enough that dragging a splitter
  *  produces one PUT, short enough that closing the window right after a click
@@ -276,6 +560,10 @@ function readSyncedPrints(): Map<string, string> {
 
 function writeSyncedPrints(values: Map<string, string>): void {
   const prints: Record<string, string> = {}
+  // Carry the roster through: this build's reconcile state must survive every
+  // prints rewrite (a pre-roster build dropping it here is the DESIRED shed).
+  const roster = currentRosterEntry()
+  if (roster !== null) prints[ROSTER_ENTRY] = roster
   for (const [k, v] of values) prints[k] = fingerprint(v)
   safeSetItem(SYNCED_KEYS_KEY, JSON.stringify(prints))
 }
@@ -296,6 +584,8 @@ function mergeSyncedPrints(updates: Map<string, string | null>): void {
     else prints.set(k, fingerprint(v))
   }
   const out: Record<string, string> = {}
+  const roster = currentRosterEntry()
+  if (roster !== null) out[ROSTER_ENTRY] = roster
   for (const [k, v] of prints) out[k] = v
   safeSetItem(SYNCED_KEYS_KEY, JSON.stringify(out))
 }
@@ -326,7 +616,19 @@ export function needsHydrate(): boolean {
 function buildPatch(current: Map<string, string>): Record<string, string | null> {
   const patch: Record<string, string | null> = {}
   const prints = lastSent ? null : readSyncedPrints()
+  // Enforced at every flush, not only at boot: a key whose reconcile state is
+  // uncommitted NEVER goes up. The boot-time reconcile alone left a producible
+  // race -- in a mixed-version multi-tab session (a build upgrade with an old
+  // tab still open), the OLD build's own baseline rewrite sheds the roster
+  // entry mid-session, and this tab's next debounced flush would then read the
+  // new keys as changed and upload their local defaults over the host backup.
+  // Reading the unreconciled set on the flush path closes the whole class:
+  // whoever drops the roster, the affected keys just stop flushing until a
+  // boot reconciles them again. Steady-state cost is one localStorage read
+  // per flush; the set is empty on every profile whose roster is intact.
+  const withheld = new Set(unreconciledKeys())
   for (const [key, value] of current) {
+    if (withheld.has(key)) continue
     const unchanged = lastSent
       ? lastSent.get(key) === value
       : prints!.get(key) === fingerprint(value)
@@ -334,6 +636,7 @@ function buildPatch(current: Map<string, string>): Record<string, string | null>
   }
   const previousKeys = lastSent ? new Set(lastSent.keys()) : new Set(prints!.keys())
   for (const key of previousKeys) {
+    if (withheld.has(key)) continue
     if (!current.has(key)) patch[key] = null
   }
   return patch
@@ -457,7 +760,18 @@ export async function hydrateUiPrefs(): Promise<number> {
       const local = safeGetItem(key)
       if (local !== null) syncedNow.set(key, local)
     }
-    writeSyncedPrints(syncedNow)
+    // One write for baselines AND roster (the hydrate has, by definition,
+    // reconciled every key this build knows, so the next boot must not pay the
+    // growth-gap reconcile GET). Split writes could leave a roster without
+    // baselines when quota drops the first write: the profile would then look
+    // warm and reconciled, and the first flush would upload local values over
+    // the backup. If this single write is dropped, the synced marker stays
+    // absent and the next boot simply hydrates again -- today's behaviour.
+    const hydratedDoc: Record<string, string> = {
+      [ROSTER_ENTRY]: JSON.stringify(DURABLE_PREF_KEYS),
+    }
+    for (const [k, v] of syncedNow) hydratedDoc[k] = fingerprint(v)
+    safeSetItem(SYNCED_KEYS_KEY, JSON.stringify(hydratedDoc))
     // Cleared AFTER the synced marker is written, so a crash between the two
     // leaves the profile still pending rather than synced-with-untrusted-locals.
     try {

@@ -4,6 +4,7 @@ import { ChevronDown, ChevronRight, Folder, FolderOpen, FolderGit2, File, FileTe
 import { IMAGE_EXTS } from './constants'
 import { extOf } from './utils'
 import { fileExplorerApi } from './api'
+import ErrorNotice from '../../components/ErrorNotice'
 import type { TreeEntry, GitInfo } from './types'
 
 import { i18nT } from '../../i18n/t'
@@ -74,7 +75,7 @@ export default function TreeNode({ node, depth, expanded, toggleExpand, selected
 
   // Lazy-load children via React Query subscription (enabled when expanded + no inline children)
   const needsFetch = isDir && isOpen && (!node.children || node.children.length === 0)
-  const { data: lazyChildren } = useQuery({
+  const { data: lazyChildren, error: lazyError } = useQuery({
     queryKey: ['file-explorer', 'tree-node', node.path],
     queryFn: () => fileExplorerApi.tree(node.path, 1),
     enabled: needsFetch,
@@ -121,7 +122,16 @@ export default function TreeNode({ node, depth, expanded, toggleExpand, selected
         />
       ))}
       {isDir && isOpen && !children && (
-        <div style={{ paddingLeft: 6 + (depth + 1) * 14 + 18, fontSize: 11, color: 'var(--muted)' }}>{i18nT('apps.fileExplorer.treeNode.loading')}</div>
+        <div style={{ paddingLeft: 6 + (depth + 1) * 14 + 18, fontSize: 11, color: 'var(--muted)' }}>
+          {lazyError
+            ? <ErrorNotice variant="inline" message={(lazyError as Error).message} askAgent />
+            : i18nT('apps.fileExplorer.treeNode.loading')}
+        </div>
+      )}
+      {isDir && isOpen && children && lazyError && (
+        <div style={{ paddingLeft: 6 + (depth + 1) * 14 + 18, fontSize: 11 }}>
+          <ErrorNotice variant="inline" message={(lazyError as Error).message} askAgent />
+        </div>
       )}
     </Fragment>
   )

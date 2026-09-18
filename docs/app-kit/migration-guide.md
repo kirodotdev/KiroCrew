@@ -32,6 +32,27 @@ provides at runtime via its import map — there is **no `npm install`** and no
 published gateway-client npm package. Mark `@kirocrew/app-sdk` (and React,
 ReactDOM, lucide-react) as build externals.
 
+### Shared transport and host interaction contracts
+
+Use `api.raw(path, init)` for a binary download or stream: successful responses
+are not parsed or consumed. HTTP errors retain the SDK's status/body contract.
+Keep abort and stream-reader cleanup in the component that owns the request.
+
+Declared API patterns follow the backend's matcher, including trailing `/*` and
+`*`. Use `/api/example/*` rather than a bare trailing slash when declaring a
+subtree. This makes previously client-rejected declared wildcards usable; it
+neither changes app-token authorization nor adds manifest grants. Review broad
+trailing `*` declarations because they deliberately match sibling string prefixes.
+
+Replace direct Redux chat handoff with `useChatLauncher`: pass `slotKey` for an
+existing session and `autoSend: false` for a draft. Do not replace a draft handoff
+with the default automatic send. `agent` applies only to a newly created session.
+The host remains responsible for session activation and backend authorization.
+
+Python cron callers use `set_enabled` / `set_enabled_async` for pause and resume.
+Passing `enabled` to an update method raises instead of silently doing nothing.
+Only owned tasks can be toggled; IDs, history and existing execution gates remain.
+
 ### Step 1: Import the hooks
 
 ```typescript
@@ -77,6 +98,14 @@ Add the API paths and WebSocket events your app uses to `app.json`:
 | `fetch('/api/spawn', { method: 'POST', body: JSON.stringify({task}) })` | `api.post('/api/spawn', {task})` |
 | `fetch('/api/crons').then(r => r.json())` | `api.get('/api/crons')` |
 | `fetch('/api/lessons').then(r => r.json())` | `api.get('/api/lessons')` |
+
+For raw request bodies (such as `FormData`), use `api.request(path, init)`.
+JSON helpers also accept request options: `api.post(path, body, { signal })`.
+All responses are still parsed as JSON; use the `status` and unparsed `body`
+fields on an HTTP `AppApiError` to handle an endpoint's conflict response rather
+than parsing its error message. See the [API reference](api-reference.md#app-sdk-hooks-dashboard-ui).
+Do not copy a session header into app code: the host supplies it, and a chat-bound
+host always overrides caller-supplied identity.
 
 ### Step 4: Replace WebSocket code
 

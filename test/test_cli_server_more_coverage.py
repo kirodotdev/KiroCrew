@@ -26,9 +26,10 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import cli_server, platform_compat
+from kiro_crew import cli_server, kiro_cli, platform_compat
 from kiro_crew.config.loader import _DEFAULT_PORT
 from kiro_crew.dashboard.handlers.core import DASHBOARD_HTML_NOT_FOUND_MARKER
+from kiro_crew.gateway_lock import LockHolder, LockProbeError
 from kiro_crew.platform.update_layout import InstallLayout
 from kiro_crew.service import linux as svc_linux
 from kiro_crew.service import macos as svc_macos
@@ -221,11 +222,231 @@ class TestStopViaService:
 
         monkeypatch.setattr(cli_server.service_controller, "stop_service", unreachable)
         monkeypatch.setattr(platform_compat, "find_listening_pids", lambda port: [])
+        monkeypatch.setattr(
+            cli_server, "lock_holder", lambda home: LockHolder(pid=None, alive=False, source="none")
+        )
         with pytest.raises(SystemExit) as exc:
             cli_server._stop(8123)
         assert exc.value.code == 1
         assert "No Kiro Crew gateway currently running on port 8123" in capsys.readouterr().out
         assert sel_rec.calls[-1]["outcome"] == "no_target"
+
+
+class TestStopLockHolderFallback:
+    """The port probe is not how single-instance is enforced -- gateway.lock
+    is (gateway_lock.py). A gateway the port probe misses (unix-socket-only,
+    or a probe blind spot) must still be VISIBLE through the lock, or
+    `kirocrew stop` reports "nothing running" the same moment `kirocrew
+    gateway` refuses to start for a live pid -- the split-brain this fixes.
+    The lock is an oracle, not a signalling path: a live holder is refused
+    and named (lock path, pid, manual command) with one ``denied`` event, and
+    nothing is signalled, whoever holds it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _arrange(self, monkeypatch):
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 5476)
+        monkeypatch.setattr(cli_server.service_controller, "stop_service", lambda: False)
+        monkeypatch.setattr(platform_compat, "find_listening_pids", lambda port: [])
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
+        monkeypatch.setattr(cli_server, "_report_authenticated_shutdown", lambda port: False)
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+        monkeypatch.setattr(cli_server, "_pid_exited", lambda pid: True)
+        monkeypatch.setattr("time.sleep", lambda s: None)
+
+    @pytest.fixture
+    def signals(self, monkeypatch) -> list[int]:
+        """Record every pid the command would signal, on either platform."""
+        sent: list[int] = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append(pid))
+        monkeypatch.setattr(platform_compat, "kill_process_tree", lambda pid, sig: sent.append(pid))
+        return sent
+
+    def test_live_kirocrew_lock_holder_is_refused_and_named(
+        self, monkeypatch, sel_rec, capsys, signals
+    ) -> None:
+        monkeypatch.setattr(
+            cli_server,
+            "lock_holder",
+            lambda home: LockHolder(pid=4242, alive=True, source="flock_owner"),
+        )
+        monkeypatch.setattr(cli_server, "_is_kirocrew_process", lambda pid: True)
+        daemon_stops: list[int] = []
+        monkeypatch.setattr(cli_server, "_stop_mcp_gateway_daemon", lambda: daemon_stops.append(1))
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        assert signals == []
+        assert daemon_stops == []
+        out = capsys.readouterr().out
+        assert "gateway.lock" in out
+        assert "pid 4242" in out
+        assert "could not reach it" in out
+        assert "kill -TERM 4242" in out
+        assert len(sel_rec.calls) == 1
+        assert sel_rec.calls[0]["operation"] == "gateway_stop"
+        assert sel_rec.calls[0]["outcome"] == "denied"
+        assert "pids=[4242]" in sel_rec.calls[0]["resources"]
+        assert "reason=lock_holder_kirocrew" in sel_rec.calls[0]["resources"]
+
+    def test_live_kirocrew_lock_holder_on_windows_names_taskkill(
+        self, monkeypatch, sel_rec, capsys, signals
+    ) -> None:
+        monkeypatch.setattr(platform_compat, "IS_WINDOWS", True)
+        monkeypatch.setattr(
+            cli_server,
+            "lock_holder",
+            lambda home: LockHolder(pid=4242, alive=True, source="flock_owner"),
+        )
+        monkeypatch.setattr(cli_server, "_is_kirocrew_process", lambda pid: True)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        assert signals == []
+        assert "taskkill /PID 4242 /T" in capsys.readouterr().out
+        assert [c["outcome"] for c in sel_rec.calls] == ["denied"]
+
+    def test_dead_lock_holder_still_reports_no_target(self, monkeypatch, sel_rec, capsys) -> None:
+        monkeypatch.setattr(
+            cli_server,
+            "lock_holder",
+            lambda home: LockHolder(pid=4242, alive=False, source="flock_owner"),
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        assert "No Kiro Crew gateway currently running" in capsys.readouterr().out
+        assert sel_rec.calls[-1]["outcome"] == "no_target"
+
+    def test_live_lock_holder_is_refused_without_a_port_tool(
+        self, monkeypatch, sel_rec, capsys, signals
+    ) -> None:
+        """The lock file needs no `lsof`: with the port tool unavailable and a
+        live Kiro Crew holder, stop names the holder instead of exiting on the
+        tool diagnostic. The diagnostic is for the case where nothing found a
+        gateway, not a gate in front of the fallbacks that need no tool."""
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: False)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool", lambda: "lsof")
+        monkeypatch.setattr(platform_compat, "tool_outside_trusted_dirs", lambda tool: None)
+        monkeypatch.setattr(
+            cli_server,
+            "lock_holder",
+            lambda home: LockHolder(pid=4242, alive=True, source="flock_owner"),
+        )
+        monkeypatch.setattr(cli_server, "_is_kirocrew_process", lambda pid: True)
+        daemon_stops: list[int] = []
+        monkeypatch.setattr(cli_server, "_stop_mcp_gateway_daemon", lambda: daemon_stops.append(1))
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert signals == []
+        assert daemon_stops == []
+        assert "not found" not in out and "Install lsof" not in out
+        assert "kill -TERM 4242" in out
+        assert len(sel_rec.calls) == 1
+        assert sel_rec.calls[0]["outcome"] == "denied"
+        assert "reason=lock_holder_kirocrew" in sel_rec.calls[0]["resources"]
+
+    def test_no_holder_and_no_port_tool_keeps_the_tool_diagnostic(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        """Both tool-free fallbacks find nothing: the tool-absent exit is still
+        what the operator sees, because "nothing running" cannot be proven
+        without the port lookup."""
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: False)
+        monkeypatch.setattr(platform_compat, "listening_pid_tool", lambda: "lsof")
+        monkeypatch.setattr(platform_compat, "tool_outside_trusted_dirs", lambda tool: None)
+        monkeypatch.setattr(
+            cli_server, "lock_holder", lambda home: LockHolder(pid=None, alive=False, source="none")
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        assert "Install lsof and retry." in capsys.readouterr().out
+        assert "reason=lsof_not_found" in sel_rec.calls[-1]["resources"]
+
+    def test_non_kirocrew_lock_holder_is_refused_not_stopped(
+        self, monkeypatch, sel_rec, capsys, signals
+    ) -> None:
+        monkeypatch.setattr(
+            cli_server,
+            "lock_holder",
+            lambda home: LockHolder(pid=99, alive=True, source="flock_owner"),
+        )
+        monkeypatch.setattr(cli_server, "_is_kirocrew_process", lambda pid: False)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        assert signals == []
+        out = capsys.readouterr().out
+        assert "does not look like a Kiro Crew gateway" in out
+        assert "kill -TERM 99" in out
+        assert len(sel_rec.calls) == 1
+        assert sel_rec.calls[0]["operation"] == "gateway_stop"
+        assert sel_rec.calls[0]["outcome"] == "denied"
+        assert "pids=[99]" in sel_rec.calls[0]["resources"]
+        assert "reason=lock_holder_foreign" in sel_rec.calls[0]["resources"]
+
+    def test_indeterminate_probe_signals_nothing_and_exits_non_zero(
+        self, monkeypatch, sel_rec, capsys, signals
+    ) -> None:
+        # The probe could not say held-or-free. Signalling the pid the file
+        # records could hit an unrelated process that reused the number, so
+        # `stop` names the problem and exits 1 without touching any pid.
+        lock_path = Path("/var/lib/kirocrew/gateway.lock")
+
+        def indeterminate(home):
+            raise LockProbeError(lock_path, OSError("flock unsupported"))
+
+        monkeypatch.setattr(cli_server, "lock_holder", indeterminate)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._stop(None)
+        assert exc.value.code == 1
+        assert signals == []
+        out = capsys.readouterr().out
+        assert f"could not determine whether a gateway holds the lock at {lock_path}" in out
+        assert "flock unsupported" in out
+        assert sel_rec.calls[-1]["outcome"] == "denied"
+        assert "lock_probe_indeterminate" in sel_rec.calls[-1]["resources"]
+
+
+class TestRestartIndeterminateLock:
+    """``restart`` on an indeterminate lock probe must neither signal the
+    recorded pid nor spawn a replacement the lock may refuse."""
+
+    def test_indeterminate_probe_signals_nothing_spawns_nothing(
+        self, monkeypatch, sel_rec, capsys
+    ) -> None:
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 5476)
+        monkeypatch.setattr(cli_server.service_controller, "restart_service", lambda: False)
+        monkeypatch.setattr(cli_server.service_controller, "is_service_active", lambda: False)
+        monkeypatch.setattr(platform_compat, "find_listening_pids", lambda port: [])
+        monkeypatch.setattr(platform_compat, "listening_pid_tool_available", lambda: True)
+        monkeypatch.setattr(cli_server, "_report_authenticated_shutdown", lambda port: False)
+        monkeypatch.setattr(cli_server.run_marker, "read_pid", lambda port: None)
+        lock_path = Path("/var/lib/kirocrew/gateway.lock")
+
+        def indeterminate(home):
+            raise LockProbeError(lock_path, OSError("flock unsupported"))
+
+        monkeypatch.setattr(cli_server, "lock_holder", indeterminate)
+        stopped: list[int] = []
+        monkeypatch.setattr(os, "kill", lambda pid, sig: stopped.append(pid))
+        spawned: list[int] = []
+        monkeypatch.setattr(
+            cli_server, "_spawn_detached_gateway", lambda port: spawned.append(port)
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli_server._restart(None)
+        assert exc.value.code == 1
+        assert stopped == []
+        assert spawned == []
+        out = capsys.readouterr().out
+        assert f"could not determine whether a gateway holds the lock at {lock_path}" in out
+        assert "not starting a replacement" in out
+        assert sel_rec.calls[-1]["operation"] == "gateway_restart"
+        assert sel_rec.calls[-1]["outcome"] == "denied"
 
 
 class TestStopOnWindows:
@@ -540,15 +761,14 @@ class TestLogsCmdOtherSources:
         assert sel_rec.operations == ["logs"]
 
     def test_zero_lines_argument_falls_back_to_the_default(
-        self, monkeypatch, tmp_path, sel_rec, fake_execvp
+        self, monkeypatch, tmp_path, sel_rec, capsys
     ) -> None:
-        """``lines=0`` is falsy, so the product substitutes 100 rather than tailing nothing."""
+        """``lines=0`` selects the default tail length on an unsupported service host."""
         monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.UNSUPPORTED)
         monkeypatch.setattr(cli_server, "config_dir", lambda: tmp_path)
         (tmp_path / "gateway.log").write_text("x\n", encoding="utf-8", newline="\n")
-        with pytest.raises(_ExecCalled) as exc:
-            cli_server._logs_cmd(argparse.Namespace(follow=False, lines=0))
-        assert exc.value.argv[:3] == ["tail", "-n", "100"]
+        cli_server._logs_cmd(argparse.Namespace(follow=False, lines=0))
+        assert capsys.readouterr().out == "x\n"
 
 
 # --------------------------------------------------------------------------
@@ -913,8 +1133,9 @@ class TestRunTask:
     def test_vector_init_is_offloaded_off_the_event_loop(
         self, taskrunner_env, tmp_path, monkeypatch
     ) -> None:
-        """``VectorMemoryStore.init()`` must honour its caller contract (#5389):
-        the Windows path shells out to icacls, so an async caller offloads it
+        """``VectorMemoryStore.init()`` must honour its caller contract:
+        it is blocking file IO whose Windows DACL writes can block on a
+        network volume round-trip, so an async caller offloads it
         via ``asyncio.to_thread`` instead of freezing the loop. Ordering is
         asserted too: init must COMPLETE before ``_run_task`` wires the embed
         hooks (a fire-and-forget offload would reorder them). The sibling
@@ -967,6 +1188,11 @@ class TestRunTask:
 # --------------------------------------------------------------------------
 
 
+# The OID the stub pins origin/<branch> to: what every later git call and the
+# reset itself must name, in place of the branch name.
+_PIN = "0123456789abcdef0123456789abcdef01234567"
+
+
 class _GitStub:
     """Routes ``subprocess.run`` by argv prefix so each branch is reachable."""
 
@@ -977,9 +1203,16 @@ class _GitStub:
         # Behind-only by default: these tests model a fast-forwardable
         # checkout, which the divergence guard waves through.
         self.rev_list_out = "0\t5\n"
+        self.show_out: bytes | None = None
+        self.show_fails = False
 
     def __call__(self, argv, **kw):
         self.calls.append(list(argv))
+        if argv[:3] == ["git", "rev-parse", "--verify"]:
+            # The upstream pin, taken right after the fetch.
+            return subprocess.CompletedProcess(
+                argv, self.rc.get("rev_parse_verify", 0), _PIN + "\n", "unknown revision"
+            )
         if argv[:2] == ["git", "rev-parse"]:
             return subprocess.CompletedProcess(argv, self.rc.get("rev_parse", 0), "main\n", "")
         if argv[:2] == ["git", "fetch"]:
@@ -992,9 +1225,32 @@ class _GitStub:
             )
         if argv[:2] == ["git", "status"]:
             return subprocess.CompletedProcess(argv, 0, self.status_out, "")
+        if argv[:2] == ["git", "show"]:
+            # The pre-reset interpreter-floor gate reads pyproject/setup.cfg out
+            # of the fetched commit. BYTES, like the real call. Absent by
+            # default, in git's own words for "not in this revision" -- the gate
+            # tells that apart from a failed read, so the wording is the contract
+            # -- and so the gate does not fire unless a test hands it a floor.
+            if self.show_fails:
+                return subprocess.CompletedProcess(
+                    argv,
+                    128,
+                    b"",
+                    b"fatal: not a git repository (or any of the parent directories)",
+                )
+            if self.show_out is None:
+                path = argv[2].split(":", 1)[1]
+                return subprocess.CompletedProcess(
+                    argv,
+                    128,
+                    b"",
+                    f"fatal: path '{path}' does not exist in '{argv[2].split(':')[0]}'".encode(),
+                )
+            return subprocess.CompletedProcess(argv, 0, self.show_out, b"")
         if argv[:2] == ["git", "reset"]:
             return subprocess.CompletedProcess(argv, self.rc.get("reset", 0), "", "dirty")
-        if argv[0] == "kiro-cli":
+        if Path(argv[0]).name == "kiro-cli":
+            # The pinned absolute path is argv0, never the bare name.
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[1:] == ["-I", "-X", "utf8", "-c", "import kiro_crew"]:
             # The full-reinstall success contract probes the target interpreter
@@ -1032,6 +1288,11 @@ def git_checkout(monkeypatch, tmp_path):
         "kiro_crew.platform.update_governance.update_blocked_reason", lambda url: ""
     )
     monkeypatch.setattr(cli_server.shutil, "which", lambda name: None)
+    # The optional kiro-cli step spawns only a PINNED install (resolved with the
+    # inherited PATH excluded); none by default, so the host's own install
+    # cannot leak into these tests. Tests that want the step reachable resolve
+    # one explicitly.
+    monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: None)
     monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: None)
     monkeypatch.setattr("kiro_crew.cli._ensure_node", lambda *a: None)
     # Pin the install ROUTE. The real probe reads the test interpreter's own
@@ -1143,6 +1404,107 @@ class TestUpdateGitPath:
         assert "--force: discarding 3 local commit(s)" in out
         assert any(c[:2] == ["git", "reset"] for c in stub.calls)
 
+    def test_a_floor_git_cannot_read_refuses_before_the_reset(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """A failed `git show` is not "no floor declared": the reset must not run."""
+        from kiro_crew import dep_sync
+
+        stub = _GitStub()
+        stub.show_fails = True
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(dep_sync, "interpreter_version", lambda *a, **k: (3, 11, 9))
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Could not read the incoming revision's interpreter requirement" in out
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_a_revision_the_venv_cannot_run_is_refused_before_the_reset(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """The floor is judged on the FETCHED commit, before the tree moves.
+
+        pip would refuse the same revision during the reinstall, but only after
+        `reset --hard` had already moved the checkout to code this interpreter
+        cannot import -- the stranded state every later run then repeats.
+        """
+        from kiro_crew import dep_sync
+
+        stub = _GitStub()
+        stub.show_out = b'[project]\nname = "kirocrew"\nrequires-python = ">=3.12"\n'
+        # Tracked edits present: the refusal must land BEFORE the operator is
+        # asked whether to discard them, so the prompt is never reached.
+        stub.status_out = " M src/a.py\n"
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(dep_sync, "interpreter_version", lambda *a, **k: (3, 11, 9))
+
+        def _never_prompt(prompt=""):
+            raise AssertionError("discard prompt reached after a floor refusal")
+
+        monkeypatch.setattr("builtins.input", _never_prompt)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        out = capsys.readouterr().out
+        assert "Refusing to update" in out
+        assert ">=3.12" in out and "3.11.9" in out
+        # Read from the PINNED commit about to be applied, and the tree left alone.
+        assert any(c[:3] == ["git", "show", f"{_PIN}:pyproject.toml"] for c in stub.calls)
+        assert not any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_a_venv_that_meets_the_incoming_floor_still_resets(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        from kiro_crew import dep_sync
+
+        stub = _GitStub()
+        stub.show_out = b'[project]\nname = "kirocrew"\nrequires-python = ">=3.12"\n'
+        monkeypatch.setattr(subprocess, "run", stub)
+        monkeypatch.setattr(dep_sync, "interpreter_version", lambda *a, **k: (3, 12, 0))
+        cli_server._update()
+        assert any(c[:2] == ["git", "reset"] for c in stub.calls)
+
+    def test_every_judgment_and_the_reset_name_the_pinned_commit(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        """Check and apply describe ONE revision, by construction.
+
+        The floor read, the divergence counts and the reset all take the OID
+        pinned right after the fetch, never the origin/<branch> name a fetch
+        from another terminal could move between them.
+        """
+        stub = _GitStub()
+        monkeypatch.setattr(subprocess, "run", stub)
+        cli_server._update()
+        # The FULL remote-tracking ref: a short `origin/main` resolves a tag of
+        # that name first, which a fetch auto-follows from the remote.
+        assert ["git", "rev-parse", "--verify", "refs/remotes/origin/main^{commit}"] in stub.calls
+        assert not any(
+            c[:3] == ["git", "rev-parse", "--verify"] and "origin/main^{commit}" in c
+            for c in stub.calls
+        )
+        assert ["git", "reset", "--hard", _PIN] in stub.calls
+        assert not any("origin/main" in c for c in stub.calls if c[:2] == ["git", "reset"])
+        assert any(c[:3] == ["git", "show", f"{_PIN}:pyproject.toml"] for c in stub.calls)
+        rev_lists = [c for c in stub.calls if c[:2] == ["git", "rev-list"]]
+        assert rev_lists and all(any(_PIN in arg for arg in c) for c in rev_lists)
+        assert any(c[:2] == ["git", "diff"] and _PIN in c for c in stub.calls)
+
+    def test_an_unresolvable_upstream_pin_exits_before_any_judgment(
+        self, monkeypatch, git_checkout, capsys
+    ) -> None:
+        stub = _GitStub(rev_parse_verify=128)
+        monkeypatch.setattr(subprocess, "run", stub)
+        with pytest.raises(SystemExit) as exc:
+            cli_server._update()
+        assert exc.value.code == 1
+        assert "Could not resolve origin/main" in capsys.readouterr().out
+        assert not any(
+            c[:2] in (["git", "diff"], ["git", "rev-list"], ["git", "reset"]) for c in stub.calls
+        )
+
     def test_unreadable_divergence_refuses_the_reset(
         self, monkeypatch, git_checkout, capsys
     ) -> None:
@@ -1203,7 +1565,7 @@ class TestUpdateGitPath:
     ) -> None:
         stub = _GitStub()
         monkeypatch.setattr(subprocess, "run", stub)
-        monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         built: list[Path] = []
         monkeypatch.setattr(cli_server, "build_frontend_sync", lambda p: built.append(p))
         cli_server._update()
@@ -1211,7 +1573,7 @@ class TestUpdateGitPath:
         assert "Kiro Crew updated!" in out
         assert "Agent config refreshed" in out
         assert built == [git_checkout]
-        assert ["kiro-cli", "update"] in stub.calls
+        assert ["/usr/bin/kiro-cli", "update"] in stub.calls
         assert any("setup" in c for c in stub.calls)
 
     def test_agent_config_refresh_failure_only_warns(
@@ -1225,7 +1587,7 @@ class TestUpdateGitPath:
 
 
 class TestUpdateSubprocessHardening:
-    """The six ``subprocess.run`` calls in ``_update()`` (issue #5648).
+    """The six ``subprocess.run`` calls in ``_update()``.
 
     Two gap classes: (a) every captured-output call must also pass
     ``stdin=subprocess.DEVNULL`` so a child prompt can never block invisibly on
@@ -1255,8 +1617,8 @@ class TestUpdateSubprocessHardening:
             return stub(argv, **kw)
 
         monkeypatch.setattr(subprocess, "run", _run)
-        # A findable kiro-cli makes the sixth (best-effort) site reachable.
-        monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
+        # A pinned kiro-cli makes the sixth (best-effort) site reachable.
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         cli_server._update()
         assert "Kiro Crew updated!" in capsys.readouterr().out
 
@@ -1266,7 +1628,7 @@ class TestUpdateSubprocessHardening:
             ["git", "diff"],
             ["git", "status"],
             ["git", "reset"],
-            ["kiro-cli", "update"],
+            ["/usr/bin/kiro-cli", "update"],
         ]
         for prefix in six:
             matching = [kw for argv, kw in recorded if argv[: len(prefix)] == prefix]
@@ -1319,10 +1681,12 @@ class TestUpdateSubprocessHardening:
         self, monkeypatch, git_checkout, capsys
     ) -> None:
         """The backend update's result is not inspected today, so its timeout
-        warns and the update continues — the #5637 handler shape."""
+        warns and the update continues."""
         stub = _GitStub()
-        monkeypatch.setattr(subprocess, "run", self._timeout_on(["kiro-cli", "update"], stub))
-        monkeypatch.setattr(cli_server.shutil, "which", lambda name: "/usr/bin/kiro-cli")
+        monkeypatch.setattr(
+            subprocess, "run", self._timeout_on(["/usr/bin/kiro-cli", "update"], stub)
+        )
+        monkeypatch.setattr(kiro_cli, "resolve_kiro_cli", lambda **kw: "/usr/bin/kiro-cli")
         cli_server._update()
         out = capsys.readouterr().out
         assert "kiro-cli update timed out" in out
@@ -1632,3 +1996,82 @@ class TestUpdateWheelInstaller:
         monkeypatch.setattr(subprocess, "run", unreachable)
         cli_server._update_wheel(_LAYOUT)
         assert "Already on the latest version" in capsys.readouterr().out
+
+
+class TestStatusCountLines:
+    """`kirocrew status` renders the two cached counts `/api/status` publishes,
+    and an unknown count (``null`` while the shared cache has not refreshed)
+    as a dash rather than ``None`` or a fabricated zero."""
+
+    def test_known_counts_print_as_numbers(self) -> None:
+        data = {"cron_jobs": 3, "lessons": 42}
+        assert cli_server._format_count(data, "cron_jobs") == "3"
+        assert cli_server._format_count(data, "lessons") == "42"
+
+    def test_null_count_prints_a_dash_not_none(self) -> None:
+        # Fails on the previous head, which printed ``Lessons: None`` for a
+        # payload whose count was still unknown.
+        data = {"cron_jobs": None, "lessons": None}
+        assert cli_server._format_count(data, "cron_jobs") == "—"
+        assert cli_server._format_count(data, "lessons") == "—"
+
+    def test_missing_key_prints_a_dash_not_zero(self) -> None:
+        assert cli_server._format_count({"uptime": "1h"}, "lessons") == "—"
+
+    def test_status_reads_the_cron_jobs_key(self, monkeypatch, capsys) -> None:
+        # Fails on the previous head, which read a ``crons`` key the snapshot
+        # never emits and so always printed ``Cron jobs: 0``.
+        import io
+        import json
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        payload = {"uptime": "1h", "cron_jobs": 7, "lessons": None}
+
+        @contextmanager
+        def _urlopen(url, timeout):
+            yield io.BytesIO(json.dumps(payload).encode())
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+        cli_server._status(SimpleNamespace(port=None))
+        out = capsys.readouterr().out
+        assert "Cron jobs:   7" in out
+        assert "Lessons:     —" in out
+        assert "None" not in out
+
+
+class TestStatusMemoryLine:
+    """`kirocrew status` prints the gateway RSS and the session ceiling from the
+    two fields `/api/status` publishes for it."""
+
+    def test_formats_rss_and_ceiling(self) -> None:
+        line = cli_server._format_memory_line({"gateway_rss_mb": 412, "watchdog_rss_max_mb": 1536})
+        assert line == "412 MiB rss, session ceiling 1536 MiB"
+
+    def test_zero_ceiling_reads_as_disabled_not_as_a_bound(self) -> None:
+        line = cli_server._format_memory_line({"gateway_rss_mb": 412, "watchdog_rss_max_mb": 0})
+        assert "disabled" in line and "watchdog_rss_max_mb" in line
+        assert "0 MiB" not in line
+
+    def test_older_gateway_without_the_fields_prints_dashes(self) -> None:
+        line = cli_server._format_memory_line({"uptime": "1h"})
+        assert line == "— rss, session ceiling —"
+
+    def test_status_prints_the_line(self, monkeypatch, capsys) -> None:
+        import io
+        import json
+        from contextlib import contextmanager
+        from types import SimpleNamespace
+
+        payload = {"uptime": "1h", "gateway_rss_mb": 412, "watchdog_rss_max_mb": 1536}
+
+        @contextmanager
+        def _urlopen(url, timeout):
+            yield io.BytesIO(json.dumps(payload).encode())
+
+        monkeypatch.setattr(cli_server, "loopback_urlopen", _urlopen)
+        monkeypatch.setattr(cli_server, "resolve_client_port", lambda p: 7777)
+        cli_server._status(SimpleNamespace(port=None))
+        out = capsys.readouterr().out
+        assert "Memory:      412 MiB rss, session ceiling 1536 MiB" in out

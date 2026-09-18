@@ -1,6 +1,6 @@
 """Session-start timeout diagnostics: name the MCP server that never reported.
 
-A session/new or session/load that blows its budget used to report only the
+A session/new or session/load that blows its budget would otherwise report only the
 budget. The runtime already holds both halves of the answer at that moment --
 the roster it sent in ``mcpServers`` and the registration frames the reader loop
 staged -- so these tests pin that the timeout carries them.
@@ -212,6 +212,32 @@ async def test_a_non_timeout_session_new_failure_gets_no_mcp_progress():
     text = str(caught.value)
     assert "did not return sessionId" in text
     assert "MCP server(s) reported" not in text
+
+
+@pytest.mark.asyncio
+async def test_an_empty_session_id_is_one_failed_start_sample(monkeypatch):
+    """A ``session/new`` that answers without an id is ONE failure to the
+    adaptive controller, never a success followed by a failure."""
+    samples: list[dict] = []
+    monkeypatch.setattr(
+        "kiro_crew.acp.runtime._record_session_start",
+        lambda t0, *, ok, attributable_timeout=False: samples.append(
+            {"ok": ok, "attributable_timeout": attributable_timeout}
+        ),
+    )
+    rt = _runtime()
+    rt._send_and_await = AsyncMock(return_value={})  # no sessionId
+
+    with pytest.raises(AcpRuntimeError):
+        await rt.create_session(mcp_servers=_roster("alpha"))
+
+    assert samples == [{"ok": False, "attributable_timeout": False}]
+    assert rt._session_inits_in_flight == 0
+
+    rt._send_and_await = AsyncMock(return_value={"sessionId": "s-1"})
+    samples.clear()
+    await rt.create_session(mcp_servers=_roster("alpha"))
+    assert samples == [{"ok": True, "attributable_timeout": False}]
 
 
 def test_request_timeout_is_still_catchable_as_a_runtime_error():

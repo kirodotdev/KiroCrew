@@ -18,8 +18,8 @@ from kiro_crew.learn import Lesson, LessonStore
 # ``_DEFAULT_DIR`` is a ``Path.home()``-derived literal, so the isolation floor in the
 # rootdir conftest redirects it per test to keep the fallback from writing the
 # operator's real data home. A by-value capture at import time would freeze the
-# pre-redirect path and compare against a directory the code under test no longer
-# names — the assertion would fail while the behaviour was correct.
+# pre-redirect path and compare against a directory the code under test does not
+# name — the assertion would fail while the behaviour was correct.
 
 
 def _default_dir() -> Path:
@@ -146,7 +146,7 @@ class TestLessonStoreSecurity:
 
 class TestImportPurity:
     def test_importing_learn_never_calls_config_dir(self) -> None:
-        # Single-point-migration invariant (PR #309): the one-time blocking
+        # Single-point-migration invariant: the one-time blocking
         # legacy-home migration fires ONLY at ensure_data_home() in the CLI
         # prologue. learn is eagerly imported by cli_server, slack/gateway,
         # context, taskrunner, and cli_commands — a module-scope config_dir()
@@ -299,10 +299,10 @@ class TestSaveOrEnrich:
         assert store.save_or_enrich(_make_lesson("Pin the port", "tool", 123)) == "unchanged"
         assert [le.negative for le in store.load_all()] == ["Do not autopick"]
 
-    def test_save_still_returns_none(self, tmp_path: Path) -> None:
-        """save() delegates but keeps its signature, so existing callers are unaffected."""
+    def test_save_returns_its_outcome(self, tmp_path: Path) -> None:
+        """Automatic callers need the outcome to avoid reporting a refused write."""
         store = LessonStore(base_dir=tmp_path)
-        assert store.save(_make_lesson("Pin the port", "tool")) is None
+        assert store.save(_make_lesson("Pin the port", "tool")) == "inserted"
 
     def test_save_does_not_overwrite_a_stored_clause(self, tmp_path: Path) -> None:
         """An AUTOMATIC writer must not replace a clause a human authored.
@@ -333,7 +333,7 @@ class TestSaveOrEnrich:
         "read-only flag, so the file reports 0o666 whatever mode was requested",
     )
     def test_a_restrictive_store_mode_survives_a_write(self, tmp_path: Path) -> None:
-        """Swapping the inode used to drop the store's permissions.
+        """Swapping the inode must not drop the store's permissions.
 
         write_text reused the existing inode, so a 0600 store stayed 0600 implicitly.
         A temp-file rename installs a NEW inode carrying umask permissions (0644
@@ -405,7 +405,7 @@ class TestConcurrentClauseAttach:
         assert records[0].negative.startswith("no ")
 
     def test_concurrent_save_and_remove_do_not_lose_the_write(self, tmp_path: Path) -> None:
-        """remove() used to rewrite the file with no lock at all, so a concurrent
+        """remove() must not rewrite the file with no lock at all, or a concurrent
         save could be lost outright."""
         store = LessonStore(base_dir=tmp_path)
         store.save(_make_lesson("Keep me", "tool"))
@@ -493,7 +493,7 @@ class TestAtomicWrite:
         store.load_all()  # prime the cache
 
         # Patched inside atomic_write, which is where the rename now happens. This is
-        # the real seam: learn.py no longer touches os itself.
+        # the real seam: learn.py does not touch os itself.
         with patch(
             "kiro_crew.atomic_write.replace_with_retry", side_effect=OSError("disk full")
         ):

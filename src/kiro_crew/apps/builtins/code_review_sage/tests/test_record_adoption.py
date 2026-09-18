@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """The worker writes ``data/results/<id>.json``; the run reads its own dir.
 
-Regression for a real failure: per-run isolation moved the READ path to
-``data/runs/<run_id>/results/`` but the reviewing worker's prompt (and the
-`sage-review` skill) still name the shared ``data/results/<id>.json``. The run
-dir stayed empty, so a review that had genuinely completed reported
-``result_records: 0`` and the UI showed an empty report while claiming "done".
+Per-run isolation puts the READ path at ``data/runs/<run_id>/results/`` while the
+reviewing worker's prompt (and the `sage-review` skill) name the shared
+``data/results/<id>.json``. Without adoption the run dir stays empty, so a review
+that genuinely completed reports ``result_records: 0`` and the UI shows an empty
+report while claiming "done".
 
 The driver owns run scoping, so it adopts the worker's record after each turn.
 """

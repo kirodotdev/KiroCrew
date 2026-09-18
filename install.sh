@@ -14,6 +14,12 @@
 #   --mise    Use mise (https://mise.jdx.dev) for Python and Node.js
 #             instead of system package managers. Does not modify your
 #             global mise config.
+#
+# Env:
+#   KIROCREW_ALLOW_SOURCE_BUILDS=1
+#             Let pip compile a dependency that has no prebuilt wheel for this
+#             host (needs a C toolchain and -dev headers). By default the
+#             install uses prebuilt wheels only and refuses instead of building.
 # ──────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -379,12 +385,12 @@ if has node; then
 fi
 
 # ══════════════════════════════════════════════════════════════════════
-# Step 2: Agent Backend (claude-agent-acp)
+# Step 2: Optional alternate agent backend (claude-agent-acp)
 # ══════════════════════════════════════════════════════════════════════
-step "Agent Backend"
+step "Optional Agent Backend"
 
-# The default agent backend is the public ACP adapter, run via Node.
-# kiro-cli is optional and not installed here.
+# A fresh configuration defaults to Kiro CLI. Keep installing the public ACP
+# adapter as an available alternative, but do not misrepresent it as selected.
 if has claude-agent-acp; then
     ok "claude-agent-acp ($( which claude-agent-acp ))"
 elif has npm; then
@@ -399,7 +405,8 @@ else
     warn "npm not available — install the agent backend later:"
     detail "npm i -g $ACP_NPM_PKG"
 fi
-detail "kiro-cli is an optional alternative backend (https://kiro.dev/docs/cli/installation)"
+warn "The default Kiro agent requires Kiro CLI; this installer does not install or sign in to it."
+detail "Install it separately from https://kiro.dev/cli/ and run: kiro-cli login"
 
 # ══════════════════════════════════════════════════════════════════════
 # Step 3: Build
@@ -470,6 +477,20 @@ fi
 # ── Python virtual environment & package ──
 info "Creating virtual environment…"
 _venv="$KIROCREW_APP_DIR/.venv"
+# Build the venv under a umask that masks group/other WRITE so bin/kirocrew
+# and its dirs are born non-group-writable -- `kirocrew service install`
+# refuses to attach its AppArmor profile to a group/world-writable launcher
+# (see the matching block in cli.sh for the full rationale). OR-ing with 022
+# only ADDS write-mask bits, so a stricter caller umask is preserved.
+_KC_PREV_UMASK="$(umask)"
+umask "$(printf '%03o' "$(( $(umask) | 022 ))")"
+# A reused venv keeps the perms it was born with: one built by an older installer
+# under a permissive umask still has a group/world-writable root or bin/, so the
+# AppArmor profile would keep refusing. Rebuild it under the tightened umask.
+if [ -d "$_venv" ] && [ -n "$(find "$_venv" "$_venv/bin" -prune \( -perm -g+w -o -perm -o+w \) -print 2>/dev/null)" ]; then
+    warn "Existing venv is group/world-writable — recreating it"
+    rm -rf "$_venv"
+fi
 # An existing venv is reusable only while its interpreter still satisfies the
 # package's requires-python. On an upgrade from a pre-3.12 install, reusing a
 # 3.10/3.11 venv makes the `pip install -e .` below refuse the package outright
@@ -494,12 +515,25 @@ if [ "$WITH_VOICE" -eq 1 ]; then
     detail "Including voice extras (.[voice])"
 fi
 
+# Dependencies come from prebuilt wheels only, as in cli.sh: without this pip
+# builds any dependency that lacks a wheel for this host from its sdist, and a
+# native one (numpy, Pillow) then needs a compiler and -dev headers the host
+# was never required to have. The editable kirocrew install itself is a local
+# source tree, which pip builds regardless of the flag; only the dependency
+# resolution is restricted. KIROCREW_ALLOW_SOURCE_BUILDS=1 opts back in for a
+# host that has the toolchain.
+_pip_binary_only="--only-binary=:all:"
+if [ "${KIROCREW_ALLOW_SOURCE_BUILDS:-0}" = "1" ]; then
+    _pip_binary_only=""
+fi
+
 _pip_log="$(mktemp)"
 (
     "$_venv/bin/pip" install --upgrade pip setuptools wheel 2>&1 | tail -5 > "$_pip_log"
     cd "$KIROCREW_APP_DIR"
     # Frontend already built and staged above; skip rebuild in setup.py.
-    KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install -e "$_pip_target" 2>&1 | tail -20 >> "$_pip_log"
+    # shellcheck disable=SC2086
+    KIROCREW_SKIP_FRONTEND=1 "$_venv/bin/pip" install $_pip_binary_only -e "$_pip_target" 2>&1 | tail -20 >> "$_pip_log"
 ) &
 spinner $! "Installing kirocrew and dependencies…"
 if wait $!; then
@@ -521,9 +555,29 @@ else
         tail -10 "$_pip_log" | while IFS= read -r _line; do detail "$_line"; done
         echo ""
     fi
+    # Under binary-only resolution this pip error means no release pip may
+    # install has a wheel this host can run. Its "(from versions: ...)" list
+    # cannot separate the causes (wheels for a newer libc or another arch are
+    # dropped before the list is built, so they read "none" exactly like a
+    # missing or unreachable index), so name the platform, the usual cause and
+    # the way out, and say the index is the other possibility.
+    if [ -n "$_pip_binary_only" ] && grep -q 'No matching distribution found for' "$_pip_log" 2>/dev/null; then
+        _missing="$(grep 'No matching distribution found for' "$_pip_log" \
+            | sed 's/.*No matching distribution found for //' | head -n 5 | tr '\n' ' ')"
+        _libc="$(getconf GNU_LIBC_VERSION 2>/dev/null || true)"
+        die "pip found no prebuilt wheel it may install on this platform ($(uname -s) $(uname -m)${_libc:+, $_libc}) for: ${_missing}
+     Kiro Crew installs prebuilt wheels only and never compiles a dependency. Usually this
+     means the host is older than the wheels' floor: use a newer Linux (Amazon Linux 2023,
+     RHEL/Rocky 8+, Ubuntu 22.04+, Debian 12+) or macOS. It can also mean the package index
+     could not be reached or does not carry these releases (see pip's output above). To
+     compile on this host instead, install a C/C++ toolchain plus the -dev headers those
+     packages need and re-run with KIROCREW_ALLOW_SOURCE_BUILDS=1."
+    fi
     die "pip install failed. Check: $_venv/bin/pip --version"
 fi
 rm -f "$_pip_log"
+# Venv fully built and born non-group-writable; restore the caller's umask.
+umask "$_KC_PREV_UMASK"
 
 # Record install method so `kirocrew update` uses the right rebuild strategy
 echo "pip" > "$KIROCREW_APP_DIR/.install-method"
@@ -696,13 +750,17 @@ case "$(basename "${SHELL:-}")" in
     *) echo "       ${GREEN}Restart your terminal${RESET}" ;;
 esac
 echo ""
-echo "    ${CYAN}2.${RESET} Run the setup wizard:"
+echo "    ${CYAN}2.${RESET} Set up the default Kiro agent (skip if you selected another ACP backend):"
+echo "       ${GREEN}Install Kiro CLI from https://kiro.dev/cli/${RESET}"
+echo "       ${GREEN}kiro-cli login${RESET}"
+echo ""
+echo "    ${CYAN}3.${RESET} Run the setup wizard:"
 echo "       ${GREEN}kirocrew setup${RESET}"
 echo ""
-echo "    ${CYAN}3.${RESET} Start the dashboard:"
+echo "    ${CYAN}4.${RESET} Start the dashboard:"
 echo "       ${GREEN}kirocrew gateway${RESET}"
 echo ""
-echo "    ${CYAN}4.${RESET} Open ${CYAN}http://localhost:${KIROCREW_PORT}${RESET} in your browser"
+echo "    ${CYAN}5.${RESET} Open ${CYAN}http://localhost:${KIROCREW_PORT}${RESET} in your browser"
 echo ""
 # SSH tunnel tip for remote Linux users
 if [ "$(uname)" != "Darwin" ]; then

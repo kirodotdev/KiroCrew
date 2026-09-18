@@ -25,33 +25,30 @@ export function dispatchMcNotification(kind: string): void {
 }
 
 /**
- * Sound kind for agent turn completion. Synthesized by the websocket layer on
- * `chat_done` — it never appears in the notification feed (no Redux entry, no
- * toast, no badge); it exists only so useNotificationSound can key a per-category
- * sound for "the agent finished replying".
+ * Sound kind for a conversation handing the floor back to the user. The
+ * persisted 'turn' key preserves per-category preferences. This sound-only
+ * event adds no notification-feed record, toast, or badge.
  */
 export const TURN_DONE_KIND = 'turn' as const
 
 /**
- * Sound kind for tool-approval prompts. Synthesized by the websocket layer on
- * `approval` frames — the agent is blocked waiting for a user decision. Uses
- * a distinct preset from turn-complete so the user can distinguish "needs my
- * action" from "finished, no action needed" without looking.
+ * Sound kind for a tool approval or explicit question. Synthesized by the
+ * websocket layer when the agent needs a user decision. Uses a distinct preset
+ * so the user can distinguish "needs my action" from "finished".
  */
 export const APPROVAL_KIND = 'approval' as const
 
 /**
- * Whether a finished turn warrants a chime. Policy: every real turn
- * completion chimes — active chat or background, focused or not — so the
- * user always gets an audible cue when any session finishes. Two
- * suppressions remain: slot-less events (no real turn behind them) and
- * reconnect catch-up replays (mirrors the markSlotUnread suppression;
- * stale completions replayed on reconnect must not chime-storm — the
- * unread badges already cover them).
+ * A turn sound means the conversation has stopped or needs an answer, not
+ * merely that one model turn returned. Continuation comes from the terminal
+ * frame, with live activity selectors as the fallback for older frames.
+ * Reconnect replay and slot-less frames never request audio.
  */
 export function shouldChimeOnTurnDone(opts: {
   slot: string | undefined | null
   reconnecting: boolean
+  continuing?: boolean
+  needsInput?: boolean
 }): boolean {
-  return !!opts.slot && !opts.reconnecting
+  return !!opts.slot && !opts.reconnecting && (!!opts.needsInput || !opts.continuing)
 }

@@ -609,7 +609,7 @@ def _tool_pin_file(args: dict[str, Any]) -> str:
     with pins_mutation(str(pins_path)):
         # read_pins_for_update, not the lenient _read_json with an empty default:
         # the write below replaces the WHOLE file, so a corrupt store read as
-        # `{"pins": []}` would be ZEROED here (#8088). That is strictly worse than
+        # `{"pins": []}` would be ZEROED here. That is strictly worse than
         # the gateway service's version of the same bug, which at least wrote its
         # live in-memory list back. Both writers share the one reader so refusing
         # in the service cannot be undone by the next pin_file from this process.

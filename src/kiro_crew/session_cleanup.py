@@ -21,6 +21,7 @@ from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.member_process_records import RecordScan
 from kiro_crew.watchdog import SessionWatchdog
 
 if TYPE_CHECKING:
@@ -107,6 +108,11 @@ PeriodicPidSweep = Callable[[int, set[int]], tuple[set[str], list[int]]]
 PidWriteback = Callable[[int, list[int], set[str]], int]
 
 
+def _no_attached_subagents(key: str) -> bool:
+    """Default sub-agent probe: a manager with no dashboard has no children."""
+    return False
+
+
 @dataclass(slots=True)
 class CleanupState:
     """Mutable state exclusively owned by :class:`SessionCleanup`."""
@@ -115,8 +121,12 @@ class CleanupState:
     rss_max_mb: int = 0
     idle_sweep_enabled: bool = False
     idle_timeout: int = 0
+    # The (timeout_secs, watchdog_rss_max_mb) pair the policy was last derived
+    # from, as configured; transitions are logged only when it moves.
+    idle_policy_source: tuple[int, int] | None = None
     stuck_reported: dict[str, float] = field(default_factory=dict)
     last_pycache_gc: float | None = None
+    member_reclaim_cursor: RecordScan | None = None
     active_dashboard_slots: set[str] | None = None
     watchdog: SessionWatchdog | None = None
 
@@ -132,12 +142,17 @@ class CleanupDeps:
     cleanup_orphaned_mcp_servers: Callable[[], int]
     cleanup_orphaned_session_roots: Callable[[], int]
     cleanup_stale_sandbox_profiles: Callable[[], int]
+    reclaim_member_bindings: Callable[[RecordScan | None], tuple[int, RecordScan | None]]
     prune_pycache: Callable[[], tuple[int, int]]
     collect_active_pids: ActivePidCollector
     periodic_pid_sweep: PeriodicPidSweep
     kill_confirmed_and_writeback: PidWriteback
     find_orphan_mcp_candidates: Callable[[set[int]], list[int]]
     kill_orphan_mcps: Callable[[list[int]], int]
+    # Linux/systemd agent-scope reaper. Takes the live provider PID set and
+    # returns a summary object exposing ``.reclaimed`` (int). Typed loosely so
+    # this module need not import ``session_scope_reap`` at module load.
+    reap_agent_scopes: Callable[[set[int]], Any]
     build_child_map: Callable[[], dict[int, list[int]]]
     rss_mb_from_tree: Callable[[int, dict[int, list[int]]], int]
     get_session_rss_mb: Callable[[int], int]
@@ -153,10 +168,22 @@ class CleanupDeps:
     get_stuck_turn_report_secs: Callable[[], float]
     get_pycache_gc_interval_secs: Callable[[], float]
     get_session_idle_expired_event: Callable[[], str]
+    # Whether *key* has sub-agent work attached (running, queued, or a
+    # completion delivery in flight). With session sharing on, children run on
+    # the parent's runtime after the parent's own turn ends, so the busy
+    # semaphore alone cannot see them. Defaults to "no children" so a manager
+    # without a dashboard keeps its existing behaviour. The answer may be an
+    # AWAITABLE: the dashboard's probe reads the task store, and the sweep
+    # asking is on the gateway loop.
+    has_attached_subagents: Callable[[str], bool | Awaitable[bool]] = _no_attached_subagents
 
 
 class SessionCleanup:
     """Coordinate cleanup hooks, sweeps, and idle-expiry policy."""
+
+    # Upper bound on one sleep of the cleanup loop, so a lowered idle timeout
+    # is adopted within this many seconds regardless of the previous interval.
+    POLICY_REFRESH_SECS = 60.0
 
     def __init__(
         self,
@@ -285,9 +312,34 @@ class SessionCleanup:
                     mcp_killed,
                 )
         except Exception:
-            # This sweep historically treats failures as a silent best-effort
+            # This sweep treats failures as a silent best-effort
             # miss.  The watchdog must not promote the severity.
             pass
+
+    async def _reap_agent_scopes_hook(self) -> None:
+        # Reclaim abandoned agent cgroup scopes (Linux/systemd; a no-op
+        # elsewhere). The live provider/pool/in-flight PID set is gathered here
+        # so a scope containing any live tree is never touched; the reaper reads
+        # tracked PIDs from the session_pid files itself. Blocking subprocess
+        # work runs on the maintenance pool, exactly like the orphan-MCP sweep.
+        try:
+            active_pids, safe = self._active_pids()
+            if not safe:
+                return
+            summary = await asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.reap_agent_scopes,
+                active_pids,
+            )
+            reclaimed = int(getattr(summary, "reclaimed", 0) or 0)
+            if reclaimed:
+                self._deps.logger.info(
+                    "Periodic sweep: reclaimed %d abandoned agent scope(s)",
+                    reclaimed,
+                )
+        except Exception:
+            # Best-effort, like the orphan-MCP sweep: never promote severity.
+            self._deps.logger.debug("agent-scope reap hook failed", exc_info=True)
 
     async def _rss_threshold_check(self) -> None:
         if not self.state.rss_max_mb:
@@ -337,6 +389,20 @@ class SessionCleanup:
 
         for key, rss, session in victims:
             try:
+                # A free semaphore only proves the parent's OWN turn is over.
+                # Sub-agents spawned by that turn keep running on this session's
+                # runtime, so a reset here discards their work. reset() only
+                # re-checks the semaphore under its lock; this is the sole
+                # guard for attached children, so it runs as late as possible.
+                if await self._has_attached_subagents(key):
+                    self._deps.logger.debug(
+                        "RSS recycle: session %s tree rss=%dMB exceeds %dMB "
+                        "but has attached sub-agent work; skipping",
+                        key,
+                        rss,
+                        self.state.rss_max_mb,
+                    )
+                    continue
                 # reset revalidates both object identity and the busy semaphore
                 # under its own lock after the unlocked RSS measurement.
                 recycled = await self._owner.reset(
@@ -360,6 +426,30 @@ class SessionCleanup:
             except Exception:
                 # One victim cannot suppress the rest of this tick.
                 self._deps.logger.exception("RSS recycle failed for session %s", key)
+
+    async def _has_attached_subagents(self, key: str) -> bool:
+        """Fail-closed wrapper around the injected sub-agent probe.
+
+        A probe that raises is a probe that cannot see the children, not a
+        session with none; recycling on that answer is exactly the hazard the
+        guard exists to prevent, so an error keeps the session.
+
+        An AWAITABLE answer is awaited: the dashboard's probe reads the task
+        store off the loop, and a sync probe (a double, a build with no queue)
+        answers straight away.
+        """
+        try:
+            answer = self._deps.has_attached_subagents(key)
+            if isinstance(answer, Awaitable):
+                answer = await answer
+            return bool(answer)
+        except Exception:
+            self._deps.logger.debug(
+                "RSS recycle: sub-agent probe failed for session %s; keeping it",
+                key,
+                exc_info=True,
+            )
+            return True
 
     async def _stuck_turn_check(self) -> None:
         try:
@@ -408,16 +498,37 @@ class SessionCleanup:
         except Exception:
             self._deps.logger.exception("Cleanup loop: _stuck_turn_check crashed; continuing")
 
-    async def _cleanup_loop(self) -> None:
-        timeout = self._owner._cfg.session.timeout_secs
+    def _adopt_idle_policy(self) -> float:
+        """Re-derive the idle-sweep policy from the owner's CURRENT config.
+
+        Returns the tick interval. Called at loop start and again before every
+        sleep, so a ``session.timeout_secs`` or ``session.watchdog_rss_max_mb``
+        write reaches the loop on its next tick from any writer -- the values
+        are never frozen into the state for the loop's lifetime. The clamps are
+        the loader's: a timeout in (0, 60) becomes 60, a negative or non-int RSS
+        ceiling disables the check. Transitions are logged once, on change,
+        so a steady config costs the loop nothing but two attribute reads.
+        """
+        cfg = self._owner._cfg
+        timeout = cfg.session.timeout_secs
+        if not isinstance(timeout, int) or isinstance(timeout, bool):
+            timeout = 0
+        rss_cfg = getattr(cfg.session, "watchdog_rss_max_mb", 0)
+        rss_max = (
+            max(0, rss_cfg) if isinstance(rss_cfg, int) and not isinstance(rss_cfg, bool) else 0
+        )
+        changed = (timeout, rss_max) != self.state.idle_policy_source
+        self.state.idle_policy_source = (timeout, rss_max)
+
         if 0 < timeout < 60:
-            self._deps.logger.warning(
-                "session.timeout_secs=%d is below minimum 60; clamping to 60",
-                timeout,
-            )
+            if changed:
+                self._deps.logger.warning(
+                    "session.timeout_secs=%d is below minimum 60; clamping to 60",
+                    timeout,
+                )
             timeout = 60
         idle_sweep_enabled = timeout > 0
-        if not idle_sweep_enabled:
+        if not idle_sweep_enabled and changed:
             self._deps.logger.info(
                 "Idle session sweep disabled (session.timeout_secs=%d); "
                 "MCP/PID sweeps still run at default cadence",
@@ -425,7 +536,17 @@ class SessionCleanup:
             )
         self.state.idle_sweep_enabled = idle_sweep_enabled
         self.state.idle_timeout = timeout
-        interval = max(timeout // 6, 60) if idle_sweep_enabled else 300
+
+        if rss_max != self.state.rss_max_mb:
+            self._deps.logger.info(
+                "session.watchdog_rss_max_mb now %d (was %d)", rss_max, self.state.rss_max_mb
+            )
+            self.state.rss_max_mb = rss_max
+
+        return float(max(timeout // 6, 60) if idle_sweep_enabled else 300)
+
+    async def _cleanup_loop(self) -> None:
+        interval = self._adopt_idle_policy()
 
         # One reclaim pass at START, and deliberately NOT awaited here. Every
         # other sweep in this loop is housekeeping that can wait an interval, but
@@ -444,23 +565,43 @@ class SessionCleanup:
             await self._run_cleanup_ticks(interval)
         finally:
             boot_reclaim.cancel()
+            if self.state.member_reclaim_cursor is not None:
+                self.state.member_reclaim_cursor.close()
+                self.state.member_reclaim_cursor = None
 
     async def _run_cleanup_ticks(self, interval: float) -> None:
+        # The sleep is chopped into short waits so a config write that shortens
+        # ``session.timeout_secs`` is felt within one refresh cadence, not after
+        # the old (possibly much longer) interval has run out. Each wake re-reads
+        # the policy; when the interval moves, the next sweep is re-anchored to
+        # the LAST sweep plus the new interval, so a lowered timeout can pull the
+        # sweep forward and a raised one pushes it out.
+        # Time is accounted from the waits this loop issued (a wait that timed
+        # out slept for its timeout), not from the wall clock, so the cadence
+        # is a property of the loop alone and a test can collapse the waits.
+        remaining = interval
         while not self._deps.get_shutdown_signal().is_set():
+            wait = min(max(remaining, 0.0), self.POLICY_REFRESH_SECS)
             try:
-                await asyncio.wait_for(
-                    self._deps.get_shutdown_signal().wait(),
-                    timeout=interval,
-                )
+                await asyncio.wait_for(self._deps.get_shutdown_signal().wait(), timeout=wait)
                 return
             except asyncio.TimeoutError:
                 pass
+            remaining -= wait
+
+            fresh = self._adopt_idle_policy()
+            if fresh != interval:
+                remaining, interval = remaining - interval + fresh, fresh
+            if remaining > 0:
+                continue
+            remaining = interval
 
             # Resolve through the facade so replacing the manager watchdog after
             # construction continues to affect the live cleanup task.
             await self._owner._watchdog.tick()
             await self._sweep_session_roots()
             await self._sweep_sandbox_artifacts()
+            await self._sweep_member_bindings()
             await self._maybe_prune_pycache()
             await self._sweep_periodic_pids()
             await self._sweep_untracked_mcps()
@@ -493,6 +634,46 @@ class SessionCleanup:
         except Exception as exc:
             self._deps.logger.debug(
                 "sandbox launcher sweep failed: %s",
+                type(exc).__name__,
+            )
+
+    async def _sweep_member_bindings(self) -> None:
+        """Advance the canonical record scan on the existing maintenance executor."""
+        try:
+            pending = asyncio.get_running_loop().run_in_executor(
+                self._deps.get_maintenance_executor(),
+                self._deps.reclaim_member_bindings,
+                self.state.member_reclaim_cursor,
+            )
+            try:
+                reclaimed, next_cursor = await asyncio.shield(pending)
+            except asyncio.CancelledError:
+                # Repeated cancellation must not abandon or cancel the worker's
+                # future before its returned cursor can be closed safely.
+                cursor = self.state.member_reclaim_cursor
+                try:
+                    while not pending.done():
+                        try:
+                            await asyncio.shield(pending)
+                        except asyncio.CancelledError:
+                            pass
+                    _, cursor = pending.result()
+                except Exception:
+                    pass
+                finally:
+                    if cursor is not None:
+                        cursor.close()
+                    self.state.member_reclaim_cursor = None
+                raise
+            self.state.member_reclaim_cursor = next_cursor
+            if reclaimed:
+                self._deps.logger.info(
+                    "Periodic sweep: reclaimed %d stale member-memory records",
+                    reclaimed,
+                )
+        except Exception as exc:
+            self._deps.logger.debug(
+                "member-memory binding sweep failed: %s",
                 type(exc).__name__,
             )
 

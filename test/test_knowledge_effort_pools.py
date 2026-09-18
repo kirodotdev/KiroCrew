@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -20,10 +21,15 @@ class _FakePool:
         pool_size: int,
         effort: str | None = None,
         use_config_pool_size: bool = True,
+        track_config_pool_size: bool | None = None,
     ) -> None:
         self.pool_size = pool_size
         self.effort = effort
         self.use_config_pool_size = use_config_pool_size
+        # Mirrors LLMPool: an explicit value wins, else it follows the seed flag.
+        self.track_config_pool_size = (
+            use_config_pool_size if track_config_pool_size is None else track_config_pool_size
+        )
         self.shutdown = AsyncMock()
 
 
@@ -80,9 +86,13 @@ class TestKnowledgePoolSetup:
         assert extraction.pool_size == 3
         assert extraction.effort == "high"
         assert extraction.use_config_pool_size is False
+        # Seeded from config, so it must follow a later write to that key; the
+        # fetch pool is a fixed single worker and must not.
+        assert extraction.track_config_pool_size is True
         assert fetch.pool_size == 1
         assert fetch.effort is None
         assert fetch.use_config_pool_size is False
+        assert fetch.track_config_pool_size is False
         assert extractor_calls[0]["pool"] is extraction
         assert app["knowledge_extraction_pool"] is extraction
         assert app["knowledge_fetch_pool"] is fetch
@@ -101,7 +111,8 @@ class TestKnowledgeFetchPoolWiring:
         fetch_pool = object()
         app = web.Application()
         app["state"] = SimpleNamespace(knowledge_store=store)
-        app["knowledge_pipeline"] = object()
+        # The handler holds the pipeline's ingestion gate while the task claims.
+        app["knowledge_pipeline"] = SimpleNamespace(ingestion_in_flight=contextlib.nullcontext)
         app["knowledge_sync"] = SimpleNamespace(get_connector=lambda _type: None)
         app["knowledge_extraction_pool"] = extraction_pool
         app["knowledge_fetch_pool"] = fetch_pool
@@ -110,8 +121,10 @@ class TestKnowledgeFetchPoolWiring:
         observed: dict[str, object] = {}
         done = asyncio.Event()
 
-        async def _fake_sync(source_id, url, name, store, pipeline, pool):
+        async def _fake_sync(source_id, url, name, store, pipeline, pool, *, claim_settled=None):
             observed["pool"] = pool
+            if claim_settled is not None:
+                claim_settled.set()
             done.set()
 
         monkeypatch.setattr(kh, "_background_agent_sync", _fake_sync)

@@ -432,7 +432,8 @@ issue as needing a human, live on the app's existing Settings page.
 Registration is two files: `lib/types.ts` (`MainView`, `ExpandedSection`) and the
 `Workspace.tsx` branch.
 
-Evidence: `.github/screenshots/issue-radar-crews/` — the crew list, the crew page,
+Evidence: attached to the PR description as GitHub `user-attachments` (see the PR
+template's Screenshots section) — the crew list, the crew page,
 the create dialog and the protocol settings in both themes, plus a recording
 walking the flow end to end. Captured from the real built SPA by
 `website/scripts/capture-crews.mjs` and `record-crews.mjs`, which share their

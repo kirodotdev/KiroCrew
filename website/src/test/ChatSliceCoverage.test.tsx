@@ -1529,6 +1529,77 @@ describe('chatSlice thunks', () => {
     expect(chat(store).slotLoading).toBe(false)
   })
 
+  // A failed close must put the row back, and the recovery refetch can answer
+  // BEFORE `rejected` fires (the thunk trails an unbounded peer navigation), so
+  // the close tombstone has to be gone by the time that reply is applied (#11224).
+  it('restores a failed close\'s row from the recovery refetch that beats `rejected`', async () => {
+    let releasePeer: (v: unknown) => void = () => {}
+    const peerFetch = new Promise(resolve => { releasePeer = resolve })
+    apiMock.chatSlotDetail.mockReturnValue(peerFetch)
+    apiMock.deleteChatSlot.mockRejectedValue(new Error('500'))
+    apiMock.chatSlots.mockResolvedValue([slotRow('doomed'), slotRow('peer')])
+    const store = makeStore()
+    store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+    store.dispatch(setActiveSlot('doomed'))
+
+    const pending = store.dispatch(deleteSlot('doomed'))
+    // Drain the DELETE rejection and the recovery fetchSlots while the peer
+    // navigation is still parked on its transcript load.
+    for (let i = 0; i < 6; i++) await Promise.resolve()
+    expect(apiMock.chatSlots).toHaveBeenCalled()
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+    expect(root(store).dashboard.closingSlots).toEqual({})
+    expect(root(store).dashboard.slotFetchesInFlight).toEqual([])
+
+    releasePeer({ messages: [], running: false })
+    const outcome = await pending
+    expect(outcome.type).toBe('chat/deleteSlot/rejected')
+    expect(root(store).dashboard.slots.map(s => s.key)).toContain('doomed')
+  })
+
+  // A successful close must move its hold to the confirmed phase when the
+  // DELETE resolves, not when `fulfilled` fires after the unbounded peer
+  // navigation: a transcript load that outlasts the in-flight cap would
+  // otherwise expire a hold whose close actually succeeded (#11224).
+  it('confirms the close hold when the DELETE resolves, before the peer navigation settles', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(new Date('2026-09-16T06:00:00Z'))
+      let releasePeer: (v: unknown) => void = () => {}
+      const peerFetch = new Promise(resolve => { releasePeer = resolve })
+      let resolveDelete: (v: unknown) => void = () => {}
+      const deleteCall = new Promise(resolve => { resolveDelete = resolve })
+      apiMock.chatSlotDetail.mockReturnValue(peerFetch)
+      apiMock.deleteChatSlot.mockReturnValue(deleteCall)
+      const store = makeStore()
+      store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+      store.dispatch(setActiveSlot('doomed'))
+
+      const pending = store.dispatch(deleteSlot('doomed'))
+      for (let i = 0; i < 4; i++) await Promise.resolve()
+      expect(root(store).dashboard.closingSlots['doomed']?.inFlightUntil).not.toBeNull()
+
+      // A slow but successful DELETE resolves at 25 s; navigation stays parked.
+      vi.setSystemTime(new Date('2026-09-16T06:00:25Z'))
+      resolveDelete({})
+      for (let i = 0; i < 6; i++) await Promise.resolve()
+      expect(root(store).dashboard.closingSlots['doomed']?.inFlightUntil).toBeNull()
+
+      // 40 s: past where the in-flight cap would have expired, inside the
+      // confirmed cap. A straggler frame still listing the key must not
+      // resurrect the row of a close the server already confirmed.
+      vi.setSystemTime(new Date('2026-09-16T06:00:40Z'))
+      store.dispatch(sseSlots([slotRow('doomed'), slotRow('peer')]))
+      expect(root(store).dashboard.slots.map(s => s.key)).toEqual(['peer'])
+
+      releasePeer({ messages: [], running: false })
+      const outcome = await pending
+      expect(outcome.type).toBe('chat/deleteSlot/fulfilled')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('evicts every per-slot cache once a delete succeeds', async () => {
     apiMock.chatSlotDetail.mockResolvedValue({ messages: [{ role: 'user', content: 'hi' }], running: false })
     apiMock.deleteChatSlot.mockResolvedValue({})

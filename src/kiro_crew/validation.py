@@ -68,6 +68,16 @@ MAX_TOOL_NAME_LEN = 256
 MAX_SHORT_STRING = 500  # names, IDs, categories
 MAX_MEDIUM_STRING = 5_000  # messages, rules
 MAX_LONG_STRING = 50_000  # task specs, inline content
+# Longest backend-authored ACP session id Kiro Crew RETAINS in a store of its
+# own: the native-child rosters and a created slot's frozen creator id (held in
+# memory only, never written to the transcript), and through it the crew log's
+# ``parent.sid`` citation. One
+# constant for the whole population, applied at the point of retention: an id
+# past it is dropped there, never truncated, so no store grows with a string the
+# backend controls and no two stores bound the same ids differently. It lives
+# here, not in the ACP layer, because application code must not import
+# ``kiro_crew.acp`` and both sides of the boundary retain these ids.
+MAX_ACP_SESSION_ID_LEN = 128
 # A cron job's message IS a task prompt (real dispatched task specs routinely
 # exceed 5k chars), so it gets its own cap at task-spec scale instead of
 # borrowing MAX_MEDIUM_STRING — raising that shared constant would widen ~20
@@ -106,6 +116,22 @@ def normalize_lesson_category(value: object, *, strict: bool) -> str:
 
 # Allowed scopes for lessons (mirrors the learn_add MCP inputSchema enum).
 ALLOWED_LESSON_SCOPES = frozenset({"global", "workspace"})
+
+# The ``GET /api/lessons`` window: how many lessons one call returns when the
+# caller names no ``limit``, and the most it may ask for. Both the route and the
+# ``learn_list`` tool schema read these, so the advertised bound and the
+# enforced one cannot drift apart. The read stays bounded whatever the query
+# says; a caller that needs the whole population pages with ``offset`` and the
+# ``total`` the body carries.
+LESSON_LIST_LIMIT = 50
+LESSON_LIST_LIMIT_MAX = 500
+# The furthest ``offset`` either surface accepts. The vector tier hands the
+# offset to SQLite as a bound parameter, and a value past the 64-bit range
+# raises ``OverflowError`` there rather than returning an empty page, so the
+# route clamps to this ceiling (and echoes the clamp) and the tool schema
+# refuses past it. Far beyond any real population: past ``total`` every page is
+# empty anyway.
+LESSON_LIST_OFFSET_MAX = 100_000_000
 
 # Allowed cron schedule kinds
 ALLOWED_SCHEDULE_KINDS = frozenset({"every", "cron", "at"})
@@ -328,7 +354,7 @@ class FieldSpec:
     # truncate it to the cap instead of rejecting the whole call. For a field
     # whose only job is to EXPLAIN a request — ``autonudge_stop`` /
     # ``monitor_stop`` ``reason`` — the length of the explanation must not be
-    # able to defeat the request itself (#8635). Never set this on a field the
+    # able to defeat the request itself. Never set this on a field the
     # handler acts on: a truncated control input is a wrong control input, and
     # rejecting is the only safe answer there.
     #
@@ -1052,6 +1078,21 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         FieldSpec("include_memory", bool, default=True),
         FieldSpec("include_lessons", bool, default=True),
         FieldSpec("include_project", bool, default=True),
+        # DELEGATE TO A CREW BY NAME. A crew is a crew-member alias in
+        # ``cfg.agents``; ``agent`` above is a kiro-cli template id, a disjoint
+        # namespace. Naming the crew is what lets the child inherit that crew's
+        # memory silo and its template together, so an orchestrator can hand work
+        # to the coding crew without the email crew's memory travelling with it.
+        # Resolved through ``resolve_agent_bindings``, never by deriving a store
+        # from ``agent``, which answers `default` for exactly the crew that
+        # configured otherwise.
+        # NOT pattern-validated, for the reason SELECT_CREW_SCHEMA states above:
+        # crew creation only strips the name, so a crew may legitimately contain
+        # spaces or dots, and a regex here would refuse a crew the operator can
+        # see in the roster. The deny-by-default gate is the `crew not in
+        # cfg.agents` membership check at the endpoint, which answers 400 with an
+        # `unknown_crew` code rather than degrading to the global store.
+        FieldSpec("crew", str, max_len=MAX_SHORT_STRING),
     ],
 )
 
@@ -1124,6 +1165,35 @@ LEARN_REMOVE_SCHEMA = ToolSchema(
     tool_name="learn_remove",
     fields=[
         FieldSpec("query", str, required=True, max_len=MAX_SHORT_STRING),
+        # Same shape as learn_add's repo_scope: the delete selector names the
+        # same stored identity the write path created, so the two share one
+        # pattern. The pattern check skips an empty string, which is the
+        # explicit selector for the unscoped (global) rows; an absent field
+        # leaves scope out of the match entirely. A nonempty value the scope
+        # gate could never satisfy (a bare "/", a dot segment) is refused here
+        # so a delete cannot silently land on rows it never named.
+        FieldSpec("repo_scope", str, max_len=MAX_SHORT_STRING, pattern=SCOPE_FRAGMENT_RE),
+        # The JSONL tier a listed row was read from. ``learn_list`` renders it
+        # because the list is a union of the global file and the active
+        # workspace's, while the delete route picks ONE file from these and
+        # defaults to the global one -- so a same-text workspace row could only
+        # ever be named by carrying its tier back. No default: an absent field
+        # keeps the route's own default rather than asserting one here.
+        FieldSpec("scope", str, allowed=ALLOWED_LESSON_SCOPES),
+        FieldSpec("workspace", str, max_len=MAX_SHORT_STRING, pattern=WORKSPACE_NAME_RE),
+    ],
+)
+
+# The ``learn_list`` window. The bounds are the route's own (``LESSON_LIST_LIMIT``
+# / ``LESSON_LIST_LIMIT_MAX``), so a value the route would clamp is refused here
+# by name instead of quietly answering a different page than the one asked for.
+# No defaults: an absent field keeps the route's default rather than asserting
+# one here, and the body echoes the effective window either way.
+LEARN_LIST_SCHEMA = ToolSchema(
+    tool_name="learn_list",
+    fields=[
+        FieldSpec("limit", int, min_val=1, max_val=LESSON_LIST_LIMIT_MAX),
+        FieldSpec("offset", int, min_val=0, max_val=LESSON_LIST_OFFSET_MAX),
     ],
 )
 
@@ -1147,7 +1217,7 @@ SESSION_LEDGER_RECORD_SCHEMA = ToolSchema(
 )
 # Empty on purpose, and REGISTERED on purpose: with no schema in
 # MCP_CORE_SCHEMAS an unexpected argument passes through unvalidated
-# (the learn_list gap), while an empty registered schema rejects it
+# (a tool with no schema at all), while an empty registered schema rejects it
 # (the spawn_list / resource_status precedent). The tool takes no
 # arguments; the schema's job is to enforce exactly that.
 SESSION_LEDGER_READ_SCHEMA = ToolSchema(tool_name="session_ledger_read")
@@ -1187,11 +1257,11 @@ AUTONUDGE_STOP_SCHEMA = ToolSchema(
     tool_name="autonudge_stop",
     fields=[
         # Clamped, not rejected: a stop request must not be defeated by the
-        # length of its own explanation (#8635). ``reason`` is a human-readable
+        # length of its own explanation. ``reason`` is a human-readable
         # note — it selects no behavior in ``_autonudge_stop``, which only
         # interpolates it into the applied-outcome text and the persisted stop
         # record — so truncating it costs a few words of narrative and saves
-        # the stop. Rejecting cost the stop AND fired the consumer's
+        # the stop. Rejecting would cost the stop AND fire the consumer's
         # lost-marker WARNING.
         FieldSpec("reason", str, max_len=MAX_SHORT_STRING, clamp_to_max=True),
     ],
@@ -1229,16 +1299,16 @@ MONITOR_STOP_SCHEMA = ToolSchema(
 # monitor_start creates an AutoNudge loop bound to the calling session (the
 # agent-facing "babysit this PR" primitive). message caps match the REST
 # endpoint's 8000-char limit; interval bounds mirror autonudge's
-# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp. max_runtime_secs is the wall-clock
-# budget (0 = unlimited); the 7-day ceiling keeps a typo like 6e9 from arming
-# an effectively-unbounded loop while still covering week-long babysits.
+# _MIN_IDLE_SECS/_MAX_IDLE_SECS clamp. Both caps must be positive; the 7-day
+# runtime ceiling keeps a typo like 6e9 from arming an effectively unbounded
+# loop while still covering week-long babysits.
 MONITOR_START_SCHEMA = ToolSchema(
     tool_name="monitor_start",
     fields=[
         FieldSpec("message", str, required=True, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
-        FieldSpec("max_cycles", int, min_val=0, max_val=1000),
-        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
+        FieldSpec("max_cycles", int, min_val=1, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=1, max_val=604800),
         # Opt-OUT of observation gating. Absent means gated, matching the tool's
         # default, so a caller written before this field existed keeps the
         # default behaviour rather than silently escaping it.
@@ -1260,8 +1330,8 @@ MONITOR_UPDATE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("message", str, max_len=8000),
         FieldSpec("interval_secs", int, min_val=15, max_val=86400),
-        FieldSpec("max_cycles", int, min_val=0, max_val=1000),
-        FieldSpec("max_runtime_secs", int, min_val=0, max_val=604800),
+        FieldSpec("max_cycles", int, min_val=1, max_val=1000),
+        FieldSpec("max_runtime_secs", int, min_val=1, max_val=604800),
         FieldSpec("target", str, max_len=MAX_SHORT_STRING),
         FieldSpec("objective", str, allowed=publicly_armable_objectives()),
         FieldSpec("max_agent_turns", int, min_val=1, max_val=MAX_MONITOR_AGENT_TURNS),
@@ -1301,7 +1371,7 @@ ASK_QUESTION_SCHEMA = ToolSchema(
         # mirrors DashboardState._QUESTION_TIMEOUT_MAX, which governs the legacy
         # blocking POST /api/ask-question path. Kept lenient rather than removed
         # so a caller still passing it gets its card instead of a validation
-        # error, while the tool's inputSchema no longer advertises it — a knob
+        # error, while the tool's inputSchema does not advertise it — a knob
         # with no effect should not be offered to a model.
         FieldSpec("timeout_secs", int, min_val=15, max_val=540),
     ],
@@ -1413,6 +1483,51 @@ SET_PROJECT_SCHEMA = ToolSchema(
 RESET_CONVERSATION_SCHEMA = ToolSchema(
     tool_name="reset_conversation",
     fields=[],
+)
+
+
+def _validate_chat_tag(cleaned: dict[str, Any]) -> None:
+    """At least one of set_state / add / remove must be present.
+
+    An empty call is a no-op the applier would otherwise have to special-case;
+    reject it at the boundary so the model gets a clear "nothing to do" signal
+    rather than a silent success."""
+    if not cleaned.get("set_state") and not cleaned.get("add") and not cleaned.get("remove"):
+        raise ValidationError("set_state", "at least one of set_state, add, or remove is required")
+
+
+# chat_tag lets an agent tag ITS OWN chat slot: set the mutually-exclusive
+# workflow state, and/or add/remove non-state tags. Requests carry a tag id
+# (a dashboard-minted 12-hex id or a built-in default -- the closed grammar
+# context._board_safe_tag_name admits onto the [BOARD] rail) OR a display
+# name — names may contain spaces and punctuation —
+# and the applier resolves them against the live vocabulary
+# case-insensitively, enforcing the per-tag agent policy. The shape gate here
+# only bounds the argv (count + per-item length); it deliberately carries NO
+# character pattern, because the resolver matches display names verbatim and
+# a name like "Needs: review" is valid vocabulary — a charset gate here would
+# refuse handles the resolver could match, while admitting nothing an
+# attacker needs (authorization lives in the grants store, not the argv).
+CHAT_TAG_SCHEMA = ToolSchema(
+    tool_name="chat_tag",
+    fields=[
+        FieldSpec("set_state", str, max_len=64),
+        FieldSpec(
+            "add",
+            list,
+            item_type=str,
+            item_max_len=64,
+            max_items=32,
+        ),
+        FieldSpec(
+            "remove",
+            list,
+            item_type=str,
+            item_max_len=64,
+            max_items=32,
+        ),
+    ],
+    custom_validator=_validate_chat_tag,
 )
 
 # suggest_followup renders an agent-authored follow-up card in the calling
@@ -1620,12 +1735,12 @@ def _validate_artifact_save(cleaned: dict) -> None:
 
 # Shared slug pattern (matches _ARTIFACT_SLUG_RE + deploy slug validation).
 _WM_SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-# constants.AWS_PROFILE_NAME_RE — the single source of truth (#6063): '+'
+# constants.AWS_PROFILE_NAME_RE — the single source of truth: '+'
 # admitted for IAM Identity Center derived profiles
-# ("<account>+<permission-set>", #6051); first char excludes '-' so a stored
+# ("<account>+<permission-set>"); first char excludes '-' so a stored
 # profile is never option-shaped when it later reaches `--profile <value>`
 # argv. \Z is load-bearing here: this path matches the raw value WITHOUT a
-# strip, so the old $ anchor let a trailing-newline value through.
+# strip, so a $ anchor would let a trailing-newline value through.
 _WM_PROFILE_RE = AWS_PROFILE_NAME_RE
 _WM_URL_RE = re.compile(r"^https?://.{1,2048}$")
 _WM_LIFECYCLE_STATUSES = {"draft", "deploying", "live", "error", "expired"}
@@ -1980,6 +2095,12 @@ CHAT_FOLDER_MOVE_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("folder", str, required=True, max_len=_ARTIFACT_FOLDER_REF_MAX),
         FieldSpec("new_parent", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+        # Sibling anchors for the folder's POSITION among its siblings. Mutually
+        # exclusive, and refused unless the anchor already sits directly under
+        # the destination -- the handler owns both rules, since neither is
+        # expressible as a field constraint.
+        FieldSpec("before", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+        FieldSpec("after", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
     ],
 )
 
@@ -1990,6 +2111,72 @@ CHAT_FOLDER_MOVE_SESSION_SCHEMA = ToolSchema(
         # exact session title — none share a charset, so only bound the length.
         FieldSpec("session", str, required=True, max_len=512),
         FieldSpec("folder", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
+CHAT_FOLDER_FILE_SELF_SCHEMA = ToolSchema(
+    tool_name="chat_folder_file_self",
+    fields=[
+        # No ``session`` field on purpose: the target is the caller's own slot,
+        # resolved server-side from the verified identity. The folder reference
+        # takes the same id-or-path shape as ``chat_folder_move_session.folder``.
+        FieldSpec("folder", str, max_len=_ARTIFACT_FOLDER_REF_MAX),
+    ],
+)
+
+# The tag endpoints store ``name[:60]`` (``chat_tags._NAME_MAX``); the cap is
+# mirrored here so the server refuses an overlong name instead of writing one
+# that no later ``chat_tag_assign`` name lookup can match.
+_CHAT_TAG_NAME_MAX = 60
+#: A tag reference is a 12-hex id or the tag's exact name; the two share no
+#: charset, so only the length is bounded — the handler resolves the shape.
+_CHAT_TAG_REF_MAX = 64
+#: Sidebar tag lists are short by construction (a strip of columns); the cap
+#: bounds one call, not the vocabulary.
+_CHAT_TAG_MAX_ITEMS = 32
+
+CHAT_TAG_LIST_SCHEMA = ToolSchema(tool_name="chat_tag_list", fields=[])
+
+CHAT_TAG_CREATE_SCHEMA = ToolSchema(
+    tool_name="chat_tag_create",
+    fields=[
+        FieldSpec("name", str, required=True, max_len=_CHAT_TAG_NAME_MAX),
+        FieldSpec("color", str, pattern=re.compile(r"^#[0-9a-fA-F]{6}$")),
+        FieldSpec("status", bool),
+    ],
+)
+
+CHAT_TAG_UPDATE_SCHEMA = ToolSchema(
+    tool_name="chat_tag_update",
+    fields=[
+        # The tag to change, by id or exact name; the fields to change are all
+        # optional and the handler requires at least one.
+        FieldSpec("tag", str, required=True, max_len=_CHAT_TAG_REF_MAX),
+        FieldSpec("name", str, max_len=_CHAT_TAG_NAME_MAX),
+        FieldSpec("color", str, pattern=re.compile(r"^#[0-9a-fA-F]{6}$")),
+        FieldSpec("status", bool),
+    ],
+)
+
+CHAT_TAG_ASSIGN_SCHEMA = ToolSchema(
+    tool_name="chat_tag_assign",
+    fields=[
+        # Same session-reference shape as ``chat_folder_move_session.session``.
+        FieldSpec("session", str, required=True, max_len=512),
+        FieldSpec(
+            "add",
+            list,
+            item_type=str,
+            item_max_len=_CHAT_TAG_REF_MAX,
+            max_items=_CHAT_TAG_MAX_ITEMS,
+        ),
+        FieldSpec(
+            "remove",
+            list,
+            item_type=str,
+            item_max_len=_CHAT_TAG_REF_MAX,
+            max_items=_CHAT_TAG_MAX_ITEMS,
+        ),
     ],
 )
 
@@ -2091,6 +2278,32 @@ OPS_MISSION_CONTROL_API_SCHEMA = ToolSchema(
     ],
     custom_validator=_validate_omc_api,
 )
+
+# Dev Fleet pod lifecycle (agent surface). A pod name is a git worktree basename,
+# so it reaches `git worktree list` matching and a filesystem path before
+# `rt.validate_name` -- the real authority -- ever sees it. Bounded here so an
+# unbounded string is refused at the tool boundary rather than carried further.
+_POD_WORKTREE_MAX_LEN = 200
+
+POD_UP_SCHEMA = ToolSchema(
+    tool_name="pod_up",
+    fields=[FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN)],
+)
+
+POD_DOWN_SCHEMA = ToolSchema(
+    tool_name="pod_down",
+    fields=[FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN)],
+)
+
+POD_STATUS_SCHEMA = ToolSchema(
+    tool_name="pod_status",
+    fields=[FieldSpec("worktree", str, required=True, max_len=_POD_WORKTREE_MAX_LEN)],
+)
+
+# `pod_ls` takes nothing. It is registered anyway: a tool ABSENT from
+# MCP_CORE_SCHEMAS has its arguments passed through raw, so an empty schema is
+# what makes an unexpected argument an "Error:" string instead of unvalidated input.
+POD_LS_SCHEMA = ToolSchema(tool_name="pod_ls", fields=[])
 
 ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA = ToolSchema(
     tool_name="issue_radar_record_investigation",
@@ -2343,6 +2556,7 @@ CRON_ADD_SCHEMA = ToolSchema(
         FieldSpec("delay", (int, float), min_val=1, max_val=86400 * 30),  # 1s to 30 days
         FieldSpec("at_time", str, max_len=100),
         FieldSpec("agent", str, max_len=MAX_SHORT_STRING, pattern=_AGENT_NAME_RE),
+        FieldSpec("member_id", str, max_len=MAX_SHORT_STRING),
         FieldSpec("model", str, max_len=MAX_SHORT_STRING, pattern=_MODEL_NAME_RE),
         FieldSpec("silent", bool),
         FieldSpec("channel", str, max_len=CHANNEL_MAX_LEN, pattern=CHANNEL_ID_RE),
@@ -2533,13 +2747,13 @@ HOOK_UPDATE_SCHEMA = ToolSchema(
 #: Syntactic shape gate for a filesystem path arriving over the dashboard's
 #: file endpoints. It admits POSIX (``/x``, ``~/x``) *and* native Windows
 #: (``C:\x``, ``C:/x``, UNC ``\\host\share\x``) absolute paths. A prefix is
-#: still required, so a bare relative path is refused exactly as before --
+#: still required, so a bare relative path is still refused --
 #: the endpoints that support relative input rewrite it to an absolute path
 #: via ``_resolve_project_relative`` under ``resolve=1``, ahead of this gate.
 #:
 #: One pattern rather than a ``sys.platform`` branch: a drive letter and a UNC
-#: root have no meaning on POSIX, so accepting those shapes there admits no
-#: path that was previously unreachable, and a single pattern cannot drift
+#: root have no meaning on POSIX, so accepting those shapes there grants
+#: nothing, and a single pattern cannot drift
 #: between platforms the way two would. This is a *syntax* gate only -- the
 #: security boundary is downstream, where ``hooks.validate_file_path``
 #: canonicalizes through ``realpath`` (resolving ``..`` and following symlinks)
@@ -2551,7 +2765,22 @@ HOOK_UPDATE_SCHEMA = ToolSchema(
 #: the caller appears to name) has a ``:`` in the body and is still refused.
 #: A drive-relative path (``C:x``) is likewise refused -- it resolves against a
 #: per-drive working directory the caller cannot see.
-_FS_PATH_PATTERN = re.compile(r"^(?:[~/]|[A-Za-z]:[\\/]|\\\\)[-\w.@~/\\ ]+$")
+#:
+#: The body is a DENYLIST, not an allowlist of punctuation. Every filesystem
+#: this gate fronts accepts any byte but the separator and NUL in a name, so an
+#: enumerated allowlist refuses legal files -- ``Notes (draft).md``,
+#: ``Q1 2026 #2.md``, ``50% done.md``, ``report [final].md`` -- and returns
+#: HTTP 400 for each. Only two classes are hazards in the path *string* itself
+#: and both stay refused: a control character, which truncates at NUL, splits a
+#: log line at CR/LF, and injects a terminal escape at ESC or at the 8-bit C1
+#: forms a UTF-8 terminal decodes the same way (U+0085 NEL, U+009B CSI); and
+#: ``:`` in the body, for the alternate-data-stream reason above. The deny range
+#: therefore spans C0, DEL and C1 -- no filesystem name legitimately carries a
+#: control character, so the wider range costs nothing. Nothing else is excluded,
+#: because nothing downstream interprets the string: every subprocess in the
+#: file handlers is ``exec``-form argv with no shell, and the required absolute
+#: prefix means the path can never be read as a leading-dash option.
+_FS_PATH_PATTERN = re.compile(r"^(?:[~/]|[A-Za-z]:[\\/]|\\\\)[^\x00-\x1f\x7f-\x9f:]+$")
 
 FILE_READ_SCHEMA = ToolSchema(
     tool_name="file_read",
@@ -2590,9 +2819,9 @@ _TARGET_ID_RE = re.compile(r"^[\x21-\x7e]{1,512}$")
 # channel a proactive send may name. Built from the shared
 # ``CHANNEL_SEND_NAMESPACES`` so this, the tool's advertised enum and the gateway's
 # accepted ``channel_type`` set are three views of ONE roster rather than three
-# lists that drift -- which is the #6514 defect, where this pattern and the tool's
-# enum both still read "discord" alone months after eight more transports were
-# registered and made serviceable by the gateway's channel-neutral owner-DM leg.
+# lists that drift. Drift here is a refusal: a pattern and an enum reading
+# "discord" alone reject every other transport the gateway's channel-neutral
+# owner-DM leg already serves.
 #
 # ``origin`` is added because it is a delivery MODE rather than a transport, and
 # ``slack`` because it routes through its own client instead of the channel ladder;
@@ -2676,7 +2905,7 @@ SEND_MESSAGE_SCHEMA = ToolSchema(
         # Must accept every value ``mcp_tools.messaging._SESSION_TARGETS``
         # advertises: this pattern runs BEFORE the handler, so a value missing
         # here is rejected as malformed even though the tool's own enum offers
-        # it. That is what happened to the eight non-Discord channels in #6514.
+        # it.
         #
         # DERIVED from the same roster the tool's enum and the gateway's accepted
         # ``channel_type`` set are built from, so the three cannot disagree.
@@ -2741,6 +2970,13 @@ REGISTER_HOOK_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("hook_id", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("context_summary", str, required=True, max_len=MAX_MEDIUM_STRING),
+    ],
+)
+
+ROUTE_CREW_SCHEMA = ToolSchema(
+    tool_name="route_crew",
+    fields=[
+        FieldSpec("task", str, required=True, max_len=MAX_MEDIUM_STRING),
     ],
 )
 
@@ -2847,7 +3083,7 @@ SESSION_CREATE_SCHEMA = ToolSchema(
         # A sidebar-folder reference — a folder id OR a ``/``-separated human
         # path, the same shape ``chat_folder_move_session.folder`` takes — so
         # filing is atomic with creation instead of a create-then-move pair a
-        # folder delete can land between (#6118). Bounded like every other
+        # folder delete can land between. Bounded like every other
         # folder reference; the two readings share no charset, so only the
         # length is checked here.
         FieldSpec("folder", str, required=False, default="", max_len=_ARTIFACT_FOLDER_REF_MAX),
@@ -2888,12 +3124,14 @@ SESSION_READ_MESSAGE_SCHEMA = ToolSchema(
 # ── Schema Registry ──
 
 MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
+    "route_crew": ROUTE_CREW_SCHEMA,
     "spawn_run": SPAWN_RUN_SCHEMA,
     "spawn_sub_agents": SPAWN_SUB_AGENTS_SCHEMA,
     "spawn_list": SPAWN_LIST_SCHEMA,
     "resource_status": RESOURCE_STATUS_SCHEMA,
     "spawn_status": SPAWN_STATUS_SCHEMA,
     "learn_add": LEARN_ADD_SCHEMA,
+    "learn_list": LEARN_LIST_SCHEMA,
     "learn_remove": LEARN_REMOVE_SCHEMA,
     "session_ledger_read": SESSION_LEDGER_READ_SCHEMA,
     "session_ledger_record": SESSION_LEDGER_RECORD_SCHEMA,
@@ -2925,6 +3163,7 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "list_sessions": LIST_SESSIONS_SCHEMA,
     "set_project": SET_PROJECT_SCHEMA,
     "reset_conversation": RESET_CONVERSATION_SCHEMA,
+    "chat_tag": CHAT_TAG_SCHEMA,
     "suggest_followup": SUGGEST_FOLLOWUP_SCHEMA,
     "artifact_save": ARTIFACT_SAVE_SCHEMA,
     "artifact_get": ARTIFACT_GET_SCHEMA,
@@ -2960,6 +3199,10 @@ MCP_CORE_SCHEMAS: dict[str, ToolSchema] = {
     "deploy_artifact": DEPLOY_ARTIFACT_SCHEMA,
     "issue_radar_record_investigation": ISSUE_RADAR_RECORD_INVESTIGATION_SCHEMA,
     "ops_mission_control_api": OPS_MISSION_CONTROL_API_SCHEMA,
+    "pod_up": POD_UP_SCHEMA,
+    "pod_down": POD_DOWN_SCHEMA,
+    "pod_status": POD_STATUS_SCHEMA,
+    "pod_ls": POD_LS_SCHEMA,
     # Registered even though ``issue_radar_crew_read`` takes no arguments: an
     # unregistered tool's args pass through raw, and the empty-field schema is
     # also what makes an unknown arg an "Error:" string instead of a stdio-loop
@@ -3122,6 +3365,11 @@ MCP_DASHBOARD_SCHEMAS: dict[str, ToolSchema] = {
     "chat_folder_create": CHAT_FOLDER_CREATE_SCHEMA,
     "chat_folder_move": CHAT_FOLDER_MOVE_SCHEMA,
     "chat_folder_move_session": CHAT_FOLDER_MOVE_SESSION_SCHEMA,
+    "chat_folder_file_self": CHAT_FOLDER_FILE_SELF_SCHEMA,
+    "chat_tag_list": CHAT_TAG_LIST_SCHEMA,
+    "chat_tag_create": CHAT_TAG_CREATE_SCHEMA,
+    "chat_tag_update": CHAT_TAG_UPDATE_SCHEMA,
+    "chat_tag_assign": CHAT_TAG_ASSIGN_SCHEMA,
 }
 
 # ── Tool Schemas (MCP Work ledger — server ``kirocrew-work``) ──

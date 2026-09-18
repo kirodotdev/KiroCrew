@@ -1,6 +1,6 @@
-"""Regression: gateway boot self-heals a stray auth-staging path (#561).
+"""Regression: gateway boot self-heals a stray auth-staging path.
 
-A stray file or dangling symlink at ``<home>/.kiro/crew-auth-staging`` used to
+A stray file or dangling symlink at ``<home>/.kiro/crew-auth-staging`` would
 make ``mkdir(exist_ok=True)`` raise ``FileExistsError`` and crash boot. It must
 now be removed (unlinked, so no sensitive contents survive to a readable
 sibling) and a fresh private directory created.

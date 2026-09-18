@@ -8,12 +8,17 @@ import logging
 
 from aiohttp import web
 
-from kiro_crew.dashboard.chat_persistence import _save_slot_to_history, save_slot_off_loop
+from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_runner import _run_chat, _start_next_queued_turn
-from kiro_crew.dashboard.chat_utils import effective_session_key, slot_history_key
+from kiro_crew.dashboard.chat_utils import (
+    effective_session_key,
+    reject_if_slot_under_construction,
+    slot_history_key,
+)
 from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
 from kiro_crew.dashboard.remote_relay import remote_bound_refusal
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.dashboard.system_notices import is_system_notice
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
 
@@ -52,6 +57,9 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    under_construction = reject_if_slot_under_construction(state, slot)
+    if under_construction is not None:
+        return under_construction
 
     # A crew-bound slot has no local regenerate: it would truncate LOCAL history
     # and re-run the turn on this machine, diverging from the peer.
@@ -68,9 +76,23 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         msgs = slot.messages
         ai_idx = -1
         for i in range(len(msgs) - 1, -1, -1):
-            if msgs[i].get("role") == "assistant":
-                ai_idx = i
+            role = msgs[i].get("role")
+            # Never cross a real user turn: the truncation below deletes
+            # everything after the target reply's user row, so a reply found
+            # PAST a newer user row (e.g. a /compact row awaiting only its
+            # notice) would take that newer turn with it, irreversibly.
+            if role == "user":
                 break
+            if role != "assistant":
+                continue
+            # A system notice (compaction / session reload) is a status row,
+            # not the reply being regenerated: capturing it as the variant
+            # would silently drop the real reply from variant history. The
+            # frontend's optimistic truncation runs the same skip.
+            if is_system_notice("assistant", msgs[i].get("meta")):
+                continue
+            ai_idx = i
+            break
         if ai_idx < 0:
             return web.json_response(
                 {"error": "no assistant message to regenerate", "code": "no_assistant_message"},
@@ -111,11 +133,67 @@ async def api_chat_slot_regenerate(request: web.Request) -> web.Response:
         slot._pending_rewrite = True
         slot._pending_variants = variants
 
+        # Pin the transcript and the slot object this truncation was authorized
+        # against. Both are read BEFORE the write's await: that await frees the
+        # event loop while the worker thread runs, and a same-name
+        # close-and-recreate is NOT serialized against this slot._lock (the
+        # cleanup pops state._slots[name] and get_or_create_slot re-inserts,
+        # neither taking the original lock).
+        #
+        # Two axes can move, and they need two checks, matching the pair
+        # edit-resend below carries:
+        #   * routing -- save_slot_off_loop refuses the write (returns False,
+        #     nothing written) when the slot's routing resolves to a different
+        #     key at write time. This catches a RENAMED replacement.
+        #   * object identity -- a same-name recreate that resumes the same
+        #     transcript keeps the history key identical, so the routing check
+        #     passes and the stale rewrite would land on the replacement anyway.
+        #     expected_slot_name carries this slot's map key into the save, where
+        #     state._slots[name] is re-read at the locked commit boundary with no
+        #     await before the write: if the map holds a different slot the
+        #     save refuses (returns False). A pre-dispatch check cannot cover it
+        #     because the recreate can land inside the executor wait, after the
+        #     check and before the write.
+        #
+        # On either refusal the original slot is being torn down and its
+        # regeneration has no future, so nothing that would otherwise persist is
+        # lost; both refusals are recorded in the save's own log lines.
+        # best_effort keeps the site fire-and-forget: a genuine transient
+        # failure re-arms _dirty (and _pending_rewrite is already set) so the
+        # periodic flush retries.
+        expected_history_key = slot_history_key(slot)
         try:
             msgs_snapshot = list(slot.messages)
-            await asyncio.to_thread(_save_slot_to_history, state, slot, msgs_snapshot)
+            committed = await save_slot_off_loop(
+                state,
+                slot,
+                msgs_snapshot,
+                expected_history_key=expected_history_key,
+                expected_slot_name=name,
+            )
         except Exception:
             logger.warning("Regenerate: failed to rewrite session history", exc_info=True)
+            committed = True
+        if not committed:
+            # The save's own guards refused the write: the slot was rebound to
+            # another transcript, or a same-name recreate replaced it, while the
+            # write awaited its lock. The truncation exists only in this popped
+            # slot's in-memory window. Dispatching _run_chat now would run a turn
+            # on a removed slot and persist its truncated branch over the
+            # replacement's transcript, so abort without dispatching.
+            logger.warning(
+                "Regenerate: history save refused for %s (concurrent delete or recreate); "
+                "not dispatching the turn",
+                slot.key,
+            )
+            state.push_slots_update()
+            return web.json_response(
+                {
+                    "error": "the conversation changed while saving; retry",
+                    "code": "regenerate_save_refused",
+                },
+                status=409,
+            )
 
         sel().log_api_access(
             caller="dashboard",
@@ -162,6 +240,9 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
     slot = state._slots.get(name)
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    under_construction = reject_if_slot_under_construction(state, slot)
+    if under_construction is not None:
+        return under_construction
 
     try:
         body = await request.json()
@@ -210,11 +291,46 @@ async def api_chat_slot_switch_variant(request: web.Request) -> web.Response:
         target_dict["variant_idx"] = idx
         slot._dirty = True
         slot._resumed_count = 0
+        # Same two-axis pin as regenerate above, matching the pair edit-resend
+        # carries: routing (save_slot_off_loop refuses when the slot resolves to
+        # a different transcript at write time -- a renamed replacement) and
+        # object identity (expected_slot_name carries this slot's map key into
+        # the save, where state._slots[name] is re-read at the locked commit
+        # boundary with no await before the write -- a same-name recreate that
+        # resumes the same transcript keeps the key identical, so only the
+        # identity check catches it, and it must run at the write not before it
+        # because the recreate can land inside the executor wait). best_effort
+        # re-arms _dirty on a transient failure so the periodic flush retries.
+        expected_history_key = slot_history_key(slot)
         try:
             msgs_snapshot = list(slot.messages)
-            await asyncio.to_thread(_save_slot_to_history, state, slot, msgs_snapshot)
+            committed = await save_slot_off_loop(
+                state,
+                slot,
+                msgs_snapshot,
+                expected_history_key=expected_history_key,
+                expected_slot_name=name,
+            )
         except Exception:
             logger.warning("switch-variant: failed to persist", exc_info=True)
+            committed = True
+        if not committed:
+            # The save's guards refused: the slot was rebound or a same-name
+            # recreate replaced it while the write awaited its lock. The chosen
+            # variant exists only in this popped slot's in-memory window;
+            # broadcasting the switch would announce a state no transcript holds,
+            # so abort without broadcasting.
+            logger.warning(
+                "switch-variant: history save refused for %s (concurrent delete or recreate)",
+                slot.key,
+            )
+            return web.json_response(
+                {
+                    "error": "the conversation changed while saving; retry",
+                    "code": "switch_variant_save_refused",
+                },
+                status=409,
+            )
         sel().log_api_access(
             caller="dashboard",
             operation="chat.switch_variant",
@@ -257,6 +373,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
     request_app = request.get("app", "")
     if not slot:
         return web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
+    under_construction = reject_if_slot_under_construction(state, slot)
+    if under_construction is not None:
+        return under_construction
 
     # App-ownership gate (App Kit §5.2). This endpoint discards the slot's
     # NATIVE ACP conversation below, so an app token reaching a slot it does not
@@ -356,7 +475,9 @@ async def api_chat_slot_edit_resend(request: web.Request) -> web.Response:
         # children run on. ``slot.running`` is False while they keep going (the
         # parent turn ends first), so nothing above catches it and a child's
         # work would be destroyed by an edit it has no part in.
-        attached = _subagents_attached_response(state, slot, session_key, "chat.slot_edit_resend")
+        attached = await _subagents_attached_response(
+            state, slot, session_key, "chat.slot_edit_resend"
+        )
         if attached is not None:
             return attached
 

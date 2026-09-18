@@ -1,14 +1,13 @@
-"""Round-7 findings: two blocking, both real, both the same root cause as before.
+"""Two invariants the benchmark store must hold, one root cause each.
 
-Finding 1 is the FOURTH site of one fact I established in round 5 and then failed
-to sweep: the live embedder's vector width is not necessarily 1024. Round 5 fixed
-the recorded *identity*; the store was still constructed with the default width,
-which gates every write and sizes the FAISS index.
+The live embedder's vector width is not necessarily 1024. Recording the
+embedder *identity* is not enough: the store must also be CONSTRUCTED with the
+live width, because that width gates every write and sizes the FAISS index.
 
-Finding 2 sharpens round 4's own fix. That round required equal, non-zero
-`session_measurable` counts. Equal counts are necessary and not sufficient:
-eligibility depends on how many distinct items the retrieval window exposed, so a
-ranking change can swap which queries qualify and leave the count untouched.
+Equal, non-zero `session_measurable` counts are necessary but not sufficient
+for eligibility: it depends on how many distinct items the retrieval window
+exposed, so a ranking change can swap which queries qualify and leave the count
+untouched.
 """
 
 from __future__ import annotations
@@ -182,9 +181,8 @@ def _report(digest: str | None, *, mean: float, count: int = 1977) -> dict:
             "retrieval": {"limit": 20, "mmr": True},
             "search_backend": "sqlite_cosine",
             "embedder": "qwen3-embedding:0.6b@1024",
-            # Required since round 13: absent provenance is refused,
-            # not compared -- two reports both missing a field used
-            # to compare as compatible.
+            # Absent provenance is refused, not compared: two reports both
+            # missing a field must not compare as compatible.
             "environment": {"python": "3.12.10", "platform": "linux-x86_64"},
         },
         "metrics": metrics,

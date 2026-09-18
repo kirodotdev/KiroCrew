@@ -284,7 +284,7 @@ def test_global_event_tap_is_confined_to_the_pointer_moving_functions():
     **This module DOES call the global tap now** — the shipped
     ``click_method: "global"`` path warps the operator's real cursor, which is a
     deliberate inversion of the original "the pointer never moves" guarantee. The
-    assertion is therefore not "the name is absent" (it no longer is) but the
+    assertion is therefore not "the name is absent" (it is present) but the
     safety property that survives the inversion: ``CGEventPostToPid`` is the
     default for every keyboard, scroll and app-scoped mouse path — it delivers to
     the app the model addressed rather than to whatever the operator is actually

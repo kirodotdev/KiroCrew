@@ -18,19 +18,25 @@ A failed server check re-enters Phase 1 rather than patching in place because ba
 movement between rounds is the common case on a repo carrying 175+ open PRs. Patching
 in place produces a fix validated against a base that no longer exists.
 
-## Why 10 iterations is a backstop and 3 is the real limit
+## Why retrospective and runtime bounds are separate
 
-The escalation triggers fire at ~3 rounds. That makes 10 unreachable in any healthy
-run: a loop that reaches 10 has already missed a trigger. It is retained purely as a
-runaway guard, and `SKILL.md` says so, because a cap presented as a target invites
-using it.
+A recurring span needs a retrospective because a stable failing-check count cannot
+show whether each repair adds another mechanism that attracts the next finding.
+The retrospective rechecks the whole diff against the original intent; it is not
+a mandatory stop at the third round. Local review passes, monitor cycles and wall
+clock measure different costs. The current bounds and escalation rules live only
+in `SKILL.md`; none is a target, and only the user may extend an exhausted budget.
 
-**Same-span recurrence needed its own trigger** because the count-based rule cannot
-see it. When each round closes exactly the finding it was given and receives one new
-blocker in the *same* `file:function` span, the failing-check count stays pinned at
-1 — it never rises and never falls, so "3 iterations with no drop" never fires. This
-is the most expensive round pattern measured on this repo, and in every instance the
-correct structural fix had already been written down mid-flight and then deferred.
+## Why the retrospective decides and continues
+
+In practice the loop stopped at every `--rounds` exit 30: the parent collected the
+retrospective, posted the remove / replace / keep verdicts as a menu, and waited.
+That turned an every-third-round review into a mandatory user gate, which is the
+opposite of what the loop is for. The verdicts are almost always decidable from the
+intent comment and the defect the mechanism was added for, so the skill now names
+the pick order and a default, and lists the only four situations where a human
+supplies something the agent cannot. Recurrence is the trigger for the review, not
+a reason to hand the PR back.
 
 ## Why the two Phase 0 gates come before opening
 
@@ -48,6 +54,73 @@ them and the gate reads as passing.
 Operating on a stale `origin/<base>` ref was the root cause of the 2026-07-31
 clobber, where a force-push replayed 114 duplicate commits. The fetch therefore fails
 closed rather than proceeding on the cached ref.
+
+## Why a green expires, and why the check is client-side
+
+A pull request's green is a verdict about `refs/pull/<N>/merge` at the moment the
+run was triggered. Nothing re-derives it when the base moves, so a head that
+passed and then waited for review can merge against a base its tests never saw.
+Measured: a PR ran CI once at 15:39, waited about ten hours, and merged at 01:32
+with no re-run; two PRs merged in between had added tests that the merged change
+makes fail. The red surfaced two hours later on an unrelated PR, because this
+repo's `main` CI is routinely cancel-evicted by the next merge — three
+consecutive main runs read `cancelled` — so there is no per-commit verdict on
+`main` to catch it either.
+
+Two obvious server-side fixes were rejected by the constraint that matters here:
+merge velocity. The median merge gap is about 1.4 minutes and CI takes about 19,
+so a merge queue or strict up-to-date protection would serialise the repository
+behind its own CI. `green_age.py` is the soft version of the same idea. It runs
+client-side during the review wait, and it costs a rebase only on a PR whose
+files actually collide with what the base gained — not on every PR, and not at
+merge time.
+
+That is also why the exit code is consumed by the skill and by nothing else.
+`pr_status.py` prints the line and carries the summary in `advisory.green_age`,
+but never feeds it to `decide()`: a client-side heuristic in front of a required
+check would be a merge gate the maintainers declined, and a probe that cannot
+measure (exit 2) must not be able to turn a readable PR red.
+
+`babysit`'s `BEHIND` trigger does not cover this. `mergeStateStatus` reports
+`BEHIND` only under strict up-to-date protection, which is off here
+(`strict_required_status_checks_policy: false`), so on this repo that trigger is
+dead and the exit-30 signal is what replaces it.
+
+### What this does not close
+
+The re-sync half only reaches a PR the loop is actively driving. A PR a human
+merges by hand gets the `green age:` line `pr_status.py` prints and nothing else,
+so the incident class is narrowed rather than closed: a merger who does not read
+that line can still merge an expired green. Closing it outright needs a
+server-side signal, which is the thing the merge-velocity constraint refuses.
+
+Exit 2 is deliberately neither of the other two. A base that cannot be read is not
+a fresh green and not a stale one, so it satisfies no criterion and blocks none;
+after three consecutive 2s the loop reports the reason and hands the PR over rather
+than polling forever on an environment it cannot fix.
+
+## Why the Backwards compatibility section is not a required one
+
+The same observed incident has a writer-side half, and it is the half that actually
+broke. The PR that waited ten hours TIGHTENED a contract: it made a ledger entry's
+`data` validate against a registry, so a payload that main accepted before now
+raises. That is a `Breaking:` change, and the writers it broke are exactly the ones
+the two PRs merging in between added -- `test/test_ledger_kinds.py`,
+`test/test_ledger_retention.py` and `test/test_remove_slot_for_history_key.py` all
+hand-write payloads without the new required fields. A writer sweep taken when that
+PR opened would have found none of them, because none of them existed yet. So the
+rule is not symmetry with the tests-side check: it is the same expiry, on the same
+merge, read from the callers instead of the tests -- which is why a tightening diff
+owes a `Breaking:` line plus a writer sweep re-run on fresh `origin/main` right
+before the last push, with that sha written into the body. `green_age.py` asks that
+question of the tests; the sweep asks it of the callers.
+
+The section is deliberately absent from `fork-pr-description.yml`'s
+`REQUIRED_SECTIONS`. That list is matched against the body of every open fork PR
+on each `edited`/`synchronize`, so adding a heading to it would fail every body
+written before this change -- a red that says nothing about the diff. The rule
+reaches the author through the template's own prompt and through prepare-pr's
+Phase 1.5 instead, where it costs an existing PR nothing.
 
 ## Why force-with-lease must be SHA-pinned
 
@@ -142,6 +215,44 @@ on the GPT comment, and one-rationale-per-finding keeps a reused reason from sil
 claiming findings it was never checked against. A rationale reused across several
 findings is the blanket line from "Common mistakes" with a marker on top of it.
 
+## Why review repairs are delegated by reviewer family
+
+The routing table in `SKILL.md` records a maintainer-requested execution policy
+for this repository's own PRs. It does not rest on a defect found in an earlier
+parent self-fix, and it does not claim a delegated repair is better than a parent
+repair. The acceptance condition is: each CI AI finding is repaired by a
+model-pinned subagent from the same family as the lane that raised it, preferring
+the stronger available member of that family, with disclosed lower-tier fallback,
+while the parent keeps verification, consolidation and publication. The intent is
+a repair that starts from the finding, the owning spec and the assigned files
+rather than the parent's round history (a subagent can still inherit context, so
+this is intent, not a guarantee), read by the family that wrote the finding, and
+checked by the parent as a separate step.
+
+The listing selects availability, the table states preference: the backend/account
+model listing says what exists, and an entry there is neither entitlement nor proof
+of service, which is why the skill still requires exact IDs and reports an
+unverified served model as such. "No pinnable spawn facility means a blocker" is
+part of the requested policy: the parent reports the blocker and hands off rather
+than presenting its own fix as delegated. The names live once, in the `SKILL.md`
+table; `docs/ci/ci-and-reviews.md` points at it, and
+`test/test_review_repair_routing_skill.py` pins the row order deliberately, so a
+generation change is one table edit plus the test that records the policy.
+
+## Why both body checks are gates
+
+`--check-body` gates completeness (exit 20) and length (exit 21) at once, and
+the two pull in opposite directions on purpose. The accounting check is the leak
+detector, not the prose: a long walkthrough hides a stray file better than a
+short body does, because the reviewer trusts it and skips the diff. The length
+check used to be a WARN, on the theory that a rename or a shared-helper migration
+needs the words and a hard cap cuts true facts. In practice the WARN was never
+read: the hard check rewarded listing, the soft one was ignored, and bodies grew
+round by round into per-file recitals nobody could read. With the ledger
+guaranteed complete, a cap cannot cut a true fact -- only a restated one. The
+code is the evidence; the body says what changed and why. Short prose, complete
+ledger -- paths, tables and pictures never count against the limit.
+
 ## Why the PR body must come from the template file
 
 The maintainer's auto-approval bot greps for the template's exact heading strings.
@@ -150,17 +261,29 @@ The maintainer's auto-approval bot greps for the template's exact heading string
 because the repo's file is the single source of truth and the skill always runs
 inside a checkout.
 
-## Why screenshots live in `temp-screenshots/`
+## Why screenshots are attachments, not commits
 
 `docs/` and `src/kiro_crew/**` ship in the wheel, the sdist, and the desktop DMG, so
-review images placed there ride into a shipped artifact. `temp-screenshots/` is
-outside every packaged path and is pruned periodically — long enough for the PR to be
-reviewed.
+review images placed there ride into a shipped artifact; a dedicated directory keeps
+them out of the package but still puts megabytes of pixels into every clone, forever.
+An attachment puts nothing in the repository at all: `gh pr create|edit --attach`
+uploads the file with the caller's own token and rewrites the body's local path to
+`https://github.com/user-attachments/assets/<uuid>`.
 
-SHA-pinned URLs are required because branch-pinned URLs break when the branch is
-deleted on merge, and external image hosts leak content and are camo-blocked for
-private repos. The pinned blob stays reachable through the historical commit even
-after cleanup removes the file from `main`'s tip.
+That URL is tied to no commit and no branch. A raw-blob URL has to be pinned to a SHA
+to survive branch deletion on merge, and then every squash, amend or force-push moves
+the SHA out from under it, so the body needs a re-pin pass after each round and the
+first missed pass leaves a broken image. The attachment URL survives all of those
+without anyone touching the body, so the loop never re-pins. External image hosts
+are the other alternative and are worse on both counts: they leak content, and GitHub
+Camo blocks them on private repos.
+
+The review lanes read the same URL the author wrote: the UX lane's blind read
+downloads the `user-attachments` links from the PR body (a committed image still
+counts), and the screenshot-evidence gate accepts them as visual evidence. Dragging
+a file into the description in the web UI produces an identical URL, so a fork
+contributor without push access — the one case `--attach` refuses — reaches the same
+place by hand, and a human reviewer and the lanes see one convention, not two.
 
 ## Why the closing-keyword check reads the API back
 
@@ -222,16 +345,9 @@ bodies. A round is complete when every check finished **and** every bot posted, 
 
 ## Why arming cannot be confirmed from the reply
 
-Arming happens when the turn's *result* is processed, so a successful
-`monitor_start` can only ever come back as *requested* — the tool says so itself. A
-synchronous refusal is visible before the turn ends and is real. The residual case —
-the applier refusing after the turn ends — is unobservable from inside the turn by
-construction and shows up as a cycle that never arrives.
-
-Treating a bare *requested* as an arming failure fires the `wait` fallback on every
-arm and reinstates the very timeout the `monitor_start` branch exists to remove,
-which is why `SKILL.md` states the two branches as one rule with an explicit default.
-
-`max_cycles` counts cycles, not rounds. One 20–40 minute round costs several
-5-minute cycles, so the default expires after roughly the first two or three rounds
-and deactivates the loop silently, well short of the 10-iteration backstop.
+Arming is applied after the tool returns, so an acknowledgement alone does not
+prove a loop exists. A synchronous refusal is definitive; other results need the
+state check prescribed in `SKILL.md`. That check and its bounded fallback prevent
+both silent abandonment and duplicate poll drivers. Monitor cycles are not server
+rounds, so a wall-clock bound must accompany the cycle budget. The execution
+procedure owns those budgets rather than a second copy here.

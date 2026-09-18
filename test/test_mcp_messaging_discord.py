@@ -85,9 +85,9 @@ def test_argument_validator_accepts_every_advertised_session(value: str) -> None
 def test_argument_validator_still_rejects_an_unadvertised_session(value: str) -> None:
     """The roster is derived, so the negative control must not be a real channel.
 
-    This case previously used ``"telegram"``, which #6514 made legal: the roster
-    now derives from ``CHANNEL_SESSION_NAMESPACES``, so every registered channel
-    is advertised. The values here are the ones that must STAY refused —
+    A registered channel name would be the wrong control: the roster derives from
+    ``CHANNEL_SESSION_NAMESPACES``, so every registered channel is advertised and
+    legal. The values here are the ones that must STAY refused —
     ``unified`` is the session-key bucket rather than a transport and is excluded
     on purpose, and the rest are a bare unknown name, a namespaced session key
     where a transport is expected, and a case variant.

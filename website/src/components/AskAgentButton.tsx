@@ -43,6 +43,25 @@ export function askAgentHard(message: string): void {
   sendErrorToChat(askAgentPrompt(resolved), { hard: true })
 }
 
+export function handoffErrorToAgent({
+  report,
+  message,
+  hard = false,
+  onHandoff,
+}: {
+  report?: ErrorReport
+  message?: string
+  hard?: boolean
+  onHandoff?: () => void
+}): boolean {
+  const resolved: ErrorReport | { message: string } | null =
+    report ?? findReport(message) ?? (message ? { message } : null)
+  if (!resolved) return false
+  if (!sendErrorToChat(askAgentPrompt(resolved), { hard })) return false
+  try { onHandoff?.() } catch { /* dismissal is cosmetic; never throw here */ }
+  return true
+}
+
 export default function AskAgentButton({
   report,
   message,
@@ -80,12 +99,7 @@ export default function AskAgentButton({
   if (!report && !message) return null
 
   const onClick = () => {
-    const resolved: ErrorReport | { message: string } | null =
-      report ?? findReport(message) ?? (message ? { message } : null)
-    if (!resolved) return
-    // Dismiss only once the hand-off actually proceeded.
-    if (!sendErrorToChat(askAgentPrompt(resolved), { hard })) return
-    try { onHandoff?.() } catch { /* dismissal is cosmetic; never throw here */ }
+    handoffErrorToAgent({ report, message, hard, onHandoff })
   }
 
   const base = 'inline-flex items-center gap-1 shrink-0 cursor-pointer transition-colors'

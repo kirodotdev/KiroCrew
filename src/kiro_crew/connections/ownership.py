@@ -24,7 +24,6 @@ helpers directly, the judge and transaction through the disconnect endpoint.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import os
 import re
@@ -32,6 +31,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
+
+from kiro_crew.agent_spec_format import (
+    is_agent_spec_name,
+    is_markdown_spec,
+    parse_agent_spec_text,
+    split_markdown_spec,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -84,7 +90,11 @@ class DisconnectScope:
 
 
 def _json_spec_names(spec_dir: Path) -> list[str] | None:
-    """The ``*.json`` spec names in ``spec_dir``; ``None`` when it is unreadable.
+    """The spec names (``*.json`` and ``*.md``) in ``spec_dir``; ``None`` when unreadable.
+
+    Both forms: a markdown spec's ``mcpServers`` holds a grant exactly like a
+    JSON spec's, and reading only ``*.json`` would count that sharer as absent
+    and let a Disconnect revoke a grant it is still using.
 
     ``os.listdir``, not ``Path.glob``: glob SUPPRESSES scan errors (an
     executable-but-unlistable directory yields zero entries with no raise), which
@@ -94,7 +104,7 @@ def _json_spec_names(spec_dir: Path) -> list[str] | None:
     or no one could ever disconnect anything.
     """
     try:
-        return sorted(n for n in os.listdir(spec_dir) if n.endswith(".json"))
+        return sorted(n for n in os.listdir(spec_dir) if is_agent_spec_name(n))
     except FileNotFoundError:
         return []
     except OSError:
@@ -212,8 +222,8 @@ def spec_census(
         try:
             if label.endswith("/"):
                 # An unenumerable-DIRECTORY sentinel from agent_spec_sources,
-                # screened by its label rather than by a stat. A stat test is what
-                # round 7 already had to fix once: a plain file sitting where the
+                # screened by its label rather than by a stat. A stat test is the wrong
+                # screen here: a plain file sitting where the
                 # agents directory belongs is ``is_file()``, so the sentinel would
                 # be parsed as a document and a source whose entries are unknown
                 # would read as a source that declares none.
@@ -227,7 +237,13 @@ def spec_census(
                 continue
             if not path.is_file():
                 continue  # genuinely absent: no entries here, nothing hidden
-            data = json.loads(safe_read_file(str(path)))
+            text = safe_read_file(str(path))
+            if is_markdown_spec(path) and split_markdown_spec(text) is None:
+                # A markdown file with no frontmatter fence (a README, notes) is
+                # not a spec: it declares nothing and hides nothing. Only a
+                # FENCED document that fails to parse is unknown, below.
+                continue
+            data = parse_agent_spec_text(text, path)
         except (OSError, ValueError):
             # PermissionError (an OSError) is what safe_read_file raises for a
             # sensitive path or a symlink race; a stalled mount and malformed
@@ -359,11 +375,11 @@ async def remove_provider_entry(
         refuted.
 
         ONE pipeline: the string that is screened is BYTE-IDENTICAL to the string
-        that is hashed. Round 3 guarded three malformed shapes and round 4 found a
-        fourth (a trailing space after an explicit port -- ``urlsplit`` lstrips
-        only) precisely because ``normalized_endpoint`` parsed ``value.strip()``
-        while ``grant_key`` parsed the raw value, so the screen's guarantee never
-        transferred.
+        that is hashed. One malformed shape -- a trailing space after an explicit
+        port, which ``urlsplit`` lstrips only -- slips through when
+        ``normalized_endpoint`` parses ``value.strip()`` while ``grant_key`` parses
+        the raw value, so the screen's guarantee never transfers unless both parse
+        identical bytes.
 
         THREE-valued, because two implementations compute this key. kiro-cli
         derives the artifact pair with the WHATWG url parser, which
@@ -371,7 +387,7 @@ async def remove_provider_entry(
         dot-segments and backslashes, and percent-encodes non-ASCII paths --
         transformations ``urlsplit`` does not perform. Hashing such a URL here
         answers a question about different bytes than the ones kiro-cli hashed:
-        round 7 measured ``%6dcp.notion.com`` and ``/a/../mcp`` both naming the
+        ``%6dcp.notion.com`` and ``/a/../mcp`` both name the
         registry pair over there while missing it here, with no exception
         anywhere. So key equality is asserted only inside the PROVABLE set --
         lowercase-ASCII LDH hosts and printable-ASCII paths free of ``%``,

@@ -1,22 +1,27 @@
-# Crew Mode
+# Crews
 
-Two related things are spelled *crew*, and this spec owns both:
+A **crew** is a named entry in the config's `agents` map. It binds a kiro-cli
+agent template plus a workspace, a memory store, a model and a reasoning effort,
+and it carries free-text `triggers` that decide whether the orchestrator may
+route work to it. The selection path is the `select_crew` MCP tool.
 
-1. **A crew** is a named entry in the config's `agents` map. It binds a kiro-cli
-   agent template plus a workspace, a memory store, a model and a reasoning
-   effort, and it carries free-text `triggers` that decide whether the
-   orchestrator may route work to it. The selection path is the `select_crew`
-   MCP tool.
-2. **Crew Mode** is the `"crew"` chat-slot mode. Its control plane is
-   `crew_chat.py`: a durable per-slot ingress queue, a single-flight decision
-   agent, and one continuable sub-session per topic, all running on the slot's
-   crew.
+This spec used to own a second thing spelled *crew*: **Crew Mode**, the
+`"crew"` chat-slot mode whose control plane (`crew_chat.py`) fanned one
+session's topics out to sub-sessions. It is retired — see
+[Retired: Crew Mode](#retired-crew-mode) — in favour of the Crew Members page
+(`/members`, served by `dashboard/handlers/members.py` and `members.py` in the
+table below), where each crew is a standing agent with its own thread.
 
-Neither is *Remote Instances* (see [instances.md](instances.md)), and neither is
+A crew is not a *Remote Instance* (see [instances.md](instances.md)), and not
 an Issue Radar *crew*, which is that app's own repository work crew
 (see [issue-radar.md](issue-radar.md)).
 
 ## Components
+
+Legacy topic respawn requires its original run identity or surviving legacy
+run state. If pruning removed both, continuation refuses with a named memory
+error and leaves the queued request retryable; the owner must start a new topic.
+Missing history must never silently turn a private topic into Global memory.
 
 | File | Role |
 |---|---|
@@ -26,15 +31,210 @@ an Issue Radar *crew*, which is that app's own repository work crew
 | `src/kiro_crew/mcp_tools/control.py` | The `select_crew` tool declaration and dispatch |
 | `src/kiro_crew/validation.py` | `SELECT_CREW_SCHEMA` — argument validation for that tool |
 | `src/kiro_crew/members.py` | Per-crew member space: activity log, DM-thread binding, permanent rules, self-maintained briefing, the member turn chokepoint |
-| `src/kiro_crew/crew_chat.py` | `CrewStore` and `CrewOrchestrator` — the Crew Mode control plane |
 | `src/kiro_crew/subagent.py` | `_validate_agent` — what an `agent=` name is checked against, and `UNADVERTISED_AGENTS` |
 | `src/kiro_crew/config/prompt-orchestrator.md` | The orchestrator prompt that names `select_crew` and the delegation rule |
 | `src/kiro_crew/dashboard/handlers/agents.py` | Crew CRUD on `/api/agents`, and the roster row serializer |
 | `src/kiro_crew/dashboard/handlers/members.py` | `/api/members` roster, thread get-or-create, rules, activity |
-| `src/kiro_crew/dashboard/chat_folders.py` | `api_chat_slot_mode` — the mode switch and its refusals |
 | `website/src/pages/KiroCrewAgentsPage.tsx` | The Crews UI, mounted as the **Crews** tab of `CapabilitiesPage` (Agent Capabilities) |
 | `website/src/components/crew/crewEditorSections.ts` | The crew editor's pane registry, including the Routing pane that edits `triggers` |
 | `website/src/components/CrewWakeSection.tsx` | "What wakes this agent" — schedules, deliberately distinct from `triggers` |
+
+## Owner-reviewed capability inheritance
+
+`agent_capabilities.py` resolves one verified Parent and explicit per-item
+`set`, `remove` and `inherit` intent. The owner-only GET, POST preview and PUT
+routes at `/api/agents/{name}/capabilities` use schema version 1. Preview ends
+in `/preview`; PUT requires its opaque preview token and the GET revision.
+Unknown fields, null sets, stale sources and ambiguous names are refused.
+
+Enrollment is explicit. Shared members follow their selected Parent; a legacy
+private snapshot starts with every existing row local and every absent Parent
+row removed. Restoring one row leaves all other overrides intact. MCP transport
+replacement is whole-value; autoApprove is separate. Skills preserve manual
+resources and cannot change tool or approval lists. An exclusion still covered
+by a wildcard or another approval list is refused instead of claimed effective.
+Ordinary upstream changes reconcile through the same resolver. New capabilities,
+transport changes and broader approvals stay pending owner acceptance. Local
+conflicts retain their usable values: accepting a Parent row moves only the
+accepted Parent baseline, an explicit local override on that row keeps applying
+on top of it, and an `inherit` or restore on that row adopts the current
+Parent value and advances that row's accepted baseline. Selected Parent rows can be accepted for
+several already-enrolled members of the same exact Parent in one request. The
+editor offers those members as a checklist drawn from the declared crew roster
+(the current member excluded); the backend alone decides eligibility and
+answers `member_parent_mismatch` for a member outside this exact Parent. The
+checklist hint says only that the names are declared members and that
+eligibility is verified at review; it never calls a listed member eligible. The
+pane's mode badge names the persisted following mode without a `Saved:` prefix;
+the separate Saved/"Unsaved draft" badge reports draft state, using the same
+"draft" word as the footer, its confirmation and the stale notice. Ticking
+Follow changes the draft, not that persisted mode badge. One muted legend above
+the row list, rendered once rather than per row, defines the source select's
+three states: Inherited follows the parent's accepted value, Override sets this
+member's own value, Removed drops it for this member. A shared-reference row
+says it references a shared skill or resource with no private copy; it promises
+no propagation to running members. The locked Agent Template pane's navigation
+button reads "Edit in Capabilities"; the pane title stays "Capabilities".
+The preview lists every member the reviewed request covers, the current
+member first, and states "no effective value changes" when the effective values
+are unchanged, without implying that inheritance metadata is unchanged. Each
+Parent checkbox names its save-time action from the draft's actual Source first,
+then the saved row state: Override dismisses the update while keeping the override;
+Removed dismisses it while keeping the row removed; Inherited takes the Parent
+value or removal. An explicit `inherit` draft already takes the current Parent
+and advances its accepted baseline even unchecked, so its checkbox only selects
+that update for the chosen peers; a nearby accessible hint separates the current
+member's save outcome from the checkbox's peer-only effect in two short lines.
+Action labels lead with what is kept or taken.
+This replaces the generic acceptance label and duplicated selection/outcome prose.
+Parent change-kind badges say "Parent added/removed/changed this", separately from
+the impact list's Added/Removed/Changed labels and the conflict badge. The shared
+and legacy modes both say "Not following parent", with an independent-legacy-
+snapshot qualifier for the latter. The visible `local` state label is
+Override; its API value remains `local`. The receipt then
+names each kept row under the current member, derived only from the reviewed
+selection, the server view's conflict flag and the sanitized preview projection
+(a row still `local` and present, or still `removed` and absent, with no impact
+entry), and shows Override or Stays removed beside its reference; it
+never prints a value, never reads the raw draft, and never invents kept-row
+details for a peer member, whose rows the response does not project. An
+Inherited row that follows a Parent removal is never labelled as a kept local
+choice; it is an impact entry when its effective presence changes.
+The Follow checkbox places the unchanged-until-save and value/empty-field
+preservation guarantee beside the control; one state-carrying helper explains
+checked means overrides are editable and unchecked means read-only, replacing
+the duplicate enrollment callout. Both are accessible descriptions while the
+checkbox's accessible name stays stable. The label explicitly targets the native
+checkbox id, so clicking its text toggles enrollment. Conflict and receipt prose wraps at
+word boundaries; long code references can break anywhere. The transport option
+is "Command (local process)"; the conflict badge says "Conflicts with your
+override", distinct from the Override row state. Reload retrieves the server view
+without moving the draft's revision; "Use the new version for this draft" moves
+that revision and invalidates a prior preview, but does not review or save.
+Review and atomic save remain separate steps. Receipt counts use registered
+locale-specific plural forms. The approval helper states that
+making a tool available does not auto-approve it. A short live helper under the
+list selector states where the selected list is stored and which references it
+matches; the select and section labels stay short. Empty approval
+section headings are hidden, but their selector choices and draft additions
+remain available. Hidden transport leaves keep short placeholders; a separate
+hint explains that typing changes only the draft, saved hidden values remain
+until a replacement is saved, and discarding keeps the original. The footer's
+Discard draft opens a nested, always-mounted Radix confirmation rather than
+immediately clearing the draft. Cancelling keeps edits and the signed preview;
+confirming clears the draft and preview without closing the editor or calling
+the server. The editor's separate close guard states in its title that it closes
+the editor, names the member whose edits are unsaved, and says no other member
+is affected, since one editor holds one draft.
+
+Each owner save writes new private spec identities and switches all selected
+bindings through one config-delta publication. This includes changes to accepted
+Parent baselines or local intent whose effective values stay unchanged; only a
+save with unchanged spec and intent keeps its generation. Failed spec or config
+publication keeps the prior bindings, specs, accepted baselines and local choices;
+old generations may be marked pending, but staged choices remain private on new
+generations. Reconciliation can clear that pending marker without accepting the
+failed batch; the owner can review and retry the same selection. After binding
+publication, a failed final receipt leaves all selected new generations pending;
+reconciliation verifies them without minting replacements. Preview
+values redact credential containers. The existing governance sanitizer still
+runs at publication. Withheld shortcuts become tombstones, so a later policy
+relaxation does not resurrect them automatically.
+
+`prepare_member_capabilities(member, project_dir)` verifies the saved spec and
+Parent identity without claiming that a provider loaded it. API runtime state
+remains pending or unverified until runtime integration supplies observations.
+The existing fork refresh delegates enrolled definitions to this resolver.
+Legacy PATCH and direct rebind refuse an enrolled definition rather than
+bypassing its intent. Unreadable authoritative state returns bounded
+`503 capabilities_unavailable`; the final PATCH guard runs under the spec lock
+before bookkeeping. A late legacy publish rebind refusal retains the old binding
+and rolls back its staged destination, not a claim that no writes occurred.
+Runtime views are projected from allocation-owned state through the public
+`SessionManager.capability_runtime_view` facade; response rows expose no mutable
+registry dictionaries. The existing whole-reset button explicitly restores the
+verified current Parent through the capability transaction. Publish flattens
+only the saved valid snapshot, without accepting pending Parent expansions or
+exporting inheritance metadata. Publish records its member, source and target
+snapshot identities in the existing sidecar before creating the destination or
+committing the binding. The destination stays private until a second
+config-first transaction verifies its binding, ownership, bytes and current
+governance and clears only the temporary lineage. A failed final write returns
+the committed template with `warning: publish_incomplete`, matching legacy
+publish behavior. Retrying the same name completes that transition, including
+after restart or a lost response; changed source/target bytes, a newer binding
+or foreign ownership refuse without overwriting anything. Completed receipts
+remain for idempotent retries and never enter the shared agent JSON.
+
+Native permission policies that exactly match
+the existing allowedTools derivation follow owner approval edits. Custom
+permission policies and alternate toolsSettings shortcuts require a separate
+review and are refused rather than silently bypassed. Cleanup of superseded
+private generations is not implemented by this backend checkpoint, and no
+generation is deleted today. A future cleanup must retain every generation that
+a member binding names, that a live session's `LoadedCapabilities` stamp names,
+that a `CapabilityPreparation` returned by `prepare_runtime` still references
+between preparation and the loaded stamp, that a persisted resume record could
+lead back to, or that a retained publish receipt names as source or target.
+Because a preparation exists before any stamp and holds no registry entry, the
+three visible references (binding, stamp, receipt) do not prove a generation
+unreferenced. Deletion therefore requires a shared lock or explicit allocation
+lease taken by the reconciliation seam that mints generations, plus an audit of
+persisted resume references, and it fails closed: a generation whose absence of
+references cannot be proven is kept. Binding
+updates preserve config.local member overrides and write a narrow delta in the
+active layer under base-then-overlay locks. A batch spanning both layers uses
+one atomic overlay delta. Enrollment preserves absent fields, null prompt/model
+values, custom hooks/settings and the original includeMcpJson choice. Removing
+capabilities while provider-global MCP inclusion remains enabled is refused as
+unrepresentable; enrollment alone never silently disables that existing source.
+
+Parent selection reuses `agent_spec_path` with an explicit scope directory.
+Unrelated malformed files are skipped; duplicate names, a broken exact-name
+project claim and a changed pinned source still refuse resolution. Safe response
+projection retains arrays and maps and masks credential values. URL userinfo
+is masked from parsed username or password on every scheme, without relying on
+the shared redactor's known-scheme patterns; revision-bound URL retention still
+preserves the exact original bytes. Complete sensitive
+`NAME=VALUE` argument assignments are recognized on both sides of `--`; that
+terminator stops option inference, not assignment scanning. Retention preserves
+the entire original argument, including additional equals signs in its value. The
+`agent_capabilities.py` response boundary is registered in the security posture
+redaction inventory, so the omission gate checks it with the other outputs. MCP `set`
+accepts `retain_paths`, RFC6901 pointers into the complete replacement value.
+Each pointer must address exactly `[REDACTED]` and the same redacted scalar leaf
+in the current member transport. Empty/root, malformed, overlapping, duplicate
+and out-of-range pointers refuse the whole request; any unretained placeholder
+also refuses. Omitted fields are removed, not deep-merged. Retained bytes stay
+server-side and are covered by preview/revision checks. MCP rows carry an
+explicit `managed` flag; absent prompt/model rows remain editable. Rows do not
+carry constant `editable` or redundant `locked_reason` fields: managed transport
+fields stay read-only while Source and Enabled remain available. Runtime status
+is one of pending, unverified, applied or failed; the separate Saved configuration
+badge describes persisted configuration, not provider application.
+
+Owned Parents retain the existing dynamic command, hooks and data-home refresh.
+That pass cannot add omitted servers or tools and preserves local prompt/model
+and resource choices. App namespace transports require a current enabled app's
+exact declaration and use its authoritative transport. Safe ordinary Parent
+fields (description, welcomeMessage and keyboardShortcut) follow updates; legacy
+snapshots retain their explicit local baseline for these fields.
+
+Reconciliation publishes changed bytes under a new private name and atomically
+switches the member binding, leaving the old runtime's file unchanged. A no-op
+keeps its generation. Failed writes retain pending intent; retry completes it
+without modifying an earlier generation. Already-published pending receipts can
+finish without another generation. Public revisions are random version ids;
+source-content digests remain internal. The prepare seam refuses pending work
+and never reports provider application from a successful save. Enrollment
+intent lives in the shared `agent_model_state.json`, so an unreadable sidecar
+cannot prove any declared member unenrolled: `prepare_runtime` refuses every
+crew-member cold start with the closed code `capability_state_unreadable` (the
+capabilities API answers `503 capabilities_unavailable`) rather than inferring
+legacy mode, and a session that resolves to no crew never reads the sidecar.
+An explicit `crew_agent` claim naming no `config.agents` entry refuses with
+`capability_member_missing`; an implicit name outside the crew namespace
+resolves to no crew and is unaffected.
 
 ## Crew records and binding
 
@@ -45,14 +245,98 @@ name into `ResolvedBindings`, in this order:
 1. the named crew, when it is a key of `config.agents`;
 2. otherwise a **materialized** kiro agent of that name (an app-registered agent
    under the user's `~/.kiro/agents/`, or a project agent), which keeps
-   dispatching itself while taking the default crew's workspace and memory
-   bindings;
+   dispatching itself with the default workspace and Global Memory V1;
 3. otherwise `default_agent`, with `requested_resolved` set to `False` so a
    caller never advertises a binding that is not running.
 
-An unresolvable workspace or memory store falls back to `default_workspace` /
-`default_memory_store` with a logged warning rather than failing the session.
-With no agents configured at all the resolver returns bare defaults.
+An unresolvable workspace falls back to `default_workspace`. Memory identity
+resolves exactly: the reserved `default` assistant uses Global Memory V1;
+existing members keep their declared V1 binding until the owner chooses V2.
+Explicitly created and opted-in members own unique private V2 stores.
+Automatically discovered agents start on Global V1 without private allocation.
+Missing, unreadable,
+shared or mismatched private identity stops execution with an actionable error.
+Selecting a member as `default_agent` preserves that member's memory version and
+binding. With no agents configured, the resolver returns the existing defaults.
+
+Member creation automatically provisions empty private memory. Members cannot
+choose a shared store or rebind their private store. Legacy members may continue
+using V1 or explicitly choose empty V2 memory from their settings; former Global
+or named V1 contents remain untouched. Config fields, atomic publication, ownership manifest and
+recovery semantics are owned by [config](config.md#named-memory-stores-memory_storespy).
+
+A new member DM inherits the member's configured workspace, falling back to
+`default_workspace` when that name is undeclared. Its project directory uses the
+shared `default_project_dir` validation, so provider cwd and project essentials
+refer to the same workspace. Resolution finishes before publishing the slot;
+the first slot broadcast includes its project directory. A concurrent opener's
+existing slot is preserved. Reopening a live or restored
+thread keeps its saved workspace and project, including an explicitly empty
+project, rather than resetting a session choice to the member default.
+
+Opting into V2 opens a fresh member conversation. Existing V1 conversation and
+native provider context cannot become private context by changing the config.
+The member-thread binding records its private store generation and reuses that
+conversation across later opens and restarts. An already protected V2 thread
+keeps its existing key. Old schedules and child runs retain their recorded store;
+the opt-in does not relabel past or already assigned work.
+
+Private memory also pins an active dashboard turn to its member in ordinary
+chat slots. A provider-side agent switch stops the stream with a visible notice
+and resets the provider before another turn; later events cannot continue under
+another agent while using that member's memory. This covers member DMs and
+ordinary V2 chats. Ordinary V1 chats keep their existing switch behavior. The
+validation and reset contract is owned by
+[session](session.md#private-member-session-ownership).
+
+The member side panel's Crew summary tab and the editor link to
+`/settings/overview?view=memory&store=<name>`. The private memory workspace has
+Memories, Profile and Recovery tabs: browsing/search/correction/copy stay in
+Memories, preferences and project anchors stay in Profile, and backups plus
+retired experiences stay in Recovery. Advanced facet analysis is collapsed.
+Profile and Recovery load on first visit; visited Profile stays mounted so tab
+changes cannot discard its drafts. Changing the selected member requires explicit
+discard while a profile draft or memory mutation dialog is open. Source references
+are rendered as origin labels and item references rather than JSON payloads.
+
+The workspace header, store picker and copy-source picker reuse the owning
+member's exact avatar descriptor and name, including uploaded pictures. Returning
+from the member editor refreshes that identity. Empty memory can open
+`/members?member=<exact-name>` directly; this link selects the member by name,
+then uses the existing verified thread-opening endpoint. A failed thread open
+retains its localized error heading and structured diagnostic report. Details
+reveals the redacted reason on demand; Ask the agent receives the same report
+when navigation permits. The cached conversation and its drafts remain available.
+
+Reopening a running private Member DM, including a turn awaiting tool approval,
+reuses its existing protected assignment. The canonical session key, selected
+member, live slot store and protected session store must agree. This read does
+not pin or repair memory while work is active; missing, mismatched or unreadable
+identity still refuses. The handler rechecks slot identity after the off-loop
+store read, and a link to another session remains a conflict.
+
+The member's presence indicator includes active child runs even while its own
+turn is idle. Completion of the member's planning turn does not imply its
+delegated work has finished. When only child runs are active, the Crew summary
+status says "Delegated work running". Driving sessions still lists dashboard
+sessions created by the member; child runs do not become dashboard sessions.
+
+Facts, rules and experiences all support correction and explicit forgetting.
+Experience correction keeps the same record identity and provenance. A store
+marked unavailable still makes a scoped read to obtain its actual refusal, with
+Retry and Recovery actions; it never displays cached records as a successful
+read. Recovery paginates retired memories and refreshes live recall after an
+item is restored. Complete snapshot restoration stays visibly staged across
+page visits until gateway restart, and the owner can cancel the pending stage
+without changing current memory or its saved backup.
+
+Inline schedules created inside the editor persist `member_id` separately from
+the provider template. A legacy schedule carrying only `agent_id` stays in Global
+Memory V1 even when that string matches a member alias. The editor lists private
+member jobs by exact `member_id`, and an existing job's member is immutable.
+Legacy jobs retain their previous template/sequence display attribution and show
+Global Memory V1 in the member's Schedules pane. Displaying an old schedule there
+does not migrate it or grant access to that member's private store.
 
 `resolve_effective_model` is the single source of truth for what model a new
 session on a crew starts with, highest tier first: the crew's own `model`, the
@@ -66,7 +350,23 @@ and a junk watchdog override collapses to `0`.
 
 ## Selection: the `select_crew` contract
 
+Discovery importing a provider template as a configured member does not rebind
+an existing dashboard conversation that selected the template. Resolved bindings
+carry a positive `selection_kind`; the protected per-session record preserves
+that namespace across callbacks and restore. New member conversations still
+resolve and validate the member's private store. An explicit owner agent choice
+may replace selection provenance, but cannot migrate an existing V1 native
+conversation into private memory. The persistence and legacy-session rules are
+owned by [session](session.md#agent-selection-provenance).
+
 `select_crew` has two modes, both answered as JSON by `_do_select_crew`.
+
+`route_crew` resolves each trigger-matched member independently. Healthy matches
+retain their rank and owned store. Matching members whose memory cannot be
+resolved appear in `unavailable` with a bounded, path- and credential-redacted
+reason. No healthy match and no trigger match are distinct outcomes; unavailable
+memory never authorizes substitution with Global memory. A named `select_crew`
+refusal returns `crew` and `error` without a bound store or routing activity.
 
 **Roster** (`crew` omitted or empty):
 
@@ -116,14 +416,20 @@ model to delegate to it, and no `via="spawn"` execution entry exists today.
 
 ## Delegating to a bound crew
 
-`select_crew`'s guidance is to delegate with `spawn_run(agent=<crew>)`, and the
-sharp edge there is named rather than smoothed over: `subagent._validate_agent`
-checks `agent=` against the installed kiro-cli **template** names
-(`agent_discovery.list_agents`, plus the requesting project's cached agent
-names), not against `config.agents`. A crew name is therefore dispatchable only
-when an installed agent of the same name exists. That holds for every crew whose
-`kiro_agent` repeats its own name, and not for the default crew, which binds the
-template `kirocrew`.
+Explicit member delegation uses `spawn_run(crew=<member>)`. The member alias
+resolves its provider template and private memory together. The separate
+`agent=` argument identifies a provider template, not a durable member identity;
+it must not be used to infer access to a member's private memory.
+The model-facing `spawn_run` schema advertises `crew` separately from `agent`,
+so a caller can select a member through tool discovery. A batch's `crew` applies
+to every task; delegating to different members requires separate calls.
+
+A private member's own sub-tasks and schedules retain its store. It cannot select
+Global V1 or a peer through `spawn_run` or `cron_add`. The trusted owner or Crew
+coordinator assigns cross-member work; named tool delegation respects the
+recipient's routing opt-in. HTTP spawning verifies the actual calling process
+before accepting a parent session, and the run primitive checks the boundary
+again before allocating a provider.
 
 A named-but-unknown agent is **refused**, never silently answered by the default
 agent, with the machine-readable code `agent_not_found`. That refusal is a
@@ -138,96 +444,6 @@ and passes `bindings.kiro_agent`. It returns the raw crew name when
 `_validate_agent` rather than quietly running the default agent under a stale
 name, and it resolves an empty crew too so the concrete template stays inside
 `capabilities.spawn.scopes.agents`.
-
-## Crew Mode: the slot mode
-
-`api_chat_slot_mode` admits `""`, `"orchestrator"` and `"crew"`
-(`chat_folders._VALID_MODES`). `"crew"` is the only one with a capability gate,
-and four refusals guard the switch:
-
-| Code | Condition |
-|---|---|
-| `crew_unsupported_slot` | `crew_chat.is_crew_capable_slot_key(slot.key)` is false: the folded key is nothing but dots, ends in a dot (Win32 strips it, merging two slots onto one store), or is a Win32 reserved device basename |
-| `member_mode_locked` | The slot is a member DM thread; member slots are born and retired only through the members thread endpoint |
-| `remote_mode_unsupported` | `slot.executor == "remote"`: a mode-specific dispatch runs its tools on this machine, not on the bound peer |
-| `crew_app_session_unsupported` | Refused at ingest for an app-owned slot, because dispatch does not preserve the app identity and the subagents would run outside the app's profile |
-
-The switch is additionally refused while the slot has pending subagent work, in
-either direction, keyed on `effective_session_key(slot)` so a channel-linked
-slot is checked under the key its spawns actually ran on. The busy check runs
-inside the state-wide slot-metadata transaction lock and fails closed.
-
-The mode is preview-gated in the UI: `PREVIEW_CREW` (Settings → Developer →
-Feature Previews) gates both doors, the Crew Members rail item and the sidebar's
-"New Crew Mode chat" entry. The gate is on ingress only, so a session already in
-crew mode keeps running when the flag goes off.
-
-## Crew Mode data flow
-
-Store layout is `<data home>/crew/<folded slot key>-<8 hex digest>/` holding
-`queue.json`, `topics.json`, `forwards.json` and `slot_key`. The digest is taken
-over the exact key, so two keys differing only in case get distinct directories
-on a case-insensitive filesystem; the readable half is capped, so an overlong
-slot name cannot produce a path the filesystem refuses. Because the directory
-name is a fold plus a digest it cannot be decoded back, which is why the exact
-key is written into `slot_key` and read from there on resume.
-
-One request walks this path:
-
-1. `CrewOrchestrator.ingest` takes a per-slot `asyncio.Lock` before any await,
-   so the order requests reach the lock is the order they surface.
-2. The entry is appended and `queue.json` is awaited **by name** before anything
-   the user can see. A failed write rolls the in-memory entry back, so a 500
-   leaves nothing queued.
-3. The echoed user message and a templated ack are posted durably. A
-   non-durable transcript row is logged loudly and the request still runs: the
-   queue is the record, and the transcript is its mirror.
-4. A decision pass is scheduled. It is single-flight per slot, prompts a
-   tool-free background call with a rendered state snapshot, and accepts only a
-   dict carrying an `actions` list, so braced JSON in surrounding prose is not
-   mistaken for the payload.
-5. Each action is applied: `route` an existing topic, `spawn` a new one, `hold`
-   until a running topic finishes, `steer` a droppable advisory correction into
-   in-flight work, `ask` one short disambiguating question, or `meta` answer a
-   question about the topics themselves.
-6. A `spawn` persists a stable `dispatch_id` and awaits a queue-only barrier
-   before starting the run, so a crash between the spawn and the accepted-state
-   write is adopted on restart instead of re-executing the task.
-7. Sub-tasks carry `_SUB_TASK_SUFFIX`, which forbids nested subagents and
-   requires a `<<<SUMMARY … >>>` block; `on_subagent_done` extracts it with
-   `_SUMMARY_RE` and forwards it verbatim with mechanical attribution. A result
-   arriving while the tab is closed is persisted to `forwards.json` and
-   re-delivered on reopen.
-
-Caps and timeouts, all named constants in `crew_chat.py`: `_DECISION_TIMEOUT`
-45s, `_DECIDE_MAX_ATTEMPTS` 3 (a pass that settles nothing eventually fails the
-entry visibly, because silence is the one outcome the user cannot act on),
-`_QUEUE_TERMINAL_CAP` 200 and `_TOPIC_IDLE_CAP` 200 (a running or held topic is
-never pruned).
-
-## Failure modes
-
-- **A broken store file is fatal, not empty.** `CrewStore._load` treats only
-  `FileNotFoundError` as "nothing enqueued yet". Collapsing every read error to
-  `[]` made the next `save()` write that emptiness back, erasing pending
-  requests and undelivered forwards. A wedged slot is recoverable; an erased
-  queue is not.
-- **Writes never block the loop.** A two-lock split keeps the sequence
-  bookkeeping off the disk path, so a slow filesystem cannot stall unrelated
-  chats; `wait_writes` and `wait_for` are how a caller awaits a specific write.
-- **A permanent delete is remembered.** `purge_slot` marks the key so an
-  in-flight decision pass cannot dispatch into a deleted conversation, and only
-  a fresh request clears the mark.
-- **Restart reconciliation adopts, it does not re-run.** `resume_persisted_slots`
-  reads store directories, recovers each exact key, and reconciles claimed
-  entries against live runs and durable evidence.
-- **A temporary slot does not leak memory.** Crew dispatch forwards the slot's
-  `blocks_reads` flag, so a temporary crew slot injects no stored memory or
-  lessons into the subagents it spawns.
-- **An unreadable member rules file stops the member.** `read_member_rules`
-  raises `MemberRulesUnreadable` for a file that exists but cannot be parsed, and
-  `member_turn_context` guarantees every member turn either delivers the current
-  section or runs the standalone fail-closed rules read.
 
 ## Boundaries
 
@@ -251,15 +467,45 @@ never pruned).
 | Test | What it holds |
 |---|---|
 | `test/test_select_crew.py` | Roster excludes the default crew and every triggerless crew, carries `default_agent` plus guidance; a named crew returns its bindings; an unknown name returns `error` plus `available`; the schema accepts spaces and dots in a crew name |
-| `test/test_crew_chat.py` | Store round-trip and persistence, dots-only and dot-bearing key handling, the durable-read boundary, ingest enqueue/ack/schedule ordering, write-failure rollback, and that an unreadable store file is not read as empty |
-| `test/test_crew_http.py` | Interleaved messages end to end, completion forwarding and held dispatch, mode-switch refusals (bad mode, app-owned slot, unstorable name), the busy/idle switch guard, and that a refused ingest is not a 200 |
-| `test/test_crew_store_read_retry.py`, `test/test_crew_store_write_retry.py` | Retrying reader and writer behaviour around the atomic store files |
 | `test/test_crew_reasoning_effort.py` | Per-crew effort reaches a crew dispatch |
 | `test/test_members.py`, `test/test_members_dm_thread.py` | Slug validation and containment, activity recording and dedupe, DM-binding canonicality, rules and briefing reads |
 | `test/test_chat_send_agent_model_default.py` | The crew model default a new session starts on |
 
-## Design of record
+## Retired: Crew Mode
 
-[`../../request-for-change/rfc-orchestrator-chat-sessions.md`](../../request-for-change/rfc-orchestrator-chat-sessions.md)
-carries the intent behind the Crew Mode control plane. This spec is the contract
-for what ships.
+Crew Mode was the `"crew"` chat-slot mode: one session whose messages became
+durable queue entries, a single-flight decision agent that routed each to a
+topic, and one continuable sub-session per topic, with results forwarded back
+under `↩ re:` attribution. Its control plane lived in `crew_chat.py`; its
+design of record is
+[`../../request-for-change/rfc-orchestrator-chat-sessions.md`](../../request-for-change/rfc-orchestrator-chat-sessions.md).
+
+It retired in favour of the Crew Members page, which inverts the model: instead
+of one nameless session fanning out to topics, each crew is a named member with
+its own standing thread. What remains, and why:
+
+- **No ingress.** `"crew"` is in neither `_CREATABLE_MODES` (`chat_handlers`)
+  nor `_VALID_MODES` (`chat_folders`) nor the fork override allowlist, so a
+  session can no longer be born or switched into it. A caller still sending
+  `mode: "crew"` on auto-create gets a plain slot (the value is dropped like any
+  unknown mode); on the create and switch endpoints it is `invalid_mode`.
+- **Existing sessions come back as plain chat.** `chat_persistence._restored_mode`
+  maps a persisted `mode: "crew"` to `""` on both restore paths. The transcript
+  is untouched and still renders; nothing is migrated and nothing is deleted.
+  The store the mode kept under `<data home>/crew/<folded key>-<digest>/`
+  (`queue.json`, `topics.json`, `forwards.json`, `slot_key`) held only routing
+  state — it is neither read nor removed, and a reader who wants the disk back
+  may delete that directory by hand.
+- **Old transcripts keep their shape.** The frontend's `TurnBlock.isCrewReply`
+  still honours the persisted `meta.crew_reply` marker so a forwarded topic
+  answer in an old session renders outside the collapse pane, as it did when it
+  was written. Nothing writes the marker any more.
+- **The autonudge crew/member boundary keeps its vocabulary.** `autonudge_authz`
+  still lists `"crew"` beside `"member"` in the modes that refuse an outside
+  arm. With no slot able to carry the mode the entry is unreachable, and it is
+  left in place rather than re-litigating a security boundary in a removal PR.
+
+The sidebar's create-menu entry that used to create a crew-mode session is now
+a "Crew Members" door: it opens `/members` when `PREVIEW_CREW` (Settings →
+Developer → Feature Previews) is on and lands on that flag's card when it is
+off.

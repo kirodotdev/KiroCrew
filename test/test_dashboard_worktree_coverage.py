@@ -54,7 +54,10 @@ class FakeGit:
         self.default = default
         self.calls: list[tuple[tuple[str, ...], str]] = []
 
-    def __call__(self, args, cwd):
+    def __call__(self, args, cwd, *, stdout_decoder=None):
+        # ``stdout_decoder`` mirrors the real ``_run_git`` signature; the
+        # table's canned stdout is already a str, which every decoder passes
+        # through unchanged, so the double records the call and ignores it.
         self.calls.append((tuple(args), cwd))
         for prefix, result in self.table.items():
             if tuple(args[: len(prefix)]) == tuple(prefix):
@@ -324,63 +327,83 @@ class TestWorktreeBranches:
         assert wt._worktree_branches("/srv/repo") == {}
 
 
-class TestWorktreeConfigActive:
+class TestWorktreeExtensionOn:
     def test_extension_probe_failure_is_false(self, git):
-        git.table = {("config", "--bool"): (1, "", "")}
-        assert wt._worktree_config_active("/srv/repo") is False
+        git.table = {("config", "--local", "--includes", "--bool"): (1, "", "")}
+        assert wt._worktree_extension_on("/srv/repo") is False
 
     def test_extension_disabled_is_false(self, git):
-        git.table = {("config", "--bool"): (0, "false\n", "")}
-        assert wt._worktree_config_active("/srv/repo") is False
+        git.table = {("config", "--local", "--includes", "--bool"): (0, "false\n", "")}
+        assert wt._worktree_extension_on("/srv/repo") is False
 
-    def test_unlocatable_git_dir_fails_open_to_true(self, git):
-        """Cannot find GIT_DIR: assume the scope is live so the probe fails closed."""
+    def test_extension_enabled_is_true(self, git):
+        git.table = {("config", "--local", "--includes", "--bool"): (0, "true\n", "")}
+        assert wt._worktree_extension_on("/srv/repo") is True
+
+
+class TestWorktreeProbeFailureClassifier:
+    """`_worktree_probe_failure_is_empty_scope` runs only AFTER a --worktree
+    probe failed; True clears the failure as the empty scope, False keeps the
+    caller's refusal."""
+
+    def test_unlocatable_git_dir_keeps_the_refusal(self, git):
+        """Cannot find GIT_DIR: absence cannot be confirmed, so fail closed."""
         git.table = {
-            ("config", "--bool"): (0, "true\n", ""),
             ("rev-parse", "--absolute-git-dir"): (128, "", "fatal"),
         }
-        assert wt._worktree_config_active("/srv/repo") is True
+        assert wt._worktree_probe_failure_is_empty_scope("/srv/repo") is False
 
-    def test_blank_git_dir_is_also_true(self, git):
+    def test_whitespace_stdout_reaches_the_classifier_unstripped(self, git, monkeypatch):
+        """A SUCCESSFUL rev-parse whose stdout is whitespace names a real
+        (odd) relative dir. The wrapper's one job is pass-through: hand the
+        classifier git's stdout EXACTLY as printed — never stripped, never
+        collapsed to the ``""`` unlocatable sentinel, which is reserved for a
+        FAILED rev-parse. The classifier owns the terminator trim; its
+        whitespace/CR handling is pinned platform-neutrally in
+        ``test_git_worktree_scope.py``."""
+        seen: list[tuple[str, str]] = []
+
+        def classify(gitdir, base):
+            seen.append((gitdir, base))
+            return False
+
+        monkeypatch.setattr(wt, "worktree_probe_failure_is_empty_scope", classify)
         git.table = {
-            ("config", "--bool"): (0, "true\n", ""),
             ("rev-parse", "--absolute-git-dir"): (0, "  \n", ""),
         }
-        assert wt._worktree_config_active("/srv/repo") is True
+        assert wt._worktree_probe_failure_is_empty_scope("/srv/repo") is False
+        assert seen == [("  \n", "/srv/repo")]
 
-    def test_absolute_git_dir_with_the_file_present(self, git, tmp_path):
+    def test_file_present_keeps_the_refusal(self, git, tmp_path):
         gitdir = tmp_path / "dotgit"
         gitdir.mkdir()
         (gitdir / "config.worktree").write_text("", encoding="utf-8", newline="\n")
         git.table = {
-            ("config", "--bool"): (0, "true\n", ""),
             ("rev-parse", "--absolute-git-dir"): (0, f"{gitdir}\n", ""),
         }
-        assert wt._worktree_config_active(str(tmp_path)) is True
+        assert wt._worktree_probe_failure_is_empty_scope(str(tmp_path)) is False
 
-    def test_absolute_git_dir_without_the_file(self, git, tmp_path):
+    def test_file_absent_is_the_empty_scope(self, git, tmp_path):
         gitdir = tmp_path / "dotgit"
         gitdir.mkdir()
         git.table = {
-            ("config", "--bool"): (0, "true\n", ""),
             ("rev-parse", "--absolute-git-dir"): (0, f"{gitdir}\n", ""),
         }
-        assert wt._worktree_config_active(str(tmp_path)) is False
+        assert wt._worktree_probe_failure_is_empty_scope(str(tmp_path)) is True
 
     def test_relative_git_dir_is_joined_to_the_root(self, git, tmp_path):
         root = tmp_path / "proj"
         (root / ".git").mkdir(parents=True)
         (root / ".git" / "config.worktree").write_text("", encoding="utf-8", newline="\n")
         git.table = {
-            ("config", "--bool"): (0, "true\n", ""),
             ("rev-parse", "--absolute-git-dir"): (0, ".git\n", ""),
         }
-        assert wt._worktree_config_active(str(root)) is True
+        assert wt._worktree_probe_failure_is_empty_scope(str(root)) is False
 
 
 class TestCheckoutFilter:
     def test_no_filter_keys_is_clean(self, git, monkeypatch):
-        monkeypatch.setattr(wt, "_worktree_config_active", lambda root: False)
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: False)
         git.table = {("config",): (0, "core.bare\nremote.origin.url\n", "")}
         assert wt._checkout_filter("/srv/repo") == ""
 
@@ -395,28 +418,28 @@ class TestCheckoutFilter:
         ],
     )
     def test_filter_driver_keys_are_reported(self, git, monkeypatch, key):
-        monkeypatch.setattr(wt, "_worktree_config_active", lambda root: False)
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: False)
         git.table = {("config",): (0, f"core.bare\n  {key}  \n", "")}
         assert wt._checkout_filter("/srv/repo") == key
 
     @pytest.mark.parametrize("key", ["filter.evil.required", "filterfoo.process", "filter.x"])
     def test_non_driver_keys_are_ignored(self, git, monkeypatch, key):
-        monkeypatch.setattr(wt, "_worktree_config_active", lambda root: False)
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: False)
         git.table = {("config",): (0, f"{key}\n", "")}
         assert wt._checkout_filter("/srv/repo") == ""
 
     def test_reported_key_is_truncated(self, git, monkeypatch):
-        monkeypatch.setattr(wt, "_worktree_config_active", lambda root: False)
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: False)
         git.table = {("config",): (0, "filter." + "n" * 400 + ".smudge\n", "")}
         assert len(wt._checkout_filter("/srv/repo")) == 120
 
     def test_unreadable_scope_fails_closed(self, git, monkeypatch):
-        monkeypatch.setattr(wt, "_worktree_config_active", lambda root: False)
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: False)
         git.table = {("config",): (128, "", "unable to read config file")}
         assert wt._checkout_filter("/srv/repo") == wt._FILTER_PROBE_FAILED
 
     def test_worktree_scope_is_probed_when_active(self, git, monkeypatch):
-        monkeypatch.setattr(wt, "_worktree_config_active", lambda root: True)
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: True)
         git.table = {
             ("config", "--worktree"): (0, "filter.sneaky.smudge\n", ""),
             ("config", "--local"): (0, "core.bare\n", ""),
@@ -425,8 +448,47 @@ class TestCheckoutFilter:
         assert git.ran("config", "--local", "--includes", "--name-only", "--list")
         assert git.ran("config", "--worktree", "--includes", "--name-only", "--list")
 
+    def test_worktree_probe_failure_on_absent_file_is_clean(self, git, monkeypatch):
+        """Extension on, config.worktree never created: the probe fails, the
+        classifier confirms the empty scope, and the repo reads filter-free."""
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: True)
+        monkeypatch.setattr(
+            wt, "_worktree_probe_failure_is_empty_scope", lambda root: True
+        )
+        git.table = {
+            ("config", "--worktree"): (128, "", "unable to read config file"),
+            ("config", "--local"): (0, "core.bare\n", ""),
+        }
+        assert wt._checkout_filter("/srv/repo") == ""
+        assert git.ran("config", "--worktree", "--includes", "--name-only", "--list")
+
+    def test_worktree_probe_failure_with_file_present_fails_closed(
+        self, git, monkeypatch
+    ):
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: True)
+        monkeypatch.setattr(
+            wt, "_worktree_probe_failure_is_empty_scope", lambda root: False
+        )
+        git.table = {
+            ("config", "--worktree"): (128, "", "bad config line 1"),
+            ("config", "--local"): (0, "core.bare\n", ""),
+        }
+        assert wt._checkout_filter("/srv/repo") == wt._FILTER_PROBE_FAILED
+
+    def test_local_probe_failure_never_consults_the_classifier(self, git, monkeypatch):
+        """A --local failure always refuses: the empty-scope classification is
+        a --worktree-only ruling, because only that file is created lazily."""
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: False)
+        monkeypatch.setattr(
+            wt,
+            "_worktree_probe_failure_is_empty_scope",
+            lambda root: (_ for _ in ()).throw(AssertionError("classifier consulted")),
+        )
+        git.table = {("config",): (128, "", "unable to read config file")}
+        assert wt._checkout_filter("/srv/repo") == wt._FILTER_PROBE_FAILED
+
     def test_worktree_scope_is_skipped_when_inactive(self, git, monkeypatch):
-        monkeypatch.setattr(wt, "_worktree_config_active", lambda root: False)
+        monkeypatch.setattr(wt, "_worktree_extension_on", lambda root: False)
         git.table = {("config",): (0, "", "")}
         assert wt._checkout_filter("/srv/repo") == ""
         assert not git.ran("config", "--worktree", "--includes", "--name-only", "--list")

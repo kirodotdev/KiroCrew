@@ -18,16 +18,19 @@ from types import SimpleNamespace
 import pytest
 
 from conftest import requires_symlinks
+from kiro_crew import agent_state
 from kiro_crew.agent_discovery import (
     SCOPE_GLOBAL,
     SCOPE_PROJECT,
     AgentInfo,
+    AmbiguousAgentSpecError,
     clear_list_agents_cache,
     clear_project_agent_cache,
     list_agents,
     project_agent_files,
     project_agent_name,
     project_agent_names,
+    spec_by_declared_name,
 )
 
 # caplog collects records from EVERY logger, not just the one at_level() names, so
@@ -372,8 +375,9 @@ class TestListAgentsRobustness:
     def test_skips_non_dict_mcp_servers(self, tmp_path: Path) -> None:
         """list_agents must not crash when mcpServers is a list instead of a dict.
 
-        AttributeError: 'list' object has no attribute 'keys' previously escaped
-        the except clause, aborting the entire loop and dropping all sibling agents.
+        A non-dict ``mcpServers`` raises AttributeError: 'list' object has no
+        attribute 'keys'; the except clause must catch it so the loop keeps every
+        sibling agent.
         """
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
@@ -524,9 +528,13 @@ class TestSpecModelCoercion:
         assert info.model == "auto"
         assert info.source == "builtin"
         assert info.package == ""
-        # to_dict() is the wire shape the dashboard renders.
+        # to_dict() is the wire shape the dashboard renders. Non-string fields
+        # are excluded by NAME, not skipped silently: the lists render as chips
+        # (one element each) and `kirocrew_owned` is the bool provenance flag —
+        # everything else must be a plain string or React error #31 returns.
         assert all(isinstance(v, str) for k, v in info.to_dict().items() if k not in
-                   ("skills", "mcp_servers"))
+                   ("skills", "mcp_servers", "kirocrew_owned"))
+        assert isinstance(info.to_dict()["kirocrew_owned"], bool)
 
     def test_list_fields_drop_only_the_unusable_elements(self) -> None:
         """`skills` / `mcp_servers` are rendered as chips, one element each.
@@ -697,9 +705,9 @@ class TestListAgentsDedup:
         Package managers publish a locally-built package as BOTH
         ``{package}-{name}.json`` and ``local-{package}-{name}.json``. Since the
         ``local-`` prefix is stripped from the package name, the twins collide on
-        the same (name, package) — an expected layout, not an anomaly. This
-        previously logged a self-contradictory "from packages 'X' and 'X'"
-        WARNING per agent per scan.
+        the same (name, package) — an expected layout, not an anomaly, so it
+        must not log a self-contradictory "from packages 'X' and 'X'" WARNING
+        per agent per scan.
         """
         agents_dir = tmp_path / "agents"
         agents_dir.mkdir()
@@ -864,8 +872,8 @@ class TestSystematicScanFailureWarning:
 
     Regression: `_read_agent_spec` degrades per file to ``None`` at debug level, so
     a systematic refusal (e.g. the trusted-root gate rejecting an entire home
-    layout, issue #6721) was indistinguishable at default log levels from an empty
-    agents directory — discovery listed nothing and nothing said why (#6727).
+    layout) is indistinguishable at default log levels from an empty
+    agents directory — discovery lists nothing and nothing says why.
     """
 
     def test_all_unreadable_user_specs_emit_one_warning(self, fake_home, caplog):
@@ -918,7 +926,7 @@ class TestSystematicScanFailureWarning:
 
     def test_project_agent_names_warns_on_systematic_failure(self, tmp_path, caplog):
         """The per-turn resolver's scan warns too — this is the exact path whose
-        silence let model resolution fall back to auto in #6721."""
+        silence lets model resolution fall back to auto."""
         proj = tmp_path / "repo"
         pd = _project_agents_dir(proj)
         (pd / "bad.json").write_text("{broken")
@@ -968,3 +976,121 @@ class TestSystematicScanFailureWarning:
         warnings = _discovery_warnings(caplog)
         assert len(warnings) == 1
         assert warnings[0].args[0] == 1
+
+
+class TestForkLineageEnrichment:
+    """list_agents stamps forked_from/private_to onto global-scope rows from the
+    agent_state sidecar (global scope only — forks are recorded against
+    user-level templates). The sidecar lives under the isolated KIROCREW_HOME."""
+
+    def test_forked_row_is_enriched(self, tmp_path):
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "design-crew.json").write_text(json.dumps({"name": "design-crew"}))
+        (d / "plain.json").write_text(json.dumps({"name": "plain"}))
+        agent_state.set_fork_info("design-crew", forked_from="kirocrew", private_to="design-crew")
+
+        clear_list_agents_cache()
+        by_name = {a.name: a for a in list_agents(agents_dir=d)}
+
+        assert by_name["design-crew"].forked_from == "kirocrew"
+        assert by_name["design-crew"].private_to == "design-crew"
+        # An un-forked sibling keeps the empty defaults.
+        assert by_name["plain"].forked_from == ""
+        assert by_name["plain"].private_to == ""
+
+    def test_unforked_rows_have_empty_lineage_when_no_sidecar(self, tmp_path):
+        d = tmp_path / "agents"
+        d.mkdir()
+        (d / "solo.json").write_text(json.dumps({"name": "solo"}))
+
+        clear_list_agents_cache()
+        (agent,) = list_agents(agents_dir=d)
+        assert agent.forked_from == ""
+        assert agent.private_to == ""
+
+
+class TestSpecByDeclaredName:
+    """The shared declared-name scan two session-start surfaces resolve through."""
+
+    @staticmethod
+    def _write(agents_dir: Path, filename: str, **fields: object) -> Path:
+        path = agents_dir / filename
+        path.write_text(json.dumps({"name": "kirocrew", **fields}), encoding="utf-8")
+        return path
+
+    def test_a_namespaced_spec_resolves_by_its_declared_name(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "SomePackage-kirocrew.json", description="namespaced")
+
+        spec = spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert spec is not None and spec["description"] == "namespaced"
+
+    def test_no_declared_match_is_none(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "SomePackage-other.json", name="other")
+        (tmp_path / "other.json").write_text(json.dumps({"name": "other"}), encoding="utf-8")
+
+        assert spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test") is None
+
+    def test_two_specs_declaring_one_name_are_refused_naming_both(self, tmp_path: Path) -> None:
+        self._write(tmp_path, "Alpha-kirocrew.json")
+        self._write(tmp_path, "Beta-kirocrew.json")
+
+        with pytest.raises(AmbiguousAgentSpecError) as exc:
+            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert "Alpha-kirocrew.json" in str(exc.value)
+        assert "Beta-kirocrew.json" in str(exc.value)
+
+    def test_only_the_first_matching_parse_is_held(self, tmp_path: Path, monkeypatch) -> None:
+        """The refusal needs the duplicates' PATHS, not their parses.
+
+        Each file is capped by the reader, so the parsed-spec memory the scan
+        holds at its peak is set by how many parses it keeps at once. Holding
+        one per match makes that the number of same-name files in a
+        user-writable directory times the cap; holding one total makes it the
+        cap. (Paths are kept one per candidate either way; they are small and
+        the refusal message needs them.) The bound is a property of
+        the scan WHILE it runs -- once it raises, any list it held dies with its
+        frame either way -- so the probe sits inside the reader: on every read,
+        each earlier parse except the first and the one the loop body last
+        assigned must already be unreachable.
+        """
+        import gc
+        import weakref
+
+        from kiro_crew import agent_discovery
+
+        class _Spec(dict):
+            """A dict that can be weakly referenced."""
+
+        for stem in ("Alpha", "Beta", "Gamma", "Delta"):
+            self._write(tmp_path, f"{stem}-kirocrew.json")
+
+        handed_out: list[weakref.ref] = []
+        retained_mid_scan: list[str] = []
+
+        def _reader(path: Path, *, operation: str, source: str) -> dict:
+            # Reads 0..n-2 are done; read n-2's parse is still the loop's own
+            # ``spec`` local until this call returns, so it is exempt. Read 0 is
+            # the match the scan may return, so it is exempt. Everything else
+            # must be gone.
+            gc.collect()
+            for ref in handed_out[1:-1]:
+                spec = ref()
+                if spec is not None:
+                    retained_mid_scan.append(spec["origin"])
+            spec = _Spec(name="kirocrew", origin=path.name)
+            handed_out.append(weakref.ref(spec))
+            return spec
+
+        monkeypatch.setattr(agent_discovery, "_read_agent_spec", _reader)
+
+        with pytest.raises(AmbiguousAgentSpecError) as exc:
+            spec_by_declared_name(tmp_path, "kirocrew", operation="t", source="test")
+
+        assert len(handed_out) == 4, "the scan must have read every candidate"
+        assert retained_mid_scan == [], f"parses held past their read: {retained_mid_scan}"
+        # The refusal still names every duplicate: paths are kept, parses are not.
+        for stem in ("Alpha", "Beta", "Gamma", "Delta"):
+            assert f"{stem}-kirocrew.json" in str(exc.value)

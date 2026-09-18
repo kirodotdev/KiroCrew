@@ -120,11 +120,9 @@ class TestTheRuleCoversEveryArchiveDerivedPrint:
     def test_the_helper_escapes_control_bytes_and_keeps_printable_text(self):
         """The escaping property itself, asserted directly on `_safe_name`.
 
-        This used to compare `_safe_name` against a shared sanitiser that lived beside the
-        off-host destination code; that helper is gone and the escaping now lives inside
-        `_safe_name`. The property is unchanged: every control byte is rendered as a
-        visible `\\xNN` escape so it cannot drive the terminal, while ordinary printable
-        text is left intact and an empty value falls back.
+        `_safe_name` owns the escaping property directly. Every control byte is
+        rendered as a visible `\\xNN` escape so it cannot drive the terminal, while
+        ordinary printable text is left intact and an empty value falls back.
         """
         got = snap._safe_name(EVIL)
         # No raw control byte survives -- neither the cursor-up escape nor the CR.

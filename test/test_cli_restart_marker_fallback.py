@@ -160,3 +160,79 @@ def test_restart_refuses_spawn_after_blind_authenticated_shutdown(
     audit = mock_sel.log_api_access.call_args.kwargs
     assert audit["outcome"] == "denied"
     assert "reason=shutdown_ack_listener_lookup_blind" in audit["resources"]
+
+
+def test_restart_refuses_spawn_when_the_lock_is_still_held_after_the_incumbent_exits(
+    capsys,
+) -> None:
+    """The listener exited, yet ``gateway.lock`` is still held -- a child that
+    inherited the descriptor. The re-probe right before the spawn sees the live
+    holder and refuses; nothing is spawned into a lock that would reject it."""
+    from kiro_crew import cli_server
+    from kiro_crew.gateway_lock import LockHolder
+
+    mock_sel = MagicMock()
+    with (
+        patch("kiro_crew.cli_server.resolve_client_port", return_value=7777),
+        patch("kiro_crew.cli_server.service_controller.restart_service", return_value=False),
+        patch("kiro_crew.cli_server.service_controller.is_service_active", return_value=False),
+        patch("kiro_crew.cli_server.run_marker.read_pid", return_value=4242),
+        patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[4242]),
+        patch(
+            "kiro_crew.cli_server.platform_compat.listening_pid_tool_available", return_value=True
+        ),
+        patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+        patch("kiro_crew.cli_server._stop"),
+        patch("kiro_crew.cli_server._wait_for_pids_exit", return_value=[]),
+        patch(
+            "kiro_crew.cli_server.lock_holder",
+            return_value=LockHolder(pid=4300, alive=True, source="flock_owner"),
+        ),
+        patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+        patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cli_server._restart(None)
+
+    assert exc.value.code == 1
+    mock_spawn.assert_not_called()
+    assert "4300" in capsys.readouterr().out
+    audit = mock_sel.log_api_access.call_args.kwargs
+    assert audit["outcome"] == "denied"
+    assert "reason=lock_holder_" in audit["resources"]
+
+
+def test_restart_refuses_spawn_when_the_lock_probe_is_indeterminate_after_the_wait(
+    capsys,
+) -> None:
+    from kiro_crew import cli_server
+    from kiro_crew.gateway_lock import LockProbeError
+
+    mock_sel = MagicMock()
+    with (
+        patch("kiro_crew.cli_server.resolve_client_port", return_value=7777),
+        patch("kiro_crew.cli_server.service_controller.restart_service", return_value=False),
+        patch("kiro_crew.cli_server.service_controller.is_service_active", return_value=False),
+        patch("kiro_crew.cli_server.run_marker.read_pid", return_value=4242),
+        patch("kiro_crew.cli_server.platform_compat.find_listening_pids", return_value=[4242]),
+        patch(
+            "kiro_crew.cli_server.platform_compat.listening_pid_tool_available", return_value=True
+        ),
+        patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+        patch("kiro_crew.cli_server._stop"),
+        patch("kiro_crew.cli_server._wait_for_pids_exit", return_value=[]),
+        patch(
+            "kiro_crew.cli_server.lock_holder",
+            side_effect=LockProbeError("gateway.lock", OSError("held but unnameable")),
+        ),
+        patch("kiro_crew.cli_server._spawn_detached_gateway") as mock_spawn,
+        patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+    ):
+        with pytest.raises(SystemExit) as exc:
+            cli_server._restart(None)
+
+    assert exc.value.code == 1
+    mock_spawn.assert_not_called()
+    audit = mock_sel.log_api_access.call_args.kwargs
+    assert audit["outcome"] == "denied"
+    assert "reason=lock_probe_indeterminate" in audit["resources"]

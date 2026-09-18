@@ -37,6 +37,7 @@ interface, the public edition is complete standalone.
 | `publish` | adapter | `DefaultPublishRegistry` (registers no provider → publish unavailable) | registers enterprise artifact/publish providers |
 | `agent_runtime` | adapter | `DefaultAgentRuntime` (`run_first_run_setup` wired; `managed_mcp_servers` **RESERVED**) | extra one-time first-run provisioning |
 | `agent_executable` | adapter | `DefaultAgentExecutableResolver` (identity) | resolves an edition-managed launcher to its direct executable before core sandboxing |
+| `gateway_lifecycle` | adapter | `DefaultGatewayLifecycleProvider` (`restart_launcher()` → `None`) | stable absolute launcher for package-manager-owned gateway installs |
 | `sandbox` | settings | `DefaultSandboxPolicy` (`_STRICT_DIRS`/`_CC_DIRS`) | additional edition-specific credential dirs |
 | `credentials` | adapter | `DefaultCredentialPolicy` (AKIA/ASIA redaction; `exempt_exact_hosts()` → `frozenset()`) | internal token regexes + trusted-tenant exempt hosts |
 | `security` | **concrete** | `PolicyAuthority()` (baseline only) | `PolicyAuthority(overlay=…)` ADD-only |
@@ -92,6 +93,8 @@ interface, the public edition is complete standalone.
 > is added here; the existing EC2 lane carries none today, and a
 > `capabilities.remote_provisioners` row mirroring `capabilities.mobile_connect`
 > is the natural follow-up once a second lane exists to narrow on.
+>
+> Contributor walkthrough: [adding-a-remote-provisioner.md](../../guides/adding-a-remote-provisioner.md).
 
 > `external_access` note — three surfaces the core offers unconditionally, none of
 > which had a composition point. Two are installable-content registries: skill
@@ -317,6 +320,17 @@ Policy shape (`admission_policy.json`):
 }
 ```
 
+**Strict gate-flag reading.** `require_signature` and
+`require_policy_signature` are read strictly by `_coerce_flag`: a real JSON
+boolean is honoured, an absent key leaves the gate off (the documented
+default), and any other present value — explicit `null`, the string
+`"false"`, `0`, `1` — is warned about and read as **on**, the fail-closed
+direction (#9641). `bool()` on the raw value used to read any non-empty
+string as ON but `null`/`""` as OFF, so a template rendering
+`"require_policy_signature": null` silently disabled the gate. Same
+strict-read shape as the `boot` gate flags in
+[governance](governance.md) (#9176).
+
 **This policy is also the trust root for the security ceiling.**
 `require_policy_signature` (default `false`) additionally demands a *verified*
 `identity.signature` on `security_policy.json`, keyed by that document's
@@ -434,6 +448,40 @@ verdict needs no fold (`0.6.0` is not newer than `0.6.0.12`). The wheel's
 dist-info metadata is not touched by the stamp — `pip` and `importlib.metadata`
 still report the base — so a downstream that builds its own wheel and needs
 those to differ must bump its own project version as well.
+
+## Gateway restart launcher
+
+`PlatformContext.gateway_lifecycle` composes a `GatewayLifecycleProvider`.
+`restart_launcher() -> str | None` returns an absolute stable launcher pathname;
+`DefaultGatewayLifecycleProvider` returns `None`. A companion opts in through
+`dataclasses.replace(ctx, gateway_lifecycle=provider)` at its trusted composition
+root, only for installs its launcher owns. This is lifecycle selection, not an
+update authorization setting: no request, config or environment command selects
+it, and update governance is unchanged. `CONTRACT_VERSION` remains 1.
+
+`gateway_restart.resolve_restart_launcher()` is the shared selector for dashboard
+restart (including update apply) and the orchestrator's automatic-update restart.
+Both import it before an update can retire the running package tree and call it
+off-loop before saving or draining sessions. The provider must load its own
+dependencies at composition and return cheaply without deferred imports. A
+provider error or an explicit empty, relative, missing, non-file or non-executable
+target refuses restart; only `None` takes the existing `respawn_executable()` →
+`reexec_python_module()` path, including core-managed virtual environments.
+
+The core executes `[launcher, *sys.argv[1:]]` directly, without a shell or Python
+`-m` prefix, and never resolves the launcher's symlinks: dispatch may depend on
+its basename. `reexec_launcher` preserves the inherited environment, including
+instance home and port, while pinning Python's UTF-8 stream settings. The launcher
+owns choosing the current bundle/interpreter and replacing version-specific
+`PYTHONPATH` and other environment entries before loading that bundle. Windows
+launchers must be native `.exe` files; each argument is quoted for the CRT's
+`execv` command-line reconstruction. POSIX receives the original argv unchanged.
+The existing restart coalescing, callback fence and drain ordering remain with
+their callers. CLI service-manager restarts are independent and unchanged.
+
+Validation establishes availability at selection time, not future execution:
+an updater must keep the stable launcher usable through handoff. The core does
+not retry a failed explicit launcher with the old Python bundle.
 
 ## Consumption-site wiring
 
@@ -775,7 +823,13 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   `apps/registry.py::_effective_registries`, which is the single list every
   registry consumer reads (index fetch/refresh, the trusted-host allowlist, row
   lookup, install, the blob-proxy allowlist). Rows are the field shape of
-  `ExternalRegistryConfig` (`{name, repo, branch, trust}`). Unlike
+  `ExternalRegistryConfig` (`{name, repo, branch, label, review, trust}`).
+  `label` (a display name shown instead of the `name` id) and `review` (`""` /
+  `"curated"` / `"community"`, which badge the dashboard renders) are display-only
+  and change no security posture; an unrecognised `review` degrades to `""` (no
+  claim) and is logged, never dropping the row, since a display field must not be
+  able to remove a registry from install and the security gates. `label` never replaces
+  the id: cache paths and installed apps' `_registry` tags are keyed by it. Unlike
   `registry_rows`, the **edition row wins** a `name` collision — and when the two
   rows name DIFFERENT repositories, **neither** is served, because the index cache
   is keyed by name and the displaced row's cache would otherwise be read under the
@@ -986,10 +1040,12 @@ is byte-identical) with no `CONTRACT_VERSION` bump.
   > `query` is an optional free-text filter HINT, sent only by MCP discovery
   > search (`mcp_providers/capability.py`); the browse endpoint
   > `GET /api/capability/mcp/registry` omits it and gets the full listing. The
-  > provider consumes at most `_LIST_LIMIT_GUARD` (500) rows, so a manager whose
-  > registry is larger MUST filter server-side or every row past that cap is
-  > unsearchable. Ignoring the hint stays correct — the provider filters again —
-  > it only costs reach. The hint is feature-detected on the signature
+  > provider hands on at most `_LIST_LIMIT_GUARD` (500) entries, and when a query
+  > is present that cap applies to the MATCHES: it bounds the fan-out, never the
+  > searchable window. So a manager whose registry is larger than the cap does NOT
+  > have to filter server-side to stay searchable, and ignoring the hint costs
+  > nothing but the work of returning its own catalog — it is a cost hint, not a
+  > correctness one. The hint is feature-detected on the signature
   > (`mcp_utils.registry_accepts_query`) and forwarded by
   > `BoundedCapabilityManager`, so an edition still on the zero-arg signature
   > keeps working.

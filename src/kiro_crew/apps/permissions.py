@@ -9,6 +9,7 @@ import logging
 from dataclasses import dataclass, field
 from typing import Any
 
+from kiro_crew.apps.manager import get_app_manifest, is_app_enabled
 from kiro_crew.apps.manifest import AppManifest
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,34 @@ def check_tool_permission(app_name: str, tool_name: str, manifest: AppManifest) 
     if not manifest.permissions.mcpTools:
         return True  # no restrictions declared
     return tool_name in manifest.permissions.mcpTools
+
+
+def app_can_manage_session_approvals(app_name: str) -> bool:
+    """Return whether an enabled app holds the user-session control grant.
+
+    Read the live manifest on every decision. App tokens can outlive an enable
+    cycle, so a cached grant must not survive a disable or manifest edit.
+
+    Manifest FIRST, then ``enabled``. ``installed.json`` lives inside the app
+    directory and is retired together with the old tree, so while an update
+    swaps trees there is no metadata at all and ``enabled`` reads False; reading
+    it last means whichever manifest was seen, the enabled state that follows is
+    at least as new and cannot pair a widened grant with the pre-update state.
+    """
+    if not app_name:
+        return False
+    try:
+        manifest = get_app_manifest(app_name)
+        if not (manifest and manifest.permissions.sessionApproval):
+            return False
+        return is_app_enabled(app_name)
+    except Exception:
+        logger.warning(
+            "Could not resolve user-session control permission for app %s",
+            app_name,
+            exc_info=True,
+        )
+        return False
 
 
 def format_permissions_summary(manifest: AppManifest) -> str:

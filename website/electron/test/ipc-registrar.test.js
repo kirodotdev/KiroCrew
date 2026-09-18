@@ -18,6 +18,7 @@ const GATEWAY_SOURCE = fs.readFileSync(
 
 const SHELL_HANDLES = [
   "app-menu:items",
+  "browser:annotate",
   "browser:close",
   "browser:control",
   "browser:get-control",
@@ -320,6 +321,7 @@ function harness({
     "setControlOwner",
     "getControl",
     "control",
+    "annotate",
   ]) {
     windows.browser[name] = recordWindow(`browser.${name}`, { from: `browser.${name}` });
   }
@@ -450,13 +452,13 @@ test("registerShell owns the exact shell channel set and is idempotent", () => {
 
   assert.deepEqual([...h.handlers.keys()].sort(), SHELL_HANDLES);
   assert.deepEqual([...h.listeners.keys()].sort(), SHELL_LISTENERS);
-  assert.equal(h.handlers.size + h.listeners.size, 34);
+  assert.equal(h.handlers.size + h.listeners.size, 35);
 
   // boot-complete is a further non-update host channel, but it is deliberately
   // gateway-owned and scoped to a single connecting WebContents. Registering it
   // globally here would weaken its sender check and leak listeners.
   assert.match(GATEWAY_SOURCE, /ipcMain\.on\("boot-complete", onComplete\)/);
-  assert.equal(h.handlers.size + h.listeners.size + 1, 35);
+  assert.equal(h.handlers.size + h.listeners.size + 1, 36);
   assert.equal(h.handlers.has("boot-complete"), false);
   assert.equal(h.listeners.has("boot-complete"), false);
 
@@ -542,6 +544,7 @@ test("shell handlers preserve sender, argument, and return shapes", async () => 
     ["browser:set-control-owner", "setControlOwner", ["panel", "agent"]],
     ["browser:get-control", "getControl", ["panel"]],
     ["browser:control", "control", ["panel", "click", { x: 4 }]],
+    ["browser:annotate", "annotate", ["panel", "poll", {}]],
   ];
   for (const [channel, owner, args] of browserCases) {
     const result = await h.handlers.get(channel)(event, ...args);

@@ -7,7 +7,7 @@ resolved its path from the real ``Path.home()`` instead of honouring the
 the settings of the machine it runs on. This pins the resolution, so that
 regression cannot come back.
 
-The browsing half of this story is gone with the MCP proxy: browsing no longer
+The browsing half of this story is gone with the MCP proxy: browsing does not
 registers an MCP server at all, so there is no browse entry left to clobber.
 What remains, and is tested here, is the purge's path resolution.
 """
@@ -39,7 +39,7 @@ class TestThePurgeResolvesItsPathFromKiroHome:
         """Resolved per call, so the override works on an ALREADY-imported module.
 
         This asserted the module attribute and re-imported to prove an
-        import-time binding. That binding was the bug: issue #874's guard forbids
+        import-time binding. That binding was the bug: the guard forbids
         it precisely because the autouse home-isolation fixture runs *after*
         collection has imported the module, so it could not reach a frozen
         constant -- and an unpatched call would then rewrite the operator's real

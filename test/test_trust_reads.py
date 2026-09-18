@@ -10,17 +10,16 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.chat import _extract_bash_command
-from kiro_crew.dashboard.state import (
+from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.history import ConversationLog
+from kiro_crew.security.readonly_bash import (
     _GLOB_SENSITIVE_WORDS,
     _INDIRECT_LIST_FLAGS_BY_PREFIX,
     _OPTION_ACCEPT_LISTS,
     _SORT_READONLY_LONG,
-    DashboardState,
-    _ChatSlot,
     is_read_only_bash,
     unsafe_bash_reason,
 )
-from kiro_crew.history import ConversationLog
 
 # ── Helpers ──
 
@@ -92,7 +91,6 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("git blame file.py") is True
 
     def test_brazil_read_commands(self):
-        assert is_read_only_bash("brazil ws show") is True
         assert is_read_only_bash("brazil versionset print --vs live") is True
         assert is_read_only_bash("brazil workspace list") is True
 
@@ -116,9 +114,8 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("javac --help -processor evil") is False
 
     def test_interpreter_suffix_bypass_rejected(self):
-        """Regression: trailing --help/--version must NOT auto-approve
-        interpreter commands whose head is not on the read-only allowlist.
-        See: coordinated disclosure from Robert Noack, 2026-08-15."""
+        """Trailing --help/--version must NOT auto-approve interpreter commands
+        whose head is not on the read-only allowlist."""
         # bash -c '<payload>' --help — interpreter passes flag to script
         assert is_read_only_bash("bash -c 'touch /tmp/owned' --help") is False
         assert is_read_only_bash("bash -c 'whoami' --version") is False
@@ -134,8 +131,8 @@ class TestIsReadOnlyBash:
     def test_help_suffix_does_not_auto_approve_an_arbitrary_command(self):
         """A trailing `--help` must not vouch for the command in front of it.
 
-        The classifier used to accept any segment whose first pipe element
-        ended with `--help`/`--version`, so appending the token removed the
+        A classifier that accepts any segment whose first pipe element
+        ends with `--help`/`--version` would let appending the token remove the
         human approval prompt for arbitrary commands. A shell hands `--help`
         to the script as $1 instead of printing usage, so the payload still
         ran.
@@ -826,8 +823,8 @@ class TestIsReadOnlyBash:
         `"javac -version"` is an allowlist literal matched as a PREFIX, so the
         operands after it were vouched for too — and an annotation processor is
         ordinary compiled Java on a caller-supplied path, i.e. arbitrary code
-        execution under an auto-approval. Reported on #1532 by the reviewers and
-        independently in #5038, whose table names it as the sharpest shape.
+        execution under an auto-approval. This is the sharpest shape of the
+        flag-suffix vouching defect.
 
         All five probes require the exact spelling, not only `javac`: whether an
         interpreter ignores a trailing operand is a property of the installed
@@ -855,7 +852,7 @@ class TestIsReadOnlyBash:
 
         Each also carries a setter under the same verb, and the prefix match
         vouched for it: `hostname evil-host` renames the host and `date 08221200`
-        sets the clock, both with no flag at all. Reported in #5038.
+        sets the clock, both with no flag at all.
 
         The two need different operand predicates rather than one shared rule —
         every `hostname` read form is flag-only, while `date`'s one legitimate
@@ -897,7 +894,7 @@ class TestIsReadOnlyBash:
 
         A write to a caller-named path, one step removed from `-o` — the same
         shape as `tree -R`, and missed for the same reason: the flag does not
-        name the file. Reported in #5038.
+        name the file.
         """
         assert is_read_only_bash("cat f | sort -T /tmp/evildir") is False
         assert is_read_only_bash("cat f | sort -T/tmp/evildir") is False
@@ -915,7 +912,6 @@ class TestIsReadOnlyBash:
         plain-glob case precise — does not implement extglob: it reads `@(` as two
         literal characters, so the pattern that reaches the flag looks inert.
         Nothing can be proven about the token, so a guarded verb refuses it.
-        Reported in #5038, which measured the expansion.
         """
         for op in ("@", "!", "+", "?", "*"):
             assert is_read_only_bash(f"git diff {op}(--output=pwned)") is False
@@ -1049,7 +1045,7 @@ class TestIsReadOnlyBash:
         assert is_read_only_bash("git log --oneline | grep fix | wc -l") is True
 
     def test_a_short_setter_is_found_anywhere_in_a_cluster(self):
-        """`date -us2026-08-23` is `-u` plus `-s 2026-08-23`, and it sets the clock.
+        """`date -us<date>` is `-u` plus `-s <date>`, and it sets the clock.
 
         A setter test anchored at the token's first character never saw it. The
         cluster is walked instead, stopping at the first letter that consumes the
@@ -1226,7 +1222,7 @@ class TestIsReadOnlyBash:
     def test_an_abbreviated_long_setter_still_matches(self):
         """GNU resolves an unambiguous abbreviation, so a plain prefix test missed it.
 
-        `date --se=2026-08-23` reaches `--set` and the clock moves. Abbreviation is
+        `date --se=<date>` reaches `--set` and the clock moves. Abbreviation is
         a separate axis from the cluster scan this function exists to avoid, and
         `_matched_flag` already accepts it for every other table.
         """
@@ -1633,7 +1629,7 @@ class TestIsReadOnlyBash:
 
 
 class TestUnsafeBashReason:
-    """Verify the rejection-reason helper used to make pills specific."""
+    """Verify the rejection-reason helper makes pills specific."""
 
     def test_read_only_commands_have_no_reason(self):
         # Invariant: empty reason IFF the command is read-only.

@@ -16,6 +16,7 @@ interface RawSchemaEntry {
   tags?: string[]
   enumValues?: string[]
   defaultValue?: unknown
+  requiresRestart?: boolean
 }
 
 async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
@@ -32,6 +33,9 @@ async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
       tags: entry.tags,
       enum: entry.enumValues ?? undefined,
       default: entry.defaultValue,
+      // Carried through as-is: the backend omits the key for every hot field, so
+      // `undefined` and `false` both mean "applies live".
+      requiresRestart: entry.requiresRestart === true ? true : undefined,
     })
   }
   return map
@@ -48,10 +52,20 @@ async function fetchConfigSchema(): Promise<Map<string, SchemaEntry>> {
  * On fetch failure, react-query retries with default exponential backoff.
  */
 export function useConfigSchema(): Map<string, SchemaEntry> | undefined {
-  const { data } = useQuery<Map<string, SchemaEntry>>({
+  return useConfigSchemaQuery().schema
+}
+
+/**
+ * The same query with its failure exposed. A caller that renders a schema-driven
+ * affordance (the restart badge) must be able to tell "still loading" from
+ * "failed": the first is honestly nothing-yet, the second is an error the user
+ * is owed through `ErrorNotice` rather than a silently missing hint.
+ */
+export function useConfigSchemaQuery(): { schema: Map<string, SchemaEntry> | undefined; error: Error | null } {
+  const { data, error } = useQuery<Map<string, SchemaEntry>>({
     queryKey: ['config-schema'],
     queryFn: fetchConfigSchema,
     staleTime: Infinity,
   })
-  return data
+  return { schema: data, error: error ?? null }
 }

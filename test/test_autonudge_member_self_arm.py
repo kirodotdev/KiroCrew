@@ -621,6 +621,7 @@ class TestFireTimeModeRecheck:
         slot.running = False
         slot._in_stage_execution = False
         slot._closing = False
+        slot.is_closing = False
         slot.mode = mode
         slot.memory_mode = "persistent"
         return slot

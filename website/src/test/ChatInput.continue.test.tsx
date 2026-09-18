@@ -98,7 +98,7 @@ describe('ChatInput continue affordance', () => {
     // the tooltip, not in the label, so the control never renames itself under
     // the user between two states that both mean "hand it back to the agent".
     expect(screen.getByRole('button', { name: 'Resume' })).toBeInTheDocument()
-    expect(screen.getByTestId('composer-continue')).toHaveAttribute('title', 'Continue the interrupted turn')
+    expect(screen.getByTestId('composer-continue')).toHaveAttribute('title', 'Resume the interrupted turn')
   })
 
   it('keeps the ordinary placeholder when the turn is not resumable', () => {

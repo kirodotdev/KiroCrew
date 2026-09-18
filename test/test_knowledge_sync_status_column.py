@@ -1,6 +1,6 @@
 """The sources.sync_status COLUMN is the single source of truth.
 
-A source's sync state used to live in two places: the ``sources.sync_status``
+A source's sync state could live in two places: the ``sources.sync_status``
 column and a ``sync_status`` key inside the ``properties`` JSON blob. Writers
 were split across the two -- most transitions wrote the column only, while the
 watcher's 'missing' marker went into the blob only -- and readers were split the
@@ -19,7 +19,9 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from kiro_crew.knowledge.ingestion import IngestionPipeline
 from kiro_crew.knowledge.store import KnowledgeStore
+from kiro_crew.knowledge.sync import SyncScheduler
 from kiro_crew.knowledge.watcher import KnowledgeWatcher
 
 
@@ -39,6 +41,20 @@ def _watcher(store) -> KnowledgeWatcher:
     # and it would put rows in the table the assertions do not expect.
     watcher._maybe_reembed_stale = AsyncMock()  # type: ignore[method-assign]
     return watcher
+
+
+def _gated_pipeline(store) -> IngestionPipeline:
+    """A pipeline whose ingestion gate is the real one over *store*."""
+    pipeline = IngestionPipeline.__new__(IngestionPipeline)
+    pipeline.store = store
+    pipeline.embedder = None
+    return pipeline
+
+
+def _window_probe(store, seen: list[bool]):
+    """Record whether a maintenance window can open right now."""
+    with store.maintenance_window(timeout=0.05) as quiescent:
+        seen.append(quiescent)
 
 
 def _status(store, sid: str) -> str:
@@ -64,8 +80,8 @@ class TestFolderPreScanSkip:
     async def test_a_paused_folder_is_not_walked(self, store, tmp_path):
         """A pause recorded in the column stops the sweep.
 
-        The skip used to read the properties copy, so a pause the column knew
-        about still walked and delete-reconciled the whole folder every sweep.
+        A skip reading the properties copy lets a pause the column knew about
+        still walk and delete-reconcile the whole folder every sweep.
         """
         folder = tmp_path / "vault"
         folder.mkdir()
@@ -333,3 +349,69 @@ class TestSingleFileMissingMarker:
         await watcher._scan()
 
         assert _status(store, sid) == "error"
+
+
+class TestSyncSourceHoldsTheGate:
+    """``sync_source`` holds the store's ingestion gate from its source lookup
+    through the pipeline call, so the connector fetch it awaits in between --
+    where an itemless row with a terminal status is otherwise an orphan to the
+    sweep -- keeps the sweep waiting."""
+
+    @pytest.mark.asyncio
+    async def test_the_gate_is_held_while_the_connector_fetches(self, store):
+        sid = store.add_source("remote", "webhook", "x://remote")
+        store.update_source(sid, sync_status="error")
+        seen: list[bool] = []
+        pipeline = _gated_pipeline(store)
+        pipeline.ingest_text = AsyncMock(return_value="job")  # type: ignore[method-assign]
+        pipeline.get_job_status = MagicMock(  # type: ignore[method-assign]
+            return_value={"items_processed": 1}
+        )
+        connector = MagicMock(detect_changes=AsyncMock(return_value=True))
+
+        async def _fetch(_source):
+            _window_probe(store, seen)
+            return "body text", {}
+
+        connector.fetch = AsyncMock(side_effect=_fetch)
+        sched = SyncScheduler(store, pipeline, {"webhook": connector})
+
+        res = await sched.sync_source(sid)
+
+        assert res["synced"] is True
+        assert seen == [False], "the maintenance window opened during the fetch"
+        _window_probe(store, seen)
+        assert seen[-1] is True, "the gate stayed held after sync_source returned"
+
+
+class TestSingleFileHoldsTheGate:
+    """The local_file loop holds the store's ingestion gate from the hash hop
+    through the pipeline call, so a changed row is never an orphan to the
+    sweep between the two."""
+
+    @pytest.mark.asyncio
+    async def test_the_gate_is_held_while_the_file_is_hashed(self, store, tmp_path):
+        here = tmp_path / "here.md"
+        here.write_text("# changed")
+        sid = store.add_source(
+            "here.md", "local_file", str(here), properties={"mtime": 1, "content_hash": "stale"}
+        )
+        store.update_source(sid, sync_status="error")
+        pipeline = _gated_pipeline(store)
+        pipeline.ingest_file = AsyncMock(return_value="job")  # type: ignore[method-assign]
+        watcher = KnowledgeWatcher(store=store, pipeline=pipeline)
+        watcher._maybe_reembed_stale = AsyncMock()  # type: ignore[method-assign]
+        seen: list[bool] = []
+        real_hash = watcher._hash_file
+
+        def _spy_hash(path):
+            _window_probe(store, seen)
+            return real_hash(path)
+
+        watcher._hash_file = _spy_hash  # type: ignore[method-assign]
+        await watcher._scan()
+
+        assert seen == [False], "the maintenance window opened during the hash"
+        pipeline.ingest_file.assert_awaited_once()
+        _window_probe(store, seen)
+        assert seen[-1] is True, "the gate stayed held after the sweep"

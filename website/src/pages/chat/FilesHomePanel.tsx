@@ -1,9 +1,12 @@
 import { useTranslation } from 'react-i18next'
 import { useQueryClient } from '@tanstack/react-query'
-import { FileText, RotateCw, ExternalLink } from 'lucide-react'
+import { FileText, ExternalLink, TerminalSquare, MoreHorizontal } from 'lucide-react'
 import { useBranding } from '../../hooks/useBranding'
 import { revealOrOpen, useRevealFailure, useRevealLabel } from '../../components/FilePathMenu'
 import ErrorNotice from '../../components/ErrorNotice'
+import {
+  DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem,
+} from '../../components/ui/dropdown-menu'
 import FileBrowserRail, { useTreeState } from './FileBrowserRail'
 
 /** Last path segment, trailing slashes ignored. */
@@ -20,13 +23,24 @@ function basename(p: string): string {
  *
  * The rail is deliberately not hideable in this state: without a file, the
  * tree IS the tab.
+ *
+ * The header is also where a PER-PROJECT action lives (issue #1142): it is the
+ * one always-present place that names the project directory, so "open a terminal
+ * already `cd`'d into it" is offered here instead of requiring the user to know
+ * that a side-panel tab kind spawns a shell in the right directory.
  */
-export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext }: {
+export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext, onOpenTerminal }: {
   projectDir: string
-  onFileOpen: (absPath: string, diff: boolean) => void
+  /** `opts.line` opens the file at that line — a rail content-search hit. */
+  onFileOpen: (absPath: string, diff: boolean, opts?: { line?: number }) => void
   /** Right-click "Add to context" on a tree row — forwarded to the composer
    *  host so a file/folder becomes an `@`-mention. */
   onAddToContext?: (absPath: string, kind: 'file' | 'dir') => void
+  /** Spawn a terminal tab whose cwd is this project directory. Omitted when the
+   *  host cannot serve one (the terminal feature is off, or the host withdraws
+   *  the terminal view), which withdraws the action rather than offering a shell
+   *  that will not start. */
+  onOpenTerminal?: () => void
 }) {
   const { t } = useTranslation()
   const qc = useQueryClient()
@@ -48,6 +62,23 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
     qc.invalidateQueries({ queryKey: ['project-tree', projectDir] })
     qc.invalidateQueries({ queryKey: ['git-status', projectDir] })
   }
+  // WHY THE ACTION IS A MENU ROW AND NOT A SECOND HEADER BUTTON. The row has to
+  // say what a terminal IS, not just name it: a first-time reader identified the
+  // control correctly and still would not click it ("a terminal feels like
+  // something for developers"), so the label carries a one-line explanation
+  // underneath. A 26px icon button in this header has nowhere to put that line —
+  // only a tooltip, which is exactly the placement that failed. So the row lives
+  // in a `Project actions` menu, whose trigger counts as one control against
+  // `max-two-buttons-per-row` however many rows it holds.
+  //
+  // The row had space for the trigger only because the header's old Refresh
+  // button, which stood between them, was UNREACHABLE: with a project directory
+  // set, `useTreeState` answers `ready` or `error` and nothing else — `ready`
+  // covers the in-flight case on purpose (see its own doc comment) — so
+  // `!treeAvailable && treeState !== 'error'` was never true here, and the two
+  // existing header tests already asserted no Refresh renders. The reachable
+  // refreshes are unaffected: the rail owns one, and the tree-error state below
+  // owns the other, which is where the remedy belongs anyway.
   const iconBtn = 'flex items-center justify-center w-[26px] h-[26px] rounded-md cursor-pointer transition-colors text-muted hover:text-text hover:bg-bg-hover bg-transparent border-none shrink-0'
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -57,20 +88,33 @@ export default function FilesHomePanel({ projectDir, onFileOpen, onAddToContext 
         <span className="flex-1" />
         {projectDir && (
           <>
-            {/* The rail's own refresh targets the same two queries and awaits
-                them, and the error state below carries a labelled Refresh of its
-                own, so mounting this unconditionally would put two
-                identically-named controls in one view. It covers only the state
-                that has neither: a directory whose tree has not resolved yet. */}
-            {!treeAvailable && treeState !== 'error' && (
-              <button onClick={refresh} className={iconBtn} title={t('pages.chat.filesHome.refresh')} aria-label={t('pages.chat.filesHome.refresh')}>
-                <RotateCw size={14} />
-              </button>
-            )}
             {isLocal && (
               <button onClick={() => { void revealOrOpen(projectDir, 'reveal', reveal) }} className={iconBtn} title={revealLabel} aria-label={revealLabel}>
                 <ExternalLink size={14} />
               </button>
+            )}
+            {onOpenTerminal && (
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <button className={iconBtn} title={t('pages.chat.filesHome.project_actions')} aria-label={t('pages.chat.filesHome.project_actions')}>
+                    <MoreHorizontal size={14} />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="end" className="min-w-[260px]">
+                  {/* Label plus one muted line, the shape the side panel's `+`
+                      menu already uses. The line states what the action IS: an
+                      earlier attempt reassured instead ("Nothing runs until you
+                      type") and the same reader took the reassurance for a
+                      warning, so naming the absence of danger introduced it. */}
+                  <DropdownMenuItem className="items-start" onSelect={onOpenTerminal}>
+                    <TerminalSquare size={13} className="shrink-0 mt-0.5" />
+                    <span className="flex flex-col gap-0.5">
+                      <span>{t('pages.chat.filesHome.open_terminal')}</span>
+                      <span className="text-[11px] text-muted leading-snug">{t('pages.chat.filesHome.open_terminal_hint')}</span>
+                    </span>
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             )}
           </>
         )}

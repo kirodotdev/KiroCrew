@@ -4,11 +4,10 @@ The Developer > Agent Backend switch writes this field over
 ``PATCH /api/config/kirocrew``, so it has to be in ``_EDITABLE_CONFIG`` at all —
 before this it was absent and every save came back "field not editable".
 
-The load-bearing tests here used to be PARITY ones: three unrelated places each
-kept a literal copy of the selectable-backend list, and these tests stood in for a
-code owner. They no longer can. The set is a REGISTRY an edition extends at boot
-(``register_selectable_backend``), which no import-time literal can see. So what is
-pinned now is that each surface RESOLVES the set at request time from the one
+The selectable-backend set is a REGISTRY an edition extends at boot
+(``register_selectable_backend``), which no import-time literal can see. A parity
+check against a literal copy of the list cannot see that registry, so these tests
+instead pin that each surface RESOLVES the set at request time from the one
 owner, ``agent_sdk.backends``, rather than carrying its own answer.
 """
 
@@ -19,8 +18,12 @@ import pytest
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_DEEPSEEK,
+    ACP_BACKEND_GOOSE,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
 )
 from kiro_crew.agent_sdk import backends as acp_backends
 from kiro_crew.config.loader import KiroCrewConfig
@@ -30,8 +33,19 @@ from kiro_crew.dashboard.handlers.core import _EDITABLE_CONFIG
 FIELD = "agent.acp_backend"
 
 #: Known ids the public baseline deliberately does not offer, each entry carrying its
-#: reason in ``test_baseline_ships_every_known_backend``. Empty is the healthy state.
-NOT_SHIPPED_SELECTABLE: frozenset = frozenset()
+#: reason in ``test_baseline_ships_every_known_backend``. Empty was the state until the
+#: first exception; an entry is a reasoned exclusion rather than a defect, and it earns
+#: its place by naming what the id fails. ``deepseek`` is the one member today.
+#:
+#: deepseek passes the install-probe half of the selectability bar and fails the
+#: ROUTING half. Its sandbox decides its own tool calls -- an in-policy action runs
+#: silently and an out-of-policy one is denied with the denial in the tool result --
+#: and ``session/request_permission`` carries only a model-initiated request to
+#: escalate past that sandbox, refused outright when the model omits its
+#: justification. Four live captures across its confined and read-only postures raised
+#: no permission request at all. So Crew's PreToolUse gate would not run for what a
+#: session actually does, and the switch would be offering a harness Crew cannot gate.
+NOT_SHIPPED_SELECTABLE: frozenset = frozenset({ACP_BACKEND_DEEPSEEK})
 
 
 @pytest.fixture
@@ -95,8 +109,15 @@ def test_a_registered_backend_reaches_the_allowlist(restore_registry):
 
 
 def test_registering_an_unknown_backend_is_refused(restore_registry):
-    """A dashboard option that cannot start a session is worse than an absent one."""
-    with pytest.raises(ValueError):
+    """A dashboard option that cannot start a session is worse than an absent one.
+
+    Matched on the UNKNOWN-id message rather than on ``ValueError`` alone, because
+    ``register_selectable_backend`` refuses for two independent reasons now -- an id
+    outside ``ACP_BACKENDS_KNOWN``, and a known id whose routing is ``UNVERIFIED``. An
+    unknown id resolves to ``UNVERIFIED`` too (``routing_for`` fails closed), so a bare
+    exception assertion here would pass even with the guard this test NAMES deleted.
+    """
+    with pytest.raises(ValueError, match="unknown ACP backend"):
         acp_backends.register_selectable_backend("byo-harness")
     assert "byo-harness" not in acp_backends.selectable_backends()
 
@@ -142,21 +163,30 @@ def test_the_field_declares_no_static_enum():
 def test_baseline_ships_every_known_backend():
     """The public build's capability, stated once so a NARROWING is deliberate.
 
-    Claude Code used to be excluded here. That was wrong: ``acp/client.py`` owns the
-    whole Claude spawn path and the adapter is a public npm package, so the only thing
-    the exclusion removed was the switch. If a backend is ever taken back out, the
+    Claude Code is not excluded here: ``acp/client.py`` owns the
+    whole Claude spawn path and the adapter is a public npm package, so excluding it
+    would remove only the switch. If a backend is ever taken back out, the
     reason belongs next to that removal — a build that cannot run a harness is a
     different claim from a machine that has not installed it, and the install probe
     already answers the second one.
 
     ``NOT_SHIPPED_SELECTABLE`` is where that reason goes. It is an explicit list
     rather than a relaxed assertion so a plain ``baseline != known`` still fails:
-    an id may sit outside the baseline only by being named there. It is empty
-    today — every known id is offered, so a switch that renders always has an
-    install probe behind it to explain a session that failed to start.
+    an id may sit outside the baseline only by being named there, with the reason
+    in the comment on that set. Every id NOT named there is offered, so a switch
+    that renders always has an install probe behind it to explain a session that
+    failed to start.
     """
     baseline: List[str] = sorted(acp_backends.BASELINE_SELECTABLE_BACKENDS)
     assert baseline == sorted(
-        [ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS, ACP_BACKEND_CODEX]
+        [
+            ACP_BACKEND_KIRO,
+            ACP_BACKEND_CLAUDE,
+            ACP_BACKEND_KAS,
+            ACP_BACKEND_CODEX,
+            ACP_BACKEND_OPENCODE,
+            ACP_BACKEND_PI,
+            ACP_BACKEND_GOOSE,
+        ]
     )
     assert baseline == sorted(acp_backends.ACP_BACKENDS_KNOWN - NOT_SHIPPED_SELECTABLE)

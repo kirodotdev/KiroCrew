@@ -9,7 +9,7 @@ absolute paths.
 **Nothing has to be installed by hand.** ``pip install kirocrew`` is the only
 prerequisite: ``uv`` is a declared Python dependency and is resolved through the
 installed package (:func:`resolve_uv`) rather than assumed to be on ``PATH``, and
-the engine arrives over plain HTTPS, so ``git`` is no longer required at all.
+the engine arrives over plain HTTPS, so ``git`` is not required at all.
 
 Why this is a Python job and not a ``setup.onInstall`` shell script: a BUILTIN
 app's source lives read-only inside the installed Python package, and the
@@ -567,7 +567,7 @@ def provision() -> ProvisionOutcome:
 
     # `uv` ships as a declared Python dependency, so this only fails on a
     # genuinely broken install. Reported precisely (and only about uv — `git` is
-    # no longer used) so the message is actionable rather than a guess.
+    # not used) so the message is actionable rather than a guess.
     uv_bin = resolve_uv()
     if uv_bin is None:
         log.append(

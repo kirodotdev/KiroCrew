@@ -97,11 +97,15 @@ async function dictateAndStop(hook: { current: { start: () => Promise<void>; sto
   await waitFor(() => expect(sttTranscribe).toHaveBeenCalledTimes(1))
 }
 
+// These hosts declare `acceptsUnowned: true`: they stand in for a page with a
+// draft store that takes a transcript for a session it does not currently show.
+// The flag is explicit — `useVoiceInput` no longer infers "no ownership
+// predicate means take everything" (First Principles review on #9787).
 describe('useVoiceInput — a transcription survives the page unmounting', () => {
   it('releases the busy state on the recording instance when it settles', async () => {
     const useVoiceInput = await loadHook()
     const onText = vi.fn()
-    const { result } = renderHook(() => useVoiceInput(onText, { sessionId: 'chat-a' }))
+    const { result } = renderHook(() => useVoiceInput(onText, { sessionId: 'chat-a', acceptsUnowned: true }))
     await dictateAndStop(result as never)
     expect(result.current.transcribing).toBe(true)
     expect(result.current.sessionOwner).toBe('chat-a')
@@ -118,14 +122,14 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
   it('delivers a transcript that settles after unmount to the next instance', async () => {
     const useVoiceInput = await loadHook()
     const onTextA = vi.fn()
-    const first = renderHook(() => useVoiceInput(onTextA, { sessionId: 'chat-a' }))
+    const first = renderHook(() => useVoiceInput(onTextA, { sessionId: 'chat-a', acceptsUnowned: true }))
     await dictateAndStop(first.result as never)
 
     // Navigate away from Chat while the request is still open.
     first.unmount()
 
     const onTextB = vi.fn()
-    renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-a' }))
+    renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-a', acceptsUnowned: true }))
 
     await act(async () => { settleStt({ text: 'hello world' }) })
 
@@ -138,13 +142,13 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
 
   it('restores the transcribing indicator on the instance that returns', async () => {
     const useVoiceInput = await loadHook()
-    const first = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a' }))
+    const first = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a', acceptsUnowned: true }))
     await dictateAndStop(first.result as never)
     expect(first.result.current.transcribing).toBe(true)
     first.unmount()
 
     // Coming back mid-request must show the session as still busy, not idle.
-    const second = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a' }))
+    const second = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a', acceptsUnowned: true }))
     expect(second.result.current.transcribing).toBe(true)
     expect(second.result.current.sessionOwner).toBe('chat-a')
 
@@ -156,12 +160,12 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
   it('surfaces a failure that settles after unmount instead of hanging busy', async () => {
     const useVoiceInput = await loadHook()
     const onTextA = vi.fn()
-    const first = renderHook(() => useVoiceInput(onTextA, { sessionId: 'chat-a' }))
+    const first = renderHook(() => useVoiceInput(onTextA, { sessionId: 'chat-a', acceptsUnowned: true }))
     await dictateAndStop(first.result as never)
     first.unmount()
 
     const onTextB = vi.fn()
-    const second = renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-a' }))
+    const second = renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-a', acceptsUnowned: true }))
     await act(async () => { settleStt({ error: 'model unavailable' }) })
 
     await waitFor(() => expect(second.result.current.error).toBeTruthy())
@@ -170,7 +174,7 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
   })
   it('does not blank a new recording when an older transcription settles', async () => {
     const useVoiceInput = await loadHook()
-    const first = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a' }))
+    const first = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a', acceptsUnowned: true }))
     await dictateAndStop(first.result as never)
     first.unmount()
 
@@ -180,7 +184,7 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
     // gates the mic indicator and the stop control for a microphone that is
     // actually running.
     const onTextB = vi.fn()
-    const second = renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-b' }))
+    const second = renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-b', acceptsUnowned: true }))
     await act(async () => { await second.result.current.start() })
     await waitFor(() => expect(second.result.current.recording).toBe(true))
 
@@ -196,7 +200,7 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
   it('drains a transcript that settled while no instance was mounted', async () => {
     const useVoiceInput = await loadHook()
     const onTextA = vi.fn()
-    const first = renderHook(() => useVoiceInput(onTextA, { sessionId: 'chat-a' }))
+    const first = renderHook(() => useVoiceInput(onTextA, { sessionId: 'chat-a', acceptsUnowned: true }))
     await dictateAndStop(first.result as never)
     first.unmount()
 
@@ -207,7 +211,7 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
     // Mounting hands it over — but only after the mount pass has committed, so
     // the page's own prefill/draft effects are not raced.
     const onTextB = vi.fn()
-    renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-a' }))
+    renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-a', acceptsUnowned: true }))
     expect(onTextB).not.toHaveBeenCalled()
     await act(async () => { await Promise.resolve() })
     expect(onTextB).toHaveBeenCalledWith('hello world', 'chat-a', 'batch')
@@ -215,7 +219,7 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
 
   it('hands a pending drain to the instance that is current when it runs', async () => {
     const useVoiceInput = await loadHook()
-    const first = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a' }))
+    const first = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a', acceptsUnowned: true }))
     await dictateAndStop(first.result as never)
     first.unmount()
     await act(async () => { settleStt({ text: 'hello world' }) })
@@ -225,10 +229,10 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
     // follow the live instance instead of being stranded by the subscription
     // that happened to schedule the drain.
     const onTextB = vi.fn()
-    const second = renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-a' }))
+    const second = renderHook(() => useVoiceInput(onTextB, { sessionId: 'chat-a', acceptsUnowned: true }))
     second.unmount()
     const onTextC = vi.fn()
-    renderHook(() => useVoiceInput(onTextC, { sessionId: 'chat-a' }))
+    renderHook(() => useVoiceInput(onTextC, { sessionId: 'chat-a', acceptsUnowned: true }))
 
     await act(async () => { await Promise.resolve() })
     expect(onTextC).toHaveBeenCalledWith('hello world', 'chat-a', 'batch')
@@ -237,7 +241,7 @@ describe('useVoiceInput — a transcription survives the page unmounting', () =>
 
   it('still stops the microphone when the page unmounts mid-recording', async () => {
     const useVoiceInput = await loadHook()
-    const { result, unmount } = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a' }))
+    const { result, unmount } = renderHook(() => useVoiceInput(vi.fn(), { sessionId: 'chat-a', acceptsUnowned: true }))
     await act(async () => { await result.current.start() })
     await waitFor(() => expect(result.current.recording).toBe(true))
     const track = lastTrack

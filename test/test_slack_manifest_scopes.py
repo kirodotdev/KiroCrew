@@ -5,8 +5,7 @@ that the manifest template renders and validates consistently — they say nothi
 about whether the granted surface matches what ``slack/client.py`` and
 ``slack/handler.py`` actually call. That gap is how the manifest drifted: code
 grew ``users.info`` lookups and private-channel thread reads while the template
-kept the original scope list, leaving tracked private channels silently dead
-(issue #3206).
+kept the original scope list, leaving tracked private channels silently dead.
 
 These tests parse the packaged template and pin the API-surface contract in
 both directions: every Slack Web API method the runtime calls must have its

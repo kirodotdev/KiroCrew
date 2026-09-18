@@ -9,6 +9,12 @@ let lastInitialData: { elements?: unknown[] } | null = null
  *  individual tests can model an empty vs non-empty canvas. */
 const fake = vi.hoisted(() => ({
   elements: [{ id: 'rect-1' }] as unknown[],
+  /** Set to make the pad throw during render, so the ErrorBoundary fallback —
+   *  the real-world shape of an uncached chunk that will not load — renders. */
+  throwOnRender: false,
+  /** Set to make the lazy import itself REJECT — the offline-first-open shape —
+   *  as opposed to `throwOnRender`, which fails inside an import that succeeded. */
+  failLoad: false,
   api: {
     getSceneElements: () => fake.elements,
     getAppState: () => ({ viewBackgroundColor: '#ffffff' }),
@@ -27,8 +33,7 @@ const fake = vi.hoisted(() => ({
 
 vi.mock('@excalidraw/excalidraw', async () => {
   const React = await import('react')
-  return {
-    Excalidraw: (props: {
+  const FakeExcalidraw = (props: {
       excalidrawAPI?: (api: unknown) => void
       onChange?: () => void
       renderTopRightUI?: () => React.ReactNode
@@ -37,6 +42,7 @@ vi.mock('@excalidraw/excalidraw', async () => {
         | (() => { elements?: unknown[] } | null)
         | null
     }) => {
+      if (fake.throwOnRender) throw new Error('chunk load failed')
       lastInitialData =
         typeof props.initialData === 'function' ? props.initialData() : props.initialData ?? null
       React.useEffect(() => {
@@ -48,6 +54,14 @@ vi.mock('@excalidraw/excalidraw', async () => {
       }, [])
       return React.createElement('div', { 'data-testid': 'fake-excalidraw' },
         props.renderTopRightUI ? props.renderTopRightUI() : null)
+  }
+  return {
+    // A getter, so the lazy factory's `mod.Excalidraw` read can be made to
+    // throw per attempt: that rejects the lazy payload exactly the way a chunk
+    // that failed to fetch does, which is the state React caches.
+    get Excalidraw() {
+      if (fake.failLoad) throw new Error('chunk load failed')
+      return FakeExcalidraw
     },
     exportToBlob: fake.exportToBlob,
     serializeAsJSON: fake.serializeAsJSON,
@@ -59,6 +73,8 @@ vi.mock('@excalidraw/excalidraw/index.css', () => ({}))
 describe('SketchDialog', () => {
   beforeEach(() => {
     fake.elements = [{ id: 'rect-1' }]
+    fake.throwOnRender = false
+    fake.failLoad = false
     fake.exportToBlob.mockClear()
     fake.serializeAsJSON.mockClear()
   })
@@ -168,5 +184,151 @@ describe('SketchDialog', () => {
   it('does not mount Excalidraw while closed (lazy chunk stays unloaded)', () => {
     render(<SketchDialog open={false} onOpenChange={() => {}} onInsert={() => {}} />)
     expect(screen.queryByTestId('fake-excalidraw')).toBeNull()
+  })
+
+  /** `errors-use-error-notice` (blocking): a load failure is a dead end the user
+   *  cannot clear, so it renders through ErrorNotice WITH the agent hand-off —
+   *  not the hand-written muted line this replaced. */
+  it('offers the agent hand-off when the pad fails to load', async () => {
+    fake.throwOnRender = true
+    const onOpenChange = vi.fn()
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      render(<SketchDialog open onOpenChange={onOpenChange} onInsert={() => {}} />)
+      const alert = await screen.findByRole('alert')
+      expect(alert).toHaveTextContent("Couldn't load the sketch pad")
+      // The hand-off, and the dialog closing before it navigates — a hand-off
+      // under a modal that stays open reads as a dead button.
+      fireEvent.click(screen.getByRole('button', { name: /ask the agent/i }))
+      expect(onOpenChange).toHaveBeenCalledWith(false)
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  /** React stores a lazy factory's REJECTION on the lazy object itself, so a
+   *  module-level `lazy(...)` would replay an offline first open forever no
+   *  matter how the boundary around it is reset. Reopening must be a real
+   *  retry: a fresh lazy per open, calling the loader again. */
+  it('retries a failed load when the dialog is reopened', async () => {
+    fake.failLoad = true
+    const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const { rerender } = render(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
+      await screen.findByRole('alert')
+
+      // The network is back; close and reopen.
+      fake.failLoad = false
+      rerender(<SketchDialog open={false} onOpenChange={() => {}} onInsert={() => {}} />)
+      rerender(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
+      await screen.findByTestId('fake-excalidraw')
+      expect(screen.queryByRole('alert')).toBeNull()
+    } finally {
+      consoleError.mockRestore()
+    }
+  })
+
+  /** A header that says "Draw something first" beside an error saying the pad
+   *  never loaded is a hint nobody can satisfy. While the load-failure fallback
+   *  is showing — whatever put it there — both the header hint and the disabled
+   *  Attach button's matching tooltip go quiet; a reopen that loads brings them
+   *  back. */
+  describe('failed-load header', () => {
+    const expectHintSuppressed = async () => {
+      await screen.findByRole('alert')
+      await waitFor(() => expect(screen.queryByText('Draw something first')).toBeNull())
+      const attach = screen.getByRole('button', { name: 'Attach to message' })
+      expect(attach).toBeDisabled()
+      expect(attach).not.toHaveAttribute('title')
+    }
+
+    it('drops the hint and tooltip when the chunk import rejects', async () => {
+      fake.failLoad = true
+      fake.elements = []
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        const { rerender } = render(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
+        await expectHintSuppressed()
+
+        // Reopen with the chunk available: the empty-canvas hint is legitimate again.
+        fake.failLoad = false
+        rerender(<SketchDialog open={false} onOpenChange={() => {}} onInsert={() => {}} />)
+        rerender(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
+        await screen.findByTestId('fake-excalidraw')
+        expect(screen.getByText('Draw something first')).toBeInTheDocument()
+        expect(screen.getByRole('button', { name: 'Attach to message' }))
+          .toHaveAttribute('title', 'Draw something first')
+      } finally {
+        consoleError.mockRestore()
+      }
+    })
+
+    it('drops the hint and tooltip when the pad throws during render', async () => {
+      fake.throwOnRender = true
+      fake.elements = []
+      const consoleError = vi.spyOn(console, 'error').mockImplementation(() => {})
+      try {
+        render(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
+        await expectHintSuppressed()
+      } finally {
+        consoleError.mockRestore()
+      }
+    })
+  })
+
+  /** Excalidraw measures its container's viewport rect ONCE on mount and
+   *  refreshes it only on window resize, scroll, or a ResizeObserver on its own
+   *  container — none of which a CSS transform animation fires, because the
+   *  layout box never moves. Mounting the pad while the dialog is still zooming
+   *  in therefore froze a mid-flight origin, which put every drawn shape and
+   *  every resize handle ~7px from the cursor for the dialog's whole life.
+   *
+   *  jsdom implements no animations, so these two tests drive
+   *  `getAnimations()` directly: that is the exact signal the component keys on,
+   *  and the browser-level proof lives in
+   *  scripts/capture-sketch-cursor-offset.mjs. */
+  describe('placement gate', () => {
+    const withAnimations = (anims: Animation[]) => {
+      const proto = Element.prototype as unknown as { getAnimations?: () => Animation[] }
+      const had = Object.prototype.hasOwnProperty.call(proto, 'getAnimations')
+      const previous = proto.getAnimations
+      proto.getAnimations = () => anims
+      return () => {
+        if (had) proto.getAnimations = previous
+        else delete proto.getAnimations
+      }
+    }
+
+    it('withholds the pad until the dialog stops animating', async () => {
+      let finish: () => void = () => {}
+      const pending = new Promise<void>(resolve => { finish = resolve })
+      const restore = withAnimations([{ finished: pending } as unknown as Animation])
+      try {
+        render(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
+        // The loading placeholder stands in, so the wait reads as one continuous
+        // load rather than an empty pane.
+        await screen.findByText('Loading sketch pad…')
+        expect(screen.queryByTestId('fake-excalidraw')).toBeNull()
+
+        finish()
+        await screen.findByTestId('fake-excalidraw')
+      } finally {
+        restore()
+      }
+    })
+
+    it('mounts the pad anyway when the entrance animation is cancelled', async () => {
+      // `Animation.finished` REJECTS on cancellation. A cancelled entrance still
+      // means the dialog has come to rest, so it must not strand the pad behind
+      // the placeholder.
+      const rejected = Promise.reject(new Error('cancelled'))
+      const restore = withAnimations([{ finished: rejected } as unknown as Animation])
+      try {
+        render(<SketchDialog open onOpenChange={() => {}} onInsert={() => {}} />)
+        await screen.findByTestId('fake-excalidraw')
+      } finally {
+        restore()
+      }
+    })
   })
 })

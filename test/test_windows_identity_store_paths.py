@@ -254,7 +254,7 @@ class TestStagingToleratesTheUnusedAppDataRoot:
 
 
 class TestReadersAgreeWithCanonicalTable:
-    """The six former copies are now projections of ``identity_stores`` (#6352).
+    """The six readers are projections of ``identity_stores``.
 
     These re-point the ratchet at the single canonical table: every reader must
     equal the projection it now wraps, so drift is impossible by construction

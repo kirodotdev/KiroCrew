@@ -27,7 +27,6 @@ import type { Notification } from '../types'
 // client so App mounts without real network.
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
-vi.mock('../pages/AgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => null }))
 vi.mock('../pages/LogsPage', () => ({ default: () => null }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
@@ -106,7 +105,7 @@ const NOTE: Notification = {
   url: '/schedule',
 }
 
-/** A cron note naming a slot, which is what renders the "Continue session"
+/** A cron note naming a slot, which is what renders the "Go to Chat"
  *  button — the jump that switches the active slot BEFORE it navigates. */
 const CRON_NOTE: Notification = {
   kind: 'cron',
@@ -204,7 +203,7 @@ describe('notification panel navigation leave guard', () => {
     typeDraft('half-written prompt')
     openBell()
     fireEvent.click(await screen.findByText('Nightly backup finished'))
-    fireEvent.click(await screen.findByRole('button', { name: /^Continue session$/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /^Go to Chat$/ }))
     expect(confirmSpy).toHaveBeenCalled()
     // The draft survives — and so does the rest of the answer. This handler
     // switches the active slot BEFORE it navigates, so vetoing only the

@@ -2,7 +2,7 @@
 
 Guards two independent fixes in ``kiro_crew.workflows.agent_exec.build_agent_fn``:
 
-1. **The swallowed-row bug (regression).** The usage-row block used to wrap the
+1. **The swallowed-row bug.** The usage-row block must not wrap the
    function-local import, the context-token read, AND the persist in one wide
    ``try/except Exception: logger.debug(...)``. A failure in the *enrichment*
    step (the context read) therefore jumped past the persist and the workflow

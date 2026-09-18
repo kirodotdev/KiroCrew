@@ -240,7 +240,7 @@ class TestApiCronScriptSource:
             assert resp.status == 200
             data = await resp.json()
         assert "AKIAIOSFODNN7EXAMPLE" not in data["source"]
-        # The display no longer equals the raw body, so the approval flow must
+        # The display does not equal the raw body, so the approval flow must
         # treat this script as unreviewable (the operator cannot read the span).
         assert data["reviewable"] is False
 

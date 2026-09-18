@@ -10,6 +10,7 @@ turn + interaction routing (transport_dispatch.py). Mirrors test_telegram.py.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import threading
 import time
@@ -21,6 +22,7 @@ from unittest import mock
 import pytest
 
 import kiro_crew.discord.transport_dispatch as td_mod
+from conftest import assert_rejected_without_backtracking
 from kiro_crew import session_directive
 from kiro_crew.acp.types import (
     EVENT_COMPACTION_STATUS,
@@ -570,6 +572,82 @@ def _cfg(soft: int = 80, default_agent: str = "", dm_scope: str = "per-channel-p
     )
 
 
+def _prime_live(cfg: Any) -> None:
+    """Publish *cfg*'s ``discord`` and ``messaging`` fields as the live snapshot.
+
+    The dispatcher reads those two sections at POINT OF USE from the config
+    watcher rather than from the ``cfg=`` copy it was constructed with, so a
+    test that varies one of them has to put the value where the turn actually
+    looks for it. Every field the test's SimpleNamespace carries is copied onto
+    a real ``KiroCrewConfig``, so the production readers see real sections and
+    the loader's own defaults fill the rest.
+
+    Call it again after mutating ``d.cfg`` mid-test -- the snapshot is a copy,
+    not a view.
+    """
+    import dataclasses
+
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    base = KiroCrewConfig()
+    sections = {}
+    for name in ("discord", "messaging"):
+        section = getattr(cfg, name, None)
+        if section is None:
+            continue
+        overrides = {
+            f.name: getattr(section, f.name)
+            for f in dataclasses.fields(getattr(base, name))
+            if hasattr(section, f.name)
+        }
+        sections[name] = dataclasses.replace(getattr(base, name), **overrides)
+    live.reset_for_tests()
+    live.watch().prime(dataclasses.replace(base, **sections))
+
+
+@pytest.fixture(autouse=True)
+def _drop_live_config_snapshot():
+    """Leave no primed config snapshot behind for the next test.
+
+    ``_prime_live`` (and ``_dispatcher``, which calls it) publishes into the
+    process-global config watcher, so without this the last test to prime would
+    set the live config for every test after it in the same worker.
+    """
+    yield
+    from kiro_crew.config import live
+
+    live.reset_for_tests()
+
+
+@contextlib.contextmanager
+def _live_discord(**discord_kw: Any):
+    """Put ``discord.*`` overrides in force for the body, then restore.
+
+    For a field the dispatcher reads per TURN off the live snapshot rather than
+    off its boot copy: the override has to be visible where the turn looks, and
+    it has to be a real section so every other live read in the same turn still
+    resolves.
+    """
+    import dataclasses
+
+    from kiro_crew.config import live
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    previous = live.snapshot()
+    base = previous if previous is not None else KiroCrewConfig()
+    live.reset_for_tests()
+    try:
+        live.watch().prime(
+            dataclasses.replace(base, discord=dataclasses.replace(base.discord, **discord_kw))
+        )
+        yield
+    finally:
+        live.reset_for_tests()
+        if previous is not None:
+            live.watch().prime(previous)
+
+
 def _inbound_with_id(text: str, *, message_id: str, **kw: Any) -> InboundMessage:
     """An inbound message carrying Discord's raw message id, which is what the
     steer-ack reaction and the phase ladder both key on."""
@@ -609,10 +687,12 @@ def _dispatcher(
     dm_scope: str = "per-channel-peer",
 ) -> tuple[DiscordDispatcher, FakeClient, FakeSessions]:
     sess = FakeSessions(raise_on_get=raise_on_get)
+    cfg = _cfg(default_agent=default_agent, dm_scope=dm_scope)
+    _prime_live(cfg)
     d = DiscordDispatcher(
         sessions=sess,  # type: ignore[arg-type]
         ctx_builder=FakeCtx(),  # type: ignore[arg-type]
-        cfg=_cfg(default_agent=default_agent, dm_scope=dm_scope),
+        cfg=cfg,
         allowed_user_ids=allowed,
         allowed_thread_ids=allowed_threads,
         agent=None,
@@ -707,7 +787,7 @@ _FENCE_SHAPES = [
     "```py\n" + _ORACLE_CODE * 20 + "```\n\n```sh\nls\n" + _ORACLE_CODE * 20,  # two fences
     "````md\n" + _ORACLE_CODE * 20 + "```\n" + _ORACLE_CODE * 20 + "\n\n\n",  # ws tail
     # Blank code lines INSIDE a fence with more code after them -- the shape the
-    # remainder used to delete, swept at every limit so the cut lands on each
+    # remainder would delete, swept at every limit so the cut lands on each
     # newline of the run in turn.
     "```py\n" + _ORACLE_CODE * 20 + "\n\n" + _ORACLE_CODE * 20,
     "```py\n" + (_ORACLE_CODE + "\n\n\n") * 12,  # 4-newline runs throughout
@@ -788,7 +868,7 @@ class TestRotationSplitting:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Nothing appended and nothing to undo, including for the shapes the
-        # deleted tail-closer strip used to have to reason about.
+        # deleted tail-closer strip would have to reason about.
         for text in ["```py\nx = 1\n", "type ``` here", "plain prose"]:
             assert await self._rotate(monkeypatch, text, 1900) == ([], text)
 
@@ -1018,7 +1098,7 @@ class TestRotationSplitting:
     ) -> None:
         """Swept oracle: a rotation IS the splitter's output, verbatim.
 
-        The renderer used to carry its own splitter and then undo part of it, and
+        The renderer must not carry its own splitter and then undo part of it, since
         every defect in that cluster was the append and the strip disagreeing on
         one shape. There is nothing left to disagree about, and this pins that:
         each chunk but the last is sealed exactly once, in order, and the last is
@@ -1112,19 +1192,16 @@ class TestExtractOptions:
         # each position — polynomial. The tempered body
         # (?:[^[]|\[(?!OPTIONS:))* forbids only a re-occurring "[OPTIONS:", so
         # the body is unambiguous (linear). A whitespace-padded unterminated tag
-        # and many repeated "[OPTIONS:" prefixes (the real pump) must both return
-        # promptly.
-        import time
-
-        for evil in (
-            "[OPTIONS:" + ("\t" * 200_000) + "x",
-            "[OPTIONS:" * 100_000 + "x",
-        ):
-            start = time.perf_counter()
-            body, opts = _extract_options(evil)
-            elapsed = time.perf_counter() - start
-            assert elapsed < 1.0, f"_extract_options took {elapsed:.2f}s (possible ReDoS)"
+        # and many repeated "[OPTIONS:" prefixes (the real pump) must both be
+        # rejected in CPU time linear in the pump -- see
+        # conftest.assert_rejected_without_backtracking for why this is not a
+        # 1.0 s wall-clock bound.
+        def reject(text: str) -> None:
+            body, opts = _extract_options(text)
             assert opts == []
+
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" + ("\t" * n) + "x")
+        assert_rejected_without_backtracking(reject, lambda n: "[OPTIONS:" * n + "x")
 
 
 class TestStripSteering:
@@ -1362,12 +1439,13 @@ class TestDiscordAttachmentAdapter:
         client.attachment_bodies[url] = b"OggS" + b"\x00" * 32
         transcribed: list[str] = []
 
-        async def _transcribe(path: str) -> str:
+        async def _transcribe(path: str, _cfg: object) -> str:
             assert os.path.exists(path)
             transcribed.append(path)
             return "spoken words"
 
         monkeypatch.setattr("kiro_crew.transcribe.is_available", lambda: True)
+        monkeypatch.setattr("kiro_crew.transcribe.batch_duration_cap_secs", lambda _cfg: None)
         monkeypatch.setattr("kiro_crew.transcribe.transcribe_audio", _transcribe)
 
         result = await process_discord_attachments(
@@ -1863,7 +1941,7 @@ class TestRenderer:
         final = cli.final_text()
         assert final.count("```") % 2 == 0  # balanced -> no stray backticks
         # The fence must CLOSE, which the balance check above already proves;
-        # the message no longer ENDS on the closer because the turn footer is
+        # the message does not END on the closer because the turn footer is
         # appended as a trailing subtext line after it.
         assert final.startswith("```")
         assert final.split("-# Finished in ")[0].rstrip().endswith("```")
@@ -2212,6 +2290,29 @@ class TestDispatcher:
         return InboundMessage(channel_type="discord", user_id=user, conversation_id=chan, text=text)
 
     @pytest.mark.asyncio
+    async def test_member_memory_refusal_redacts_before_posting(self, monkeypatch) -> None:
+        from unittest.mock import AsyncMock
+
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
+        private_path = "/home/alice/.kiro/crew/memory_stores/member-one/memory.db"
+        credential = "AKIAIOSFODNN7EXAMPLE"
+        failure = UnknownMemoryStore(
+            f"memory_unavailable: cannot open {private_path}; {credential}"
+        )
+        monkeypatch.setattr(
+            "kiro_crew.discord.transport_dispatch.session_store_for_turn",
+            AsyncMock(side_effect=failure),
+        )
+        dispatcher, client, sessions = _dispatcher({"u1"})
+        await dispatcher.handle_message(self._msg("hello"))
+        posted = "\n".join(text for text, _ in client.sent)
+        assert "memory_unavailable:" in posted
+        assert private_path not in posted and "alice" not in posted
+        assert credential not in posted
+        assert sessions.released == []
+
+    @pytest.mark.asyncio
     async def test_a_disconnected_conversation_gets_no_reply(self) -> None:
         """Disconnecting Discord in the dashboard must actually stop the replies.
 
@@ -2266,8 +2367,8 @@ class TestDispatcher:
         ACP session. ``on_turn_start`` does not send the indicator inline -- it
         spawns a refresh task -- so it must be called BEFORE the cold start, or
         the task is not even created until the cold start has finished and the
-        user sees several seconds of dead air. That regressed when attachment
-        ingestion was inserted ahead of ``on_turn_start`` (#1053). The shared
+        user sees several seconds of dead air. Inserting attachment ingestion
+        ahead of ``on_turn_start`` reintroduces exactly that. The shared
         skeleton in messaging/dispatch.py documents this order as "typing
         indicator before cold start"; telegram/transport_dispatch.py follows it.
 
@@ -2365,9 +2466,14 @@ class TestDispatcher:
         await d.handle_message(self._msg("keep me"))
         assert spool.exists() and "keep me" in spool.read_text(encoding="utf-8")
         spool.unlink()
+        sess.reserve_inbound_callback = lambda: None
 
-        async def _restricted(_key: str) -> bool:
-            return True
+        d._session_resume.route = mock.AsyncMock(
+            return_value=td_mod.RoutingDecision(resumed_key="dashboard:restricted")
+        )
+
+        async def _restricted(key: str) -> bool:
+            return key == "dashboard:restricted"
 
         monkeypatch.setattr(d, "_session_restricted", _restricted)
         await d.handle_message(self._msg("my secret"))
@@ -2467,20 +2573,15 @@ class TestDispatcher:
             )
         )
         try:
-            await boundary_reached.wait()
+            await asyncio.wait_for(boundary_reached.wait(), timeout=5)
             await manager.get_or_create(key)  # A user turn wins the actual semaphore.
             resume_monitor.set()
 
-            # Fixed scheduler turns keep the assertion deterministic: the
-            # non-waiting claim completes immediately, while the old blocking
-            # path remains parked until the user lease is released in finally.
-            for _ in range(10):
-                await asyncio.sleep(0)
-                if monitor_task.done():
-                    break
-
-            assert monitor_task.done()
-            assert monitor_task.result() is MonitorDispatchResult.BUSY
+            # Await completion while the user still owns the semaphore. Real
+            # off-loop metadata reads may need more than a few scheduler turns;
+            # a blocking claim cannot finish before finally releases the user.
+            result = await asyncio.wait_for(asyncio.shield(monitor_task), timeout=5)
+            assert result is MonitorDispatchResult.BUSY
             assert provider.steered == []
             assert manager.dequeue(key) is None
             assert completions == []
@@ -2931,6 +3032,7 @@ class TestDispatcher:
     ) -> None:
         d, cli, sess = _dispatcher({"u1"})
         d.cfg.messaging.queue_mode = "queue"
+        _prime_live(d.cfg)
         download_started = asyncio.Event()
         finish_download = asyncio.Event()
         url = "https://cdn.discordapp.com/attachments/c/m/slow.png"
@@ -3166,7 +3268,7 @@ class TestDispatcher:
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         d, cli, sess = _dispatcher({"u1"})
         calls: list[int] = []
 
@@ -3442,7 +3544,7 @@ class TestDispatcher:
     async def test_unlink_clears_binding_stranded_by_generation_rotation(self) -> None:
         # THE stale-mirror regression: a binding written at one DM generation,
         # then the conversation rotates (!new / idle / daily reset). The row's
-        # key spelling no longer derives from the current session key, so the
+        # key spelling does not derive from the current session key, so the
         # key-addressed clears cannot reach it — yet it still occupies the
         # location and blocks `!session` resume. Unlink must free it by value.
         d, cli, sess = _dispatcher({"u1"})
@@ -3639,7 +3741,7 @@ class TestInteractions:
 
     @pytest.mark.asyncio
     async def test_channels_deny_still_resolves_reject_interaction(self, tmp_path, monkeypatch):
-        # MEDIUM (GPT round-13 #3): a REJECT press ("a:...:0") on a denied channel
+        # A REJECT press ("a:...:0") on a denied channel
         # must STILL resolve the pending approval as refused (False) — a reject is a
         # denial, exactly what a channels-deny wants, and silently dropping it would
         # strand the pending future until timeout (~300s). Only APPROVE is gated out.
@@ -3786,7 +3888,7 @@ class TestContextThresholdNotices:
     @pytest.mark.asyncio
     async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
         # The nudge advises !compact, which this backend refuses — it compacts
-        # on its own, so there is nothing for the user to act on (#8156).
+        # on its own, so there is nothing for the user to act on.
         d, cli, sess = _dispatcher({"u1"})
         sess.check_context_usage = lambda key, provider: 85.0
         provider = SimpleNamespace(manual_compact_unsupported_backend="kas")
@@ -4073,11 +4175,8 @@ class TestRenderTogglesAreWiredPerTurn:
 
         with (
             mock.patch.object(td_mod, "DiscordRenderer", _spy),
-            mock.patch("kiro_crew.config.loader.KiroCrewConfig.load") as load,
+            _live_discord(reactions_enabled=False, show_thinking=True),
         ):
-            load.return_value = SimpleNamespace(
-                discord=SimpleNamespace(reactions_enabled=False, show_thinking=True)
-            )
             await d.handle_message(_inbound("hi"))
         # Read per TURN, not off the boot config, so the dashboard toggle takes
         # effect on the next message instead of the next restart.
@@ -4110,6 +4209,132 @@ class TestUndeliveredTurnIsNotASuccess:
         d, _cli, sess = _dispatcher({"u1"})
         await d.handle_message(_inbound("hi"))
         assert sess.successes and not sess.failures
+
+
+class _RecordingCtx(FakeCtx):
+    """``FakeCtx`` that also keeps every ``build_message`` kwarg."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.build_calls: list[dict[str, Any]] = []
+
+    def build_message(self, text: str, is_new: bool, key: str, **kw: Any) -> Any:
+        self.build_calls.append({"text": text, "is_new": is_new, "key": key, **kw})
+        return super().build_message(text, is_new, key, **kw)
+
+
+def _arm_reinjection(sessions: Any) -> dict[str, Any]:
+    """Give the session stand-in the real manager's one-shot flag surface."""
+    ledger: dict[str, Any] = {"consumed": [], "marks": 0, "armed": True}
+
+    def _consume(key: str) -> bool:
+        ledger["consumed"].append(key)
+        was = ledger["armed"]
+        ledger["armed"] = False
+        return was
+
+    def _mark(key: str) -> None:
+        ledger["marks"] += 1
+        ledger["armed"] = True
+
+    sessions.consume_needs_reinjection = _consume
+    sessions.mark_needs_reinjection = _mark
+    return ledger
+
+
+class _DyingProvider(FakeProvider):
+    """A provider whose very next turn fails before any text lands."""
+
+    async def stream(self, message: str) -> Any:
+        raise RuntimeError("provider fell over")
+        yield  # pragma: no cover -- makes this an async generator
+
+
+class TestCompactionReinjection:
+    """The Discord turn loop is its own copy, so it must consume the flag itself.
+
+    ``session_compaction`` marks ``needs_reinjection`` after an in-place compaction
+    dropped the session-start context. A turn loop that does not read it runs
+    every turn after ``!compact`` without the skills index or the response-preferences
+    block.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_compacted_session_forwards_the_flag_to_build_message(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
+        ledger = _arm_reinjection(sess)
+        await d.handle_message(_inbound("hi"))
+        call = d.ctx_builder.build_calls[-1]
+        assert ledger["consumed"] == [call["key"]], "consumed under the key the turn runs as"
+        assert call["needs_reinjection"] is True
+        # Landed: consumed exactly once, and NOT put back.
+        assert ledger["marks"] == 0 and ledger["armed"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_session_stand_in_without_the_flag_gets_the_false_default(self) -> None:
+        d, _cli, sess = _dispatcher({"u1"})
+        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
+        assert not hasattr(sess, "consume_needs_reinjection")
+        await d.handle_message(_inbound("hi"))
+        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is False
+        assert sess.successes, "the turn still ran"
+
+    @pytest.mark.asyncio
+    async def test_a_cancelled_consuming_turn_puts_the_flag_back(self) -> None:
+        # A !stop completes the turn normally with stop_reason "cancelled", and
+        # the backend drops that turn from its transcript -- the re-injected
+        # context goes with it, so the flag must come back like a raised turn.
+        d, _cli, sess = _dispatcher({"u1"})
+        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
+        ledger = _arm_reinjection(sess)
+
+        class _Cancelled(FakeProvider):
+            async def stream(self, message: str) -> Any:
+                yield _Ev(EVENT_COMPLETE, stop_reason="cancelled")
+
+        async def _cancelled(key: str, **kw: Any) -> Any:
+            return _Cancelled(), True, False
+
+        sess.get_or_create = _cancelled  # type: ignore[method-assign]
+        await d.handle_message(_inbound("hi"))
+        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    @pytest.mark.asyncio
+    async def test_a_delivery_failure_after_a_landed_turn_does_not_rearm(self) -> None:
+        # The provider completed the turn, so the re-injected context is in the
+        # conversation; Discord then failed every send. That is a delivery
+        # failure (recorded as one), not a lost prompt -- re-arming would inject
+        # the same context a second time on the next turn.
+        d, cli, sess = _dispatcher({"u1"})
+        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
+        ledger = _arm_reinjection(sess)
+        cli.edit_ok = False
+        cli.fail_sends = True
+        await d.handle_message(_inbound("hi"))
+        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
+        assert sess.failures and not sess.successes, "undelivered is still a failure"
+        assert ledger["marks"] == 0 and ledger["armed"] is False
+
+    @pytest.mark.asyncio
+    async def test_a_failed_consuming_turn_puts_the_flag_back(self) -> None:
+        # The flag is cleared BEFORE build_message; a provider error on that very
+        # turn discards the prompt carrying the re-injected context. Without the
+        # re-arm the session runs without it until the NEXT compaction -- the
+        # contract the dashboard runner keeps in its finally, applied here.
+        d, _cli, sess = _dispatcher({"u1"})
+        d.ctx_builder = _RecordingCtx()  # type: ignore[assignment]
+        ledger = _arm_reinjection(sess)
+
+        async def _dying(key: str, **kw: Any) -> Any:
+            return _DyingProvider(), True, False
+
+        sess.get_or_create = _dying  # type: ignore[method-assign]
+        await d.handle_message(_inbound("hi"))
+        assert d.ctx_builder.build_calls[-1]["needs_reinjection"] is True
+        assert sess.failures and not sess.successes
+        assert ledger["marks"] == 1 and ledger["armed"] is True
 
 
 class TestGuildCommandRefusalsAreVisible:

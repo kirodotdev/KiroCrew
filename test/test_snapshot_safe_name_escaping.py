@@ -40,7 +40,7 @@ class TestABrokenDestinationLinkDoesNotAbortAMerge:
         (src / "history" / "note.md").write_text("incoming")
         (src / "top.md").write_text("fine")
 
-        # Must not raise. `_copy_tree_no_overwrite` no longer takes a `home` argument:
+        # Must not raise. `_copy_tree_no_overwrite` does not take a `home` argument:
         # the destination chain is pinned descriptor-by-descriptor by the shared
         # primitive, so containment is enforced by the pinned walk rather than by a
         # home passed in here.
@@ -60,9 +60,9 @@ class TestABrokenDestinationLinkDoesNotAbortAMerge:
 
 
 class TestArchiveNamesAreSanitizedBeforeReachingATerminal:
-    """A restore prints names that came out of an untrusted archive, so the escaping
-    that used to guard S3 object keys now guards manifest fields and member names, as
-    the body of ``snap._safe_name``."""
+    """A restore prints names that came out of an untrusted archive, so
+    ``snap._safe_name`` escapes the manifest fields and member names before they
+    reach a terminal."""
 
     def test_control_bytes_are_escaped(self):
         raw = "backups/host/\x1b[2Jsnap.tar.gz"

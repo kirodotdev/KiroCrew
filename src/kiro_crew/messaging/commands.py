@@ -321,8 +321,8 @@ def format_ttl(ttl_secs: int) -> str:
 def compact_unsupported_backend(provider: Any) -> str | None:
     """Backend id when *provider* cannot serve a manual ``/compact``, else ``None``.
 
-    The channel half of the dashboard's manual-``/compact`` capability gate
-    (#7800): a backend outside ``ACP_BACKENDS_COMPACT`` treats the ``/compact``
+    The channel half of the dashboard's manual-``/compact`` capability gate:
+    a backend outside ``ACP_BACKENDS_COMPACT`` treats the ``/compact``
     prompt as ordinary text and never emits a compaction status, so dispatching
     it strands ``wait_for_compaction()`` for its whole deadline. The capability
     is read off the LIVE provider — ``manual_compact_unsupported_backend`` is
@@ -394,20 +394,24 @@ def _redact(text: str) -> str:
 # ── spawn / bg ─────────────────────────────────────────────────────────────
 
 
-def spawn_command_reply(
+async def spawn_command_reply(
     text: str, manager: "SubagentManager | Any", session_key: str = ""
 ) -> str | None:
     """Handle ``spawn <task>`` / ``bg <task>`` / ``spawn list`` / ``spawn status``.
 
     Reads ``manager.running`` (an iterable of records with ``id``/``started``/
-    ``task``), ``manager.max_concurrent`` and ``manager.spawn(task,
+    ``task``), ``manager.max_concurrent`` and ``manager.spawn_async(task,
     parent_session_key=)``.
+
+    Async for the same reason :func:`cron_command_reply` is: every caller is a
+    channel handler on the gateway loop, and the accept a spawn performs is a
+    ``BEGIN IMMEDIATE`` on the task store -- see :func:`_spawn_off_loop`.
     """
     stripped = text.strip()
     low = stripped.lower()
     for prefix in ("spawn ", "bg "):
         if low.startswith(prefix):
-            return spawn_task_reply(stripped[len(prefix) :].strip(), manager, session_key)
+            return await spawn_task_reply(stripped[len(prefix) :].strip(), manager, session_key)
     return None
 
 
@@ -461,7 +465,34 @@ def lists_host_state(command: str, arg: str) -> bool:
     return arg.strip().lower() in _HOST_WIDE_ARGS
 
 
-def spawn_task_reply(
+async def _spawn_off_loop(manager: "SubagentManager | Any", task: str, session_key: str) -> Any:
+    """Start *task* without a task-store write on the gateway's event loop.
+
+    ``SubagentManager.spawn_async`` writes the durable row on the store's writer
+    thread and only then starts the run (write-before-ack, off-loop); the
+    synchronous ``spawn`` takes ``BEGIN IMMEDIATE`` on the calling thread, which
+    for a channel handler is the loop every session's turn shares. A manager
+    without that entry -- a test double -- is spawned synchronously, which is the
+    pre-queue behaviour those doubles model. Same shape as
+    ``dashboard.handlers.messaging._spawn_on_loop`` and ``apps.spawn_sdk``.
+    """
+    import inspect
+
+    from kiro_crew.context import store_of_session
+    from kiro_crew.history import ConversationLog
+
+    kwargs: dict[str, Any] = {"parent_session_key": session_key}
+    if session_key:
+        store = await asyncio.to_thread(lambda: store_of_session(ConversationLog(), session_key))
+        if store:
+            kwargs["memory_store"] = store
+    spawn_async = getattr(manager, "spawn_async", None)
+    if inspect.iscoroutinefunction(spawn_async):
+        return await spawn_async(task, **kwargs)
+    return manager.spawn(task, **kwargs)
+
+
+async def spawn_task_reply(
     task: str, manager: "SubagentManager | Any", session_key: str = ""
 ) -> str | None:
     """Handle an ALREADY-PARSED spawn argument (``list``/``status``/a task).
@@ -470,6 +501,8 @@ def spawn_task_reply(
     Telegram ``/spawn <task>``, a Discord ``!spawn <task>``) has the argument in
     hand and must not have to re-synthesize ``"spawn " + arg`` just to have it
     stripped off again.
+
+    Async for the reason :func:`_spawn_off_loop` gives.
     """
     if not task:
         return None
@@ -485,7 +518,12 @@ def spawn_task_reply(
                 f"🔹 `{agent.id}` | {elapsed}s | {_redact(agent.task)[:_SPAWN_TASK_PREVIEW_CHARS]}"
             )
         return "\n".join(lines)
-    info = manager.spawn(task, parent_session_key=session_key)
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    try:
+        info = await _spawn_off_loop(manager, task, session_key)
+    except UnknownMemoryStore as exc:
+        return f"⚠️ {_redact(str(exc))}"
     if not info:
         return f"⚠️ Subagent capacity reached ({manager.max_concurrent}). Try again later."
     return f"🚀 Spawned subagent `{info.id}`\n_{_redact(task)[:_SPAWN_ECHO_CHARS]}_"

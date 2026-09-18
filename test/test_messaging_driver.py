@@ -895,10 +895,10 @@ class TestDenyAllTools:
 class TestPromptChoiceNamesItsOwnTool:
     """A security prompt must name the tool IT asks about.
 
-    Renderers used to reconstruct the name from the last ``tool_call`` they saw and
-    never cleared it, so a permission arriving without its own titled tool call
-    named the PREVIOUS tool. That is informed consent, so the name (and the purpose
-    of the matching tool call) travel on the prompt event itself.
+    A renderer that reconstructs the name from the last ``tool_call`` it saw and
+    never clears it names the PREVIOUS tool when a permission arrives without its
+    own titled tool call. That breaks informed consent, so the name (and the
+    purpose of the matching tool call) travel on the prompt event itself.
     """
 
     async def _decider(self, event):
@@ -1153,8 +1153,8 @@ class TestTheTwoSpellingsOfTheGrammarAgree:
     relationship that makes that safe, which a shared string alone does not: every
     cut point of anything the recognizer accepts must be admitted by the probe.
     Miss one and the filter emits half a real marker; admit too much and prose is
-    held. Requested in review on #9117, where the two spellings were noted as
-    already diverging on `IGNORECASE`.
+    held. `IGNORECASE` is one axis on which the two spellings can silently
+    diverge, so this pins them together.
     """
 
     ACCEPTED = [

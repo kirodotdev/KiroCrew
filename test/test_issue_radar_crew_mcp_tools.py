@@ -149,7 +149,7 @@ class TestGatewayPathsAreReachableWithTheInternalSecret(unittest.TestCase):
                         # unpatched, got swallowed into `{"error": ...}`, and the
                         # capture never ran — green locally, red on the merge.
                         # It now also carries the attempt's resolved socket path
-                        # (#4106 item 1), so the fake must accept it or the same
+                        # too, so the fake must accept it or the same
                         # swallow-into-error failure returns.
                         with patch.object(mcp_core, "_api_urlopen", _capture):
                             got = helper("/api/x", session_key="MINE", **kwargs)
@@ -217,7 +217,7 @@ class TestToolRegistration(unittest.TestCase):
         assert MCP_CORE_SCHEMAS[READ_TOOL].fields == []
 
     def test_record_requires_nothing_unconditionally(self):
-        # `number` USED to be required, which left a crew that swept an empty
+        # Requiring `number` would leave a crew that swept an empty
         # queue no way to record the cycle without inventing an issue number. The
         # coupling that replaced the requirement (a missing number is valid only
         # with `sweep`, and `sweep` only without one) is a relation between two
@@ -448,8 +448,8 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
     This pins the other half: an Issue Radar crew driven by an auto-nudge cycle
     is NOT a subagent -- it is the same principal, its own dashboard slot,
     re-entered on a timer -- so it must resolve to its OWN crew identity and be
-    let through the gate. Issue #5905 reported the crew ledger tools refusing an
-    auto-nudge worker "classified as a subagent". There is no such
+    let through the gate. The crew ledger tools must not refuse an auto-nudge
+    worker as "classified as a subagent". There is no such
     classification; the two turns already resolve identically. The refutation is
     "correct by construction", and this test is what keeps the construction from
     silently regressing.
@@ -463,7 +463,7 @@ class TestAnAutoNudgeTurnResolvesTheSameIdentityAsADirectTurn:
     ``_fire_dashboard_nudge`` routed the nudge somewhere that skipped
     ``_run_chat`` (or drove it on a different session), the identity a crew tool
     resolves would diverge from a human turn's and every crew tool would start
-    refusing again with #5905's confusing message. The assertions below name the
+    refusing again with that confusing message. The assertions below name the
     slot key and the writer rather than any call ordering, so they survive an
     internal rewrite that preserves the property.
     """
@@ -827,7 +827,7 @@ class TestPublicStringsAreSanitizedOnTheWayIn(unittest.TestCase):
     def test_a_credential_in_the_pass_reason_is_not_stored(self):
         """``why`` is what the shared skip index keeps as the reason.
 
-        Its audience grew: it is no longer only the crew page, it is the line every
+        Its audience is wide: it is not only the crew page but the line every
         other crew in the repository reads before deciding not to investigate an
         issue. It takes ``redact`` rather than the stricter public sanitizer because
         it stays on this machine — but a credential quoted out of a log must not be
@@ -1026,7 +1026,7 @@ class TestReadOutput(unittest.TestCase):
     def test_bounds_the_event_log_to_the_NEWEST_events_chronologically(self):
         """The window must contain the newest events, oldest-first inside it.
 
-        This test previously built its fixture oldest-first, which is the opposite
+        A fixture built oldest-first would be the opposite
         of what ``crew_store.read_events`` returns ("Newest first" — it walks the
         append-only log in reverse). Against that unrealistic fixture the old
         ``events[-N:]`` looked right, so the test went green while the real code
@@ -1204,8 +1204,8 @@ class TestMiddlewareDecision:
         layer's own opinion. Without it, an agent holding the internal secret could
         pause or retire a crew.
 
-        ``/crew/guidance`` used to be in this list. It is not merely closed now, it
-        is GONE: a crew never waits for a human, so there is no guidance to inject.
+        ``/crew/guidance`` is not in this list, and not merely closed: it is
+        GONE. A crew never waits for a human, so there is no guidance to inject.
         Asserting a deleted route is refused would pass for the wrong reason — a
         route that does not exist cannot be registered, so the lookup below would
         fail before the gate was ever consulted. The deletion is asserted separately.

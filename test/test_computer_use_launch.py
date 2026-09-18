@@ -270,7 +270,7 @@ class TestLaunchResolutionTrust:
         ``C:\\Windows`` therefore accepted a planted ``C:\\Windows\\Temp\\Evil.exe``, and
         an ``App Paths`` entry in the writable ``HKCU`` hive can name exactly that.
 
-        Two changes close it: ``C:\\Windows`` is no longer a root at all (``System32``
+        Two changes close it: ``C:\\Windows`` is not a root at all (``System32``
         comes from ``platform_compat`` instead), and the file's own directory is probed
         for writability. This asserts the second, because the first alone would leave the
         two writable directories still under ``System32``.

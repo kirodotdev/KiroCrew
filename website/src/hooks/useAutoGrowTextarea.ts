@@ -34,8 +34,8 @@ export function useAutoGrowTextarea(
   }, [ref, value, maxH])
 
   // Re-measure once the field gains a layout box. A responsive shell may mount a
-  // composer inside a hidden pane; IntersectionObserver and not ResizeObserver,
-  // because `measure` SETS the height it would otherwise observe.
+  // composer inside a hidden pane; IntersectionObserver here because visibility
+  // is what changes, and `measure` sets nothing that observer reads.
   useEffect(() => {
     const el = ref.current
     if (!el || typeof IntersectionObserver === 'undefined') return
@@ -44,5 +44,24 @@ export function useAutoGrowTextarea(
     })
     io.observe(el)
     return () => io.disconnect()
+  }, [ref, maxH])
+
+  // Re-measure when the box's WIDTH changes at an unchanged value (a window
+  // resize, a pane folding beside it): the text wraps at a different column and
+  // the value-keyed effect above cannot know. Width only -- `measure` writes the
+  // height, which this observer also sees, and re-measuring on that would loop;
+  // the guard makes a height-only notification a no-op.
+  useEffect(() => {
+    const el = ref.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    let lastWidth = el.clientWidth
+    const ro = new ResizeObserver(() => {
+      const width = el.clientWidth
+      if (width === lastWidth) return
+      lastWidth = width
+      measure(el, maxH)
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
   }, [ref, maxH])
 }

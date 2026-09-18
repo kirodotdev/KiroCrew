@@ -37,6 +37,14 @@ pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 _PARK_TIMEOUT = 1.0
 
 
+# How long the holder thread keeps the lock in the on-loop / off-loop pair.
+# Both tests derive their bounds from it: one asserts the on-loop caller does
+# NOT wait this out, the other that the off-loop caller does. Naming it keeps
+# the two from drifting apart, and keeps either bound from being read as a
+# statement about absolute speed rather than about queueing.
+_HOLD_SECS = 1.5
+
+
 def _new_agent(agent_id: str) -> None:
     sp.create_agent_folder(
         agent_id,
@@ -188,7 +196,7 @@ class TestOnLoopCallerDoesNotWait:
 
         # Release the lock well after the assertion window: if the on-loop
         # caller wrongly waits, it waits this long and fails on elapsed.
-        timer = threading.Timer(1.5, holder_release.set)
+        timer = threading.Timer(_HOLD_SECS, holder_release.set)
         timer.daemon = True
         timer.start()
         try:
@@ -204,8 +212,18 @@ class TestOnLoopCallerDoesNotWait:
             holder_release.set()
             keeper.join(timeout=10.0)
 
-        # Did not queue behind the holder.
-        assert elapsed < 0.5, f"on-loop caller waited {elapsed:.2f}s on the lock"
+        # Did not queue behind the holder. The bound is DERIVED from the hold, not a
+        # bare constant: what this test can distinguish is "returned promptly" from
+        # "waited out a holder that keeps the lock for _HOLD_SECS", and a caller that
+        # queued measures the full hold. A tighter absolute number does not sharpen
+        # that distinction -- it only fails on scheduler noise, which is what a
+        # 0.5s bound did on a loaded Windows runner at 0.515s while the caller had
+        # plainly not queued behind a 1.5s holder.
+        assert elapsed < _HOLD_SECS * 0.66, (
+            f"on-loop caller waited {elapsed:.2f}s with the lock held for "
+            f"{_HOLD_SECS:.2f}s, so it queued behind the holder instead of "
+            "offloading the write"
+        )
         assert wrote is True
         state = sp.read_state("a3")
         assert state is not None
@@ -349,21 +367,21 @@ class TestLockRegistry:
 
 
 def _park_first_writer_late(monkeypatch, inside: threading.Event, delay: float) -> None:
-    """Patch ``_atomic_write`` so the FIRST writer announces itself, then lands
-    *delay* seconds later.
+    """Park the FIRST state.json writer after its read, then land it later.
 
     The announcement marks the point where the writer's READ has already
     happened, so anything written after it is what a stale rewrite would roll
     back. The delay is what puts the writer's WRITE after the on-loop write
     under test -- unserialized and undrained, that ordering is the clobber.
     """
+
     real_atomic_write = sp._atomic_write
     seen: list[str] = []
     guard = threading.Lock()
 
     def instrumented(path, data):
         with guard:
-            first = not seen
+            first = path.name == "state.json" and not seen
             if first:
                 seen.append("parked")
         if first:
@@ -400,6 +418,7 @@ def _mock_sessions_for_run(served_model: str):
     sessions.reset = AsyncMock()
     sessions.record_success = MagicMock()
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     return sessions
 
 
@@ -414,7 +433,7 @@ def _mock_ctx_builder_for_run():
 
 
 class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
-    """#6298: the on-loop retention ``keep`` write must not be rolled back.
+    """The on-loop retention ``keep`` write must not be rolled back.
 
     ``_promote_conversation`` / ``release_conversation`` write ``keep`` from the
     event loop, where ``update_state`` deliberately takes no lock -- so a
@@ -422,8 +441,8 @@ class TestOnLoopKeepWriteAgainstACancelledRunsWorker:
     only through the ``_conversation_busy`` gate, which refuses while a run is in
     flight, so the one writer that can still be concurrent is a DETACHED worker:
     one whose ``to_thread`` await was cancelled while the write was in flight.
-    Draining every off-loop writer on cancellation (#6308) removes that
-    population, which closes this interleave too -- a pool writer can no longer
+    Draining every off-loop writer on cancellation removes that
+    population, which closes this interleave too -- a pool writer cannot
     outlive the run it belongs to.
     """
 

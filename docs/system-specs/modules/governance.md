@@ -19,6 +19,11 @@ implementation companion to the design doc (Pippin `kirocrew/MVTDhLpm2SSW`).
 > (`~/.kiro/agents/*.json`) is **out of scope**: KiroCrew enforces its own
 > ceiling at its own gate even when the kiro side grants more.
 
+Subagent admission checks explicit target names. When execution resolves an
+omitted name from the original conversation or parent session, the runner also
+checks that effective name against the parent's `capabilities.spawn` agent scope
+before provider allocation, using the same evaluator and app identity.
+
 ## The four archetypes (one composition algebra each)
 
 Every governed control is exactly one of four shapes. The evaluator dispatches
@@ -151,6 +156,18 @@ meaningful when the authority actually said something:
   switching the central tier off and dropping every centrally supplied restriction.
   `compose_tier_ladder` tracks the effective value as the fold proceeds and
   re-applies it on every exit, so no path that rebuilds a ceiling can drop it.
+  An **unusable home file beneath a present authority is skipped, not raised**
+  (`_subordinate_ceiling(beneath_authority=True)`, one warning per process) --
+  unreadable, not JSON, JSON that `parse_policy` rejects, or bytes on which verifying
+  or parsing raises anything at all (the catch is total at this one boundary), one
+  path for every shape so JSON validity does not split the behaviour. The home
+  `distribution` peek that runs before the central document is known is a lookup for
+  a declared source, not a ruling on the file: a malformed block declares no source
+  and the peek moves on, leaving skip-or-fatal to `_subordinate_ceiling`, which
+  re-parses the home document only when the home tier is the one selected. The
+  authority governs unchanged, which is the fail-closed direction, whereas raising
+  -- the behaviour when the home file is the only ceiling -- would let whoever owns
+  `~/.kiro/crew` refuse boot and freeze every refresh on a fleet host.
   "Declared" is read from the **presence** of the block, not from its values
   (`PolicyDistribution.explicit`, set by `from_dict`, outside `__eq__`): a central
   document that spells out `on_unavailable: fail_closed` -- the default -- has
@@ -661,7 +678,7 @@ so there is no age left to restart.
 **A refused install does not leave the rejected bytes as the last-known-good.** The
 publish is confirmed before the install, so the new document is on disk before
 `apply_ceiling` has had its say — and that step refuses for reasons the earlier
-`validate_ceiling` cannot see (a bound profile, the trust root, or a tier-1 pin that moved
+`validate_ceiling` cannot see (a bound profile, the trust root, or a subordinate tier that moved
 between the two). `refresh_now` snapshots the prior copy and `_restore_cache` puts it back
 on any failure — **invalidating first, then writing** — carrying its original `fetched_at` so a repeatedly-failing refresh cannot
 keep resetting the staleness clock. **The rollback is itself a compare-and-swap**, on the
@@ -1277,7 +1294,11 @@ which parses fine — so fail-closing on a *malformed* file would catch only a c
 variant of an attack the design already concedes, while turning a non-atomic fleet
 push or a hand-edit typo into an unbootable host. Corruption there is a reliability
 event: it is logged at WARNING, plugin admission independently fails closed on the
-same file, and `kirocrew doctor` reports it.
+same file, and `kirocrew doctor` reports it. Distinct from a broken FILE: a
+well-formed trust root whose `require_policy_signature` is present but not a
+real JSON boolean (explicit `null`, `"false"`, `0`) reads fail-closed as
+opted-IN — both the enforcement gate and the key store route through the one
+strict `admission.AdmissionPolicy.from_dict` reader (#9641).
 
 
 **Threat model.** This detects **offline / at-rest tampering and substitution** of
@@ -1794,6 +1815,16 @@ along with the rest of the computer-use governance model — see [Computer use i
 governed](#computer-use-is-not-governed-deliberately). The global `approval_mode`
 row's live clamp remains reserved (see "Still-reserved in v1").
 
+### Owner capability previews
+
+`sanitize_agent_config_governance(config, audit=False)` uses the same approval
+filter as publication without emitting withdrawal logs or SEL events. The
+nested MCP filter receives the same flag. All existing writers keep the default
+`audit=True`. Capability previews do not maintain a second governance predicate.
+Derived native permissions are updated from the filtered allowedTools list;
+custom permission policies that cannot be reconciled without changing their
+meaning are refused rather than silently retained as an alternate shortcut.
+
 ## Foreign-agent import interaction
 
 Foreign-agent import is a data-ingest path, not a third governance level and
@@ -2259,7 +2290,9 @@ see `platform-context.md`), and
 chokepoints — **policy layer only**, see below), and
 `capabilities.social_share` (the dashboard's "Share as image" entry — read
 through `GET /api/dashboard/config`, every layer honoured, every decision
-audited; see below). Only the live `approval_mode`
+audited; see below), and `capabilities.feature_videos_download` (fetching the
+signed feature-video manifest and its media from the vendor CDN — three
+chokepoints, every layer honoured; see below). Only the live `approval_mode`
 clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
@@ -2629,6 +2662,55 @@ distinct `pinned` state — the card must separate "off because the operator lef
 switch off" (flippable) from "off because an administrator pinned it" (a config
 write returns 403), since offering a working-looking toggle for the second is the
 half-control this row exists to avoid.
+
+### Hosted feature-video media — `capabilities.feature_videos_download`
+
+Feature-intro clips are hosted, not bundled: the gateway fetches a signed manifest
+from a vendor CloudFront distribution and downloads the media it lists into
+`~/.kiro/crew/feature-videos/<release>/` (`feature_videos_manifest.py`,
+`feature_videos_cache.py`; user-facing doc `feature-videos.md`). That is outbound
+traffic to a vendor endpoint plus third-party bytes landing on disk — two things a
+managed fleet frequently may not do at all. Governed by the
+`capabilities.feature_videos_download` `SCOPE_CATALOG` capability row
+(`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or evaluator
+change, mirroring the rows above).
+
+**Three chokepoints, because any one alone is a half-control.** Each manifest
+request (the fallback walk re-asks before every candidate url, so no request is
+made after a withdrawal and nothing is learned), each clip request in the download pass
+(the poster and the clip each take their own audited answer, so no media lands on
+disk after a withdrawal), and `POST /api/feature-videos/fetch-all` (refused 403
+rather than accepted into a task that would deny itself). All three are server-side,
+and that is the whole surface: the BROWSER never reaches the CDN, because the server
+never hands it a CDN url. An uncached hosted clip is not offered at all — a remote
+`src` would have the browser play bytes the sha256 pin never checked and follow
+redirects the gateway's own opener refuses — so `feature_videos.validate_asset_path`
+admits only this origin, and the ceiling has no client-side leg to govern.
+
+**Already-cached clips keep playing under a denial.** Withdrawing bytes that are
+already on disk is a separate decision this row does not make; a denied install
+offers its local entries and nothing else.
+
+**Shape: the social-share read, not the startup probes.** `vet_and_audit` on the
+pinned `dashboard:ui` surface key — never a caller-controlled header — and every
+denied decision is honoured whichever layer produced it, so a Level-2 profile bound
+to the dashboard can withdraw the fetch. The frontend reads the answer as
+`download_enabled` on `GET /api/feature-videos/status` (the settings panel) and
+`/next` (the modal), so it never guesses and never has to discover the ceiling
+through a 403. It is deliberately NOT repeated on `GET /api/dashboard/config`: that
+route is fetched on every dashboard load by every install, and an audited
+`download_denied()` there would spend a governance decision — and a SEL row — on a
+readout nobody consumes.
+
+**Fails CLOSED** (`fail_closed=True`), joining `capabilities.publish` /
+`theme_install` / `telemetry` / `tailnet_origin` / `social_share`: a wrong-DENY
+withholds an intro clip, a wrong-PERMIT makes a vendor-CDN request on a fleet that
+forbade vendor egress. An unevaluable ceiling is audited as the denial it produces.
+
+**No CSP change.** `media-src` stays `'self' blob:`. Every clip the dashboard plays
+is served from this origin — a bundled asset or a downloaded, verified one — so the
+policy needs no off-origin media host, and a header that admitted one would be
+admitting a fetch the server never offers.
 
 ### "Share as image" — `capabilities.social_share`
 

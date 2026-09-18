@@ -178,7 +178,15 @@ class WeixinRenderer(Renderer):
         must reach ``handle_message``'s except branch (which calls
         ``record_failure``). ``close()`` is the teardown path and suppresses it,
         since by then the turn is already being unwound.
+
+        The body is scrubbed render-aware HERE rather than in ``text()`` because
+        ``text()`` is also what the dispatcher persists: the redaction belongs on
+        the bytes that ship, not on the transcript. iLink renders the body as
+        markdown, so a credential split by emphasis (``AKIA**REST**``) or a link
+        survives the channel-neutral literal stream pass and is reassembled on
+        screen; this is the same send-boundary scrub every markdown channel does.
         """
+        body = self.redact_for_target(body)
         ctx_token = self._ctx.get(self._account_id, self._to)
         chunks = render_chunks(body, self.capabilities.max_message_chars)
         for i, part in enumerate(chunks):

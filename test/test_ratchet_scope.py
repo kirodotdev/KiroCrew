@@ -111,7 +111,7 @@ def _build_repo_with_diverged_feature(repo: Path) -> None:
 def _repo_template(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the diverged-feature repo once per session; ``repo`` copies it per test.
 
-    Six git subprocesses (~2-3s) were previously paid on every one of the 23
+    Six git subprocesses (~2-3s) would otherwise be paid on every one of the 23
     tests in this module. Session scope is safe here because the template is
     never handed to a test, only copied from via ``shutil.copytree`` -- so a
     test that adds a commit, merges, or moves a branch cannot reach another's
@@ -481,6 +481,38 @@ class TestExplicitBase:
         _git(repo, "commit", "-m", "unrelated root")
 
         assert scope.resolve_base("main") == "main"
+
+    def test_the_fallback_announces_that_it_degraded(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A verdict computed against the tip must not look like one from the merge base.
+
+        The fallback answers a question it cannot answer exactly, and the pair
+        (exact answer, degraded answer) is indistinguishable in every gate's
+        report. So the degradation is stated where the gates already print, as a
+        ``warning`` so CI surfaces it as an annotation.
+        """
+        _git(repo, "checkout", "--orphan", "detached")
+        _git(repo, "commit", "-m", "unrelated root")
+
+        scope.resolve_base("main")
+
+        out = capsys.readouterr().out
+        assert "::warning::" in out
+        assert "base TIP" in out
+
+    def test_the_merge_base_path_announces_too(
+        self, repo: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Silence on success would make a lost announcement look like a clean run."""
+        _git(repo, "checkout", "feature")
+
+        resolved = scope.resolve_base("main")
+
+        out = capsys.readouterr().out
+        assert "::notice::" in out
+        assert resolved in out
+        assert "::warning::" not in out
 
 
 class TestParseAddedLines:

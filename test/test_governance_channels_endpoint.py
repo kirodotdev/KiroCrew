@@ -113,7 +113,7 @@ class TestPolicyDenies:
         assert result["wecom"] is True
 
     def test_eval_error_is_null_not_denied(self, monkeypatch):
-        # MEDIUM (GPT round-6 pass 3): a transient governance-EVALUATION error must
+        # A transient governance-EVALUATION error must
         # surface as null ("unavailable"), NOT False ("Off by admin") — mislabeling
         # a transient failure as an explicit admin denial is misleading. The
         # fail-closed degrade Decision carries rule="default" + a

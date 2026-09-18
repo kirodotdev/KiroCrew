@@ -326,6 +326,29 @@ class ReplayReport:
         )
 
 
+def _refusal_entry(channel_type: str, route: InboundRoute | None) -> SpooledInbound | None:
+    """Build the durable record for one declared refusal route."""
+    if route is None:
+        return None
+    if not route.text.strip() and not route.attachments_dropped:
+        return None
+    return SpooledInbound(
+        channel_type=channel_type,
+        conversation_id=route.conversation_id,
+        text=route.text,
+        user_id=route.user_id,
+        thread_id=route.thread_id,
+        message_id=route.message_id,
+        attachments_dropped=route.attachments_dropped,
+    )
+
+
+def spool_refused_turn_sync(*, channel_type: str, route: InboundRoute | None) -> bool:
+    """Persist a refusal inline after the update restart fence is committed."""
+    entry = _refusal_entry(channel_type, route)
+    return False if entry is None else record_refusal_sync(entry)
+
+
 async def spool_refused_turn(*, channel_type: str, route: InboundRoute | None) -> bool:
     """Spool a turn the shutdown gate refused. The one call every channel makes.
 
@@ -349,21 +372,8 @@ async def spool_refused_turn(*, channel_type: str, route: InboundRoute | None) -
     The entry carries an empty body and a nonzero ``attachments_dropped``, so
     replay routes it straight to the notice, which names the dropped media.
     """
-    if route is None:
-        return False
-    if not route.text.strip() and not route.attachments_dropped:
-        return False
-    return await record_refusal(
-        SpooledInbound(
-            channel_type=channel_type,
-            conversation_id=route.conversation_id,
-            text=route.text,
-            user_id=route.user_id,
-            thread_id=route.thread_id,
-            message_id=route.message_id,
-            attachments_dropped=route.attachments_dropped,
-        )
-    )
+    entry = _refusal_entry(channel_type, route)
+    return False if entry is None else await record_refusal(entry)
 
 
 def spool_path() -> Path:
@@ -618,6 +628,19 @@ def record_refusal_sync(
         return False
 
 
+_pending_refusal_writes: set[asyncio.Task[bool]] = set()
+
+
+def pending_refusal_write_count() -> int:
+    """Return off-loop refusal writes that have not reached durable storage."""
+    return sum(1 for task in _pending_refusal_writes if not task.done())
+
+
+def pending_refusal_writes() -> tuple[asyncio.Task[bool], ...]:
+    """Snapshot unfinished refusal writes for the update restart drain."""
+    return tuple(task for task in _pending_refusal_writes if not task.done())
+
+
 async def record_refusal(entry: SpooledInbound, *, path: Path | None = None) -> bool:
     """Off-loop :func:`record_refusal_sync`, shielded from the caller's cancel.
 
@@ -631,9 +654,11 @@ async def record_refusal(entry: SpooledInbound, *, path: Path | None = None) -> 
     write would be an orphan nobody awaits. ``asyncio.shield`` is what keeps
     those two apart -- the caller may be cancelled, the write is not, and this
     coroutine still returns its result when the caller is allowed to finish.
-    (The residual is the process's ``os._exit`` landing while the worker is
-    mid-write, which no in-process shape can close and which loses at most the
-    one message being written.)
+    The inner task is retained in ``_pending_refusal_writes`` until it finishes.
+    Automatic update restart counts and drains that registry before re-exec; once
+    its yield-free restart fence is committed, later refusals use the synchronous
+    wrapper instead. Thus a caller cancellation cannot orphan the write and an
+    update exec cannot overtake it.
 
     The default executor may already be refusing work at this point
     (``RuntimeError: cannot schedule new futures after shutdown``); dropping the
@@ -642,7 +667,13 @@ async def record_refusal(entry: SpooledInbound, *, path: Path | None = None) -> 
     bounded file, on a loop that is being torn down anyway.
     """
     try:
-        return await asyncio.shield(asyncio.to_thread(record_refusal_sync, entry, path=path))
+        write = asyncio.create_task(
+            asyncio.to_thread(record_refusal_sync, entry, path=path),
+            name="inbound-refusal-write",
+        )
+        _pending_refusal_writes.add(write)
+        write.add_done_callback(_pending_refusal_writes.discard)
+        return await asyncio.shield(write)
     except asyncio.CancelledError:
         raise
     except RuntimeError:
@@ -822,22 +853,23 @@ def _route_authorized(entry: SpooledInbound, transport: Any) -> bool:
     notice is a proactive send, which is exactly what it governs. Fails CLOSED on
     a transport that cannot answer or that raises.
 
-    The principal is passed for a DM route ONLY. A THREADED route (a Discord
-    thread, a Telegram forum Topic) is authorized by the thread roster and
-    nothing else: Discord's ``may_send_to`` falls from a thread not in
+    The principal is normally passed for a DM route ONLY. A THREADED route (a
+    Discord thread, a Telegram forum Topic) is authorized by the thread roster
+    and nothing else: Discord's ``may_send_to`` falls from a thread not in
     ``_allowed_threads`` to its DM arm, ``principal in _allowed``, on the stated
     assumption that a thread route names no principal. A spooled thread entry
     DOES name one -- the sender -- so passing it would let a still-allowed sender
     authorize a notice into a thread that was revoked while the gateway was
-    down. The sender being on the DM allow-list says nothing about whether the
-    thread may be posted to; withholding the principal keeps the two rosters
-    from answering for each other.
+    down. Slack is the only exception: it has no separate thread roster, and the
+    accepted sender is itself the route authority, so the stored owner principal
+    is rechecked while the original thread id is preserved.
     """
     gate = getattr(transport, "may_send_to", None)
     if gate is None:
         return False
     thread = entry.thread_id or None
-    principal = "" if thread else entry.user_id
+    sender_owns_thread = entry.channel_type == "slack"
+    principal = entry.user_id if not thread or sender_owns_thread else ""
     try:
         permitted = bool(gate(entry.conversation_id, thread, principal=principal))
     except Exception:

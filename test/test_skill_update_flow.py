@@ -368,7 +368,7 @@ def test_process_no_candidate_emits_skipped_audit(monkeypatch):
     """When the model returns no new_skill, emit a 'skipped' audit event.
 
     Regression test for the observability gap: an eligible session that ran the
-    skill-gen prompt but got no candidate previously left NO SEL event, making
+    skill-gen prompt but got no candidate would leave NO SEL event, making
     'asked, model declined' indistinguishable from 'never asked' in the audit
     log. The else-branch in _process_auto_skills now records it.
     """
@@ -820,7 +820,7 @@ def test_frontmatter_value_resolves_block_scalars():
         H._frontmatter_value(body, "description") == "Retry a deploy after checking the logs.\n"
     )
     # `triggers` uses `|-`, whose strip chomping drops the trailing break, so it is
-    # unaffected by #7097 -- the pair keeps the two modes visibly distinct here.
+    # unaffected by the strip chomping -- the pair keeps the two modes visibly distinct here.
     assert H._frontmatter_value(body, "triggers") == "a, b"
     # An empty block resolves to "" rather than the indicator character.
     assert H._frontmatter_value("---\ndescription: >\nname: x\n---\nbody", "description") == ""

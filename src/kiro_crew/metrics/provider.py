@@ -31,6 +31,7 @@ import`` note there.
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import logging
 import os
@@ -975,7 +976,7 @@ def _consent_worker(generation: int) -> None:
             if generation != _build_generation:
                 # Superseded: another flip or a shutdown happened while we read.
                 # Do NOT stamp the clock — this check answered a question about a
-                # state that no longer exists, and stamping it would defer the
+                # state that is already gone, and stamping it would defer the
                 # replacement check by a full window while the setting sat
                 # unapplied.
                 return
@@ -1129,7 +1130,7 @@ def _take_provider_locked() -> Optional["_MeterProviderT"]:
 
 
 def _flush_detached_provider(doomed: "_MeterProviderT") -> None:
-    """Flush a provider that is no longer referenced. Never holds ``_lock``.
+    """Flush a detached provider that nothing references. Never holds ``_lock``.
 
     Best-effort by construction. The SDK registers its own ``atexit`` flush when a
     provider is built (``MeterProvider(shutdown_on_exit=True)``, its default), which
@@ -1165,7 +1166,7 @@ def shutdown() -> None:
     with _lock:
         doomed = _take_provider_locked()
         # Drop the stamp rather than carry a reading that describes a recorder that
-        # no longer exists; whichever rebuild comes next stamps its own. This does
+        # is gone; whichever rebuild comes next stamps its own. This does
         # not defer the next recheck — a zero stamp reads as immediately due — but
         # nothing consults it while `_recorder` is None.
         _consent_checked_at = 0.0
@@ -1227,3 +1228,41 @@ def reset_for_testing() -> None:
     _wait_for_in_flight_consent_worker()
     with _lock:
         _ever_built = False
+
+
+#: The registered telemetry applier, kept so ``watch_config`` stays idempotent.
+_config_sub: object = None
+
+
+async def _on_config_change(change: object) -> None:
+    """Rebuild the recorder whenever anything under ``telemetry`` moves.
+
+    The consent worker re-resolves only ``enabled``, on a 30-second window, so
+    every other field in the section (``local_dir``, ``retention_days``,
+    ``max_total_mb``, ``export_interval_seconds``, ``otlp_endpoint``) was frozen
+    into the recorder at first use and stayed there for the process lifetime.
+    :func:`shutdown` drops the recorder and its provider, so the next metric call
+    rebuilds from the new values -- which is also the fast path for ``enabled``,
+    replacing the 30-second wait with an immediate apply.
+
+    Deliberately blunt: the section is small, a rebuild is bounded, and a config
+    write is rare, so comparing which field moved would buy nothing over
+    rebuilding once. ``shutdown`` flushes on the calling thread, so it runs in a
+    worker rather than on the event loop.
+    """
+    del change  # any telemetry.* change rebuilds; nothing to inspect
+    await asyncio.to_thread(shutdown)
+
+
+def watch_config() -> None:
+    """Register the telemetry applier on the process config watcher.
+
+    Idempotent per process: a second call is a no-op, so a re-entered boot path
+    cannot stack appliers that each rebuild the recorder.
+    """
+    global _config_sub
+    if _config_sub is not None:
+        return
+    from kiro_crew.config import live
+
+    _config_sub = live.subscribe("telemetry", callback=_on_config_change, name="telemetry")

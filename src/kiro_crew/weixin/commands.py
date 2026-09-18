@@ -18,8 +18,8 @@ from kiro_crew.messaging.conversation import ConversationState  # noqa: F401
 #: has no dashboard-mirror command, so listing one would advertise a capability
 #: that does not exist here.
 # ── Command grammar ───────────────────────────────────────────────────────────
-# Kept LOCAL rather than shared. WeCom grew its own ``build_help_text`` in #5105,
-# so Weixin is the only caller these three would have, and a shared module with one
+# Kept LOCAL rather than shared. WeCom has its own ``build_help_text``, so Weixin
+# is the only caller these three would have, and a shared module with one
 # consumer is a guess about the second. The day a second channel wants this table
 # shape, this is the block to move -- with two callers to shape it, instead of one.
 

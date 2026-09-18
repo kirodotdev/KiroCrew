@@ -1,9 +1,9 @@
 /**
- * Isolated capture entry for the Spec Builder #7662 fixes.
+ * Isolated capture entry for the Spec Builder modal-error fixes (#7662, #8757).
  *
  * Mounts the REAL components against the real stylesheet, theme tokens and
  * live i18n catalog; API responses come from the capture script's route
- * interception (gateway-free). Two scenes, one per fixed surface:
+ * interception (gateway-free). One scene per fixed surface:
  *
  *   ?scene=detail — SpecDetail; the script opens the delete confirm and the
  *                   intercepted DELETE refuses, so the frame documents the
@@ -12,12 +12,16 @@
  *                   assert the occluded page-top banner is no longer used.
  *   ?scene=rail   — SpecRail; the script types a filter that matches nothing
  *                   and photographs the empty state's Clear-filter exit.
+ *   ?scene=settings — SettingsModal over the rail; the intercepted POST
+ *                   /settings refuses, so the frame documents the save failure
+ *                   rendering INSIDE the modal rather than behind its backdrop.
  */
 import { createRoot } from 'react-dom/client'
 import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
+import SettingsModal from '../src/apps/spec-builder/components/SettingsModal'
 import SpecDetail from '../src/apps/spec-builder/components/SpecDetail'
 import SpecRail from '../src/apps/spec-builder/components/SpecRail'
 import type { SpecSummary } from '../src/apps/spec-builder/api'
@@ -42,7 +46,20 @@ const SPECS: SpecSummary[] = [
   { name: 'billing-export', title: 'Billing export', phase: 'requirements', running: false, status: 'planning' },
 ] as SpecSummary[]
 
-const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+})
+
+const rail = (
+  <SpecRail
+    specs={SPECS}
+    sel={null}
+    setSel={() => {}}
+    onNew={() => {}}
+    onSettings={() => {}}
+    width={280}
+  />
+)
 
 async function main() {
   await initI18n()
@@ -51,32 +68,28 @@ async function main() {
       <QueryClientProvider client={queryClient}>
         <MemoryRouter>
           <div className="h-screen flex bg-bg text-text" data-capture-root>
-            {scene === 'rail'
-              ? (
-                <SpecRail
-                  specs={SPECS}
-                  sel={null}
-                  setSel={() => {}}
-                  onNew={() => {}}
-                  onSettings={() => {}}
-                  width={280}
+            {scene === 'rail' && rail}
+            {scene === 'settings' && (
+              <>
+                {rail}
+                <SettingsModal onClose={() => {}} />
+              </>
+            )}
+            {scene === 'detail' && (
+              <AppApiProvider
+                appName="spec-builder"
+                allowedApiPaths={['/api/chat']}
+                allowedEvents={[]}
+                subscribeFn={() => () => {}}
+                navigateFn={() => {}}
+                notifyFn={() => {}}
+              >
+                <SpecDetail
+                  name="checkout-flow"
+                  setErr={(m) => { window.__setErrCalls.push(m) }}
                 />
-              )
-              : (
-                <AppApiProvider
-                  appName="spec-builder"
-                  allowedApiPaths={['/api/chat']}
-                  allowedEvents={[]}
-                  subscribeFn={() => () => {}}
-                  navigateFn={() => {}}
-                  notifyFn={() => {}}
-                >
-                  <SpecDetail
-                    name="checkout-flow"
-                    setErr={(m) => { window.__setErrCalls.push(m) }}
-                  />
-                </AppApiProvider>
-              )}
+              </AppApiProvider>
+            )}
           </div>
         </MemoryRouter>
       </QueryClientProvider>

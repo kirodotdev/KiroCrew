@@ -22,7 +22,7 @@ Property A — the packaged launcher must resolve
 Defect B — stale predecessor MCP entries
     ``clean_stale_managed_mcp()`` only removes ``kirocrew-*`` entries unless an
     edition registers a superseded agent through the import-source seam — those
-    entries point at a runtime that no longer exists and are purgeable by the
+    entries point at a runtime that does not exist and are purgeable by the
     edition that replaced them.
 
 Both tests FAIL against the pre-fix code, proving they catch the real bug.
@@ -170,7 +170,7 @@ def test_resolver_finds_the_bundled_launcher(tmp_path, monkeypatch):
 
 
 # --------------------------------------------------------------------------
-# Defect A — managed servers survive (no longer dropped)
+# Defect A — managed servers survive (not dropped)
 # --------------------------------------------------------------------------
 def test_managed_servers_survive_in_the_desktop_bundle(tmp_path, monkeypatch):
     """build_agent_config() must give kirocrew-core/kirocrew-cron an absolute,
@@ -321,6 +321,26 @@ def test_first_run_delivers_shim_and_purge(tmp_path, monkeypatch):
     assert "ai-community-slack-mcp" in remaining
     # one-time marker written
     assert marker.exists()
+
+
+def test_first_run_removes_a_generated_conductor_skill(tmp_path, monkeypatch):
+    exe = _fake_bundle_launcher(tmp_path)
+    _sandbox_first_run(tmp_path, monkeypatch, exe)
+    skills_root = tmp_path / "skills"
+    monkeypatch.setattr("kiro_crew.skills.skills_dir", lambda: skills_root)
+    skill = skills_root / "conductor" / "SKILL.md"
+    skill.parent.mkdir(parents=True)
+    fixture = (
+        Path(__file__).parent
+        / "fixtures"
+        / "retired_conductor_skill"
+        / "select-crew-v2.md"
+    )
+    skill.write_bytes(fixture.read_bytes())
+
+    agent.run_first_run_setup()
+
+    assert not skill.parent.exists()
 
 
 def test_first_run_purge_is_one_time(tmp_path, monkeypatch):
@@ -1038,7 +1058,7 @@ def test_gateway_start_replaces_launcher_whose_interpreter_vanished(tmp_path, mo
     """The launcher file exists but its venv was reaped: dead, so replaceable.
 
     This is the shape that made the live host's `kirocrew` fail -- a readable,
-    executable console script whose interpreter no longer exists.
+    executable console script whose interpreter does not exist.
     """
     exe = _fake_bundle_launcher(tmp_path)
     _simulate_bundled_app_honest(monkeypatch, tmp_path, exe)

@@ -157,7 +157,7 @@ class TestParserWiring:
         assert _calls(rec)[0]["attrs"]["tool_kind"] == "mcp"
 
     def test_an_output_less_completion_is_still_measured(self, rec):
-        """_build_tool_result_event returns None with no output; the sample stays."""
+        """An output-less terminal frame emits its status and one sample."""
         from kiro_crew.acp import _dispatch
 
         _dispatch._build_tool_call_event(
@@ -165,7 +165,10 @@ class TestParserWiring:
             None,
         )
         event = _dispatch._build_tool_result_event({"toolCallId": "tc-2", "status": "completed"})
-        assert event is None
+        assert event is not None
+        assert event.kind == "tool_result"
+        assert event.tool_call_id == "tc-2"
+        assert event.tool_status == "completed"
         assert len(_calls(rec)) == 1
 
     def test_both_layers_together_still_yield_one_sample(self, rec):

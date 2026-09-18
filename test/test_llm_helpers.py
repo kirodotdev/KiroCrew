@@ -739,6 +739,39 @@ class TestNextFallbackCandidate:
         assert next_fallback_candidate(["some-model"], "x", []) == "some-model"
         assert next_fallback_candidate(["some-model"], "x", None) == "some-model"
 
+    def test_namespace_qualified_entry_folds_to_advertised_bare_id(self) -> None:
+        # A persisted chain entry can carry a stale ``<namespace>::<bare-id>``
+        # qualifier from the catalog that advertised it, while the session
+        # advertises the bare id. The walk must recognize it as
+        # served instead of skipping toward exhaustion — and must return the
+        # CHAIN's own spelling (``FallbackState.next_candidate`` locates the
+        # applied candidate with ``remaining.index``).
+        chain = ["openrouter::z-ai/glm-5.3-flash"]
+        adv = ["z-ai/glm-5.3-flash", *self._ADV]
+        assert next_fallback_candidate(chain, "claude-fable-5", adv) == (
+            "openrouter::z-ai/glm-5.3-flash"
+        )
+
+    def test_qualified_entry_peeling_to_active_model_is_skipped(self) -> None:
+        # Post-fold active skip: a qualified entry that resolves to the
+        # currently-failing model cannot help and must still be skipped.
+        chain = ["ns::model-x", "claude-opus-4.8"]
+        adv = ["model-x", *self._ADV]
+        assert next_fallback_candidate(chain, "model-x", adv) == "claude-opus-4.8"
+
+    def test_entry_absent_under_both_spellings_still_skipped(self) -> None:
+        # Deny-parity: the fold must not weaken the advertised filter — an id
+        # the backend serves under NEITHER the full nor the peeled spelling
+        # stays skipped.
+        assert next_fallback_candidate(["ns::not-served"], "x", self._ADV) is None
+
+    def test_verbatim_advertised_qualified_id_not_peeled(self) -> None:
+        # An id advertised WITH its qualifier matches on the full id first;
+        # peeling never rewrites a verbatim match.
+        chain = ["ns::model-y"]
+        adv = ["ns::model-y", "model-y"]
+        assert next_fallback_candidate(chain, "x", adv) == "ns::model-y"
+
 
 class TestConfiguredFallbackChain:
     """agent.fallback_model -> walk-order derivation (the one shared derivation)."""
@@ -917,6 +950,71 @@ class TestAdvanceFallbackCandidateAutoPrimary:
         assert fb.primary == "auto"
         marker = getattr(provider, TURN_FALLBACK_ATTR)
         assert marker == ("auto", "claude-opus-4.8")
+
+
+class TestAdvanceFallbackCandidateNamespacedChain:
+    """A qualified chain entry is applied under its ADVERTISED spelling.
+
+    The chain keeps its own spelling for ``FallbackState`` bookkeeping
+    (``remaining.index``), but everything later compared against the SERVED
+    model — the substitute ``set_model`` call, the swap witness,
+    ``fb_state.active``/``walked``, and the ``TURN_FALLBACK_ATTR`` marker the
+    restore probe reads — must carry the advertised spelling. A qualified
+    spelling there desynchronizes the restore probe: it reads the session as
+    having moved off the fallback and clears the sticky state, so the slot
+    heal never runs.
+    """
+
+    _BARE = "z-ai/glm-5.3-flash"
+    _QUALIFIED = "openrouter::z-ai/glm-5.3-flash"
+
+    def _provider(self) -> MagicMock:
+        provider = MagicMock()
+        provider._model = "claude-fable-5"
+        provider.served_model = None  # not a str -> ignored by the reader
+        provider.available_models = MagicMock(
+            return_value=[{"modelId": self._BARE}, {"modelId": "claude-fable-5"}]
+        )
+
+        # Successful set_model syncs _model (real-provider behavior) so the
+        # witness observes the switch.
+        async def _move(model_id: str) -> None:
+            provider._model = model_id
+
+        provider.set_model = AsyncMock(side_effect=_move)
+        # No surviving marker: the getattr must yield a non-tuple.
+        setattr(provider, TURN_FALLBACK_ATTR, None)
+        return provider
+
+    @pytest.mark.asyncio
+    async def test_qualified_entry_applies_under_advertised_spelling(self) -> None:
+        from kiro_crew.llm_helpers import FallbackState, advance_fallback_candidate
+
+        provider = self._provider()
+        fb = FallbackState(chain=(self._QUALIFIED, "auto"))
+        cand = await advance_fallback_candidate(provider, fb, surface="test")
+        # The walk applies the entry (no exhaustion), the wire carries the
+        # advertised spelling, and every served-model comparison record agrees.
+        assert cand == self._BARE
+        provider.set_model.assert_awaited_once_with(self._BARE)
+        assert fb.active == self._BARE
+        assert fb.walked == [self._BARE]
+        assert getattr(provider, TURN_FALLBACK_ATTR) == ("claude-fable-5", self._BARE)
+        # Bookkeeping still advanced past the CHAIN entry itself.
+        assert fb.pos == 1
+
+    @pytest.mark.asyncio
+    async def test_qualified_entry_peeling_to_failing_model_is_skipped(self) -> None:
+        from kiro_crew.llm_helpers import FallbackState, advance_fallback_candidate
+
+        provider = self._provider()
+        # The chain names the currently-failing model under a qualifier; the
+        # walk must skip it (retrying it is what the walk exists to escape)
+        # and exhaust rather than announce a no-op swap.
+        fb = FallbackState(chain=("openrouter::claude-fable-5",))
+        cand = await advance_fallback_candidate(provider, fb, surface="test")
+        assert cand is None
+        provider.set_model.assert_not_awaited()
 
 
 class TestFallbackState:
@@ -1377,7 +1475,7 @@ class TestRecordInteractionEvent:
 
 
 class TestFallbackRetryBudgetSingleBody:
-    """#5447 item 2: the per-candidate retry budget lives in ONE place."""
+    """The per-candidate retry budget lives in ONE place."""
 
     def test_no_active_candidate_never_retries(self) -> None:
         st = FallbackState(("m1",))
@@ -1426,7 +1524,7 @@ class TestFallbackExhaustionStory:
 
 
 class TestFallbackStoryConsumer:
-    """#5447 item 1: append_fallback_story is THE reader of the story attr."""
+    """append_fallback_story is THE reader of the story attr."""
 
     def _exc_with_story(self, story: str = "primary-m throttled; fallbacks fb-1 also unavailable"):
         from kiro_crew.llm_helpers import FALLBACK_STORY_ATTR
@@ -1473,7 +1571,7 @@ class TestFallbackStoryConsumer:
 
 
 class TestAnnotateModelFallbackSharedBody:
-    """#5447 item 4: one spelling of the fallback-served warning."""
+    """There is one spelling of the fallback-served warning."""
 
     def test_prefixes_warning_from_marker(self) -> None:
         from types import SimpleNamespace
@@ -1512,7 +1610,7 @@ class TestAnnotateModelFallbackSharedBody:
 
 
 class TestProbeFallbackRestoreSlotSeams:
-    """#5447 item 3: the parameter seams the dashboard's slot probe wraps.
+    """The parameter seams the dashboard's slot probe wraps.
 
     The slot probe (chat_runner._probe_fallback_restore_for_slot_locked) is a
     thin adapter over this single body; these tests pin the seams it depends
@@ -1622,7 +1720,7 @@ class TestProbeFallbackRestoreSlotSeams:
 
 
 class TestCase275RoutesThroughSharedBudgetBody:
-    """DRIFT PIN (#5447 item 2): Case 2.75 must consult should_retry_active.
+    """Case 2.75 must consult should_retry_active.
 
     Mutation check in reverse: forcing the shared body to refuse retries
     changes this surface's attempt count — proof the budget is not re-encoded

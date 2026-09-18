@@ -131,6 +131,14 @@ _LOGGER = logging.getLogger(__name__)
 _WAL_TRUNCATE_ATTEMPTS = 3
 _WAL_TRUNCATE_RETRY_SECS = 0.05
 
+_SQLITE_INT_MIN = -(1 << 63)
+_SQLITE_INT_MAX = (1 << 63) - 1
+
+#: Prefix keeps an out-of-range decimal in SQLite's TEXT storage class even
+#: though the existing columns have INTEGER affinity.  In-range values stay as
+#: integers so every row written before this encoding remains compatible.
+_WIDE_STAT_ID_PREFIX = "i:"
+
 #: Name of the index file, kept beside the session directory it describes so a
 #: pod or a test home gets its own rather than sharing the live one.
 INDEX_FILENAME = "session_index.db"
@@ -147,6 +155,21 @@ def cjk_inventory(folded: str) -> str:
         if ch not in seen and is_cjk_char(ch):
             seen[ch] = None
     return " ".join(seen)
+
+
+def _sqlite_stat_identity(value: int) -> int | str:
+    """Losslessly encode one ``st_dev``/``st_ino`` value for SQLite.
+
+    SQLite INTEGER parameters are signed 64-bit, while Windows ``st_dev`` is an
+    unsigned volume identifier and Python 3.12 may expose a filesystem's full
+    128-bit file identifier as ``st_ino``.  A modulo conversion would alias
+    distinct files.  Keep signed-range values unchanged for compatibility with
+    existing rows; prefix wider decimal values so INTEGER affinity stores them
+    as exact TEXT rather than coercing them to an imprecise REAL.
+    """
+    if _SQLITE_INT_MIN <= value <= _SQLITE_INT_MAX:
+        return value
+    return f"{_WIDE_STAT_ID_PREFIX}{value}"
 
 
 class SessionSearchIndex:
@@ -287,8 +310,8 @@ class SessionSearchIndex:
             if (
                 st.st_mtime_ns == mtime_ns
                 and st.st_size == size
-                and st.st_dev == dev
-                and st.st_ino == ino
+                and _sqlite_stat_identity(st.st_dev) == dev
+                and _sqlite_stat_identity(st.st_ino) == ino
             ):
                 fresh[key] = rowid
         return fresh
@@ -324,6 +347,8 @@ class SessionSearchIndex:
         folded = "\x00".join(texts).casefold()
         doc_chars = sum(len(t) for t in texts)
         blob = zlib.compress(json.dumps(list(texts), ensure_ascii=False).encode("utf-8"), 6)
+        stored_dev = _sqlite_stat_identity(dev)
+        stored_ino = _sqlite_stat_identity(ino)
         try:
             conn = self._ensure_open()
             with conn:
@@ -351,7 +376,7 @@ class SessionSearchIndex:
                     "  size=excluded.size, dev=excluded.dev, ino=excluded.ino,"
                     "  doc_chars=excluded.doc_chars,"
                     "  raw_texts=excluded.raw_texts",
-                    (key, rowid, mtime_ns, size, dev, ino, doc_chars, blob),
+                    (key, rowid, mtime_ns, size, stored_dev, stored_ino, doc_chars, blob),
                 )
         except Exception:
             # Losing one row costs one scanned file on the next query, so this must
@@ -395,8 +420,8 @@ class SessionSearchIndex:
         if (
             row[0] != st.st_mtime_ns
             or row[1] != st.st_size
-            or row[2] != st.st_dev
-            or row[3] != st.st_ino
+            or row[2] != _sqlite_stat_identity(st.st_dev)
+            or row[3] != _sqlite_stat_identity(st.st_ino)
         ):
             return None
         try:

@@ -17,7 +17,7 @@ import { useNavigate } from 'react-router-dom'
 import { api } from '../../api/client'
 import { i18nT } from '../../i18n/t'
 import { recordEvent } from '../../rum'
-import { useTrustGate } from '../../components/appstore/TrustAppModal'
+import { isSessionApprovalConsentRequiredError, useTrustGate } from '../../components/appstore/TrustAppModal'
 import type { TrustAppTarget } from '../../components/appstore/TrustAppModal'
 import type { AppsData } from './useAppsData'
 
@@ -62,6 +62,7 @@ export function useAppActions({
       trustRepository: installed.trustRepository,
       origin: installed.origin,
       _registry: row?._registry,
+      sessionApproval: installed.manifest.permissions?.sessionApproval === true,
     }
     if (row) return {
       name: row.name,
@@ -69,13 +70,22 @@ export function useAppActions({
       trustRepository: row.trustRepository,
       origin: row.origin,
       _registry: row._registry,
+      sessionApproval: row.manifest?.permissions?.sessionApproval === true,
     }
     return { name }
   }
 
   /** The single enable path — shared by the cards and the trust retry. */
   const runEnable = async (name: string) => {
-    await api.enableApp(name)
+    try {
+      await api.enableApp(name)
+    } catch (e) {
+      if (isSessionApprovalConsentRequiredError(e)) {
+        openDetail(name)
+        return
+      }
+      throw e
+    }
     recordEvent('app_enable', { app: name })
     announceAppsChanged()
   }

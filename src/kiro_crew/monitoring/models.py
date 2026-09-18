@@ -16,6 +16,8 @@ from dataclasses import asdict, dataclass, field, fields
 from enum import Enum
 from typing import Any, Protocol
 
+from kiro_crew.monitoring.registry import PULL_REQUEST_MONITOR_KINDS
+
 logger = logging.getLogger(__name__)
 
 MONITOR_STATE_VERSION = 1
@@ -36,25 +38,76 @@ MAX_MONITOR_PROVIDER_ERRORS = 20
 MAX_MONITOR_WAKE_INSTRUCTIONS_CHARS = 1_000
 MAX_MONITOR_STOP_REASON_CHARS = 500
 MAX_MONITOR_CHECK_NAMES = 8
+MAX_MONITOR_PROVIDER_CONCURRENCY = 4
+MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET = 100
+MAX_MONITOR_CHECK_IDENTITY_CHARS = 200
 # The normal turn ceiling is two hours. One extra minute lets the raw completion
 # callback win the timeout race while keeping missing evidence restart-durable
 # and bounded.
 MONITOR_COMPLETION_EVIDENCE_TIMEOUT_SECS = 7_260
 MONITOR_BUSY_RETRY_SECS = 15
+#: Shortest a coalescing window stays open before an actionable change may wake
+#: the session. A floor, not a timeout: a subject whose checks are still landing
+#: can look settled for a moment, and firing on that reports a convergence that
+#: did not happen. Successive changes to the one subject age from when the window
+#: opened, so a burst of edits costs one wake rather than one per change.
+DEFAULT_MONITOR_COALESCE_SECS = 240.0
+#: A delivered wake re-arms after this long while the same actionable
+#: fingerprint persists. Level-triggered re-assertion: an unresolved condition
+#: is re-reported on this interval rather than once, and a future timestamp
+#: (clock rollback) reads as stale so it can never suppress a wake forever.
+DEFAULT_MONITOR_REALERT_SECS = 6 * 3600
+#: How many consecutive COUNTED ticks may carry a byte-identical verdict before
+#: the watch is retired as stuck. Counted in ticks because the thing being
+#: counted is repeated conclusions, and a tick is when a conclusion is reached.
+#:
+#: The value is bounded on both sides by numbers already in this module rather
+#: than chosen freely. It must EXCEED the floor's tick equivalent at the default
+#: cadence (``DEFAULT_MONITOR_STALL_MIN_SECS // DEFAULT_MONITOR_CADENCE_SECS``,
+#: which is 6), or the count never binds at the default and the constant is
+#: decoration. And it must fall INSIDE the ticks a default watch gets before its
+#: runtime budget retires it (``DEFAULT_MONITOR_RUNTIME_SECS //
+#: DEFAULT_MONITOR_CADENCE_SECS``, which is 48), or the stall can never fire for
+#: the reason it exists. So 6 < 12 < 48.
+DEFAULT_MONITOR_STALL_TICKS = 12
+#: Least wall-clock a stall streak must cover before it may retire a watch.
+#:
+#: The tick count above answers "how many times did it reach the same
+#: conclusion", which is the right question in the wrong unit on its own: cadence
+#: is user-set from 15s to 86400s. The streak's clock starts on its FIRST counted
+#: tick, so twelve ticks is ELEVEN intervals -- 3300s at the 300s default, 165s at
+#: the 15s minimum -- and 165s of an unchanged subject is a watch whose agent is
+#: still working. The trip therefore needs BOTH.
+#:
+#: This value is bounded on both sides too. It must exceed
+#: ``DEFAULT_MONITOR_COALESCE_SECS`` by a wide margin, or a burst being folded
+#: could look like a stall (1800 is 7.5 windows). And it must stay well under
+#: ``DEFAULT_MONITOR_REALERT_SECS``, because a re-alert wakes the subject and
+#: zeroes the streak: a floor at or past that interval could never be reached,
+#: which is the unreachable-mechanism failure in its other direction. So
+#: 240 << 1800 << 21600, and at the default cadence twelve ticks already span
+#: 3300s, inside the 14400s runtime budget.
+DEFAULT_MONITOR_STALL_MIN_SECS = 1800
 MONITOR_STOP_RUNTIME_BUDGET = "runtime_budget"
 MONITOR_STOP_AGENT_TURN_BUDGET = "agent_turn_budget"
 MONITOR_STOP_TOKEN_BUDGET = "token_budget"
 MONITOR_STOP_PROVIDER_ERROR_BUDGET = "provider_error_budget"
 MONITOR_STOP_APPROVAL_STALL = "approval_stall"
+#: A watch retired because its own verdict stopped moving. DISTINCT from
+#: ``approval_stall``, which is a delivery failure -- the session could not get
+#: tool approval -- and distinct from every ``*_budget`` reason, which mean a
+#: bound was spent. Those three answers to "why did this stop" have different
+#: remedies, so a reader must be able to tell them apart from the record alone.
+MONITOR_STOP_VERDICT_STALL = "verdict_stall"
 MONITOR_STOP_COMPLETION_UNAVAILABLE = "completion_evidence_unavailable"
 MONITOR_STOP_UNSUPPORTED_VERSION = "unsupported_monitor_version"
 MONITOR_STOP_USER = "user_stop"
 MONITOR_STOP_SESSION_UNAVAILABLE = "session_unavailable"
 MONITOR_STOP_SESSION_CLOSE = "session_close"
-PULL_REQUEST_MONITOR_KINDS = frozenset({"github_pull_request"})
-_GITHUB_OBSERVATION_FIELDS = (
+PULL_REQUEST_OBSERVATION_FIELDS = (
     "blocking_review",
     "checks",
+    "checks_complete",
     "draft",
     "head_revision",
     "kind",
@@ -65,17 +118,22 @@ _GITHUB_OBSERVATION_FIELDS = (
     "target",
     "unresolved_review_threads",
 )
-_GITHUB_CHECK_FIELDS = ("failed", "passed", "pending", "unknown")
-_GITHUB_BLOCKING_REVIEWS = {"unknown", "changes_requested", "unresolved_threads", "none"}
-_GITHUB_MERGEABILITY = {"conflicting", "behind", "blocked", "pending", "mergeable"}
-_GITHUB_REVIEW_DECISIONS = {
+PULL_REQUEST_CHECK_FIELDS = ("failed", "passed", "pending", "unknown")
+PULL_REQUEST_BLOCKING_REVIEWS = {
+    "unknown",
+    "changes_requested",
+    "unresolved_threads",
+    "none",
+}
+PULL_REQUEST_MERGEABILITY = {"conflicting", "behind", "blocked", "pending", "mergeable"}
+PULL_REQUEST_REVIEW_DECISIONS = {
     "none",
     "approved",
     "changes_requested",
     "review_required",
     "unknown",
 }
-_GITHUB_PULL_REQUEST_STATES = {"open", "closed", "merged", "unknown"}
+PULL_REQUEST_STATES = {"open", "closed", "merged", "unknown"}
 MONITOR_PUBLIC_FIELDS = (
     "version",
     "config_generation",
@@ -177,6 +235,52 @@ class MonitorOutcome(str, Enum):
     TARGET_UNAVAILABLE = "target_unavailable"
 
 
+#: Terminal outcomes a directive re-arm may displace, because the SYSTEM imposed
+#: them: a spent bound, a finished subject, a lapsed approval, a vanished target.
+#: Everything else -- ``USER_STOP``, ``SESSION_CLOSE``, and any outcome a later
+#: version adds -- was recorded FOR a consumer and is retained evidence.
+#:
+#: The one source of truth for that split. ``autonudge._stopped_row_is_replaceable``
+#: applies it to a live ``NudgeLoop``, and the ``mcp_tools.control`` preflight
+#: applies it to the JSON reading of the same record, so the answer the agent is
+#: given before its turn ends cannot disagree with the answer the turn boundary
+#: enforces. Duplicating the set at either site is what lets them drift.
+REARMABLE_MONITOR_OUTCOMES = frozenset(
+    {
+        MonitorOutcome.SUCCESS,
+        MonitorOutcome.BLOCKED,
+        MonitorOutcome.BUDGET,
+        MonitorOutcome.TARGET_UNAVAILABLE,
+    }
+)
+
+
+def retained_outcome_blocks_rearm(outcome: object, stopped_reason: object = "") -> bool:
+    """Whether a recorded *outcome* is evidence a re-arm must not displace.
+
+    Accepts the enum or its serialized value, so one predicate serves both the
+    in-process record and the endpoint reading of it. Fails CLOSED: an outcome
+    this version does not recognise is treated as evidence, matching the ruling
+    that only a system-imposed stop is automatically re-armable.
+
+    ``None`` means no terminal outcome was recorded, which blocks nothing.
+    """
+    if outcome is None or outcome == "":
+        return False
+    try:
+        resolved = MonitorOutcome(outcome)
+    except ValueError:
+        # An unknown outcome is evidence, not a system stop.
+        return True
+    if resolved is MonitorOutcome.BLOCKED and str(stopped_reason or "") == (
+        MONITOR_STOP_INVALID_RECORD
+    ):
+        # A quarantined malformed record is an inspection artifact retained for a
+        # human, not a stop the system chose; the arm path refuses it too.
+        return True
+    return resolved not in REARMABLE_MONITOR_OUTCOMES
+
+
 class MonitorActionDisposition(str, Enum):
     """Terminal disposition reported by a started monitor action turn."""
 
@@ -192,6 +296,14 @@ class MonitorDispatchResult(str, Enum):
     DISPATCHED = "dispatched"
     BUSY = "busy"
     UNAVAILABLE = "unavailable"
+
+
+class MonitorCreationSurface(str, Enum):
+    """Authenticated surface that armed a durable monitor."""
+
+    UNKNOWN = "unknown"
+    DASHBOARD = "dashboard"
+    CHANNEL = "channel"
 
 
 def monitor_frontend_contract() -> dict[str, object]:
@@ -486,6 +598,7 @@ class MonitorState:
     target: str
     objective: str
     created_ts: float
+    creation_surface: MonitorCreationSurface = MonitorCreationSurface.UNKNOWN
     version: int = MONITOR_STATE_VERSION
     config_generation: int = 1
     budgets: MonitorBudgets = field(default_factory=MonitorBudgets)
@@ -515,6 +628,79 @@ class MonitorState:
     last_probe_at: float = 0.0
     last_decision: MonitorDecision | None = None
     last_provider_error: ProviderErrorKind | None = None
+    #: The coalescing window over successive changes to this one subject. A
+    #: structured monitor watches ONE subject, so a tick yields one observation
+    #: and there is no simultaneous set of anomalies to fold; the burst is the
+    #: same subject changing again before the last change settled. The window
+    #: holds the actionable fingerprint currently waiting out its floor.
+    #:
+    #: Empty ``coalesce_fingerprint`` means no window is open, so a persisted
+    #: record written before these fields load as an unopened window and the
+    #: first tick behaves as a fresh start -- neither a window opened at time
+    #: zero (which fires at once) nor one held open forever.
+    coalesce_fingerprint: str = ""
+    #: When the open window's fingerprint was first seen. Read only while
+    #: ``coalesce_fingerprint`` is non-empty; the pair moves together.
+    coalesce_opened_at: float = 0.0
+    #: Per-fingerprint time of the last wake it caused, for level-triggered
+    #: re-assertion: the same actionable fingerprint re-wakes only once its entry
+    #: is older than the re-alert interval. Pruned unconditionally each settled
+    #: decision, because on a durable per-loop record this map grows across
+    #: restarts and the growth is a durability cost, not untidiness.
+    coalesce_alerted: dict[str, float] = field(default_factory=dict)
+    #: The stall streak: a digest of the last COUNTED verdict, and how many
+    #: consecutive ticks have reached exactly that verdict.
+    #:
+    #: A tick counts only when it settled the subject AND the engine then did
+    #: nothing about it -- a ``NO_CHANGE``. Any other settled decision zeroes all
+    #: three fields, because it means the watch was working: a wake acted, a
+    #: record or a retry deferred on purpose, a stop already ended it.
+    #:
+    #: The digest is DERIVED from the verdict on every tick and never stored
+    #: alongside a second copy of what it summarizes, so the two cannot
+    #: disagree. What is persisted here is history -- the digest of the verdict
+    #: BEFORE this tick's -- which nothing else in the record holds, so there is
+    #: still one source of truth for the present verdict.
+    #:
+    #: All three fields load as absent-means-fresh. A record written before them
+    #: starts its streak on its first post-upgrade tick, which costs at most one
+    #: ceiling of ticks once and can neither miss a wake nor retire a live watch
+    #: early. Seeding a streak from the recorded ``last_decision`` and
+    #: ``last_fingerprint`` was considered and rejected: the record does not carry
+    #: the rest of the last verdict's entry, so a seeded digest could claim a
+    #: match that never happened, and the only direction that error runs is
+    #: stopping a working watch.
+    stall_digest: str = ""
+    #: Consecutive counted ticks whose verdict digest matched ``stall_digest``,
+    #: counting this one. Zero before the first counted tick and after ANY tick
+    #: that was not one, so the word "consecutive" means what it says.
+    stall_streak: int = 0
+    #: When the current streak's first counted tick landed. Zero means no streak.
+    #:
+    #: The trip needs both a repeated-conclusion count and elapsed wall-clock, and
+    #: this is the wall-clock measured DIRECTLY rather than translated. Storing a
+    #: tick ceiling derived from ``cadence_secs`` would make the trip a pure
+    #: integer comparison, at the price of a cached value derived from a mutable
+    #: input with nothing invalidating it: a streak opened at the 300s default
+    #: would carry that ceiling into a 15s cadence and trip a quarter of the way
+    #: into its floor. Any translation from ticks to seconds breaks on a cadence
+    #: change in one direction or the other, so nothing is translated.
+    #:
+    #: Reading the clock in the trip does NOT reopen the hazard a ceiling guards
+    #: against, which is a predicate an operator can make true between two folds by
+    #: rewriting the cadence. This is ``time.time()``, a WALL clock, so it is not
+    #: monotonic and can move either way -- but neither direction reopens that
+    #: hazard. Backwards, ``now - stall_started_at`` goes negative and fails the
+    #: floor, so a jump can only DELAY a trip. Forwards, a jump can satisfy the
+    #: floor early but cannot manufacture the twelve counted ticks, which is the
+    #: other half of the condition and the reason both halves are required.
+    #: What it does require is that the fold zero this pair on every tick that is
+    #: not a counted one -- an unsettled tick INCLUDED -- because a stale streak
+    #: sitting through a long pending stretch would let the clock satisfy the floor
+    #: and hand the next NON-RETRYABLE PROVIDER ERROR a stall's reason. A merge or
+    #: close is settled and takes its own branch, so the exposure is exactly the
+    #: unsettled terminal tick.
+    stall_started_at: float = 0.0
     #: Adoption metering. Without these two numbers a probe gate that never
     #: fires and a probe gate that is doing its job are indistinguishable from
     #: the outside, so a gate stuck at zero adoption goes unnoticed.
@@ -595,6 +781,9 @@ class MonitorState:
     stopped_reason: str = ""
     user_stop_reason: str = ""
     stopped_at: float = 0.0
+    # Persisted only after the dashboard accepts the terminal notice. False is
+    # fail-safe: a restart may repeat a notice, but it cannot lose the only one.
+    terminal_notification_delivered: bool = False
     extra_fields: dict[str, object] = field(default_factory=dict, repr=False)
     _raw_payload: dict[str, object] | None = field(default=None, repr=False, compare=False)
 
@@ -619,6 +808,7 @@ class MonitorState:
             "last_probe_at",
             "next_probe_at",
             "stopped_at",
+            "stall_started_at",
         ):
             value = getattr(self, name)
             if not is_finite_non_negative_number(value):
@@ -637,6 +827,7 @@ class MonitorState:
             "followup_ticks",
             "quiet_streak",
             "floor_ticks",
+            "stall_streak",
         ):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -657,6 +848,8 @@ class MonitorState:
             self.terminal_pending = "blocked" if self.terminal_pending else ""
         if not isinstance(self.budgets, MonitorBudgets):
             raise ValueError("budgets must be MonitorBudgets")
+        if not isinstance(self.creation_surface, MonitorCreationSurface):
+            raise ValueError("creation_surface must be a MonitorCreationSurface")
         if (
             isinstance(self.cadence_secs, bool)
             or not isinstance(self.cadence_secs, int)
@@ -701,6 +894,19 @@ class MonitorState:
             self.last_provider_error, ProviderErrorKind
         ):
             raise ValueError("last_provider_error must be a ProviderErrorKind")
+        if not isinstance(self.coalesce_fingerprint, str):
+            raise ValueError("coalesce_fingerprint must be a string")
+        if not is_finite_non_negative_number(self.coalesce_opened_at):
+            raise ValueError("coalesce_opened_at must be a finite non-negative number")
+        if not isinstance(self.coalesce_alerted, dict):
+            raise ValueError("coalesce_alerted must be an object")
+        for key, value in self.coalesce_alerted.items():
+            if not isinstance(key, str):
+                raise ValueError("coalesce_alerted keys must be strings")
+            if not is_finite_non_negative_number(value):
+                raise ValueError("coalesce_alerted values must be finite non-negative numbers")
+        if not isinstance(self.stall_digest, str):
+            raise ValueError("stall_digest must be a string")
         if self.outcome is not None and not isinstance(self.outcome, MonitorOutcome):
             raise ValueError("outcome must be a MonitorOutcome")
         if not isinstance(self.stopped_reason, str):
@@ -709,6 +915,8 @@ class MonitorState:
             raise ValueError("user_stop_reason must be a string")
         if len(self.user_stop_reason) > MAX_MONITOR_STOP_REASON_CHARS:
             raise ValueError("user_stop_reason is too long")
+        if not isinstance(self.terminal_notification_delivered, bool):
+            self.terminal_notification_delivered = False
         if not isinstance(self.extra_fields, dict):
             raise ValueError("extra_fields must be an object")
         _validate_strict_json_object("extra_fields", self.extra_fields)
@@ -781,6 +989,29 @@ def monitor_state_from_dict(raw: object) -> MonitorState:
     observation_status = values.get("last_observation_status")
     if observation_status is not None:
         values["last_observation_status"] = MonitorObservationStatus(observation_status)
+    creation_surface = values.get("creation_surface")
+    if creation_surface is not None:
+        values["creation_surface"] = MonitorCreationSurface(creation_surface)
+    # A record persisted before the re-alert map existed carries no
+    # coalesce_alerted. It is absent, not empty, so reconstruct the alert time
+    # from the recorded last wake: a monitor that already woke was alerted, and
+    # reading an absent map as never-alerted would re-wake it once on its first
+    # post-upgrade probe. The wake time is the completion time of that turn; the
+    # fingerprint it woke on is last_wake_fingerprint. Only seed when both are
+    # present, and only when the map is genuinely absent -- a present, empty map
+    # is a live monitor that has legitimately alerted nothing yet.
+    if "coalesce_alerted" not in raw:
+        woke_on = values.get("last_wake_fingerprint")
+        woke_at = values.get("last_completed_at")
+        if (
+            isinstance(woke_on, str)
+            and woke_on
+            and isinstance(woke_at, (int, float))
+            and not isinstance(woke_at, bool)
+            and is_finite_non_negative_number(woke_at)
+            and woke_at > 0
+        ):
+            values["coalesce_alerted"] = {woke_on: float(woke_at)}
     return MonitorState(**values)
 
 
@@ -832,49 +1063,67 @@ def monitor_state_to_dict(state: MonitorState) -> dict[str, object]:
     return payload
 
 
-def _public_github_observation(raw: dict[str, object]) -> dict[str, object]:
+def _public_pull_request_observation(
+    raw: dict[str, object],
+    *,
+    expected_kind: str,
+) -> dict[str, object]:
     """Project only the bounded canonical schema across the public boundary."""
     if not raw:
         return {}
-    checks = raw.get("checks")
+    # ``checks_complete`` was added after the initial GitHub schema. Old
+    # snapshots could only be written from a complete rollup, so absence has
+    # the precise legacy meaning True. Present malformed values still fail
+    # closed instead of being truthiness-coerced.
+    projected = raw if "checks_complete" in raw else {**raw, "checks_complete": True}
+    checks = projected.get("checks")
     if not isinstance(checks, dict):
         return {}
-    for field_name in _GITHUB_OBSERVATION_FIELDS:
-        if field_name not in raw:
+    for field_name in PULL_REQUEST_OBSERVATION_FIELDS:
+        if field_name not in projected:
             return {}
-    for field_name in _GITHUB_CHECK_FIELDS:
+    for field_name in PULL_REQUEST_CHECK_FIELDS:
         values = checks.get(field_name)
-        if not isinstance(values, list) or any(
-            not isinstance(value, str) or not value for value in values
+        if (
+            not isinstance(values, list)
+            or any(
+                not isinstance(value, str)
+                or not value
+                or len(value) > MAX_MONITOR_CHECK_IDENTITY_CHARS
+                for value in values
+            )
+            or len(values) > MAX_MONITOR_CHECK_IDENTITIES_PER_BUCKET
         ):
             return {}
-    unresolved = raw.get("unresolved_review_threads")
-    blocking_review = raw.get("blocking_review")
-    mergeability = raw.get("mergeability")
-    review_decision = raw.get("review_decision")
-    pull_request_state = raw.get("state")
+    unresolved = projected.get("unresolved_review_threads")
+    blocking_review = projected.get("blocking_review")
+    mergeability = projected.get("mergeability")
+    review_decision = projected.get("review_decision")
+    pull_request_state = projected.get("state")
     if (
-        raw.get("kind") != "github_pull_request"
-        or not isinstance(raw.get("target"), str)
-        or not raw.get("target")
-        or not isinstance(raw.get("head_revision"), str)
-        or not isinstance(raw.get("draft"), bool)
-        or not isinstance(raw.get("review_threads_complete"), bool)
+        projected.get("kind") != expected_kind
+        or expected_kind not in PULL_REQUEST_MONITOR_KINDS
+        or not isinstance(projected.get("target"), str)
+        or not projected.get("target")
+        or not isinstance(projected.get("head_revision"), str)
+        or not isinstance(projected.get("draft"), bool)
+        or not isinstance(projected.get("checks_complete"), bool)
+        or not isinstance(projected.get("review_threads_complete"), bool)
         or isinstance(unresolved, bool)
         or not isinstance(unresolved, int)
         or unresolved < 0
         or not isinstance(blocking_review, str)
-        or blocking_review not in _GITHUB_BLOCKING_REVIEWS
+        or blocking_review not in PULL_REQUEST_BLOCKING_REVIEWS
         or not isinstance(mergeability, str)
-        or mergeability not in _GITHUB_MERGEABILITY
+        or mergeability not in PULL_REQUEST_MERGEABILITY
         or not isinstance(review_decision, str)
-        or review_decision not in _GITHUB_REVIEW_DECISIONS
+        or review_decision not in PULL_REQUEST_REVIEW_DECISIONS
         or not isinstance(pull_request_state, str)
-        or pull_request_state not in _GITHUB_PULL_REQUEST_STATES
+        or pull_request_state not in PULL_REQUEST_STATES
     ):
         return {}
-    public = {key: deepcopy(raw[key]) for key in _GITHUB_OBSERVATION_FIELDS}
-    public["checks"] = {key: deepcopy(checks[key]) for key in _GITHUB_CHECK_FIELDS}
+    public = {key: deepcopy(projected[key]) for key in PULL_REQUEST_OBSERVATION_FIELDS}
+    public["checks"] = {key: deepcopy(checks[key]) for key in PULL_REQUEST_CHECK_FIELDS}
     return public
 
 
@@ -882,5 +1131,8 @@ def monitor_state_public_dict(state: MonitorState) -> dict[str, object]:
     """Return the stable inspect/dashboard fields without persistence internals."""
     payload = {key: deepcopy(getattr(state, key)) for key in MONITOR_PUBLIC_FIELDS}
     payload["budgets"] = asdict(state.budgets)
-    payload["last_observation"] = _public_github_observation(state.last_observation)
+    payload["last_observation"] = _public_pull_request_observation(
+        state.last_observation,
+        expected_kind=state.kind,
+    )
     return payload

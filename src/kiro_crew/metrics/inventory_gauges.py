@@ -25,18 +25,21 @@ HOST ATTRIBUTION IS BOUNDED BY THE RESOURCE, not by anything in this module, and
 the bound is worth knowing before building a per-host dashboard on it. These
 gauges carry no host attribute of their own -- deliberately, since a hostname is
 free-form and routinely embeds an employee alias -- so separating two machines
-depends entirely on the ``Resource`` ``provider.py`` builds. Today that resource
-is ``service.name`` plus whatever the SDK's own detector contributes. On the
-version this project pins, that includes a ``service.instance.id``, but the SDK
-generates it FRESH PER PROCESS: two hosts are distinguishable at any instant,
-while a single host's series restarts whenever its gateway does, so
-"watch this machine's cron count over time" is not something a reader should
-assume works yet. The dependency range also permits SDK versions that contribute
-no instance id at all, in which case two hosts are genuinely indistinguishable.
-Both are properties of the shared resource -- every ``kirocrew.process.*`` gauge
-has them already -- and both are closed by giving the resource a persisted,
-install-scoped identity rather than by anything here; these instruments inherit
-that the moment the resource gains it.
+depends entirely on the ``Resource`` ``provider.py`` builds. That resource sets
+``service.instance.id`` EXPLICITLY to the persisted anonymous install id
+(``beacon.install_id``), and carries ``process.pid`` SEPARATELY, which is what
+splits the two questions apart. Two installs stay distinguishable, and "watch
+this machine's cron count over time" is a group-by on ``service.instance.id`` --
+NOT a single continuous series, because the pid is part of the resource, so the
+series turn over whenever a restart lands on a different pid (a container that
+hands the gateway PID 1 every time is the exception, not the rule). It is the
+same resource every ``kirocrew.process.*`` gauge rides, so these instruments
+inherit that identity rather than defining one. The residual is a property of
+that shared resource and not of anything here: a host whose id mint FAILS (an
+unwritable data dir) omits the attribute entirely and is left with whatever the
+SDK's own default resource supplies, so nothing stitches its restarts back into
+one install -- see
+:func:`kiro_crew.metrics.provider._resource_attributes`.
 
 These instruments close that gap the same way ``process_gauges`` does — OTEL
 *observable* (asynchronous) instruments, whose callbacks run only when a
@@ -335,9 +338,9 @@ def read_probe_failures() -> dict[str, int]:
 # process -- a fleet sum reads N times the truth, and a fleet average is dragged
 # toward whichever installs happen to run the most processes.
 #
-# Deduplicating downstream is not available: that needs an install-scoped resource
-# identity, and the resource carries only a per-process id today (see the module
-# docstring). So exactly one process must publish, and it is ELECTED EXPLICITLY by
+# Deduplicating downstream would work off the resource's install-scoped
+# ``service.instance.id`` (see the module docstring), but it puts the burden on
+# every consumer and every query. So one process publishes, ELECTED EXPLICITLY by
 # the gateway calling :func:`mark_install_reporter` rather than inferred here. An
 # inference was the alternative -- ``autonudge.get_instance()`` is non-None only in
 # the gateway, so it would work today -- but it silently stops being true if that
@@ -350,8 +353,8 @@ def read_probe_failures() -> dict[str, int]:
 # the dashboard's singleton is per PORT, not per data home -- a pre-existing property
 # of that configuration (every install-scoped fact duplicates, not just these), and
 # not something a flag can detect: a second gateway double-counts whether or not it
-# runs crons. Closing it needs either cross-process arbitration or, more cheaply, the
-# persisted install-scoped resource id that lets a consumer dedupe. A POD is NOT this
+# runs crons. Closing it needs cross-process arbitration, or a consumer that dedupes
+# on the install-scoped ``service.instance.id`` the resource carries. A POD is NOT this
 # case: it boots with its own ``KIROCREW_HOME`` and never copies crons, sessions or
 # the databases, so its inventory is a genuinely different install's and publishing
 # it is correct.
@@ -718,11 +721,13 @@ def _keyed_observations(
 
 
 def _failure_observations() -> "Callable[[CallbackOptions], Iterable[Observation]]":
-    """Observable-counter callback for per-probe failure counts.
+    """Observable-gauge callback for per-probe failure counts.
 
     Publishes nothing until a probe has actually failed, so a healthy install adds
-    no series. Cumulative like the process counters: the aggregator reduces it
-    window-relative, and a provider rebuild re-observes the same in-process totals.
+    no series. Its reading is a process-lifetime total, like the process CPU and GC
+    gauges: the aggregator reduces it window-relative (see
+    :data:`LIFETIME_TOTAL_METRICS`), and a provider rebuild re-observes the same
+    in-process totals.
     """
     from opentelemetry.metrics import Observation
 

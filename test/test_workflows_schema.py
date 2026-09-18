@@ -66,7 +66,7 @@ def test_c3_bool_is_not_integer() -> None:
 
 
 def test_union_type_still_enforces_required_and_properties() -> None:
-    # GPT review round 2: keying the object sub-checks on the literal string
+    # Keying the object sub-checks on the literal string
     # "object" skipped required/properties for union spellings, so an invalid
     # object validated under ["object", "null"].
     union = dict(FINDING_SCHEMA, type=["object", "null"])
@@ -133,7 +133,7 @@ def test_parse_json_nesting_bomb_keeps_valueerror_contract() -> None:
 
 
 def test_nesting_bomb_cannot_launder_a_candidate_past_refusal() -> None:
-    # GPT review round 4: a bomb between a worked example and the real payload
+    # A bomb between a worked example and the real payload
     # truncated the scan after collecting only the example, defeating the
     # ambiguity refusal. The scan now fails closed on overflow: nothing is
     # returned, parsing errors, and the retry loop re-asks.
@@ -205,7 +205,7 @@ def test_coerce_two_different_shaped_candidates_refuse_to_guess() -> None:
 
 
 def test_coerce_nullable_union_type_keeps_ambiguity_refusal() -> None:
-    # GPT review round 1: `type: ["object", "null"]` must derive the object
+    # `type: ["object", "null"]` must derive the object
     # preference — routing unions to no-preference let a worked example win
     # first-match and validate as the payload instead of triggering refusal.
     schema = dict(FINDING_SCHEMA, type=["object", "null"])

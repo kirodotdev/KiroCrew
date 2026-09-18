@@ -92,7 +92,8 @@ with the defaults that apply when the spec omits them:
   "work_source": {"kind": "gh_issues", "select_labels": ["auto-fixable"],
                   "skip_signals": ["claimed", "in-progress"]},
   "worker_contract": {"branch_pattern": "fix/{slug}-{n}",
-                      "worktree_pattern": "../{repo_name}-fix-{n}"},
+                      "worktree_pattern": "../{repo_name}-fix-{n}",
+                      "max_commits": 2},
   "verifier": {"repro_gate": "best_effort"},
   "governance": {"max_in_flight": 32, "max_per_cycle": 3,
                  "idle_alert_secs": 900, "session_ceiling": 30,
@@ -237,6 +238,16 @@ cycle's fleet view; when the two disagree the ledger wins and this file is what
 gets fixed. Two independent spellings of item state would drift, and the drift
 would be silent.
 
+Two more conductor-owned artifacts live beside the spec, opened empty at
+startup: `decisions.md`, one line per decision
+(`<ts> | <subject> | <decision> | <reason>`) appended at the moment the decision
+is made, and the run's retrospective, appended in the cycle a lesson happens.
+They are the durable record, and they exist because every alternative is a
+tail: `events_tail` is a bounded, newest-first mirror of the most recent
+`decisions.md` lines, and the session ledger keeps `_MAX_EVENTS` = 100 events on
+disk while `session_ledger_read` returns only the newest `_MAX_EVENT_TAIL` = 20
+(`session_ledger.py`), so neither can hold a whole run's rulings.
+
 `open_rulings` is reviewed every cycle independently of what the probe fired.
 That is structural: the probe is right not to re-fire a signal already marked
 handled, and that suppression is what keeps a quiet cycle quiet, so a worker on
@@ -286,24 +297,25 @@ is not granted them; its durable state is the session work ledger
 `conductor-status/v1`. The work-ledger tool family generalized from the Issue
 Radar one, proposed in
 [`../../request-for-change/rfc-conductor-work-ledger.md`](../../request-for-change/rfc-conductor-work-ledger.md),
-is now built through Phase 2 — but this conductor does **not** mount it. It was
-mounted here briefly and the mount was retracted: the ledger flow inverts the
-dispatch order and replaces the patrol cycle, so it is a different procedure
-rather than two extra tools, and it lives on its own agent. See that RFC's
-rollout note for the criteria under which the two fold back together.
+is now built and is what `kirocrew-conductor` runs — but this conductor does
+**not** mount it. It was mounted here briefly and the mount was retracted: the
+ledger flow binds before it seeds and reads a record instead of a transcript, so
+it is a different procedure rather than two extra tools, and this conductor's
+children report through the `pipeline-conductor` skill's own scripts.
 
-Two sibling agents share this one's installer mechanics and nothing else:
-`kirocrew-conductor` (the `goal-conductor` skill) decomposes a free-form goal,
-and `kirocrew-ledger-conductor` (the `goal-ledger-conductor` skill) does the same
-while tracking items in the work ledger. All three narrow `mcpServers`, withhold
-every file-writing tool, grant verb by verb and derive `permissions` from the
-filtered list; only the third mounts `kirocrew-work`.
+One sibling agent shares this one's installer mechanics and nothing else:
+`kirocrew-conductor` (the `goal-conductor` skill) decomposes a free-form goal and
+tracks its items in the work ledger. `kirocrew-ledger-conductor` is a deprecated
+alias emitting that same spec under the flow's old name for one release. Both
+narrow `mcpServers`, withhold every file-writing tool, grant verb by verb and
+derive `permissions` from the filtered list; only the conductor mounts
+`kirocrew-work`.
 
 ## Tests that pin this
 
 | Test | What it holds |
 |---|---|
-| `test/test_pipeline_conductor_agent.py` | Identity and charter, the owned filename, the verbosity placeholder, patrol via `monitor_start` rather than `wait`, that the prompt names the tools and scripts it runs on, that no file-writing tool is mounted, that dashboard grants are create-and-read only, that core grants are named verbs rather than a whole server, that `mcpServers` is narrowed, and that a governed host withholds and audits |
+| `test/test_pipeline_conductor_agent.py` | Identity and charter, the owned filename, that the retired verbosity token is absent, patrol via `monitor_start` rather than `wait`, that the prompt names the tools and scripts it runs on, that no file-writing tool is mounted, that dashboard grants are create-and-read only, that core grants are named verbs rather than a whole server, that `mcpServers` is narrowed, and that a governed host withholds and audits |
 | `test/test_pipeline_conductor_skill_contract.py` | That the skill cites the script rather than a prose predicate, that every exit code has a documented action, that all five verdicts are named, that `UNKNOWN` is never permission, that a prose closure request needs author authorization, that an absent script has defined behaviour, and that a `verifier.repro_gate` outside its two declared values refuses the run instead of degrading to the generic contract |
 | `test/test_pipeline_conductor_probe_roundtrip.py` | That the probe classifies what the conversation log actually wrote, that the watchdog patterns match the constants the gateway emits, that the index needle matches the real writer, that a raw slot key finds the transcript the dashboard writes, and that `credit_spend.py` sums what the recorder wrote |
 | `test/test_pipeline_conductor_claim_preflight.py` | The claim verdict lattice: merged-PR coverage and its near misses, fork PRs, prose self-claims, closure requests outranking claims, and absent-symbol risk handling |

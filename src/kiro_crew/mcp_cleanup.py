@@ -21,12 +21,12 @@ from kiro_crew.config.paths import kiro_home
 
 logger = logging.getLogger(__name__)
 
-# Override hook + accessor, NOT a resolved constant (issue #874). Binding
-# `kiro_home()` at import time froze whichever home was active when this module
-# was first imported, so conftest's isolation fixture -- which runs after
-# collection has already imported it -- could not redirect it, and a test that
-# reached `clean_stale_managed_mcp()` without patching would rewrite the
-# operator's REAL mcp.json. Keeping the module-level name means the existing
+# Override hook + accessor, NOT a resolved constant. Binding `kiro_home()` at
+# import time freezes whichever home was active when this module was first
+# imported, so conftest's isolation fixture -- which runs after collection has
+# already imported it -- cannot redirect it, and a test that reached
+# `clean_stale_managed_mcp()` without patching would rewrite the operator's REAL
+# mcp.json. Keeping the module-level name means the existing
 # `monkeypatch.setattr(mcp_cleanup, "_KIRO_MCP_JSON", tmp)` call sites still work.
 _KIRO_MCP_JSON: Path | None = None  # explicit override hook, None = live
 

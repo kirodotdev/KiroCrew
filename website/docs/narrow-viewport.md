@@ -88,6 +88,18 @@ undersized target still conforms if a 24px circle centred on it does not interse
 neighbour's. So under 24x24 *and* crowded is a conformance failure; under 44x44 alone is a
 convention miss. Reporting every sub-44 control as a violation over-reports by roughly 3x.
 
+**In a row of adjacent icon actions, width carries the margin; height may be 32.** The two
+axes face different misses. Sideways, a finger that lands off-centre hits the *next*
+action, so the glyph pitch (cell width, cells flush) is the safety distance. Vertically the
+row has no neighbour — message text above, whitespace below — and touch browsers already
+snap a near-miss onto the only tappable element nearby, so extra height buys nothing and
+every completed turn pays for it. The message footers (`ICON_ACTION_ROW_CLS` in
+`touchActions.ts`) are 36 wide x 32 high on touch for that reason, the same shape ChatGPT's
+response-actions row uses (40 x 32); 32 clears the 24px floor. Width is also what keeps a
+row on one line: six actions plus an en-US timestamp fit 390px at 36, and wrapped at 40.
+The rule is for rows of icon-only actions; a lone button, or one carrying a text label, keeps
+`HOVER_NONE_ACTION_BTN_CLS` / `HOVER_NONE_ACTIONS_ROW_CLS` and their 40px square.
+
 **`overflow: hidden` on ANY ancestor kills `position: sticky` — use `overflow: clip`.**
 Same family: a `transform` on an ancestor re-anchors `position: fixed` children, and
 `align-self: start` is the most common silent sticky failure in flex and grid. A sticky
@@ -513,3 +525,55 @@ across 15 files, but a hit is not a work item: most are toolbars, banners, stick
 buttons that own the only gutter their content has, and rows inside a bordered pane must
 keep theirs. There is no lint gate for this, so read the structure around a hit before
 gating it.
+
+
+### Member memory drill-in
+
+A named member Memory view owns its compact identity header and one back action.
+`SettingsPage` opts into `SidePanelLayout.paneOwnsHeader` only for
+`/settings/overview?view=memory&store=<named-store>`. The shell yields its duplicate
+title, description and mobile back bar to that pane; Global V1 and other settings
+retain their existing chrome. The picker updates router search parameters, so
+this ownership follows selection and reload. The member workspace uses separate
+Memories, Profile and Recovery sections; profile drafts remain mounted while
+hidden. `MemoryTab` publishes unsaved state through `useSidePanelLeaveGuard` and
+`beforeunload`, and the Overview back action uses `useGuardedLeave`.
+
+
+Member memory identity uses the same `CrewAvatar` as the member roster, including
+pinned ghost traits and uploaded pictures. `SimpleSelect.optionIcons` decorates
+desktop choices while keeping their accessible labels and text typeahead. On
+touch devices the selected avatar sits beside the native select; native options
+remain text so long lists retain reliable platform scrolling.
+
+The shared V1/V2 `MemoryRecordsEditor` renders one server page of 50 records.
+Text search and memory-type filters cover the entire store; individual selections retain
+record revisions across pages, while an all-matching selection freezes its query
+and records explicit exclusions. Search controls lock only for all-matching
+selection, making the batch scope visible on mobile. The toolbar wraps, card
+previews clamp to three lines, and details show full text and revision proposals.
+Preview dialogs stack before/after columns on narrow screens and keep application
+behind a separate explicit action. A stale preview preserves typed input and
+refreshes selected identities; an uncertain apply retries the same signed token.
+Selection and draft state participate in the store, shell and browser leave guard.
+Refreshing all-matching selections asks the server to count the frozen query with
+its exclusions again; removed or nonmatching exclusions never reduce the count
+twice. An empty refreshed scope can still be cleared. A missing single record
+keeps its correction draft and retry action until that identity becomes available
+again, at which point preview uses its new revision.
+
+Pending revision proposals offer both adoption and keeping the current value.
+Keeping the current value prepares a versioned review preview directly; its
+resolution notice explains why identical before/after content still requires an
+explicit apply. Historical proposals whose base revision no longer matches the
+server's current revision remain readable without pending-action buttons.
+History loads in pages of 25 inside the same details view. A failed later page
+keeps earlier revisions visible and retries that page; overlapping revision IDs
+are displayed only once if the history changes during review.
+
+Desktop and mobile detail views in `SidePanelLayout` share one mounted pane
+ancestry. Crossing the viewport breakpoint only changes chrome and spacing;
+it must not remount an editor or lose its selection, draft, or signed preview.
+The mobile root list still has no pane: returning to that list is an intentional
+navigation through the existing leave guard. Regression coverage resizes the
+shared memory editor in both directions with a reviewed batch waiting to apply.

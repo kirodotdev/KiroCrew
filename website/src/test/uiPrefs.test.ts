@@ -5,10 +5,21 @@ import {
   needsHydrate,
   flushUiPrefs,
   startUiPrefsSync,
+  hasUnreconciledKeys,
+  reconcileNewDurableKeys,
   __resetUiPrefsSyncForTests,
 } from '../lib/uiPrefs'
 
 const SYNCED_KEYS_KEY = 'mc-ui-prefs-synced'
+const ROSTER_ENTRY = 'mc:ui-prefs:roster'
+
+/** The reconciled roster stored inside the synced document, or null. */
+function storedRoster(): string[] | null {
+  const raw = localStorage.getItem(SYNCED_KEYS_KEY)
+  if (raw === null) return null
+  const entry = (JSON.parse(raw) as Record<string, string>)[ROSTER_ENTRY]
+  return typeof entry === 'string' ? (JSON.parse(entry) as string[]) : null
+}
 
 function mockFetch(impl: (url: string, init?: RequestInit) => unknown) {
   const spy = vi.fn((url: string, init?: RequestInit) => Promise.resolve(impl(url, init)))
@@ -46,12 +57,11 @@ describe('uiPrefs', () => {
     })
 
     it('excludes the Apps Library view toggle, which is origin-local by decision', () => {
-      // Adding a key to this list is not safe for a WARM profile: it never
-      // hydrates (needsHydrate is false once SYNCED_KEYS_KEY exists), so the
-      // key's local default flushes over another origin's saved value. The
-      // Library show-all toggle is therefore kept out until the mechanism can
-      // hydrate a newly added key before the first flush (growth-gap issue 9491).
-      // A re-add without that fix fails here.
+      // The growth-gap mechanism (reconcileNewDurableKeys, issue 9491) now
+      // hydrates a newly added key before its first flush, so re-adding this
+      // key is mechanically safe -- but whether the Library show-all toggle
+      // SHOULD follow the user across origins is a product decision that has
+      // not been made. A re-add without that decision fails here.
       expect(DURABLE_PREF_KEYS).not.toContain('mc-apps-library-show-all')
     })
 
@@ -104,6 +114,15 @@ describe('uiPrefs', () => {
     it('excludes its own sync bookkeeping keys', () => {
       expect(DURABLE_PREF_KEYS).not.toContain(SYNCED_KEYS_KEY)
       expect(DURABLE_PREF_KEYS).not.toContain('mc-ui-prefs-hydrate-pending')
+      expect(DURABLE_PREF_KEYS).not.toContain(ROSTER_ENTRY)
+    })
+
+    it('holds the three per-surface prefs that used to reset across origins', () => {
+      // Issue 9875: sound, interface mode, and reading width were localStorage
+      // only, so they silently reverted to defaults on every fresh origin.
+      for (const key of ['mc-notification-sound', 'mc-ui', 'mc-reading-width']) {
+        expect(DURABLE_PREF_KEYS).toContain(key)
+      }
     })
   })
 
@@ -280,9 +299,10 @@ describe('uiPrefs', () => {
       vi.restoreAllMocks()
 
       expect(localStorage.getItem('mc-dev-mode')).toBeNull()
-      expect(Object.keys(JSON.parse(localStorage.getItem(SYNCED_KEYS_KEY)!))).toEqual([
-        'mc-crews-view',
-      ])
+      const printKeys = Object.keys(JSON.parse(localStorage.getItem(SYNCED_KEYS_KEY)!)).filter(
+        (k) => k !== ROSTER_ENTRY, // reconcile bookkeeping, not a fingerprint
+      )
+      expect(printKeys).toEqual(['mc-crews-view'])
 
       // The follow-up flush must not delete the host's copy of the key it failed
       // to store locally.
@@ -607,6 +627,330 @@ describe('uiPrefs', () => {
       window.dispatchEvent(new Event('storage'))
       await vi.advanceTimersByTimeAsync(2000)
       expect(lastPatch(spy)).toEqual({ 'mc-dev-mode': 'true' })
+    })
+  })
+
+  describe('reconcileNewDurableKeys (growth-gap, issue 9491)', () => {
+    /** Build the state of a profile from BEFORE a key joined the allowlist:
+     *  warm (has synced fingerprints for an old key), no reconciled roster. */
+    async function warmLegacyProfile() {
+      localStorage.setItem('mc-crews-view', 'list')
+      mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      __resetUiPrefsSyncForTests() // reload into the upgraded build
+      expect(storedRoster()).toBeNull()
+    }
+
+    it('a cold origin restores the three keys through the ordinary hydrate', async () => {
+      mockFetch(() =>
+        okJson({
+          prefs: {
+            'mc-notification-sound': '{"enabled":false,"volume":0.2,"perCategory":{"all":"ding"}}',
+            'mc-ui': 'cli',
+            'mc-reading-width': 'full',
+          },
+        }),
+      )
+      expect(await hydrateUiPrefs()).toBe(3)
+      expect(localStorage.getItem('mc-ui')).toBe('cli')
+      expect(localStorage.getItem('mc-reading-width')).toBe('full')
+      expect(hasUnreconciledKeys()).toBe(false) // hydrate also records the roster
+    })
+
+    it('a warm origin does NOT flush a mount-written default over the host value', async () => {
+      await warmLegacyProfile()
+      // UIModeProvider persists the current mode on mount, so by the time the
+      // upgraded build reconciles, the key exists locally holding the default.
+      localStorage.setItem('mc-ui', 'chat')
+      mockFetch(() => okJson({ prefs: { 'mc-ui': 'cli' } }))
+      expect(await reconcileNewDurableKeys()).toBe(0)
+
+      // Local stays in use here (the backup is not a live sync channel)...
+      expect(localStorage.getItem('mc-ui')).toBe('chat')
+      // ...and the first flush does not upload it over the host's copy.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+
+      // The moment the user changes it HERE, it is theirs and goes up.
+      localStorage.setItem('mc-ui', 'cli')
+      const spy2 = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(lastPatch(spy2)).toEqual({ 'mc-ui': 'cli' })
+    })
+
+    it('a warm origin adopts the host value for a new key it never held', async () => {
+      await warmLegacyProfile()
+      mockFetch(() => okJson({ prefs: { 'mc-reading-width': 'full' } }))
+      expect(await reconcileNewDurableKeys()).toBe(1) // caller reloads on > 0
+      expect(localStorage.getItem('mc-reading-width')).toBe('full')
+
+      // Adopted, so baselined: nothing to flush.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('a warm origin seeds the backup for a new key the host does not hold', async () => {
+      await warmLegacyProfile()
+      localStorage.setItem('mc-notification-sound', '{"enabled":false}')
+      mockFetch(() => okJson({ prefs: {} }))
+      expect(await reconcileNewDurableKeys()).toBe(0)
+
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(lastPatch(spy)).toEqual({ 'mc-notification-sound': '{"enabled":false}' })
+    })
+
+    it('records the roster, so the pass runs once per allowlist growth, not per boot', async () => {
+      await warmLegacyProfile()
+      expect(hasUnreconciledKeys()).toBe(true)
+      mockFetch(() => okJson({ prefs: {} }))
+      await reconcileNewDurableKeys()
+      expect(hasUnreconciledKeys()).toBe(false)
+      expect(storedRoster()).toEqual([...DURABLE_PREF_KEYS])
+    })
+
+    it('does NOT bulk-import old keys a legacy profile merely never held', async () => {
+      // Only keys added AFTER the profile's baseline are reconciled. mc-nav is
+      // a pre-mechanism key with no fingerprint here (never held); adopting it
+      // would be the cross-origin sync design decision 1 forbids.
+      await warmLegacyProfile()
+      mockFetch(() => okJson({ prefs: { 'mc-nav': 'ORIGIN-A-LAYOUT' } }))
+      expect(await reconcileNewDurableKeys()).toBe(0)
+      expect(localStorage.getItem('mc-nav')).toBeNull()
+
+      // And it is not baselined, so a local deletion can never null the host copy.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('a downgrade sheds the roster, so a re-upgrade reconciles again', async () => {
+      await warmLegacyProfile()
+      mockFetch(() => okJson({ prefs: {} }))
+      await reconcileNewDurableKeys()
+      expect(hasUnreconciledKeys()).toBe(false)
+
+      // A pre-roster build rewrites the synced document from its own prints
+      // and drops both the roster entry and the new keys' fingerprints.
+      const doc = JSON.parse(localStorage.getItem(SYNCED_KEYS_KEY)!) as Record<string, string>
+      delete doc[ROSTER_ENTRY]
+      for (const k of ['mc-notification-sound', 'mc-ui', 'mc-reading-width']) delete doc[k]
+      localStorage.setItem(SYNCED_KEYS_KEY, JSON.stringify(doc))
+
+      // Back on this build: the keys must count as new again -- trusting the
+      // stale roster would upload a stale local value over the host backup.
+      expect(hasUnreconciledKeys()).toBe(true)
+    })
+
+    it('withholds an unreconciled key from every flush, not only at boot', async () => {
+      // Mixed-version multi-tab race: this (new-build) tab reconciled at boot,
+      // then an OLD tab's baseline rewrite sheds the roster and the new keys'
+      // fingerprints mid-session. This tab's next debounced flush must NOT
+      // read the new keys as changed and upload their local values over the
+      // host backup -- they stop flushing until a boot reconciles them again.
+      await warmLegacyProfile()
+      localStorage.setItem('mc-ui', 'chat')
+      mockFetch(() => okJson({ prefs: { 'mc-ui': 'cli' } }))
+      await reconcileNewDurableKeys()
+
+      // The old tab's commitSent, as a pre-roster build performs it.
+      const doc = JSON.parse(localStorage.getItem(SYNCED_KEYS_KEY)!) as Record<string, string>
+      delete doc[ROSTER_ENTRY]
+      for (const k of ['mc-notification-sound', 'mc-ui', 'mc-reading-width']) delete doc[k]
+      localStorage.setItem(SYNCED_KEYS_KEY, JSON.stringify(doc))
+
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled() // mc-ui withheld, nothing else changed
+
+      // An old (reconciled-baseline) key still flushes normally.
+      localStorage.setItem('mc-crews-view', 'grid')
+      const spy2 = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(lastPatch(spy2)).toEqual({ 'mc-crews-view': 'grid' })
+    })
+
+    it('the roster survives an ordinary flush baseline rewrite', async () => {
+      await warmLegacyProfile()
+      mockFetch(() => okJson({ prefs: {} }))
+      await reconcileNewDurableKeys()
+
+      localStorage.setItem('mc-dev-mode', 'true')
+      mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs() // commitSent rewrites the whole document
+      expect(storedRoster()).toEqual([...DURABLE_PREF_KEYS])
+    })
+
+    it('reports failure on a non-2xx response too, and writes no roster', async () => {
+      await warmLegacyProfile()
+      mockFetch(() => ({ ok: false, status: 503, json: () => Promise.resolve({}) }))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+      expect(storedRoster()).toBeNull()
+      expect(hasUnreconciledKeys()).toBe(true)
+    })
+
+    it('treats a 200 with a malformed body as a failure, not as an empty backup', async () => {
+      // Recording completion here would start the sync and flush local
+      // defaults over whatever the host really holds.
+      await warmLegacyProfile()
+      localStorage.setItem('mc-ui', 'chat')
+      mockFetch(() => okJson({ prefs: 'nope' }))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+      expect(storedRoster()).toBeNull()
+      expect(hasUnreconciledKeys()).toBe(true)
+    })
+
+    it('a malformed-body failure still records the ownership snapshot for the retry', async () => {
+      // Without the snapshot, ownedAtFailure() is null on retry, keepLocal is
+      // true for the default a hook mounted AFTER the failure, and the host
+      // value would be silently lost forever.
+      await warmLegacyProfile()
+      mockFetch(() => okJson({ prefs: 'nope' }))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+      localStorage.setItem('mc-ui', 'chat') // mounted default, written post-failure
+
+      mockFetch(() => okJson({ prefs: { 'mc-ui': 'cli' } }))
+      expect(await reconcileNewDurableKeys()).toBe(1)
+      expect(localStorage.getItem('mc-ui')).toBe('cli') // host wins
+    })
+
+    it('a dropped-commit failure records the snapshot; restored keys stay, later defaults lose', async () => {
+      await warmLegacyProfile()
+      const realSet = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        k: string,
+        v: string,
+      ) {
+        if (k === SYNCED_KEYS_KEY) throw new DOMException('full', 'QuotaExceededError')
+        realSet.call(this, k, v)
+      })
+      mockFetch(() => okJson({ prefs: { 'mc-reading-width': 'full' } }))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+      vi.restoreAllMocks()
+      // The adoption landed before the commit failed; it holds the HOST value,
+      // so the snapshot treats it as owned and the retry keeps it.
+      expect(localStorage.getItem('mc-reading-width')).toBe('full')
+      localStorage.setItem('mc-ui', 'chat') // mounted default, written post-failure
+
+      mockFetch(() => okJson({ prefs: { 'mc-reading-width': 'full', 'mc-ui': 'cli' } }))
+      expect(await reconcileNewDurableKeys()).toBe(1)
+      expect(localStorage.getItem('mc-reading-width')).toBe('full') // kept
+      expect(localStorage.getItem('mc-ui')).toBe('cli') // host wins
+
+      // Both baselined: nothing to flush.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('does not baseline an adopted value the quota-safe writer had to drop', async () => {
+      await warmLegacyProfile()
+      const realSet = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        k: string,
+        v: string,
+      ) {
+        if (k === 'mc-reading-width') throw new DOMException('full', 'QuotaExceededError')
+        realSet.call(this, k, v)
+      })
+      mockFetch(() => okJson({ prefs: { 'mc-reading-width': 'full' } }))
+      expect(await reconcileNewDurableKeys()).toBe(0)
+      vi.restoreAllMocks()
+
+      // Not stored locally, and NOT baselined: a baseline for a missing key
+      // would make the first flush null out the good host backup.
+      expect(localStorage.getItem('mc-reading-width')).toBeNull()
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+    })
+
+    it('fails the whole reconcile when the baseline+roster commit write is dropped', async () => {
+      // A roster recorded without its baselines would start the sync and let
+      // the first flush upload unreconciled local values over the host backup.
+      // The commit is one write, and a dropped write is a failed reconcile.
+      await warmLegacyProfile()
+      localStorage.setItem('mc-ui', 'chat')
+      const realSet = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        k: string,
+        v: string,
+      ) {
+        if (k === SYNCED_KEYS_KEY) throw new DOMException('full', 'QuotaExceededError')
+        realSet.call(this, k, v)
+      })
+      mockFetch(() => okJson({ prefs: { 'mc-ui': 'cli' } }))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+      vi.restoreAllMocks()
+      expect(storedRoster()).toBeNull()
+      expect(hasUnreconciledKeys()).toBe(true) // retried next boot
+    })
+
+    it('a hydrate whose marker write is dropped leaves the profile cold, never roster-only', async () => {
+      // Baselines and roster land in ONE write: a profile must never look warm
+      // and reconciled while holding no fingerprints.
+      const realSet = Storage.prototype.setItem
+      vi.spyOn(Storage.prototype, 'setItem').mockImplementation(function (
+        this: Storage,
+        k: string,
+        v: string,
+      ) {
+        if (k === SYNCED_KEYS_KEY) throw new DOMException('full', 'QuotaExceededError')
+        realSet.call(this, k, v)
+      })
+      mockFetch(() => okJson({ prefs: { 'mc-ui': 'cli' } }))
+      await hydrateUiPrefs()
+      vi.restoreAllMocks()
+      expect(needsHydrate()).toBe(true) // next boot hydrates again
+      expect(storedRoster()).toBeNull()
+    })
+
+    it('reports failure so the caller can decline to start the sync, and the next boot retries', async () => {
+      await warmLegacyProfile()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
+      expect(await reconcileNewDurableKeys()).toBe(-1)
+      expect(hasUnreconciledKeys()).toBe(true) // roster not written: retried next boot
+    })
+
+    it('after a FAILED reconcile, the host wins for a new key written by a settings-less render', async () => {
+      await warmLegacyProfile()
+      vi.stubGlobal('fetch', vi.fn(() => Promise.reject(new Error('ECONNREFUSED'))))
+      await reconcileNewDurableKeys()
+      // The page rendered without its settings; the mount hook wrote a default.
+      localStorage.setItem('mc-ui', 'chat')
+
+      mockFetch(() => okJson({ prefs: { 'mc-ui': 'cli' } }))
+      expect(await reconcileNewDurableKeys()).toBe(1)
+      expect(localStorage.getItem('mc-ui')).toBe('cli')
+      expect(localStorage.getItem('mc-ui-prefs-hydrate-pending')).toBeNull()
+    })
+
+    it('a reconciled key still propagates a later local deletion', async () => {
+      await warmLegacyProfile()
+      localStorage.setItem('mc-reading-width', 'full')
+      mockFetch(() => okJson({ prefs: { 'mc-reading-width': 'full' } }))
+      await reconcileNewDurableKeys()
+
+      localStorage.removeItem('mc-reading-width')
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(lastPatch(spy)).toEqual({ 'mc-reading-width': null })
+    })
+
+    it('leaves every previously synced fingerprint intact', async () => {
+      await warmLegacyProfile()
+      mockFetch(() => okJson({ prefs: { 'mc-ui': 'cli' } }))
+      await reconcileNewDurableKeys()
+      // The old key's fingerprint survived the merge: nothing is re-uploaded.
+      const spy = mockFetch(() => okJson({ prefs: {} }))
+      await flushUiPrefs()
+      expect(spy).not.toHaveBeenCalled()
+      expect(localStorage.getItem('mc-crews-view')).toBe('list')
     })
   })
 })

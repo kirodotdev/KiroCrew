@@ -35,7 +35,7 @@ def teardown_function() -> None:
 
 
 def test_declared_yolo_does_not_expire() -> None:
-    """The defect this replaces: it used to lapse after 24h and revert to Normal."""
+    """Declared YOLO does not lapse after 24h and revert to Normal."""
     state = _make_state()
     with patch("kiro_crew.safety_override.sel"):
         _apply_startup_yolo(state, _cfg(yolo=True))
@@ -46,7 +46,7 @@ def test_declared_yolo_does_not_expire() -> None:
     assert so.is_permanent is True
     assert so.remaining_secs() == -1
 
-    # Drive time past every deadline that used to end it.
+    # Drive time past every deadline that would end it.
     base = time.monotonic()
     with patch(
         "kiro_crew.safety_override.time.monotonic",

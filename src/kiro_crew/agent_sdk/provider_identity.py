@@ -2,8 +2,9 @@
 
 This is the ``agent.provider`` axis: the config key an operator sets, whose
 value reaches roughly a dozen branches that need to know "am I on Claude Code".
-Those branches used to spell the value inline, which made the provider-specific
-logic impossible to find by grep and impossible to change in one place.
+Spelling the value inline in each branch makes the provider-specific logic
+impossible to find by grep and impossible to change in one place, so it is
+consolidated here.
 
 Four different things are spelled ``"claude_code"`` in this codebase and only
 the FIRST is this module's business. Consolidating the others into this one

@@ -180,7 +180,7 @@ class TestMergePullRequest(unittest.TestCase):
             out = azure_client.merge_pull_request(OWNER, REPO, 7, "SQUASH", SHA, host=HOST)
         body = az.writes()[0]["body"]
         self.assertEqual(body["status"], "completed")
-        # Azure refuses the completion when this is no longer the PR's last source
+        # Azure refuses the completion when this is not the PR's last source
         # commit, which is what stops a push landing mid-review from being merged.
         self.assertEqual(body["lastMergeSourceCommit"], {"commitId": SHA})
         self.assertEqual(out, {"merged": True, "sha": "c" * 40, "message": ""})

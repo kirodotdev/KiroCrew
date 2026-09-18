@@ -2,7 +2,7 @@
 
 Handlers converted to ``_shared.read_bounded_json``'s capped path enforce the
 byte ceiling BEFORE decoding by draining ``request.content`` incrementally --
-so a mocked ``request.json`` alone no longer feeds them, and every harness for
+so a mocked ``request.json`` alone does not feed them, and every harness for
 such a handler must supply real body bytes through a stream double. This
 module is that double, extracted from the near-identical ``_Payload`` copies
 the converted test files each grew.

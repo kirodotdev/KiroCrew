@@ -152,7 +152,7 @@ class RunState:
     #:
     #: Carried per-run rather than on the supervisor because it decides this run's TERMINAL
     #: STATUS: an offline run's discovery early-returns an empty candidate list, so the loop
-    #: quiesces and ``driver.run()`` returns cleanly, and a clean return used to be reported
+    #: quiesces and ``driver.run()`` returns cleanly — a clean return with no reason set reads
     #: as ``done``. Set from :meth:`RunSupervisor._build_runner` via :meth:`RunSupervisor.start`.
     offline_reason: str = ""
     #: Where THIS run's terminal record belongs, bound when the run started.
@@ -485,21 +485,17 @@ class RunSupervisor:
             # Register the tool-restricted discovery agent so kiro-cli resolves it by name.
             # FAIL CLOSED on the returned bool: an unknown agent name does not error, it
             # silently activates the DEFAULT agent — which carries the full kirocrew-core
-            # toolset including `spawn_sub_agents`. Ignoring this result meant an
-            # unwritable agent dir quietly widened an unattended agent's tool scope to
-            # everything, which is the opposite of what registering it is for. Raised by
-            # review of this branch.
+            # toolset including `spawn_sub_agents`. Ignoring this result lets an unwritable
+            # agent dir quietly widen an unattended agent's tool scope to everything, which
+            # is the opposite of what registering it is for.
             if not runner.ensure_agent_registered():
-                # OFFLINE, not the subprocess fallback. This used to fall through, which
-                # meant a configured provider whose agent registration failed silently
-                # downgraded to `claude -p` — bypassing the provider's own permission
-                # gate even though a provider EXISTED. Measured: with `available()` True
-                # and `ensure_agent_registered()` False, `_build_runner` returned
-                # `AgentRunner`. That is the substance of the review's long-standing
-                # "fallback bypasses the ACP gate" objection, and it is a real hole
-                # rather than the impossible case it looked like: the fallback is only
-                # defensible when there is NO provider to route through. Raised by the
-                # GPT review of this branch.
+                # OFFLINE, not the subprocess fallback. Falling through here lets a
+                # configured provider whose agent registration failed downgrade silently
+                # to `claude -p` — bypassing the provider's own permission gate even
+                # though a provider EXISTS. The hole is reachable, not theoretical:
+                # `available()` True with `ensure_agent_registered()` False is a state
+                # `_build_runner` sees here. The fallback is only defensible when there
+                # is NO provider to route through.
                 logger.warning(
                     "%s: could not register the tool-restricted agent — running OFFLINE "
                     "rather than falling back to the subprocess agent, because a provider "
@@ -514,10 +510,9 @@ class RunSupervisor:
                 return None
             self._offline_reason = ""
             return runner
-        # NO subprocess fallback. Review asked for this removal on every head, and after the
-        # two fall-through holes were closed the remaining objection turned out to be right on
-        # the facts: the fallback's stated purpose — "the only path that authors fixes when no
-        # in-process provider is configured" — describes a state that cannot occur.
+        # NO subprocess fallback. The fallback's stated purpose — "the only path that authors
+        # fixes when no in-process provider is configured" — describes a state that cannot
+        # occur.
         # `SessionAgentRunner.available()` is `cfg.create_provider_factory() is not None`, and
         # `create_provider_factory` has exactly two returns (`AcpProvider(...)` and `_acp`) and
         # NEVER returns None — verified by inspecting its source. So `available()` is False only
@@ -527,7 +522,7 @@ class RunSupervisor:
         # agent outside the provider's permission gate precisely when the platform is unhealthy.
         # Running OFFLINE (no fabricated fixes) is the honest outcome. Removing the selection
         # rather than the class keeps `AgentRunner` available for a future caller that can route
-        # it properly. Raised by the GPT review of this branch.
+        # it properly.
         logger.warning(
             "%s: no provider-backed agent runner available — running offline (the subprocess "
             "fallback is deliberately not used: it would bypass the provider permission gate)",
@@ -831,7 +826,7 @@ class RunSupervisor:
         UI reporting ``calibrating`` forever."""
         with self._lock:
             # The thread is RUNNING now, so `is_alive()` can carry the answer from here and the
-            # reservation is no longer needed. Released first so an early return or raise below
+            # reservation is not needed. Released first so an early return or raise below
             # cannot leave the supervisor permanently busy.
             self._reserved = False
         try:
@@ -922,15 +917,15 @@ class RunSupervisor:
                 self._note("running the canary (a known win must clear the band)")
                 canary = profile.ruler.measure_canary(base_src=clone)
                 observed = float(getattr(canary, "primary_delta", 0.0) or 0.0)
-                # Reuse the SPINE's predicate rather than re-deriving it. This used to be
-                # `abs(observed) > band`, which ignored both `canary.ok` and the ruler's improving
-                # DIRECTION — so `POST /calibrate` wrote `status="calibrated"` for two cases that
-                # prove the opposite. Measured against the spine's rule at band=10: a REGRESSION of
-                # +25 (minimize) passed, and a measurement with `ok=False` passed. A canary is the
+                # Reuse the SPINE's predicate rather than re-deriving it. A local
+                # `abs(observed) > band` ignores both `canary.ok` and the ruler's improving
+                # DIRECTION — so `POST /calibrate` writes `status="calibrated"` for two cases that
+                # prove the opposite: against the spine's rule at band=10, a REGRESSION of +25
+                # (minimize) clears, and so does a measurement with `ok=False`. A canary is the
                 # one measurement whose sign we know a priori, so direction-blindness here defeats
                 # the whole point of proving the ruler. `_canary_clears_band` already handles ok /
                 # None / direction and is what Phase-1 preflight uses; a second copy is exactly how
-                # these two drifted apart. Raised by the GPT review of this branch.
+                # the two drift apart.
                 from ..spine.preflight import _canary_clears_band
 
                 cleared = _canary_clears_band(
@@ -1134,7 +1129,7 @@ class RunSupervisor:
         kill the thread silently and leave the UI reporting ``running`` forever."""
         with self._lock:
             # The thread is RUNNING now, so `is_alive()` can carry the answer from here and the
-            # reservation is no longer needed. Released first so an early return or raise below
+            # reservation is not needed. Released first so an early return or raise below
             # cannot leave the supervisor permanently busy.
             self._reserved = False
         try:

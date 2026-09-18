@@ -66,12 +66,27 @@ class TestWidgetBlockPlaceholder:
         # Hard budget per density. The pre-pointer block was ~800 chars of
         # inlined instructions; the pointer deliberately grew to two short
         # sections (Inline Widgets + Artifacts, ~640 chars for "more") when the
-        # Artifacts pointer was added. Budgets sit just above today's sizes to
-        # keep catching accidental regrowth toward inlining full skill docs.
-        budgets = {"more": 700, "less": 400}
+        # Artifacts pointer was added, and again by one theme-contract sentence
+        # (~1000 / ~560) once answer-only widgets shipped unreadable in dark
+        # mode because the model never loaded the skill. Budgets sit just above
+        # today's sizes to keep catching accidental regrowth toward inlining
+        # full skill docs.
+        budgets = {"more": 1050, "less": 600}
         for density, budget in budgets.items():
             result = _resolve("{{WIDGET_BLOCK}}", "dashboard:abc", density=density)
             assert len(result) < budget, f"{density} pointer too long: {len(result)} chars"
+
+    def test_pointer_carries_the_theme_contract_without_the_var_table(self):
+        # The one rule that cannot wait for a skill load: the frame's body is
+        # already themed, so a fixed light palette with the theme's text color
+        # inherited (the answer-only failure) renders white-on-white in dark
+        # mode. Both densities state the rule in prose -- no var names, so the
+        # no-restating guard above still holds.
+        for density in ("more", "less"):
+            result = _resolve("{{WIDGET_BLOCK}}", "dashboard:abc", density=density)
+            assert "The frame is themed" in result, density
+            assert "never a fixed palette" in result, density
+            assert "background together with its text color" in result, density
 
     def test_dashboard_underscore_key_also_matches(self):
         # Some dashboard sessions use `dashboard_<slot>` instead of `dashboard:<slot>`.

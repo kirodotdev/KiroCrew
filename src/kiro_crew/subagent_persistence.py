@@ -41,6 +41,7 @@ _SUBAGENTS_DIR: Path | None = None
 SUBAGENT_CONVERSATION_PREFIX = "subagent:"
 _CLEANUP_IDENTITIES_FILE = "cleanup-identities.json"
 _CLEANUP_IDENTITIES_TRUST_DIR = "subagent-cleanup-identities"
+_RUN_MEMORY_BINDINGS_DIR = "member-memory-bindings"
 _CLEANUP_IDENTITY_LOCK = threading.Lock()
 _LIVE_CLEANUP_IDENTITIES: dict[str, list[dict[str, object]]] = {}
 _LIVE_CLEANUP_HINTS: set[str] = set()
@@ -86,6 +87,75 @@ def _protect_cleanup_identities_path(agent_id: str) -> Path:
 def _delete_cleanup_identities_file(agent_id: str) -> None:
     """Remove the protected generation record after its run folder is gone."""
     shutil.rmtree(_cleanup_identities_path(agent_id).parent, ignore_errors=True)
+    shutil.rmtree(_run_memory_identity_path(agent_id).parent, ignore_errors=True)
+
+
+def _run_memory_identity_path(agent_id: str) -> Path:
+    """A top-level, sandbox-readonly identity tree, never the writable trust tree."""
+    _agent_dir(agent_id)
+    path = _subagents_dir().parent.resolve() / _RUN_MEMORY_BINDINGS_DIR / agent_id / "memory.json"
+    if path.resolve() != path:
+        raise ValueError("memory binding unavailable: protected identity path is redirected")
+    return path
+
+
+def _run_agent_identity_path(agent_id: str) -> Path:
+    """Keep template authority beside memory in the sandbox-readonly run tree."""
+    path = _run_memory_identity_path(agent_id).with_name("agent.json")
+    if path.resolve() != path:
+        raise ValueError("resume_failed: protected agent template path is redirected")
+    return path
+
+
+def write_run_agent(agent_id: str, agent: str | None, *, kind: str = "template") -> None:
+    """Publish a selected template/member; None explicitly withholds inheritance."""
+    if agent is not None and (
+        not isinstance(agent, str)
+        or kind not in ("template", "member")
+        or (kind == "member" and not agent)
+    ):
+        raise ValueError("resume_failed: effective agent template is invalid")
+    path = _run_agent_identity_path(agent_id)
+    for directory in (path.parent.parent, path.parent):
+        platform_compat.make_owner_only_dir(directory)
+        platform_compat.restrict_dir_to_owner(directory)
+    _atomic_write(path, {"agent": agent, "kind": kind if agent is not None else None, "version": 2})
+    platform_compat.restrict_to_owner(path)
+
+
+def read_run_agent_selection(agent_id: str) -> tuple[str, str]:
+    """Restore a namespace without guessing from current config or diagnostics."""
+    path = _run_agent_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError(
+            "resume_failed: protected agent template unavailable; supply agent explicitly"
+        ) from exc
+    if (
+        not isinstance(payload, dict)
+        or type(payload.get("version")) is not int
+        or payload["version"] not in (1, 2)
+    ):
+        raise ValueError("resume_failed: protected agent template is invalid")
+    agent = payload.get("agent")
+    if agent is None:
+        raise ValueError(
+            "resume_failed: protected agent template unavailable; supply agent explicitly"
+        )
+    if not isinstance(agent, str):
+        raise ValueError("resume_failed: protected agent template is invalid")
+    if payload["version"] == 1:
+        if agent:
+            raise ValueError(
+                "resume_failed: protected agent template unavailable: legacy namespace "
+                "is ambiguous; supply agent explicitly"
+            )
+        return "template", ""
+    kind = payload.get("kind")
+    if kind not in ("template", "member") or (kind == "member" and not agent):
+        raise ValueError("resume_failed: protected agent template selection is invalid")
+    return kind, agent
 
 
 def _read_cleanup_identities_file(agent_id: str) -> list[dict[str, object]]:
@@ -359,6 +429,9 @@ def create_agent_folder(
     parent_session: str = "",
     max_turns: int = 0,
     context_groups: str = "",
+    memory_store: str = "",
+    memory_mode: str = "persistent",
+    app: str = "",
 ) -> Path:
     """Create ``~/.kiro/crew/subagents/{id}/`` with ``state.json``.
 
@@ -371,6 +444,30 @@ def create_agent_folder(
     withheld — distinct from the key being absent, which marks a run from before
     the field existed and resolves to all-on.
     """
+    from kiro_crew.messaging.privacy_mode import strictest
+
+    if memory_mode not in {"persistent", "incognito", "temporary"}:
+        raise ValueError("memory binding unavailable: invalid session memory mode")
+    # Resume identity is gateway-owned; the run folder itself is agent writable.
+    memory_path = _run_memory_identity_path(agent_id)
+    holder = _lock_for_agent(agent_id)
+    with holder.lock:
+        if memory_path.parent.exists():
+            previous_mode = read_run_memory_mode(agent_id)
+            memory_mode = strictest((memory_mode, previous_mode)) or "persistent"
+        for directory in (memory_path.parent.parent, memory_path.parent):
+            platform_compat.make_owner_only_dir(directory)
+            platform_compat.restrict_dir_to_owner(directory)
+        _atomic_write(
+            memory_path,
+            {
+                "memory_store": memory_store,
+                "memory_mode": memory_mode,
+                "app": app,
+                "version": 2,
+            },
+        )
+        platform_compat.restrict_to_owner(memory_path)
     d = _agent_dir(agent_id)
     d.mkdir(parents=True, exist_ok=True)
     state = {
@@ -385,10 +482,108 @@ def create_agent_folder(
         "turns": 0,
         "last_tool": "",
         "context_groups": context_groups,
+        "memory_store": memory_store,
+        "memory_binding_version": 2,
         "updated_at": time.time(),
     }
     _atomic_write(d / "state.json", state)
     return d
+
+
+def read_run_memory_mode(agent_id: str) -> str:
+    """Read the protected birth restriction, never the editable run metadata.
+
+    Missing legacy modes are unknown, not evidence of persistent-mode admission.
+    A caller must refuse to resume restricted-capable work until it has authority.
+    """
+    path = _run_memory_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError("memory binding unavailable: session memory mode is unreadable") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 2
+        or not isinstance(payload.get("memory_store"), str)
+        or not isinstance(payload.get("memory_mode"), str)
+        or payload["memory_mode"] not in {"persistent", "incognito", "temporary"}
+    ):
+        raise ValueError("memory binding unavailable: session memory mode is unknown")
+    return payload["memory_mode"]
+
+
+def tighten_run_memory_mode(agent_id: str, memory_mode: str) -> str:
+    """Tighten an existing conversation's policy without rewriting its run state."""
+    from kiro_crew.messaging.privacy_mode import strictest
+
+    if memory_mode not in ("persistent", "incognito", "temporary"):
+        raise ValueError("memory binding unavailable: invalid session memory mode")
+    path = _run_memory_identity_path(agent_id)
+    holder = _lock_for_agent(agent_id)
+    with holder.lock:
+        previous = read_run_memory_mode(agent_id)
+        effective = strictest((previous, memory_mode)) or "persistent"
+        if effective != previous:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            payload["memory_mode"] = effective
+            _atomic_write(path, payload)
+            platform_compat.restrict_to_owner(path)
+        return effective
+
+
+def read_run_app(agent_id: str) -> str:
+    """Restore the app owner; absence is unknown, never a person-owned run."""
+    path = _run_memory_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, RecursionError) as exc:
+        raise ValueError("protected app ownership unavailable; start a new conversation") from exc
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 2
+        or not isinstance(payload.get("app"), str)
+    ):
+        raise ValueError("protected app ownership unavailable; start a new conversation")
+    return payload["app"]
+
+
+def read_run_memory_store(agent_id: str, *, validate_memory_files: bool = True) -> str:
+    """Restore a run's protected memory identity, preserving legacy global runs."""
+    path = _run_memory_identity_path(agent_id)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        # A known protected directory cannot become a legacy run when its record
+        # disappears. The former trust-tree record was agent-writable and must
+        # never be imported as authority.
+        old_path = _cleanup_identities_path(agent_id).parent / "memory.json"
+        if path.parent.exists() or old_path.exists():
+            raise ValueError(
+                "memory binding unavailable: restore this run's protected memory record"
+            )
+        try:
+            state = json.loads((_agent_dir(agent_id) / "state.json").read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            state = {}
+        except (OSError, ValueError, RecursionError) as exc:
+            raise ValueError("memory binding unavailable: run metadata is unreadable") from exc
+        if not isinstance(state, dict):
+            raise ValueError("memory binding unavailable: run metadata is unreadable")
+        if "memory_binding_version" in state or state.get("memory_store"):
+            raise ValueError(
+                "memory binding unavailable: restore this run's protected memory record"
+            )
+        return ""
+    if not isinstance(payload, dict) or payload.get("version") != 2:
+        raise ValueError("memory binding unavailable: invalid protected memory record")
+    store = payload.get("memory_store")
+    if not isinstance(store, str):
+        raise ValueError("memory binding unavailable: invalid protected memory store")
+    if store:
+        from kiro_crew.memory_stores import require_memory_store
+
+        require_memory_store(store, require_directory=validate_memory_files)
+    return store
 
 
 # ── read / update ────────────────────────────────────────────────────
@@ -429,9 +624,9 @@ def read_tombstone(agent_id: str) -> dict | None:
 #: (model provenance, CC-path model refinement, per-turn diagnostics -- each via
 #: ``asyncio.to_thread``), so two pool writers overlap during a run and a
 #: loop-side write executes while the run's coroutine is suspended inside a
-#: pool-side one (#6298). Cancellation widens it: cancelling a ``to_thread``
+#: pool-side one. Cancellation widens it: cancelling a ``to_thread``
 #: await DETACHES the worker rather than stopping it, so it finishes carrying a
-#: read that is already stale (#6308).
+#: read that is already stale.
 #:
 #: SCOPE -- ordinary ``update_state`` callers take the lock OFF-LOOP only.
 #: Serializing every loop-side write by waiting would block the event loop behind
@@ -439,7 +634,7 @@ def read_tombstone(agent_id: str) -> dict | None:
 #: instead probes the same per-agent lock non-blocking and returns RETRYABLE when
 #: busy; once acquired, its existing on-loop keep write cannot be overwritten by
 #: an older pool writer. Other on-loop callers keep their pre-existing unlocked
-#: behavior -- see :func:`update_state` for the remaining #6308 limitation.
+#: behavior -- see :func:`update_state` for the remaining limitation.
 #:
 #: The ordinary acquire is UNBOUNDED, and can be, because no on-loop caller reaches
 #: it: only pool workers block there, and their own read + fsync + rename already
@@ -547,9 +742,7 @@ def _retention_lock_for_agent(agent_id: str) -> "_AgentLock":
 
 def _try_acquire_retention_lock(agent_id: str) -> "_AgentLock | None":
     """Return held per-agent retention arbitration, or None without blocking."""
-    return _try_acquire_registry_lock(
-        agent_id, _RETENTION_LOCKS, _RETENTION_LOCKS_GUARD
-    )
+    return _try_acquire_registry_lock(agent_id, _RETENTION_LOCKS, _RETENTION_LOCKS_GUARD)
 
 
 def _acquire_retention_locks(*agent_ids: str) -> list["_AgentLock"]:
@@ -572,18 +765,18 @@ def update_state(agent_id: str, **fields: object) -> bool:
     the current state could not be read (missing/corrupt/unreadable). The skip
     is deliberate -- fabricating a fresh state here would resurrect a record
     the reaper deleted -- but callers with a durability contract (the pre-spawn
-    provenance write, #5394) need to see the skip to retry rather than mistake
+    provenance write) need to see the skip to retry rather than mistake
     a silent no-op for success.
 
     The read / merge / rewrite is serialized per agent for OFF-LOOP callers (see
-    :data:`_STATE_LOCKS`), so two pool writers can no longer rewrite a snapshot
+    :data:`_STATE_LOCKS`), so two pool writers cannot rewrite a snapshot
     that predates the other's write.
 
     KNOWN LIMITATION: ordinary ON-LOOP callers do not take the lock, because waiting
     on a pool thread's fsync from the event loop is exactly the blocking call the
-    repo's anchor forbids. Every writer inside a run now goes off-loop through
-    ``_write_state_off_loop`` and is drained on cancellation (#6298 / #6308 /
-    #7302); an abandoned writer holds the conversation until it settles, so the
+    repo's anchor forbids. Every writer inside a run goes off-loop through
+    ``_write_state_off_loop`` and is drained on cancellation; an abandoned writer
+    holds the conversation until it settles, so the
     on-loop retention writes are deferred past it. Retention promotion adds a
     second defense: on the event loop it probes the same per-agent lock
     non-blocking and returns RETRYABLE on contention, while off-loop promotion
@@ -591,7 +784,7 @@ def update_state(agent_id: str, **fields: object) -> bool:
     roll back ``keep=True`` and no loop-side caller waits for a pool writer's
     fsync. The remaining on-loop callers are the synchronous retention writers;
     they still pay their own fsync on the loop, and moving that I/O while keeping
-    their ``SessionMap`` mutation on-loop is the rest of #7302.
+    their ``SessionMap`` mutation on-loop remains outstanding.
     """
     p = _agent_dir(agent_id) / "state.json"
     # Off-loop callers serialize; on-loop callers keep pre-existing behaviour.
@@ -687,9 +880,7 @@ def write_tombstone(
     d = _agent_dir(agent_id)
     state = read_state(agent_id) or {}
     cleanup_identity = {
-        key: state[key]
-        for key in ("session_id", "provider", "cwd")
-        if state.get(key)
+        key: state[key] for key in ("session_id", "provider", "cwd") if state.get(key)
     }
     live_cleanup_identities = _live_cleanup_identities(agent_id)
     latest_live_identity = live_cleanup_identities[-1] if live_cleanup_identities else {}
@@ -856,11 +1047,7 @@ _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS = 90 * 86400
 def _tombstone_died(ts: dict[str, object], path: Path, now: float) -> int | float:
     """Return a finite, positive, non-future death time with bounded fallback."""
     died = ts.get("died")
-    if (
-        isinstance(died, (int, float))
-        and not isinstance(died, bool)
-        and 0 < died <= now
-    ):
+    if isinstance(died, (int, float)) and not isinstance(died, bool) and 0 < died <= now:
         return died
     try:
         fallback = path.stat().st_mtime
@@ -883,9 +1070,7 @@ def _should_defer_tombstone_cleanup(
     """Return whether prune must preserve provider files and identity folder."""
     if retention_unknown:
         if not cleanup_session_id or not (
-            isinstance(died, (int, float))
-            and not isinstance(died, bool)
-            and 0 < died <= now
+            isinstance(died, (int, float)) and not isinstance(died, bool) and 0 < died <= now
         ):
             return False
         return died >= cutoff - _UNREADABLE_STATE_GRACE_SECS
@@ -912,9 +1097,7 @@ def _cleanup_identity_fallback_record(
     return records[-1]
 
 
-def _cleanup_retention_fallback(
-    agent_id: str, session_id: object
-) -> tuple[bool | None, str, str]:
+def _cleanup_retention_fallback(agent_id: str, session_id: object) -> tuple[bool | None, str, str]:
     """Return trusted fallback retention, owner, and SID."""
     record = _cleanup_identity_fallback_record(agent_id, session_id)
     if record is None:
@@ -951,9 +1134,11 @@ def _tombstone_cleanup_identities(agent_id: str) -> list[tuple[str, str, str]]:
         identities.append(
             (
                 sid,
-                record_provider
-                if isinstance(record_provider, str) and record_provider
-                else PROVIDER_LABEL_DEFAULT,
+                (
+                    record_provider
+                    if isinstance(record_provider, str) and record_provider
+                    else PROVIDER_LABEL_DEFAULT
+                ),
                 record_cwd if isinstance(record_cwd, str) else "",
             )
         )
@@ -1087,9 +1272,7 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
                                 # to honor because it only preserves material.
                                 if sidecar_keep:
                                     retention_unknown = False
-                            conversation_key = str(
-                                fallback_record.get("conversation_key") or ""
-                            )
+                            conversation_key = str(fallback_record.get("conversation_key") or "")
                         owner_id = subagent_id_from_conversation_key(conversation_key)
                         if owner_id and owner_id != d.name:
                             try:
@@ -1120,19 +1303,13 @@ def prune_stale_tombstones(max_age_days: int = 7, delivered_ttl_secs: int = 3600
                     # arriving after the keep=False decision returns retryable
                     # instead of writing keep=True just before deletion.
                     cleanup_identities = _tombstone_cleanup_identities(d.name)
-                    within_retry_window = (
-                        died >= now - _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS
-                    )
+                    within_retry_window = died >= now - _UNRECLAIMABLE_LOOKUP_MAX_AGE_SECS
                     # Legacy/pre-upgrade runs can carry a SID only in the
                     # agent-writable state/tombstone. It is not safe deletion
                     # authority, but the folder is useful for a later trusted
                     # migration. Bound that lookup window so an unavailable
                     # migration cannot accumulate private run folders forever.
-                    if (
-                        lookup_session_id
-                        and not cleanup_identities
-                        and within_retry_window
-                    ):
+                    if lookup_session_id and not cleanup_identities and within_retry_window:
                         continue
                     cleanup_succeeded = True
                     for cleanup_sid, cleanup_provider, cleanup_cwd in cleanup_identities:
@@ -1247,3 +1424,72 @@ def _atomic_write(path: Path, data: dict) -> None:
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
         raise
+
+
+def _session_mode_identity_path(session_key: str) -> Path:
+    """Policy for gateway-created runtime keys, separate from run/store identities."""
+    import hashlib
+
+    if not isinstance(session_key, str) or not session_key:
+        raise ValueError("memory binding unavailable: invalid session identity")
+    digest = hashlib.sha256(session_key.encode("utf-8")).hexdigest()
+    path = (
+        _subagents_dir().parent.resolve()
+        / _RUN_MEMORY_BINDINGS_DIR
+        / "session-modes"
+        / digest
+        / "memory.json"
+    )
+    if path.resolve() != path:
+        raise ValueError("memory binding unavailable: session identity is redirected")
+    return path
+
+
+def read_session_memory_mode(session_key: str) -> str | None:
+    """Recover a frozen runtime policy; a damaged committed identity never defaults."""
+    path = _session_mode_identity_path(session_key)
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        if not path.parent.exists():
+            return None
+        raise ValueError("memory binding unavailable: session policy is missing") from None
+    except (OSError, ValueError, RecursionError):
+        raise ValueError("memory binding unavailable: session policy is unreadable") from None
+    if (
+        not isinstance(payload, dict)
+        or payload.get("version") != 1
+        or payload.get("session_key") != session_key
+        or payload.get("memory_mode") not in ("persistent", "incognito", "temporary")
+    ):
+        raise ValueError("memory binding unavailable: session policy is invalid")
+    return payload["memory_mode"]
+
+
+def bind_session_memory_mode(session_key: str, memory_mode: str) -> str:
+    """Publish/tighten gateway runtime policy without touching editable history."""
+    from kiro_crew.messaging.privacy_mode import strictest
+
+    if memory_mode not in ("persistent", "incognito", "temporary"):
+        raise ValueError("memory binding unavailable: invalid session policy")
+    path = _session_mode_identity_path(session_key)
+    holder = _lock_for_agent(f"session-mode-{path.parent.name}")
+    with holder.lock:
+        previous = read_session_memory_mode(session_key)
+        effective = strictest((previous or "persistent", memory_mode)) or "persistent"
+        if previous == effective:
+            return effective
+        try:
+            for directory in (path.parent.parent.parent, path.parent.parent, path.parent):
+                platform_compat.make_owner_only_dir(directory)
+                platform_compat.restrict_dir_to_owner(directory)
+            _atomic_write(
+                path,
+                {"version": 1, "session_key": session_key, "memory_mode": effective},
+            )
+            platform_compat.restrict_to_owner(path)
+        except OSError:
+            raise ValueError(
+                "memory binding unavailable: session policy publication failed"
+            ) from None
+        return effective

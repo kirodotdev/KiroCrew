@@ -781,7 +781,7 @@ class TestLinkedAncestorGate:
     be refused BEFORE the first filesystem probe -- both is_file() and
     is_sensitive_path's resolved candidate forms traverse every ancestor, so
     the probe itself would open the SMB connection the lexical UNC screen in
-    local_destination exists to prevent (#5962). Mirrors the guard on the
+    local_destination exists to prevent. Mirrors the guard on the
     upload-side consumer (_inspect in outbound_files)."""
 
     def _windows(self, monkeypatch: pytest.MonkeyPatch) -> None:

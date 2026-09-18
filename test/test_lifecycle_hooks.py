@@ -217,6 +217,9 @@ class TestShellBeforePython:
             request = MagicMock()
             request.match_info = {"name": "test-app"}
             request.app = {"state": MagicMock()}
+            request.can_read_body = False
+            # No app identity: the enable route refuses app tokens outright.
+            request.get = lambda key, default=None: default
 
             await handle_enable_app(request)
 
@@ -255,7 +258,7 @@ class TestLifecycleDispatcherEdgeCases:
 
 
 # ---------------------------------------------------------------------------
-# Per-hook timeout at the dispatch boundary (issue #5443)
+# Per-hook timeout at the dispatch boundary
 # ---------------------------------------------------------------------------
 
 
@@ -1314,7 +1317,7 @@ class TestGatewayShutdownBackendSweep:
 
 
 # ---------------------------------------------------------------------------
-# Shutdown resolves the LOADED code, not disk (issue #7880 reconciler teardown)
+# Shutdown resolves the LOADED code, not disk (reconciler teardown)
 # ---------------------------------------------------------------------------
 
 

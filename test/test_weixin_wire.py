@@ -151,7 +151,7 @@ class TestProtocolErrorParsing:
 
 
 class TestQrLoginShape:
-    """Pins the live-probed QR contract that PR #711 fixed."""
+    """Pins the live-probed QR contract."""
 
     def test_qr_start_returns_a_scannable_url_not_image_bytes(self) -> None:
         wire = FakeWireSession().route(

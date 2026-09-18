@@ -1,8 +1,8 @@
-"""ctx.nudge → AutoNudge wiring (regression for
-``RuntimeError('ctx.nudge is not available for this run (no nudge port wired)')``).
+"""ctx.nudge → AutoNudge wiring, guarding against
+``RuntimeError('ctx.nudge is not available for this run (no nudge port wired)')``.
 
 The authoring prompt and validator both advertise ``ctx.nudge`` as a legal
-primitive, but ``WorkflowService`` historically built its ``WorkflowRunner``
+primitive, but ``WorkflowService`` built its ``WorkflowRunner``
 without wiring the ``nudge`` port, so any authored script that called it crashed
 at runtime. These tests pin the fix AND its security follow-up:
 
@@ -30,8 +30,9 @@ from types import SimpleNamespace
 import pytest
 
 import kiro_crew.autonudge_authz as autonudge_authz
-from kiro_crew.autonudge import binding_key_for
+from kiro_crew.autonudge import NudgeAdmissionRefused, binding_key_for
 from kiro_crew.autonudge_authz import authorize_and_add_nudge
+from kiro_crew.monitoring.models import MonitorCreationSurface
 from kiro_crew.workflows.service import WorkflowService
 
 pytestmark = pytest.mark.asyncio
@@ -105,14 +106,18 @@ async def test_nudge_port_noop_when_session_not_nudgeable() -> None:
     async def authorizer(*, slot_key, message, idle_secs, max_cycles):
         calls.append(slot_key)
 
-    _svc(authorizer)._nudge_port(run_id="wf_t", session_key="cron:job", idle_secs=90, message="poke")
+    _svc(authorizer)._nudge_port(
+        run_id="wf_t", session_key="cron:job", idle_secs=90, message="poke"
+    )
     await asyncio.sleep(0)
     assert calls == []  # not nudge-able → authorizer never invoked, no crash
 
 
 async def test_nudge_port_noop_when_no_authorizer() -> None:
     # No authorizer wired (e.g. non-dashboard host) → logged no-op, no crash.
-    _svc(None)._nudge_port(run_id="wf_t", session_key="dashboard:chat-1-1", idle_secs=90, message="poke")
+    _svc(None)._nudge_port(
+        run_id="wf_t", session_key="dashboard:chat-1-1", idle_secs=90, message="poke"
+    )
     await asyncio.sleep(0)
 
 
@@ -121,7 +126,9 @@ async def test_nudge_port_swallows_authorizer_failure() -> None:
         raise RuntimeError("authz exploded")
 
     # Arm failure must not propagate out of the fire-and-forget task.
-    _svc(boom)._nudge_port(run_id="wf_t", session_key="dashboard:chat-1-1", idle_secs=90, message="poke")
+    _svc(boom)._nudge_port(
+        run_id="wf_t", session_key="dashboard:chat-1-1", idle_secs=90, message="poke"
+    )
     await asyncio.sleep(0)
 
 
@@ -220,17 +227,11 @@ async def test_slow_nudge_arm_drained_before_terminal() -> None:
     # the armed log would land ~0.3s after terminal and this would fail.
     result = svc.result(out["run_id"]) or {}
     events = result.get("events", [])
-    logs = [
-        (e.get("data") or {}).get("message", "")
-        for e in events
-        if e.get("type") == "log"
-    ]
+    logs = [(e.get("data") or {}).get("message", "") for e in events if e.get("type") == "log"]
     assert any("ctx.nudge armed" in m for m in logs), logs
     # EVENT-STREAM CONTRACT: terminal events are last — the nudge outcome log
     # must appear BEFORE run_finished in the stream, never after it.
-    types_and_msgs = [
-        (e.get("type"), (e.get("data") or {}).get("message", "")) for e in events
-    ]
+    types_and_msgs = [(e.get("type"), (e.get("data") or {}).get("message", "")) for e in events]
     armed_idx = next(
         i for i, (t, m) in enumerate(types_and_msgs) if t == "log" and "ctx.nudge armed" in m
     )
@@ -281,9 +282,9 @@ async def test_autonudge_add_survives_caller_cancellation(tmp_path, monkeypatch)
         if (tmp_path / "autonudge.json").exists():
             break
         await asyncio.sleep(0.02)
-    assert (tmp_path / "autonudge.json").exists(), (
-        "shielded add did not persist after caller cancellation"
-    )
+    assert (
+        tmp_path / "autonudge.json"
+    ).exists(), "shielded add did not persist after caller cancellation"
     loop = svc.get_by_slot("chat-cancel-1")
     assert loop is not None
     svc.remove_sync(loop.id)  # cleanup: cancel the armed timer
@@ -310,13 +311,16 @@ class FakeNudgeSvc:
         banner="",
         admission_check=None,
         gate=True,
+        creation_surface=MonitorCreationSurface.DASHBOARD,
     ):
         if admission_check is not None and not admission_check():
-            raise AssertionError("test admission unexpectedly changed")
-        self.added.append((slot_key, message, idle_secs, max_cycles))
+            raise NudgeAdmissionRefused("session changed before nudge arm committed")
+        self.added.append((slot_key, message, idle_secs, max_cycles, creation_surface))
         self.banners: list[str] = getattr(self, "banners", [])
         self.banners.append(banner)
-        return SimpleNamespace(id="loop1", slot_key=slot_key, idle_secs=idle_secs, max_cycles=max_cycles)
+        return SimpleNamespace(
+            id="loop1", slot_key=slot_key, idle_secs=idle_secs, max_cycles=max_cycles
+        )
 
 
 class FakeDiscordDispatcher:
@@ -347,11 +351,27 @@ async def test_authz_rejects_unknown_dashboard_slot() -> None:
     assert svc.added == []  # never armed
 
 
+async def test_authz_rejects_dashboard_slot_during_close() -> None:
+    svc = FakeNudgeSvc()
+    slot = SimpleNamespace(workspace="default", is_closing=True)
+
+    loop, error, status = await authorize_and_add_nudge(
+        svc=svc,
+        state=_state(slots={"chat-1-1": slot}),
+        slot_key="chat-1-1",
+        message="watch",
+        source="dashboard",
+    )
+
+    assert loop is None and status == 409 and "session changed" in error
+    assert svc.added == []
+
+
 async def test_authz_rejects_message_too_long() -> None:
     svc = FakeNudgeSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="x" * 8001,
         source="workflow",
@@ -364,9 +384,7 @@ async def test_authz_rejects_spoofed_discord_session() -> None:
     svc = FakeNudgeSvc()
     # User IS allowlisted, but the requested key is NOT their current session →
     # deny-by-default rejects the spoof (the core cross-session-injection guard).
-    disp = FakeDiscordDispatcher(
-        authorized={"42"}, current={"42": "discord:kirocrew:direct:42"}
-    )
+    disp = FakeDiscordDispatcher(authorized={"42"}, current={"42": "discord:kirocrew:direct:42"})
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
         state=_state(discord=disp),
@@ -402,7 +420,7 @@ async def test_authz_arms_valid_dashboard_slot_and_audits(monkeypatch) -> None:
     svc = FakeNudgeSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         idle_secs=60,
@@ -435,7 +453,7 @@ async def test_authz_denies_arm_when_audit_unavailable(monkeypatch) -> None:
     svc = FakeNudgeSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         source="workflow",
@@ -463,7 +481,7 @@ async def test_authz_success_audit_failure_keeps_loop(monkeypatch) -> None:
     svc = FakeNudgeSvc()
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message="watch",
         source="workflow",
@@ -504,7 +522,7 @@ async def test_authz_redacts_llm_influenced_message(monkeypatch) -> None:
     secret = "check AKIA" + "IOSFODNN7EXAMPLE and report"  # AWS access key id shape
     loop, error, status = await authorize_and_add_nudge(
         svc=svc,
-        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default")}),
+        state=_state(slots={"chat-1-1": SimpleNamespace(workspace="default", is_closing=False)}),
         slot_key="chat-1-1",
         message=secret,
         source="workflow",

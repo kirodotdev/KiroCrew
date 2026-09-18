@@ -38,6 +38,16 @@ one is invalid on its own terms, so the retry ladder must be skipped rather than
 walked. `AcpRequestTimeout` subclasses its base so existing
 `except AcpRuntimeError` handlers keep catching it.
 
+**A retry DROPPED after its backoff hands back everything it counted before it.**
+A spent one-shot silently disarms the next real recovery; a counted attempt
+shortens the next ladder and inflates its backoff seed, both for a retry that
+never reached the provider. A no-requeue exit ENDS the turn, so it owes the same
+per-turn budget refresh the landed and terminal arms do -- the whole ladder, not a
+decrement, because an arm that already spent attempts 1..2 would otherwise stay
+permanently short. The pending "retrying..." card is corrected by APPENDING a
+give-up row rather than retracted, so the affordance to continue comes back
+instead of the row simply disappearing.
+
 ## Boundaries
 
 | Boundary | Strategy |
@@ -47,6 +57,16 @@ walked. `AcpRequestTimeout` subclasses its base so existing
 | Config load | Invalid JSON → log warning, return defaults |
 | Process spawn | `shutil.which` check before spawn; clear error if missing |
 | asyncio loop callback | A Windows Proactor reset repeated by its `connection_lost` close callback is warning-only; task-level connection resets and other exceptions remain ERRORs with crash breadcrumbs |
+
+## Dashboard Error Codes
+
+Dashboard JSON errors include a stable lower-snake `code` alongside advisory
+`error` text, preserving the route's HTTP status. Redact untrusted text fields
+before putting them in a transparent response dictionary. A computed status is
+compliant when that dictionary carries an explicit code; an uncoded or opaque
+body remains debt in `test/test_error_code_contract.py`. That guard also checks
+literal code values on computed-status responses and refuses dictionary spreads
+that could replace the code.
 
 ## Backend Error Classification
 

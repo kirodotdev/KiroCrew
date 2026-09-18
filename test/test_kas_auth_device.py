@@ -20,8 +20,6 @@ from kiro_crew.auth.login.device import (
 )
 from kiro_crew.auth.store import SocialProvider
 
-pytestmark = pytest.mark.asyncio
-
 
 class _FakeResp:
     def __init__(self, status: int, payload):
@@ -53,6 +51,7 @@ class _FakeSession:
         return self._responses.pop(0)
 
 
+@pytest.mark.asyncio
 async def test_initiate_returns_codes():
     resp = _FakeResp(
         200,
@@ -75,12 +74,14 @@ async def test_initiate_returns_codes():
     assert body == {"clientId": "Kiro-CLI", "loginProvider": "Google"}
 
 
+@pytest.mark.asyncio
 async def test_initiate_non_200_raises():
     session = _FakeSession([_FakeResp(500, "boom")])
     with pytest.raises(DeviceAuthError):
         await initiate_device_authorization(SocialProvider.GITHUB, session=session)
 
 
+@pytest.mark.asyncio
 async def test_initiate_malformed_200_raises_device_auth_error():
     # A 200 missing required fields must raise DeviceAuthError, not a bare KeyError
     # bubbling out as an HTTP 500.
@@ -89,6 +90,7 @@ async def test_initiate_malformed_200_raises_device_auth_error():
         await initiate_device_authorization(SocialProvider.GOOGLE, session=session)
 
 
+@pytest.mark.asyncio
 async def test_initiate_non_object_200_raises_device_auth_error():
     session = _FakeSession([_FakeResp(200, ["not", "a", "dict"])])
     with pytest.raises(DeviceAuthError):
@@ -106,6 +108,7 @@ def _auth(interval: float = 0.0) -> DeviceAuthorization:
     )
 
 
+@pytest.mark.asyncio
 async def test_poll_pending_then_authorized_returns_token():
     session = _FakeSession(
         [
@@ -133,18 +136,21 @@ async def test_poll_pending_then_authorized_returns_token():
     assert tok.expires_at > datetime.now(timezone.utc) + timedelta(seconds=7000)
 
 
+@pytest.mark.asyncio
 async def test_poll_expired_raises():
     session = _FakeSession([_FakeResp(200, {"status": "expired_token"})])
     with pytest.raises(DeviceAuthError, match="expired"):
         await poll_device_token(_auth(), SocialProvider.GOOGLE, session=session)
 
 
+@pytest.mark.asyncio
 async def test_poll_invalid_raises():
     session = _FakeSession([_FakeResp(200, {"status": "invalid_token"})])
     with pytest.raises(DeviceAuthError, match="invalid"):
         await poll_device_token(_auth(), SocialProvider.GOOGLE, session=session)
 
 
+@pytest.mark.asyncio
 async def test_poll_authorized_missing_profile_arn_raises():
     session = _FakeSession(
         [
@@ -158,12 +164,14 @@ async def test_poll_authorized_missing_profile_arn_raises():
         await poll_device_token(_auth(), SocialProvider.GOOGLE, session=session)
 
 
+@pytest.mark.asyncio
 async def test_poll_authorized_missing_tokens_raises():
     session = _FakeSession([_FakeResp(200, {"status": "authorized", "profileArn": "arn:x"})])
     with pytest.raises(DeviceAuthError, match="accessToken"):
         await poll_device_token(_auth(), SocialProvider.GOOGLE, session=session)
 
 
+@pytest.mark.asyncio
 async def test_poll_expires_in_defaults_when_absent():
     session = _FakeSession(
         [
@@ -184,6 +192,7 @@ async def test_poll_expires_in_defaults_when_absent():
     assert tok.expires_at > datetime.now(timezone.utc) + timedelta(seconds=3400)
 
 
+@pytest.mark.asyncio
 async def test_poll_unknown_identity_provider_falls_back():
     session = _FakeSession(
         [
@@ -203,10 +212,12 @@ async def test_poll_unknown_identity_provider_falls_back():
     assert tok.provider == "Google"  # requested provider, unknown wire value ignored
 
 
+@pytest.mark.asyncio
 async def test_provider_resolver_case_insensitive():
     assert device._resolve_provider("GITHUB", SocialProvider.GOOGLE) is SocialProvider.GITHUB
 
 
+@pytest.mark.asyncio
 async def test_initiate_oversized_expiry_raises_device_auth_error():
     # An absurd expiresInMilliseconds (beyond timedelta's range) must surface as
     # DeviceAuthError, not an uncaught OverflowError -> uncoded HTTP 500.
@@ -242,6 +253,7 @@ def test_token_from_poll_rejects_non_string_credential_fields():
                 device._token_from_poll(data, SocialProvider.GOOGLE)
 
 
+@pytest.mark.asyncio
 async def test_json_or_error_maps_decode_failure():
     # A 200 whose body is not JSON must surface as DeviceAuthError, not an
     # uncaught JSONDecodeError/ContentTypeError -> uncoded HTTP 500.
@@ -253,6 +265,7 @@ async def test_json_or_error_maps_decode_failure():
         await device._json_or_error(_BadResp())
 
 
+@pytest.mark.asyncio
 async def test_provider_resolver_non_string_falls_back():
     # A malformed 200 can carry a number/object in identityProvider; that must
     # fall back to the requested provider, not crash the poll with AttributeError.

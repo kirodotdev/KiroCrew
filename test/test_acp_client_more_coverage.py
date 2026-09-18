@@ -410,6 +410,11 @@ class TestClientAccessors:
         client._process = _live_process()
         assert client.is_process_alive() is True
         assert client.exit_code is None
+        # Idle == done: a live process with no prompt sent is NOT an unfinished
+        # turn (see test_acp_turn_done_idle_init). A turn begins when the prompt
+        # entry clear()s the Event.
+        assert client.has_unfinished_turn() is False
+        client._turn_done.clear()
         assert client.has_unfinished_turn() is True  # turn not done + process alive
 
         client._process.returncode = 3
@@ -437,7 +442,7 @@ class TestClientAccessors:
 
         assert client._session_key == "new"
         assert client._channel_id == "C-new"
-        # Stale context must not be handed to the new chat (#2932).
+        # Stale context must not be handed to the new chat.
         assert client.last_prompt_stats.context_pct == 0.0
         assert client.last_prompt_stats.context_used_tokens == 0
         assert client.last_prompt_stats.context_window_tokens == 0
@@ -688,9 +693,9 @@ class TestEnsureReady:
         """A gate refusal is a configuration fact, so a respawn re-reads it.
 
         ``AcpToolGateUnroutable`` documents itself Non-retryable, but it subclasses
-        ``AcpError``, so the generic transport ladder used to retry it: attempt 0
-        tore the child down, respawned, hit the identical refusal, and only then
-        raised. That is one wasted spawn plus teardown, and it spends the reconnect
+        ``AcpError``, so the generic transport ladder would retry it: attempt 0
+        tears the child down, respawns, hits the identical refusal, and only then
+        raises. That is one wasted spawn plus teardown, and it spends the reconnect
         budget the distinct type exists to protect.
 
         Revert-verified: dropping the dedicated handler makes both counters 2.

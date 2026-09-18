@@ -1,4 +1,4 @@
-"""Deferred-note hold durability (issue #4093).
+"""Deferred-note hold durability.
 
 ``POST /api/chat/slots/{slot}/note`` accepts a note while a turn is running and
 replies ``200`` with ``visibleDeferred: true`` — a delivery promise for a

@@ -3,7 +3,7 @@
 The store's whole contract is that it can only ever REMOVE dependency resolution
 from a launch, never add a failure to one. So most of what is pinned here is the
 shape of a miss: a spec that is not an npm launcher, a record that is absent,
-malformed, stale, or points at a file that no longer exists must each read as
+malformed, stale, or points at a missing file must each read as
 "launch it the way you would have anyway" rather than as an error.
 
 No test spawns npm. ``install`` is exercised through a stubbed ``npm`` that
@@ -950,7 +950,7 @@ class _ReapProbe:
     ``_drain_capped`` reader already cancelled, so the stdout pipe is undrained:
     a killed npm blocked writing into a full pipe -- or a lifecycle-script
     grandchild still holding it open -- makes a bare ``await proc.wait()`` hang
-    forever (#6005). The bounded reap must drain via ``communicate()`` and never
+    forever. The bounded reap must drain via ``communicate()`` and never
     touch ``wait()``.
     """
 
@@ -978,7 +978,7 @@ class TestReapInstallTree:
     @pytest.mark.asyncio
     async def test_reaps_via_communicate_not_wait(self, monkeypatch) -> None:
         """The reap must go through the bounded, pipe-draining ``kill_and_reap``,
-        never a bare ``await proc.wait()`` that a full pipe can hang (#6005)."""
+        never a bare ``await proc.wait()`` that a full pipe can hang."""
         from kiro_crew import platform_compat
 
         proc = _ReapProbe()

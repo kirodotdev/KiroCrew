@@ -49,6 +49,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Awaitable, Callable
 
+from kiro_crew.config.sections import _coerce_whatsapp_groups
 from kiro_crew.messaging.attachments import append_attachment_context, cleanup
 from kiro_crew.messaging.dispatch import inbound_permitted
 from kiro_crew.messaging.transport import (
@@ -137,6 +138,7 @@ class WhatsAppTransport(MessagingTransport):
         """The low-level client (dashboard pairing handlers read state/QR)."""
         return self._client
 
+    # -- Live config ---------------------------------------------------------
     def __init__(
         self,
         client: WhatsAppClient,
@@ -156,7 +158,12 @@ class WhatsAppTransport(MessagingTransport):
             normalize_jid(wa_id_to_user_jid(w)) for w in (allowed_wa_ids or []) if str(w).strip()
         )
         self.echo = EchoTracker()
-        self.group_gate = GroupGate(groups)
+        # Coerced, so a live reload can compare like with like: the loader's
+        # coercion is what decides an entry's effective mode and cooldown, and
+        # comparing raw config against it would rebuild the gate (resetting its
+        # cooldown clock) on every unrelated whatsapp write.
+        self._group_rules: list[dict] = _coerce_whatsapp_groups(groups)
+        self.group_gate = GroupGate(self._group_rules)
         self._clock = clock or time.time
         #: ``@lid`` alias -> phone JID, resolved once per sender (see
         #: ``_canonical_sender``). Confined to the gateway event loop like the
@@ -184,6 +191,90 @@ class WhatsAppTransport(MessagingTransport):
         client.on_message = self.receive
 
     # -- Tier-1 core ---------------------------------------------------
+
+    def reconfigure(self, section: Any) -> None:
+        """Adopt a reloaded ``whatsapp`` section's authorization fields.
+
+        Called by the dispatcher's config applier when ``config.json`` changes
+        under ``whatsapp``, so a policy, allow-list or group-rule edit from the
+        dashboard, the CLI or ``$EDITOR`` takes effect on the next stanza instead
+        of the next restart. Each holder is REPLACED wholesale (never mutated) so
+        an in-flight decision keeps reading one consistent value: the frozen DM
+        allow-list, and the ``GroupGate`` -- rebuilt from the same
+        ``_coerce_whatsapp_groups`` pass the loader applies, which is what makes
+        an unknown ``mode`` fall back to ``mention`` rather than to a mode that
+        speaks unprompted.
+
+        Fails closed on shape: a ``dm_policy`` that is not a string, or an
+        allow-list that is not a list, keeps the PREVIOUS value and logs at
+        WARNING. An unknown policy STRING is adopted, because ``_dm_policy``
+        denies everyone it does not recognize -- refusing to adopt it would leave
+        the wider previous policy in force. Policy flips and roster changes are
+        SEL-audited; a wa_id is a phone number, so the audit counts, never lists.
+
+        Rebuilding the gate resets its unprompted-reply cooldown clock, which is
+        the conservative direction only for the cooldown's purpose (rate limiting
+        the agent's own speech), so the gate is rebuilt only when the coerced
+        rules actually differ.
+
+        ``whatsapp.db_path`` is not reloadable at all: the device store is opened
+        once at connect and holds the account's credential.
+        """
+        policy = getattr(section, "dm_policy", None)
+        if not isinstance(policy, str):
+            logger.warning(
+                "whatsapp: dm_policy is not a string in the reloaded config; keeping %r",
+                self._dm_policy,
+            )
+        else:
+            new_policy = policy.strip().lower()
+            if new_policy != self._dm_policy:
+                logger.warning("whatsapp: dm_policy reloaded %r -> %r", self._dm_policy, new_policy)
+                self._dm_policy = new_policy
+                sel().log_api_access(
+                    caller="config",
+                    operation="whatsapp_transport.reconfigure",
+                    outcome="dm_policy_changed",
+                    source="whatsapp",
+                    resources=f"policy={new_policy}",
+                )
+
+        wa_ids = getattr(section, "allowed_wa_ids", None)
+        if not isinstance(wa_ids, list):
+            logger.warning(
+                "whatsapp: allowed_wa_ids is not a list in the reloaded config; keeping the "
+                "previous allow-list (%d entry/entries)",
+                len(self._allowed),
+            )
+        else:
+            new_allowed = frozenset(
+                normalize_jid(wa_id_to_user_jid(w)) for w in wa_ids if str(w).strip()
+            )
+            if new_allowed != self._allowed:
+                added = len(new_allowed - self._allowed)
+                removed = len(self._allowed - new_allowed)
+                self._allowed = new_allowed
+                logger.info("whatsapp: allow-list reloaded (+%d/-%d entry/entries)", added, removed)
+                sel().log_api_access(
+                    caller="config",
+                    operation="whatsapp_transport.reconfigure",
+                    outcome="allow_list_changed",
+                    source="whatsapp",
+                    resources=f"added={added} removed={removed} size={len(new_allowed)}",
+                )
+
+        groups = _coerce_whatsapp_groups(getattr(section, "groups", None))
+        if groups != self._group_rules:
+            self._group_rules = groups
+            self.group_gate = GroupGate(groups)
+            logger.info("whatsapp: group rules reloaded (%d configured group(s))", len(groups))
+            sel().log_api_access(
+                caller="config",
+                operation="whatsapp_transport.reconfigure",
+                outcome="group_rules_changed",
+                source="whatsapp",
+                resources=f"groups={len(groups)}",
+            )
 
     async def send_message(
         self, conversation_id: str, content: str, thread_id: str | None = None

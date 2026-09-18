@@ -124,7 +124,7 @@ def _read_ledger_for_update() -> dict[str, Any]:
     offers a re-push (a duplicate billable upload) and leaves the real cloud
     copies with no record to remove them by.
 
-    Corruption propagates too (#7805, mirroring #7794): "cannot merge into" is
+    Corruption propagates too: "cannot merge into" is
     not "safe to destroy". A truncated ledger still holds most of its records
     verbatim, and replacing it discards the operator's only chance to recover
     them by hand. Two shapes that never reach ``json.loads``'s own raise are
@@ -139,8 +139,7 @@ def _read_ledger_for_update() -> dict[str, Any]:
     The per-ACCOUNT tolerance in :func:`_update_ledger` (a corrupted scalar
     entry for the account being written is reset) is deliberately untouched:
     it replaces one account's unusable entry while carrying every other row
-    forward verbatim, not the whole document. The sidecar-preserve alternative
-    for even that case is tracked in #7789.
+    forward verbatim, not the whole document.
     """
     try:
         data = json.loads(_ledger_path().read_text(encoding="utf-8"))

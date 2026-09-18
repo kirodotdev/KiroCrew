@@ -1,37 +1,46 @@
-import { useId, type CSSProperties, type ReactNode } from 'react'
+import { useId, useLayoutEffect, useMemo, useRef, type CSSProperties, type ReactNode } from 'react'
 import type { FileContents } from '@pierre/diffs'
 import type { PierreDiffOptions } from './config'
+import { changedLineSpan } from '../utils/diffLineCounts'
+import { Btn } from '../components/ui'
+import ErrorNotice from '../components/ErrorNotice'
 import { i18nT } from '../i18n/t'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 
 /** Plain-text stand-in used while the Pierre chunk loads and for patch text
  *  that does not (yet) parse — e.g. the partial frames of a streaming diff.
  *
- *  Pierre's own geometry, MEASURED from a rendered block (7 blocks, heights
- *  exactly 50 + 20×lines): 2px border, 32px header, 16px body padding, 20px per
- *  line. The stand-in has to match all of it, or the swap moves the reader.
+ *  Pierre's own geometry is 2px border, 32px header, 16px body padding, and
+ *  20px per line. `pierre-plain` wins the transcript's more-specific `<pre>`
+ *  rule so a fallback-to-Pierre swap does not move the reader.
  *
- *  `leading-5` and `py-2` say 20px and 8px — and inside a transcript they were
- *  BOTH LOSING: `.msg-content pre` (specificity 0,1,1) beats a single-class
- *  utility and sets `line-height:1.5` (19.5px at 13px) with `padding:10px 12px`.
- *  The stand-in therefore rendered 4px taller per surface than the thing it
- *  stands in for, and the reader was displaced by 12-36px per transcript row the
- *  moment the chunk resolved (measured in a browser: -4px on every
- *  `.pierre-surface`, three code blocks in one row = -36px). `pierre-plain` is
- *  the hook that wins that fight; the metrics live in index.css next to the rule
- *  they have to beat. Keep the two geometries equal or the reflow returns.
- *
- *  Also the FINAL render for patch surfaces when the plain-diff preference is
- *  on (see `usePlainDiff`), which is why it accepts the caller's `className`:
- *  in that mode it stands in for the Pierre element the class was written for.
- *  The geometry above still has to hold there — the preference can flip while a
- *  transcript is on screen, so this element replaces a Pierre surface in place.
+ *  This is also the final patch render when plain-diff mode is enabled, so it
+ *  preserves a caller class. Recovery and file-pair loading additionally use
+ *  the optional header; a collapsed pair renders the header row alone.
  */
-export function PlainCodeFallback({ text, className }: { text: string; className?: string }) {
+export function PlainCodeFallback({ text, className, contentStyle, header }: {
+  text: string
+  className?: string
+  contentStyle?: CSSProperties
+  header?: ReactNode
+}) {
   return (
-    <pre className={`pierre-plain m-0 px-3 py-2 overflow-x-auto text-[13px] font-mono leading-5 whitespace-pre${className ? ` ${className}` : ''}`}>
-      {text}
-    </pre>
+    <>
+      {header != null ? <PlainFallbackHeader>{header}</PlainFallbackHeader> : null}
+      <pre style={contentStyle} className={`pierre-plain m-0 px-3 py-2 overflow-x-auto text-[13px] font-mono leading-5 whitespace-pre${className ? ` ${className}` : ''}`}>
+        {text}
+      </pre>
+    </>
+  )
+}
+
+/** The header row shared by the fallbacks, sized to Pierre's own header so a
+ *  swap does not move the layout. A collapsed pair is this row alone. */
+function PlainFallbackHeader({ children }: { children: ReactNode }) {
+  return (
+    <div data-diffs-header="" className="flex min-h-9 items-center justify-end gap-1 border-b border-border px-2 py-1">
+      {children}
+    </div>
   )
 }
 
@@ -41,11 +50,19 @@ interface PlainFilePairFallbackProps {
   oldFile: FileContents | null
   newFile: FileContents | null
   options?: PierreDiffOptions
+  geometry?: 'simplified' | 'pierre-swap'
+  text?: string
   className?: string
   contentStyle?: CSSProperties
   renderHeaderMetadata?: () => ReactNode
   renderHeaderPrefix?: () => ReactNode
   renderHeaderFilenameSuffix?: () => ReactNode
+  onShowLineByLineDiff?: () => void
+  /** Off-thread compute status for the opt-in. `computing` swaps the button
+   *  for a progress label + Cancel; `error` re-offers the button with a short
+   *  failure notice. */
+  lineByLineState?: 'idle' | 'computing' | 'error'
+  onCancelLineByLineDiff?: () => void
 }
 
 /**
@@ -57,15 +74,49 @@ export function PlainFilePairFallback({
   oldFile,
   newFile,
   options,
+  geometry = 'simplified',
+  text,
   className,
   contentStyle,
   renderHeaderMetadata,
   renderHeaderPrefix,
   renderHeaderFilenameSuffix,
+  onShowLineByLineDiff,
+  lineByLineState = 'idle',
+  onCancelLineByLineDiff,
 }: PlainFilePairFallbackProps) {
   useLanguageGeneration()
   const titleId = useId()
   const simplifiedLabel = i18nT('components.fileChangeChips.large_file_simplified_view')
+  const changeRegionLabel = i18nT('components.fileChangeChips.large_file_change_region_view')
+
+  // The fallback is handed two whole files and no hunks, so it finds WHERE the
+  // change is with a bounded prefix/suffix scan (see `changedLineSpan`) rather
+  // than a diff — the synchronous diff is exactly what the render budget
+  // rejected. Split each side into lines ONCE and remember the outer change
+  // region. The region stays neutral because its interior can include unchanged
+  // rows; only the boundary rows the scan proves changed use diff colors.
+  const oldLines = useMemo(() => (oldFile?.contents ? oldFile.contents.split('\n') : []), [oldFile?.contents])
+  const newLines = useMemo(() => (newFile?.contents ? newFile.contents.split('\n') : []), [newFile?.contents])
+  const span = useMemo(() => changedLineSpan(oldLines, newLines), [oldLines, newLines])
+  const anchorKey = span == null
+    ? null
+    : span.oldEnd > span.oldStart ? 'old' : span.newEnd > span.newStart ? 'new' : null
+  // The bounded content scroller and the first changed row, so the mount effect
+  // can anchor the card without moving the surrounding transcript.
+  const contentRef = useRef<HTMLDivElement | null>(null)
+  const firstChangedRef = useRef<HTMLSpanElement | null>(null)
+  useLayoutEffect(() => {
+    const content = contentRef.current
+    const changed = firstChangedRef.current
+    if (!content || !changed) return
+    // Scroll THIS card's own bounded region directly. `scrollIntoView()` can
+    // choose the transcript/page as another scroll ancestor and strand the card
+    // at line 1 after the surrounding virtualizer settles. `offsetTop` is the
+    // changed row's position inside the card; center it when there is room.
+    content.scrollTop = Math.max(0, changed.offsetTop - content.clientHeight / 2)
+  }, [span, oldFile?.contents, newFile?.contents, options?.diffStyle])
+
   const filename = newFile?.name ?? oldFile?.name
   if (filename == null) return null
 
@@ -73,12 +124,59 @@ export function PlainFilePairFallback({
   // resolve the same way here or oversized side-panel diffs gain extra chrome.
   const showHeader = options?.disableFileHeader === false
   const collapsed = options?.collapsed === true
+  const filePairLabel = span != null && !collapsed ? changeRegionLabel : simplifiedLabel
   const wraps = options?.overflow === 'wrap'
+
+  if (geometry === 'pierre-swap') {
+    const oldMarker = '-'.repeat(3)
+    const newMarker = '+'.repeat(3)
+    const fallbackText = text ?? (oldFile && newFile
+      ? `${oldMarker} ${oldFile.name}\n${oldFile.contents}\n${newMarker} ${newFile.name}\n${newFile.contents}`
+      : (newFile ?? oldFile)?.contents ?? '')
+    // Prefix, filename and suffix keep the header's geometry and click
+    // selectors; the action cluster (`renderHeaderMetadata`) is left to
+    // Pierre's real header — it can be three buttons, and a diff-added row of
+    // three is barred by `max-two-buttons-per-row`.
+    const header = options?.disableFileHeader === false ? (
+      <>
+        {renderHeaderPrefix?.()}
+        <span data-title="" className="min-w-0 flex-1 truncate">{filename}</span>
+        {renderHeaderFilenameSuffix?.()}
+      </>
+    ) : undefined
+    if (options?.collapsed === true) return header != null ? <PlainFallbackHeader>{header}</PlainFallbackHeader> : null
+    return <PlainCodeFallback text={fallbackText} className={className} contentStyle={contentStyle} header={header} />
+  }
   const sides = [
-    oldFile == null ? null : { file: oldFile, marker: '−', key: 'old' },
-    newFile == null ? null : { file: newFile, marker: '+', key: 'new' },
-  ].filter((side): side is { file: FileContents; marker: string; key: string } => side != null)
+    oldFile == null ? null : { file: oldFile, lines: oldLines, marker: '−', key: 'old' as const, start: span?.oldStart, end: span?.oldEnd },
+    newFile == null ? null : { file: newFile, lines: newLines, marker: '+', key: 'new' as const, start: span?.newStart, end: span?.newEnd },
+  ].filter((side): side is { file: FileContents; lines: string[]; marker: string; key: 'old' | 'new'; start: number | undefined; end: number | undefined } => side != null)
   const split = options?.diffStyle === 'split' && sides.length === 2
+  const showLineByLineDiffControl = !collapsed && onShowLineByLineDiff ? (
+    lineByLineState === 'computing' ? (
+      <span className="flex shrink-0 items-center gap-2">
+        <span aria-live="polite">{i18nT('components.fileChangeChips.computing_line_by_line_diff')}</span>
+        {onCancelLineByLineDiff && (
+          <Btn type="button" className="shrink-0" onClick={onCancelLineByLineDiff}>{i18nT('components.fileChangeChips.cancel_line_by_line_diff')}</Btn>
+        )}
+      </span>
+    ) : (
+      <span className="flex shrink-0 items-center gap-2">
+        {lineByLineState === 'error' && (
+          /* No hand-off: this shared fallback also renders dirty working-tree
+             diffs (MarkdownPanel routes the current, possibly unsaved buffer
+             through PierreFilePair), and the Ask Agent navigation has no dirty
+             guard — it would silently discard that buffer. The retry button
+             next to this notice is the recovery path. */
+          <ErrorNotice
+            message={i18nT('components.fileChangeChips.line_by_line_diff_failed')}
+            variant="inline"
+          />
+        )}
+        <Btn type="button" className="shrink-0" onClick={onShowLineByLineDiff}>{i18nT('components.fileChangeChips.show_line_by_line_diff')}</Btn>
+      </span>
+    )
+  ) : null
 
   return (
     <div
@@ -96,24 +194,38 @@ export function PlainFilePairFallback({
               {filename}
             </span>
             {renderHeaderFilenameSuffix?.()}
-            <span className="text-[11px] font-normal text-muted">{simplifiedLabel}</span>
+            <span className="text-[11px] font-normal text-muted">{filePairLabel}</span>
           </div>
           {renderHeaderMetadata && <div className="shrink-0">{renderHeaderMetadata()}</div>}
         </div>
       )}
+      {/* Opt-in control lives in its own strip BETWEEN the header and the
+          scroller, never inside either: the header already carries the
+          caller's prefix and metadata actions (a third one crowds the
+          truncating filename at narrow widths), and inside the bounded
+          scroller the strip would scroll out of view — or start hidden
+          entirely once the fallback opens scrolled to the first change. The
+          no-header branch also shows the simplified label here, since it has
+          no header to carry it. */}
+      {!collapsed && (!showHeader || showLineByLineDiffControl) && (
+        <div className="flex items-center justify-between gap-2 border-b border-border bg-bg px-3 py-1 text-[11px] text-muted">
+          {!showHeader ? <span>{filePairLabel}</span> : <span />}
+          {showLineByLineDiffControl}
+        </div>
+      )}
       {!collapsed && (
         <div
+          ref={contentRef}
           data-pierre-plain-content
           style={contentStyle}
-          className={`${split ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'} grid min-w-0 overflow-auto`}
+          className={`${split ? 'grid-cols-1 md:grid-cols-2' : 'grid-cols-1'} relative grid min-w-0 overflow-auto`}
         >
-          {!showHeader && (
-            <div className={`${split ? 'md:col-span-2' : ''} border-b border-border bg-bg px-3 py-1 text-[11px] text-muted`}>
-              {simplifiedLabel}
-            </div>
-          )}
-          {sides.map(({ file, marker, key }, index) => {
+          {sides.map(({ file, lines, marker, key, start, end }, index) => {
             const headingId = `${titleId}-${key}`
+            const regionLines = start != null && end != null && end > start
+              ? lines.slice(start, end)
+              : []
+            const lastRegionLine = regionLines.length - 1
             return (
               <section
                 key={key}
@@ -132,7 +244,15 @@ export function PlainFilePairFallback({
                 </h3>
                 {/* A native pre is the actual horizontal scroller. The named
                     props give it a tab stop so keyboard users can reach clipped
-                    long lines without weakening lint for other elements. */}
+                    long lines without weakening lint for other elements.
+
+                    Keep the DOM constant-size even for a 40k-line file: plain
+                    prefix text, ONE neutral region span, plain suffix text. The
+                    region has at most two diff-colored child spans for the first
+                    and last rows the bounded scan proves changed. Its interior
+                    remains neutral because the scan cannot classify those rows.
+                    Box-decoration cloning paints each wrapped fragment without
+                    adding one DOM node per source line. */}
                 <pre
                   data-pierre-plain-side={key}
                   {...KEYBOARD_SCROLL_REGION_PROPS}
@@ -141,7 +261,45 @@ export function PlainFilePairFallback({
                     wraps ? 'whitespace-pre-wrap break-words' : 'whitespace-pre'
                   }`}
                 >
-                  {file.contents}
+                  {regionLines.length > 0 ? (
+                    <>
+                      {start! > 0 ? `${lines.slice(0, start).join('\n')}\n` : ''}
+                      <span
+                        data-change-region=""
+                        className="bg-bg-hover [box-decoration-break:clone] [-webkit-box-decoration-break:clone]"
+                      >
+                        <span
+                          ref={key === anchorKey ? firstChangedRef : undefined}
+                          data-changed-line=""
+                          className={key === 'new'
+                            ? 'bg-[var(--diff-add)] text-[var(--diff-add-text)] [box-shadow:inset_2px_0_0_0_var(--diff-add-text)] pl-[0.5ch] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]'
+                            : 'bg-[var(--diff-del)] text-[var(--diff-del-text)] [box-shadow:inset_2px_0_0_0_var(--diff-del-text)] pl-[0.5ch] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]'
+                          }
+                        >
+                          <span aria-hidden className="select-none">{marker} </span>
+                          {regionLines[0]}
+                        </span>
+                        {lastRegionLine > 0 && (
+                          <>
+                            {lastRegionLine > 1
+                              ? `\n${regionLines.slice(1, lastRegionLine).join('\n')}\n`
+                              : '\n'}
+                            <span
+                              data-changed-line=""
+                              className={key === 'new'
+                            ? 'bg-[var(--diff-add)] text-[var(--diff-add-text)] [box-shadow:inset_2px_0_0_0_var(--diff-add-text)] pl-[0.5ch] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]'
+                            : 'bg-[var(--diff-del)] text-[var(--diff-del-text)] [box-shadow:inset_2px_0_0_0_var(--diff-del-text)] pl-[0.5ch] [box-decoration-break:clone] [-webkit-box-decoration-break:clone]'
+                          }
+                            >
+                              <span aria-hidden className="select-none">{marker} </span>
+                              {regionLines[lastRegionLine]}
+                            </span>
+                          </>
+                        )}
+                      </span>
+                      {end! < lines.length ? `\n${lines.slice(end).join('\n')}` : ''}
+                    </>
+                  ) : lines.join('\n')}
                 </pre>
               </section>
             )

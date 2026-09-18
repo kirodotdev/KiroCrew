@@ -82,7 +82,7 @@ describe('CronRowActions', () => {
     await waitFor(() => expect(spies.onToggleEnabled).toHaveBeenCalledTimes(1))
   })
 
-  it('the result row is disabled with no result, and says Continue session with a slot', async () => {
+  it('the result row is disabled with no result, and says Go to Chat with a slot', async () => {
     const { unmount } = render(
       <CronRowActions
         job={job()}
@@ -104,7 +104,7 @@ describe('CronRowActions', () => {
     unmount()
 
     const spies = setup({ has_slot: true })
-    fireEvent.click(await screen.findByText('Continue session'))
+    fireEvent.click(await screen.findByText('Go to Chat'))
     await waitFor(() => expect(spies.onOpenInChat).toHaveBeenCalledTimes(1))
   })
 

@@ -74,8 +74,8 @@ def main():
 
     # Divergence vs base (non-destructive fetch).  The fetch MUST succeed —
     # without a fresh origin/<base> ref every subsequent merge-base/rebase
-    # operates on a potentially stale local copy (root cause of the 2026-07-31
-    # clobber incident where a force-push carried 114 duplicate commits).
+    # operates on a potentially stale local copy (root cause of the clobber
+    # incident where a force-push carried 114 duplicate commits).
     # Uses an explicit refspec so the remote-tracking ref is always updated
     # regardless of the clone's configured remote.origin.fetch (single-branch
     # clones, narrow CI checkouts).
@@ -133,7 +133,7 @@ def main():
     # (more than DEFAULT_MAX_AHEAD commits for a single-commit PR workflow),
     # warn loudly.  This catches worktrees that were branched from a local
     # trunk carrying unshipped integration commits (root cause of the
-    # 2026-07-31 clobber).  The threshold is generous — a normal prepare-pr
+    # clobber).  The threshold is generous — a normal prepare-pr
     # squashes to 1 commit; DEFAULT_MAX_AHEAD allows for multi-commit profiles
     # or a small rebase stack.
     if ahead != "?" and int(ahead) > DEFAULT_MAX_AHEAD:

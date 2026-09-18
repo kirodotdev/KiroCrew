@@ -503,7 +503,7 @@ class TestFilingOnSurface:
     def test_first_filing_inherits_the_folders_tags(self, dashboard_state: Any) -> None:
         """A channel chat BORN into a tagged folder inherits like a dashboard chat.
 
-        Inheritance is creation-only across the whole feature (#5419); the
+        Inheritance is creation-only across the whole feature; the
         channel default-filing branch is a birth, so the caller-resolved tags
         are copied by value here and nowhere else.
         """
@@ -513,6 +513,27 @@ class TestFilingOnSurface:
         assert slot is not None
         assert slot.folder_id == "f1"
         assert sorted(slot.tags) == ["t1", "t2"]
+
+    def test_first_filing_rotates_the_tags_revision(self, dashboard_state: Any) -> None:
+        """Inherited tags ship under a revision distinct from the slot's birth one."""
+        from unittest.mock import patch
+
+        from kiro_crew.dashboard.state import _ChatSlot
+
+        birth_revisions: list[str] = []
+        original_init = _ChatSlot.__init__
+
+        def _recording_init(self, *args, **kwargs):  # type: ignore[no-untyped-def]
+            original_init(self, *args, **kwargs)
+            birth_revisions.append(self.tags_revision)
+
+        with patch.object(_ChatSlot, "__init__", _recording_init):
+            slot = channel_slots.surface_channel_session(
+                dashboard_state, self._info(), {}, [], folder_id="f1", folder_tags=["t1"]
+            )
+        assert slot is not None and slot.tags == ["t1"]
+        assert birth_revisions and slot.tags_revision not in birth_revisions
+        assert slot.tags_revision > max(birth_revisions)
 
     def test_restoring_a_filed_session_never_re_tags(self, dashboard_state: Any) -> None:
         """The restore branch (persisted folder_id) is not a birth — no tags.
@@ -603,7 +624,7 @@ class TestFilingOnSurface:
 class _FakeLog:
     """Minimal ConversationLog stand-in: one channel session, one message.
 
-    Since #1366 the tab and the channel share ONE record, so *meta* is keyed by
+    The tab and the channel share ONE record, so *meta* is keyed by
     the session key itself. ``update_metadata`` merges like the real thing, which
     is what lets a test assert that the filing marker was actually persisted.
     """
@@ -949,14 +970,14 @@ class TestReconcilePassFiling:
         config reads before filing. A tag deleted in that window must not be
         written onto the freshly filed chat — the filing write validates the
         ids against the vocabulary as it is at write time. Modeled here by a
-        folder carrying an id the vocabulary no longer contains.
+        folder carrying an id the vocabulary does not contain.
         """
         _write_config("discord", "Discord")
         key = "discord:kirocrew:direct:U1"
         fid = asyncio.run(
             channel_folders.ensure_channel_folder(dashboard_state, "discord", "Discord")
         )
-        # The folder still references "deleted"; the vocabulary no longer has it.
+        # The folder still references "deleted"; the vocabulary does not have it.
         dashboard_state._tags = [{"id": "t1", "name": "alpha", "color": "#123456"}]
         dashboard_state._tags_authoritative = True
         for f in dashboard_state._folders:
@@ -1142,7 +1163,7 @@ class TestReconcilePassFiling:
         assert log.get_metadata(key)["folder_id"] == "user-picked"
         assert "channel_folder_filed" not in log.get_metadata(key)
         # The surfaced slot is unfiled: this pass declined to apply a placement it
-        # could no longer justify, and the record — not this slot — is what the
+        # could not justify, and the record — not this slot — is what the
         # next restart restores from.
         slot = dashboard_state._slots[channel_slots.channel_slot_name(key)]
         assert slot.folder_id == ""

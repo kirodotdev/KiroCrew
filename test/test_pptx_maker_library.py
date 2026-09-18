@@ -276,8 +276,8 @@ class TestStyleLifecycle(_LibraryFixture):
     def test_a_failed_state_write_undoes_the_rename(self) -> None:
         """The rename has already committed when state is written.
 
-        So a failing write left the file under its NEW name while `state.json`
-        still pinned the OLD one — a pin pointing at a name that no longer exists,
+        So a failing write leaves the file under its NEW name while `state.json`
+        still pins the OLD one — a pin pointing at a name that does not exist,
         with the request reporting 500 as though nothing had happened. The undo is
         what keeps the two consistent and makes a retry possible.
         """
@@ -391,8 +391,8 @@ class TestTemplates(_LibraryFixture):
         """The file MOVE and the state update must be one critical section.
 
         Split, a concurrent delete of the new name could interleave between the link
-        and the state write, leaving `state.json` naming a file that no longer exists
-        while both verbs answered 200. The move is what makes the state stale, so the
+        and the state write, leaving `state.json` naming a file that does not exist
+        while both verbs answer 200. The move is what makes the state stale, so the
         lock has to span it — `delete_style`/`delete_template` already do.
 
         Observed structurally, from inside the filesystem call, rather than by racing
@@ -614,8 +614,8 @@ class TestListing(_LibraryFixture):
         self.assertEqual([r["name"] for r in rows], ["real"])
 
     def test_a_style_with_no_name_lists_without_a_thumbnail(self) -> None:
-        """A nameless entry cannot be resolved to a file; it must not be used to
-        probe the filesystem."""
+        """A nameless entry cannot be resolved to a file; it must not drive a
+        filesystem probe."""
         with mock.patch.object(
             engine,
             "load_lists",

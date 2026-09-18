@@ -226,7 +226,7 @@ describe('the pinned reducer does not alias two distinct pastes', () => {
   const prompt = formatToken(first)
 
   const input = (b: PasteBlock, over: Record<string, unknown> = {}) => ({
-    idx: 4, ts: 't1', raw: prompt, pastes: [b], machineLabel: null, push: 0, bannerH: 40, ...over,
+    idx: 4, ts: 't1', raw: prompt, pastes: [b], push: 0, bannerH: 40, ...over,
   })
 
   it('the two really are indistinguishable to a seq+length key', () => {
@@ -266,7 +266,7 @@ describe('bodyBeyondPreview earns the expand chevron', () => {
     // mount the chevron -- and the body is the whole point of expanding.
     const p = block(1, 'first\nsecond\nthird')
     const st = nextPinnedPromptState(null, {
-      idx: 1, ts: 't', raw: formatToken(p), pastes: [p], machineLabel: null, push: 0, bannerH: 40,
+      idx: 1, ts: 't', raw: formatToken(p), pastes: [p], push: 0, bannerH: 40,
     })
     expect(st.text).toBe('first second third')
     expect(st.full).toBe('first\nsecond\nthird')
@@ -276,17 +276,9 @@ describe('bodyBeyondPreview earns the expand chevron', () => {
   it('NEGATIVE CONTROL: a genuinely single-line paste does NOT earn one', () => {
     const p = block(1, 'one single line of pasted text')
     const st = nextPinnedPromptState(null, {
-      idx: 1, ts: 't', raw: formatToken(p), pastes: [p], machineLabel: null, push: 0, bannerH: 40,
+      idx: 1, ts: 't', raw: formatToken(p), pastes: [p], push: 0, bannerH: 40,
     })
     expect(st.full).toBe(st.text)
     expect(st.bodyBeyondPreview).toBe(false)
-  })
-
-  it('stays set for a machine row, whose label is not its body', () => {
-    const st = nextPinnedPromptState(null, {
-      idx: 1, ts: 't', raw: 'payload', pastes: [], machineLabel: 'Auto-nudge - cycle 17',
-      machineBody: 'Babysit the run. Check CI.', push: 0, bannerH: 40,
-    })
-    expect(st.bodyBeyondPreview).toBe(true)
   })
 })

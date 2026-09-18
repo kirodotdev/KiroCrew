@@ -87,6 +87,8 @@ class _CompactionOwner(Protocol):
 
     def _fold_key(self, key: str) -> str: ...
 
+    def _advance_session_generation(self, key: str) -> int: ...
+
     def _trigger_compaction(
         self, key: str, reason: str, pct: float, provider: LLMProvider
     ) -> str | None: ...
@@ -128,7 +130,7 @@ class _CompactionOwner(Protocol):
 def _compact_unsupported_backend(provider: LLMProvider) -> str | None:
     """Backend id this provider names as unable to serve ``/compact``, else None.
 
-    The same capability #7800 gave the manual entry points, read for the
+    The same capability the manual entry points read, asked for the
     automatic one.  The property is spelled ``manual_`` because the manual
     command was its first consumer, but its ANSWER is a property of the
     BACKEND -- ``ACP_BACKENDS_COMPACT`` membership -- not of the entry point,
@@ -169,6 +171,7 @@ class CompactionCoordinator:
         session = owner._sessions.get(key)
         if session:
             session.prompt_count += 1
+            self._record_floor(key, session, provider, pct)
 
         # Go through the owner so patches on SessionManager._trigger_compaction
         # keep intercepting the call after this extraction.
@@ -184,6 +187,33 @@ class CompactionCoordinator:
             elif pct > 0:
                 self._deps.logger.info("Session %s context at %.0f%%", key, pct)
         return pct
+
+    def _record_floor(self, key: str, session: Any, provider: LLMProvider, pct: float) -> None:
+        """Pin a session that started with no history to its first confirmed reading.
+
+        ``floor_pending`` is set on the session whose cold start consumed a
+        replay suppression (``SessionManager.consume_replay_suppression``), so
+        it started with no conversation.  Its first CONFIRMED reading is the
+        floor a fresh session on this key reads before anyone has said
+        anything.  Recorded once per provider and never lowered: a reading that
+        arrives after telemetry confirms may include turns that ran meanwhile,
+        which only over-states the floor -- and an over-stated floor declines a
+        reset, never forces one.  The flag lives on the session so it dies with
+        it; nothing here outlives the registry entry.  Bookkeeping, not a gate:
+        it decides nothing about compaction and lives outside the ladder.
+        """
+        if not getattr(session, "floor_pending", False):
+            return
+        if pct <= 0 or self._deps.context_pct_is_unknown(provider):
+            return
+        session.floor_pending = False
+        if getattr(session, "floor_pct", None) is None:
+            session.floor_pct = pct
+            self._deps.logger.info(
+                "Session %s context floor recorded at %.0f%% (fresh session, no history)",
+                key,
+                pct,
+            )
 
     async def compact_if_needed(self, key: str) -> str:
         """Await a compaction attempt before a between-turn caller proceeds."""
@@ -247,24 +277,6 @@ class CompactionCoordinator:
             self._owner._fold_key(key), self._owner._cfg.session.autocompact_pct
         )
 
-    def drop_autocompact_overrides_matching(
-        self, exact_keys: set[str], folded_keys: set[str], fold: Callable[[str], str]
-    ) -> int:
-        """Drop overrides for permanently deleted sessions with NO live session.
-
-        ``destroy()`` clears a live session's override, but a permanent delete
-        of ARCHIVED history has no session to destroy — and channel keys are
-        deterministic, so a recreated session would silently inherit the
-        deleted conversation's threshold. Same fold-matching contract as the
-        session-ledger purge sweep: an override matches when its stored key is
-        in ``exact_keys`` or its ``fold``-ed spelling is in ``folded_keys``.
-        Returns the number of entries dropped.
-        """
-        doomed = [k for k in self.state.pct_overrides if k in exact_keys or fold(k) in folded_keys]
-        for k in doomed:
-            self.state.pct_overrides.pop(k, None)
-        return len(doomed)
-
     def _compaction_gate_decision(self, key: str, provider: LLMProvider, pct: float) -> str | None:
         """Return the first compaction gate decline, in lifecycle order.
 
@@ -277,15 +289,36 @@ class CompactionCoordinator:
         ``/compact`` still has a context meter worth reporting, and declining
         above the threshold check would take the per-turn usage line in
         ``check_context_usage`` with it.  Placing it here also means the only
-        behaviour that changes for such a backend is the one that was broken --
+        behaviour that changes for such a backend is the one that cannot work --
         the dispatch itself -- and it changes before ``_compact_session`` is
         ever scheduled, so no ``compacting`` entry, no background task and no
         ``session.semaphore`` acquisition happens for a compaction that could
-        only have ended in the 300s strand (#7812).
+        only end in the 300s strand.
         """
         baseline = self.state.pending_verdict.get(key)
         if baseline is not None and not self._deps.context_pct_is_unknown(provider):
             del self.state.pending_verdict[key]
+            # Append-only the session's log (flag-gated, fail-soft). The OTHER half
+            # of the emit in ``_settle_compact_cooldown``: a compaction whose
+            # effect was not measurable at the time deferred its verdict to here,
+            # and without this line that compaction would never appear in the
+            # crew log at all. ``pct`` is the first CONFIRMED reading after it, so
+            # it is the honest ``pct_after`` even when it is higher than
+            # ``baseline`` -- a deferred reading includes a later turn's growth,
+            # which makes ``freed_pct`` negative rather than absent. Recording
+            # that beats recording nothing: the entry says a compaction happened
+            # and what was measured, and a reader can see the measurement is not
+            # a clean before/after because the numbers say so.
+            # Deferred, not module-scope: this module is reached from the gateway
+            # boot path, and AUTOSDE's no-new-work-on-gateway-boot-path rule asks
+            # for a flag-gated subsystem's IMPORT to be gated, not just its use.
+            from kiro_crew.crew_log import emit as crew_log_emit
+
+            crew_log_emit.on_compaction_applied(
+                crew_log_emit.session_id_of(provider),
+                pct_before=baseline,
+                pct_after=pct,
+            )
             # Ignore the escalation result here: a deferred reading includes a
             # later turn's growth and is only safe for cooldown damping.
             self._owner._judge_compact_effect(key, baseline, pct)
@@ -443,6 +476,7 @@ class CompactionCoordinator:
                 popped = None
                 if owner._sessions.get(key) is session:
                     popped = owner._sessions.pop(key, None)
+                    owner._advance_session_generation(key)
                     # Same tick as the pop. Only this branch records: on the
                     # other one the registry already holds a SUCCESSOR under
                     # this key, whose start must stay its own.
@@ -550,7 +584,25 @@ class CompactionCoordinator:
             )
             return False
         self.state.pending_verdict.pop(key, None)
+        # Append-only the session's log (flag-gated, fail-soft). This is the
+        # immediately-confirmed half; a deferred verdict is recorded by
+        # ``_compaction_gate_decision`` when its reading settles, so every
+        # compaction reaches the crew log on exactly one of the two paths.
+        # Deferred for the boot-path rule; see the note at the other call site.
+        from kiro_crew.crew_log import emit as crew_log_emit
+
+        crew_log_emit.on_compaction_applied(
+            crew_log_emit.session_id_of(provider),
+            pct_before=pct_before,
+            pct_after=pct_after,
+        )
         return self._owner._judge_compact_effect(key, pct_before, pct_after)
+
+    def _floor_pct(self, key: str) -> float | None:
+        """The recorded no-conversation floor of *key*'s live session, if known."""
+        session = self._owner._sessions.get(key)
+        floor = getattr(session, "floor_pct", None)
+        return floor if isinstance(floor, (int, float)) else None
 
     def _judge_compact_effect(self, key: str, pct_before: float, pct_after: float) -> bool:
         """Arm damping for an ineffective drop and report critical context."""
@@ -560,6 +612,30 @@ class CompactionCoordinator:
                 time.monotonic() + self._deps.compact_failure_cooldown_secs
             )
             still_critical = pct_after >= self._deps.post_compact_reset_pct
+            verdict = (
+                "still critical — escalating to reset" if still_critical else "cooldown applied"
+            )
+            if still_critical:
+                floor = self._floor_pct(key)
+                if (
+                    floor is not None
+                    and pct_after - floor < self._deps.compact_min_effect_pct_points
+                ):
+                    # A reset replaces the conversation with NOTHING and keeps
+                    # everything else, so the most it can free is the distance
+                    # down to the floor. When that distance is under the same
+                    # bar compaction just failed, the reset would destroy the
+                    # conversation and land on a reading that is critical again.
+                    # The message reports the two numbers it compared and
+                    # nothing it did not measure: the floor is a reading, not a
+                    # breakdown of what fills the window.
+                    still_critical = False
+                    verdict = (
+                        f"still critical, but a fresh session on this key already read "
+                        f"{floor:.1f}% at its first confirmed reading — a reset is "
+                        f"unlikely to free {self._deps.compact_min_effect_pct_points:.1f} "
+                        f"points; keeping the conversation and the cooldown"
+                    )
             self._deps.logger.warning(
                 "Session %s compaction ineffective — context %.1f%% -> %.1f%% "
                 "(freed %.1f < %.1f points); %s",
@@ -568,7 +644,7 @@ class CompactionCoordinator:
                 pct_after,
                 freed,
                 self._deps.compact_min_effect_pct_points,
-                ("still critical — escalating to reset" if still_critical else "cooldown applied"),
+                verdict,
             )
             return still_critical
         self.state.cooldown_until.pop(key, None)

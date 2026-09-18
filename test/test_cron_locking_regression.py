@@ -90,6 +90,32 @@ class TestFileLockNonBlocking:
         job = svc.add_job(name="j", message="m", every_secs=60)
         assert svc.get_job(job.id) is not None
 
+    def test_file_lock_open_does_not_truncate(self, tmp_path: Path) -> None:
+        """``_file_lock`` must open the lock file WITHOUT truncating it.
+
+        A truncating open (``"w"``) empties the lock file before the
+        ``try_acquire_lock`` spin ever runs. On Windows a truncating open of a
+        file whose first byte another holder has under ``msvcrt.locking``
+        raises a sharing violation (``PermissionError``) at ``open()`` time, so
+        a contending acquirer crashes instead of spinning until release; POSIX
+        ``flock`` tolerates it, hiding the defect on Linux. Seeding the file
+        and asserting the bytes survive a real acquire/release cycle fails on
+        EVERY platform if a truncating open comes back (same class as
+        ``work_ledger._open_lock``).
+
+        The seeded bytes are checked only AFTER release: ``msvcrt.locking`` is
+        a mandatory lock on byte 0, so reading the file while the lock is held
+        would itself raise ``PermissionError`` on Windows.
+        """
+        svc = CronService(base_dir=tmp_path)
+        svc._dir.mkdir(parents=True, exist_ok=True)
+        lock = svc._dir / ".crons.lock"
+        seed = b"seeded-lock-bytes"
+        lock.write_bytes(seed)
+        with svc._file_lock(timeout=1.0):
+            pass
+        assert lock.read_bytes() == seed, "lock file truncated at open()"
+
 
 # ── Bug 2: unlocked read paths racing the remove worker ──
 
@@ -137,7 +163,7 @@ class TestReadPathsLocked:
     def test_reads_never_block_even_while_store_lock_held(self, tmp_path: Path) -> None:
         """Cache-only reads return promptly even while the store lock is held.
 
-        The read paths no longer touch the lock at all, so a mutator holding
+        The read paths do not touch the lock at all, so a mutator holding
         the store lock from a separate open description can never delay or
         block a read.
         """

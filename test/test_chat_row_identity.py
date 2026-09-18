@@ -43,7 +43,7 @@ def test_two_identical_same_ts_rows_get_distinct_ids() -> None:
 
 def test_append_preserves_a_supplied_row_id() -> None:
     """A row replayed from disk keeps its id, or a post-restart redelivery of
-    that row would no longer be recognisable as the same row."""
+    that row would not be recognisable as the same row."""
     slot = _slot()
     slot.append("assistant", "restored", meta={"mid": "m-fromdisk", "other": 1})
     assert slot.messages[-1]["meta"]["mid"] == "m-fromdisk"

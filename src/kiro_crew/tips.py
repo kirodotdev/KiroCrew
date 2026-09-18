@@ -25,6 +25,7 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.context import ContextBuilder
 from kiro_crew.llm_helpers import run_bg_oneliner
 from kiro_crew.loop_lock import LoopBoundLock
+from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 from kiro_crew.platform import PROFILE_STANDALONE, current_context, safe_context_call
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.tips_allowlist import TIP_DOC_ALLOWLIST
@@ -366,15 +367,15 @@ def _save_state(st: TipsState) -> None:
         # Owner-only: generated tips embed memory-derived content (preferences,
         # projects, recent activity) — must not be world-readable on shared
         # machines. restrict_to_owner locks the temp file down BEFORE any content
-        # reaches it (a post-rename lockdown left the payload readable under the
-        # inherited DACL on Windows for the write window, issue #5285), implies
+        # reaches it (a post-rename lockdown leaves the payload readable under the
+        # inherited DACL on Windows for the write window), implies
         # 0o600 on POSIX — which also corrects permissions of pre-existing 0644
         # files on the next write (atomic replace) — and applies the owner-only
         # DACL on Windows, where mode bits are a no-op. Warn-and-continue: a
         # lockdown failure must not break tips persistence, but it must be
         # visible. The linked-parent refusal restrict_to_owner also implies is
         # NOT covered by restrict_on_error — it raises unconditionally, which is
-        # correct for a secret-adjacent writer (#4381) and unreachable here in
+        # correct for a secret-adjacent writer and unreachable here in
         # practice: the parent is config_dir(), a trust anchor.
         restrict_to_owner=True,
         restrict_on_error="warn",
@@ -394,7 +395,7 @@ class TipsCache:
     # directly are unaffected; populated only by get_tips_cache in production.
     curated: list[dict] = field(default_factory=list)  # type: ignore[type-arg]
     state: TipsState = field(default_factory=TipsState)
-    # LoopBoundLock, not asyncio.Lock (#4800): the cache is stored on the
+    # LoopBoundLock, not asyncio.Lock: the cache is stored on the
     # long-lived DashboardState, which outlives any single event loop.
     _lock: LoopBoundLock = field(default_factory=LoopBoundLock, repr=False)
     _task: asyncio.Task | None = field(default=None, repr=False)  # type: ignore[type-arg]
@@ -775,7 +776,10 @@ def _build_context(state: DashboardState) -> str:
     """Assemble context for the tips prompt from memory and recent activity."""
     parts: list[str] = []
     try:
-        memory = ContextBuilder.get_memory_for(None)
+        # The GLOBAL store by name, not by omission. This surface summarizes the
+        # operator's own memory for a dashboard panel, so it stays on the v1
+        # path deliberately rather than inheriting whichever crew spoke last.
+        memory = ContextBuilder.get_memory_for(memory_store=DEFAULT_MEMORY_STORE)
         prefs = memory.read_preferences()
         if prefs and prefs.strip() != "# User Preferences\n\n<!-- Learned from conversations -->":
             parts.append(f"## User Preferences\n{prefs[:2000]}")

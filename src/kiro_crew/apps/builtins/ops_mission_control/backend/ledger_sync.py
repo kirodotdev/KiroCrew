@@ -388,8 +388,8 @@ async def _git(*args: str) -> tuple[int, str, str]:
     in the child, ``Popen._execute_child`` then blocks the event loop in an unbounded
     ``os.read`` with no await point for a timeout to reach, and the orphan keeps a duplicate
     of every inherited fd — the dashboard's listening socket included. The shim applies the
-    same limits after ``exec`` instead. Caught by ``test/test_spawn_preexec_guard.py``
-    (issue #935), a core gate this app had not been run against.
+    same limits after ``exec`` instead. Caught by ``test/test_spawn_preexec_guard.py``,
+    a core gate every spawn in this app must pass.
     """
     # Identity on the ARGV, not in the repo's config: `-c` beats config, so it holds
     # even against a repo-local `user.email` an agent could have written, and it needs

@@ -560,17 +560,11 @@ class CompanionStore:
             # Re-arm ONLY when the interval itself changed, so a shortened interval
             # takes effect now rather than after the old, longer one elapses.
             #
-            # This used to re-arm on EVERY patch, which quietly broke break nudges
-            # altogether: the overlay saves the companion's position through this same
-            # config endpoint, and the companion moves ITSELF (the idle fidget). So
-            # each little hop reset the break countdown, and a companion left alone
-            # postponed its own breaks indefinitely. Measured live: 22 seconds before
-            # a nudge was due, a position write pushed it back out to 269 seconds.
-            #
-            # The app this was ported from never had the bug — it re-arms only on
-            # start, on return from away, and after firing, and reads the interval
-            # lazily at arm time. Gating on a real change keeps the prompt behaviour
-            # that comment wanted without inventing the regression.
+            # Re-arming on EVERY patch breaks break nudges altogether: the overlay
+            # saves the companion's position through this same config endpoint, and
+            # the companion moves ITSELF (the idle fidget), so each little hop would
+            # reset the break countdown and a companion left alone would postpone its
+            # own breaks indefinitely.
             if cfg.break_reminder_mins != before_mins:
                 self._next_break_at = 0.0
         self._last_stats_flush = 0.0

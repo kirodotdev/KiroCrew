@@ -1,6 +1,6 @@
 """Public-repo chip-status gate: a non-owner dashboard user sees PR/MR status
 for PUBLIC repos, while private/unknown repos stay owner-only and app tokens
-see nothing (issue #6786).
+see nothing.
 
 Covers the three cooperating pieces:
   * ``source_providers`` repo-visibility cache + fetch + scheduler,
@@ -128,7 +128,7 @@ async def test_fetch_github_visibility_maps_isprivate(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_github_internal_is_not_public(monkeypatch):
-    # GPT #6789 round-9: isPrivate is False for internal (Enterprise) repos too,
+    # isPrivate is False for internal (Enterprise) repos too,
     # but internal is NOT anonymously readable — must not classify as public.
     async def fake_run(*argv, **kw):
         return {"isPrivate": False, "visibility": "internal"}
@@ -179,7 +179,7 @@ async def test_fetch_gitlab_public_with_public_features_is_public(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_fetch_gitlab_public_but_private_pipelines_is_not_public(monkeypatch):
-    # GPT #6789 round-6: public_jobs=false hides pipeline/CI status from
+    # public_jobs=false hides pipeline/CI status from
     # non-members even when builds_access_level is "enabled".
     async def fake_run(*argv, **kw):
         return {
@@ -196,7 +196,7 @@ async def test_fetch_gitlab_public_but_private_pipelines_is_not_public(monkeypat
 
 @pytest.mark.asyncio
 async def test_fetch_gitlab_public_but_member_only_mr_is_not_public(monkeypatch):
-    # GPT #6789 round-5: a public project can restrict MR/CI to members, so
+    # a public project can restrict MR/CI to members, so
     # visibility=="public" alone must NOT authorize non-owner status.
     async def fake_run(*argv, **kw):
         return {
@@ -241,7 +241,7 @@ async def test_refresh_keeps_prior_known_value_on_failure(monkeypatch):
     monkeypatch.setattr(source, "_run_json", boom)
     source._visibility_inflight.add(source._visibility_key(ref))
     await source._refresh_repo_visibility(ref)
-    # A failed read must not erase a previously-known public flag (within TTL).
+    # A failed read must not erase an already-known public flag (within TTL).
     assert source.is_repo_public(PR_URL) is True
 
 
@@ -339,7 +339,7 @@ async def test_schedule_respects_fresh_ttl(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_force_synchronously_invalidates_public_before_refresh(monkeypatch):
-    # GPT #6789 round-4 race: a forced refresh runs concurrently with the forced
+    # Race: a forced refresh runs concurrently with the forced
     # status read; if status finishes first it must NOT see a still-cached-public
     # visibility. force=True drops a public entry to unknown SYNCHRONOUSLY (before
     # the task is spawned), so is_repo_public fails closed for the in-flight window.
@@ -366,7 +366,7 @@ async def test_force_synchronously_invalidates_public_before_refresh(monkeypatch
 
 @pytest.mark.asyncio
 async def test_force_invalidates_public_even_when_refresh_already_inflight(monkeypatch):
-    # GPT #6789 round-14: the force path must fail a cached-public entry closed
+    # The force path must fail a cached-public entry closed
     # BEFORE the inflight-dedup return — otherwise a force=True call that arrives
     # while a (pre-flip) refresh is already running would `continue` without
     # invalidating, and the in-flight positive read could restore public after a
@@ -391,7 +391,7 @@ async def test_force_invalidates_public_even_when_refresh_already_inflight(monke
 
 @pytest.mark.asyncio
 async def test_stale_inflight_positive_cannot_restore_public_across_force(monkeypatch):
-    # GPT #6789 round-14: a visibility refresh whose positive read predates a
+    # A visibility refresh whose positive read predates a
     # force-invalidation (public->private flip) must NOT write ``public`` back —
     # doing so would re-open the leak the force path just closed. The generation
     # guard makes it record unknown instead, so is_repo_public stays None.
@@ -428,7 +428,7 @@ async def test_stale_inflight_positive_cannot_restore_public_across_force(monkey
 
 @pytest.mark.asyncio
 async def test_force_bumps_generation_even_when_entry_already_unknown(monkeypatch):
-    # GPT #6789 round-15: the generation bump must fire on EVERY forced refresh
+    # The generation bump must fire on EVERY forced refresh
     # (before inflight dedup), not only when the cached entry is currently
     # public. Otherwise a second force arriving while the entry is already
     # unknown (first force landed, pre-privacy fetch still in flight) would skip
@@ -450,7 +450,7 @@ async def test_force_bumps_generation_even_when_entry_already_unknown(monkeypatc
 
 @pytest.mark.asyncio
 async def test_force_public_to_private_transition_queues_hide_update(monkeypatch):
-    # GPT #6789 round-7: a forced refresh pre-invalidates a cached-public entry
+    # A forced refresh pre-invalidates a cached-public entry
     # to unknown before spawning the refresh. If the repo genuinely went private,
     # the refresh must STILL queue an on_update so connected non-owners hide the
     # now-stale public chip — the comparison must measure the flip against the
@@ -477,7 +477,7 @@ async def test_force_public_to_private_transition_queues_hide_update(monkeypatch
 
 @pytest.mark.asyncio
 async def test_status_change_forces_visibility_revalidation(monkeypatch):
-    # GPT #6789 round-8: a status refresh can land a freshly-fetched status while
+    # A status refresh can land a freshly-fetched status while
     # this URL's visibility entry is still within its TTL, so a plain (non-force)
     # visibility schedule would SKIP the read and is_repo_public would authorize
     # the new status against a stale-fresh public flag. A confirmed status change
@@ -509,7 +509,7 @@ async def test_status_change_forces_visibility_revalidation(monkeypatch):
 
 
 def test_full_payload_status_change_forces_visibility_revalidation(monkeypatch):
-    # GPT #6789 round-9: record_full_payload_status is a SECOND authoritative
+    # record_full_payload_status is a SECOND authoritative
     # status writer (the detail panel). A public->private change refreshed here
     # must also force-revalidate visibility, or a non-owner is served the new
     # status against a stale-fresh public flag. Fix the writer, do NOT drop the
@@ -534,7 +534,7 @@ def test_full_payload_status_change_forces_visibility_revalidation(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_status_change_forces_visibility_before_flap_and_await(monkeypatch):
-    # GPT #6789 round-11 finding 2: the force visibility invalidation must run
+    # The force visibility invalidation must run
     # IMMEDIATELY after 'changed' is detected — before flap handling (which can
     # early-return) and before the first await (_invalidate_full_payload_cache).
     # Otherwise a public->private repo whose transition is flapping would return
@@ -635,7 +635,7 @@ def test_issue_link_never_gets_status_even_for_owner():
 
 
 def test_non_owner_public_status_grant_is_sel_audited(monkeypatch):
-    # GPT #6789 round-12: granting a non-owner status on a confirmed-public repo
+    # Granting a non-owner status on a confirmed-public repo
     # is an access-control decision and MUST leave an SEL allow event
     # (AUTOSDE backend-security-controls: grants, not only denials). Owner and
     # app-token paths do NOT go through this grant, so they emit nothing here.
@@ -669,7 +669,7 @@ def test_non_owner_public_status_grant_is_sel_audited(monkeypatch):
     _project_source_links([_link(PR_URL_2)], True, dashboard_user=False)
     assert events == []
 
-    # DENY decision (GPT #6789 round-15): a non-owner on a NON-public repo is
+    # DENY decision: a non-owner on a NON-public repo is
     # denied status and that denial must ALSO be SEL-audited (deduped per url).
     events.clear()
     _seed_status(PR_URL_2, {"state": "open", "ci": "passed"})

@@ -6,18 +6,21 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { createTestStore } from './helpers'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { api } from '../api/client'
-import chatReducer, { PANE_HYDRATE_LIMIT, sseSubagentSpawn, sseSubagentPending, sseSubagentDone } from '../store/chatSlice'
+import chatReducer, { PANE_HYDRATE_LIMIT, refreshSlot, sseSubagentSpawn, sseSubagentPending, sseSubagentDone } from '../store/chatSlice'
 import type { RootState } from '../store'
+import { setViewedThreadSlot, _resetViewedThreadForTests } from '../lib/viewedThread'
 
-// Track markSlotUnread dispatches
+// Track markSlotUnread dispatches (normalized to the slot key: the payload
+// widened to `{slot, ts}` for the read-watermark, and these specs pin WHICH
+// slots get marked, not the watermark itself)
 const markSlotUnreadCalls: string[] = []
 
 vi.mock('../store/dashboardSlice', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../store/dashboardSlice')>()
   return {
     ...actual,
-    markSlotUnread: (slot: string) => {
-      markSlotUnreadCalls.push(slot)
+    markSlotUnread: (slot: string | { slot: string; ts?: string }) => {
+      markSlotUnreadCalls.push(typeof slot === 'string' ? slot : slot.slot)
       return actual.markSlotUnread(slot)
     },
   }
@@ -332,6 +335,92 @@ describe('unread fires on chat_done not chat_chunk', () => {
   })
 })
 
+describe('unread-marker honours the thread a non-chat surface is showing', () => {
+  // The Crew Members page mounts a member thread without moving
+  // `chat.activeSlot`; it registers the thread in `viewedThread` instead. A
+  // message landing there is being watched, so it must not be flagged --
+  // flagging it lit the parent dashboard's crew-tab badge for one render on
+  // every message (the page's read effect then cleared it): a flicker.
+  let testStore: ReturnType<typeof createTestStore>
+
+  beforeEach(() => {
+    vi.clearAllMocks()
+    markSlotUnreadCalls.length = 0
+    WS_INSTANCES.length = 0
+    _resetViewedThreadForTests()
+    testStore = createTestStore({
+      chat: { activeSlot: 'chat-active', slotMessages: {}, slotRun: {}, slotHydrated: {}, slotActivity: {} } as RootState['chat'],
+    })
+    vi.stubGlobal('WebSocket', MockWebSocket)
+  })
+
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    _resetViewedThreadForTests()
+  })
+
+  function wrapper({ children }: { children: React.ReactNode }) {
+    const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    return createElement(Provider, { store: testStore },
+      createElement(QueryClientProvider, { client: qc }, children)
+    )
+  }
+
+  it('chat_message in the registered thread does NOT mark unread', () => {
+    setViewedThreadSlot('member-oncall')
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_message', data: { slot: 'member-oncall', role: 'assistant', content: 'hi', ts: '1' } })
+    })
+    expect(markSlotUnreadCalls).toEqual([])
+    unmount()
+  })
+
+  it('chat_done in the registered thread does NOT mark unread', () => {
+    setViewedThreadSlot('member-oncall')
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_done', data: { slot: 'member-oncall' } })
+    })
+    expect(markSlotUnreadCalls).toEqual([])
+    unmount()
+  })
+
+  it('the registration is per slot: other slots still mark unread, and chat.activeSlot still counts', () => {
+    setViewedThreadSlot('member-oncall')
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_message', data: { slot: 'member-research', role: 'assistant', content: 'hi', ts: '1' } })
+      ws.simulateMessage({ type: 'chat_message', data: { slot: 'chat-active', role: 'assistant', content: 'hi', ts: '2' } })
+    })
+    expect(markSlotUnreadCalls).toEqual(['member-research'])
+    unmount()
+  })
+
+  it('once the registration is retired the thread marks unread again', () => {
+    setViewedThreadSlot('member-oncall')
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    _resetViewedThreadForTests()
+
+    act(() => {
+      ws.simulateMessage({ type: 'chat_message', data: { slot: 'member-oncall', role: 'assistant', content: 'hi', ts: '1' } })
+    })
+    expect(markSlotUnreadCalls).toEqual(['member-oncall'])
+    unmount()
+  })
+})
+
 describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
   let testStore: ReturnType<typeof createTestStore>
   let rafCbs: FrameRequestCallback[]
@@ -355,6 +444,15 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
       createElement(QueryClientProvider, { client: qc }, children))
   }
 
+  /** Seed the active slot's replay floor the way production does: a refresh
+   *  snapshot whose trailing streaming row carries the newest folded seq. The
+   *  reducer raises `lastChunkSeq` from it and later drops batched parts at or
+   *  below that floor. */
+  const snapshotWithFloor = (seq: number) => refreshSlot.fulfilled({
+    key: 'chat-active', running: true, hasMore: false, total: 1, queue: [], stopping: false,
+    messages: [{ role: 'streaming', content: 'SNAPSHOT', cls: 'msg msg-a', seq }],
+  }, 'r1', 'chat-active')
+
   it('coalesces multiple chunks in a frame into one deferred flush', () => {
     const { unmount } = renderHook(() => useWebSocket(), { wrapper })
     const ws = WS_INSTANCES[0]
@@ -372,6 +470,76 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
     act(() => { rafCbs[0](0) })
     const streaming = testStore.getState().chat.messages.find(m => m.role === 'streaming')
     expect(streaming?.content).toBe('abc')
+    unmount()
+  })
+
+  it('a buffered chunk a later snapshot already covers is dropped by the reducer at flush', () => {
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+
+    // A chunk arrives first, so the buffer entry exists and nothing has flushed.
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'a', seq: 1 } })
+    })
+    // The slot is then refreshed by a snapshot whose trailing streaming row
+    // already holds text up to seq 3 (a variant switch keeps the entry alive).
+    act(() => { testStore.dispatch(snapshotWithFloor(3)) })
+    expect(testStore.getState().chat.lastChunkSeq).toBe(3)
+    act(() => {
+      // seq 2 and 3 are replays of text the snapshot already contains; seq 4 is new.
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'b', seq: 2 } })
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'c', seq: 3 } })
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'd', seq: 4 } })
+    })
+    act(() => { rafCbs.forEach(cb => cb(0)) })
+    const streaming = testStore.getState().chat.messages.find(m => m.role === 'streaming')
+    // 'a' (seq 1) was still buffered when the snapshot with floor 3 arrived, so
+    // the snapshot already holds it and the buffered copy is discarded; of the
+    // later chunks only 'd' may be appended, onto the snapshot's own row.
+    expect(streaming?.content).toBe('SNAPSHOTd')
+    expect(testStore.getState().chat.lastChunkSeq).toBe(4)
+    unmount()
+  })
+
+  it('a snapshot that covers only part of the buffer drops exactly the covered chunks', () => {
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    // Chunks 1..3 are buffered and nothing has flushed.
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'a', seq: 1 } })
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'b', seq: 2 } })
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'c', seq: 3 } })
+    })
+    // A refreshed snapshot holds text up to seq 2 only: 'a' and 'b' are covered,
+    // 'c' is not and must still reach the transcript.
+    act(() => { testStore.dispatch(snapshotWithFloor(2)) })
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'd', seq: 4 } })
+    })
+    act(() => { rafCbs.forEach(cb => cb(0)) })
+    const streaming = testStore.getState().chat.messages.find(m => m.role === 'streaming')
+    expect(streaming?.content).toBe('SNAPSHOTcd')
+    unmount()
+  })
+
+  it('a snapshot that lands after the chunks but before the frame still governs the flush', () => {
+    const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+    const ws = WS_INSTANCES[0]
+    act(() => { ws.simulateOpen() })
+    act(() => {
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'a', seq: 1 } })
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'b', seq: 2 } })
+      ws.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'c', seq: 3 } })
+    })
+    // No further chunk arrives; the refreshed snapshot (floor 2) lands during
+    // the requestAnimationFrame window. The reducer applies the floor when the
+    // batched frame is dispatched, so the covered parts never reach the row.
+    act(() => { testStore.dispatch(snapshotWithFloor(2)) })
+    act(() => { rafCbs.forEach(cb => cb(0)) })
+    const streaming = testStore.getState().chat.messages.find(m => m.role === 'streaming')
+    expect(streaming?.content).toBe('SNAPSHOTc')
     unmount()
   })
 
@@ -532,5 +700,48 @@ describe('chat-stream-perf: chunk coalescing + background cache warm', () => {
     act(() => { rafCbs[1](0) })
     expect(testStore.getState().chat.messages.find(m => m.role === 'streaming')?.content).toBe('A')
     unmount()
+  })
+
+  it('a fresh buffer entry after reconnect does not re-append chunks the snapshot holds', () => {
+    vi.useFakeTimers()
+    vi.stubGlobal('requestAnimationFrame', (cb: FrameRequestCallback) => { rafCbs.push(cb); return rafCbs.length })
+    try {
+      const { unmount } = renderHook(() => useWebSocket(), { wrapper })
+      const ws1 = WS_INSTANCES[0]
+      act(() => { ws1.simulateOpen() })
+      // Disconnect → reconnect clears the buffer, so the next chunk builds a
+      // FRESH entry with no delivery seq of its own.
+      act(() => { ws1.onclose?.(new CloseEvent('close')) })
+      act(() => { vi.advanceTimersByTime(2000) })
+      const ws2 = WS_INSTANCES[1]
+      act(() => { ws2.simulateOpen() })
+      // The reconnect refresh lands: the snapshot already holds "Hello wor" and
+      // says the newest chunk folded into it is seq 3. The reducer raises the
+      // slot's replay floor from that row.
+      const refreshed = refreshSlot.fulfilled({
+        key: 'chat-active', running: true, hasMore: false, total: 2, queue: [], stopping: false,
+        messages: [
+          { role: 'user', content: 'hi', cls: '', meta: { mid: 'u1' } },
+          { role: 'streaming', content: 'Hello wor', cls: 'msg msg-a', seq: 3 },
+        ],
+      }, 'r1', 'chat-active')
+      act(() => { testStore.dispatch(refreshed) })
+      expect(testStore.getState().chat.lastChunkSeq).toBe(3)
+      // The frames that raced the snapshot are batched by the flush buffer and
+      // handed to the reducer with each part's seq; the reducer drops the parts
+      // at or below the floor and appends only the rest.
+      act(() => {
+        ws2.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'Hello ', seq: 2 } })
+        ws2.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'wor', seq: 3 } })
+        ws2.simulateMessage({ type: 'chat_chunk', data: { slot: 'chat-active', content: 'ld', seq: 4 } })
+      })
+      act(() => { for (const cb of rafCbs.splice(0)) cb(0) })
+      const streaming = testStore.getState().chat.messages.filter(m => m.role === 'streaming')
+      expect(streaming).toHaveLength(1)
+      expect(streaming[0].content).toBe('Hello world')
+      unmount()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })

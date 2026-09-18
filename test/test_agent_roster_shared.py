@@ -2,13 +2,13 @@
 
 Three surfaces put installed agent names in front of a model: an unknown-agent
 refusal (``subagent._available_agents_hint``), the spawn tools' parameter
-descriptions (``spawn._agent_roster_hint``), and ``spawn_list``'s output. Each
-one used to re-implement the same pipeline -- grammar filter, redact, bound,
-report the remainder -- and the copies had already drifted apart.
+descriptions (``spawn._agent_roster_hint``), and ``spawn_list``'s output. They
+share one pipeline -- grammar filter, redact, bound, report the remainder -- so
+the copies cannot drift apart.
 
-``subagent.visible_agent_names`` is now that pipeline. These tests pin its
+``subagent.visible_agent_names`` is that pipeline. These tests pin its
 contract, ratchet that no surface re-implements it, and hold each of the three
-rendered strings byte-for-byte at what it was before the extraction.
+rendered strings byte-for-byte.
 """
 
 from __future__ import annotations
@@ -196,10 +196,9 @@ class TestRenderedStringsAreUnchanged:
 
 
 class TestOrderingConverged:
-    """The one intentional change: the parameter-description roster used to sort
-    the REDACTED strings, while the refusal roster sorts the declared names. Both
-    now sort by declared name, so a name that redaction rewrites is replaced in
-    place instead of jumping to wherever its placeholder happens to sort.
+    """Both rosters sort by declared name, so a name that redaction rewrites is
+    replaced in place instead of jumping to wherever its placeholder happens to
+    sort.
 
     Observable only for an agent literally named like a leaked API key, which is
     why it is safe to normalize -- and why it is stated rather than assumed.
@@ -224,7 +223,7 @@ class TestOrderingConverged:
 
 class TestExclusionIsInheritedNotRespelled:
     def test_the_helper_default_is_the_shared_constant(self) -> None:
-        """The spawn tools no longer name the reserved set at all -- they inherit
+        """The spawn tools do not name the reserved set at all -- they inherit
         it as this default -- so the default is what makes that omission safe."""
         default = inspect.signature(sa.visible_agent_names).parameters["exclude"].default
         assert default is sa.UNADVERTISED_AGENTS

@@ -53,6 +53,7 @@ from kiro_crew.identity_stores import (
     AUTH_SQLITE_SIDECAR_SUFFIXES,
     fenced_home_dirs,
 )
+from kiro_crew.memory_stores import MEMORY_STORES_DIR_NAME
 
 from .diagnostics import annotate_refusal, refusal_diagnostic
 
@@ -75,11 +76,6 @@ _LEAF_SEPARATOR = "/"
 def _leaf_segments(spec: str) -> list[str]:
     """Path segments of a ``/``-authored leaf spec, for ``os.path.join``."""
     return spec.split(_LEAF_SEPARATOR)
-
-
-def _leaf_basename(spec: str) -> str:
-    """Final segment of a ``/``-authored leaf spec."""
-    return _leaf_segments(spec)[-1]
 
 
 _SENSITIVE_HOME_DIRS: list[str] = [
@@ -265,6 +261,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # backend opens it directly rather than through this gate, so writes keep
     # working.
     "md-notebook-staging",
+    # Where the sandbox launcher stages the live-target pointer's absent-equivalent
+    # stub before linking it into place. Classified as the whole DIRECTORY so the
+    # in-flight temp is never a visible, linkable name: a second hard link to that
+    # inode would be an unmasked path to the bytes the gateway executes. Only the
+    # gateway process writes here.
+    "live-target-staging",
     # The AWS Control builtin's app data directory. ``backup.json`` in here holds
     # ``nightly``, the bit that AUTHORIZES the app's startup loop to upload the
     # gateway's memory and workspace to S3 unattended, so a prompt-injected agent
@@ -317,6 +319,16 @@ _CREW_SECRET_LEAVES: list[str] = [
     # opens all of it directly rather than through this gate, so spooling and
     # the notice pass keep working.
     "inbound-spool",
+    # The durable task queue (taskq/store.py): ``tasks/tasks.db`` plus its WAL
+    # and journal siblings. Every row is another session's accepted work --
+    # the task prompt, its parameters, its lease and generation -- and the
+    # store is the scheduler's authority: an agent that could write it could
+    # cancel or re-dispatch another session's task, or forge a claim. Whole
+    # DIRECTORY (SQLite writes ``-wal`` / ``-journal`` / ``-shm`` siblings).
+    # Every legitimate reader and writer is the GATEWAY process (the subagent
+    # manager, the runner adapters, ``/api/tasks``), which opens the path
+    # directly; the MCP tools reach the queue through ``/api/spawn``.
+    "tasks",
     # Per-session work ledgers (session_ledger.py). Not credentials, but each
     # directory is one session's private work state, and the ledger's whole
     # authorization model is "a session reaches only its OWN ledger" (the HTTP
@@ -336,11 +348,39 @@ _CREW_SECRET_LEAVES: list[str] = [
     # straight off disk, and a corrupted record reads as ABSENT to the store —
     # silent loss the conductor cannot see. No legitimate file-tool reader.
     "work-ledger",
+    # Every append-only per-unit crew log, crew and session alike (crew_log/store.py).
+    # Not credentials, but the design's whole premise is that the crew log is the
+    # AUTHORITY and the context window only a cache: a conductor reads a unit's
+    # history as fact instead of re-deriving it. An agent's auto-approved file
+    # tools reaching this subtree would let it forge an entry attributed to the
+    # gateway, or rewrite the history it is supposed to be reporting into, which
+    # is the one thing an append-only record exists to prevent. The write-side
+    # rules (type ownership, guest namespacing, seq under the lock) live in the
+    # library, so they bind only callers who go through it; this entry is what
+    # keeps a file tool from going around it, and the sandbox mask on the same
+    # leaf is what keeps a spawned subprocess from going around BOTH. Named at the
+    # shared ``crew-log`` root so every unit kind is fenced by one entry — session
+    # crew logs included, which is why they do not live under the ``sessions``
+    # transcript root. The store opens these paths directly rather than through
+    # this gate, so nothing breaks.
+    "crew-log",
+    # The RETIRED root the same store used before it was renamed. Kept because this
+    # rename ships no migration: a machine that ran the old build with the feature
+    # flag on still has real entries under ``<home>/ledgers``, and dropping the leaf
+    # would un-fence them from the agent's file tools on upgrade. Nothing writes here
+    # any more, so the entry costs a retired name and refuses nothing legitimate --
+    # the same reasoning the retired browser leaves above are kept under.
+    "ledgers",
     # The optional Playwright extension token. It removes the browser-side approval
     # click for an attach, so a process that could read it could attach to the
     # operator's logged-in browser without them seeing a prompt. The gateway hands
     # it to the CLI through the environment, so nothing legitimate opens the file.
     "playwright-extension-token",
+    # Gateway-executed browser launcher and its vendored package tree. Agent
+    # subprocesses receive a READONLY sandbox view so their browser commands can
+    # run it; file tools must not inspect or replace the executable the
+    # unsandboxed gateway later uses for startup cleanup and owner launches.
+    "playwright-cli",
     # Legacy SEL HMAC key location (pre-``trust/`` installs, and any stale file
     # a backup restore resurrects). Kept alongside the ``trust``
     # directory entry below so the key is gated at BOTH locations.
@@ -360,6 +400,7 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``workspace/`` was itself replaceable with one ``ln -s``, and the app opens the
     # path directly (as keystone writers must), so it would have followed the link.
     "trust",
+    "member-memory-bindings",
     "security_events.jsonl",
     # Rotated SEL segments. sel.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
@@ -434,6 +475,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # Recovery is a re-import, but a prompt-injected agent corrupting user data
     # is the mainline threat these leaves exist for.
     "appearance-library",
+    # The chat_tag authorization store. Grant rows decide which tags an agent
+    # may self-apply, so agent file tools must neither read nor write them;
+    # the OS-sandbox counterpart is ``sandbox._CREW_HIDDEN_LEAVES``. Only the
+    # gateway opens the path.
+    "tag-grants",
     # The operator's OAuth consent-endpoint extension
     # ({additional_authorization_endpoints: [{host, path}]}). Each entry widens
     # the banner-only OAuth entropy carve-out (_OAUTH_AUTHORIZATION_ENDPOINTS),
@@ -458,9 +504,11 @@ _CREW_SECRET_LEAVES: list[str] = [
     # resolved during startup and exec'd into, so a writable one is arbitrary
     # code execution in the gateway's own identity — the agent must not be able
     # to author it, and must not be able to read it back to discover a target to
-    # aim at either. Only the human-driven dashboard cutover writes it, and the
-    # gateway's own startup reader opens it directly rather than through this
-    # gate, so both keep working.
+    # aim at either. The GATEWAY process writes it (Dev Fleet's in-gateway
+    # cutover route, on the dashboard owner's request); the sandboxed Dev Fleet
+    # backend does not touch the file at all and reads pointer state through
+    # that route. The gateway's own startup reader opens it directly rather than
+    # through this gate, so both keep working.
     "live_target.json",
     # Holds `backup/redaction.json`, the switch that decides whether a bundle
     # leaving this machine is redacted first. An agent that could write it would
@@ -553,6 +601,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     # writer and opens the path directly, not through this gate, so it keeps
     # working; there is deliberately no CLI verb to fence.
     "file_delivery_consent.json",
+    "ssh_auth_sock_consent.json",
+    # The single-use step-up nonce that authorizes RECORDING a flagged-file
+    # delivery grant. A whole DIRECTORY, not a leaf file, because arming writes a
+    # sibling ``.tmp`` and renames it into place. It lives in its OWN top-level
+    # leaf rather than under ``trust/`` on purpose: ``trust/`` is sandbox-VISIBLE
+    # (it holds SEL append targets an in-sandbox MCP server writes), so a
+    # prompt-injected agent could FORGE a nonce there with a runtime-constructed
+    # shell path (the acknowledged evadable tier) and then drive the owner's
+    # loopback browser to POST that chosen nonce -- recording a grant with no
+    # human present. This leaf has NO in-sandbox reader (the gateway writes it on
+    # arm, the host ``kirocrew file-delivery approve`` reads it), so it is also
+    # bind-masked in ``sandbox._CREW_HIDDEN_LEAVES``; masking is what actually
+    # closes the forge path, since the text/argv file gate alone does not stop a
+    # runtime-constructed shell write.
+    "file-delivery-consent-pending",
     "token_signing.key",
     "refresh_chains.json",
     ".local_secret",
@@ -673,6 +736,33 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``identity_stores`` and opens it directly, not through this gate.
     AUTH_SQLITE_DB,
     *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
+    # Named memory stores. Each subdirectory is ONE crew's private memory silo --
+    # its markdown tree, its FTS index and its vector-store SQLite file -- and the
+    # whole point of a named store is that a crew reaches only its own. Agent file
+    # tools run as the same UID as every store on disk, so owner-only modes decide
+    # nothing here: without this entry any crew's agent could read another crew's
+    # preferences and lessons straight off disk, or rewrite them, which is the
+    # boundary the split exists to draw. Read AND write, because reading another
+    # crew's memory is the primary harm and writing it is steering that crew's
+    # future turns.
+    #
+    # A DIRECTORY entry, for the reason ``routing`` and ``webhooks`` above are:
+    # markdown files are published through ``atomic_write``'s ``mkstemp`` sibling,
+    # so fencing final names only would leave a writable path to the same bytes
+    # under a random temp name.
+    #
+    # DELIBERATE ASYMMETRY, do not "tidy" it: the DEFAULT store's own ``memory.db``
+    # and ``workspace/memory/`` stay readable, because that is the agent's own
+    # memory and reading it is the product working. Fencing them would be a
+    # default-path behaviour change, which the coexistence constraint forbids. So
+    # ``is_sensitive_path(<home>/memory.db)`` is False and
+    # ``is_sensitive_path(<home>/memory_stores/work/memory.db)`` is True, on
+    # purpose. Full reasoning: docs/system-specs/modules/security.md.
+    #
+    # Every legitimate reader opens a store path DIRECTLY rather than through this
+    # gate -- the established keystone-reader pattern -- so the memory subsystem is
+    # unaffected.
+    MEMORY_STORES_DIR_NAME,
 ]
 _SENSITIVE_HOME_DIRS += [
     f"{prefix}/{leaf}" for prefix in _CREW_HOME_PREFIXES for leaf in _CREW_SECRET_LEAVES
@@ -852,6 +942,30 @@ _WRITE_PROTECTED_HOME_PATHS += [
     # file-edit tool gate is the enforcement point; shell writes sit on the same
     # footing as config.json's.
     f"{prefix}/sessions"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The per-agent bookkeeping sidecar (agent_state.py, ``agent_model_state.json``
+    # directly under the crew home). It is the same input-to-an-authorization-decision
+    # class as rotation.yaml and the OMC index: besides model bookkeeping it records
+    # FORK LINEAGE — ``forked_from`` / ``private_to`` mark a template as ONE crew's
+    # private copy of a shared one (blueprint / copy-on-first-edit semantics). The
+    # fork endpoint reads this lineage to decide whether a template is already the
+    # crew's own copy; a prompt-injected agent that could write it would forge a
+    # ``private_to`` entry naming a SHARED template, so the fork returns
+    # ``already_private`` and the owner's next PATCH lands on the shared file instead
+    # of forking a copy — silently mutating a template other crews depend on. Nothing
+    # downstream neutralizes the forgery: the fork/PATCH path trusts the sidecar as
+    # its own record..
+    #
+    # WRITE-protected, NOT read+write sensitive: it holds no secret and is READ
+    # constantly (``list_agents`` enriches every row with fork info, model resolution
+    # reads ``model_managed`` / ``cc_model``), so classifying it sensitive would break
+    # those reads. Only the agent's own file-edit tool is refused; every internal
+    # writer (agent_state._write via ``atomic_write``) opens the path directly and does
+    # not route through this gate, so the dashboard fork/PATCH and the CLI model-state
+    # updates keep working.
+    f"{prefix}/agent_model_state.json"
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
@@ -1043,6 +1157,52 @@ def _oversize_refusal(length: int, limit: int) -> str:
 # The thread is NOT freed by the timeout (a started future cannot be cancelled);
 # that is why this has its own pool -- see ``executors.path_resolve_executor``.
 _PATH_RESOLVE_TIMEOUT_SECS = 2.0
+# The ANCHOR REBUILD's own budget. One pool job there performs ~130 `realpath`
+# calls to build ~200 targets, where a candidate resolution performs one or two,
+# so a single budget sized for the candidate leaves the rebuild running ~130x
+# closer to its ceiling -- measured: a cold rebuild is 130 `_realpath_or_none`
+# calls, a warm one 4. Sizing this to the work actually done is what stops an
+# ordinarily-slow rebuild from being mistaken for a wedged mount on a loaded host
+# (4 xdist workers plus real-time antivirus on a 4-vCPU Windows runner is where it
+# was first observed); raising `_PATH_RESOLVE_TIMEOUT_SECS` globally instead would
+# relax the latency guarantee on the candidate path, which does not need it.
+_PATH_RESOLVE_REBUILD_TIMEOUT_SECS = 8.0
+# Fail-closed tightening: successful waits and stalls under DISTINCT prefixes all
+# block the calling thread. Allow 12s total (one rebuild plus its maximum grace),
+# leaving 13s of the 25s watchdog for heartbeat age and other tool-call work.
+# Retain that spend until 25s after the LAST wait, not a fixed window boundary:
+# otherwise two adjacent windows can spend twice the cap inside one watchdog gap.
+# Background callers have their own allowance, never the event-loop thread's.
+_PATH_RESOLVE_WAIT_CAP_SECS = 12.0
+_PATH_RESOLVE_WAIT_WINDOW_SECS = 25.0
+# A wait below this floor is resolver-pool round-trip overhead, not filesystem
+# latency, so it is excluded from the cumulative spend above -- otherwise ordinary
+# bulk work (a project-tree listing, a knowledge-indexing pass, a directory-wide
+# path_contains_sensitive scan) accumulates thousands of sub-millisecond on-time
+# waits and exhausts the allowance with zero mount evidence, trading the rare
+# crash this bound removes for a reachable silent host-wide refusal instead.
+# Measured on a 32-core host: 3000 calls against a healthy path cost 1.151s of
+# accounted wait, 0.384ms/call -- 100ms is ~260x that overhead, so realistic pool
+# jitter stays free, and 20x under the 2.0s default candidate budget, so it stays
+# far below both a single missed-budget timeout and the slow-but-completing case
+# this bound must still catch: a run of waits that each finish just under budget
+# (13 at ~2s apiece is ~25s of loop block) all clear the floor and still count.
+_PATH_RESOLVE_WAIT_FLOOR_SECS = 0.1
+# How much longer a resolution that missed its budget is given to finish before the
+# prefix is charged with a stall. A miss is not itself proof of a wedged mount -- a
+# merely slow one completes -- and on any platform where the syscall probe below
+# cannot discriminate, this is what separates the two, empirically rather than by
+# syscall table. Paid at most once per prefix per cooldown, because the charge that
+# follows a grace miss refuses later paths under the prefix without probing.
+#
+# Expressed as a FRACTION of the caller's budget, not a constant: the grace is "half
+# again as long as this caller already agreed to wait", so a caller that deliberately
+# chooses a tight budget keeps a tight worst case (the whole point of taking a budget
+# per call) instead of inheriting a fixed multi-second tail. Capped so the generous
+# rebuild budget cannot compound into the loop-stall watchdog this bound protects:
+# 8s + 4s stays well inside 25s.
+_PATH_RESOLVE_GRACE_FACTOR = 1.5
+_PATH_RESOLVE_GRACE_MAX_SECS = 4.0
 _PATH_RESOLVE_COOLDOWN_SECS = 30.0
 _PATH_RESOLVE_COOLDOWN_MAX_SECS = 1800.0
 # The load arm declines to charge the prefix, so it carries the event-loop bound the cooldown
@@ -1064,6 +1224,8 @@ _FS_BLOCKING_SYSCALLS: frozenset[int] = _FS_BLOCKING_SYSCALLS_BY_ARCH.get(
 # consecutive stalls recorded under it -- drives the exponential backoff)
 _path_resolve_degraded: dict[str, tuple[float, int]] = {}
 _path_resolve_load_probes: dict[str, tuple[float, int]] = {}
+# calling thread id -> (quiet-window end, accumulated seconds in result waits)
+_path_resolve_thread_waits: dict[int, tuple[float, float]] = {}
 # futures that timed out and still hold an mc-pathres worker; pruned as they finish
 # (candidate spellings, root anchors and target rebuilds all land here)
 _path_resolve_wedged: list[Future[Any]] = []
@@ -1115,15 +1277,32 @@ def _stall_prefix(expanded: str) -> str:
 
     A wedged mount stalls everything beneath its mount point, and mount points
     sit at depth one or two (``/home/<user>`` autofs, ``/Volumes/<share>``,
-    ``/net/<host>``, ``C:\\Users``), so two components is the narrowest key
+    ``/net/<host>``, ``C:\\Users\\<user>``), so two components is the narrowest key
     that still covers the whole stalled subtree.  Scoping the cooldown here is
     what keeps a stall on the REMOTE half of an ``ssh`` command from switching
     resolution off for the local workspace where a bypass symlink would live.
+
+    **The DRIVE is split off first, and on Windows that is what makes the key two
+    components rather than one.**  A POSIX absolute path starts with an empty
+    component (``"/a/b"`` -> ``["", "a", "b"]``), which is why three are kept; a
+    Windows path does not (``"C:\\Users\\bob"`` -> ``["C:", "Users", "bob"]``), so
+    counting components without splitting the drive kept ``C:`` as one of the two
+    and collapsed every user path to ``C:\\Users``.  That single key contains
+    ``$HOME``, ``%TEMP%``, the workspace and the checkout, so one stall anywhere in
+    the profile refused path resolution for essentially the whole host -- the exact
+    opposite of the per-mount isolation this function exists to provide.
+
+    A UNC share root is returned whole: ``\\\\server\\share`` IS the mount point,
+    and ``splitdrive`` already reports it as the drive, so no component of the
+    remainder belongs in the key.
     """
     normalized = os.path.normpath(expanded)
-    parts = normalized.split(os.sep)
+    drive, rest = os.path.splitdrive(normalized)
+    if drive[:1] in ("\\", "/") and drive[1:2] in ("\\", "/"):
+        return drive
+    parts = rest.split(os.sep)
     keep = 3 if parts and parts[0] == "" else 2  # leading "" for an absolute path
-    return os.sep.join(parts[:keep]) or normalized
+    return (drive + os.sep.join(parts[:keep])) or normalized
 
 
 def _wedged_workers() -> int:
@@ -1237,13 +1416,15 @@ def _load_arm_budget_spent(prefix: str) -> bool:
 def _mark_stalled(prefix: str, budget: float) -> None:
     """Record an OBSERVED stall under *prefix*: back off exponentially on repeats.
 
-    Only a resolution that actually timed out is recorded.  A refusal issued
-    because every worker was already pinned costs nothing (nothing is
-    submitted) and must not charge the refused prefix -- often the local
-    workspace -- a backoff it never earned, or a transient dual-mount outage
-    would keep refusing healthy paths for the accrued window after the mounts
-    recover.  The log line deliberately omits the path: the token is
-    agent-supplied and is what the gates exist to keep out of clear-text logs.
+    Only a resolution that actually RAN and timed out is recorded.  A refusal
+    issued because every worker was already pinned (nothing is submitted), or
+    because a submitted resolution never left the queue (its future cancelled
+    on timeout), says nothing about the filesystem and must not charge the
+    refused prefix -- often the local workspace -- a backoff it never earned,
+    or a transient dual-mount outage would keep refusing healthy paths for the
+    accrued window after the mounts recover.  The log line deliberately omits
+    the path: the token is agent-supplied and is what the gates exist to keep
+    out of clear-text logs.
     """
     now = _path_resolve_clock()
     with _path_resolve_lock:
@@ -1290,7 +1471,7 @@ _ResolvedT = TypeVar("_ResolvedT")
 
 
 def _run_resolution_bounded(
-    expanded: str, worker: Callable[[str], _ResolvedT]
+    expanded: str, worker: Callable[[str], _ResolvedT], *, budget: float | None = None
 ) -> _ResolvedT | None:
     """Run *worker(expanded)* on the ``mc-pathres`` pool within the resolve budget.
 
@@ -1314,7 +1495,25 @@ def _run_resolution_bounded(
     prefix with a stall history is only re-probed while that leaves at least one
     worker free for everything else -- so a permanently dead mount is probed
     rarely and can never pin the whole pool.  Never blocks the caller for longer
-    than ``_PATH_RESOLVE_TIMEOUT_SECS``.
+    than *budget* plus its grace -- the bounded second wait a missed budget earns
+    before the prefix is charged, itself a capped fraction of *budget*. Both waits
+    also consume the calling thread's cumulative allowance -- excluding a wait
+    below the floor, resolver-pool round-trip overhead rather than filesystem
+    latency; exhaustion refuses without submitting work or charging a prefix until
+    the quiet window expires.
+    Charging the prefix on a timeout ALSO requires that both the budget and the
+    grace were granted in full, uncapped by the allowance: a wait clamped short by
+    the allowance says nothing about the mount, so it refuses this call alone,
+    the same conclusion the saturated-pool, never-ran and load arms reach.
+
+    A stall is charged only to a resolution that RAN.  A future that times out
+    still QUEUED (the pool saturated by concurrent callers, e.g. simultaneous
+    cron fires) is cancelled and refuses this call alone: queue wait is
+    evidence about load, not about the mount, so it opens no cooldown and pins
+    no worker in :func:`_wedged_workers`.  A future claimed by a freeing worker
+    in the very instant the deadline fires is abandoned by handshake -- the
+    worker returns without entering the resolution -- so the never-ran
+    classification is binding, not a race.
 
     The UNC shortcut is NOT here: skipping a ``\\\\server\\share`` token is a
     stance about agent-supplied CANDIDATES (:func:`_resolved_forms_bounded`),
@@ -1322,8 +1521,16 @@ def _run_resolution_bounded(
     fence itself, and a UNC home with a junction inside ``KIROCREW_HOME`` must
     still be canonicalised or a canonical-spelling request would miss the
     governance file (found in review); the bound makes that probe safe.
+
+    *budget* sizes the wait to the work the caller submits: the anchor REBUILD is
+    one job performing ~130 ``realpath`` calls and passes
+    ``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS``, while a candidate resolution keeps the
+    default. One budget for both put the rebuild ~130x closer to its ceiling than
+    the path whose latency the default exists to guarantee.
     """
-    budget = _PATH_RESOLVE_TIMEOUT_SECS
+    if budget is None:
+        budget = _PATH_RESOLVE_TIMEOUT_SECS
+    requested_budget = budget
     now = _path_resolve_clock()
     prefix = _stall_prefix(expanded)
     with _path_resolve_lock:
@@ -1345,26 +1552,90 @@ def _run_resolution_bounded(
             _MAX_PATH_RESOLVE_WORKERS,
         )
         raise PathResolutionStalled(expanded, prefix)
+    caller_tid = threading.get_ident()
+    with _path_resolve_lock:
+        if len(_path_resolve_thread_waits) > 64:
+            # Clearing live entries would let thread churn refund the loop's spend.
+            expired = [tid for tid, (end, _) in _path_resolve_thread_waits.items() if now >= end]
+            for expired_tid in expired:
+                del _path_resolve_thread_waits[expired_tid]
+        window_end, seconds_spent = _path_resolve_thread_waits.get(caller_tid, (0.0, 0.0))
+        if now >= window_end:
+            seconds_spent = 0.0
+    remaining = _PATH_RESOLVE_WAIT_CAP_SECS - seconds_spent
+    if remaining <= 0:
+        # No work ran, so this refusal says nothing about the prefix's mount.
+        logger.debug(
+            "sensitive-path symlink resolution refused without probing: calling thread's "
+            "cumulative wait allowance exhausted; prefix not charged"
+        )
+        raise PathResolutionStalled(expanded, prefix)
+    granted_budget = min(budget, remaining)
     try:
         started = threading.Event()
+        abandoned = threading.Event()
+        handoff = threading.Lock()
         worker_tid: list[int] = []
 
         @functools.wraps(worker)
-        def _tracked(arg: str) -> _ResolvedT:
+        def _tracked(arg: str) -> _ResolvedT | None:
             worker_tid.append(threading.get_native_id())
-            started.set()
+            with handoff:
+                if abandoned.is_set():
+                    # The caller classified this future as never-run at its
+                    # deadline: return without touching the filesystem, so a
+                    # late claim can neither probe a wedged mount nor pin a
+                    # worker _wedged_workers() is not tracking.
+                    return None
+                started.set()
             return worker(arg)
 
         future = path_resolve_executor().submit(_tracked, expanded)
     except RuntimeError:
         # Pool already shut down (interpreter exit).  Lexical forms only.
         return None
+
+    def _wait_for_result(timeout: float) -> _ResolvedT | None:
+        nonlocal seconds_spent
+        wait_start = _path_resolve_clock()
+        try:
+            return future.result(timeout=timeout)
+        finally:
+            wait_end = _path_resolve_clock()
+            elapsed = max(0.0, wait_end - wait_start)
+            if elapsed >= _PATH_RESOLVE_WAIT_FLOOR_SECS:
+                seconds_spent += elapsed
+                with _path_resolve_lock:
+                    _path_resolve_thread_waits[caller_tid] = (
+                        wait_end + _PATH_RESOLVE_WAIT_WINDOW_SECS,
+                        seconds_spent,
+                    )
+
     try:
-        value = future.result(timeout=budget)
+        value = _wait_for_result(granted_budget)
     except FutureTimeoutError:
-        if not started.is_set() and future.cancel():
-            # Only a future proven dead by cancel() may go untracked: one that refuses
-            # cancellation is running, and would pin a worker _wedged_workers() cannot see.
+        if future.cancel():
+            # Never claimed by a worker: the pool was saturated and the
+            # resolution never started -- evidence about load, not the mount.
+            logger.debug(
+                "sensitive-path symlink resolution refused: the resolver pool was "
+                "saturated and the resolution never started; prefix not charged"
+            )
+            raise PathResolutionStalled(expanded, prefix) from None
+        with handoff:
+            ran = started.is_set()
+            if not ran:
+                abandoned.set()
+        if not ran:
+            # Claimed by a freeing worker in the instant the deadline fired,
+            # before entering the resolution.  The handshake makes the
+            # classification binding: the worker sees ``abandoned`` and returns
+            # without probing, so it pins nothing and there is nothing to
+            # charge -- the same conclusion as the queued arm above.
+            logger.debug(
+                "sensitive-path symlink resolution refused: the resolver pool was "
+                "saturated and the resolution never started; prefix not charged"
+            )
             raise PathResolutionStalled(expanded, prefix) from None
         with _path_resolve_lock:
             _path_resolve_wedged.append(future)
@@ -1380,11 +1651,73 @@ def _run_resolution_bounded(
             # so ordinary contention refuses THIS resolution instead of opening a
             # cooldown across every path under the prefix.
             raise PathResolutionStalled(expanded, prefix) from None
+        # A missed budget is not yet proof of a wedged mount, and charging the prefix
+        # is the expensive conclusion: it refuses EVERY path under that prefix for the
+        # cooldown, so one transient miss becomes a cascade of refusals across
+        # unrelated paths. Give the resolution a bounded GRACE to finish first. This is
+        # the only discriminator available wherever the syscall probe above cannot
+        # answer -- an architecture absent from `_FS_BLOCKING_SYSCALLS_BY_ARCH`, which
+        # is every Windows host (`platform.machine()` is "AMD64") and Apple silicon --
+        # because there it returns True for a merely slow resolution as readily as for
+        # a dead mount, and the prefix was charged either way.
+        #
+        # Costs nothing on a genuinely wedged mount beyond delaying the cooldown by
+        # the grace, and is paid at most ONCE per prefix per cooldown: the charge
+        # below refuses later paths under the prefix without probing at all. The
+        # future stays tracked as wedged while this waits, so a second token cannot
+        # pin the last worker meanwhile, and it self-prunes from that list if it does
+        # complete (`_wedged_workers` drops finished futures).
+        entitled_grace = min(
+            requested_budget * _PATH_RESOLVE_GRACE_FACTOR, _PATH_RESOLVE_GRACE_MAX_SECS
+        )
+        granted_grace = min(entitled_grace, _PATH_RESOLVE_WAIT_CAP_SECS - seconds_spent)
+        # A one-element list, not an Optional: the sentinel has to distinguish "the
+        # future completed" from "it completed as None", and the worker's own return
+        # is Optional since the never-ran handshake above makes it return None.  That
+        # arm raises before reaching here, so a None here can only come from the
+        # worker itself and is passed through exactly like the on-time path does.
+        late: list[_ResolvedT | None] = []
+        try:
+            if granted_grace > 0:
+                late.append(_wait_for_result(granted_grace))
+        except FutureTimeoutError:
+            pass
+        except Exception:
+            logger.debug("sensitive-path symlink resolution failed", exc_info=True)
+            return None
+        if late:
+            logger.debug(
+                "sensitive-path resolution completed within %.1fs past its %.1fs "
+                "budget, so the prefix is NOT charged (tid=%s)",
+                granted_grace,
+                requested_budget,
+                tid,
+            )
+            if history is not None:
+                with _path_resolve_lock:
+                    _path_resolve_degraded.pop(prefix, None)
+            return late[0]
+        if granted_budget < requested_budget or granted_grace < entitled_grace:
+            # The wait ended early because the calling thread's cumulative allowance
+            # ran out, not because the resolution itself proved anything about the
+            # mount -- the same conclusion the saturated-pool, never-ran and load
+            # arms above reach by a different route. Charging here would let the
+            # allowance clamp reopen exactly the blast radius this bound removes:
+            # on a host where the syscall probe cannot discriminate (every Windows
+            # host, and Apple silicon), the grace is the ONLY signal, and a
+            # truncated grace answers nothing either way. Refuse this call alone.
+            logger.debug(
+                "sensitive-path resolution timed out with its budget or grace clamped "
+                "by the calling thread's cumulative wait allowance; prefix not "
+                "charged (tid=%s)",
+                tid,
+            )
+            raise PathResolutionStalled(expanded, prefix) from None
         logger.debug(
             "sensitive-path resolution timed out blocked in the filesystem (tid=%s)",
             tid,
         )
-        _mark_stalled(prefix, budget)
+        _mark_stalled(prefix, requested_budget)
         raise PathResolutionStalled(expanded, prefix) from None
     except Exception:
         # The worker's own exceptions are already swallowed inside the worker;
@@ -1425,7 +1758,9 @@ def _realpath_or_none(path: str) -> str | None:
         return None
 
 
-def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
+def _candidate_forms(
+    path_str: str, base_dir: str | None = None, *, pre_resolved: bool = False
+) -> set[str]:
     """Expand *path_str* into every candidate form the sensitive-path gates match.
 
     Symlink-resolved forms defeat a link bypass; the lexical forms are the
@@ -1435,6 +1770,13 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     :func:`_path_in_home_dirs` (is the path INSIDE a protected location?) and
     :func:`path_contains_sensitive` (does the path CONTAIN one?) so the
     symlink/anchoring hardening cannot drift between the two directions.
+
+    *pre_resolved* says the caller ALREADY holds the canonical spelling -- the
+    output of ``os.path.realpath`` computed on its own thread -- so no
+    resolution is submitted to the ``mc-pathres`` pool: the candidates are the
+    input and its ``normpath``, which is exactly what :func:`_resolved_spellings`
+    returns for a path that has no link left to follow. Reserved for
+    :func:`is_sensitive_resolved_path`; see there for why a caller may claim it.
     """
     # Expand ~ and $HOME
     expanded = os.path.expanduser(os.path.expandvars(path_str))
@@ -1455,7 +1797,7 @@ def _candidate_forms(path_str: str, base_dir: str | None = None) -> set[str]:
     # A resolution that does not COMPLETE raises PathResolutionStalled through
     # here, and every gate turns that into a refusal: no lexical-only matching
     # of a path whose canonical form is unknown.
-    candidates: set[str] = _resolved_forms_bounded(expanded)
+    candidates: set[str] = set() if pre_resolved else _resolved_forms_bounded(expanded)
     candidates.add(os.path.normpath(expanded))
     candidates.add(expanded)
     return candidates
@@ -1615,15 +1957,14 @@ def _home_dir_targets_uncached(
     # membership in *home_dirs* for the same reason as the agents dir above: a
     # write-tier build must not gain a read-tier target.
     _adapter_roots = dict(resolved.adapter_roots)
-    for _leaf, _root_envs in _OVERRIDE_ANCHORED_LEAVES:
+    for _leaf, _root_envs, _under_root in _OVERRIDE_ANCHORED_LEAVES:
         if _leaf not in home_dirs:
             continue
-        _basename = _leaf_basename(_leaf)
         for _env in _root_envs:
             _root = _adapter_roots.get(_env)
             if not _root:
                 continue
-            _full = os.path.join(_root, _basename)
+            _full = os.path.join(_root, *_leaf_segments(_under_root))
             sensitive_targets.add(_full.casefold())
             _full_real = _realpath_or_none(_full)
             if _full_real is not None:
@@ -1719,15 +2060,16 @@ class _ResolvedRoots(NamedTuple):
     # under this root. No host SSO cache contents are copied in; that staging was
     # removed. It is therefore anchored by re-anchoring EVERY ``home_dirs`` entry
     # in ``_home_dir_targets_uncached``, rather than through
-    # ``_OVERRIDE_ANCHORED_LEAVES``, which maps one leaf to the roots its parent
-    # can move to. Without it the relocated tree sits at a path no matcher
+    # ``_OVERRIDE_ANCHORED_LEAVES``, which maps one leaf to the roots that move
+    # it. Without it the relocated tree sits at a path no matcher
     # covers, so an agent inside a pod could read the operator's identity token
     # at the pod-path spelling while the identical bytes at ``~/.aws`` are
     # refused.
     os_home: str | None
 
 
-#: Sensitive leaf -> the ``$HOME``-override VARIABLES its parent can be moved by.
+#: Sensitive leaf -> the ``$HOME``-override VARIABLES that move it, and the
+#: spelling it takes under each of them.
 #:
 #: PROJECTED from the harness declarations, not enumerated: the pairing has to
 #: name the same leaf the list above fences and the same variable the resolver
@@ -1737,7 +2079,7 @@ class _ResolvedRoots(NamedTuple):
 #:
 #: Read once at import, like the leaf list itself: the declarations are static
 #: data, and re-projecting per gate call would put a table walk on the hot path.
-_OVERRIDE_ANCHORED_LEAVES: tuple[tuple[str, tuple[str, ...]], ...] = (
+_OVERRIDE_ANCHORED_LEAVES: tuple[tuple[str, tuple[str, ...], str], ...] = (
     host_auth.override_anchored_leaves()
 )
 
@@ -1898,11 +2240,23 @@ def _resolved_root_key() -> _ResolvedRoots:
     return roots
 
 
-def _home_dir_targets(home_dirs: list[str]) -> set[str]:
+def _home_dir_targets(home_dirs: list[str], *, inline: bool = False) -> set[str]:
     """TTL-cached :func:`_home_dir_targets_uncached`.
 
     Keyed on the *home_dirs* list plus the RESOLVED home and crew-home roots
     (see the note above the constant for why the raw env vars are not enough).
+
+    *inline* resolves the anchors and rebuilds the set on the CALLING thread
+    instead of through the bounded ``mc-pathres`` hop -- the same stance
+    :func:`sandbox_credential_targets` takes, and for the same reason: the
+    bound exists to keep the EVENT LOOP responsive, and a caller that is
+    already on a worker thread gains nothing from it while its submissions
+    queue ahead of the loop's own. Reserved for :func:`is_sensitive_resolved_path`,
+    whose contract is exactly such a caller. The freshness invariant is kept:
+    the roots are still resolved on every call and key the cache, so a repointed
+    root still invalidates; what changes is only WHERE the ``realpath`` runs. A
+    wedged mount blocks the calling thread here rather than raising a stall --
+    which is what the same thread's own ``os.walk`` on that mount does anyway.
 
     ponytail: the returned set is the cached instance, not a copy — both
     callers only iterate it. A future caller that MUTATES the result would
@@ -1913,13 +2267,16 @@ def _home_dir_targets(home_dirs: list[str]) -> set[str]:
     # reads file one root's targets under the other root's key — a fail-OPEN
     # TOCTOU, pinned by the regression test
     # test_roots_are_resolved_once_for_key_and_build.
-    roots = _resolved_root_key()
+    roots = _resolve_root_anchors(str(Path.home())) if inline else _resolved_root_key()
     key = (tuple(home_dirs),) + roots
     now = time.monotonic()
     cached = _home_targets_cache.get(key)
     if cached is not None and now < cached[0]:
         return cached[1]
-    targets = _rebuild_targets_bounded(home_dirs, roots)
+    if inline:
+        targets = _home_dir_targets_uncached(home_dirs, roots)
+    else:
+        targets = _rebuild_targets_bounded(home_dirs, roots)
     # Bound the dict: the key space is tiny (two constant home_dirs lists ×
     # roots), but a test or embedder that churns KIROCREW_HOME must not grow it
     # without limit.
@@ -1949,6 +2306,11 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     stall bookkeeping is charged to ``roots.home``'s prefix, the mount every
     anchor ordinarily lives under and the one the crash dumps named.
 
+    It carries its OWN budget (``_PATH_RESOLVE_REBUILD_TIMEOUT_SECS``) because that
+    single job does ~130 ``realpath`` calls where a candidate resolution does one or
+    two: sharing the candidate's budget sized the wait to the wrong work and let an
+    ordinarily-slow rebuild on a loaded host read as a stalled mount.
+
     A rebuild that does not complete canonically within the budget RAISES, and
     every gate turns that into a refusal -- the same invariant as
     :func:`_resolved_root_key` (see the comment there for the three weaker
@@ -1961,7 +2323,9 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     """
     try:
         targets = _run_resolution_bounded(
-            roots.home, lambda _home: _home_dir_targets_uncached(home_dirs, roots)
+            roots.home,
+            lambda _home: _home_dir_targets_uncached(home_dirs, roots),
+            budget=_PATH_RESOLVE_REBUILD_TIMEOUT_SECS,
         )
     except PathResolutionStalled:
         targets = None
@@ -1970,7 +2334,14 @@ def _rebuild_targets_bounded(home_dirs: list[str], roots: _ResolvedRoots) -> set
     return targets
 
 
-def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None = None) -> bool:
+def _path_in_home_dirs(
+    path_str: str,
+    home_dirs: list[str],
+    base_dir: str | None = None,
+    *,
+    strict: bool = False,
+    pre_resolved: bool = False,
+) -> bool:
     """Return True if *path_str* resolves under any of *home_dirs* (``$HOME``-relative).
 
     Shared matching core for :func:`is_sensitive_path` (read+write gate,
@@ -1999,19 +2370,27 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     ``sub/cfg.ini`` resolves against the real directory rather than whatever CWD
     the gateway process happens to have.  Absolute inputs are unaffected;
     ``base_dir=None`` preserves the historical CWD-relative behavior.
+    ``pre_resolved`` is :func:`_candidate_forms`'s flag of the same name, and
+    such a caller is by contract on its own worker thread, so the anchors are
+    resolved inline as well (``_home_dir_targets(inline=True)``): the whole
+    check then performs no ``mc-pathres`` submission.
     """
     if not path_str:
         return False
 
     try:
-        candidates = _candidate_forms(path_str, base_dir)
+        candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
         # The anchors are bounded the same way (see _rebuild_targets_bounded):
         # a stall with no prior canonical resolution to serve refuses too.
-        sensitive_targets = _home_dir_targets(home_dirs)
+        sensitive_targets = _home_dir_targets(home_dirs, inline=pre_resolved)
     except PathResolutionStalled:
         # Canonical form unavailable (wedged mount under the path): refuse.  A
         # lexical-only match here would pass a workspace symlink into a
-        # credential store for the length of the stall.
+        # credential store for the length of the stall.  A *strict* caller
+        # (``sensitive_path_refusal``) wants to REPORT that as what it is rather
+        # than as a match, so it gets the exception; the refusal is the same.
+        if strict:
+            raise
         return True
 
     # Case-fold both sides for the membership test.  On a case-insensitive
@@ -2030,7 +2409,13 @@ def _path_in_home_dirs(path_str: str, home_dirs: list[str], base_dir: str | None
     return False
 
 
-def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) -> bool:
+def _is_keystone_publish_artifact(
+    path_str: str,
+    base_dir: str | None = None,
+    *,
+    strict: bool = False,
+    pre_resolved: bool = False,
+) -> bool:
     """Return True if *path_str* is the atomic-write temp or lock beside a keystone leaf.
 
     Closes the gap between a keystone leaf's FINAL name, which
@@ -2054,9 +2439,11 @@ def _is_keystone_publish_artifact(path_str: str, base_dir: str | None = None) ->
     if not path_str:
         return False
     try:
-        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS)
-        candidates = _candidate_forms(path_str, base_dir)
+        artifact_parents = _home_dir_targets(_KEYSTONE_ARTIFACT_PARENTS, inline=pre_resolved)
+        candidates = _candidate_forms(path_str, base_dir, pre_resolved=pre_resolved)
     except PathResolutionStalled:
+        if strict:
+            raise
         return True  # fail closed: see _path_in_home_dirs
     for cand in candidates:
         cand_cf = cand.casefold()
@@ -2096,10 +2483,107 @@ def is_sensitive_path(path_str: str, base_dir: str | None = None) -> bool:
     the leaf holds the leaf's full payload, so READ is blocked alongside write -- a
     write-only fence there would still disclose ``.env`` or ``token_signing.key`` to a
     reader that wins the race.
+
+    The decision is :func:`sensitive_path_refusal`'s -- this is its boolean
+    spelling, so the two cannot diverge. A stall is refused there (a string) and is
+    therefore ``True`` here: the callers that only hold this boolean keep refusing
+    fail-closed; what they lose is the distinct WORDING, which is the gate
+    consumers' business.
+    """
+    return sensitive_path_refusal(path_str, base_dir) is not None
+
+
+def is_sensitive_resolved_path(resolved: str) -> bool:
+    """:func:`is_sensitive_path` for a path the caller has ALREADY canonicalised.
+
+    Same decision and same targets, with NO ``mc-pathres`` submission on either
+    half: the candidate is matched lexically, and the anchors (``$HOME``, the
+    override roots, the keystone leaves) are resolved inline on the calling
+    thread (:func:`_home_dir_targets` with ``inline=True``), fresh on every call
+    and keying the same TTL cache the bounded path uses. *resolved* MUST be the
+    output of ``os.path.realpath`` (or ``Path.resolve``) that the caller computed
+    on its OWN worker thread: the only thing the bounded resolution would add for
+    such an input is the same string back, since a canonical path has no link
+    left to follow. Handing this an unresolved spelling is a link bypass, and
+    calling it from the event loop forfeits the bound the pool exists to give
+    that loop -- so it is for exactly one shape of caller: a bulk WALK on a
+    worker thread that already resolves every entry to detect symlink loops and
+    prove containment, and only then asks whether the entry is fenced.
+
+    Why a separate entry point rather than "just call the pool anyway": the pool
+    is sized for the event loop (two workers, so a wedged mount can pin at most
+    two threads), and it is FIFO. A walk over a thousand skill directories, each
+    submitting a resolution the walk had already performed plus an anchor
+    resolution per call, fills that queue from worker threads while the loop's
+    own latency-critical resolutions wait behind it -- not for a slow disk, for
+    the queue -- and the accumulated waits cross the loop-stall watchdog. The
+    scanner's realpath is unbounded either way (it runs off the loop, and
+    ``os.walk`` on the same mount is unbounded too), so the pool bought that
+    caller nothing and cost the loop its budget.
+
+    A wedged mount therefore does not surface here as a refusal: it blocks the
+    calling thread inside ``realpath``, exactly as that thread's own walk of the
+    same mount would. Nothing is admitted while it blocks.
     """
     return _path_in_home_dirs(
-        path_str, _SENSITIVE_HOME_DIRS, base_dir
-    ) or _is_keystone_publish_artifact(path_str, base_dir)
+        resolved, _SENSITIVE_HOME_DIRS, pre_resolved=True
+    ) or _is_keystone_publish_artifact(resolved, pre_resolved=True)
+
+
+#: The fixed opening of an unverifiable-path refusal. Consumers tell a stall from a
+#: match with :func:`is_unverifiable_path_refusal`, a prefix test, and never by
+#: searching the text: both refusals embed the caller-chosen path, and a prefix is
+#: the one place that path cannot reach -- a substring test would let a path
+#: spelled to contain the phrase pass itself off as a stall.
+UNVERIFIABLE_PATH_PREFIX = (
+    "Blocked: the path could not be verified against the sensitive-path list within "
+    "the resolver budget"
+)
+
+
+def is_unverifiable_path_refusal(reason: str) -> bool:
+    """True when *reason* is the stall refusal :func:`sensitive_path_refusal` produces.
+
+    Structural, by the fixed prefix that precedes any caller-influenced text. The
+    match refusal opens ``Blocked: access to sensitive path:`` instead, so no path
+    spelling can move one refusal into the other's class.
+    """
+    return reason.startswith(UNVERIFIABLE_PATH_PREFIX)
+
+
+def sensitive_path_refusal(path_str: str, base_dir: str | None = None) -> str | None:
+    """The path tier of the tool gate: the refusal for *path_str*, or ``None``.
+
+    Reason-or-``None`` like the other tiers (``is_sensitive_bash_command``,
+    ``audit_bash_exfiltration``, ``is_denied``), so ``hooks.on_tool_call`` applies
+    it the same way.
+
+    The ONE decision: :func:`is_sensitive_path` is ``refusal is not None``. A path
+    whose canonical form (or whose anchors) could not be established within the
+    resolve budget is refused exactly as a match is, fail-closed, and this function
+    is never a way to let one through -- but the two refusals get different WORDS.
+    A match is ``Blocked: access to sensitive path: <path>``. A stall opens with
+    :data:`UNVERIFIABLE_PATH_PREFIX`, says the path is NOT a match, and quotes the
+    path LAST: a stall reported as a match leads the agent reading it to conclude,
+    reasonably and wrongly, that an ordinary project file holds a credential, that
+    the session has been locked down, or that a different spelling might pass, and
+    each of those costs a wasted round where "could not verify within budget, retry
+    shortly" costs one wait.
+    """
+    try:
+        matched = _path_in_home_dirs(
+            path_str, _SENSITIVE_HOME_DIRS, base_dir, strict=True
+        ) or _is_keystone_publish_artifact(path_str, base_dir, strict=True)
+    except PathResolutionStalled:
+        return (
+            f"{UNVERIFIABLE_PATH_PREFIX} (symlink resolution did not complete in time), "
+            "so it is refused fail-closed. This is NOT a match: the path is not known to "
+            "be sensitive. Retry the same call after a short wait; do not re-spell it. "
+            f"Path: {path_str!r}"
+        )
+    if matched:
+        return f"Blocked: access to sensitive path: {path_str}"
+    return None
 
 
 def path_contains_sensitive(dir_str: str, base_dir: str | None = None) -> bool:
@@ -2257,14 +2741,13 @@ def sandbox_credential_targets(exclude_leaves: tuple[str, ...] = ()) -> tuple[st
                     break
     # An adapter's credential store follows that adapter's own home override.
     adapter_roots = dict(resolved.adapter_roots)
-    for leaf, root_envs in _OVERRIDE_ANCHORED_LEAVES:
+    for leaf, root_envs, under_root in _OVERRIDE_ANCHORED_LEAVES:
         if leaf in excluded or leaf not in _SENSITIVE_HOME_DIRS:
             continue
-        basename = _leaf_basename(leaf)
         for env in root_envs:
             root = adapter_roots.get(env)
             if root:
-                targets.add(os.path.join(root, basename))
+                targets.add(os.path.join(root, *_leaf_segments(under_root)))
     return tuple(sorted(targets))
 
 

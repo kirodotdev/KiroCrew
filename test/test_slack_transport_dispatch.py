@@ -18,11 +18,13 @@ import asyncio
 import importlib
 import sys
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 from kiro_crew.acp.types import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
     EVENT_TEXT_CHUNK,
+    STOP_REASON_CANCELLED,
     STOP_REASON_END_TURN,
 )
 from kiro_crew.messaging.link import canonical_key
@@ -70,7 +72,11 @@ class _CapturingSessions(FakeSessions):
 def _run_transport(monkeypatch, thread_agent=None, agent_override=None):
     # Empty configured default -> exercises the canonical-agent fallback.
     monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "")
-    monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+    monkeypatch.setattr(
+        transport_dispatch,
+        "_hydrate_thread_overrides",
+        AsyncMock(return_value=None),
+    )
     monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
 
     thread_map: dict = {}
@@ -131,7 +137,7 @@ class TestTransportAgentResolution:
         assert sessions.agents == ["kirocrew-research"]
 
     def test_channels_deny_drops_transport_message_before_session(self, monkeypatch, tmp_path):
-        # HIGH (GPT round-8): a channels policy that denies slack must stop
+        # A channels policy that denies slack must stop
         # handle_message_transport BEFORE it acquires a session — removing the gate
         # would let a denied transport message start a turn. Regression-locks the
         # transport call site (distinct from the native handle_message gate).
@@ -160,6 +166,46 @@ class TestTransportAgentResolution:
             ), "denied slack transport message must not acquire a session"
         finally:
             gp.reset_store()
+
+
+class TestTransportAdmissionSpool:
+    def test_session_closing_spools_the_unopened_slack_turn(self, monkeypatch):
+        from kiro_crew.session_allocation import SessionClosingError
+
+        async def reject_turn(*_args, **_kwargs):
+            raise SessionClosingError("automatic update owns admission")
+
+        spool = AsyncMock()
+        monkeypatch.setattr(_CapturingSessions, "get_or_create", reject_turn)
+        monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
+        monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: False)
+
+        sessions = _run_transport(monkeypatch)
+
+        spool.assert_awaited_once()
+        assert spool.await_args.kwargs["channel_type"] == "slack"
+        route = spool.await_args.kwargs["route"]
+        assert route.conversation_id == "C1"
+        assert route.text == "hello"
+        assert route.user_id == "U_OWNER"
+        assert route.thread_id == _MSG_TS
+        assert route.message_id == _MSG_TS
+        assert sessions.agents == []
+
+    def test_session_closing_does_not_spool_restricted_slack_turn(self, monkeypatch):
+        from kiro_crew.session_allocation import SessionClosingError
+
+        async def reject_turn(*_args, **_kwargs):
+            raise SessionClosingError("automatic update owns admission")
+
+        spool = AsyncMock()
+        monkeypatch.setattr(_CapturingSessions, "get_or_create", reject_turn)
+        monkeypatch.setattr(transport_dispatch, "spool_refused_turn", spool)
+        monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: True)
+
+        _run_transport(monkeypatch)
+
+        spool.assert_not_awaited()
 
 
 class TestTransportBookkeepingIsolation:
@@ -191,7 +237,11 @@ class TestTransportBookkeepingIsolation:
 
         monkeypatch.setattr(transport_dispatch, "sel", _sel_factory)
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -264,7 +314,11 @@ def _run_transport_text(
     through to the normal LLM turn.
     """
     monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-    monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+    monkeypatch.setattr(
+        transport_dispatch,
+        "_hydrate_thread_overrides",
+        AsyncMock(return_value=None),
+    )
     monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
     monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -298,6 +352,25 @@ def _run_transport_text(
 
 def _posts(slack):
     return [kw["text"] for (m, kw) in slack.transcript if m == "post_message"]
+
+
+def test_member_memory_refusal_redacts_before_posting(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    private_path = "/home/alice/.kiro/crew/memory_stores/member-one/memory.db"
+    credential = "AKIAIOSFODNN7EXAMPLE"
+    failure = UnknownMemoryStore(f"memory_unavailable: cannot open {private_path}; {credential}")
+    monkeypatch.setattr(
+        transport_dispatch, "session_store_for_turn", AsyncMock(side_effect=failure)
+    )
+    slack, sessions = _run_transport_text(monkeypatch, "hello there")
+    posted = "\n".join(_posts(slack))
+    assert "memory_unavailable:" in posted
+    assert private_path not in posted and "alice" not in posted
+    assert credential not in posted
+    assert sessions.agents == []
 
 
 class TestTransportKeywordCommands:
@@ -412,7 +485,11 @@ class TestTransportPrivacyModifiers:
                 return text, {}
 
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -456,7 +533,11 @@ class TestTransportReactionsEnabled:
 
     def _run(self, monkeypatch, reactions_enabled):
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
         slack = RecordingSlackClient()
@@ -525,7 +606,11 @@ class _CapturingCtxBuilder:
 class TestTransportNativeParity:
     def _prep(self, monkeypatch):
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -606,6 +691,130 @@ class TestTransportNativeParity:
         assert cb.captured.get("user_display_name") == "Alice"
 
 
+def _arm_reinjection(sessions) -> dict:
+    """Give the session stand-in the real manager's one-shot flag surface."""
+    ledger: dict = {"consumed": [], "marks": 0, "armed": True}
+
+    def _consume(key):
+        ledger["consumed"].append(key)
+        was = ledger["armed"]
+        ledger["armed"] = False
+        return was
+
+    def _mark(key):
+        ledger["marks"] += 1
+        ledger["armed"] = True
+
+    sessions.consume_needs_reinjection = _consume
+    sessions.mark_needs_reinjection = _mark
+    return ledger
+
+
+class TestTransportCompactionReinjection:
+    """The transport turn loop is its own copy, so it must consume the flag itself.
+
+    ``session_compaction`` marks ``needs_reinjection`` after an in-place compaction
+    dropped the session-start context. A turn loop that does not read it runs
+    every turn after ``/compact`` without the skills index or the response-preferences
+    block.
+    """
+
+    def _prep(self, monkeypatch):
+        monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
+        monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
+        monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
+
+    def _run(self, sessions, cb):
+        asyncio.run(
+            transport_dispatch.handle_message_transport(
+                slack=RecordingSlackClient(),
+                sessions=sessions,
+                channel="C1",
+                text="hi",
+                thread_ts=None,
+                msg_ts=_MSG_TS,
+                user_id="U_OWNER",
+                context_builder=cb,
+                conversation_log=None,
+            )
+        )
+
+    def _provider(self):
+        return ScriptedProvider(
+            [
+                make_event(EVENT_TEXT_CHUNK, text="hi"),
+                make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_END_TURN),
+            ]
+        )
+
+    def test_a_compacted_session_forwards_the_flag_to_build_message(self, monkeypatch):
+        self._prep(monkeypatch)
+        cb = _CapturingCtxBuilder()
+        sessions = _CapturingSessions(self._provider())
+        ledger = _arm_reinjection(sessions)
+        self._run(sessions, cb)
+        assert ledger["consumed"] == [canonical_key(_MSG_TS)]
+        assert cb.captured.get("needs_reinjection") is True
+        # Landed: consumed exactly once, and NOT put back.
+        assert ledger["marks"] == 0 and ledger["armed"] is False
+
+    def test_a_session_stand_in_without_the_flag_gets_the_false_default(self, monkeypatch):
+        self._prep(monkeypatch)
+        cb = _CapturingCtxBuilder()
+        sessions = _CapturingSessions(self._provider())
+        assert not hasattr(sessions, "consume_needs_reinjection")
+        self._run(sessions, cb)
+        assert cb.captured.get("needs_reinjection") is False
+
+    def test_a_cancelled_consuming_turn_puts_the_flag_back(self, monkeypatch):
+        # A /stop completes the turn normally with stop_reason "cancelled", and
+        # the backend drops that turn from its transcript -- the re-injected
+        # context goes with it, so the flag must come back like a raised turn.
+        self._prep(monkeypatch)
+        cb = _CapturingCtxBuilder()
+        sessions = _CapturingSessions(
+            ScriptedProvider([make_event(EVENT_COMPLETE, stop_reason=STOP_REASON_CANCELLED)])
+        )
+        ledger = _arm_reinjection(sessions)
+        self._run(sessions, cb)
+        assert cb.captured.get("needs_reinjection") is True
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+    def test_a_failed_consuming_turn_puts_the_flag_back(self, monkeypatch):
+        # The flag is cleared BEFORE build_message; a driver fault on that very
+        # turn discards the prompt carrying the re-injected context. Without the
+        # re-arm the session runs without it until the NEXT compaction -- the
+        # contract the dashboard runner keeps in its finally, applied here.
+        self._prep(monkeypatch)
+
+        class _DyingDriver:
+            def __init__(self, *a, **k):
+                pass
+
+            async def run(self, message):
+                raise RuntimeError("backend died before streaming")
+
+        monkeypatch.setattr(transport_dispatch, "TurnDriver", _DyingDriver)
+        cb = _CapturingCtxBuilder()
+        sessions = _CapturingSessions(self._provider())
+        ledger = _arm_reinjection(sessions)
+        failures: list = []
+
+        async def _record_failure(key):
+            failures.append(key)
+
+        sessions.record_failure = _record_failure
+        self._run(sessions, cb)
+        assert cb.captured.get("needs_reinjection") is True
+        assert failures == [canonical_key(_MSG_TS)]
+        assert ledger["marks"] == 1 and ledger["armed"] is True
+
+
 class TestTransportTemporaryBlocksMemoryReads:
     """``!temporary`` must block memory READS on the DEFAULT transport path.
 
@@ -620,7 +829,11 @@ class TestTransportTemporaryBlocksMemoryReads:
 
     def _prep(self, monkeypatch):
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -724,7 +937,11 @@ class TestTransportToolGateWiring:
         from kiro_crew.hooks import HookResult, ToolHookResult
 
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -801,7 +1018,11 @@ class TestHydrationBeforeHook:
             _handler._thread_incognito[session_key] = None
 
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", _fake_hydrate)
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
 
         saved: list = []
 
@@ -862,7 +1083,11 @@ class TestConversationLogAgentMetadata:
         from kiro_crew.history import ConversationLog
 
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "sales-agent")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -906,7 +1131,11 @@ class TestConversationLogAgentMetadata:
         from kiro_crew.history import ConversationLog
 
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "sales-agent")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -963,7 +1192,11 @@ class TestConversationLogAgentMetadata:
         from kiro_crew.hooks import HookResult
 
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "sales-agent")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -1047,7 +1280,11 @@ class _TitleSessions(_CapturingSessions):
 def _run_transport_titling(monkeypatch, *, restricted=False, conversation_log=None):
     """Drive one successful transport turn and drain the fire-and-forget tasks."""
     monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-    monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+    monkeypatch.setattr(
+        transport_dispatch,
+        "_hydrate_thread_overrides",
+        AsyncMock(return_value=None),
+    )
     monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
     monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
     monkeypatch.setattr(transport_dispatch, "_is_slack_restricted", lambda _key: restricted)
@@ -1163,7 +1400,11 @@ class TestTransportAutoTitle:
                 calls["failure"] += 1
 
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "kirocrew")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -1198,7 +1439,7 @@ class TestTransportAutoTitle:
 
 
 class TestTransportTrustedBotErrorSuppression:
-    """Echo-loop guard parity with native handle_message (issue #6638).
+    """Echo-loop guard parity with native handle_message.
 
     A failed turn on a trusted-bot message must NOT post the transport error
     reply: in a mutual-mesh setup the reply is itself a bot-authored event the
@@ -1207,7 +1448,11 @@ class TestTransportTrustedBotErrorSuppression:
 
     def _run_failing_turn(self, monkeypatch, *, from_trusted_bot: bool):
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 
@@ -1259,12 +1504,12 @@ class TestTransportTrustedBotErrorSuppression:
 class TestTransportPartialProgressRescue:
     """A turn killed mid-flight must persist what the model already produced.
 
-    Before this, the user row was durable but partial assistant output lived
-    only in the renderer, so every retry re-read a transcript that ended at the
-    question and started over. Observed 2026-09-02: a ~28-minute transient
-    backend outage burned five consecutive attempts on one Slack thread, each
-    re-deriving the same ticket ids before dying again, with the session file
-    still 625 bytes at the end of it.
+    Without this, the user row is durable but partial assistant output lives
+    only in the renderer, so every retry re-reads a transcript that ends at the
+    question and starts over. A transient backend outage can then burn several
+    consecutive attempts on one Slack thread, each re-deriving the same ticket
+    ids before dying again, with the session file never growing past the user
+    row.
     """
 
     def _run_dying_turn(
@@ -1280,7 +1525,11 @@ class TestTransportPartialProgressRescue:
         from kiro_crew.history import ConversationLog
 
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "sales-agent")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 

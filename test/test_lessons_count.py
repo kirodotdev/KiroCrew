@@ -66,14 +66,14 @@ class TestCountLessons:
         assert state._count_lessons() == 0
 
     def test_status_snapshot_uses_count_lessons(self):
-        """status_snapshot() uses _count_lessons when lessons param not given."""
+        """_count_lessons totals JSONL + vector store; this is the count the
+        off-loop status cache (status_counts._load_status_counts) reports."""
         vs_lessons = [{"rule": f"r{i}"} for i in range(10)]
         state = _make_state(vector_lessons=vs_lessons)
-        snap = state.status_snapshot()
-        assert snap["lessons"] == 10
+        assert state._count_lessons() == 10
 
-    def test_status_snapshot_explicit_lessons_overrides(self):
-        """When lessons param is explicitly passed, it overrides _count_lessons."""
+    def test_status_snapshot_explicit_lessons_passes_through(self):
+        """A caller-supplied lessons count is emitted verbatim by status_snapshot."""
         vs_lessons = [{"rule": f"r{i}"} for i in range(10)]
         state = _make_state(vector_lessons=vs_lessons)
         snap = state.status_snapshot(lessons=42)

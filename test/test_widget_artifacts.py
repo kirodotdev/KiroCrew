@@ -9,7 +9,7 @@ import pytest
 
 from kiro_crew import widget_artifacts
 from kiro_crew.artifacts import ArtifactComment, ArtifactPublication, ArtifactStore
-from kiro_crew.widget_slug import derive_widget_slug
+from kiro_crew.widget_slug import derive_widget_body_slug
 
 
 @pytest.fixture
@@ -26,7 +26,7 @@ WIDGET_MSG = 'Here:\n<mcwidget title="Chart">\n<div>hi</div>\n</mcwidget>'
 class TestRegisterWidgets:
     def test_registers_widget_unpinned_and_auto_flagged(self, store: ArtifactStore) -> None:
         slugs = widget_artifacts.register_widgets(WIDGET_MSG, "ts-1", "chat-1")
-        assert slugs == [derive_widget_slug("ts-1", 0)]
+        assert slugs == [derive_widget_body_slug("ts-1", "<div>hi</div>")]
         art = store.get(slugs[0])
         assert art.kind == "widget"
         assert art.name == "Chart"
@@ -41,7 +41,8 @@ class TestRegisterWidgets:
     def test_slug_matches_frontend_derivation(self, store: ArtifactStore) -> None:
         """The whole scheme rests on this: the frontend must find what we wrote."""
         widget_artifacts.register_widgets(WIDGET_MSG, "1779995123.456789", "chat-1")
-        assert store.get("4dc7b6b89ccdb068").name == "Chart"
+        slug = derive_widget_body_slug("1779995123.456789", "<div>hi</div>")
+        assert store.get(slug).name == "Chart"
 
     def test_registered_widget_is_findable_by_the_session_query(self, store: ArtifactStore) -> None:
         """The in-session Artifacts tab must actually find what we registered.
@@ -59,10 +60,11 @@ class TestRegisterWidgets:
         found = store.list(session_key=slot_key)
         assert [a.slug for a in found] == slugs
 
-    def test_two_widgets_get_distinct_slugs(self, store: ArtifactStore) -> None:
+    def test_distinct_widget_bodies_get_distinct_slugs(self, store: ArtifactStore) -> None:
         text = '<mcwidget title="A">1</mcwidget>\n<mcwidget title="B">2</mcwidget>'
         slugs = widget_artifacts.register_widgets(text, "ts-2", "chat-1")
-        assert slugs == [derive_widget_slug("ts-2", 0), derive_widget_slug("ts-2", 1)]
+        assert slugs == [derive_widget_body_slug("ts-2", "1"), derive_widget_body_slug("ts-2", "2")]
+        assert slugs[0] != slugs[1]
         assert store.get(slugs[0]).name == "A"
         assert store.get(slugs[1]).name == "B"
 
@@ -334,5 +336,5 @@ class TestOffLoopWrapper:
     async def test_off_loop_registers(self, store: ArtifactStore) -> None:
         """The async path is what chat_runner uses — it must not block the loop."""
         slugs = await widget_artifacts.register_widgets_off_loop(WIDGET_MSG, "ts-async", "chat-1")
-        assert slugs == [derive_widget_slug("ts-async", 0)]
+        assert slugs == [derive_widget_body_slug("ts-async", "<div>hi</div>")]
         assert store.get(slugs[0]).name == "Chart"

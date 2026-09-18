@@ -129,10 +129,10 @@ class TestKiroStartupAttrs:
     """The kiro (default) backend's emit, driven through production.
 
     ``_start_kiro_runtime_impl`` always spawns a fresh AcpRuntime, so every point
-    from this path is a cold start. Regression guard: the emit previously carried
-    no ``spawned`` attribute, and the Telemetry aggregator splits cold from warm
-    on exactly that key — so bool(None) filed 100% of real cold starts as warm
-    and cold read 0ms / 0 startups permanently.
+    from this path is a cold start. The emit must carry a ``spawned`` attribute:
+    the Telemetry aggregator splits cold from warm on exactly that key — so
+    bool(None) files 100% of real cold starts as warm and cold reads 0ms / 0
+    startups permanently.
     """
 
     def _emit(self, outcome="ready"):

@@ -1,7 +1,7 @@
 """Name-grant verification on every surface that honours a name-based grant.
 
 The check refuses to honour a name-based shell auto-approve when a program
-name in the command no longer resolves to the program it appears to name
+name in the command does not resolve to the program it appears to name
 (a PATH-shadowing shim, an agent-writable tree, an unwitnessed file). It was
 originally wired into the dashboard chat loop only; these tests pin that the
 task runner, subagents, the channel turn driver, and the native Slack handler
@@ -332,6 +332,8 @@ class TestSubagentSurface:
         sessions = MagicMock()
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
         sessions.get_approval_policy = MagicMock(return_value="")
+        sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.release_subagent_runtime = AsyncMock()
 
         ctx = MagicMock()
@@ -578,7 +580,7 @@ class TestTurnDriverSurface:
 
 class TestSpawnRungEventIdentity:
     """The ``auto_approve_subagent_spawn`` rung keys on canonical event
-    identity, never the model-authored title (issue #6506).
+    identity, never the model-authored title.
 
     Pinned through the real ``build_auto_approve`` predicate on the shared
     driver honour point, using this file's event doubles. Both directions per

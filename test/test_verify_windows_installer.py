@@ -251,7 +251,7 @@ def test_a_correctly_signed_installer_passes(
 def _chain_pkcs7(tmp_path: Path, ca_cn: str, leaf_cn: str) -> bytes:
     """A DER PKCS#7 holding a CA cert plus a leaf it issued.
 
-    Used to prove the guard matches the SIGNER rather than any certificate in
+    Proves the guard matches the SIGNER rather than any certificate in
     the bag: the CA carries the expected publisher name and the leaf does not.
     """
     ca_key, ca_cert = tmp_path / "ca.key", tmp_path / "ca.pem"

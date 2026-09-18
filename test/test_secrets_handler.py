@@ -438,7 +438,7 @@ class TestApiSecretsDelete:
     @pytest.mark.asyncio
     async def test_deletes_secret_removes_from_list(self, vault_dir: Path) -> None:
         """A successful DELETE removes the name from the vault; a subsequent list
-        no longer includes it.  Proves the membership check does not block the
+        does not include it.  Proves the membership check does not block the
         actual deletion path."""
         app = _app()
 

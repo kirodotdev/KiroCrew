@@ -109,14 +109,13 @@ def test_a_plain_send_still_validates_without_the_pair() -> None:
     assert validate_tool_args({"text": "hi"}, SEND_MESSAGE_SCHEMA)["text"] == "hi"
 
 
-# ── The channel-session roster (issue #6514) ──
+# ── The channel-session roster ──
 #
 # The tool refuses a ``session`` value it does not recognise, so this roster is a
 # gate in FRONT of the gateway's owner-DM leg. That leg
 # (``_deliver_channel_dm``) is channel-neutral by construction, so a roster
 # narrower than the gateway's does not disable a feature visibly -- it refuses a
-# destination the plumbing behind it would have served, which is what #6514
-# reported for Webex.
+# destination the plumbing behind it would have served, as it does for Webex.
 
 
 def test_the_channel_session_roster_is_the_gateways_minus_owner_inference_gaps() -> None:
@@ -127,8 +126,7 @@ def test_the_channel_session_roster_is_the_gateways_minus_owner_inference_gaps()
     through ``_owner_dm_target``, so it additionally needs the transport to tell
     configured recipients from peers learned off inbound traffic. Every member of
     the narrower set is a member of the wider one, and each exclusion carries its
-    reason at the definition -- so this stays a derivation, not the hand-kept drift
-    that #6514 was.
+    reason at the definition -- so this stays a derivation, not hand-kept drift.
     """
     from kiro_crew.constants import CHANNEL_OWNER_DM_NAMESPACES, CHANNEL_SEND_NAMESPACES
     from kiro_crew.dashboard.handlers.messaging import _SEND_MESSAGE_CHANNEL_TYPES

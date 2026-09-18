@@ -19,8 +19,6 @@ src/apps/auto-improvement/AutoImprovementPage.tsx 58.0   # 47/81
 src/apps/auto-improvement/FindingDetail.tsx 8.3   # 2/24
 src/apps/auto-improvement/SetupPanel.tsx 53.7   # 36/67
 src/apps/code-review-sage/api.ts 12.7   # 9/71
-src/apps/crew-companion/LottieRenderer.tsx 9.5   # 2/21
-src/apps/crew-companion/SpriteRenderer.tsx 39.6   # 19/48
 src/apps/crew-companion/ToggleRow.tsx 66.7   # 2/3
 src/apps/crew-companion/api.ts 0.0   # 0/24
 src/apps/crew-companion/petdexImport.ts 10.4   # 5/48
@@ -44,7 +42,6 @@ src/apps/mochi/panel/MochiSnipHost.tsx 0.0   # 0/48
 src/apps/mochi/pet/main.tsx 0.0   # 0/21
 src/apps/mochi/snip/main.tsx 0.0   # 0/54
 src/apps/mochi/src/renderer/PetdexImporter.tsx 0.0   # 0/40
-src/apps/mochi/src/renderer/SpriteRenderer.tsx 39.6   # 19/48
 src/apps/mochi/src/shared/appearanceTypes.ts 8.7   # 6/69
 src/apps/mochi/src/shared/utils.ts 0.0   # 0/44
 src/apps/ops-mission-control/HandoverPanel.tsx 0.0   # 0/42
@@ -58,7 +55,6 @@ src/apps/personal-shopper/api.ts 5.3   # 1/19
 src/apps/pptx-maker/LibraryPanel.tsx 39.6   # 42/106
 src/apps/pptx-maker/api.ts 3.5   # 2/57
 src/apps/spec-builder/components/ChatColumn.tsx 0.0   # 0/2
-src/apps/workflows/WorkflowRunTree.tsx 3.4   # 1/29
 src/apps/workflows/WorkflowSourcePanel.tsx 4.7   # 2/43
 src/components/AddJobSplitButton.tsx 66.7   # 2/3
 src/components/AppIcon.tsx 51.1   # 24/47
@@ -73,7 +69,6 @@ src/components/MarkdownToc.tsx 55.0   # 77/140
 src/components/Strands.tsx 52.2   # 71/136
 src/components/folderColorPaint.ts 0.0   # 0/4
 src/components/notifications/NotificationDetailPanel.tsx 43.2   # 16/37
-src/hooks/useBottomTerminal.ts 66.3   # 65/98
 src/hooks/useCronActions.ts 31.0   # 9/29
 src/hooks/usePopoutSync.ts 0.0   # 0/51
 src/hooks/useQuickSearchShortcut.ts 40.5   # 17/42
@@ -85,14 +80,12 @@ src/pages/MigrationPage.tsx 0.0   # 0/38
 src/pages/chat/KnowledgePicker.tsx 0.0   # 0/23
 src/pages/chat/PinnedPrompt.tsx 3.5   # 2/57
 src/pages/chat/SidePanel.tsx 69.3   # 124/179
-src/pages/overview/EmbeddingModelCard.tsx 58.7   # 64/109
 src/pages/overview/MemoryGraphTab.tsx 68.3   # 97/142
 src/pages/overview/PortabilityTab.tsx 0.0   # 0/60
 src/pages/overview/UsageTab.tsx 0.0   # 0/21
 src/pages/settings/DisplayPanel.tsx 69.5   # 82/118
 src/pages/settings/InstancesPanel.tsx 63.3   # 88/139
 src/pages/settings/OverviewPanel.tsx 0.0   # 0/2
-src/pages/settings/SttSettings.tsx 67.8   # 78/115
 src/pages/settings/WeixinPanel.tsx 54.0   # 47/87
 src/providers/adapters/acp.ts 62.3   # 71/114
 src/utils/highlightClient.ts 25.0   # 10/40

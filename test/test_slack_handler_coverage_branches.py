@@ -21,6 +21,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from conftest import MockSlackClient
+from kiro_crew import agent_discovery
 from kiro_crew.config.loader import ConfigReadError
 from kiro_crew.messaging import auto_title
 from kiro_crew.messaging import commands as mc
@@ -354,7 +355,10 @@ class TestResolveAgentName:
         (agents / "helper.json").write_text('{"name": "helper"}', encoding="utf-8", newline="\n")
         monkeypatch.setattr(h, "_discover_project_agents", lambda _d: [])
         monkeypatch.setattr(h, "kiro_agents_dir", lambda: agents)
-        monkeypatch.setattr(h, "validate_file_path", lambda _s: None)
+        # The hardened reader vets the RESOLVED target in the same step as the
+        # read, so the refusal is injected at its gate, not at a path check
+        # here.
+        monkeypatch.setattr(agent_discovery, "is_sensitive_path", lambda _p: True)
         assert h._resolve_agent_name("helper") is None
 
     def test_unparseable_spec_falls_back_to_the_file_stem(self, monkeypatch, tmp_path):
@@ -363,7 +367,6 @@ class TestResolveAgentName:
         (agents / "helper.json").write_text("{not json", encoding="utf-8", newline="\n")
         monkeypatch.setattr(h, "_discover_project_agents", lambda _d: [])
         monkeypatch.setattr(h, "kiro_agents_dir", lambda: agents)
-        monkeypatch.setattr(h, "validate_file_path", lambda s: s)
         assert h._resolve_agent_name("helper") == "helper"
 
 
@@ -490,13 +493,15 @@ class TestUnknownBangCommand:
 # small command helpers — empty-argument early returns
 # ──────────────────────────────────────────────────────────────────────
 class TestCommandHelperEarlyReturns:
-    def test_spawn_with_no_task_declines(self):
+    @pytest.mark.asyncio
+    async def test_spawn_with_no_task_declines(self):
         manager = MagicMock()
-        assert mc.spawn_task_reply("", manager) is None
+        assert await mc.spawn_task_reply("", manager) is None
         manager.spawn.assert_not_called()
 
-    def test_spawn_keyword_without_prefix_declines(self):
-        assert h._handle_spawn_command("summarize this", MagicMock()) is None
+    @pytest.mark.asyncio
+    async def test_spawn_keyword_without_prefix_declines(self):
+        assert await h._handle_spawn_command("summarize this", MagicMock()) is None
 
     @pytest.mark.asyncio
     async def test_task_run_with_no_argument_declines(self):

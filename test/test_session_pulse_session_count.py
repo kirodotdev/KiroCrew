@@ -5,7 +5,7 @@ minted. This asserts the durable session-pulse counter goes up by one only when
 the caller both opts in via ``count_user_session=True`` (the human request-layer
 paths: chat-send auto-create, new-chat tab, fork) AND the new slot's origin is
 ``SlotOrigin.USER``. Either conjunct alone must not count: origin=USER without
-the flag is the agent-driven session-control create verb (#6139), and the flag
+the flag is the agent-driven session-control create verb, and the flag
 without USER origin is an app/cron/system slot the survey must never see.
 """
 
@@ -72,7 +72,7 @@ def test_user_origin_new_chat_with_flag_increments(tmp_path) -> None:
 
 
 def test_user_origin_without_flag_does_not_increment(tmp_path) -> None:
-    # THE regression pinned by #6139: the session-control create verb mints
+    # The session-control create verb mints
     # brand-new slots with origin=SlotOrigin.USER (the tag carries slots:user
     # privacy semantics and cannot change) but does NOT opt in to the counter.
     # An agent opening sessions unattended must not satisfy the survey's
@@ -107,8 +107,8 @@ def test_non_user_origins_do_not_increment(tmp_path, kwargs) -> None:
 def test_restore_shape_named_user_slot_does_not_increment(tmp_path) -> None:
     # Restore/rehydrate calls get_or_create_slot with the persisted key as
     # `name` and origin=USER. That must NOT count -- otherwise every gateway
-    # restart re-counts each restored user session. Regression for the GPT
-    # blocking finding "restoring sessions corrupts the durable session count".
+    # restart re-counts each restored user session, corrupting the durable
+    # session count.
     # The flag does not override this: even an opted-in caller addressing a
     # named (non-minted) slot stays uncounted.
     state = _make_state(tmp_path)
@@ -167,7 +167,7 @@ def test_only_human_request_paths_opt_in() -> None:
     # auto-create and the new-chat tab (chat_handlers.py), and fork
     # (chat_fork.py). This sweeps every module under src/kiro_crew, so an
     # opt-in appearing anywhere else -- most importantly the session-control
-    # create verb, whose absence IS the fix for #6139 -- or disappearing from
+    # create verb, whose absence is required -- or disappearing from
     # these two files is a deliberate decision: update this pin alongside it.
     assert _opted_in_call_counts() == {
         "dashboard/chat_handlers.py": 2,
@@ -176,7 +176,7 @@ def test_only_human_request_paths_opt_in() -> None:
 
 
 def test_session_control_create_does_not_opt_in() -> None:
-    # The named regression for #6139, kept explicit even though the sweep above
+    # The named guard, kept explicit even though the sweep above
     # subsumes it: the session-control create verb mints USER-origin slots
     # (privacy semantics) but must not count toward the survey. Passing
     # count_user_session=True there re-introduces the bug.

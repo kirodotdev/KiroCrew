@@ -58,9 +58,9 @@ class _ActiveMeeting:
         #:
         #: ``accepting_dispatches`` alone cannot answer "should this line be
         #: refused?", because it is false for two opposite reasons: the meeting is
-        #: stopping/reviewing/expired (the line has nowhere to go — refuse it, which
-        #: is the gate issue #1981 added) or the meeting is STARTING and its agents
-        #: are not ready yet (the line is wanted — hold it). Conflating them is what
+        #: stopping/reviewing/expired (the line has nowhere to go — refuse it) or
+        #: the meeting is STARTING and its agents are not ready yet (the line is
+        #: wanted — hold it). Conflating them is what
         #: made a meeting refuse its own opening speech for ~46s.
         #:
         #: Stored as the SESSION rather than a bool so the state cannot outlive the
@@ -122,16 +122,30 @@ class _ActiveMeeting:
             self.accepting_dispatches = False
             self.buffering_session = session if buffer_speech else None
 
-    def resume_dispatches(self, session: MeetingSession) -> None:
+    def resume_dispatches(self, session: MeetingSession, *, mark_ready: bool = False) -> None:
         """Open ingress only if *session* is still the installed session.
 
         Ends any hold in the same step: once direct fan-out is open, a line that
         stayed in the buffer would be delivered out of order behind live speech.
         The caller drains under this same lock acquisition.
+
+        ``mark_ready`` is passed ONLY by the start path, after ``init_agents``
+        completed — it is what ``became_ready`` means. The ``/status active``
+        unpause path also reopens ingress through here but must NOT pass it: a
+        routine status call is reachable against a retired-mid-init session
+        (same-status ``active`` is allowed as an idempotent retry), and marking
+        that never-initialized session ready would re-wedge the single-active
+        latch and let agents receive transcript with no output setup.
         """
         if self.session is session:
             self.accepting_dispatches = True
             self.buffering_session = None
+            if mark_ready:
+                # Monotonic: records that this meeting finished init and became
+                # usable at least once, so `abandoned` can distinguish a
+                # never-ready mid-init retirement from an idle-reaped-but-resumable
+                # established meeting.
+                session.became_ready = True
 
     def set(self, session: MeetingSession | None) -> None:
         """Install *session*, replacing any current one.
@@ -482,7 +496,7 @@ class Admission(NamedTuple):
     ingress is open (fan out normally); True is a session still INITIALIZING its
     agents, admitted only because the producer opted into the hold — the line is
     wanted, so it is appended to the transcript and buffered for the drain instead
-    of refused (issue #4610).
+    of refused.
     """
 
     session: MeetingSession
@@ -562,6 +576,14 @@ async def dispatch_admission(
                 status=410,
                 code="meeting_session_replaced",
             )
+        # NOTE: only `expired` (a real TTL lapse) tears the meeting down here, NOT
+        # `abandoned`. A meeting whose agent slots were reclaimed (identity sweep, or
+        # an ordinary idle/cleanup sweep on a merely-quiet-but-valid meeting) is
+        # recoverable on this path: broadcast -> flush -> dispatch_to_agent ->
+        # get_or_create recreates the slot session and the line lands. Ending on
+        # `abandoned` here would drop that utterance and kill a healthy meeting, so
+        # abandoned is released only by the start latch (where the meeting is being
+        # replaced anyway).
         if session.expired:
             ACTIVE.suspend_dispatches(session)
             expired = session

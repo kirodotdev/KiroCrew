@@ -1198,8 +1198,8 @@ class SafetyOverride:
         # the path when it RAN would act on whatever the module names at that
         # moment rather than on the file this transition was about. Nothing in
         # production repoints it, so this changes no behaviour there -- but a job
-        # that outlives the context it was queued in was deleting and overwriting
-        # an unrelated file, which is issue #8586.
+        # that outlives the context it was queued in would otherwise delete and
+        # overwrite an unrelated file.
         path = _breadcrumb_path()
 
         def _publish() -> None:
@@ -1263,11 +1263,11 @@ class SafetyOverride:
 # ─── Restart-drop breadcrumb ─────────────────────────────────────────────────
 #
 # A grant lives in memory only, so a restart ends it. That is the DESIGNED
-# behaviour and this module does not change it -- what it changes is that the
-# ending used to be SILENT: an operator who granted six hours of auto-approval,
-# then restarted the gateway an hour later, got no reply telling them the
-# remaining five hours were gone. The next unattended run simply stopped and
-# waited for an approval nobody was watching for.
+# behaviour and this module does not change it -- it makes the ending VISIBLE.
+# Otherwise an operator who grants six hours of auto-approval and restarts the
+# gateway an hour later gets no reply telling them the remaining five hours are
+# gone, and the next unattended run simply stops and waits for an approval
+# nobody is watching for.
 #
 # So the file below records that a grant WAS live, never that it may resume. It
 # holds the wall-clock deadline (the in-memory deadlines are
@@ -2033,8 +2033,8 @@ register_ceiling_install_hook(_on_ceiling_installed)
 # refused at parse time (see the ``SCOPE_CATALOG`` entry).
 #
 # This helper exists so the dashboard's status field and the per-tool-call
-# enforcement predicate cannot disagree. ``dashboard/state.py`` used to keep its own
-# TTL cache of the same question, which had already drifted: one mechanism cannot
+# enforcement predicate cannot disagree. A second TTL cache of the same question
+# in ``dashboard/state.py`` would drift from this one: one mechanism cannot
 # drift from itself.
 
 

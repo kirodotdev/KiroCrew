@@ -1,4 +1,4 @@
-"""Tests for the tracked-channel history-readability probe (issue #3225).
+"""Tests for the tracked-channel history-readability probe.
 
 A Slack install created before the manifest gained ``groups:history`` keeps
 its old OAuth grant, so tracked private channels deliver no message events

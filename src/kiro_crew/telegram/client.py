@@ -943,7 +943,7 @@ class TelegramClient:
     ) -> bool:
         """Edit ONLY a message's inline keyboard, leaving its text intact.
 
-        Used to retire an ``[OPTIONS:]`` keyboard after a choice is tapped
+        Retires an ``[OPTIONS:]`` keyboard after a choice is tapped
         without clobbering the answer text that carried it. Pass
         ``{"inline_keyboard": []}`` to remove the buttons.
         """
@@ -1238,7 +1238,7 @@ class TelegramClient:
 
         Telegram REPLACES the whole default-scope menu on each call, so the full
         list must be sent every time — that is also what retires a command the
-        bot no longer serves. An empty list is refused rather than sent, because
+        bot does not serve. An empty list is refused rather than sent, because
         Telegram would read it as "this bot has no commands" and wipe the menu.
         """
         if not commands:
@@ -1520,7 +1520,7 @@ class TelegramClient:
         # _spawn_handler only creates a task, so acking at this point would advance
         # the cursor past an album whose turn has not run. The handler resolves them
         # as a unit in its finally, because replaying half an album would deliver the
-        # same photos again under a caption that no longer matches.
+        # same photos again under a caption that does not match.
         self._spawn_handler(merged, tuple(pending))
 
     def _flush_all_albums(self) -> None:

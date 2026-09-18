@@ -174,10 +174,10 @@ class TestFilterHallucinations:
         assert filter_hallucinations(text) == "Priya owns the rollout. We ship Friday."
 
     def test_a_dictated_sign_off_survives_whole(self):
-        """The GPT 5.6 blocking finding, pinned.
+        """A dictated sign-off survives whole.
 
         Each of these is a complete sentence a human records — a demo outro, a
-        dictated video script — and each was previously deleted by an exact
+        dictated video script — and each must survive an exact
         whole-sentence match. When it was the entire transcript the filter
         returned "", which ``transcribe_audio`` turns into ``None``: the only
         words the recording held, gone, with a log line as the sole trace.

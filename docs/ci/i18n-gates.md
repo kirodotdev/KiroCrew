@@ -257,7 +257,18 @@ on: every catalog value is wrapped in `[` … `]`, and every ASCII letter outsid
 preserved region is accented. So inside one inline run, a `]…[` seam **is** a
 surviving concatenation, and plain Latin **is** text that never reached a catalog.
 
-Five things to know before touching it:
+An explicit `group`, `tablist`, `radiogroup` or `toolbar` ends its parent's inline
+run. Its contents are still scanned independently, including hardcoded labels,
+attributes and multiple catalog units inside one control. Ungrouped inline-flex
+content does not receive this boundary. Use these roles for actual control groups;
+they do not exempt text from translation checks.
+
+Locale-formatted machine timestamps may use a semantic `<time dateTime="...">`
+with `data-i18n-opaque` around only the formatted value. Keep surrounding labels
+in the catalog and keep active-locale formatting. Memory record fixture keys,
+like other visible fixture values, use digit-shaped identifiers.
+
+Seven things to know before touching it:
 
 1. **It builds its own bundle with `NODE_ENV=development`.** `en-XA` is DEV-only in
    three independent places, all keyed on `import.meta.env.DEV`. `vite build --mode
@@ -290,6 +301,20 @@ Five things to know before touching it:
    placeholder would render the surface while hiding the defect it exists to show.
    Read those numbers as a fixed structural probe, not as the size of the debt,
    because the scanner counts per word.
+6. **Fetched content must be ready before it is measured.** The App Details
+   surface waits for its fixture description to mount before its existing settle
+   interval. The shell alone exceeds the generic text-volume check while the
+   manifest requests are pending; comparing that loading state with the populated
+   body would report different findings for identical code. A missing readiness
+   marker fails the run instead of silently measuring less content.
+7. **A new query-param panel has no old panel to measure.** A surface may declare
+   its required `sourceFile`, relative to `website/`. If both the source file and
+   the surface registration are absent from the exported base, the base sweep
+   omits that panel and its findings are compared against zero. HEAD still renders
+   it and must satisfy `readyText`; a missing declared HEAD source fails the run.
+   Newly registered panels whose implementation already existed remain measured
+   on the base. This prevents waiting for member-memory content on an older
+   overview page that keeps the query URL but cannot render that panel.
 
 Known limits of the render gate, named rather than papered over:
 

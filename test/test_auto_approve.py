@@ -329,6 +329,7 @@ class TestAutoApproveRespectsHookDeny:
 
         # ctx.hooks.on_tool_call returns TOOL_DENY (deny-list / sensitive-path block).
         ctx = MagicMock()
+        ctx.conversation_log.get_metadata_status.return_value = ({}, True)
         ctx.build_message = MagicMock(return_value=("prompt", {}))
         ctx.hooks.on_tool_call = MagicMock(return_value=MagicMock(action=TOOL_DENY))
 
@@ -359,6 +360,7 @@ class TestAutoApproveRespectsHookDeny:
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
 
         ctx = MagicMock()
+        ctx.conversation_log.get_metadata_status.return_value = ({}, True)
         ctx.build_message = MagicMock(return_value=("prompt", {}))
         ctx.hooks.on_tool_call = MagicMock(return_value=MagicMock(action=TOOL_AUTO_APPROVE))
 

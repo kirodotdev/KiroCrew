@@ -613,6 +613,27 @@ async def _deregister_app_off_loop(name: str) -> RegistrationResult:
     )
 
 
+async def _app_may_run_after_install(name: str, *, fresh_install: bool = False) -> bool:
+    """Read whether installed app resources may run after an install or update."""
+
+    def _read_live_state() -> bool:
+        info = get_app(name)
+        if not info or info.get("sessionApprovalConsentPending"):
+            return False
+        return fresh_install or bool(info.get("enabled"))
+
+    return await asyncio.get_running_loop().run_in_executor(subprocess_executor(), _read_live_state)
+
+
+async def _suspend_app_for_session_approval_reconsent(
+    name: str,
+) -> RegistrationResult:
+    """Stop the old app and remove its resources until the user re-enables it."""
+    await asyncio.get_running_loop().run_in_executor(subprocess_executor(), stop_app_backend, name)
+    await _deregister_app_off_loop(name)
+    return RegistrationResult()
+
+
 async def handle_install_app(request: web.Request) -> web.Response:
     """POST /api/apps/install — install an app from a local path."""
     try:
@@ -709,11 +730,18 @@ async def handle_install_app(request: web.Request) -> web.Response:
             return web.json_response(result.to_dict(), status=400)
         invalidate_app_secret_cache(result.name)
 
-        # Auto-register resources
-        reg = await _register_app_off_loop(result.name)
-        # Spawn the backend now so the app is reachable without a gateway reboot
-        # (see _start_backend_after_install). No-op for backend-less apps.
-        await _start_backend_after_install(result.name)
+        # Same gate as the registry paths: a fresh install whose manifest declares
+        # ``permissions.sessionApproval`` is consent-pending, so its resources
+        # are not registered and its backend does not start until the user
+        # enables it from the disclosure surface.
+        if await _app_may_run_after_install(result.name, fresh_install=True):
+            # Auto-register resources
+            reg = await _register_app_off_loop(result.name)
+            # Spawn the backend now so the app is reachable without a gateway
+            # reboot (see _start_backend_after_install). No-op for backend-less apps.
+            await _start_backend_after_install(result.name)
+        else:
+            reg = await _suspend_app_for_session_approval_reconsent(result.name)
     sel().log_api_access(
         caller="dashboard", operation="app_install", outcome="completed", resources=result.name
     )
@@ -804,7 +832,11 @@ async def handle_update_app(request: web.Request) -> web.Response:
                 subprocess_executor(), stop_app_backend, name
             )
             await _deregister_app_off_loop(name)
-            if info.get("enabled"):
+            # Live read, not the pre-update ``info`` snapshot: ``update_app`` drops
+            # ``enabled`` when the new version adds ``permissions.sessionApproval``,
+            # and a backend started here would run an app the UI shows as disabled.
+            still_enabled = await _app_may_run_after_install(name)
+            if still_enabled:
                 reg_result = await _register_app_off_loop(name)
                 await asyncio.get_running_loop().run_in_executor(
                     subprocess_executor(), start_app_backend, name
@@ -833,7 +865,7 @@ async def handle_update_app(request: web.Request) -> web.Response:
 
         # Stop the backend, then deregister old resources — same order as uninstall and
         # the disable rollback. Stopping pops the tracking record, so the health watch
-        # can no longer re-register the OLD manifest's MCP servers after the scrub
+        # cannot re-register the OLD manifest's MCP servers after the scrub
         # (see app-kit-platform §17).
         await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(), stop_app_backend, name
@@ -862,9 +894,13 @@ async def handle_update_app(request: web.Request) -> web.Response:
             )
             return web.json_response(up_result.to_dict(), status=400)
 
-        # Re-register with new manifest if app was enabled
+        # Re-register with the new manifest only if the app is STILL enabled.
+        # ``update_app`` drops ``enabled`` when the new version adds
+        # ``permissions.sessionApproval``, so the pre-update ``info`` snapshot
+        # would start a backend the user has not re-consented to.
         up_reg = None
-        if info.get("enabled"):
+        still_enabled = await _app_may_run_after_install(name)
+        if still_enabled:
             up_reg = await _register_app_off_loop(name)
             await asyncio.get_running_loop().run_in_executor(
                 subprocess_executor(), start_app_backend, name
@@ -988,8 +1024,42 @@ async def handle_uninstall_preview(request: web.Request) -> web.Response:
 
     Returns resource list and dependency classification (removable/shared/userInstalled).
     """
+    # Dashboard-only: ``_app_owns_path`` grants an app token its own
+    # ``/api/apps/{name}/**`` namespace, but the classification below discloses
+    # SIBLING app names (``shared[].usedBy`` / ``reason``), which an app must
+    # not see. The confirm dialog is an operator surface, so refuse app tokens
+    # outright.
+    if request.get("app"):
+        # SEL audit for the permission decision, matching the sibling app-token
+        # deny paths in this file: an authorization denial that leaves no trail
+        # is invisible to the audit log, so a repeated probe would be
+        # unobservable.
+        sel().log_api_access(
+            caller=request.get("app", ""),
+            operation="app_uninstall_preview_forbidden",
+            outcome="denied",
+            source="app_routes",
+            resources=request.path,
+            error="app token cannot preview uninstall",
+        )
+        return web.json_response(
+            {
+                "error": "app tokens cannot preview uninstall",
+                "code": "app_token_forbidden",
+            },
+            status=403,
+        )
+
     name = request.match_info["name"]
-    info = get_app(name)
+    # Registry read + ledger classification both touch disk (the ledger takes
+    # a blocking file lock), so they run off-loop like the sibling handlers.
+    # ``get_app`` can also WRITE: for a self-managed app with version drift it
+    # rewrites ``installed.json``, and unsynchronized against a concurrent
+    # uninstall that write can land after the deletion and recreate the file
+    # as a ghost installation. Take the per-app lifecycle lock around it, the
+    # same lock the uninstall sequence holds.
+    async with app_lifecycle_lock(name):
+        info = await asyncio.to_thread(get_app, name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
 
@@ -1007,7 +1077,7 @@ async def handle_uninstall_preview(request: web.Request) -> web.Response:
     declared_deps = declared_capability_keys(deps_data)
 
     # Classify dependencies
-    dep_classification = classify_for_uninstall(name, declared_deps)
+    dep_classification = await asyncio.to_thread(classify_for_uninstall, name, declared_deps)
 
     return web.json_response(
         {
@@ -1427,10 +1497,56 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     macOS-only app enabled on Linux/Windows would otherwise run a command that
     cannot succeed there.
     """
+    # Dashboard-only. ``_app_owns_path`` grants an app token its own
+    # ``/api/apps/{name}/**`` namespace, and ``disable_app`` only flips
+    # ``enabled`` -- the token stays valid. Enabling is the user's consent
+    # moment: ``app_can_manage_session_approvals`` reads ``enabled`` as the
+    # live grant, and an update that widens the grant leaves the app disabled
+    # precisely so the user re-enables it deliberately. An app that could POST
+    # its own enable route would turn both into a formality, so refuse app
+    # identities outright (mirrors ``handle_uninstall_preview``).
+    if request.get("app"):
+        sel().log_api_access(
+            caller=request.get("app", ""),
+            operation="app_enable_forbidden",
+            outcome="denied",
+            source="app_routes",
+            resources=request.path,
+            error="app token cannot enable an app",
+        )
+        return web.json_response(
+            {
+                "error": "app tokens cannot enable apps",
+                "code": "app_token_forbidden",
+            },
+            status=403,
+        )
+
     name = request.match_info["name"]
     info = get_app(name)
     if not info:
         return web.json_response({"error": f"app {name!r} not installed"}, status=404)
+
+    body: dict[str, Any] = {}
+    if request.can_read_body:
+        try:
+            parsed = await request.json()
+            if isinstance(parsed, dict):
+                body = parsed
+        except (json.JSONDecodeError, web.HTTPBadRequest, UnicodeDecodeError, LookupError):
+            # ``request.json()`` decodes the body with the declared charset
+            # before parsing: a bad charset or invalid bytes must land on the
+            # same "no body" path as malformed JSON, not a 500.
+            pass
+    session_approval_consent = body.get("sessionApprovalConsent") is True
+    if session_approval_consent:
+        # Consent hands an app control of the OWNER's sessions, so only the
+        # owner can give it. Same gate the other machine-global mutations use.
+        from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
+
+        denied = await require_owner_dashboard_request(request, "app_enable_session_consent")
+        if denied is not None:
+            return denied
 
     resources = info.get("resources", "gateway")
     manifest = info.get("manifest", {})
@@ -1442,7 +1558,7 @@ async def handle_enable_app(request: web.Request) -> web.Response:
     # install/update/uninstall of the same app (e.g. enabling while an
     # off-loop uninstall is deleting the app directory).
     async with app_lifecycle_lock(name):
-        result = enable_app(name)
+        result = enable_app(name, session_approval_consent=session_approval_consent)
         if not result.ok:
             sel().log_api_access(
                 caller="dashboard",
@@ -1939,6 +2055,7 @@ async def handle_registry_install(request: web.Request) -> web.Response:
     # lock-free internally (asyncio.Lock is not reentrant), so this is the
     # single acquisition covering clone/build → copy → register → backend.
     async with app_lifecycle_lock(name):
+        was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
         result = await install_from_registry(name)
 
         # Redact install log and error before returning to client — build output
@@ -1968,14 +2085,21 @@ async def handle_registry_install(request: web.Request) -> web.Response:
             )
             return web.json_response(result, status=400)
 
-        # Auto-register resources
-        reg = await _register_app_off_loop(result["name"])
-        # Spawn the backend now so apps with a server are reachable immediately —
-        # without this the backend only starts on the next gateway reboot (via
-        # start_enabled_app_backends), leaving the app's UI with "no reachable
-        # backend" until then. No-op for apps that declare no backend. Run in a
-        # thread because start_app_backend blocks on a health-check poll.
-        await _start_backend_after_install(result["name"])
+        may_run = await _app_may_run_after_install(result["name"], fresh_install=not was_installed)
+        if not may_run:
+            # The install transaction owns the live state. An update that newly asks
+            # for session control leaves the app disabled, but this also preserves a
+            # user's existing disabled state without depending on response wording.
+            reg = await _suspend_app_for_session_approval_reconsent(result["name"])
+        else:
+            # Auto-register resources
+            reg = await _register_app_off_loop(result["name"])
+            # Spawn the backend now so apps with a server are reachable immediately —
+            # without this the backend only starts on the next gateway reboot (via
+            # start_enabled_app_backends), leaving the app's UI with "no reachable
+            # backend" until then. No-op for apps that declare no backend. Run in a
+            # thread because start_app_backend blocks on a health-check poll.
+            await _start_backend_after_install(result["name"])
     result["registration"] = reg.to_dict()
     sel().log_api_access(
         caller="dashboard", operation="app_registry_install", outcome="completed", resources=name
@@ -2016,7 +2140,12 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
             "X-Accel-Buffering": "no",
         },
     )
-    await resp.prepare(request)
+    try:
+        await resp.prepare(request)
+    except (ConnectionResetError, ConnectionAbortedError):
+        # The client vanished between sending the request and the stream
+        # opening; nothing has been installed yet, so just hang up quietly.
+        return resp
 
     # Create a queue-backed log collector so install_from_registry streams
     # each log line as it's appended — zero changes to the install logic.
@@ -2043,6 +2172,20 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         except (ConnectionResetError, ConnectionAbortedError):
             pass
 
+    async def _finish_stream() -> None:
+        """Close the SSE stream, tolerating a client that already left.
+
+        A browser tab closed mid-install makes ``write_eof`` raise
+        ``ClientConnectionResetError`` ("Cannot write to closing
+        transport", a ``ConnectionResetError`` subclass), which would
+        otherwise escape the handler and be logged by aiohttp as an
+        unhandled server error for a routine client disconnect.
+        """
+        try:
+            await resp.write_eof()
+        except (ConnectionResetError, ConnectionAbortedError):
+            pass
+
     async def _drain_queue() -> None:
         """Forward queued log lines to the SSE stream until sentinel."""
         from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -2060,14 +2203,24 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
     # lock (install_from_registry is lock-free internally).
     async def _locked_install() -> dict[str, Any]:
         async with app_lifecycle_lock(name):
+            was_installed = await asyncio.to_thread(lambda: get_app(name) is not None)
             r = await install_from_registry(name, log_lines=streaming_log)
             if r.get("ok") and not r.get("needsClientInstall"):
-                reg = await _register_app_off_loop(r["name"])
-                # Spawn the backend immediately (see handle_registry_install) so
-                # the app is reachable without a gateway reboot. No-op for
-                # backend-less apps.
-                await _start_backend_after_install(r["name"])
-                r["registration"] = reg.to_dict()
+                may_run = await _app_may_run_after_install(
+                    r["name"], fresh_install=not was_installed
+                )
+                if not may_run:
+                    # Match the non-stream and update routes: live enabled state,
+                    # rather than notice wording, decides whether resources may run.
+                    reg = await _suspend_app_for_session_approval_reconsent(r["name"])
+                    r["registration"] = reg.to_dict()
+                else:
+                    reg = await _register_app_off_loop(r["name"])
+                    # Spawn the backend immediately (see handle_registry_install) so
+                    # the app is reachable without a gateway reboot. No-op for
+                    # backend-less apps.
+                    await _start_backend_after_install(r["name"])
+                    r["registration"] = reg.to_dict()
             return r
 
     install_task = asyncio.create_task(_locked_install())
@@ -2103,7 +2256,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
 
     if result.get("needsClientInstall"):
         await _send_sse("done", json.dumps(result))
-        await resp.write_eof()
+        await _finish_stream()
         return resp
 
     if not result.get("ok"):
@@ -2115,7 +2268,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
             error=result.get("error", ""),
         )
         await _send_sse("done", json.dumps(result))
-        await resp.write_eof()
+        await _finish_stream()
         return resp
 
     # Resource registration + backend start already ran inside the locked
@@ -2127,7 +2280,7 @@ async def handle_registry_install_stream(request: web.Request) -> web.StreamResp
         resources=name,
     )
     await _send_sse("done", json.dumps(result))
-    await resp.write_eof()
+    await _finish_stream()
     return resp
 
 
@@ -2515,7 +2668,7 @@ async def handle_app_config(request: web.Request) -> web.Response:
 
 
 #: Ceiling on one UI-bundle file this route will serve. With streaming (see
-#: :func:`handle_app_ui_file`) the ceiling no longer bounds gateway memory —
+#: :func:`handle_app_ui_file`) the ceiling does not bound gateway memory —
 #: per-request memory is one :data:`_UI_STREAM_CHUNK` regardless of file size —
 #: it bounds the WORK one unauthenticated request can command (bytes read and
 #: sent per request; the route bypasses token auth). Measured reality: the
@@ -2555,7 +2708,7 @@ def _open_ui_file(name: str, file_path: str) -> tuple[int, os.stat_result] | str
     ``"not_found"`` (-> 404). On the tuple path the CALLER owns closing the fd.
 
     Handing back the descriptor rather than a path is the security-relevant
-    part, and it is the same fix :func:`_read_declared_art` carries (#6794):
+    part, and it is the same fix :func:`_read_declared_art` carries:
     validating a path and then handing it to ``FileResponse`` opens it a SECOND
     time, so the app that owns this directory can swap a validated name for a
     symlink between the check and that open and have the gateway read the
@@ -2716,8 +2869,8 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
 
     Serves bytes STREAMED from a pinned descriptor (see :func:`_open_ui_file`)
     rather than handing a validated path to ``FileResponse``, which re-opens it
-    and re-introduces the check-then-reopen window #6794 closed on the art
-    route. Streaming rather than buffering is itself load-bearing: this route
+    and re-introduces the check-then-reopen window the art route also closes.
+    Streaming rather than buffering is itself load-bearing: this route
     is UNAUTHENTICATED (the ``/apps/{name}/ui/`` token-auth bypass), so a
     buffered body would let N outstanding requests each pin a whole file in
     gateway memory — with streaming, per-request memory is one chunk
@@ -2802,20 +2955,26 @@ async def handle_app_ui_file(request: web.Request) -> web.StreamResponse:
             # after the open must not stream past the length the client was told,
             # so the loop below caps at `remaining` as well as EOF.
             resp.content_length = st.st_size
-            await resp.prepare(request)
-            remaining = st.st_size
-            # The enclosing `_UI_STREAM_SEMAPHORE` scope (acquired before the
-            # open, released after the close) is what bounds this loop's
-            # `to_thread` hops on the shared default executor — no second
-            # acquisition here: a nested acquire under the same semaphore
-            # would deadlock once 8 holders each waited for a 9th permit.
-            while remaining > 0:
-                chunk = await asyncio.to_thread(os.read, fd, min(_UI_STREAM_CHUNK, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                await resp.write(chunk)
-            await resp.write_eof()
+            try:
+                await resp.prepare(request)
+                remaining = st.st_size
+                # The enclosing `_UI_STREAM_SEMAPHORE` scope (acquired before the
+                # open, released after the close) is what bounds this loop's
+                # `to_thread` hops on the shared default executor — no second
+                # acquisition here: a nested acquire under the same semaphore
+                # would deadlock once 8 holders each waited for a 9th permit.
+                while remaining > 0:
+                    chunk = await asyncio.to_thread(os.read, fd, min(_UI_STREAM_CHUNK, remaining))
+                    if not chunk:
+                        break
+                    remaining -= len(chunk)
+                    await resp.write(chunk)
+                await resp.write_eof()
+            except (ConnectionResetError, ConnectionAbortedError):
+                # A tab can close at any response boundary. The descriptor is
+                # still closed by the shielded finally below; the disconnect is
+                # routine client behavior, not an application error.
+                pass
             return resp
         finally:
             # Off the loop: `os.close` is on the no-blocking-call-on-event-loop
@@ -3081,8 +3240,8 @@ async def _fetch_git_blob(
     second registry-row resolution would open without retaining credentials in
     the row itself.
 
-    ``owner_designated`` extends the same-repo credential carve-out (PR 918) to
-    this third clone chokepoint.  It is ``True`` only when the caller has
+    ``owner_designated`` extends the same-repo credential carve-out to this third
+    clone chokepoint.  It is ``True`` only when the caller has
     confirmed — via the merged :func:`_owner_designated_repo_target` predicate,
     evaluated against the SAME entry ``git_url`` was resolved from — that the
     entry's clone URL is byte-identical to the owner-typed
@@ -3329,7 +3488,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     # repo's cache directory — a crafted ``ref`` would then yield a cache hit that
     # returns another repo's cached (possibly private) bytes without
     # authorization.  Reject any ``..`` segment or leading ``/`` in ``ref``
-    # BEFORE it is used to build or read the cache path, mirroring the
+    # BEFORE the cache path is built or read from it, mirroring the
     # ``file_path`` guard above, so a ``ref`` can only ever name a flat branch
     # subtree under its own ``repo_key``.
     if ".." in ref or ref.startswith("/"):
@@ -3415,7 +3574,7 @@ async def handle_blob_proxy(request: web.Request) -> web.Response:
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
     if not cache_path.is_file():
-        # Same-repo credential carve-out (PR 918, extended to the blob chokepoint):
+        # Same-repo credential carve-out, extended to the blob chokepoint:
         # only when the entry's clone URL is byte-identical to the owner-typed
         # registry repo does the clone get owner credentials.  Reuse the merged
         # predicate verbatim — no host normalization, no index-supplied URL trust;
@@ -3741,10 +3900,16 @@ async def handle_app_api_proxy(request: web.Request) -> web.StreamResponse:
                         if k.lower() not in _PROXY_HOP_HEADERS
                     },
                 )
-                await resp.prepare(request)
-                async for chunk in upstream.content.iter_any():
-                    await resp.write(chunk)
-                await resp.write_eof()
+                try:
+                    await resp.prepare(request)
+                    async for chunk in upstream.content.iter_any():
+                        await resp.write(chunk)
+                    await resp.write_eof()
+                except (ConnectionResetError, ConnectionAbortedError):
+                    # The upstream request may finish after the browser has
+                    # already closed its side of the proxy stream. Do not turn
+                    # that routine client disconnect into a gateway traceback.
+                    pass
                 return resp
         finally:
             if owns_session:
@@ -3800,26 +3965,35 @@ async def handle_registries(request: web.Request) -> web.Response:
         # FORCE for them: `registry._registry_trust_tier` resolves `owner` only
         # from build-pinned rows, since `config.json` is agent-writable. Echoing a
         # hand-edited `owner` back would report a grant the runtime does not honour.
+        # `label`/`review` are reported empty for the same reason: they are claims
+        # only the build may make, so an operator row makes neither.
         registries = [
             {
                 "name": r.name,
                 "repo": _strip_git_target_userinfo(r.repo),
                 "branch": r.branch,
                 "trust": _TRUST_INDEX,
+                "label": "",
+                "review": "",
             }
             for r in config.registries
         ]
         # Edition-pinned registries are reported SEPARATELY and read-only. They
         # are not part of ``registries`` because PUT replaces that list verbatim:
         # a GET→edit→PUT round-trip would persist an edition default into the
-        # operator's config.json, where a later edition change could no longer
-        # move it. The client renders these as non-editable rows.
+        # operator's config.json, where a later edition change cannot move it.
+        # The client renders these as non-editable rows.
         pinned = [
             {
                 "name": r.name,
                 "repo": _strip_git_target_userinfo(r.repo),
                 "branch": r.branch,
                 "trust": r.trust,
+                # Display metadata the build owns. `label` never replaces `name`
+                # in the payload: the client needs the id to key its per-registry
+                # app counts and refresh calls, and shows the label beside it.
+                "label": r.label,
+                "review": r.review,
             }
             for r in _pinned_registries()
         ]
@@ -3852,6 +4026,9 @@ async def handle_registries(request: web.Request) -> web.Response:
 
     # Validate each entry
     validated: list[dict[str, str]] = []
+    # Names whose entry tried to claim `label`/`review`. Recorded, not refused —
+    # see the drop comment at the `validated.append` below.
+    stripped_claims: list[str] = []
     _blocked_repos = {"KiroCrew"}
     # Keyed the same way `_effective_registries` decides a contest — by the cache
     # file the registry would use, not the raw string. Comparing raw names here
@@ -3917,6 +4094,17 @@ async def handle_registries(request: web.Request) -> web.Response:
                 f"{name!r} is the name of a registry this build provides — choose another",
                 f"pinned_name_collision={name}",
             )
+        # `label` and `review` are DROPPED rather than stored, mirroring `trust`:
+        # both are claims about a registry that only the build may make, and
+        # `config.json` is agent-writable, so a value persisted here would let a
+        # hand-edited file relabel a source or stamp it "Reviewed by the Kiro Crew
+        # team" in the UI. Dropped rather than refused with a 400, because unlike
+        # `trust: owner` there is no grant to withhold — the fields are display
+        # text, so the save still does what the operator asked and simply carries
+        # no claim. The drop is recorded in the audit event below so it is not
+        # silent to anyone reading the log.
+        if str(entry.get("label", "")).strip() or str(entry.get("review", "")).strip():
+            stripped_claims.append(name)
         validated.append({"name": name, "repo": repo, "branch": branch, "trust": trust})
 
     # Update config file (atomic write to prevent corruption on crash)
@@ -3984,8 +4172,11 @@ async def handle_registries(request: web.Request) -> web.Response:
         resources=(
             f"count={len(validated)} repos="
             f"{','.join(_strip_git_target_userinfo(r['repo']) for r in validated)}"
+            + (f" stripped_build_claims={','.join(stripped_claims)}" if stripped_claims else "")
         ),
     )
+    # The response echoes exactly what was stored, so a client that sent a
+    # `label`/`review` sees them absent and can tell the claim did not stick.
     public_registries = [
         {**row, "repo": _strip_git_target_userinfo(row["repo"])} for row in validated
     ]
@@ -4093,6 +4284,7 @@ def register_app_routes(app: web.Application) -> None:
     app.router.add_get("/api/apps/{name}/manifest", handle_get_manifest)
     app.router.add_get("/api/apps/{name}/config", handle_app_config)
     app.router.add_put("/api/apps/{name}/config", handle_app_config)
+    app.router.add_get("/api/apps/{name}/uninstall/preview", handle_uninstall_preview)
     app.router.add_post("/api/apps/{name}/uninstall", handle_uninstall_app)
     app.router.add_post("/api/apps/{name}/update", handle_update_app)
     app.router.add_post("/api/apps/{name}/enable", handle_enable_app)

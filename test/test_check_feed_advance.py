@@ -2,12 +2,11 @@
 
 ``scripts/check_feed_advance.py`` decides, at publish time, whether a
 release run may rewrite its channel's mutable feed pointer. The scenario
-it exists for is a hotfix cut on an OLD release line (``v0.4.1-insider.1``
+it exists for is a patch release cut on an OLD release line (``v0.4.1-insider.1``
 while insider serves ``0.5.0-insider.1``): the run must publish its
 immutable versioned assets, but rewriting the pointer would offer every
 client on the channel a downgrade -- which electron-updater ACCEPTS when
-the installed version carries a prerelease suffix. This happened live on
-2026-08-28 and required an emergency ``v0.5.0-insider.2`` to undo.
+the installed version carries a prerelease suffix.
 
 Structural pins on the four publish workflows keep the guard wired to
 every pointer write; a plausible refactor that drops one silently
@@ -50,7 +49,7 @@ class TestParseVersion:
             # Nightly wheel (PEP 440): same run, same comparable number.
             ("0.1.0.dev20260731065756", (0, 1, 0, 0, 20260731065756)),
             # Free-form prerelease labels release.yml accepts and builds.
-            # A hyphen in the label used to make the guard exit 2 with empty
+            # A hyphen in the label would make the guard exit 2 with empty
             # stdout, which the desktop publishers read as "neither advance
             # nor hold" and fail -- a hard publish outage on a valid tag.
             ("0.5.0-beta-preview.1", (0, 5, 0, 0, 1)),
@@ -150,7 +149,7 @@ def _run(args: list[str], feed: str = "", tags: str = "", tmp_path: Path | None 
 
 class TestVerdicts:
     def test_hotfix_on_old_line_holds_against_the_feed(self, tmp_path: Path) -> None:
-        """The exact live incident: insider serves 0.5.0, hotfix publishes 0.4.1."""
+        """An old-line patch release holds against a newer feed: insider 0.5.0, publish 0.4.1."""
         res = _run(
             ["--new", "0.4.1-insider.1", "--channel", "insider", "--self", "v0.4.1-insider.1"],
             feed="version: 0.5.0-insider.1\n",
@@ -269,7 +268,7 @@ class TestVerdicts:
         assert res.returncode == 3
 
     def test_insider_line_is_capped_by_a_shipped_bare_release(self, tmp_path: Path) -> None:
-        """Once 0.5.0 shipped stable, another 0.5.0-insider.N is a hotfix
+        """Once 0.5.0 shipped stable, another 0.5.0-insider.N is a patch release
         on an old line by definition."""
         res = _run(
             ["--new", "0.5.0-insider.3", "--channel", "insider", "--self", "v0.5.0-insider.3"],
@@ -317,7 +316,7 @@ class TestWorkflowsAreWired:
         It shells out to ``scripts/check_feed_advance.py`` and to
         ``git ls-remote --tags origin``, so the job holding it must have
         checked the repository out whenever the guard step itself runs.
-        ``sign-and-notarize.yml``'s publish job used to check out only on
+        ``sign-and-notarize.yml``'s publish job checking out only on
         the promotion path (``if: inputs.promote``) -- with that gating the
         guard step red-fails on a normal nightly/insider publish, AFTER the
         immutable assets are already uploaded. So a checkout in a

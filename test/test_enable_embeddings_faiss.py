@@ -1,6 +1,6 @@
 """Tests for faiss-cpu installation block in enable-embeddings handler.
 
-The enable flow no longer boots Ollama: when the GGUF is absent it kicks (or
+The enable flow does not boot Ollama: when the GGUF is absent it kicks (or
 adopts) a background ``ensure_model`` download task and returns 200
 "downloading" immediately; when the model file is present it pip-installs
 faiss-cpu (flow unchanged), wires ``make_sync_embed_fn()`` onto the vector
@@ -54,6 +54,21 @@ def _reset_status():
     mem_mod._embedding_setup_status = {"step": "idle", "error": ""}
     yield
     mem_mod._embedding_setup_status = {"step": "idle", "error": ""}
+
+
+@pytest.fixture(autouse=True)
+def _pin_active_embedder():
+    """Pin the ACTIVE vector width the handler persists.
+
+    The handler reads it off the shared embedder rather than writing a literal, and
+    resolving that singleton for real would construct a process-wide backend that
+    outlives the test. 1024 is the bundled model's width, so every persisted-config
+    assertion below reads the same as it would on an unpatched install.
+    """
+    embedder = MagicMock()
+    embedder.dim = 1024
+    with patch(f"{_MOD}.get_shared_embedder", return_value=embedder):
+        yield embedder
 
 
 def _common_patches(cfg_path, faiss_available=False, proc_rc=0, proc_stderr=b"",
@@ -287,6 +302,76 @@ class TestLoadFaissIndexCalled:
         assert data["memory"]["migrated"] is True
 
 
+class TestPersistedEmbeddingDim:
+    """``memory.embedding_dim`` must be the LIVE width, never a literal.
+
+    ``_load_model`` refuses a model whose own ``n_embd`` disagrees with the persisted
+    width, so writing 1024 while a 768- or 1536-wide model is active leaves that model
+    unloadable on every later restart until config.json is hand-edited.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_non_bundled_active_width_is_what_gets_persisted(
+        self, tmp_path: Path, _pin_active_embedder
+    ) -> None:
+        cfg_path = tmp_path / "kirocrew.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        _pin_active_embedder.dim = 768
+        patches, store, proc, mgr = _common_patches(cfg_path, faiss_available=True)
+
+        with patches["mgr"], patches["model_present"], patches["cfg_load"], \
+             patches["cfg_path"], patches["subprocess"], patches["embed_fn"], \
+             patches["faiss"], patches["store"], patches["wrap_argv"]:
+            async with TestClient(TestServer(_make_app())) as c:
+                assert (await c.post("/api/memory/enable-embeddings")).status == 200
+
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+        assert data["memory"]["embedding_dim"] == 768
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_width_fails_loudly_and_persists_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        cfg_path = tmp_path / "kirocrew.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        patches, store, proc, mgr = _common_patches(cfg_path, faiss_available=True)
+
+        class _DimlessEmbedder:
+            @property
+            def dim(self) -> int:
+                raise RuntimeError("backend never settled on a width")
+
+        with patches["mgr"], patches["model_present"], patches["cfg_load"], \
+             patches["cfg_path"], patches["subprocess"], patches["embed_fn"], \
+             patches["faiss"], patches["store"], patches["wrap_argv"], \
+             patch(f"{_MOD}.get_shared_embedder", return_value=_DimlessEmbedder()):
+            async with TestClient(TestServer(_make_app())) as c:
+                resp = await c.post("/api/memory/enable-embeddings")
+                assert resp.status == 500
+                assert (await resp.json())["code"] == "embedding_dim_unreadable"
+
+        assert json.loads(cfg_path.read_text(encoding="utf-8")) == {}
+
+    @pytest.mark.asyncio
+    async def test_a_non_positive_width_fails_loudly_and_persists_nothing(
+        self, tmp_path: Path, _pin_active_embedder
+    ) -> None:
+        cfg_path = tmp_path / "kirocrew.json"
+        cfg_path.write_text("{}", encoding="utf-8")
+        _pin_active_embedder.dim = 0
+        patches, store, proc, mgr = _common_patches(cfg_path, faiss_available=True)
+
+        with patches["mgr"], patches["model_present"], patches["cfg_load"], \
+             patches["cfg_path"], patches["subprocess"], patches["embed_fn"], \
+             patches["faiss"], patches["store"], patches["wrap_argv"]:
+            async with TestClient(TestServer(_make_app())) as c:
+                resp = await c.post("/api/memory/enable-embeddings")
+                assert resp.status == 500
+                assert (await resp.json())["code"] == "embedding_dim_unreadable"
+
+        assert json.loads(cfg_path.read_text(encoding="utf-8")) == {}
+
+
 class TestLoadFaissIndexFailure:
     @pytest.mark.asyncio
     async def test_returns_500_when_load_faiss_raises(self, tmp_path: Path) -> None:
@@ -334,7 +419,7 @@ class TestFaissInstallTimeout:
         proc.kill.assert_called_once()
         # The critical pin: the reap drains pipes via a SECOND communicate();
         # a bare wait() on a killed pip blocked writing into a full stderr
-        # pipe would hang the handler forever (#5989).
+        # pipe would hang the handler forever.
         assert proc.communicate.call_count == 2
         proc.wait.assert_not_awaited()
         assert mem_mod._embedding_setup_status["step"] == "idle"
@@ -527,7 +612,7 @@ class TestSetMigratedFailClosed:
 
 
 class TestPipStderrRedaction:
-    """Regression for issue #7279: pip/ensurepip stderr reached the gateway log
+    """pip/ensurepip stderr must not reach the gateway log
     unredacted. A private index configured with userinfo credentials leaks the
     token into pip's stderr on an auth failure; both warning sites must route
     the decoded stderr through ``redact_and_truncate`` (redact the FULL text

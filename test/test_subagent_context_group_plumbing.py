@@ -14,6 +14,7 @@ context rebuilding entirely, so the flags cannot apply to it.
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock
 
@@ -38,6 +39,7 @@ def _mock_sessions() -> MagicMock:
     sessions.get_pid = MagicMock(return_value=None)
     sessions.get_approval_policy = MagicMock(return_value="auto")
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.has_session = MagicMock(return_value=True)
     sessions.release = MagicMock()
     sessions.reset = AsyncMock()
@@ -229,7 +231,7 @@ class TestContinuationInheritsScope:
         )
         assert mgr.recorded_cwd("conv9") == str(proj)
 
-        # A project that no longer exists is forwarded ANYWAY, so `spawn` refuses
+        # A project that does not exist is forwarded ANYWAY, so `spawn` refuses
         # it. Filtering this to "" would be unsafe because an empty cwd resolves
         # to the POOL project, so a follow-up naming relative files would then edit
         # an unrelated repository.
@@ -244,17 +246,29 @@ class TestContinuationInheritsScope:
         monkeypatch.setattr("kiro_crew.subagent.read_state", lambda _id: {})
         assert mgr.recorded_cwd("conv9") == ""
 
-        # And the synchronous path carries no probe of its own. Comments are
-        # stripped first: the method explains the hazard by naming the call, and a
-        # scan that counted prose would fail on its own documentation.
+        # And the synchronous path carries no probe of its own -- the sync entry
+        # plus the prelude it shares with the async one, which is where every
+        # check and every state read now live. Comments are stripped first: the
+        # code explains the hazard by naming the call, and a scan that counted
+        # prose would fail on its own documentation.
         src = Path(ContinuationCoordinator.__module__.replace(".", "/") + ".py")
         src = (Path(__file__).parents[1] / "src" / src).read_text(encoding="utf-8")
-        body = src.split("def continue_conversation_impl")[1].split("\n    def ")[0]
+        bodies = {
+            node.name: ast.get_source_segment(src, node) or ""
+            for node in ast.walk(ast.parse(src))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        }
+        body = "\n".join(
+            bodies[name] for name in ("continue_conversation_impl", "_continue_prelude_impl")
+        )
         code = "\n".join(
             ln for ln in body.splitlines() if not ln.lstrip().startswith("#")
         )
         assert "is_dir(" not in code, "a blocking probe is back on the event loop"
         assert "read_state(" in code, "premise: the seed read is still there to compare"
+        assert (
+            "_continue_prelude(" in bodies["continue_conversation_impl"]
+        ), "premise: the sync entry still runs the shared prelude"
 
 
 class TestScopePersistence:

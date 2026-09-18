@@ -173,6 +173,32 @@ describe('untranslated-english — a Latin-script value must not read as English
   })
 })
 
+describe('a marker prefix earns no exemption', () => {
+  // The consent line this key carries shipped for one revision as English
+  // prefixed with a marker, and both checks skipped a value that carried it.
+  // A ratchet the value being judged can switch off is not a ratchet, so the
+  // prefix is now ordinary prose and is judged like any other.
+  const PREFIXED = 'TODO(i18n): This starts a request you finish in a terminal on this machine — nothing is delivered until then, and you can withdraw it at any time.'
+
+  it('is flagged in every non-Latin locale', () => {
+    for (const lang of Object.keys(TARGET_SCRIPTS)) {
+      expect(flagsScript(PREFIXED, lang), lang).toBe(true)
+    }
+  })
+
+  it('is flagged in every Latin-script locale', () => {
+    for (const lang of Object.keys(FUNCTION_WORDS)) {
+      expect(flagsEnglish(PREFIXED, lang, PREFIXED), lang).toBe(true)
+    }
+  })
+
+  it('is flagged the same with the prefix as without it', () => {
+    const unmarked = PREFIXED.slice('TODO(i18n): '.length)
+    expect(flagsScript(unmarked, 'ja')).toBe(flagsScript(PREFIXED, 'ja'))
+    expect(flagsEnglish(unmarked, 'de', unmarked)).toBe(flagsEnglish(PREFIXED, 'de', PREFIXED))
+  })
+})
+
 describe('stripping', () => {
   it('removes every locale-invariant span before anything is judged', () => {
     expect(strippedProse('Open {{name}} at https://x.dev/a/b using `npm ci` v2')).toBe('Open at using v')

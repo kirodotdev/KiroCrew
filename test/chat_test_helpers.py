@@ -28,7 +28,7 @@ def move_transcript_past(log: ConversationLog, key: str, sig: float) -> None:
     (~15.6 ms on Windows), leaving the second write with an mtime identical
     to the first -- a staged "transcript moved on" then has not moved on at
     all, and any staleness assertion keyed on the mtime signature becomes a
-    coin flip (#2981, same class as #2449). Pinning the mtime makes the test
+    coin flip. Pinning the mtime makes the test
     exercise the signature COMPARISON rather than the platform's clock
     resolution (testing-conventions.md § Determinism).
     """
@@ -46,7 +46,7 @@ async def drain_background_tasks(state) -> None:
     the Slack mock straight afterwards races it: it usually wins on an idle machine and
     loses under load. That flake surfaces as a plain count mismatch (``assert 0 == 2``)
     or as ``'NoneType' object has no attribute 'args'``, on a DIFFERENT test in the
-    class each run, and names neither the task nor the race (#4130).
+    class each run, and names neither the task nor the race.
 
     Awaiting the not-yet-done members is an exact wait on the real completion
     condition rather than a sleep. An empty set means the task already finished; a
@@ -96,14 +96,44 @@ def _make_ready_kiro_prerequisite() -> KiroPrerequisiteService:
     return _READY_KIRO_PREREQUISITE
 
 
+def stub_readonly_spec_publisher(monkeypatch) -> list[tuple[str, str | None]]:
+    """Stand in for the side turn's derived-spec publisher.
+
+    ``_run_side_turn`` derives ``<agent>--readonly`` from the live kiro agent
+    registry before it creates the side session; under a test home that
+    registry holds no base spec, so the real publisher would refuse every turn
+    (``base_spec_missing``). The stub answers with the derived name and a fixed
+    digest and records the base it was asked for. The real derivation and
+    publication are covered by ``test_side_readonly_spec.py``.
+    """
+    from kiro_crew.dashboard.side_readonly_spec import PublishedSpec
+
+    calls: list[tuple[str, str | None]] = []
+
+    def _fake_publish(base_name: str, project_dir: str | None = None) -> PublishedSpec:
+        calls.append((base_name, project_dir))
+        return PublishedSpec(name=f"{base_name}--readonly", digest="d" * 64)
+
+    monkeypatch.setattr("kiro_crew.dashboard.handlers.side.publish_readonly_spec", _fake_publish)
+    return calls
+
+
 def _make_state(tmp_path, **kwargs):
     """Create a DashboardState with mocked services and real ConversationLog."""
     sessions = MagicMock(count=0)
+    sessions.get_provider = MagicMock(return_value=None)
+    sessions.resumable_sid = MagicMock(return_value=None)
     sessions.remove = AsyncMock()
     sessions.discard_conversation = AsyncMock()
     sessions.aflush = AsyncMock()
     sessions.recycle_background = AsyncMock()
     sessions.get_pid = MagicMock(return_value=None)
+    # No live provider by default, and a destroy that can be awaited: the side
+    # turn asks ``get_provider`` whether a session is retained and destroys a
+    # stale one. A bare MagicMock answers "yes" to the first and cannot be
+    # awaited for the second. Tests that want a live provider set it explicitly.
+    sessions.get_provider = MagicMock(return_value=None)
+    sessions.destroy = AsyncMock()
     # Real in-memory Slack-link store rather than bare MagicMocks. The unlink
     # path unpacks get_slack_link into (thread_ts, channel_id) and branches on
     # whether a link is PRESENT, and a MagicMock satisfies neither: it iterates

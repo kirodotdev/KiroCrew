@@ -8,10 +8,24 @@ disconnect, and the two launch-gate rungs. The subsystem is
 `l0_record.py`, `l1_smoke.py`, `tool_test.py`), plus
 `dashboard/handlers/connections.py` and `website/src/pages/connections/`.
 
+The `src/kiro_crew/connections/vendors/zoom/` subtree is a separate connector-campaign slice with its own owning spec — [connector-zoom.md](connector-zoom.md) (`W11-A` Zoom contract semantics) — not this subsystem's OAuth-grant plumbing.
+
 **Kiro Crew never holds a connection's credential.** kiro-cli owns the OAuth chain
 end to end; Kiro Crew observes grant presence by `stat`, and every rule below follows
 from that boundary. The credential-boundary detail lives in
 [`../architecture/design-notes/mcp-oauth-ownership.md`](../../architecture/design-notes/mcp-oauth-ownership.md).
+
+One thing that looks like an exception is not one. A provider whose MCP server
+refuses dynamic client registration (`auth.mode: "preregistered"` in the
+registry — GitHub and Asana today) needs an OAuth **app** an operator registered
+in the vendor console, and a confidential app comes with a `client_secret`. That
+secret is the operator's *application* credential, not any user's grant: the
+grant still lives with kiro-cli and nothing here reads it. Kiro Crew keeps the
+secret in the encrypted vault (`CONNECTIONS_<SLUG>_CLIENT_SECRET`) as the source
+of truth and writes it into the emitted agent spec as `oauth.clientSecret` only
+because that file is the one thing kiro-cli reads — **the same footing the
+existing `headers` secrets have: vault is truth, the spec is a projection.** See
+"Pre-registered OAuth clients" below.
 
 ## Status and cancel
 
@@ -903,16 +917,28 @@ mounts or gates on it.
 | Stripe | payments-finance | 1 | yes / yes | tool-level | shown | — |
 | Vercel | developer-tools | 1 | yes / yes | none | shown | — |
 | GitLab | developer-tools | 1 | yes / yes | none (single `mcp` scope) | shown | — |
-| GitHub | developer-tools | 2 | **no** / yes | read-only server variant | gated | Kiro OAuth app registration, then `client_id` |
+| GitHub | developer-tools | 2 | **no** / yes — pre-registered client (`auth.mode`) | read-only server variant | shown as "needs configuration" until an operator enters a client; Connect after | manual launch-gate check with an operator-registered app ([runbook](../../guides/oauth-app-registration/github.md)) |
 | Superhuman Mail | calendar-email | 1 | yes / yes | none | gated | logged-in revoke-surface check |
 | Sentry | developer-tools | 2 | yes / yes | grant only the `inspect` + `docs` skills | gated | manual launch-gate check (L2 SOP) |
 | Supabase | developer-tools | 2 | yes / yes | installs `?read_only=true` | gated | manual launch-gate check |
 | Airtable | data-analytics | 2 | yes / yes | decline the `*:write` scopes at consent | gated | manual launch-gate check |
 | PayPal | payments-finance | 2 | yes / yes | none — live endpoint moves money | gated | manual launch-gate check; sandbox first |
-| Asana | project-management | 2 | **no** / yes | none (single `default` scope) | gated | Kiro MCP-app registration in Asana's developer console, then `client_id` |
+| Asana | project-management | 2 | **no** / yes — pre-registered client (`auth.mode`) | none (single `default` scope) | shown as "needs configuration" until an operator enters a client; Connect after | manual launch-gate check with an operator-registered app ([runbook](../../guides/oauth-app-registration/asana.md)) |
 | Figma | design | 3 | yes / yes | Dev seat is read-only outside drafts | hidden | Figma admits clients from its MCP Catalog waitlist |
 | Canva | design | 3 | yes / yes | none | hidden | Canva allow-lists the redirect URI per client |
 | Dropbox | file-storage | 3 | yes / yes | `/dash` search server (Dash plan) | hidden | Dropbox honours DCR only for its trusted-client list |
+| Miro | design | 2 | yes / yes | none — `boards:read` advertised but consent cannot drop `boards:write` | gated | manual launch-gate check |
+| Webflow | design | 2 | yes / yes | none (per-tool grant, each tool bundles read and write) | gated | manual launch-gate check |
+| Netlify | developer-tools | 2 | yes / yes | none — `read` scope is not enforced by the broker; call only `*-services-reader` | gated | manual launch-gate check |
+| Amplitude | data-analytics | 2 | yes / yes | request `mcp:read` only | gated | manual launch-gate check |
+| Mixpanel | data-analytics | 2 | yes / yes | none (analysis scopes only; role-limited) | gated | manual launch-gate check |
+| Cloudflare (Workers Bindings) | developer-tools | 2 | yes / yes | none — fixed `workers:write` + `d1:write`; `observability` host is the read-only sibling | gated | manual launch-gate check |
+| Hugging Face | developer-tools | 2 | yes / yes | request `read-mcp` only; installs `?login` so the server demands a grant | gated | manual launch-gate check; L1 must not read an anonymous 200 as a held grant |
+| Zapier | developer-tools | 2 | yes / yes | manual server configuration at mcp.zapier.com | gated | manual launch-gate check |
+| Square | payments-finance | 3 | yes / yes | tick `*_READ` permissions only at consent | hidden | Square admits MCP clients from an allowlist (developer-forum request) |
+| Postman | developer-tools | 2 | yes / yes | installs `/minimal` (no delete tools); no scope picker | gated | manual launch-gate check |
+| Neon | developer-tools | 2 | yes / yes | installs `?readonly=true` | gated | manual launch-gate check |
+| Prisma | developer-tools | 2 | yes / yes | none (only `workspace:admin`) | gated | manual launch-gate check |
 
 Tier is provider *categorization* (see the tiers note above), never mint
 latency: tier 3 means the vendor gates clients by allowlist or waitlist, so
@@ -922,22 +948,35 @@ banner allowlist stays registry-derived while the admission is pursued.
 
 ### How an entry gets in, and what each rung buys
 
-1. **Industry baseline.** The candidate is listed by both the ChatGPT and the
-   Claude connector directories, or fills a category the registry has none of.
-   The comparison lives in the research note
+1. **Industry baseline.** The candidate is listed by at least one of the two
+   connector directories, ChatGPT's or Claude's. Being listed by both, or
+   filling a category the registry has none of, is what orders the backlog,
+   not what admits an entry: a single-directory listing is a sufficient floor
+   because rungs 2–4 hold the entry launch-gated, so registering it changes
+   nothing a user sees until rung 5. The comparison lives in the research note
    `research/connectors-industry-baseline.md` in the operator workspace, not in
-   this tree; this section records only the outcome.
+   this tree; this section records only the outcome. Of the roster above,
+   Zapier, Postman, Neon, Prisma and Square are single-directory listings; the
+   rest are listed by both.
 2. **Public remote MCP with OAuth discovery.** The vendor hosts the server and
    publishes RFC 9728 protected-resource metadata naming an RFC 8414 issuer.
    Without that the L0 probe has nothing to assert and the entry cannot exist.
-   Google Workspace, Microsoft 365, Snowflake and Databricks all fail this rung
-   today (pre-registered client, tenant-scoped URL, or no fixed endpoint) and
-   would need a Kiro-built connector, which is a different product decision.
+   A vendor that publishes the metadata but refuses dynamic client
+   registration (GitHub, Asana, Google Workspace, Slack, HubSpot, Box) clears
+   this rung as a **pre-registered** entry — see "Pre-registered OAuth clients"
+   below; a vendor with no fixed public endpoint at all (Microsoft 365,
+   Snowflake, Databricks) still fails it and would need a Kiro-built
+   connector, which is a different product decision.
 3. **L0 green in record mode, then strict mode.** `l0_probe --record` captures
    DCR, PKCE and the issuer; a strict run must then pass with those values
-   committed. Trailing-slash issuer disagreements between a vendor's PRM and
-   its AS document (Calendly, Box, Google in the 2026-09-08 survey) fail here
-   by design — RFC 8414 §2 compares issuers as exact strings.
+   committed. Issuers are compared as exact strings (RFC 8414 §2) with exactly
+   one equivalence, `l0_probe.same_issuer`: an issuer whose path is empty
+   equals the same issuer with path `/` (RFC 3986 §6.2.3), which is the
+   root-slash disagreement Google and Box publish between their PRM and AS
+   documents. A trailing slash after a **non-empty** path (`/tenant/` vs
+   `/tenant`) remains a mismatch by design and is pinned by tests — that is the
+   realm-substitution boundary the strict comparison exists for. Pre-registered
+   entries record the vendor's DCR value but are not held to it.
 4. **Banner allowlist.** The issuer's `authorization_endpoint` is added to
    `security.exfil._OAUTH_AUTHORIZATION_ENDPOINTS` and the consent-URL corpus,
    or the fail-closed banner blocks every connect.
@@ -947,3 +986,216 @@ banner allowlist stays registry-derived while the admission is pursued.
 
 Rungs 1–4 are what this roster's gated entries have; rung 5 is what they wait
 on.
+
+## What a card shows inline, and what it hides behind the triangle
+
+A Connections card is one cell of a grid, so every line it renders is paid by
+every card that reaches the same state. The card therefore has exactly three
+kinds of content, and a new state or a new piece of copy lands in one of them:
+
+| Content | Where it renders | Examples |
+|---|---|---|
+| The state, in a word | the header badge (icon + label) | Not connected, Needs configuration, Connected |
+| A **pre-action caveat** — what the user should know before pressing the row's action, or what pressing it entails | the amber warning triangle (`PrerequisiteTip`) placed immediately before that action, in the same row: hover or focus previews the copy, click pins it, Escape or an outside press dismisses it | GitLab's Duo/group requirement and Atlassian's site requirement beside **Connect**; the one-time OAuth-app setup explanation beside **Configure OAuth app** |
+| A **verdict the user must act on**, or a form the state needs | an inline band, the only thing allowed to add a row | the not-verified / not-authorized verdict, the needs-attention diagnosis, the return-address relay while waiting for approval |
+
+The line between the last two is what the copy is *about*. A verdict reports a
+fact about the card's current state; a caveat annotates a button. Copy phrased
+as "X needs …", "Y opens …", "requires …", "before you …" is a caveat and goes
+in the triangle however important it feels — importance is why it sits next to
+the action the user is about to press, not a reason to grow the card. One
+triangle per action row; two caveats for one action merge into one bubble.
+
+This was decided by trying the alternative: the prerequisite warnings were
+built as always-visible bands while under review and were reverted to the
+triangle on the maintainer's ruling before they merged, so the bands never
+reached `main`. The needs-configuration state later shipped a band for its
+setup explanation and was moved behind the triangle the same way. A
+review-lane suggestion to "make the warning visible" is answered by this
+section and by `website/AUTOSDE.yaml`'s blocking `connection-card-caveat-tip`
+rule, which names the same three kinds; the frontend test that renders the
+needs-configuration card pins the explanation as absent from the document
+until the triangle is hovered.
+
+The triangle's copy comes from two places. A provider-side prerequisite is the
+registry's `prerequisite_copy` (English fallback) rendered through the
+slug-keyed `prerequisite_<slug>` catalog entries, kept in lockstep by a test;
+a state-level caveat, like the setup explanation, is an ordinary catalog key
+(`needs_configuration_help`). Both ride under the one `before_you_connect`
+heading with the `prerequisites_for_provider` accessible name — a new state
+reuses them rather than adding a second tooltip component or heading.
+
+## Pre-registered OAuth clients
+
+Most providers let kiro-cli register a public OAuth client at runtime (RFC 7591),
+so nothing about the client exists before the first Connect. A provider that
+refuses that carries an `auth` block in the registry:
+
+```json
+"auth": {"mode": "preregistered", "confidential": true, "redirect_host": "127.0.0.1",
+         "redirect_port": 48101, "registration_guide": "oauth-app-registration/github.md"}
+```
+
+`registry.py` validates the block (`_validate_auth`): the mode vocabulary is
+closed, a `dcr` block carries nothing else, a `preregistered` block names
+`confidential`, a unique `redirect_port` in 1024–49151, an optional
+`redirect_host` of `127.0.0.1` (default, RFC 8252 §7.3) or `localhost` (for a
+vendor whose HTTPS exemption names only that host — HubSpot refuses IP
+literals), and a runbook under `docs/guides/oauth-app-registration/`. The
+callback path is the constant `CALLBACK_PATH = "/callback"`, so
+`registry.redirect_uri(provider)` is the one string both the runbook prints and
+the runtime pins: `http://<host>:<port>/callback`. A shipped `redirect_host` /
+`redirect_port` is immutable: every operator who followed the runbook has
+registered that exact URI in a vendor console Kiro Crew cannot reach, so changing
+it silently breaks each of their apps until they re-register. Retire a port by
+adding a provider, never by renumbering one;
+`test_connections_registry_auth.py` pins the shipped values so a change fails
+loudly.
+
+**Where the client lives.** `connections/oauth_clients.py` resolves it with a
+fixed precedence — environment
+(`KIROCREW_CONNECTIONS_<SLUG>_CLIENT_ID` / `_CLIENT_SECRET`, the container and
+CI shape) over `config.json` (`connections.oauth_clients.<slug>.client_id`, the
+public half) and the vault (`CONNECTIONS_<SLUG>_CLIENT_SECRET`, the secret
+half), with the registry's own `client_id` as a last-resort default for the id
+only. `resolve_oauth_client` answers `None` when what is stored cannot attempt
+an authorization (no id, or a confidential client without a secret), and
+`oauth_client_view` is the dashboard shape, which by construction never carries
+a secret value.
+
+**How it reaches kiro-cli.** kiro-cli's remote-MCP `oauth` block accepts
+`clientId`, `clientSecret` (when both are set DCR is skipped and the secret is
+presented at the token endpoint) and `redirectUri` (pins the loopback host, port
+and path). `agent._apply_operator_oauth_client` writes the three at agent-spec
+emission for a server whose name is the provider slug **and** whose URL is the
+registry `mcp_url` (`provider_for_server` — name alone would land an operator's
+client on a hand-authored stranger); `warm._registry_server_entry` does the same
+for the premint path and answers `None` for an unconfigured provider so nothing
+warms against a vendor that will only say "unknown client". The mint spec copies
+the emitted entry verbatim, so the cold path inherits it.
+
+**What the user sees.** `get_visible_providers` shows a pre-registered entry
+regardless of `launch_gate_passed` (vendor approval still hides), because until
+a client exists the card is an instruction, not an offer: `/api/connections/status`
+marks the row `needsClientConfig` (only while no grant is held), and the card
+renders the sixth state `needs-configuration` — a lock badge, the Documentation
+link, and a **Configure OAuth app** route to **Settings → OAuth Apps** in place
+of Connect. What the setup involves (a guided settings page, nothing changes
+until saved, removable later, registers an app and enters its client ID and
+secret) is the row's pre-action caveat, so it sits behind the amber triangle
+beside that route, never as a band — see [What a card shows
+inline](#what-a-card-shows-inline-and-what-it-hides-behind-the-triangle). On
+the Settings tab one card per pre-registered provider carries the redirect URI
+to copy, the Client ID field, the Client secret field (write-only, vault-backed)
+and the runbook link. The routes behind it are
+`GET /api/connections/oauth-clients` (any dashboard user; no secret value) and
+owner-only `PUT` / `DELETE /api/connections/oauth-clients/{slug}`. The launch
+gate keeps governing the entry's quality claims: a configured GitHub still runs
+the normal first-connect (`not-verified`) flow, and `launch_gate_passed` flips
+only after the manual L2 walk with an operator-registered app.
+
+**Runbooks.** One per provider under `docs/guides/oauth-app-registration/`
+(index in its `README.md`): console, app type, scopes, the exact redirect URI,
+review or publishing requirements, and where the result goes. Registering the
+app is the operator's action; the tree only ships the instructions. Microsoft
+365 has a runbook and no entry — there is no fixed public endpoint to probe.
+
+## The shared control-plane seam (W01)
+
+`connections/control_plane/` is the single, shared, typed seam every provider
+stream (`W02`..`W14`) dispatches a connector operation through. It exists so the
+vocabulary a downstream manifest entry declares (`operation_kind`, `effect`,
+`service_id`, its auth mode) and the vocabulary a runtime dispatch switches on
+are ONE set of constants, defined once, instead of each stream re-deriving its
+own and drifting. It is pure types with zero IO: descriptors and envelopes, no
+client, no token, no network.
+
+Four typed pieces, in the `TypedDict` + module-level schema-version shape the
+rest of this subsystem uses (`l0_probe.ProbeResult`, `l1_smoke.SmokeResult`,
+`status.ConnectionStatus`):
+
+| Module | Carries |
+|---|---|
+| `operation.py` | `OperationDescriptor` — what an operation *is*: `operation_id`, `service_id`, `operation_kind`, `effect`, and `credential_modes`. THREE enums — `operation_kind` / `effect` / `service_id` — are copied VERBATIM from the closed sets in [connector-capability-manifest.md](connector-capability-manifest.md); that spec owns them, and this seam neither invents a value nor drops one. `credential_modes` is not a new axis: it IS the manifest's per-operation `auth_modes` array, named as the shared `CredentialMode` set. It is PLURAL — the *set of modes the operation permits* — because the manifest defines `auth_modes` as an array and a real operation (W02's GitHub `get_rate_limit`) supports OAuth + PAT + service-to-service. |
+| `context.py` | `OperationContext` — the per-call references: `binding_ref`, `tenant_ref`, `subject_ref`, `deadline`, plus `credential_mode` (singular). No field is a credential VALUE; `binding_ref`/`tenant_ref`/`subject_ref` are references, `deadline` is an absolute POSIX-seconds UTC cutoff, and `credential_mode` is the single SELECTED mode identifier for this call (a mode *type*, never a token), chosen from — and never outside — the descriptor's declared `credential_modes` set. |
+| `result.py` | `OperationResult` — the outcome envelope: `status` (`ok` / `partial`) and `next_cursor` (an opaque continuation token, or `None` when complete). `next_cursor` is deliberately opaque: the manifest declares each operation's own `pagination` contract, and the envelope only says "resume here, or you are done". |
+| `errors.py` | `OperationError` — the RUN-01 typed error taxonomy: a twelve-value closed set (`auth`, `scope`, `consent`, `not_found`, `forbidden`, `quota`, `throttle`, `conflict`, `input`, `temporary`, `partial`, `ambiguous`) copied verbatim from the manifest, plus `detail`. |
+
+**`detail` reuses the subsystem's redaction discipline, opening no new
+channel.** A typed error's `detail` can reflect provider-returned text, so it
+goes through the SAME redact-then-truncate discipline as
+`l1_smoke._redacted_detail`, capped at the same 200 characters. `redacted_detail`
+(and the `operation_error` constructor that calls it) delegate to
+`kiro_crew.security.redact_and_truncate`, which runs the site-wide credential /
+exfiltration-URL scanners over the whole string BEFORE the slice — truncating
+first would bisect a credential straddling the boundary and leak the prefix past
+the regex. There is no un-redacted path onto `detail`.
+
+### Two orthogonal axes, the same word in this repo, kept apart on purpose
+
+Two independent questions wear the word "mode" in this subsystem today, and this
+seam pins the distinction so a later leaf cannot quietly collapse them:
+
+- **Axis A — registration mode** answers *where the OAuth client came from*:
+  `dcr` (dynamic client registration) or `preregistered` (an app an operator
+  registered in the vendor console). It lives in `registry.AuthConfig` and is
+  read through `auth_mode()` / `is_preregistered()`. **W01 changes none of it.**
+- **Axis B — credential mode** answers *what credential this operation
+  authenticates its call with*: `oauth_user`, `fine_grained_pat`, or
+  `service_to_service`. This IS the manifest's per-operation `auth_modes` axis,
+  named as the shared `CredentialMode` set. The operation descriptor declares a
+  SET of them (`credential_modes`, plural, on `control_plane/operation.py`); the
+  single mode a given invocation uses lives on the per-call `OperationContext`
+  (`credential_mode`, singular).
+
+**The two combine freely and neither is derived from the other.** The manifest
+already states the general form of this rule — *"an account type never stands in
+for an auth mode"* — and registration mode standing in for credential mode is
+the same category error. A `preregistered` client (Axis A) can still
+authenticate a given operation as `oauth_user` OR `service_to_service` (Axis B);
+a `dcr` client says nothing about which credential a particular operation uses.
+Any code that inferred one axis from the other would reintroduce exactly the
+collapse the manifest's two-axis design exists to prevent, so a dispatch reads
+`credential_modes` off the operation descriptor directly and never computes it
+from a provider's registration mode.
+
+### Descriptor declares, policy narrows — one source of truth for the mode set
+
+`credential_modes` on the descriptor is the OUTER bound of which credential
+modes an operation permits, and it is the single source of truth for that set.
+A governance policy — for example W05/L05's `permit_operation` / `PermittedModes`
+— may **narrow** which of the declared modes are permitted in a given context,
+but MUST NOT permit a mode the descriptor did not declare: a mode absent from
+`credential_modes` is refused even if a registry or account would otherwise
+allow it. The per-call `OperationContext.credential_mode` is likewise chosen
+from within the declared set. This keeps "what modes exist for this operation"
+in exactly one place (the descriptor); everything downstream only subtracts.
+
+### RUN-01 replaces string-sniffing, but not in this slice
+
+RUN-01 (the twelve-value taxonomy above) is the typed replacement for
+classifying a failure by sniffing substrings out of a free-text message — the
+`l1_smoke._RECONSENT_TOKENS` / `_reconsent_error` matching of `"unauthorized"` /
+`"forbidden"` is the in-repo example of the anti-pattern it supersedes.
+**Reconnecting that classifier to RUN-01 is a separate later slice; W01 only
+fixes the taxonomy it will target and does not touch `l1_smoke`.**
+
+### The `vendors/` container anchor
+
+`connections/vendors/__init__.py` is a committed anchor for an otherwise-empty
+container this slice creates ONCE, for two reasons. First, **packaging**:
+`setup.cfg` builds with `packages = find:` (`find_packages`), which discovers
+only directories containing an `__init__.py` and drops every subpackage beneath
+a directory that lacks one — even a `vendors/<slug>/` that has its own
+`__init__.py`. So without this committed file, `vendors/` and all of it would be
+absent from the wheel/sdist and a non-editable install would ship no provider
+code (a build-artifact effect, not a source one — under an editable/source tree
+PEP 420 namespace packages let `vendors.<slug>` import regardless). Second,
+**race avoidance**: each provider stream (`W02`..`W14`) owns its own
+`vendors/<slug>/` subpackage, and a single owner minting the anchor here stops
+several streams landing in parallel from each trying to create `vendors/` and
+colliding. **W01 creates the anchor and nothing under it** — no `vendors/<slug>/`
+subdirectory is this slice's to make. The name is `vendors`, not `providers`,
+deliberately: `src/kiro_crew/providers/` already exists and means LLM providers,
+so a `connections/providers/` here would be one word for two different things in
+one package tree.

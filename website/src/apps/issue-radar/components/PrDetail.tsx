@@ -555,16 +555,11 @@ export default function PrDetail({ pull }: { pull: PullRequest }) {
   const copyLink = async () => {
     const attempt = ++copyAttemptRef.current
     if (copyTimerRef.current) clearTimeout(copyTimerRef.current)
-    let next: 'copied' | 'failed'
-    try {
-      await copyToClipboard(detail?.url ?? pull.url)
-      next = 'copied'
-    } catch {
-      // Reported, never swallowed: a row that does nothing on press is
-      // indistinguishable from a copy that worked, so the URL is silently
-      // missing from the clipboard at the moment it is about to be pasted.
-      next = 'failed'
-    }
+    const ok = await copyToClipboard(detail?.url ?? pull.url)
+    // Reported, never swallowed: a row that does nothing on press is
+    // indistinguishable from a copy that worked, so the URL is silently
+    // missing from the clipboard at the moment it is about to be pasted.
+    const next = ok ? 'copied' : 'failed'
     if (attempt !== copyAttemptRef.current) return
     setCopyStatus(next)
     copyTimerRef.current = setTimeout(() => setCopyStatus('idle'), 1500)

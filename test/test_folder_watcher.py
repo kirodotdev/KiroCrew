@@ -647,8 +647,8 @@ class TestOrphanCleanupExclusion:
             (source_id, "/tmp/vault/a.md", "2026-01-01", "done"))
         store.db.commit()
 
-        # Run migration which includes orphan cleanup
-        store._migrate()
+        # Run the orphan sweep (formerly part of the migration)
+        store.reclaim_orphans()
 
         # Source should still exist
         row = store.db.execute("SELECT id FROM sources WHERE id = ?", (source_id,)).fetchone()

@@ -1,6 +1,6 @@
 """A backend-only Pull + Build must not reinstall node_modules or rebuild.
 
-Issue #7132. Dev Fleet's sync appended the ``npm ci`` and ``npm build + stage``
+Dev Fleet's sync must not append the ``npm ci`` and ``npm build + stage``
 steps unconditionally on every non-edition sync, so a sync that moved only
 Python still paid a full ``npm ci`` (which DELETES ``website/node_modules``
 before reinstalling from an unchanged lockfile) and a full vite build that
@@ -133,7 +133,7 @@ class TestPreflightEmitsFrontendSkipOnlyWhenProven:
         assert rc == np.EXIT_FRONTEND_SKIP
 
     def test_does_not_emit_skip_when_the_build_fingerprint_is_stale(self, tmp_path, monkeypatch):
-        """The #7132 hole: a prior frontend sync merged new source but its npm ci
+        """The stale-bundle hole: a prior frontend sync merged new source but its npm ci
         failed, so the transaction restored the OLD node_modules. The subtree
         stops changing, but static/dist was built from the OLD tree. The
         fingerprint (old) does not match the incoming website/ tree (new), so the

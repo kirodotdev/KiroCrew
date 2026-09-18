@@ -25,12 +25,15 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
+from member_memory_helpers import patch_private_memory_supported
 from test_chat_runner_coverage import _complete, _drive, _runner_state, _set_stream, _slot
 
 from kiro_crew.acp.types import EVENT_TEXT_CHUNK
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn
+from kiro_crew.member_memory_auth import bind_private_session_store
+from kiro_crew.memory_stores import provision_member_memory
 from kiro_crew.providers.base import LLMEvent
 
 GLOBAL_DEFAULT = "claude-opus-5"
@@ -48,18 +51,50 @@ def _load_config(tmp_path: Path, data: dict) -> KiroCrewConfig:
 
 def _config(tmp_path: Path, *, crew_model: str = "") -> KiroCrewConfig:
     """Global ``agent.model`` set; the crews pin nothing unless *crew_model*."""
-    return _load_config(
+    cfg = _load_config(
         tmp_path,
         {
             "agent": {"model": GLOBAL_DEFAULT, "provider": "acp"},
-            "agents": {"researcher": {"kiro_agent": "kirocrew", "model": crew_model}},
-            "default_agent": "kirocrew",
+            "agents": {
+                "default": {"kiro_agent": "kirocrew", "memory_store": "default"},
+                "researcher": {"kiro_agent": "kirocrew", "model": crew_model},
+            },
+            "default_agent": "default",
         },
     )
+    provision_member_memory(cfg, "researcher")
+    return cfg
+
+
+def _grant_researcher(cfg: KiroCrewConfig, slot_key: str = "chat-cov-1") -> None:
+    """Write the member's private session grant, as an owner-gated route would.
+
+    A turn only confirms a grant that already exists; these turns exercise
+    model selection, not admission, so the grant is written up front.
+    """
+    bind_private_session_store(f"dashboard:{slot_key}", cfg.agents["researcher"].memory_store)
+
+
+def _pin_sync_accessors(client) -> None:
+    """Give the provider double's remaining SYNC accessors sync stand-ins.
+
+    ``_runner_state`` pins the context-usage trio; the turn also reads
+    ``mcp_session_report``, ``available_models`` and the inner client's
+    ``pop_pending_oauth_requests`` without ``await``. Left as ``AsyncMock``
+    children each returns a coroutine nobody awaits, reported at garbage
+    collection against whichever later test triggers it.
+    """
+    client.mcp_session_report = unittest.mock.MagicMock(return_value=None)
+    client.available_models = unittest.mock.MagicMock(return_value=[])
+    client.client.pop_pending_oauth_requests = unittest.mock.MagicMock(return_value=[])
 
 
 def _turn_state(tmp_path: Path):
-    state, client = _runner_state(tmp_path)
+    builder = unittest.mock.MagicMock()
+    builder.ensure_store = unittest.mock.AsyncMock(return_value=object())
+    builder.build_message.return_value = ("fixture context", None)
+    state, client = _runner_state(tmp_path, context_builder=builder)
+    _pin_sync_accessors(client)
     _set_stream(client, [LLMEvent(kind=EVENT_TEXT_CHUNK, text="hi"), _complete()])
     return state, client
 
@@ -70,8 +105,11 @@ def _session_model(state) -> str | None:
 
 
 @pytest.fixture
-def _runner_config(tmp_path):
+def _runner_config(tmp_path, monkeypatch):
     """Serve the real config object to every ``KiroCrewConfig.load()`` in the turn."""
+    # These turns use a fake provider and exercise model selection. Supply only
+    # the host capability result; member provisioning and binding remain real.
+    patch_private_memory_supported(monkeypatch)
 
     def _install(cfg: KiroCrewConfig):
         patcher = unittest.mock.patch.object(
@@ -110,7 +148,7 @@ class TestRunChatDefaultModel:
         ``slot.model`` is persisted and re-sent as a ``set_model`` override on
         every resume, so writing the resolved default there would turn an
         inheriting slot into a permanent pin: a later change to ``agent.model``
-        would no longer reach it. An empty value must survive the turn.
+        would not reach it. An empty value must survive the turn.
         """
         _runner_config(_config(tmp_path))
         state, _client = _turn_state(tmp_path)
@@ -123,7 +161,9 @@ class TestRunChatDefaultModel:
 
     @pytest.mark.asyncio
     async def test_crew_pin_outranks_the_global_default(self, tmp_path, _runner_config):
-        _runner_config(_config(tmp_path, crew_model=CREW_PIN))
+        cfg = _config(tmp_path, crew_model=CREW_PIN)
+        _runner_config(cfg)
+        _grant_researcher(cfg)
         state, _client = _turn_state(tmp_path)
         slot = _slot()
         slot.agent = "researcher"
@@ -135,7 +175,9 @@ class TestRunChatDefaultModel:
 
     @pytest.mark.asyncio
     async def test_explicit_slot_pin_is_untouched(self, tmp_path, _runner_config):
-        _runner_config(_config(tmp_path, crew_model=CREW_PIN))
+        cfg = _config(tmp_path, crew_model=CREW_PIN)
+        _runner_config(cfg)
+        _grant_researcher(cfg)
         state, _client = _turn_state(tmp_path)
         slot = _slot()
         slot.agent = "researcher"
@@ -281,6 +323,7 @@ class TestEagerSpawnDefaultModel:
     async def test_eager_session_starts_on_the_global_default(self, tmp_path, _runner_config):
         _runner_config(_config(tmp_path))
         state, _client = _runner_state(tmp_path)
+        _pin_sync_accessors(_client)
         slot = _slot()
         state._slots[slot.key] = slot
         state.sessions.release = unittest.mock.MagicMock()
@@ -304,6 +347,7 @@ class TestEagerSpawnDefaultModel:
         """
         _runner_config(_config(tmp_path))
         state, _client = _runner_state(tmp_path)
+        _pin_sync_accessors(_client)
         slot = _slot()
         state._slots[slot.key] = slot
         state.sessions.release = unittest.mock.MagicMock()

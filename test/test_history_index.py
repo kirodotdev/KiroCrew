@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import threading
+from types import SimpleNamespace
 
 import pytest
 
@@ -36,6 +37,10 @@ CJK_DOG_SENTENCE = "\u72d7\u5728\u9662\u5b50\u91cc"
 
 def _index(tmp_path) -> SessionSearchIndex:
     return SessionSearchIndex(tmp_path / "session_index.db")
+
+
+def _synthetic_stat(*, dev: int, ino: int) -> SimpleNamespace:
+    return SimpleNamespace(st_mtime_ns=11, st_size=12, st_dev=dev, st_ino=ino)
 
 
 def _sync(index: SessionSearchIndex, tmp_path, key: str, text: str) -> os.stat_result:
@@ -159,6 +164,81 @@ def test_fresh_keys_returns_the_rowid_for_an_unchanged_file(tmp_path):
     fresh = index.fresh_keys({"a": st})
     assert set(fresh) == {"a"}
     assert index.document(fresh["a"], "a") == (len("hello world"), "hello world")
+
+
+@pytest.mark.parametrize(
+    ("dev", "ino"),
+    [
+        ((1 << 63), 17),
+        (17, (1 << 63)),
+        ((1 << 64) - 1, (1 << 128) - 1),
+    ],
+)
+def test_wide_stat_identities_round_trip_without_aliasing(tmp_path, dev, ino):
+    """Windows device IDs are unsigned-64 and Python 3.12 inodes can be 128-bit."""
+    index = _index(tmp_path)
+    index.sync(
+        "wide",
+        mtime_ns=11,
+        size=12,
+        dev=dev,
+        ino=ino,
+        texts=["wide identity"],
+    )
+    same = _synthetic_stat(dev=dev, ino=ino)
+
+    fresh = index.fresh_keys({"wide": same})
+    assert set(fresh) == {"wide"}
+    assert index.raw_texts("wide", same) == ["wide identity"]
+
+    stored = (
+        index._ensure_open()
+        .execute("SELECT dev, ino, typeof(dev), typeof(ino) FROM session_entry")
+        .fetchone()
+    )
+    assert stored is not None
+    expected_types = tuple("integer" if value <= (1 << 63) - 1 else "text" for value in (dev, ino))
+    assert stored[2:] == expected_types
+    decoded = tuple(
+        int(value.split(":", 1)[1]) if isinstance(value, str) else value for value in stored[:2]
+    )
+    assert decoded == (dev, ino)
+
+    for changed in (
+        _synthetic_stat(dev=dev + 1, ino=ino),
+        _synthetic_stat(dev=dev, ino=ino + 1),
+    ):
+        assert index.fresh_keys({"wide": changed}) == {}
+        assert index.raw_texts("wide", changed) is None
+
+
+def test_existing_signed_integer_identity_rows_stay_compatible(tmp_path):
+    """Opening an existing version-2 row must not require a schema migration."""
+    index = _index(tmp_path)
+    index.sync(
+        "legacy",
+        mtime_ns=11,
+        size=12,
+        dev=23,
+        ino=29,
+        texts=["legacy row"],
+    )
+    storage_classes = (
+        index._ensure_open()
+        .execute("SELECT typeof(dev), typeof(ino) FROM session_entry")
+        .fetchone()
+    )
+    assert storage_classes == ("integer", "integer")
+    index.close()
+
+    reopened = _index(tmp_path)
+    try:
+        st = _synthetic_stat(dev=23, ino=29)
+        assert set(reopened.fresh_keys({"legacy": st})) == {"legacy"}
+        assert reopened.raw_texts("legacy", st) == ["legacy row"]
+        assert reopened._ensure_open().execute("PRAGMA user_version").fetchone()[0] == 2
+    finally:
+        reopened.close()
 
 
 def test_stale_row_is_not_vouched_for(tmp_path):

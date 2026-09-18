@@ -553,7 +553,7 @@ def test_huge_or_nonfinite_timestamps_drop_entry_not_crash(monkeypatch, module):
     )
     state = irq.load_state(spath)
     # bad entries dropped, sibling kept -- and the surviving bare key is adopted
-    # into the epoch-scoped space, which is what a pre-sentinel key always was.
+    # into the epoch space, which is what a pre-sentinel key always was.
     assert state["alerted"] == {irq._migrate_key("good"): 1.0}
     with pytest.raises(Report):  # and the tick still runs (re-alert, no crash)
         _tick(module, _msg())
@@ -744,7 +744,7 @@ def test_staggered_reds_arrive_as_one_wake(monkeypatch, module):
     assert "lint" in body and "unit" in body
 
 
-def test_conflict_is_an_nmi_and_ignores_the_window(monkeypatch, module):
+def test_conflict_is_immediate_and_ignores_the_window(monkeypatch, module):
     """A dirty PR dispatches no checks, so pending never drains and waiting
     observes nothing: the conflict must fire despite an open window."""
     _wire(
@@ -774,8 +774,6 @@ def test_oversized_json_integer_is_terminal_not_a_crash_loop(monkeypatch, module
     digits), which is not a JSONDecodeError. It does NOT escape: the kernel's
     identity() wrapper converts every ValueError into Done, so the watch removes
     itself with a reason instead of raising on every tick.
-
-    This pins the mechanism a review round claimed was broken.
     """
     _wire(monkeypatch, module, _payload([]))
     huge = "9" * 5000
@@ -862,8 +860,8 @@ def test_unfiltered_qualified_red_still_wakes(monkeypatch, module):
 # The gap these close: a comment and a review verdict move no check, so every
 # signal in this section is invisible to the rollup the rest of this file
 # exercises. On this repository a reviewer lane can report success while its
-# comment body carries findings, which is exactly the case that used to leave a
-# PR sitting green with nobody reading the verdict.
+# comment body carries findings, which is exactly the case that leaves a PR
+# sitting green with nobody reading the verdict.
 
 
 def test_a_fresh_foreign_comment_wakes(monkeypatch, module):

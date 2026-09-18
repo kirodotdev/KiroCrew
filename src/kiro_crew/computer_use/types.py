@@ -570,10 +570,10 @@ SECURE_WINDOW_NOTE = (
 )
 #: A truncated walk cannot prove the window holds no password field, so
 #: ``capture_macos`` treats "unknown" as "present" and captures nothing. That
-#: refusal used to be SILENT, which is the normal state for a browser (Chrome
+#: silent refusal is the normal state for a browser (Chrome
 #: measured 1475 nodes against a 1200 default) — so ``screenshot: true`` on
-#: Chrome/Slack/VS Code returned no image and no reason, and the model retried in
-#: exactly the loop the sibling notes exist to prevent. It names the remedy,
+#: Chrome/Slack/VS Code would return no image and no reason, and the model would
+#: retry in exactly the loop the sibling notes exist to prevent. It names the remedy,
 #: because raising the budget is something the model can actually do.
 TRUNCATED_WINDOW_NOTE = (
     "Screenshot suppressed: the accessibility tree was truncated, so this window "

@@ -503,9 +503,9 @@ class TestContextDrain:
     def test_drain_formats_context(self):
         """Pending context entries are formatted with source labels.
 
-        Calls the real ``drain_pending_context`` (this test previously
+        Calls the real ``drain_pending_context`` (this test avoids the stub that
         simulated the drain inline, so it kept passing while the production
-        frame changed underneath it — e.g. the #4780 silent-consumption
+        frame changed underneath it — e.g. the silent-consumption
         contract line would never have shown up here).
         """
         from kiro_crew.dashboard.chat_runner import (
@@ -955,7 +955,7 @@ class TestReverseProxy:
 
         try:
             async with self._make_client() as client:
-                # Test path containing space (%20) (#2053)
+                # Test path containing space (%20)
                 resp = await client.get("/apps/proxy-app/api/read?path=/tmp/my%20notes.md")
                 assert resp.status == 200, f"Expected 200, got {resp.status}"
                 data = await resp.json()
@@ -1745,7 +1745,7 @@ class TestNoteEndpoint:
         """The running turn must not consume a note written after it started.
 
         `_run_chat` drains the pending-context queue long after `slot.task` is
-        assigned, so a POST landing in that window used to hand its context to
+        assigned, so a POST landing in that window would hand its context to
         the turn already in flight: the note shaped the request it was written
         after, and the next turn found the queue empty because the drain clears
         it. Both drains are asserted -- the second is what proves it was held
@@ -2988,7 +2988,7 @@ class TestAutomaticSuccessorsDoNotConsumeNotes:
     def test_the_stage_loop_still_flushes_on_every_exit_path(self):
         """(c) hazard: withholding must delay delivery, never lose it.
 
-        The stage loop no longer flushes above its auto-go row, so its EXIT call
+        The stage loop does not flush above its auto-go row, so its EXIT call
         is the only delivery point for a plan that runs to completion and then
         idles. That call sits in the function's ``finally`` and is reached by the
         completed, paused and cancelled paths alike -- asserted structurally
@@ -3612,7 +3612,7 @@ class TestRegistryInstallStream:
         real call performs a fresh, deliberately UNCACHED HTTPS fetch on
         every install (a planted cache row must not supply install
         coordinates), so without this pin the test's verdict depended on
-        live network from the runner (#4236): a transient fetch failure
+        live network from the runner: a transient fetch failure
         takes the fail-closed ``CatalogUnavailable`` branch instead, which
         the companion test below pins separately.
         """
@@ -3642,7 +3642,7 @@ class TestRegistryInstallStream:
         authoritative absence, ``CatalogUnavailable`` means "could not ask" —
         and the install path must refuse rather than fall back to unpinned
         coordinates. Both branches are now deterministic instead of being
-        selected by the CI runner's live network (#4236).
+        selected by the CI runner's live network.
         """
         from kiro_crew.apps import official_catalog
 
@@ -3804,7 +3804,7 @@ class TestInstallFromRegistryLogLines:
         """Pin "catalog reachable, app absent" for the unknown-app path.
 
         These tests exercise the same live-fetching resolution path as
-        ``test_unknown_app_streams_error`` (#4236); without the pin their
+        ``test_unknown_app_streams_error``; without the pin their
         verdict depends on the runner's network.
         """
         monkeypatch.setattr(

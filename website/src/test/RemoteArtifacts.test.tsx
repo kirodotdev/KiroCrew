@@ -109,6 +109,35 @@ describe('ArtifactsPage remote-browse gating', () => {
     expect(vi.mocked(api).browseRemoteArtifacts).toHaveBeenCalledWith('companion', { scope: 'mine' })
   })
 
+  it('renders NO section for a discovery-capable provider whose tooling is absent', async () => {
+    // available: false means the provider's tooling is not installed here, so
+    // every browse it could make fails. Its only possible rendering is an error
+    // card, and nothing inside the section installs anything.
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+      providers: [mkProvider('companion', { available: false })],
+      kind: 'widget',
+    })
+    const browse = vi.fn()
+    vi.mocked(api).browseRemoteArtifacts = browse
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('local a')).toBeInTheDocument())
+    expect(screen.queryByText('On Companion Provider')).not.toBeInTheDocument()
+    expect(browse).not.toHaveBeenCalled()
+  })
+
+  it('renders the section for an installed provider (available: true)', async () => {
+    // The filter must key on the explicit false, not on truthiness: an
+    // available provider is exactly the case the section exists for.
+    vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
+      providers: [mkProvider('companion', { available: true })],
+      kind: 'widget',
+    })
+    vi.mocked(api).browseRemoteArtifacts = vi.fn().mockResolvedValue({ artifacts: [mkRemote('ext-9')] })
+    renderWithProviders(<ArtifactsPage />)
+    await waitFor(() => expect(screen.getByText('On Companion Provider')).toBeInTheDocument())
+    expect(screen.getByText('Remote ext-9')).toBeInTheDocument()
+  })
+
   it('dedups rows that already exist locally (local_slug set)', async () => {
     vi.mocked(api).getArtifactPublishProviders = vi.fn().mockResolvedValue({
       providers: [mkProvider('companion')],

@@ -1,4 +1,4 @@
-"""Tests for the CLI ``kirocrew update`` wheel-install dispatch (issue #1871).
+"""Tests for the CLI ``kirocrew update`` wheel-install dispatch.
 
 Covers:
 - Install layout detection (git, wheel, externally managed)
@@ -143,7 +143,7 @@ class TestReleaseChannel:
     from the async update check, and ``config_dir`` is resolve-AND-maintain (it
     refreshes the recovery breadcrumb and re-runs a leftover-archive sweep that can
     ``shutil.rmtree``), so calling it there put a destructive sweep on the event
-    loop -- issue #1057. ``test_no_config_dir_in_async.py`` guards the production
+    loop. ``test_no_config_dir_in_async.py`` guards the production
     side; patch whichever name that module actually uses.
     """
 
@@ -507,6 +507,9 @@ class TestUpdateDivergenceGuard:
                     result.stdout = f"{proj}\n"
                 elif "--abbrev-ref" in args:
                     result.stdout = "main\n"
+                elif "--verify" in args:
+                    # The upstream pin every later judgment and the reset name.
+                    result.stdout = "0123456789abcdef0123456789abcdef01234567\n"
                 elif "diff" in args:
                     # Non-zero: the upstream has new commits, so the update
                     # proceeds past the up-to-date early return.
@@ -524,6 +527,16 @@ class TestUpdateDivergenceGuard:
                         result.stdout = counts
                 elif "status" in args:
                     result.stdout = porcelain
+                elif "show" in args:
+                    # The pre-reset interpreter-floor gate reads pyproject /
+                    # setup.cfg out of the fetched commit, capturing BYTES like
+                    # the real call. Answer "no such path" in git's own words
+                    # (the gate distinguishes an absent path from a failed
+                    # read by them) so the gate does not fire: the divergence
+                    # guard is what these tests are about.
+                    result.returncode = 128
+                    result.stdout = b""
+                    result.stderr = b"fatal: path 'pyproject.toml' does not exist in 'origin/main'"
             return result
 
         monkeypatch.setattr("subprocess.run", fake_run)

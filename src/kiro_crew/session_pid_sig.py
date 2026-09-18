@@ -15,8 +15,8 @@ authorization boundary. This module makes the mapping authenticated:
   Writes the ``.txt`` file plus a ``session_pid_<pid>.sig`` sidecar containing
   an HMAC-SHA256 over ``"<pid>:<body>"`` — *body* being the full published
   ``.txt`` content: the session key alone (legacy), or the session key plus a
-  second line carrying the process START TOKEN (PID-recycle guard, issue
-  #8343; see below). The MAC is keyed with a subkey **derived
+  second line carrying the process START TOKEN (PID-recycle guard; see
+  below). The MAC is keyed with a subkey **derived
   from** the SEL trust root (``sel_hmac.key`` — the same key that makes the
   security event log tamper-evident, and whose reads are deny-listed for agent
   shells in ``security.py``) via a domain-separation label. The raw root key
@@ -26,10 +26,10 @@ authorization boundary. This module makes the mapping authenticated:
   (state-mutating MCP tools). Returns the session key only when the sidecar
   verifies; missing/invalid signature fails closed to ``""``.
 
-PID-recycle guard (issue #8343): the mapping and its MAC used to bind only
-the pid NUMBER, so once the OS recycled the pid the mapping still verified
-and answered for the NEW process with the previous owner's session key until
-the next restart's orphan sweep. Publication now records the process
+PID-recycle guard: binding only the pid NUMBER would let a mapping keep
+verifying once the OS recycled the pid, answering for the NEW process with
+the previous owner's session key until the next restart's orphan sweep.
+Publication records the process
 incarnation (``platform_compat.get_process_start_id`` — the same identity
 ``session_pid.py`` writes into its ``<gw>:<pid>:<start_token>`` sweep
 records) and BOTH readers refuse on a proven mismatch, while an absent
@@ -54,7 +54,7 @@ Threat model — what the sidecar does and does NOT defend against:
   own pid to another slot's key — no valid sidecar can be produced without
   the deny-listed root key), cross-pid replay (copying another pid's
   ``.txt``/``.sig`` pair — the pid is bound into the MAC), tampering
-  (redirecting a signed ``.txt`` — the old MAC no longer matches), and
+  (redirecting a signed ``.txt`` — the MAC does not match the new bytes), and
   symlink planting at the predictable paths on BOTH sides: publication uses
   ``atomic_write``/``os.replace`` (swaps a symlink out rather than following
   it), and verification opens with ``O_NOFOLLOW`` + regular-file check so a
@@ -148,7 +148,7 @@ def _load_hmac_key() -> bytes | None:
     back to the identical bytes the live ``SecurityEventLog`` validated at init
     (:func:`kiro_crew.sel.sel_hmac_key_bytes`). Without that fallback this
     protocol dies permanently the moment the resolved path stops resolving.
-    :func:`kiro_crew.sel.sel_hmac_key_path` now re-resolves per call (#2588), so
+    :func:`kiro_crew.sel.sel_hmac_key_path` re-resolves per call, so
     a key relocated by a concurrent process (legacy -> ``trust/`` migration) is
     followed rather than mourned; this fallback still carries the cases no path
     can resolve away — deleted, chmod'd, truncated, or a relocation whose bytes
@@ -354,10 +354,10 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     """Publish the pid -> session-key mapping with its HMAC sidecar.
 
     Gateway-side only. Writes ``session_pid_<pid>.txt`` (the lenient-reader
-    contract, unchanged) and ``session_pid_<pid>.sig`` (the strict-resolver
+    contract) and ``session_pid_<pid>.sig`` (the strict-resolver
     trust anchor). When the SEL key is unavailable the mapping is published
     unsigned and any stale sidecar is removed — strict resolvers then fail
-    closed for this pid (pre-sidecar behavior) instead of trusting a
+    closed for this pid instead of trusting a
     signature that no longer matches.
 
     Both files are written via :func:`kiro_crew.atomic_write.atomic_write`
@@ -368,7 +368,7 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     file — an in-place open would follow it and truncate the target.
     ``os.replace`` swaps the symlink itself out instead of following it.
 
-    PID-recycle guard (issue #8343): when the live process's start token is
+    PID-recycle guard: when the live process's start token is
     readable (``platform_compat.get_process_start_id`` — the same
     incarnation identity ``session_pid.py`` records in its
     ``<gw>:<pid>:<start_token>`` sweep entries), it is appended to the
@@ -376,7 +376,7 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     "still the process this mapping was published for" from "the OS
     recycled this pid number". An unreadable token (Windows, probe failure)
     degrades to the legacy single-line form — readers then treat identity
-    as unknown, exactly as for a pre-change file.
+    as unknown, exactly as for a legacy file.
     """
     cfg = config_dir()
     token = platform_compat.get_process_start_id(pid)
@@ -388,6 +388,9 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     else:
         body = session_key
     atomic_write(_txt_path(pid, cfg), body)
+    from kiro_crew.member_memory_auth import publish_member_session_pid
+
+    publish_member_session_pid(pid, session_key, home=cfg)
     key = _load_hmac_key()
     if key is None:
         _report_signing_unavailable()

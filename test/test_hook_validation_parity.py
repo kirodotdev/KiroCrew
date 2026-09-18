@@ -1,6 +1,6 @@
 """Parity + regression tests for centralized script-hook validation.
 
-Issue #5444: the skills-plus-command invariant, event membership, and timeout
+The skills-plus-command invariant, event membership, and timeout
 bounds were enforced only in ``ScriptHookStore.update``, so a direct caller of
 ``ScriptHookStore.create`` could persist a hook the update path rejects and that
 later silently fails to fire. Deserialization (``ScriptHook.from_dict``) also

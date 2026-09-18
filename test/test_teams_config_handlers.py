@@ -204,7 +204,9 @@ class TestSaveThresholds:
             monkeypatch, tmp_path, {"soft_threshold_pct": 60, "hard_threshold_pct": 85}
         )
         assert resp.status == 200
-        assert json.loads(resp.body)["restart_required"] is True
+        # The dispatcher reads both thresholds at point of use, so the next turn
+        # already compares against the saved pair.
+        assert json.loads(resp.body)["restart_required"] is False
         data = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert data["teams"]["soft_threshold_pct"] == 60
         assert data["teams"]["hard_threshold_pct"] == 85

@@ -10,7 +10,7 @@ export const SOUND_PRESETS = ['chime', 'ding', 'blip', 'pop', 'pulse'] as const
 export type SoundPreset = typeof SOUND_PRESETS[number] | 'none'
 
 /** Category mirrors Notification.kind values used by NotificationsPage, plus
- * the frontend-synthesized 'turn' kind (agent finished a turn — see
+ * the frontend-synthesized 'turn' kind (conversation ready for the user — see
  * TURN_DONE_KIND in notificationEvent.ts; sound-only, never in the feed). */
 export const SOUND_CATEGORIES = ['all', 'turn', 'agent', 'cron', 'approval', 'hook', 'heartbeat', 'subagent', 'taskrunner', 'skills'] as const
 export type SoundCategory = typeof SOUND_CATEGORIES[number]
@@ -54,9 +54,18 @@ export function loadSoundSettings(): SoundSettings {
   }
 }
 
-export function saveSoundSettings(s: SoundSettings): void {
-  safeSetItem(STORAGE_KEY, JSON.stringify(s))
-  window.dispatchEvent(new CustomEvent(MC_SOUND_SETTINGS_CHANGED_EVENT))
+export function saveSoundSettings(s: SoundSettings): boolean {
+  // Persist first; only announce the change if it actually landed. A quota-
+  // dropped write must NOT fire the settings-changed event, or every mounted
+  // useNotificationSound would reload from localStorage and read the OLD value,
+  // making the running session diverge from what the user just chose. Callers
+  // (NotificationsPanel) branch on the return to update local state only on
+  // success, so a failed save leaves the UI showing the persisted truth.
+  const persisted = safeSetItem(STORAGE_KEY, JSON.stringify(s))
+  if (persisted) {
+    window.dispatchEvent(new CustomEvent(MC_SOUND_SETTINGS_CHANGED_EVENT))
+  }
+  return persisted
 }
 
 let ctxSingleton: AudioContext | null = null
@@ -173,6 +182,55 @@ export function playPreset(preset: SoundPreset, volume: number): void {
 }
 
 /**
+ * Play an audio FILE the gateway serves — an appearance pack's own cue.
+ *
+ * A separate path from `playPreset` on purpose, and not a shortcoming of it: a
+ * preset is synthesized from oscillators this module owns, while a pack's cue is
+ * third-party bytes behind an authenticated route. Nothing in the AudioContext
+ * graph helps with those, and decoding them through it would mean fetching and
+ * holding every cue in memory; an `<audio>` element streams it and sends the
+ * same-origin session cookie the route requires.
+ *
+ * Failure is SILENCE, never a substitute sound: a 404 (the pack declares a state
+ * it cannot serve), an undecodable file, and a browser that refuses to play
+ * without a user gesture all end here with nothing played. Substituting a preset
+ * would report the pack's own cue with a sound its author never chose.
+ *
+ * The element is released as soon as it finishes or fails, so a long session does
+ * not accumulate one per cue. Callers debounce per crew and state, so this needs
+ * no queue of its own.
+ */
+export function playSoundFile(url: string, volume: number): void {
+  if (!url || volume <= 0) return
+  if (typeof Audio === 'undefined') return
+  let el: HTMLAudioElement
+  try {
+    el = new Audio(url)
+  } catch {
+    return
+  }
+  // The stored volume is a 0..1 setting, but it arrives from localStorage and
+  // `HTMLMediaElement.volume` THROWS outside that range rather than clamping —
+  // so a hand-edited setting would take the cue down with it.
+  el.volume = Math.min(1, Math.max(0, volume))
+  // Stopping is the whole of the release: dropping the handlers leaves nothing
+  // holding the element, so it is collectable, and `pause()` ends a play that is
+  // still buffering — the case a refused `play()` leaves behind. Assigning to
+  // `src` would release the same resource and is a dynamic media-source
+  // assignment, which is a shape worth not writing when it buys nothing.
+  const release = () => {
+    el.onended = null
+    el.onerror = null
+    el.pause()
+  }
+  el.onended = release
+  el.onerror = release
+  // `play()` rejects on the autoplay policy and on a decode failure alike; both
+  // are silence, and neither is an error the user can act on.
+  void el.play().catch(release)
+}
+
+/**
  * Schedule a preset's oscillators on a running context.
  * Disconnects nodes via `onended` so the audio graph doesn't leak over long
  * sessions — without this, every call leaks one osc + one gain node permanently.
@@ -213,9 +271,17 @@ export function presetForKind(kind: string | undefined, settings: SoundSettings)
   const cat = kind && VALID_CATEGORIES.has(kind) ? (kind as SoundCategory) : undefined
   const specific = cat ? settings.perCategory[cat] : undefined
   if (specific) return specific
-  // Built-in category default (not persisted — survives "Use default" reset)
+  // A global 'all' = 'none' is an explicit "silence everything" and must win
+  // over a built-in category default. Otherwise setting all=none would still
+  // let approval chime its built-in 'pulse', which reads as the setting being
+  // ignored. An explicit per-category override (handled above) still wins over
+  // this — only the UNSET category falls through to the global silence.
+  const fallback = settings.perCategory.all ?? 'chime'
+  if (fallback === 'none') return 'none'
+  // Built-in category default (not persisted — survives "Use default" reset).
+  // Reached only when the global fallback is audible.
   if (cat && BUILTIN_CATEGORY_DEFAULTS[cat]) return BUILTIN_CATEGORY_DEFAULTS[cat]!
-  return settings.perCategory.all ?? 'chime'
+  return fallback
 }
 
 /** Installs a window listener that plays sounds on notification SSE events. */
@@ -224,19 +290,40 @@ export function useNotificationSound(): void {
     let current = loadSoundSettings()
     let lastPlayedAt = 0
     const onSettingsChanged = () => { current = loadSoundSettings() }
+    // Cross-tab sync: a settings write in ANOTHER tab fires a DOM `storage`
+    // event here (the same-window MC_SOUND_SETTINGS_CHANGED_EVENT never crosses
+    // tabs). Filter by key and storageArea so an unrelated key or a
+    // sessionStorage write in a same-origin iframe does not force a reload.
+    // Reload from localStorage rather than parsing e.newValue so we reuse
+    // loadSoundSettings' validation/clamping (and correctly adopt DEFAULTS on a
+    // cross-tab key removal, where e.newValue is null).
+    const onStorage = (e: StorageEvent) => {
+      try {
+        if (e.storageArea && e.storageArea !== localStorage) return
+      } catch {
+        /* locked-down storage: fall through to the key filter alone */
+      }
+      if (e.key !== null && e.key !== STORAGE_KEY) return
+      current = loadSoundSettings()
+    }
     const onNotification = (e: Event) => {
       const now = performance.now()
       if (now - lastPlayedAt < 300) return
       const kind = (e as CustomEvent<McNotificationDetail>).detail?.kind
+      // Primary switch: enabled=false yields 'none' from presetForKind, so
+      // WebAudio never plays. Kept as the single gate rather than a second
+      // check here.
       const preset = presetForKind(kind, current)
       if (preset === 'none' || current.volume <= 0) return
       lastPlayedAt = now
       playPreset(preset, current.volume)
     }
     window.addEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, onSettingsChanged)
+    window.addEventListener('storage', onStorage)
     window.addEventListener(MC_NOTIFICATION_EVENT, onNotification as EventListener)
     return () => {
       window.removeEventListener(MC_SOUND_SETTINGS_CHANGED_EVENT, onSettingsChanged)
+      window.removeEventListener('storage', onStorage)
       window.removeEventListener(MC_NOTIFICATION_EVENT, onNotification as EventListener)
     }
   }, [])

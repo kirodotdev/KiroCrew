@@ -96,6 +96,11 @@ concurrency:
 jobs:
   triage:
     name: Suggest labels
+    # NOT routed to the CodeBuild fleet -- same reason as issue-summary.yml's
+    # summarize job: this fires on `issues: opened`, any GitHub user's issue
+    # requests the CodeBuild label, and a non-collaborator author's dispatch
+    # is rejected by the AWS webhook's actor allowlist, queuing the job
+    # forever instead of running it.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # Job-level permissions REPLACE the workflow default: no `contents` here,

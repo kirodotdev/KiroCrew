@@ -1,8 +1,8 @@
 """note_tab_id updates the tab_id chain index in place without hiding sibling keys.
 
-The slot-save path used to call invalidate_tab_id_cache() on every save, which threw the whole
-tab_id -> [keys] index away and made the next chained read re-glob the session directory and
-re-open every dashboard_chat-*.jsonl to rebuild a mapping a content-only save never changed.
+Calling invalidate_tab_id_cache() on every slot save would throw the whole
+tab_id -> [keys] index away and make the next chained read re-glob the session directory and
+re-open every dashboard_chat-*.jsonl to rebuild a mapping a content-only save never changes.
 note_tab_id updates just the affected entry instead.
 
 The hazard it has to avoid is appending onto an entry that is present but empty. That forges a

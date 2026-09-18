@@ -1,4 +1,4 @@
-"""Per-turn cost/token wiring for the claude ACP seam (issue #6750).
+"""Per-turn cost/token wiring for the claude ACP seam.
 
 The claude-agent-acp adapter reports a session-cumulative ``cost`` on
 ``usage_update`` and turn-scoped token counts on the PromptResponse. These
@@ -88,7 +88,7 @@ class TestParseUsageCost:
         assert parse_usage_cost({"cost": {"amount": 0.42, "currency": 42}}) is None
 
     def test_explicit_null_currency_treated_as_absent(self):
-        # Issue #6761's prescribed policy: "present (not None)" — an explicit
+        # Policy: "present (not None)" — an explicit
         # JSON null reads as the adapter omitting currency, so lenience applies.
         # Pinned so a refactor to `"currency" in cost` can't silently flip it.
         assert parse_usage_cost({"cost": {"amount": 0.42, "currency": None}}) == 0.42
@@ -369,8 +369,8 @@ class TestPersistGateFires:
         stats.apply_prompt_token_usage(100, 50, 30, 20)
         u = stats.to_turn_usage()
 
-        # The chat-runner persist gate (chat_runner.py) — previously all zeros
-        # on the claude seam, so the row was never written.
+        # The chat-runner persist gate (chat_runner.py) drops an all-zero row, so
+        # the claude seam must produce a nonzero field for the row to be written.
         assert u.input_tokens or u.output_tokens or u.credits
 
         usage_mod.persist_token_record("slot-1", "test-model", u, "acp")

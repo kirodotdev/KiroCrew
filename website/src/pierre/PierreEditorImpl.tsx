@@ -3,11 +3,13 @@
  * editing surface for every code-editing view. Lives beside `PierreImpl` in
  * the same lazy chunk; reach it through `../pierre` only.
  */
-import { forwardRef, useEffect, useId, useImperativeHandle, useMemo, useRef } from 'react'
+import { forwardRef, useEffect, useId, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { BaseCodeOptions, FileContents } from '@pierre/diffs'
 import { EditProvider, File, MultiFileDiff, Virtualizer } from '@pierre/diffs/react'
 import { Editor, type EditorOptions } from '@pierre/diffs/edit'
 import { useIsDark } from '../hooks/useIsDark'
+import ErrorNotice from '../components/ErrorNotice'
+import { i18nT } from '../i18n/t'
 import {
   PIERRE_EDIT_CARET_ALIGN_CSS,
   PIERRE_VIRTUALIZER_CONFIG,
@@ -15,7 +17,7 @@ import {
   pierreFileOptions,
   pierreThemeType,
 } from './config'
-import { contentCacheKey, PierreShell } from './PierreImpl'
+import { activeWorkerPool, contentCacheKey, PierreShell, usePierreWorkerPool, useRegisterEditorSurface } from './PierreImpl'
 import { isPierreFilePairWithinBudget } from './renderBudget'
 
 export interface EditorMarker {
@@ -58,6 +60,27 @@ function revealSpan(editor: Editor<undefined>, line: number, endLine?: number): 
   }])
 }
 
+function offsetToEditorPosition(contents: string, offset: number): { line: number; character: number } {
+  const before = contents.slice(0, Math.max(0, Math.min(offset, contents.length)))
+  const lastNewline = before.lastIndexOf('\n')
+  return {
+    line: lastNewline < 0 ? 0 : before.split('\n').length - 1,
+    character: lastNewline < 0 ? before.length : before.length - lastNewline - 1,
+  }
+}
+
+function applyMarkers(editor: Editor<undefined>, markers: EditorMarker[] | undefined): void {
+  if (markers == null) return
+  editor.setMarkers(
+    markers.map(marker => ({
+      severity: marker.severity,
+      message: marker.message,
+      start: { line: marker.line - 1, character: 0 },
+      end: { line: marker.line - 1, character: Number.MAX_SAFE_INTEGER },
+    })),
+  )
+}
+
 export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   file: FileContents
   options?: BaseCodeOptions
@@ -77,6 +100,10 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
   className?: string
 }>(function PierreEditorImpl({ file, options, onChange, onSave, markers, onCursorChange, diffBase, diffSplit, diffExpandUnchanged, className }, ref) {
   const dark = useIsDark()
+  const poolState = usePierreWorkerPool()
+  useRegisterEditorSurface()
+  const activePool = activeWorkerPool(poolState)
+  const pierreActive = activePool !== undefined
   const resolved = useMemo(
     () => pierreFileOptions({ themeType: pierreThemeType(dark), ...options }),
     [dark, options],
@@ -92,6 +119,56 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     [dark, options, diffSplit, diffExpandUnchanged],
   )
   const surfaceId = useId()
+  const recoveryStatusId = `${surfaceId}-recovery-status`
+  const containerRef = useRef<HTMLDivElement>(null)
+  const fallbackRef = useRef<HTMLTextAreaElement>(null)
+  const restoreFocusRef = useRef(false)
+  const fallbackSelectionRef = useRef<{ start: number; end: number; direction: 'forward' | 'backward' | 'none' } | null>(null)
+  const propContentsRef = useRef(file.contents)
+  const latestContentsRef = useRef(file.contents)
+  const remountDraftRef = useRef<string | null>(null)
+  const previousPierreActiveRef = useRef(pierreActive)
+  const [fallbackDraft, setFallbackDraft] = useState(file.contents)
+  const propChanged = propContentsRef.current !== file.contents
+  if (propChanged) {
+    propContentsRef.current = file.contents
+    latestContentsRef.current = file.contents
+    remountDraftRef.current = null
+    if (fallbackDraft !== file.contents) setFallbackDraft(file.contents)
+  }
+  const previousPierreActive = previousPierreActiveRef.current
+  const enteringFallback = previousPierreActive && !pierreActive
+  const leavingFallback = !previousPierreActive && pierreActive
+  if (enteringFallback && containerRef.current?.contains(document.activeElement)) {
+    restoreFocusRef.current = true
+  }
+  const focusedFallback = fallbackRef.current
+  if (leavingFallback && focusedFallback !== null && focusedFallback === document.activeElement) {
+    restoreFocusRef.current = true
+    fallbackSelectionRef.current = {
+      start: focusedFallback.selectionStart,
+      end: focusedFallback.selectionEnd,
+      direction: focusedFallback.selectionDirection ?? 'none',
+    }
+  }
+  previousPierreActiveRef.current = pierreActive
+  if (enteringFallback) {
+    remountDraftRef.current = latestContentsRef.current
+    if (fallbackDraft !== latestContentsRef.current) setFallbackDraft(latestContentsRef.current)
+  }
+  const recoveryContents = enteringFallback ? latestContentsRef.current : fallbackDraft
+  // The remount seed is frozen for the life of a Pierre generation: the buffer
+  // is the source of truth while an edit session is active, and a `file` prop
+  // that changed on every keystroke would clear Pierre's dirty render cache
+  // mid-edit. Later edits live in `latestContentsRef`, which the next
+  // recovery snapshot reads, so nothing typed after a remount is lost.
+  const editorContents = remountDraftRef.current ?? file.contents
+  const editorFile = useMemo<FileContents>(
+    () => (file.contents === editorContents
+      ? file
+      : { ...file, contents: editorContents, cacheKey: contentCacheKey(file.name, editorContents) }),
+    [file, editorContents],
+  )
   const baseFile = useMemo<FileContents | null>(
     () => (diffBase == null
       ? null
@@ -99,17 +176,30 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     [diffBase, file.name, surfaceId],
   )
   const renderLiveDiff = diffBase !== undefined
-    && isPierreFilePairWithinBudget(baseFile, file)
+    && isPierreFilePairWithinBudget(baseFile, editorFile)
   const editorRef = useRef<Editor<undefined> | null>(null)
   /** A jump requested before Pierre bound its editor, replayed on attach. */
   const pendingJumpRef = useRef<{ line: number; endLine?: number } | null>(null)
-  const containerRef = useRef<HTMLDivElement>(null)
   const onChangeRef = useRef(onChange)
   onChangeRef.current = onChange
   const onSaveRef = useRef(onSave)
   onSaveRef.current = onSave
   const onCursorRef = useRef(onCursorChange)
   onCursorRef.current = onCursorChange
+  const generationRef = useRef(poolState.generation)
+  generationRef.current = poolState.generation
+  const markersRef = useRef(markers)
+  markersRef.current = markers
+  const markerApplicationRef = useRef<{ generation: number; markers: EditorMarker[] | undefined } | null>(null)
+
+  useLayoutEffect(() => {
+    if (pierreActive) return
+    editorRef.current = null
+    if (restoreFocusRef.current) {
+      fallbackRef.current?.focus()
+      restoreFocusRef.current = false
+    }
+  }, [pierreActive, poolState.generation])
 
   const reportCursor = () => {
     const sel = editorRef.current?.getState()?.selections?.[0]
@@ -122,13 +212,38 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
     () => ({
       onAttach(editor) {
         editorRef.current = editor
+        const generation = generationRef.current
+        const currentMarkers = markersRef.current
+        const applied = markerApplicationRef.current
+        if (
+          currentMarkers != null
+          && currentMarkers.length > 0
+          && !(applied?.generation === generation && applied.markers === currentMarkers)
+        ) {
+          applyMarkers(editor, currentMarkers)
+          markerApplicationRef.current = { generation, markers: currentMarkers }
+        }
+        const fallbackSelection = fallbackSelectionRef.current
+        if (fallbackSelection !== null) {
+          fallbackSelectionRef.current = null
+          editor.setSelections([{
+            start: offsetToEditorPosition(latestContentsRef.current, fallbackSelection.start),
+            end: offsetToEditorPosition(latestContentsRef.current, fallbackSelection.end),
+            direction: fallbackSelection.direction,
+          }])
+        }
         const pending = pendingJumpRef.current
         if (pending !== null) {
           pendingJumpRef.current = null
           revealSpan(editor, pending.line, pending.endLine)
         }
+        if (restoreFocusRef.current) {
+          restoreFocusRef.current = false
+          editor.focus()
+        }
       },
       onChange(changed) {
+        latestContentsRef.current = changed.contents
         onChangeRef.current(changed.contents)
         reportCursor()
       },
@@ -138,16 +253,12 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
 
   useEffect(() => {
     const editor = editorRef.current
-    if (!editor || markers == null) return
-    editor.setMarkers(
-      markers.map(m => ({
-        severity: m.severity,
-        message: m.message,
-        start: { line: m.line - 1, character: 0 },
-        end: { line: m.line - 1, character: Number.MAX_SAFE_INTEGER },
-      })),
-    )
-  }, [markers])
+    if (!editor) return
+    const applied = markerApplicationRef.current
+    if (applied?.generation === poolState.generation && applied.markers === markers) return
+    applyMarkers(editor, markers)
+    markerApplicationRef.current = { generation: poolState.generation, markers }
+  }, [markers, poolState.generation])
 
   useImperativeHandle(ref, () => ({
     jumpToLine: (line: number, endLine?: number) => {
@@ -191,32 +302,87 @@ export const PierreEditorImpl = forwardRef<PierreEditorHandle, {
       onKeyUp={reportCursor}
       onMouseUp={reportCursor}
     >
-      <PierreShell>
-      <Virtualizer
-        config={PIERRE_VIRTUALIZER_CONFIG}
-        className={`pierre-surface h-full w-full overflow-auto ${className ?? ''}`}
-      >
-        <EditProvider createEditor={createEditor}>
-        {renderLiveDiff ? (
-          // Live-diff edit session: Pierre diffs the buffer against the
-          // baseline as you type. Inputs outside the renderer-thread budget
-          // keep the same editor behavior but omit live diff decoration.
-          // Keyed so flipping modes rebuilds the edit session rather than
-          // rebinding one editor across surface kinds.
-          <MultiFileDiff
-            key="diff"
-            oldFile={baseFile}
-            newFile={file}
-            edit
-            editorOptions={editorOptions}
-            options={resolvedDiff}
+      {activePool !== undefined ? (
+        <PierreShell pool={activePool} generation={poolState.generation}>
+        <Virtualizer
+          config={PIERRE_VIRTUALIZER_CONFIG}
+          className={`pierre-surface h-full w-full overflow-auto ${className ?? ''}`}
+        >
+          <EditProvider createEditor={createEditor}>
+          {renderLiveDiff ? (
+            // Live-diff edit session: Pierre diffs the buffer against the
+            // baseline as you type. Inputs outside the renderer-thread budget
+            // keep the same editor behavior but omit live diff decoration.
+            // Keyed so flipping modes rebuilds the edit session rather than
+            // rebinding one editor across surface kinds.
+            <MultiFileDiff
+              key="diff"
+              oldFile={baseFile}
+              newFile={editorFile}
+              edit
+              editorOptions={editorOptions}
+              options={resolvedDiff}
+            />
+          ) : (
+            <File key="file" file={editorFile} edit editorOptions={editorOptions} options={resolved} />
+          )}
+          </EditProvider>
+        </Virtualizer>
+        </PierreShell>
+      ) : (
+        <div className="grid h-full w-full grid-rows-[auto_minmax(0,1fr)]">
+          <textarea
+            ref={fallbackRef}
+            aria-label={file.name}
+            aria-describedby={recoveryStatusId}
+            className="pierre-editor-fallback row-start-2 h-full min-h-0 w-full resize-none overflow-auto bg-transparent px-3 py-2 text-[13px] font-mono leading-5 text-text"
+            spellCheck={false}
+            value={recoveryContents}
+            onChange={event => {
+              const contents = event.currentTarget.value
+              fallbackSelectionRef.current = {
+                start: event.currentTarget.selectionStart,
+                end: event.currentTarget.selectionEnd,
+                direction: event.currentTarget.selectionDirection ?? 'none',
+              }
+              latestContentsRef.current = contents
+              remountDraftRef.current = contents
+              setFallbackDraft(contents)
+              onChangeRef.current(contents)
+            }}
           />
-        ) : (
-          <File key="file" file={file} edit editorOptions={editorOptions} options={resolved} />
-        )}
-      </EditProvider>
-      </Virtualizer>
-      </PierreShell>
+          {poolState.phase === 'unavailable' ? (
+            <div id={recoveryStatusId} className="row-start-1 shrink-0 bg-bg-elevated">
+              {/* No hand-off: the recovery textarea may hold an unsaved draft,
+                  so an agent action must not replace or navigate away from it. */}
+              <ErrorNotice
+                variant="inline"
+                className="px-3 py-1 text-[11px]"
+                message={i18nT('components.pierreEditorImpl.highlighting_unavailable_reload')}
+              />
+            </div>
+          ) : poolState.phase === 'starting' ? (
+            // Cold start is not a failure: a quiet status line, not an alert.
+            <div
+              id={recoveryStatusId}
+              role="status"
+              className="pointer-events-none row-start-1 shrink-0 border-t border-border bg-bg-elevated px-3 py-1 text-[11px] text-muted"
+            >
+              {i18nT('components.pierreEditorImpl.highlighting_starting_editing_available')}
+            </div>
+          ) : (
+            <div id={recoveryStatusId} className="row-start-1 shrink-0 bg-bg-elevated">
+              {/* No hand-off: the recovery textarea may hold an unsaved draft,
+                  so an agent action must not replace or navigate away from it. */}
+              <ErrorNotice
+                variant="inline"
+                className="px-3 py-1 text-[11px]"
+                message={i18nT('components.pierreEditorImpl.highlighting_restarting_editing_available')}
+              />
+            </div>
+          )}
+        </div>
+      )}
     </div>
   )
 })

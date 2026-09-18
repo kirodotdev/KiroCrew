@@ -47,7 +47,7 @@ class TestRuntimeModelParam:
 
         with (
             patch(
-                "kiro_crew.acp.runtime._resolve_kiro_bin_for_spawn",
+                "kiro_crew.acp.client._resolve_kiro_bin_for_spawn",
                 new_callable=AsyncMock,
                 return_value="/bin/kiro-cli",
             ),

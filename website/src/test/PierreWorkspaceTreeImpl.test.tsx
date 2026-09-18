@@ -33,6 +33,11 @@ vi.mock('../components/AppIcon', () => ({ default: () => null }))
 
 import { PierreWorkspaceTreeImpl } from '../pierre/PierreWorkspaceTreeImpl'
 import { api } from '../api/client'
+import {
+  recallExpandedPaths,
+  rememberExpandedPaths,
+  __resetTreeExpansionMemoryForTests,
+} from '../pierre/treeExpansionMemory'
 import { treeMock } from './__mocks__/pierreTreesReact'
 import type { MenuItem, MenuContext } from './__mocks__/pierreTreesReact'
 
@@ -169,6 +174,30 @@ describe('PierreWorkspaceTreeImpl — data loading', () => {
     await waitForTree()
 
     expect(treeMock.last().calls.resetPaths).toEqual([['README.md', 'src/a.ts']])
+  })
+
+  it('keeps explicit directory rows and marks directories whose files were sampled', async () => {
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({
+      paths: ['alpha/a.ts'],
+      directories: ['alpha', 'late', 'late/nested'],
+      truncatedDirectories: ['late'],
+      truncated: true,
+    }))
+    renderTree()
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([
+      ['alpha/a.ts', 'alpha/', 'late/', 'late/nested/'],
+    ])
+    const decorate = treeMock.last().options.renderRowDecoration as (
+      context: { item: MenuItem },
+    ) => { text: string; title?: string } | null
+    expect(decorate({ item: { kind: 'directory', name: 'late', path: 'late' } })).toEqual({
+      text: 'files hidden',
+      title: 'files hidden',
+    })
+    expect(decorate({ item: { kind: 'directory', name: 'alpha', path: 'alpha' } })).toBeNull()
+    expect(screen.getByText(/all folders remain available/i)).toBeInTheDocument()
   })
 
   it('reports an empty workspace instead of an empty tree', async () => {
@@ -465,23 +494,23 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
     })
   })
 
-  it('wires renderContextMenu only when a host is present to hand the row to', async () => {
-    // `<FileTree>`'s own `renderContextMenu != null` check forces the menu
-    // enabled unconditionally, so passing it with no `onAddToContext` would
-    // open a menu whose only action closes itself and does nothing.
+  it('always wires renderContextMenu, since a file row always has Download', async () => {
+    // A file row is downloadable on its own, so the menu is wired
+    // unconditionally. The per-node component still renders nothing on a node
+    // with no action (asserted in the Download suite).
     const { update } = renderTree()
     await waitForTree()
-    expect(treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBeUndefined()
+    expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
 
     update({ onAddToContext: vi.fn() })
     expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
   })
 
-  const openMenu = (item: MenuItem) => {
+  const openMenu = (item: MenuItem, anchorRect?: Partial<DOMRect>, anchorElement?: HTMLElement) => {
     const close = vi.fn()
     const context: MenuContext = {
-      anchorElement: document.createElement('div'),
-      anchorRect: document.createElement('div').getBoundingClientRect(),
+      anchorElement: anchorElement ?? document.createElement('div'),
+      anchorRect: { ...document.createElement('div').getBoundingClientRect(), ...anchorRect } as DOMRect,
       close,
       restoreFocus: vi.fn(),
     }
@@ -518,6 +547,79 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
     // And the focused item actually activates on Enter.
     fireEvent.keyDown(menuitem, { key: 'Enter' })
     expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
+  })
+
+  it('portals the menu to document.body, outside the clipping tree root (#10100)', async () => {
+    // Pierre's default slot placement hangs the menu in a width-0 slot at the
+    // row's trailing edge INSIDE the tree root, whose `overflow: hidden` plus
+    // this app's zero inline padding clipped it to a sliver flush against the
+    // panel's right border at every panel width -- an unreachable "..." menu.
+    // The portal (marked with the library's documented
+    // `data-file-tree-context-menu-root` attribute so outside-click and Escape
+    // still treat it as inside) is what escapes that clipping boundary.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const menu = screen.getByRole('menu')
+    expect(menu.parentElement).toBe(document.body)
+    expect(menu).toHaveAttribute('data-file-tree-context-menu-root', 'true')
+    // Fixed positioning is what places it from the open context's anchorRect
+    // instead of the slot's in-flow (clipped) position.
+    expect(menu.className).toContain('fixed')
+  })
+
+  it("dismisses on a scroll inside the tree's own root, not on an outside scroll", async () => {
+    // The portaled menu is position: fixed, so if the virtualized tree scrolls
+    // under it the menu would hover an unrelated row while still acting on the
+    // original node. The tree renders in a SHADOW ROOT and scroll is a
+    // non-composed event, so the dismiss listener sits capture-phase on the
+    // anchor's own root: it sees every scroll container inside the tree and
+    // nothing outside it -- a chat transcript auto-scrolling beside the rail
+    // must NOT snatch a just-opened menu.
+    const onAddToContext = vi.fn()
+    renderTree({ onAddToContext })
+    await waitForTree()
+
+    const host = document.createElement('div')
+    document.body.appendChild(host)
+    try {
+      const shadow = host.attachShadow({ mode: 'open' })
+      const scroller = document.createElement('div')
+      const anchor = document.createElement('div')
+      scroller.appendChild(anchor)
+      shadow.appendChild(scroller)
+
+      const { close } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' }, undefined, anchor)
+      fireEvent.scroll(document.body) // outside the tree: keep the menu
+      expect(close).not.toHaveBeenCalled()
+      fireEvent.scroll(scroller) // the tree's own scroller: rows moved, dismiss
+      expect(close).toHaveBeenCalledTimes(1)
+    } finally {
+      host.remove()
+    }
+  })
+
+  it('clamps into the viewport and flips above when the bottom would overflow', async () => {
+    // jsdom rects are zeros by default, so stub the menu measurement and hand
+    // the open context a bottom-right anchor: the horizontal clamp and the
+    // vertical flip are exactly the branches the clipped-slot defect was about.
+    const rect = { width: 176, height: 200, top: 0, bottom: 200, left: 0, right: 176, x: 0, y: 0, toJSON: () => ({}) } as DOMRect
+    const spy = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect)
+    try {
+      const onAddToContext = vi.fn()
+      renderTree({ onAddToContext })
+      await waitForTree()
+
+      // window.innerWidth = 1024, innerHeight = 768 in jsdom.
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' }, { width: 18, height: 28, left: 998, right: 1016, top: 700, bottom: 728 })
+      const menu = screen.getByRole('menu')
+      await waitFor(() => expect(menu.style.left).toBe('840px')) // 1016 - 176, at the 1024-176-8 clamp
+      expect(menu.style.top).toBe('498px') // flipped above: 700 - 200 - 2
+    } finally {
+      spy.mockRestore()
+    }
   })
 
   it('reports a directory as a dir add', async () => {
@@ -576,6 +678,221 @@ describe('PierreWorkspaceTreeImpl — row context menu', () => {
   })
 })
 
+describe('PierreWorkspaceTreeImpl — row context menu Download', () => {
+  // Download streams the file's bytes through /api/file-download — the SAME
+  // credential-gated endpoint the viewer's Download uses — then hands the blob
+  // to the browser as a save-to-disk. These tests pin: the row is file-only,
+  // the fetch hits that endpoint (so the gate is in front of it), a refusal is
+  // surfaced not bypassed, and the menu offers Download even with no host.
+  const openMenu = (item: MenuItem) => {
+    const close = vi.fn()
+    const context: MenuContext = {
+      anchorElement: document.createElement('div'),
+      anchorRect: document.createElement('div').getBoundingClientRect(),
+      close,
+      restoreFocus: vi.fn(),
+    }
+    const node = treeMock.fileTreeProps.at(-1)!.renderContextMenu!(item, context)
+    return { close, ...render(<>{node}</>) }
+  }
+
+  /** Stub fetch, URL.createObjectURL/revoke and the anchor click so the
+   *  download can be observed without a real network or DOM navigation.
+   *  `code` populates the JSON body the helper reads to tell a credential
+   *  refusal (`content_redacted`) apart from any other 400. */
+  function captureDownload(response: { ok: boolean; status?: number; code?: string }) {
+    const names: string[] = []
+    const origFetch = global.fetch
+    const origCreate = URL.createObjectURL
+    const origRevoke = URL.revokeObjectURL
+    const body = response.code ? { error: 'refused', code: response.code } : { error: 'refused' }
+    const mkRes = () => ({
+      ok: response.ok,
+      status: response.status ?? (response.ok ? 200 : 400),
+      statusText: response.ok ? 'OK' : 'Bad Request',
+      blob: async () => new Blob(['bytes'], { type: 'application/octet-stream' }),
+      json: async () => body,
+      clone() { return mkRes() },
+    })
+    const fetchMock = vi.fn().mockImplementation(async () => mkRes())
+    global.fetch = fetchMock as unknown as typeof fetch
+    URL.createObjectURL = vi.fn(() => 'blob:dl') as typeof URL.createObjectURL
+    URL.revokeObjectURL = vi.fn() as typeof URL.revokeObjectURL
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, 'click')
+      .mockImplementation(function mockClick(this: HTMLAnchorElement) { names.push(this.download) })
+    return {
+      fetchMock, names,
+      restore: () => {
+        clickSpy.mockRestore()
+        global.fetch = origFetch
+        URL.createObjectURL = origCreate
+        URL.revokeObjectURL = origRevoke
+      },
+    }
+  }
+
+  it('offers Download on a file row and streams the bytes through /api/file-download', async () => {
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      // The absolute path goes to the credential-gated endpoint; absolute paths
+      // carry no resolve=1.
+      await waitFor(() => expect(cap.fetchMock).toHaveBeenCalledTimes(1))
+      expect(cap.fetchMock).toHaveBeenCalledWith(
+        `/api/file-download?path=${encodeURIComponent(`${ROOT}/src/a/b.ts`)}`,
+      )
+      // The saved file keeps its basename.
+      await waitFor(() => expect(cap.names).toEqual(['b.ts']))
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('offers no Download on a directory row', async () => {
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+      // The ask is file rows only, and /api/file-download serves one file.
+      expect(screen.queryByRole('menuitem', { name: 'Download' })).not.toBeInTheDocument()
+      expect(screen.getByRole('menuitem', { name: 'Add to chat' })).toBeInTheDocument()
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('surfaces the gate refusal as a distinct credential message and reaches no bytes', async () => {
+    // The credential gate aborts a flagged file with `code: content_redacted`.
+    // The row names that specifically -- not a generic failure a user would
+    // retry forever -- reports it through the tree notice, never falls back to
+    // another transport, and creates no blob.
+    const cap = captureDownload({ ok: false, status: 400, code: 'content_redacted' })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('flagged by the credential scan')
+      expect(URL.createObjectURL).not.toHaveBeenCalled()
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('does not read a non-credential 400 as a credential refusal', async () => {
+    // /api/file-download also answers 400 for an invalid or out-of-project path
+    // (no `content_redacted` code). Keying on the bare status would falsely tell
+    // the user their file holds secrets; keying on the body code shows generic.
+    const cap = captureDownload({ ok: false, status: 400 })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('Download failed')
+      expect(notice).not.toHaveTextContent('credential scan')
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('surfaces a non-400 failure as the generic Download failed, not the credential message', async () => {
+    // Any other non-ok status (a 500, a gone file) is an ordinary failure the
+    // user may retry -- it must NOT read as a credential refusal.
+    const cap = captureDownload({ ok: false, status: 500 })
+    try {
+      renderTree({ onAddToContext: vi.fn() })
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Download' }))
+
+      const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
+      expect(notice).toHaveTextContent('Download failed')
+      expect(notice).not.toHaveTextContent('credential scan')
+      expect(cap.names).toEqual([])
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('offers Download on a file row even with no host onAddToContext', async () => {
+    // A file row is downloadable on its own, so the menu is wired and focused
+    // on Download with no Add-to-chat row above it to own focus entry.
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree()
+      await waitForTree()
+      expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      const row = screen.getByRole('menuitem', { name: 'Download' })
+      expect(row).toHaveFocus()
+      fireEvent.keyDown(row, { key: 'Enter' })
+
+      await waitFor(() => expect(cap.fetchMock).toHaveBeenCalledTimes(1))
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('shows Download as the ONLY row on a file with no host onAddToContext', async () => {
+    // The reachable shape on a hostless render site (e.g. the Members DM file
+    // tree, which mounts the panel with no onAddToContext): the file row menu
+    // holds Download alone -- no Add to chat above it. This is shipped UI, not a
+    // defensive dead path, so the single-row Download layout must render.
+    const cap = captureDownload({ ok: true })
+    try {
+      renderTree()
+      await waitForTree()
+
+      openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+      const items = screen.getAllByRole('menuitem')
+      expect(items).toHaveLength(1)
+      expect(items[0]).toHaveTextContent('Download')
+      expect(screen.queryByRole('menuitem', { name: 'Add to chat' })).not.toBeInTheDocument()
+    } finally {
+      cap.restore()
+    }
+  })
+
+  it('renders no menu on a directory row with no host and no app rows', async () => {
+    // The wiring is now unconditional, but a directory node with nothing to
+    // offer must still render nothing rather than an empty popup.
+    renderTree()
+    await waitForTree()
+
+    const { node } = (() => {
+      const context: MenuContext = {
+        anchorElement: document.createElement('div'),
+        anchorRect: document.createElement('div').getBoundingClientRect(),
+        close: vi.fn(),
+        restoreFocus: vi.fn(),
+      }
+      return { node: treeMock.fileTreeProps.at(-1)!.renderContextMenu!({ kind: 'directory', name: 'a', path: 'src/a' }, context) }
+    })()
+    render(<>{node}</>)
+    expect(screen.queryByRole('menu')).toBeNull()
+    expect(screen.queryAllByRole('menuitem')).toHaveLength(0)
+  })
+})
+
 describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)', () => {
   // The DEGENERATE case of the shared `role="menu"` contract: this menu hosts
   // exactly ONE menuitem, so every focus-move assertion is vacuously true —
@@ -598,11 +915,13 @@ describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)
   }
 
   /** Open the row menu and hand back its single item, focused (the
-   *  component's own firstItemRef effect owns that focus entry). */
+   *  component's own firstItemRef effect owns that focus entry). A DIRECTORY
+   *  row is the one-item case: it carries Add to chat but no Download (which is
+   *  file-only), so the degenerate single-menuitem contract still holds. */
   const openSingleItemMenu = async () => {
     renderTree({ onAddToContext: vi.fn() })
     await waitForTree()
-    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
     const menuitem = screen.getByRole('menuitem', { name: 'Add to chat' })
     expect(menuitem).toHaveFocus()
     return menuitem
@@ -645,6 +964,33 @@ describe('PierreWorkspaceTreeImpl — row context menu keyboard contract (#6231)
     fireEvent.keyDown(menuitem, { key: 'Enter' })
     expect(onAddToContext).toHaveBeenCalledWith(`${ROOT}/src/a/b.ts`, 'file')
   })
+
+  it('moves focus between Add to chat and Download with ArrowDown/ArrowUp', async () => {
+    // The real two-item case: a FILE row with a host holds Add to chat AND
+    // Download, so the arrows do actual roving focus (not the degenerate
+    // one-item no-op above). ArrowDown steps to the next item and ArrowUp wraps
+    // back, both consumed so neither scrolls the tree behind the open menu.
+    renderTree({ onAddToContext: vi.fn() })
+    await waitForTree()
+    openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+
+    const add = screen.getByRole('menuitem', { name: 'Add to chat' })
+    const download = screen.getByRole('menuitem', { name: 'Download' })
+    // Focus enters on the first row.
+    expect(add).toHaveFocus()
+
+    // ArrowDown -> Download, claimed (false = preventDefault called).
+    expect(fireEvent.keyDown(add, { key: 'ArrowDown' })).toBe(false)
+    expect(download).toHaveFocus()
+
+    // ArrowUp -> back to Add to chat, claimed.
+    expect(fireEvent.keyDown(download, { key: 'ArrowUp' })).toBe(false)
+    expect(add).toHaveFocus()
+
+    // ArrowUp from the first item wraps to the last (Download).
+    expect(fireEvent.keyDown(add, { key: 'ArrowUp' })).toBe(false)
+    expect(download).toHaveFocus()
+  })
 })
 
 describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
@@ -674,16 +1020,24 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
     return { close, node: render_ ? render_(item, context) : null }
   }
 
-  it('wires the context menu for an app row even with no host onAddToContext', async () => {
-    // The gate is what decides whether Pierre offers a menu at all. Before this seam
-    // it tracked `onAddToContext` alone, so an app-only row could never be reached.
+  it('reaches an app row with no host onAddToContext, on a node with no built-in row', async () => {
+    // A directory node has no host row and no Download, so before an app
+    // contributes, its menu renders nothing; a contributed row is what makes it
+    // reachable. (A file node is always reachable now — it has Download — so a
+    // directory is the node that isolates app-row reachability.)
     const { qc, update } = renderTree()
     await waitForTree()
-    expect(treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBeUndefined()
+
+    const dir = { kind: 'directory', name: 'a', path: 'src/a' } as const
+    const before = openMenu(dir)
+    render(<>{before.node}</>)
+    expect(screen.queryByRole('menuitem')).toBeNull()
 
     seed(qc, appsWith())
     update()
-    expect(typeof treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBe('function')
+    const after = openMenu(dir)
+    render(<>{after.node}</>)
+    expect(screen.getByRole('menuitem', { name: /^Send to store\b/ })).toBeInTheDocument()
   })
 
   it('renders the app row, POSTs the path and root, and never the file content', async () => {
@@ -712,7 +1066,8 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
 
   it('renders NOTHING rather than an empty popup when no row survives `when`', async () => {
     // The gate counts registered rows; `when` then filters per node. A row scoped to
-    // markdown files makes right-clicking a .ts file an empty bordered box with no
+    // markdown files does not match a directory node, which also has no Download
+    // (file-only) and no host row — so the menu is an empty bordered box with no
     // menuitem for the focus effect to land on.
     const { qc, update } = renderTree()
     await waitForTree()
@@ -721,7 +1076,7 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
     }))
     update()
 
-    const { node } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
     // Assert on the RENDERED output, not on `node`: Pierre's slot always receives a
     // `<TreeContextMenu/>` element, and the component's own empty-menu guard is what
     // renders nothing — so an element-identity check would pass whatever it renders.
@@ -731,14 +1086,15 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
   })
 
   it('focuses the first app row when there is no built-in row to focus', async () => {
-    // `firstItemRef` hangs off the built-in row, which is gated on `onAddToContext`;
-    // the querySelector fallback is what gives an app-only menu a focus target.
+    // `firstItemRef` hangs off the built-in rows (Add to chat, Download); on a
+    // directory node with no host neither exists, and the querySelector fallback
+    // is what gives an app-only menu a focus target.
     const { qc, update } = renderTree()
     await waitForTree()
     seed(qc, appsWith())
     update()
 
-    const { node } = openMenu({ kind: 'file', name: 'b.ts', path: 'src/a/b.ts' })
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
     render(<>{node}</>)
     const row = screen.getByRole('menuitem', { name: /^Send to store\b/ })
     expect(row).toHaveFocus()
@@ -751,7 +1107,11 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
     await waitForTree()
     seed(qc, appsWith({ enabled: false }))
     update()
-    expect(treeMock.fileTreeProps.at(-1)!.renderContextMenu).toBeUndefined()
+    // A directory node has no built-in row, so a disabled app contributing
+    // nothing leaves the menu empty.
+    const { node } = openMenu({ kind: 'directory', name: 'a', path: 'src/a' })
+    render(<>{node}</>)
+    expect(screen.queryByRole('menuitem')).toBeNull()
   })
 
   it('surfaces a rejected dispatch on the TREE, which outlives the menu', async () => {
@@ -769,5 +1129,247 @@ describe('PierreWorkspaceTreeImpl — app-contributed context rows', () => {
 
     const notice = await waitFor(() => screen.getByTestId('workspace-tree-action-error'))
     expect(notice).toHaveTextContent('endpoint refused')
+  })
+})
+
+describe('PierreWorkspaceTreeImpl — expansion persistence', () => {
+  // The Files tab mounts only while active, so opening a file remounts the
+  // whole tree; `persistExpansion` remembers the expanded directories (keyed
+  // by projectDir) and restores them through `resetPaths`'
+  // `initialExpandedPaths`. Off by default: the other hosts of this shared
+  // tree keep their collapsed-by-default behavior.
+  const TREE_PATHS = ['src/a.ts', 'src/lib/b.ts', 'README.md']
+  // `@pierre/trees` materializes DIRECTORY row paths with a trailing slash
+  // (`src/`, not `src`); the helper emits that canonical shape so these tests
+  // exercise what the real library hands the capture. Shape verified against
+  // @pierre/trees 1.0.0-beta.6 (path-store materializeNodePath appends `/`
+  // to directory nodes) — re-verify on an upgrade.
+  const expandedDir = (path: string) => ({ kind: 'directory' as const, path: path + '/', isExpanded: true })
+
+  beforeEach(() => {
+    __resetTreeExpansionMemoryForTests()
+    localStorage.clear()
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: TREE_PATHS }))
+  })
+
+  it('passes no expansion options on a first mount with nothing remembered', async () => {
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPaths).toEqual([TREE_PATHS])
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('restores the expanded directories on a remount of the same projectDir', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => {
+      treeMock.last().simulateVisibleRows([
+        expandedDir('src'),
+        expandedDir('src/lib'),
+        { kind: 'file', path: 'src/a.ts', isExpanded: false },
+      ])
+    })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src', 'src/lib'] },
+    ])
+  })
+
+  it('gives a different projectDir nothing', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true, projectDir: '/repo/other' })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('drops remembered directories absent from the new payload', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    unmount()
+
+    // `src/lib` no longer exists in the new payload: a stale path must be
+    // filtered out rather than handed to the controller.
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['src/a.ts'] }))
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('snapshots nothing while a search is active', async () => {
+    // The search session expands matches transiently; persisting that would
+    // restore an unrelated expansion after the filter is cleared.
+    const { unmount } = renderTree({ persistExpansion: true, searchQuery: 'lib' })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+  })
+
+  it('neither reads nor writes the memory in changed mode', async () => {
+    vi.mocked(api.projectGitStatus).mockResolvedValue(
+      mkStatus([mkFile('project/src/a.ts', 'M')]),
+    )
+    rememberExpandedPaths(ROOT, ['src'])
+
+    const { unmount } = renderTree({ persistExpansion: true, mode: 'changed' })
+    await waitForTree()
+    // Changed mode starts fully open by design: the remembered set must not
+    // narrow it.
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/x')]) })
+    unmount()
+
+    // And the changed-mode notification must not have overwritten the memory.
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('carries a remembered directory through a payload that temporarily lacks it', async () => {
+    // The backend truncates large payloads and a branch switch can drop a
+    // subtree: a remembered directory absent from the current payload is not
+    // evidence of a collapse, so a capture during that window must not erase
+    // it, and it must restore once the payload carries it again.
+    const first = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/lib')]) })
+    first.unmount()
+
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: ['src/a.ts'] }))
+    const second = renderTree({ persistExpansion: true })
+    await waitForTree()
+    // Only the still-present directory is passed to the controller…
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+    // …and a capture during this window keeps the absent one remembered.
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    second.unmount()
+
+    vi.mocked(api.projectTree).mockResolvedValue(mkTree({ paths: TREE_PATHS }))
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src', 'src/lib'] },
+    ])
+  })
+
+  it('does not erase the memory when the model transiently holds no rows', async () => {
+    // A `project-tree` poll can answer with an empty payload (re-indexing,
+    // transient backend miss); the resulting empty visible set must not
+    // overwrite the remembered expansion.
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    act(() => { treeMock.last().simulateVisibleRows([]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('evicts the least recently written project from storage past the dir cap', () => {
+    // One storage key holds every project's entry; without eviction a long
+    // session would grow the origin's quota use without bound.
+    for (let i = 0; i <= 20; i++) rememberExpandedPaths(`/repo/p${i}`, ['src'])
+    __resetTreeExpansionMemoryForTests()
+
+    expect(recallExpandedPaths('/repo/p0')).toEqual([])
+    expect(recallExpandedPaths('/repo/p1')).toEqual(['src'])
+    expect(recallExpandedPaths('/repo/p20')).toEqual(['src'])
+  })
+
+  it('restores from the localStorage mirror after a page reload', async () => {
+    const { unmount } = renderTree({ persistExpansion: true })
+    await waitForTree()
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+    unmount()
+
+    // A page reload drops the module-scope session map; the localStorage
+    // mirror is what carries the expansion across it.
+    __resetTreeExpansionMemoryForTests()
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
+  })
+
+  it('tolerates localStorage throwing on both write and read', async () => {
+    // Private mode / quota: storage access is best-effort, the module-scope
+    // session map still covers the remount case.
+    const setItem = vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota exceeded')
+    })
+    const getItem = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('storage unavailable')
+    })
+    try {
+      const first = renderTree({ persistExpansion: true })
+      await waitForTree()
+      act(() => { treeMock.last().simulateVisibleRows([expandedDir('src')]) })
+      first.unmount()
+
+      const second = renderTree({ persistExpansion: true })
+      await waitForTree()
+      expect(treeMock.last().calls.resetPathsOptions).toEqual([
+        { initialExpandedPaths: ['src'] },
+      ])
+      second.unmount()
+
+      // With the session map gone (a fresh page load) the throwing read falls
+      // back to nothing remembered rather than crashing.
+      __resetTreeExpansionMemoryForTests()
+      const third = renderTree({ persistExpansion: true })
+      await waitForTree()
+      expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+      third.unmount()
+    } finally {
+      setItem.mockRestore()
+      getItem.mockRestore()
+    }
+  })
+
+  it('leaves the memory alone when persistExpansion is off (the default)', async () => {
+    rememberExpandedPaths(ROOT, ['src'])
+
+    const { unmount } = renderTree()
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([undefined])
+
+    act(() => { treeMock.last().simulateVisibleRows([expandedDir('src'), expandedDir('src/x')]) })
+    unmount()
+
+    renderTree({ persistExpansion: true })
+    await waitForTree()
+    expect(treeMock.last().calls.resetPathsOptions).toEqual([
+      { initialExpandedPaths: ['src'] },
+    ])
   })
 })

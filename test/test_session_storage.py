@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import shutil
+import threading
 import time
 from pathlib import Path, PurePosixPath
 from typing import Callable
@@ -26,7 +27,7 @@ import pytest
 
 from kiro_crew import session_storage
 from kiro_crew.config import paths
-from kiro_crew.history import transcript_stem
+from kiro_crew.history import ConversationLog, transcript_stem
 from kiro_crew.session_storage import SessionIndex, SessionStorageError
 
 _NOW = 1_700_000_000.0
@@ -87,6 +88,17 @@ def _transcript(crew_home: Path, stem: str, *, size: int, age_days: float) -> in
 def _archive_segment(crew_home: Path, stem: str, stamp: str, *, size: int, age_days: float) -> int:
     path = crew_home / "sessions" / "archive" / f"{stem}__{stamp}.jsonl"
     path.write_bytes(b"a" * size)
+    mtime = _NOW - age_days * _DAY
+    os.utime(path, (mtime, mtime))
+    return size
+
+
+def _attachment(crew_home: Path, stem: str, name: str, *, size: int, age_days: float) -> int:
+    """One image in the session's attachments directory, aged with its transcript."""
+    adir = crew_home / "sessions" / f"{stem}.attachments"
+    adir.mkdir(exist_ok=True)
+    path = adir / name
+    path.write_bytes(b"i" * size)
     mtime = _NOW - age_days * _DAY
     os.utime(path, (mtime, mtime))
     return size
@@ -692,6 +704,173 @@ class TestRestoreIsAllOrNothing:
         assert seg.read_bytes() == b"a" * 16
         assert session_storage.list_trash() == []
 
+    def test_restore_publishes_transcript_under_history_lock(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+        active_locks: set[str] = set()
+        real_locked = ConversationLog._locked_stem
+        real_move = session_storage._move_file_exclusive
+        transcript = crew_home / "sessions" / "dashboard_chat-1.jsonl"
+        replay = kiro_home / "sessions" / "cli" / "aaaa1111.jsonl"
+
+        @contextlib.contextmanager
+        def recording_lock(log: ConversationLog, key: str):
+            with real_locked(log, key):
+                active_locks.add(key)
+                try:
+                    yield
+                finally:
+                    active_locks.remove(key)
+
+        def observed_move(src: Path, dst: Path) -> bool:
+            if dst == replay:
+                assert active_locks == set()
+            if dst == transcript:
+                assert "dashboard_chat-1" in active_locks
+            return real_move(src, dst)
+
+        monkeypatch.setattr(ConversationLog, "_locked_stem", recording_lock)
+        monkeypatch.setattr(session_storage, "_move_file_exclusive", observed_move)
+
+        assert session_storage.restore(batch.batch_id) == 1
+        assert transcript.is_file()
+
+    @pytest.mark.parametrize(
+        "stem",
+        ["slack_1785370133.085469", "1785370133.085469"],
+    )
+    def test_restore_locks_both_slack_transcript_aliases(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+        stem: str,
+    ) -> None:
+        crew_home, kiro_home = stores
+        thread_ts = "1785370133.085469"
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, stem, size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": stem}),
+            now=_NOW,
+        )
+        active_locks: set[str] = set()
+        real_locked = ConversationLog._locked_stem
+        real_move = session_storage._move_file_exclusive
+        transcript = crew_home / "sessions" / f"{stem}.jsonl"
+
+        @contextlib.contextmanager
+        def recording_lock(log: ConversationLog, key: str):
+            with real_locked(log, key):
+                active_locks.add(key)
+                try:
+                    yield
+                finally:
+                    active_locks.remove(key)
+
+        def observed_move(src: Path, dst: Path) -> bool:
+            if dst == transcript:
+                assert {thread_ts, f"slack_{thread_ts}"} <= active_locks
+            return real_move(src, dst)
+
+        monkeypatch.setattr(ConversationLog, "_locked_stem", recording_lock)
+        monkeypatch.setattr(session_storage, "_move_file_exclusive", observed_move)
+
+        assert session_storage.restore(batch.batch_id) == 1
+        assert transcript.is_file()
+
+    def test_waiting_canonical_append_re_resolves_after_bare_restore(
+        self,
+        stores: tuple[Path, Path],
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        crew_home, kiro_home = stores
+        thread_ts = "1785370133.085469"
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, thread_ts, size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": thread_ts}),
+            now=_NOW,
+        )
+        sessions_dir = crew_home / "sessions"
+        log = ConversationLog(base_dir=sessions_dir)
+        writer_waiting = threading.Event()
+        release_writer = threading.Event()
+        errors: list[BaseException] = []
+        real_locked = ConversationLog._locked
+        writer: threading.Thread
+
+        @contextlib.contextmanager
+        def paused_writer_lock(current_log: ConversationLog, key: str):
+            if threading.current_thread() is writer:
+                writer_waiting.set()
+                if not release_writer.wait(timeout=5):
+                    raise TimeoutError("restore never released the waiting append")
+            with real_locked(current_log, key):
+                yield
+
+        def append_after_restore() -> None:
+            try:
+                log.append(f"slack:{thread_ts}", "user", "writer")
+            except BaseException as exc:
+                errors.append(exc)
+
+        monkeypatch.setattr(ConversationLog, "_locked", paused_writer_lock)
+        writer = threading.Thread(target=append_after_restore)
+        started = False
+        try:
+            writer.start()
+            started = True
+            assert writer_waiting.wait(timeout=5)
+            assert session_storage.restore(batch.batch_id) == 1
+        finally:
+            release_writer.set()
+            if started:
+                writer.join(timeout=5)
+                assert not writer.is_alive(), "restore race worker outlived its test"
+
+        canonical = sessions_dir / f"slack_{thread_ts}.jsonl"
+        bare = sessions_dir / f"{thread_ts}.jsonl"
+        assert errors == []
+        assert not canonical.exists()
+        assert b'"content": "writer"' in bare.read_bytes()
+
+    def test_canonical_occupant_blocks_bare_alias_restore(
+        self,
+        stores: tuple[Path, Path],
+    ) -> None:
+        crew_home, kiro_home = stores
+        thread_ts = "1785370133.085469"
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, thread_ts, size=8, age_days=40)
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": thread_ts}),
+            now=_NOW,
+        )
+        canonical = crew_home / "sessions" / f"slack_{thread_ts}.jsonl"
+        canonical.write_bytes(b"new canonical transcript")
+
+        assert session_storage.restore(batch.batch_id) == 0
+        assert canonical.read_bytes() == b"new canonical transcript"
+        assert not (crew_home / "sessions" / f"{thread_ts}.jsonl").exists()
+        assert [item.batch_id for item in session_storage.list_trash()] == [batch.batch_id]
+
     def test_a_full_restore_never_writes_to_the_batch_it_is_leaving(
         self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -1124,6 +1303,197 @@ class TestSidecarFiles:
         assert sidecar.read_bytes() == b"lock"
 
 
+class TestAttachmentsAreTheThirdHalf:
+    """``<stem>.attachments/`` holds the images a transcript's rows reference, so it
+    is measured, moved, restored and emptied with the transcript -- leaving it
+    behind would keep served images for a session the user reclaimed."""
+
+    def test_attachment_bytes_are_the_sessions(self, stores: tuple[Path, Path]) -> None:
+        crew_home, kiro_home = stores
+        cli = _cli_half(kiro_home, "aaaa1111", log_bytes=100, age_days=40)
+        crew = _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        img = _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=900, age_days=40)
+
+        report = session_storage.measure(_index({"aaaa1111": "dashboard_chat-1"}), now=_NOW)
+
+        assert report.total_sessions == 1
+        assert report.total_bytes == cli + crew + img
+
+    def test_a_fresh_attachment_keeps_the_session_fresh(self, stores: tuple[Path, Path]) -> None:
+        """An image written hours ago is activity on the session, whatever the
+        transcript's own mtime says."""
+        crew_home, _ = stores
+        _transcript(crew_home, "dashboard_chat-1", size=50, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=9, age_days=0.2)
+
+        with pytest.raises(SessionStorageError, match="touched in the last"):
+            session_storage.move_to_trash(
+                ["dashboard_chat-1"], reason="manual", index=_index(), now=_NOW
+            )
+
+    def test_attachments_move_restore_and_empty_with_the_session(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=33, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "ef01-other.png", size=44, age_days=40)
+        adir = crew_home / "sessions" / "dashboard_chat-1.attachments"
+
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+
+        # Moved: the images travel under the directory's own name, and the drained
+        # directory does not linger as an empty shell beside the live sessions.
+        staged = session_storage.trash_root() / batch.batch_id / "crew" / adir.name
+        assert (staged / "abcd-shot.png").read_bytes() == b"i" * 33
+        assert (staged / "ef01-other.png").read_bytes() == b"i" * 44
+        assert not adir.exists()
+        entry = json.loads(
+            (session_storage.trash_root() / batch.batch_id / session_storage.MANIFEST_NAME)
+            .read_text(encoding="utf-8")
+            .splitlines()[1]
+        )
+        assert str(adir / "abcd-shot.png") in {r["origin"] for r in entry["files"]}
+
+        # Restored: the directory comes back with its files.
+        assert session_storage.restore(batch.batch_id) == 1
+        assert (adir / "abcd-shot.png").read_bytes() == b"i" * 33
+        assert (adir / "ef01-other.png").read_bytes() == b"i" * 44
+        assert (crew_home / "sessions" / "dashboard_chat-1.jsonl").is_file()
+
+        # Emptied: nothing of the session is left anywhere.
+        batch = session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+        freed = session_storage.empty_trash([batch.batch_id])
+        assert freed >= 8 + 8 + 33 + 44
+        assert not adir.exists()
+        assert not (session_storage.trash_root() / batch.batch_id).exists()
+        assert session_storage.list_trash() == []
+
+    def test_the_drained_attachments_dir_is_removed_under_the_transcript_lock(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The empty-shell ``rmdir`` runs while the unit's transcript lock is held.
+
+        A writer resuming the session creates the directory and lands its first
+        image under that same lock, so an ``rmdir`` issued after the lock is
+        released could take the directory between the ``mkdir`` and the file --
+        the image copy fails open and the row keeps its scratch path.
+        """
+        crew_home, kiro_home = stores
+        _cli_half(kiro_home, "aaaa1111", log_bytes=8, age_days=40)
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=33, age_days=40)
+        adir = crew_home / "sessions" / "dashboard_chat-1.attachments"
+
+        events: list[tuple[str, str]] = []
+        real_locked_stem = ConversationLog._locked_stem
+
+        @contextlib.contextmanager
+        def recording_locked_stem(self: ConversationLog, key: str):
+            events.append(("enter", key))
+            try:
+                with real_locked_stem(self, key):
+                    yield
+            finally:
+                events.append(("exit", key))
+
+        real_rmdir = os.rmdir
+
+        def recording_rmdir(path, *args, **kwargs):
+            events.append(("rmdir", str(path)))
+            return real_rmdir(path, *args, **kwargs)
+
+        monkeypatch.setattr(ConversationLog, "_locked_stem", recording_locked_stem)
+        monkeypatch.setattr(os, "rmdir", recording_rmdir)
+
+        session_storage.move_to_trash(
+            ["aaaa1111"],
+            reason="manual",
+            index=_index({"aaaa1111": "dashboard_chat-1"}),
+            now=_NOW,
+        )
+        assert not adir.exists()
+
+        rmdir_at = events.index(("rmdir", str(adir)))
+        before = events[:rmdir_at]
+        opened = [i for i, e in enumerate(before) if e == ("enter", "dashboard_chat-1")]
+        assert opened, "the transcript lock was never taken before the rmdir"
+        assert ("exit", "dashboard_chat-1") not in before[
+            opened[-1] :
+        ], "the attachments directory was removed after the transcript lock was released"
+
+    def test_a_foreign_entry_in_the_attachments_dir_is_not_taken(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """This code writes only flat files there. A subdirectory is not the
+        session's and is left alone -- and so is the now non-empty directory."""
+        crew_home, _ = stores
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=5, age_days=40)
+        adir = crew_home / "sessions" / "dashboard_chat-1.attachments"
+        (adir / "foreign").mkdir()
+        aged = _NOW - 40 * _DAY
+        os.utime(adir / "foreign", (aged, aged))
+
+        batch = session_storage.move_to_trash(
+            ["dashboard_chat-1"], reason="manual", index=_index(), now=_NOW
+        )
+
+        assert batch.sessions == 1
+        assert not (adir / "abcd-shot.png").exists()
+        assert (adir / "foreign").is_dir()
+        assert session_storage.restore(batch.batch_id) == 1
+        assert (adir / "abcd-shot.png").read_bytes() == b"i" * 5
+
+    def test_an_unreadable_attachments_dir_leaves_the_session_whole(
+        self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Files the scan cannot see cannot be moved, so nothing of the session is:
+        moving the transcript alone would orphan images that are still served."""
+        crew_home, _ = stores
+        _transcript(crew_home, "dashboard_chat-1", size=8, age_days=40)
+        _attachment(crew_home, "dashboard_chat-1", "abcd-shot.png", size=5, age_days=40)
+        adir = crew_home / "sessions" / "dashboard_chat-1.attachments"
+        real_scandir = os.scandir
+
+        def refusing(path=".", *a, **k):
+            if isinstance(path, (str, os.PathLike)) and Path(path) == adir:
+                raise PermissionError(errno.EACCES, "denied", str(path))
+            return real_scandir(path, *a, **k)
+
+        monkeypatch.setattr(session_storage.os, "scandir", refusing)
+        with pytest.raises(SessionStorageError, match="none of the selected sessions"):
+            session_storage.move_to_trash(
+                ["dashboard_chat-1"], reason="manual", index=_index(), now=_NOW
+            )
+
+        assert (crew_home / "sessions" / "dashboard_chat-1.jsonl").is_file()
+        assert (adir / "abcd-shot.png").is_file()
+
+    def test_a_manifest_cannot_route_an_attachment_outside_its_store(
+        self, stores: tuple[Path, Path]
+    ) -> None:
+        """The origin is DERIVED from the staged path, and the directory name in it
+        must be a session id: a tampered record cannot name another directory."""
+        assert session_storage._canonical_origin("crew/../x.attachments/a.png") is None
+        assert session_storage._canonical_origin("crew/not a session.attachments/a.png") is None
+        assert session_storage._canonical_origin("crew/x.attachments/a/b.png") is None
+        crew_home, _ = stores
+        origin = session_storage._canonical_origin("crew/dashboard_chat-1.attachments/a.png")
+        assert origin == crew_home / "sessions" / "dashboard_chat-1.attachments" / "a.png"
+
+
 class TestFreshSessionsAreProtected:
     """The session map is not a complete registry of live sessions.
 
@@ -1312,7 +1682,7 @@ class TestBatchIdentityIsTheDirectory:
 class TestTrashBatchNamesAreLogSafe:
     """A batch directory name is agent-controlled and can embed a newline; every
     ``list_trash`` log line that carries it must escape it, or one record forges
-    additional records (refs #6315, the #6281 log-forgery class).
+    additional records (the log-forgery class).
     """
 
     _FORGED = "20240101T000000-deadbeef\nWARNING forged: batch cleared by operator"
@@ -1393,7 +1763,7 @@ class TestTrashBatchNamesAreLogSafe:
                 return True
 
         # Shaped for `_summarize_manifest` — (header, sessions, staged_bytes) —
-        # because that is the seam `list_trash` reads since #6312. Patching
+        # because that is the seam `list_trash` reads. Patching
         # `_read_manifest` instead lets the real `_summarize_manifest` run, and it
         # does `batch / MANIFEST_NAME`, which a name-only double cannot support.
         manifests: dict[str, tuple[dict[str, object], int, int] | None] = {
@@ -1406,7 +1776,7 @@ class TestTrashBatchNamesAreLogSafe:
         # (i.e. `pathlib.Path.iterdir`) globally leaks across the xdist worker:
         # a sibling test in the same process that legitimately iterates a real
         # directory then reaches the unpatched `_summarize_manifest`, which does
-        # `<_ForgedDir> / MANIFEST_NAME` and raises TypeError (refs #6425).
+        # `<_ForgedDir> / MANIFEST_NAME` and raises TypeError.
         class _ForgedRoot(type(session_storage.trash_root())):
             def iterdir(self):  # type: ignore[override]
                 return iter([_ForgedDir()])
@@ -1434,7 +1804,7 @@ class TestTrashBatchNamesAreLogSafe:
 
 class TestUntrustedNamesAreLogSafeOutsideListTrash:
     """The forgery primitive of :class:`TestTrashBatchNamesAreLogSafe`, at the
-    sibling sites outside ``list_trash`` (refs #6344, the #6281 class).
+    sibling sites outside ``list_trash`` (the log-forgery class).
 
     Two operands carry it, and they are not equally reachable. A manifest-supplied
     ``uid`` is read off disk with no validation, so its sites take a forged value
@@ -2022,7 +2392,7 @@ class TestCotenantCache:
     """The co-tenant lookup follows the scan cache's rules: reads may reuse, mutations never.
 
     :func:`_scan_units` is the single funnel for four public entry points, and its
-    co-tenant dependency used to bypass the 30s cache entirely — every read paid a
+    co-tenant dependency can bypass the 30s cache entirely — every read paying a
     pod-root enumeration plus a map read per leftover pod even on a scan-cache hit.
     The cache is OPT-IN per call site because the same value gates destructive
     paths; the safety tests below are what stop a later refactor from making it
@@ -2927,7 +3297,7 @@ class TestSharedStoreRefusal:
 class TestCotenantNamesAreLogSafe:
     """A co-tenant directory name is agent-influenced and can embed a newline;
     both ``cotenant_sids`` log sites that carry it must escape it, or one record
-    forges additional records (refs #6371, the #6281/#6315 log-forgery class).
+    forges additional records (the log-forgery class).
     """
 
     _FORGED = "wt-evil\nWARNING forged: reclaim authorized by operator"
@@ -3049,9 +3419,8 @@ class TestCotenantRefusalTextIsForgeSafe:
     """The raw co-tenant name also exits ``cotenant_sids`` inside the refusals
     tuples and is interpolated into two downstream refusal-text surfaces. Neither
     is a log line today, but one caller-side ``logger.warning(str(exc))`` away
-    from re-opening the #6281/#6371 forgery class — so both must carry the name
-    repr'd, exactly like the log sites ``TestCotenantNamesAreLogSafe`` pins
-    (refs #6430).
+    from re-opening the forgery class — so both must carry the name
+    repr'd, exactly like the log sites ``TestCotenantNamesAreLogSafe`` pins.
     """
 
     _FORGED = "wt-evil\nWARNING forged: reclaim authorized by operator\x1b[31m"
@@ -3087,7 +3456,7 @@ class TestCotenantRefusalTextIsForgeSafe:
         self, stores: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The ``SessionStorageError`` raised at the move renders one-line and
-        escaped, so a caller logging ``str(exc)`` cannot be used to forge a
+        escaped, so a caller logging ``str(exc)`` cannot forge a
         second record.
         """
         _, kiro_home = stores
@@ -3821,11 +4190,10 @@ class TestEmptyTrash:
                 session_storage.staged_targets([batch.batch_id])
 
         assert swapped == [True], "the swap must land inside the window under test"
-        # This assertion got STRONGER. It used to say only that whatever came back had its
-        # identity and its size describing one directory -- the impostor's -- because binding
-        # the pair was all the code could then promise. The manifest header now has to name
-        # the batch it was read from as well, so a different batch renamed into the selected
-        # name is refused outright rather than approved self-consistently under the wrong id.
+        # The manifest header must name the batch it was read from, not just carry an
+        # identity and a size describing one directory -- the impostor's. That way a
+        # different batch renamed into the selected name is refused outright rather than
+        # approved self-consistently under the wrong id.
         assert (staged / session_storage.MANIFEST_NAME).is_file(), "and it is left alone"
 
     def test_a_header_with_no_batch_id_is_refused_rather_than_waved_through(
@@ -4746,11 +5114,11 @@ class TestEmptyTrash:
     ) -> None:
         """The batch's own name gets the same treatment its interior directories get.
 
-        The final scan proves the batch empty by DESCRIPTOR and the removal used to
-        address a NAME, so a swap in between removed an empty replacement instead. That
-        was the worst of the name-addressed removals rather than the mildest: by then the
-        manifest has already been moved aside, so the real batch was left holding data
-        with nothing to list it -- and the caller reported success.
+        The final scan proves the batch empty by DESCRIPTOR; a removal that addressed a
+        NAME instead would let a swap in between remove an empty replacement. That is the
+        worst of the name-addressed removals rather than the mildest: by then the
+        manifest has already been moved aside, so the real batch is left holding data
+        with nothing to list it -- and the caller reports success.
 
         Here the manifest move is the trigger, which puts the swap exactly in that
         interval.
@@ -5085,7 +5453,7 @@ class TestEmptyTrash:
 
         Checking a path and then handing the SAME path to `rmtree` re-resolves it, so a
         swap in between is followed. The rename removes that: by the time anything is
-        removed the approved name no longer exists, and the name being removed is one that
+        removed the approved name does not exist, and the name being removed is one that
         existed for microseconds.
 
         Asserted structurally rather than by racing. A test that tries to land a swap
@@ -5126,7 +5494,7 @@ class TestEmptyTrash:
 
         It is not `OSError`, so it escaped every caller that turns a failed read into a
         refusal and reached the request handler as an unexplained snapshot failure - and
-        that handler used to answer a named selection by deleting it unchecked. Depth is
+        that handler would answer a named selection by deleting it unchecked. Depth is
         reachable by anything that can write into the trash, so the walk is iterative:
         deep enough still fails, but with `EMFILE`, which is an `OSError` and is handled.
         """
@@ -5329,7 +5697,7 @@ class TestEmptyTrash:
 
         POSIX has no unlink-by-inode - the stdlib's own `_rmtree_safe_fd` addresses names
         too - so this cannot be closed the way the directories were. What it can do is
-        refuse a name that no longer denotes the object the pinned scan saw, which is the
+        refuse a name that does not denote the object the pinned scan saw, which is the
         interval between that scan and the unlink. The swap here lands inside it.
         """
         if not session_storage._FD_SAFE_DELETE:
@@ -5522,7 +5890,7 @@ class TestSingleTrashPass:
 
     @staticmethod
     def _counted_manifest_reads(monkeypatch: pytest.MonkeyPatch) -> list[Path]:
-        """Count via ``_summarize_manifest``: since #6281 it is ``list_trash``'s
+        """Count via ``_summarize_manifest``: it is ``list_trash``'s
         per-batch cost (the count-only streamed pass), and it is hit through the
         module global, so it sees every ``list_trash`` pass no matter which
         module's imported name made the call."""
@@ -5713,7 +6081,7 @@ class TestManifestReaders:
     def test_corrupt_lines_are_counted_and_logged_once(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """#6292 item 3: mid-file corruption is no longer silent — one aggregated
+        """Mid-file corruption is not silent — one aggregated
         warning per read, counting only genuinely corrupt lines."""
         lines = [
             json.dumps(self._header()),
@@ -5845,7 +6213,7 @@ class TestManifestReaders:
     def test_a_cap_boundary_read_does_not_destroy_a_record_boundary(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """GPT round-2 finding 1: a cap-sized read that cuts a physical line
+        """a cap-sized read that cuts a physical line
         mid-way must not condemn the bounded, individually valid records inside
         it. A 255-char record + \\u2028 + another record on one physical line,
         with the cap at 256, must yield both records."""
@@ -5863,7 +6231,7 @@ class TestManifestReaders:
     def test_a_final_line_ended_by_a_unicode_boundary_is_complete_corruption(
         self, tmp_path: Path, caplog: pytest.LogCaptureFixture
     ) -> None:
-        """GPT round-2 finding 2: 'garbage\\u2028' at EOF IS terminated under
+        """'garbage\\u2028' at EOF IS terminated under
         splitlines semantics — a complete corrupt record that must warn, not a
         crash-partial that hides at debug."""
         blob = json.dumps(self._header()) + "\n" + "garbage {\u2028"

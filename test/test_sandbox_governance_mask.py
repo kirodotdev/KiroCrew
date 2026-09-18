@@ -83,6 +83,7 @@ class TestKeystonesAreSealedInEveryMode:
     #: THESE paths are covered, so a test derived from the same tuple the production
     #: code reads would pass just as happily after someone emptied it.
     KEYSTONES = (
+        "member-memory-bindings",
         "security_policy.json",
         "admission_policy.json",
         "app_admission.json",
@@ -91,13 +92,16 @@ class TestKeystonesAreSealedInEveryMode:
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
-        # Recorded consent to deliver a scanner-flagged file (#7770). Sealing it
+        # Recorded consent to deliver a scanner-flagged file. Sealing it
         # is the load-bearing half of the whole design: the deny-list tiers can
         # be evaded by runtime path construction, so only a kernel write denial
         # makes "the owner consents, never the agent" true rather than merely
         # intended.
         "file_delivery_consent.json",
-        # The app dev-mode authorization record (#6907): sealing it is what
+        # Gateway-executed browser launcher. Agent shells must read and run it,
+        # but a write would choose the binary the unsandboxed gateway executes.
+        "playwright-cli",
+        # The app dev-mode authorization record: sealing it is what
         # makes the operator-attestation flag unforgeable from an agent shell
         # — a sandboxed process cannot mint a grant however the toggle was
         # spelled.
@@ -151,6 +155,7 @@ class TestSecretsAreMaskedInEveryMode:
     """Crew-home leaves with no in-sandbox reader are bind-masked, not merely sealed."""
 
     MASKED = (
+        "memory_stores",
         "token_signing.key",
         "refresh_chains.json",
         "kas",
@@ -276,6 +281,17 @@ class TestTheReconciliationIsComplete:
         assert not hidden & readonly
         assert not hidden & visible
         assert not readonly & visible
+
+    def test_the_gateway_launcher_is_a_top_level_readonly_leaf(self) -> None:
+        """A nested leaf can be bypassed by renaming its writable parent.
+
+        The Linux bind mount follows the moved parent, leaving the original path
+        free for an agent-planted replacement. A top-level leaf has no extra
+        agent-writable ancestor inside the data home.
+        """
+        assert "playwright-cli" in sandbox._CREW_READONLY_LEAVES
+        assert "playwright-cli" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert "tools/playwright-cli" not in sandbox._CREW_READONLY_LEAVES
 
     @pytest.mark.parametrize("mode", _MODES)
     def test_every_mode_carries_the_derived_set(self, mode: str) -> None:
@@ -410,7 +426,7 @@ class TestThirdPartyCredentialsKeepTheirExistingTiering:
 
 
 class TestAppBackendOwnedLeaves:
-    """An app's OWN backend gets its state leaves back; nothing else changes (#8762).
+    """An app's OWN backend gets its state leaves back; nothing else changes.
 
     The md-notebook leaves are masked to fence agent subprocesses, but the Notes
     backend is itself a sandboxed spawn and is those files' only legitimate
@@ -494,7 +510,7 @@ class TestAppBackendOwnedLeaves:
 
 
 class TestForeignMaskShadowGuard:
-    """A carve-out spelling beneath a FOREIGN mask is refused, not carved (#8795).
+    """A carve-out spelling beneath a FOREIGN mask is refused, not carved.
 
     ``_hidden_path_contains_visible_path`` cancels any hidden mask entry that
     CONTAINS a visible path, so an ``extra_visible_dirs`` spelling planted beneath
@@ -621,7 +637,7 @@ class TestForeignMaskShadowGuard:
 
 
 class TestAPodChildsRemappedHomeIsMasked:
-    """Round 10 security fix. ``acp.client._apply_pod_home_remap`` gives a pod's
+    """``acp.client._apply_pod_home_remap`` gives a pod's
     kiro-cli child a pod-owned ``HOME`` (``KIROCREW_OS_HOME``) and
     ``pod.runtime._seed_pod_os_home`` stages the host's SSO tokens into it -- but
     every entry in the tier lists is ``$HOME``-relative joined against the GATEWAY's
@@ -665,8 +681,7 @@ class TestAPodChildsRemappedHomeIsMasked:
         `<os-home>/.aws/sso/cache/kiro-auth-token*.json`, and the pod's kiro-cli
         child WRITES its own MCP OAuth grants into that same directory.
 
-        This assertion is the inverse of the one round 10 shipped, and that
-        reversal is the fix. Bind-masking `<os-home>/.aws` empty breaks both
+        Bind-masking `<os-home>/.aws` empty breaks both
         directions -- the child cannot read the token it was seeded, and its grant
         writes land in the overlay rather than the pod tree, so `mcp_grant`'s stat
         answers "no grant" forever. On Linux `is_kiro_cli` does not skip Crew's

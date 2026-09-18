@@ -98,13 +98,17 @@ export default function AgentPanel({
   const { confirm, confirmDialog } = useConfirm()
   const inputRef = useRef<HTMLInputElement>(null)
   const [sent, setSent] = useState<string[]>([])
-  // `null` means "not editing". One piece of state rather than a boolean plus a
-  // string, so the two can never disagree about whether there is a draft.
+  // `null` means "not editing". One piece of state carrying both the text and
+  // the seed it was opened from, so the pieces can never disagree about whether
+  // there is a draft or what it started as.
   //
   // Seeded when edit mode OPENS and never from a poll, which is what makes the
   // outputs query safe to keep refetching underneath: a 5-second poll landing
-  // mid-sentence cannot overwrite what the user is typing.
-  const [draft, setDraft] = useState<string | null>(null)
+  // mid-sentence cannot overwrite what the user is typing. The seed is why the
+  // dirty check below survives that same poll — comparing against the live
+  // `output` prop would call an untouched draft dirty the moment the agent
+  // writes more.
+  const [draft, setDraft] = useState<{ seed: string; text: string } | null>(null)
   const isChatAgent = agent.widget_type === 'chat'
   const showChat = chatView || isChatAgent
   const editable = onSaveOutput != null && !showChat
@@ -112,11 +116,17 @@ export default function AgentPanel({
   // The session hook's toast fades; a save or revert that did not land is a state
   // this panel must keep showing until the next attempt.
   const [outputError, setOutputError] = useState<string | null>(null)
+  // THIS panel's save, distinct from the `editSaving` prop: that prop is
+  // session-wide (any panel's save or revert), which is right for disabling the
+  // controls but wrong for the button label — an idle panel must not read
+  // "Saving…" because a sibling agent's write is in flight.
+  const [savePending, setSavePending] = useState(false)
 
   const saveDraft = async () => {
     if (draft === null || onSaveOutput == null) return
-    const submittedDraft = draft
+    const submittedDraft = draft.text
     setOutputError(null)
+    setSavePending(true)
     try {
       await onSaveOutput(submittedDraft)
     } catch {
@@ -124,11 +134,13 @@ export default function AgentPanel({
       // here would turn a failed save into permanent loss of the user's correction.
       setOutputError(i18nT('apps.meetings.session.minutesSaveFailed'))
       return
+    } finally {
+      setSavePending(false)
     }
     // Saving is asynchronous but the textarea remains editable. Only close the
     // exact snapshot the request persisted; text typed while it was in flight is
     // still a local draft and must stay on screen.
-    setDraft(current => current === submittedDraft ? null : current)
+    setDraft(current => current !== null && current.text === submittedDraft ? null : current)
   }
 
   const requestRevert = async () => {
@@ -145,6 +157,25 @@ export default function AgentPanel({
     } catch {
       setOutputError(i18nT('apps.meetings.session.minutesRevertFailed'))
     }
+  }
+
+  const cancelEdit = async () => {
+    // A dirty draft is unsaved work; discarding it silently is the same loss the
+    // revert path already confirms, so it gets the same dialog. A clean draft
+    // (nothing typed, or typed back to the seed) closes without asking. The
+    // comparison is against the SEED the editor opened with, never the live
+    // `output` prop: the outputs poll refreshes that prop while the editor is
+    // open, and an untouched draft must not read as dirty because the agent
+    // wrote more underneath.
+    if (draft !== null && draft.text !== draft.seed) {
+      const confirmed = await confirm({
+        title: i18nT('apps.meetings.agentPanel.discardDraft'),
+        body: i18nT('apps.meetings.agentPanel.discardDraftHint'),
+        confirmLabel: i18nT('apps.meetings.agentPanel.discardDraft'),
+      })
+      if (!confirmed) return
+    }
+    setDraft(null)
   }
 
   const send = () => {
@@ -305,8 +336,16 @@ export default function AgentPanel({
       <Card className="col-span-2 flex flex-col gap-2">
         {header}
         <textarea
-          value={draft}
-          onChange={e => setDraft(e.target.value)}
+          value={draft.text}
+          onChange={e =>
+            setDraft(current =>
+              current === null ? current : { seed: current.seed, text: e.target.value },
+            )
+          }
+          // The Edit button unmounts with the read view when edit mode opens, so
+          // without this the browser drops focus to <body> and a keyboard user
+          // has to tab back into the editor they just asked for.
+          autoFocus
           // Distinct from the card's title on purpose: the region and the control are
           // different things, and giving both the same accessible name makes them
           // indistinguishable to a screen reader.
@@ -317,16 +356,19 @@ export default function AgentPanel({
         {/* No hand-off: the minutes draft in the textarea above is unsaved. */}
         <ErrorNotice message={outputError} />
         <div className="flex items-center justify-end gap-2">
-          <Btn onClick={() => setDraft(null)} disabled={editSaving}>
+          <Btn onClick={() => void cancelEdit()} disabled={editSaving}>
             {i18nT('apps.meetings.agentPanel.cancel')}
           </Btn>
           <SendBtn
             onClick={saveDraft}
             disabled={editSaving}
           >
-            {i18nT('apps.meetings.agentPanel.save')}
+            {savePending
+              ? i18nT('apps.meetings.agentPanel.saving')
+              : i18nT('apps.meetings.agentPanel.save')}
           </SendBtn>
         </div>
+        {confirmDialog}
       </Card>
     )
   }
@@ -340,7 +382,7 @@ export default function AgentPanel({
         <div className="flex flex-wrap items-center justify-end gap-2 pt-2 border-t border-border">
           {editable && (
             <Btn
-              onClick={() => setDraft(output)}
+              onClick={() => setDraft({ seed: output, text: output })}
               aria-label={i18nT('apps.meetings.agentPanel.edit')}
             >
               <Pencil className="lucide-inline" />
@@ -385,11 +427,14 @@ export default function AgentPanel({
       >
         {output ? (
           <MarkdownRenderer content={output} />
-        ) : (
+        ) : !edit ? (
           <p className="text-[13px] text-muted">
             {i18nT('apps.meetings.agentPanel.awaitingOutput', { name: agent.name })}
           </p>
-        )}
+        ) : /* A saved-but-empty edit is the user's own (blank) version: saying
+               "output will appear here" would misreport their deliberate state
+               as the agent not having written yet. The "Edited" badge above
+               already says whose copy this is. */ null}
       </div>
       {confirmDialog}
     </Card>

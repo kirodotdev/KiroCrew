@@ -17,7 +17,8 @@ from pathlib import Path
 
 from skill_script_helpers import load_skill_script
 
-from kiro_crew import agent
+from conftest import make_dir_link
+from kiro_crew import agent, platform_compat
 from kiro_crew.agent_files import (
     OWNED_KIRO_AGENT_FILES,
     PIPELINE_CONDUCTOR_AGENT_FILENAME,
@@ -71,11 +72,11 @@ class TestPipelineConductorInstaller:
         missing from that allowlist silently rots when Playwright servers move."""
         assert PIPELINE_CONDUCTOR_AGENT_FILENAME in OWNED_KIRO_AGENT_FILES
 
-    def test_prompt_carries_the_verbosity_placeholder(self, tmp_path, monkeypatch):
-        """Custom agents get their OWN prompt, so the token must appear here or
-        the user's verbosity setting silently never reaches this agent."""
+    def test_prompt_does_not_carry_the_retired_verbosity_token(self, tmp_path, monkeypatch):
         data = self._install(tmp_path, monkeypatch)
-        assert "{{VERBOSITY_BLOCK}}" in data["prompt"]
+        # Reply style now arrives as session-context chrome for every
+        # agent; a token left here would reach the model as a literal.
+        assert "{{VERBOSITY_BLOCK}}" not in data["prompt"]
 
     def test_prompt_drives_patrol_with_monitor_start_not_wait(self, tmp_path, monkeypatch):
         data = self._install(tmp_path, monkeypatch)
@@ -120,12 +121,34 @@ class TestPipelineConductorInstaller:
             "@kirocrew-dashboard/session_send",
             "@kirocrew-dashboard/session_stop",
             "@kirocrew-dashboard/chat_folder_move_session",
+            # Deliberately NOT granted here: the pipeline procedure does not
+            # file itself yet (the goal and security conductors do), and a
+            # grant nothing in the skill exercises is surface without a user.
+            "@kirocrew-dashboard/chat_folder_file_self",
             "@kirocrew-dashboard",
             "execute_bash",
         ):
             assert gated not in allowed, gated
         assert "@kirocrew-dashboard" in data["tools"]  # mounted, so gated verbs still work
         assert "execute_bash" in data["tools"]
+
+    def test_skill_does_not_name_the_self_filing_verb_it_is_not_granted(self):
+        """Grant and procedure move together. ``chat_folder_file_self`` is
+        withheld from this agent (see the gated list above), so its skill must
+        not instruct a call that would prompt on every unattended cycle. When
+        the pipeline procedure adopts the goal/agent folder shape, both this
+        pin and the grant change in the same PR."""
+        from pathlib import Path
+
+        skill = (
+            Path(__file__).resolve().parents[1]
+            / "src"
+            / "kiro_crew"
+            / "builtin_skills"
+            / "pipeline-conductor"
+            / "SKILL.md"
+        )
+        assert "chat_folder_file_self" not in skill.read_text(encoding="utf-8")
 
     def test_core_grants_are_named_verbs_never_the_whole_server(self, tmp_path, monkeypatch):
         """Untrusted content feeds every auto-approved call on an unattended
@@ -156,7 +179,7 @@ class TestPipelineConductorInstaller:
         ``kirocrew-work`` is NOT among them. It was mounted here briefly and the
         mount is retracted, because the work-ledger flow is a different dispatch
         and patrol procedure and this agent ships its own — see
-        ``kirocrew-ledger-conductor``. Negative rather than deleted so the mount
+        ``kirocrew-conductor``. Negative rather than deleted so the mount
         cannot return unnoticed.
         """
         data = self._install(tmp_path, monkeypatch)
@@ -290,10 +313,9 @@ class TestFleetProbe:
 
     def test_a_protocol_word_in_prose_is_not_a_report(self, tmp_path, capsys, monkeypatch):
         """The protocol is ``<WORD>:``. A line that merely OPENS with a protocol
-        word -- ``PR #6580 is green ...`` -- is prose, and tagging it invents a
-        report nobody filed. Measured over the 60 most recent transcripts on the
-        development host, 20 of the 94 assistant rows that matched the old
-        ``^<WORD>\\b`` form were prose, 13 of them a bare ``PR #<n>``."""
+        word -- ``PR #<n> is green ...`` -- is prose, and tagging it invents a
+        report nobody filed. Among assistant rows matching a bare ``^<WORD>\\b``
+        form, many are prose, and a bare ``PR #<n>`` is the common shape."""
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-prose"])
         self._session(
@@ -1579,9 +1601,9 @@ class TestFleetProbe:
     def test_a_non_protocol_disposition_does_not_erase_the_terminal_tag(
         self, tmp_path, capsys, monkeypatch
     ):
-        """The defect 2b closes: the handled set keeps ONE entry per key, so a
-        later IDLE or GONE disposition used to overwrite the terminal report and
-        the finished worker read as wedged again on the next cycle."""
+        """The handled set keeps ONE entry per key, so a later IDLE or GONE
+        disposition must not overwrite the terminal report; otherwise the
+        finished worker reads as wedged again on the next cycle."""
         mod = self._mod()
         cfg = self._config(tmp_path, monkeypatch, ["s-done"], idle_alert_secs=100)
         sessions = tmp_path / "sessions"
@@ -1700,8 +1722,9 @@ class TestFleetProbe:
     # ── 2d: cwd-scoped banned scan ────────────────────────────────────────────
 
     def _proc(self, tmp_path: Path, pid: str, argv: bytes, cwd: Path | None) -> Path:
-        """One fake ``/proc/<pid>``. ``cwd`` is written as a SYMLINK because that
-        is what the kernel exposes and what the probe reads.
+        """One fake ``/proc/<pid>``. ``cwd`` is written as a reparse link (a
+        junction on Windows) because that is what the kernel exposes and what
+        the probe reads.
 
         A ``stat`` file is always written: every live process on a real system
         has one, and the probe reads its ``starttime`` (field 22) as the process
@@ -1719,7 +1742,7 @@ class TestFleetProbe:
         (proc / pid / "stat").write_text(f"{pid} (proc) R " + " ".join(stat_tail) + "\n", "ascii")
         if cwd is not None:
             cwd.mkdir(parents=True, exist_ok=True)
-            os.symlink(str(cwd), str(proc / pid / "cwd"))
+            make_dir_link(proc / pid / "cwd", cwd)
         return proc
 
     def test_a_banned_match_outside_the_fleet_is_foreign_not_banned(
@@ -1801,7 +1824,7 @@ class TestFleetProbe:
         self._run(
             mod, cfg, capsys, "--mark-handled", "s-gone", "GREEN", self._digest_of(out, "s-gone")
         )
-        # The report is no longer in the window; only the state file knows.
+        # The report is not in the window; only the state file knows.
         self._session(sessions, "s-gone", "trailing chatter with no prefix", age_secs=500)
         out = self._run(mod, cfg, capsys)
         assert "TERMINAL" in out
@@ -2034,8 +2057,8 @@ class TestFleetProbe:
         for target in (Path(os.sep), store.parent):
             link = tmp_path / f"link-{abs(hash(str(target))) % 1000}"
             if link.is_symlink() or link.exists():
-                link.unlink()
-            os.symlink(str(target), str(link))
+                platform_compat.unlink_link_or_junction(link)
+            make_dir_link(link, target)
             cfg.write_text(
                 json.dumps({"sessions": [], "fleet_worktrees": [str(link)]}), encoding="utf-8"
             )
@@ -2328,7 +2351,7 @@ class TestFleetProbe:
         real = tmp_path / "real-fleet" / "wt-a"
         real.mkdir(parents=True)
         link = tmp_path / "via-link"
-        os.symlink(str(tmp_path / "real-fleet"), str(link))
+        make_dir_link(link, tmp_path / "real-fleet")
         # The process reports the REAL path; the config names the symlinked one.
         proc = self._proc(tmp_path, "5100", b"pytest\x00test/x.py\x00", real)
         cfg = self._config(tmp_path, monkeypatch, [], fleet_worktrees=[str(link / "wt-a")])
@@ -2492,10 +2515,10 @@ class TestFleetProbe:
         """An answered report must not re-present because a later tag was marked.
 
         The handled set holds ONE entry per key, so marking a condition tag
-        (``IDLE``/``NOPROGRESS``) over an answered payload tag used to overwrite
-        the record that the payload was dealt with -- and the answered ruling then
-        fired again, sending the conductor to re-adjudicate something it had
-        already decided. The payload disposition is now preserved beside the new
+        (``IDLE``/``NOPROGRESS``) over an answered payload tag must not overwrite
+        the record that the payload was dealt with -- otherwise the answered ruling
+        fires again, sending the conductor to re-adjudicate something it has
+        already decided. The payload disposition is preserved beside the new
         entry, which is the shape ``proto`` already uses for the terminal reading.
         """
         mod = self._mod()

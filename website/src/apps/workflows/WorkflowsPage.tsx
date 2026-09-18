@@ -9,8 +9,9 @@
  *
  * This is a BUILTIN dashboard page (rendered by BuiltinAppRoute inside the main
  * React tree), so it uses same-origin `fetch` with the dashboard's session
- * cookie — NOT the app-sdk hooks (those require <AppApiProvider>, which only
- * wraps standalone/installed apps via AppHost).
+ * cookie — NOT the app-sdk data hooks (those need the SDK's scoped-API layer,
+ * which a builtin page mounts for itself via `AppScopedApiProvider`; app identity
+ * is published for every builtin page by BuiltinAppRoute).
  *
  * Backend contract: see kiro_crew/apps/builtins/workflows/server.py and the run
  * event schema in docs/system-specs/modules/workflows.md.
@@ -57,6 +58,7 @@ interface RunResponse {
   ok: boolean
   result: unknown
   error: string | null
+  error_code?: string | null
   events: WfEvent[]
 }
 
@@ -247,6 +249,7 @@ export default function WorkflowsPage() {
               status={run ? (run.ok ? 'finished' : 'failed') : 'running'}
               result={run?.result}
               error={run?.error}
+              errorCode={run?.error_code}
             />
           )}
         </div>

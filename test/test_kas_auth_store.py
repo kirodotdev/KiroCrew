@@ -283,3 +283,59 @@ def test_linked_vault_subdir_is_refused(tmp_path: Path):
     store = TokenStore(tmp_path)
     with pytest.raises(TokenStoreError):
         store.save(_token())
+
+
+# ---- is_usable + the refresh-rejected marker -----------------------------------
+
+
+def test_is_usable_is_live_token_or_renewable():
+    """The one predicate the spawn decision, doctor and the sign-in card share."""
+    assert _token().is_usable() is True
+    assert _token(expires_in=-60).is_usable() is True  # expired but renewable
+    assert _token(expires_in=-60, refresh_token=None).is_usable() is False
+    assert _token(expires_in=REFRESH_MARGIN_SECS - 5, refresh_token=None).is_usable() is False
+
+
+def test_refresh_rejected_marker_round_trips_and_is_token_free(tmp_path: Path):
+    store = TokenStore(tmp_path)
+    assert store.refresh_rejected("social") is None
+    store.mark_refresh_rejected("social")
+    when = store.refresh_rejected("social")
+    assert when is not None and when.tzinfo is not None
+    # A plain timestamp sidecar beside the vault: nothing secret in it, and it is
+    # per identity so a Builder ID refusal does not read as a social one.
+    marker = tmp_path / "kas" / "refresh-rejected-social"
+    assert marker.is_file()
+    assert "at-value" not in marker.read_text() and "rt-value" not in marker.read_text()
+    assert store.refresh_rejected("builder_id") is None
+
+
+def test_save_clears_refresh_rejected_marker(tmp_path: Path):
+    """A credential landing in the slot supersedes the refusal recorded against
+    the one it replaces -- otherwise the card would call a fresh sign-in expired."""
+    store = TokenStore(tmp_path)
+    store.save(_token())
+    store.mark_refresh_rejected("social")
+    assert store.refresh_rejected("social") is not None
+    store.save(_token(access_token="renewed"))
+    assert store.refresh_rejected("social") is None
+
+
+def test_delete_clears_refresh_rejected_marker(tmp_path: Path):
+    store = TokenStore(tmp_path)
+    store.save(_token())
+    store.mark_refresh_rejected("social")
+    store.delete("social")
+    assert store.refresh_rejected("social") is None
+    assert not (tmp_path / "kas" / "refresh-rejected-social").exists()
+
+
+def test_refresh_rejected_ignores_unknown_identity_and_garbage(tmp_path: Path):
+    store = TokenStore(tmp_path)
+    # Unknown identity kind: a hint, never a raise.
+    assert store.refresh_rejected("nope") is None
+    store.mark_refresh_rejected("nope")  # no-op, no raise
+    # A malformed marker reads as absent rather than crashing status.
+    (tmp_path / "kas").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "kas" / "refresh-rejected-social").write_text("not a timestamp")
+    assert store.refresh_rejected("social") is None

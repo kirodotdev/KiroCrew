@@ -58,76 +58,77 @@ class FakeSessionManager:
         pass
 
 
+@pytest.mark.asyncio
 class TestHydrateThreadOverrides:
     """Tests for _hydrate_thread_overrides function."""
 
-    def test_hydrate_sets_agent_from_metadata(self):
+    async def test_hydrate_sets_agent_from_metadata(self):
         log = FakeConversationLog({"t1": {"agent": "my-agent"}})
-        _hydrate_thread_overrides("t1", log)
+        await _hydrate_thread_overrides("t1", log)
         assert _thread_agents["t1"] == "my-agent"
 
-    def test_hydrate_sets_project_from_metadata(self):
+    async def test_hydrate_sets_project_from_metadata(self):
         log = FakeConversationLog({"t2": {"project": "/home/user/my-project"}})
-        _hydrate_thread_overrides("t2", log)
+        await _hydrate_thread_overrides("t2", log)
         assert _thread_projects["t2"] == "/home/user/my-project"
 
-    def test_hydrate_all_fields(self):
+    async def test_hydrate_all_fields(self):
         log = FakeConversationLog({"t4": {"agent": "coder", "project": "/opt/proj"}})
-        _hydrate_thread_overrides("t4", log)
+        await _hydrate_thread_overrides("t4", log)
         assert _thread_agents["t4"] == "coder"
         assert _thread_projects["t4"] == "/opt/proj"
 
-    def test_hydrate_skips_if_already_hydrated(self):
+    async def test_hydrate_skips_if_already_hydrated(self):
         _hydrated_sessions.add("t5")
         log = FakeConversationLog({"t5": {"agent": "override-this"}})
-        _hydrate_thread_overrides("t5", log)
+        await _hydrate_thread_overrides("t5", log)
         # Should not populate since session was already hydrated
         assert "t5" not in _thread_agents
 
-    def test_hydrate_adds_to_hydrated_set(self):
+    async def test_hydrate_adds_to_hydrated_set(self):
         log = FakeConversationLog({"t5b": {"agent": "my-agent"}})
-        _hydrate_thread_overrides("t5b", log)
+        await _hydrate_thread_overrides("t5b", log)
         assert "t5b" in _hydrated_sessions
         assert _thread_agents["t5b"] == "my-agent"
 
-    def test_hydrate_adds_to_hydrated_set_even_if_no_log(self):
-        _hydrate_thread_overrides("t5c", None)
+    async def test_hydrate_adds_to_hydrated_set_even_if_no_log(self):
+        await _hydrate_thread_overrides("t5c", None)
         assert "t5c" in _hydrated_sessions
 
-    def test_hydrate_noop_if_no_conversation_log(self):
-        _hydrate_thread_overrides("t6", None)
+    async def test_hydrate_noop_if_no_conversation_log(self):
+        await _hydrate_thread_overrides("t6", None)
         assert "t6" not in _thread_agents
 
-    def test_hydrate_noop_if_empty_metadata(self):
+    async def test_hydrate_noop_if_empty_metadata(self):
         log = FakeConversationLog({})
-        _hydrate_thread_overrides("t7", log)
+        await _hydrate_thread_overrides("t7", log)
         assert "t7" not in _thread_agents
         assert "t7" not in _thread_projects
 
-    def test_hydrate_handles_get_metadata_exception(self):
+    async def test_hydrate_handles_get_metadata_exception(self):
         log = FakeConversationLog({})
         log.get_metadata = MagicMock(side_effect=RuntimeError("db error"))
-        _hydrate_thread_overrides("t8", log)
+        await _hydrate_thread_overrides("t8", log)
         assert "t8" not in _thread_agents
 
-    def test_hydrate_ignores_falsy_agent(self):
+    async def test_hydrate_ignores_falsy_agent(self):
         log = FakeConversationLog({"t9": {"agent": "", "project": ""}})
-        _hydrate_thread_overrides("t9", log)
+        await _hydrate_thread_overrides("t9", log)
         assert "t9" not in _thread_agents
         assert "t9" not in _thread_projects
 
-    def test_hydrate_rejects_sensitive_project_path(self):
+    async def test_hydrate_rejects_sensitive_project_path(self):
         # Defense-in-depth: a tampered/corrupted metadata project path that
         # resolves to a sensitive credential dir must never enter the cache.
         log = FakeConversationLog({"t10": {"project": "/home/user/.aws"}})
         with patch("kiro_crew.slack.handler.is_sensitive_path", return_value=True):
-            _hydrate_thread_overrides("t10", log)
+            await _hydrate_thread_overrides("t10", log)
         assert "t10" not in _thread_projects
 
-    def test_hydrate_accepts_non_sensitive_project_path(self):
+    async def test_hydrate_accepts_non_sensitive_project_path(self):
         log = FakeConversationLog({"t11": {"project": "/home/user/safe-proj"}})
         with patch("kiro_crew.slack.handler.is_sensitive_path", return_value=False):
-            _hydrate_thread_overrides("t11", log)
+            await _hydrate_thread_overrides("t11", log)
         assert _thread_projects["t11"] == "/home/user/safe-proj"
 
 

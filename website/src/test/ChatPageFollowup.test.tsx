@@ -169,14 +169,14 @@ describe('ChatPage follow-up worktree orchestration', () => {
     // not vacuous: chat-1 is filed under 'folder-proj', and the worktree the
     // button opens must be created with that same folder. createChatSlot's
     // folder_id is positional arg index 8
-    // (name, agent, model, mode, memory_mode, title, clean_mode, artifact, folder_id, instance_id).
+    // (name, agent, model, mode, memory_mode, title, artifact, folder_id, instance_id).
     const store = makeStore('folder-proj')
     await renderPage(store)
     fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
     await waitFor(() => expect(api.createChatSlot).toHaveBeenCalled())
     // Locate by stable identity (the create call), not by the value asserted.
     const call = (api.createChatSlot as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(call[8]).toBe('folder-proj')
+    expect(call[7]).toBe('folder-proj')
   })
 
   it('files the worktree session top-level when the spawning session is unfiled (#6347 fallback)', async () => {
@@ -187,7 +187,7 @@ describe('ChatPage follow-up worktree orchestration', () => {
     fireEvent.click(screen.getByRole('button', { name: /start in new worktree/i }))
     await waitFor(() => expect(api.createChatSlot).toHaveBeenCalled())
     const call = (api.createChatSlot as ReturnType<typeof vi.fn>).mock.calls[0]
-    expect(call[8]).toBeUndefined()
+    expect(call[7]).toBeUndefined()
   })
 
   it('does not activate the new session until scoping has completed', async () => {

@@ -139,8 +139,8 @@ def service_environment(home: str) -> "dict[str, str]":
     * ``KIROCREW_KIRO_BIN`` — propagated only when the installer already has it
       set, resolved to an absolute path (a relative pin is meaningless once the
       service runs from a different working directory). The readiness ``whoami``
-      probe's real-home fallback keys off this pin; capturing it means a
-      ``service install`` no longer drops it and regresses the gateway to a
+      probe's real-home fallback keys off this pin; capturing it keeps a
+      ``service install`` from dropping it and regressing the gateway to a
       not-signed-in state.
     """
     # macOS BSD libc has no C.UTF-8; en_US.UTF-8 is always in its base set.

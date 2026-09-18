@@ -1,4 +1,4 @@
-"""Second-hop cron script source verification (Refs #7093).
+"""Second-hop cron script source verification.
 
 The packaged ``builtin_skills/`` to installed-skills hop is content-verified,
 ``scripts/`` included -- ``test_builtin_skill_sync_safety.py`` pins that with

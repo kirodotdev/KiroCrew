@@ -87,9 +87,9 @@ def test_success_exit_status_is_recorded(tmp_path: Path) -> None:
 
 @needs_bash
 def test_failure_exit_status_is_recorded_not_discarded(tmp_path: Path) -> None:
-    # The core regression: the restart verb exiting non-zero (replacement
-    # never served) must land in the status file, and the script itself must
-    # propagate it — a disowned run previously discarded both.
+    # The restart verb exiting non-zero (replacement never served) must land in
+    # the status file, and the script itself must propagate it — a disowned run
+    # would discard both.
     proc, crew_home = _run_script(tmp_path, exit_status=7)
     status_file = crew_home / "logs" / "restart-status"
     assert proc.returncode == 7

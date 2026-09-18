@@ -52,6 +52,7 @@ class TestCronApprovalModeGateway:
         gw.sessions = MagicMock()
         gw.sessions.get_pid = MagicMock(return_value=None)
         gw.ctx_builder = MagicMock()
+        gw.ctx_builder.conversation_log.get_metadata_status.return_value = ({}, True)
         gw.slack = MagicMock()
         gw.conv_log = None
         gw.dashboard_state = None
@@ -327,6 +328,7 @@ class TestSubagentInheritsPolicy:
         # Parent session has the given policy
         sessions.get_approval_policy = MagicMock(return_value=parent_policy)
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
 
         captured = {}
         mock_client = MagicMock()
@@ -376,6 +378,7 @@ class TestSubagentInheritsPolicy:
         ctx_builder = MagicMock()
         sessions.get_approval_policy = MagicMock(return_value=parent_policy)
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
 
         mock_client = MagicMock()
         mock_client.approve_tool = AsyncMock()
@@ -456,6 +459,7 @@ class TestCronSubagentInjection:
         gw.sessions = MagicMock()
         gw.sessions.get_pid = MagicMock(return_value=None)
         gw.ctx_builder = MagicMock()
+        gw.ctx_builder.conversation_log.get_metadata_status.return_value = ({}, True)
         gw.slack = None
         gw.conv_log = None
         gw.dashboard_state = None
@@ -483,6 +487,7 @@ class TestCronSubagentInjection:
                 mgr = MagicMock()
                 mgr.running = []
                 mgr.queued_count_for = MagicMock(return_value=0)
+                mgr.queued_count_for_async = AsyncMock(return_value=0)
                 return mgr
 
             mock_cls.side_effect = capture_mgr
@@ -601,6 +606,7 @@ class TestCronSubagentInjection:
         # .running is empty, but another subagent is mid-injection
         gw.subagent_mgr.running = []
         gw.subagent_mgr.queued_count_for = MagicMock(return_value=0)
+        gw.subagent_mgr.queued_count_for_async = AsyncMock(return_value=0)
         gw._cron_injecting["cron:daily-prep"] = 1
 
         info = SubagentInfo(
@@ -810,6 +816,7 @@ class TestSubagentRoleModelForcesDedicatedPath:
         sessions.get_pid = MagicMock(return_value=None)
         sessions.get_approval_policy = MagicMock(return_value="")
         sessions.get_agent = MagicMock(return_value="")
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         ctx_builder = MagicMock()
         ctx_builder.build_message = MagicMock(return_value=("msg", None))
         ctx_builder.hooks.auto_approve_subagent_tools = False

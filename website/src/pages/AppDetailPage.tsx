@@ -6,26 +6,31 @@
  * Shows full description, features, screenshots, tags, and action buttons.
  */
 import { useEffect, useState, useCallback, useRef } from 'react'
+import { useQuery } from '@tanstack/react-query'
 import { useReducedMotion } from 'framer-motion'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   ArrowLeft, Download, Check, Loader2, Power, PowerOff,
   Trash2, RefreshCw, Bot, Zap, ArrowUp,
   Clock, ChevronLeft, ChevronRight, X, Monitor, Copy, Terminal,
-  Target, Settings2, Star,
+  Target, Settings2, Star, ShieldAlert,
 } from 'lucide-react'
 import { needsDesktopApp } from '../lib/electron'
 import { api } from '../api/client'
 import { isNotFoundError } from '../api/apiError'
 import { PageHeader, Card, CardTitle, Badge, Btn } from '../components/ui'
+import SessionApprovalModes from '../components/appstore/SessionApprovalModes'
 import AppIcon from '../components/AppIcon'
 import TrustAppModal, { APP_EXECUTION_DENIED, isTrustDeniedError, useTrustGate } from '../components/appstore/TrustAppModal'
-import { isRegistrySourced, sanitizeStargazersCount } from '../components/appstore/types'
+import { isRegistrySourced, sanitizeStargazersCount, type RegistryApp } from '../components/appstore/types'
+import AppSource from '../components/appstore/AppSource'
 import { recordEvent } from '../rum'
 import { useTheme } from '../hooks/useTheme'
 import { DOUBLE_TAP_MS, DOUBLE_TAP_SLOP, DOUBLE_TAP_ZOOM, usePinchZoom } from '../hooks/usePinchZoom'
 import ErrorNotice from '../components/ErrorNotice'
+import { useConfirm } from '../components/ConfirmDialog'
 import { findReport, recordError } from '../utils/errorReport'
+import { copyCode } from '../utils/clipboard'
 
 import { i18nT } from '../i18n/t'
 import type { AppContributor } from '../types'
@@ -35,7 +40,8 @@ import {
 import { isBuiltinServerRow, mergeBuiltinRow } from '../components/appstore/mergeBuiltinRow'
 import { classifyManifestArt, installedArt, installedArtList, installedArtListAligned, installedIcon } from '../components/appstore/useHeroArt'
 import { fmtDateNumeric, fmtCompact, fmtNumber } from '../i18n/format'
-type AppInfo = {
+type AppInfo = Pick<RegistryApp, '_registry' | 'provenance'> & {
+  catalogListed?: boolean
   name: string
   displayName: string
   description: string
@@ -82,6 +88,7 @@ type AppInfo = {
   installed: boolean
   installedVersion?: string
   enabled?: boolean
+  sessionApprovalConsentPending?: boolean
   managed?: string
   source?: string
   installedAt?: string
@@ -114,6 +121,7 @@ interface AppPermissions {
   cron?: boolean
   network?: boolean
   memory?: boolean | string
+  sessionApproval?: boolean
   [key: string]: unknown
 }
 
@@ -578,10 +586,17 @@ export function HeroBanner({ src, fallbackSrc, isDetail }: { src: string; fallba
 
 export default function AppDetailPage() {
   const { name } = useParams<{ name: string }>()
+  const [app, setApp] = useState<AppInfo | null>(null)
+  const { data: registriesData, error: registriesError } = useQuery({
+    queryKey: ['registries'],
+    queryFn: () => api.listRegistries(),
+    enabled: !!app?._registry && app.origin !== 'local',
+  })
+  const sourceNames = [...(registriesData?.pinned || []), ...(registriesData?.registries || [])]
+    .map(r => ({ name: r.name || r.repo, label: r.label || r.name || r.repo, review: r.review }))
   const navigate = useNavigate()
   const location = useLocation()
   const { theme: resolvedMode } = useTheme()
-  const [app, setApp] = useState<AppInfo | null>(null)
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   /**
@@ -592,6 +607,12 @@ export default function AppDetailPage() {
    * the same reason, and both paths this fix wires need to say it.
    */
   const [successMsg, setSuccessMsg] = useState('')
+  const reconsentMsg = app?.sessionApprovalConsentPending
+    ? i18nT('pages.appDetailPage.session_approval_reconsent_notice', { name: appDisplayName(app) })
+    : ''
+  const enableLabel = app?.sessionApprovalConsentPending
+    ? i18nT('pages.appDetailPage.enable_and_allow_chat_control')
+    : i18nT('pages.appDetailPage.enable')
   const clearError = useCallback(() => {
     setError('')
   }, [])
@@ -713,6 +734,7 @@ export default function AppDetailPage() {
             installed: true,
             installedVersion: installed.version,
             enabled: installed.enabled,
+            sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -761,6 +783,9 @@ export default function AppDetailPage() {
             // records for `author`.
             version: installed.version || m.version || registryEntry?.version || '0.0.0',
             author: m.author || registryEntry?.author || '',
+            _registry: registryEntry?._registry,
+            provenance: registryEntry?.provenance,
+            catalogListed: !!registryEntry,
             icon: registryEntry?.icon || m.ui?.pages?.[0]?.icon || '',
             // `iconPath` is preferred over a manifest-declared `iconUrl` for the
             // same reason the backend honours only `iconPath`: a repo-relative
@@ -833,6 +858,7 @@ export default function AppDetailPage() {
             installed: true,
             installedVersion: installed.version,
             enabled: installed.enabled,
+            sessionApprovalConsentPending: installed.sessionApprovalConsentPending,
             managed: installed.managed,
             source: installed.source,
             installedAt: installed.installedAt,
@@ -1014,13 +1040,14 @@ export default function AppDetailPage() {
 
   /** The single enable path — shared by the action buttons and the trust retry. */
   const runEnable = useCallback(async (name: string) => {
-    await api.enableApp(name)
+    await api.enableApp(name, app?.sessionApprovalConsentPending === true)
     recordEvent('app_enable', { app: name, version: app?.installedVersion || app?.version })
     await load()
     window.dispatchEvent(new Event('mc:apps-changed'))
   }, [app, load])
 
   const trust = useTrustGate(runEnable)
+  const { confirm: confirmConsent, confirmDialog: consentDialog } = useConfirm()
 
   /**
    * Get / Install / Update entry point — owns the consent modal.
@@ -1040,6 +1067,7 @@ export default function AppDetailPage() {
         displayName: app.displayName,
         trustRepository: app.trustRepository,
         origin: app.origin,
+        sessionApproval: app.manifest?.permissions?.sessionApproval === true,
       },
       async () => {
         // ANY unsuccessful retry must REJECT, not resolve. `useTrustGate` rolls the
@@ -1064,12 +1092,30 @@ export default function AppDetailPage() {
       return
     }
     setActionLoading(action)
+    let updateResult: { notice?: string } | undefined
     clearError()
     setSuccessMsg('')
     try {
-      if (action === 'enable') { await runEnable(app.name); return }
+      if (action === 'enable') {
+        // Consent to chat control is restated at click time, on the trusted and
+        // the untrusted path alike, so the button has one ceremony: a dialog
+        // that names the grant, then enable (the trust modal may still follow
+        // for an untrusted repository).
+        if (app.sessionApprovalConsentPending) {
+          const ok = await confirmConsent({
+            title: i18nT('pages.appDetailPage.session_approval_confirm_title', { name: appDisplayName(app) }),
+            body: i18nT('pages.appDetailPage.session_approval_desc'),
+            confirmLabel: i18nT('pages.appDetailPage.enable_and_allow_chat_control'),
+            danger: false,
+          })
+          if (!ok) return
+        }
+        await runEnable(app.name)
+        await load()
+        return
+      }
       if (action === 'disable') await api.disableApp(app.name)
-      else if (action === 'update') await api.updateApp(app.name)
+      else if (action === 'update') updateResult = await api.updateApp(app.name)
       if (action === 'disable') {
         recordEvent('app_disable', { app: app.name, version: app.installedVersion || app.version })
       }
@@ -1080,10 +1126,16 @@ export default function AppDetailPage() {
       // registry-sourced app from the registry rather than copying a directory, so
       // each case has to name where the update actually came from.
       if (action === 'update') {
-        setSuccessMsg(isRegistrySourced(app)
-          ? i18nT('pages.appsPage.updated_from_the_registry', { name: appDisplayName(app) })
-          : i18nT('pages.appsPage.synced_from_its_source_directory', { name: appDisplayName(app) }))
-        setTimeout(() => setSuccessMsg(''), 4000)
+        // A widened session-approval grant leaves the app DISABLED pending
+        // re-consent (`notice: session_approval_reconsent`). Saying "updated"
+        // alone would report success over an app that just stopped running, so
+        // that case gets its own persistent notice instead of the 4s toast.
+        if (updateResult?.notice !== 'session_approval_reconsent') {
+          setSuccessMsg(isRegistrySourced(app)
+            ? i18nT('pages.appsPage.updated_from_the_registry', { name: appDisplayName(app) })
+            : i18nT('pages.appsPage.synced_from_its_source_directory', { name: appDisplayName(app) }))
+          setTimeout(() => setSuccessMsg(''), 4000)
+        }
       }
       window.dispatchEvent(new Event('mc:apps-changed'))
     } catch (e: unknown) {
@@ -1097,6 +1149,7 @@ export default function AppDetailPage() {
           displayName: app.displayName,
           trustRepository: app.trustRepository,
           origin: app.origin,
+          sessionApproval: app.manifest?.permissions?.sessionApproval === true,
         })
       } else {
         setError(e instanceof Error ? e.message : i18nT('pages.appDetailPage.failed_to', { action }))
@@ -1233,6 +1286,20 @@ export default function AppDetailPage() {
           </div>
         )}
 
+        {/* Re-consent after an update that widened the session-approval grant.
+            Warn-styled like the PR's other session-approval surfaces -- the text
+            says "it is now disabled", so a green box would contradict it. Cleared
+            when the user enables the app again (the action the notice asks for). */}
+        {reconsentMsg && (
+          <div
+            role="status"
+            className="mb-4 flex items-start gap-2 rounded-lg border border-warn/30 bg-warn-subtle p-3 animate-rise"
+          >
+            <ShieldAlert size={14} className="mt-[3px] shrink-0 text-warn" />
+            <span className="text-text text-sm">{reconsentMsg}</span>
+          </div>
+        )}
+
         {/* Error. No special execution-policy branch here any more: an untrusted
             third-party app is refused with `app_execution_denied`, and that
             refusal is now resolved INLINE by the consent modal (granting this
@@ -1255,6 +1322,7 @@ export default function AppDetailPage() {
           onCancel={trust.cancel}
           onConfirm={trust.confirm}
         />
+        {consentDialog}
 
         {/* Uninstall confirmation modal */}
         {showUninstallConfirm && app && (
@@ -1327,6 +1395,13 @@ export default function AppDetailPage() {
               )}
             </div>
 
+            <div className="mb-3">
+              <AppSource app={app} sources={sourceNames} unlisted={app.installed && (app.catalogListed === false || app.origin === 'local')} />
+              {app._registry && app.origin !== 'local' && registriesError && (
+                <ErrorNotice message={registriesError.message} variant="inline" askAgent />
+              )}
+            </div>
+
             {/* Actions */}
             <div className="flex items-center gap-2 flex-wrap">
               {!app.installed && !clientInstall && (
@@ -1353,7 +1428,7 @@ export default function AppDetailPage() {
                        store row / feature card keep the badge alone (the decision
                        does not happen there). */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {i18nT('pages.appDetailPage.enable')}</Btn>
+                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {enableLabel}</Btn>
                     {desktopOnly && (
                     <span className="text-[13px] text-muted flex items-center gap-1.5">
                       <Monitor size={14} /> {i18nT('pages.appDetailPage.desktop_app_hint')}
@@ -1383,7 +1458,7 @@ export default function AppDetailPage() {
                        where store rows land, so it was the common path. Same
                        pattern as AppListRow / FeaturedSpotlight rows. */
                     <>
-                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {i18nT('pages.appDetailPage.enable')}</Btn>
+                    <Btn onClick={() => handleAction('enable')} disabled={actionLoading === 'enable'}><Power size={14} /> {enableLabel}</Btn>
                     {desktopOnly && (
                     /* The consequence is VISIBLE here, not only in `title`. A
                        hover tooltip does not exist on touch and is not reachable
@@ -1476,10 +1551,13 @@ export default function AppDetailPage() {
                   <button
                     className="absolute top-2 right-2 p-1.5 rounded-md bg-bg-elevated border border-border text-muted hover:text-text hover:border-accent/40 transition-all opacity-0 group-hover/cmd:opacity-100"
                     aria-label={i18nT('pages.appDetailPage.copy_command')}
-                    onClick={() => {
-                      navigator.clipboard.writeText(resolvedShell)
-                      setCopied(true)
-                      setTimeout(() => setCopied(false), 2000)
+                    onClick={async () => {
+                      // Gate the confirmation on the boolean: a tick over an
+                      // unchanged clipboard is worse than no affordance.
+                      if (await copyCode(resolvedShell)) {
+                        setCopied(true)
+                        setTimeout(() => setCopied(false), 2000)
+                      }
                     }}
                   >
                     {copied ? <Check size={14} className="text-ok" /> : <Copy size={14} />}
@@ -1610,6 +1688,24 @@ export default function AppDetailPage() {
                       {(app.manifest.permissions.mcpTools || []).map((t: string) => (
                         <code key={t} className="bg-ok-subtle border border-ok/20 px-1.5 py-0.5 rounded text-[11px] text-ok">{t}</code>
                       ))}
+                    </div>
+                  </div>
+                )}
+                {app.manifest.permissions.sessionApproval && (
+                  <div className="rounded-md border border-warn/30 bg-warn-subtle px-2.5 py-2">
+                    {/* Plain words first: the manifest key alone told a reader nothing
+                        about what the app can do to their sessions. The key stays as
+                        the secondary label so it matches the manifest they may read. */}
+                    <div className="flex items-start gap-2 text-text">
+                      <ShieldAlert size={13} className="mt-[2px] shrink-0 text-warn" />
+                      <span>{i18nT('pages.appDetailPage.session_approval_desc')}</span>
+                    </div>
+                    <SessionApprovalModes
+                      className="mt-1.5 text-[12px]"
+                      label={i18nT('pages.appDetailPage.session_approval_modes')}
+                    />
+                    <div className="mt-1.5 text-[11px] text-muted">
+                      {i18nT('pages.appDetailPage.session_approval_manifest_key')}: <code>sessionApproval</code>
                     </div>
                   </div>
                 )}

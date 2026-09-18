@@ -81,18 +81,10 @@ function data(overrides: Partial<TailnetMobileData> = {}): TailnetMobileData {
   return {
     boot_id: 'boot-before',
     step: 'ready',
-    host: HOST,
     origin: ORIGIN,
-    installed: true,
-    reachable: true,
-    logged_in: true,
     peer_count: 2,
     peers_online: 1,
-    trusted: true,
-    startup_trusted: true,
-    published: true,
     keep_awake: true,
-    governance_pinned: false,
     detail: '',
     download_url: 'https://tailscale.com/download',
     ...overrides,
@@ -105,7 +97,6 @@ function qrPayload(overrides: Partial<TailnetMobileQr> = {}): TailnetMobileQr {
     image: 'data:image/png;base64,zzzQRIMAGE',
     ttl_secs: 3600,
     link_window_secs: 300,
-    host: HOST,
     ...overrides,
   }
 }
@@ -179,7 +170,7 @@ describe('TailnetMobileCard — render gating', () => {
 
 describe('TailnetMobileCard — install invitation', () => {
   it('starts as a one-line teaser rather than a full card', async () => {
-    await mount(data({ step: 'install', installed: false }))
+    await mount(data({ step: 'install' }))
     expect(screen.getByText('Use this on your phone')).toBeInTheDocument()
     expect(screen.getByText('needs Tailscale')).toBeInTheDocument()
     // The full card's copy must NOT be present yet — that is the whole point of
@@ -188,7 +179,7 @@ describe('TailnetMobileCard — install invitation', () => {
   })
 
   it('expands on click, persists the choice, and re-probes the daemon', async () => {
-    await mount(data({ step: 'install', installed: false }))
+    await mount(data({ step: 'install' }))
     expect(mockApi.tailnetMobile).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: 'Use this on your phone' }))
@@ -202,13 +193,13 @@ describe('TailnetMobileCard — install invitation', () => {
 
   it('opens expanded when the stored preference says so', async () => {
     window.localStorage.setItem(LS_KEY, '1')
-    await mount(data({ step: 'install', installed: false }))
+    await mount(data({ step: 'install' }))
     expect(screen.getByText('Download Tailscale')).toBeInTheDocument()
   })
 
   it('collapses again from Hide, so expanding is not a one-way door', async () => {
     window.localStorage.setItem(LS_KEY, '1')
-    await mount(data({ step: 'install', installed: false }))
+    await mount(data({ step: 'install' }))
 
     fireEvent.click(screen.getByRole('button', { name: 'Hide' }))
 
@@ -235,7 +226,7 @@ describe('TailnetMobileCard — install invitation', () => {
       realSet(k, v)
     })
 
-    await mount(data({ step: 'install', installed: false }))
+    await mount(data({ step: 'install' }))
     expect(screen.getByText('Use this on your phone')).toBeInTheDocument()
 
     // And a click whose choice cannot be persisted still expands, rather than
@@ -246,7 +237,7 @@ describe('TailnetMobileCard — install invitation', () => {
 
   it('offers exactly two buttons in the expanded row', async () => {
     window.localStorage.setItem(LS_KEY, '1')
-    await mount(data({ step: 'install', installed: false }))
+    await mount(data({ step: 'install' }))
     // `max-two-buttons-per-row` (website/AUTOSDE.yaml, blocking) counts a link
     // styled as a button, and rejects wrapping as a fix — so Re-check is absent
     // here by design, not by omission.
@@ -296,7 +287,7 @@ describe('TailnetMobileCard — occupied', () => {
   it('renders the manual command its copy tells the operator to run', async () => {
     // Without this the body ("Publish it yourself if you are sure it is safe to
     // overwrite") is an instruction with no means to follow it.
-    await mount(data({ step: 'occupied', published: null }))
+    await mount(data({ step: 'occupied' }))
     expect(screen.getByText('kirocrew tailnet up')).toBeInTheDocument()
     // And no publish button: publishing here would replace whatever Tailscale is
     // already serving, which is exactly what this step exists to avoid.
@@ -378,7 +369,7 @@ describe('TailnetMobileCard — the QR', () => {
 
   it('discards the code when phone access is turned off', async () => {
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
-    mockApi.tailnetMobileUnpublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
+    mockApi.tailnetMobileUnpublish.mockResolvedValue({ ok: true, detail: '' })
     await mount()
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
     await screen.findByAltText('QR code linking to this dashboard')
@@ -413,17 +404,18 @@ describe('TailnetMobileCard — copy', () => {
     await waitFor(() => expect(btn.querySelector('.lucide-check')).not.toBeNull())
   })
 
-  it('does not tick when the clipboard write rejects', async () => {
+  it('does not tick when the clipboard write resolves false', async () => {
     // The defect this pins: the previous form called
     // `navigator.clipboard?.writeText(...)` and set the tick unconditionally, so
     // on a non-secure origin — where the optional chain short-circuits and
     // nothing is written — the user was shown a success tick over an empty
-    // clipboard, on the one string this feature exists to hand to a phone.
+    // clipboard, on the one string this feature exists to hand to a phone. The
+    // shared helper reports that refusal by resolving `false`; it never rejects.
     //
     // Asserted on the ICON, not the accessible name: `aria-label` is the static
     // `label` prop either way, so a name-based assertion holds whether the tick
     // appeared or not and cannot fail against the bug.
-    mockCopy.mockRejectedValue(new Error('zzz clipboard unavailable'))
+    mockCopy.mockResolvedValue(false)
     await mount()
     const btn = screen.getByRole('button', { name: 'Copy' })
 
@@ -449,9 +441,9 @@ describe('TailnetMobileCard — copy', () => {
 
 describe('TailnetMobileCard — mutating actions', () => {
   it('publishes and immediately shows the QR from the publish step', async () => {
-    mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
+    mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, detail: '' })
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
-    await mount(data({ step: 'publish', published: false }))
+    await mount(data({ step: 'publish' }))
     mockApi.tailnetMobile.mockResolvedValue(data())
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
@@ -465,10 +457,9 @@ describe('TailnetMobileCard — mutating actions', () => {
     // telling the operator why nothing happened.
     mockApi.tailnetMobilePublish.mockResolvedValue({
       ok: false,
-      code: 'occupied',
       detail: 'zzz something else is already served here',
     })
-    await mount(data({ step: 'publish', published: false }))
+    await mount(data({ step: 'publish' }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
@@ -482,20 +473,16 @@ describe('TailnetMobileCard — mutating actions', () => {
       restart_required: true,
     })
     mockApi.restartGateway.mockResolvedValue({})
-    mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
+    mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, detail: '' })
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
-    await mount(data({ step: 'trust_off', trusted: false }))
+    await mount(data({ step: 'trust_off' }))
     mockApi.tailnetMobile
       .mockResolvedValueOnce(data({
         step: 'restart_gateway',
-        trusted: true,
-        startup_trusted: false,
-        published: false,
       }))
       .mockResolvedValueOnce(data({
         boot_id: 'boot-after',
         step: 'publish',
-        published: false,
       }))
       .mockResolvedValue(data({ boot_id: 'boot-after' }))
 
@@ -533,18 +520,16 @@ describe('TailnetMobileCard — mutating actions', () => {
 
   it('continues automatically after a required gateway restart', async () => {
     mockApi.restartGateway.mockResolvedValue({})
-    mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, code: 'ok', detail: '' })
+    mockApi.tailnetMobilePublish.mockResolvedValue({ ok: true, detail: '' })
     mockApi.tailnetMobileQr.mockResolvedValue(qrPayload())
-    await mount(data({ step: 'restart_gateway', startup_trusted: false }))
+    await mount(data({ step: 'restart_gateway' }))
     mockApi.tailnetMobile
       .mockResolvedValueOnce(data({
         step: 'restart_gateway',
-        startup_trusted: false,
       }))
       .mockResolvedValueOnce(data({
         boot_id: 'boot-after',
         step: 'publish',
-        published: false,
       }))
       .mockResolvedValue(data({ boot_id: 'boot-after' }))
 
@@ -557,7 +542,7 @@ describe('TailnetMobileCard — mutating actions', () => {
 
   it('labels the full operation as phone access setup while it is running', async () => {
     mockApi.tailnetMobileConfigure.mockReturnValue(new Promise<void>(() => {}))
-    await mount(data({ step: 'trust_off', trusted: false }))
+    await mount(data({ step: 'trust_off' }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
@@ -607,7 +592,7 @@ describe('TailnetMobileCard — mutating actions', () => {
   })
 
   it('re-checks from a mid-setup step', async () => {
-    await mount(data({ step: 'sign_in', logged_in: false }))
+    await mount(data({ step: 'sign_in' }))
     expect(mockApi.tailnetMobile).toHaveBeenCalledTimes(1)
 
     fireEvent.click(screen.getByRole('button', { name: /Re-check/ }))
@@ -617,7 +602,7 @@ describe('TailnetMobileCard — mutating actions', () => {
 
   it('surfaces a transport error from a mutation', async () => {
     mockApi.tailnetMobileConfigure.mockRejectedValue(new Error('zzz network unreachable'))
-    await mount(data({ step: 'trust_off', trusted: false }))
+    await mount(data({ step: 'trust_off' }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
@@ -638,7 +623,7 @@ describe('TailnetMobileCard — mutating actions', () => {
         }),
       },
     ))
-    await mount(data({ step: 'trust_off', trusted: false }))
+    await mount(data({ step: 'trust_off' }))
 
     fireEvent.click(screen.getByRole('button', { name: /Set up & show QR/ }))
 
@@ -650,7 +635,7 @@ describe('TailnetMobileCard — mutating actions', () => {
 
 describe('TailnetMobileCard — terminal steps', () => {
   it('offers no action at all when policy pins tailnet access off', async () => {
-    await mount(data({ step: 'pinned', governance_pinned: true }))
+    await mount(data({ step: 'pinned' }))
     expect(screen.getByText('Blocked by policy')).toBeInTheDocument()
     // Nothing here is the operator's to change, so no button pretends otherwise.
     expect(screen.queryByRole('button', { name: /Re-check/ })).toBeNull()
@@ -658,14 +643,14 @@ describe('TailnetMobileCard — terminal steps', () => {
   })
 
   it('links to the Tailscale DNS console from enable_magicdns', async () => {
-    await mount(data({ step: 'enable_magicdns', host: '' }))
+    await mount(data({ step: 'enable_magicdns' }))
     const link = screen.getByRole('link', { name: /Open Tailscale DNS settings/ })
     expect(link).toHaveAttribute('href', 'https://login.tailscale.com/admin/dns')
     expect(link).toHaveAttribute('rel', 'noopener noreferrer')
   })
 
   it('requires tailnet HTTPS consent before offering one-click setup', async () => {
-    await mount(data({ step: 'enable_https', published: false }))
+    await mount(data({ step: 'enable_https' }))
 
     expect(screen.getByText('Enable HTTPS certificates in Tailscale')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Set up & show QR' })).toBeNull()

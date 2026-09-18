@@ -292,8 +292,8 @@ class KeystoneFileBackend:
         PagerDuty and Datadog, and every poll fails closed until they do. The
         error propagates and the mutation is abandoned instead.
 
-        Corruption propagates too (#7805, mirroring #7794's decision for the
-        incident index): "cannot merge into" is not "safe to destroy". A
+        Corruption propagates too, on the same reasoning as the incident
+        index: "cannot merge into" is not "safe to destroy". A
         truncated store still holds most of its tokens verbatim -- readable
         right up to the moment a rewrite replaces them -- and a refusal costs
         one skipped mutation and a visible error. Every corruption door raises
@@ -345,9 +345,9 @@ class KeystoneFileBackend:
         payload = json.dumps(data, indent=2, sort_keys=True)
         # Fail-loud lockdown BEFORE any content lands: ``restrict_to_owner=True``
         # applies the owner-only DACL to the temp file before the payload
-        # reaches it (a post-rename lockdown left every stored provider token
-        # readable under the inherited DACL on Windows for the write window,
-        # issue #5285) and implies the owner-only POSIX mode. The default
+        # reaches it (a post-rename lockdown leaves every stored provider token
+        # readable under the inherited DACL on Windows for the write window)
+        # and implies the owner-only POSIX mode. The default
         # ``restrict_on_error="raise"`` refuses to publish a token file it
         # cannot protect.
         #

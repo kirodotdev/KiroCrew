@@ -373,7 +373,7 @@ def main() -> int:
         raise SystemExit(f"unknown role(s): {sorted(str(r) for r in unknown)}")
 
     # Resolved, because the concat step runs with cwd set to this directory: a
-    # relative --out-dir would then no longer point at the list file.
+    # relative --out-dir would then not point at the list file.
     aud = pathlib.Path(safe_output_path(args.out_dir))
     aud.mkdir(parents=True, exist_ok=True)
 

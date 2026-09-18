@@ -12,11 +12,11 @@ These three operations are the escape hatch, and all three work by APPENDING a
 
     forget(fp)      the locus becomes re-discoverable; artifacts are left alone
     purge(fp)       same, and the fingerprint-addressed artifacts are deleted
-    purge_dead()    sweep every record that can no longer make progress
+    purge_dead()    sweep every record that cannot make progress
 
 WHY ``purged`` and not a delete: ``Ledger.known()`` returns False for
 :data:`STATUS_PURGED` (see ``spine/ledger.py``), so appending one event is exactly
-"the dedup layer no longer knows this locus" — the retry falls out of the existing
+"the dedup layer does not know this locus" — the retry falls out of the existing
 status machine instead of needing a second mechanism. Rewriting or truncating the
 file would also destroy the audit trail, which is the ledger's other job: the
 timeline view shows ``seen → failed_gate → purged`` and a reader can see that a
@@ -28,7 +28,7 @@ an event; an append cannot. The lock serializes read → decide → append here 
 requests cannot both conclude "no prior event" for one fingerprint. Readers tolerate
 a torn final line (a crash mid-append), so one bad tail never hides earlier entries.
 
-The on-disk field carrying the pull-request reference is historically named ``cr``.
+The on-disk field carrying the pull-request reference is named ``cr``.
 Both spellings are READ; the ledger event written here keeps ``cr`` because
 ``spine.ledger.LedgerEntry`` is a fixed-field dataclass that rejects an unknown key
 outright — an event written with ``pr`` is dropped by ``Ledger._load()``, which would
@@ -48,7 +48,7 @@ from typing import Any
 # The ONE process-wide lock that serializes read → decide → append against the ledger
 # file, SHARED with the loop's own filing writer: :meth:`spine.ledger.Ledger.record`
 # acquires the SAME object, so an operator forget / purge / manual-filed / commit here
-# cannot interleave with the loop's `record()` on the same file (#6716). It lives in the
+# cannot interleave with the loop's `record()` on the same file. It lives in the
 # stdlib-only leaf :mod:`spine.ledger_lock` precisely so both layers share one object
 # without this module pulling the spine engine (the driver / agent runner / PR pipeline).
 # Aliased to the historical name so the four `with _LEDGER_LOCK:` sites read unchanged.
@@ -407,7 +407,7 @@ def purge(fp: str, *, remove_artifacts: bool = True) -> dict[str, Any]:
 
 
 def purge_dead(*, remove_artifacts: bool = False) -> dict[str, Any]:
-    """Sweep every record that can no longer make progress.
+    """Sweep every record that cannot make progress.
 
     Housekeeping for the findings list: a run interrupted between "filed" and the
     reference being recorded leaves records that claim a pull request nobody can

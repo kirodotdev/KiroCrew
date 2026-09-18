@@ -556,7 +556,7 @@ def _write_backup_exclusively(path: Path, backup_path: Path) -> None:
         # both the real invariant and what the lockdown gate checks: the 0o600
         # mode above already means POSIX never sees a readable moment, but that
         # argument is ignored on Windows, so the DACL has to land while the file
-        # is still empty (issue #5307).
+        # is still empty.
         platform_compat.restrict_to_owner(backup_path)
         handle = os.fdopen(fd, "wb")
         fd_owned = False  # the file object owns it now and will close it
@@ -638,7 +638,7 @@ def apply_repair(
         # session directory's DACL -- and os.replace carries the TEMP's
         # permissions onto the transcript, so a repair would silently WIDEN
         # access to the whole conversation for other local accounts. Same
-        # invariant and same ordering as the backup above (issue #5307).
+        # invariant and same ordering as the backup above.
         platform_compat.restrict_to_owner(tmp_name)
         handle = os.fdopen(fd, "wb")
         fd_owned = False  # the file object owns it now

@@ -1,9 +1,9 @@
 """Background tool approvals must never borrow an unrelated dashboard slot.
 
-``_interactive_approval`` used to fall back to "the first slot that is
-``running``" whenever a background caller (cron / taskrunner / autonudge)
-supplied neither an authoritative parent session key nor a ``slot_resolver``.
-That guess hijacked an unrelated conversation in three ways:
+``_interactive_approval`` must never fall back to "the first slot that is
+``running``" when a background caller (cron / taskrunner / autonudge)
+supplies neither an authoritative parent session key nor a ``slot_resolver``.
+That guess would hijack an unrelated conversation in three ways:
 
 * the prompt rendered in a chat that never raised it;
 * the slot-scoped Trust control resolved against that innocent slot;
@@ -127,10 +127,10 @@ class TestUnownedBackgroundApprovalHasNoSlot:
     async def test_all_trusted_slots_do_not_auto_approve(self) -> None:
         """No implicit trust path for an unowned job, however many slots trust.
 
-        This previously auto-approved via an "every conversation is trusted"
-        rule. For the typical single-open-chat dashboard that rule was
-        trivially satisfied, so it reproduced the exact harm this change
-        removes. Session trust speaks for a chat session, never for an
+        An "every conversation is trusted" rule would auto-approve here: for the
+        typical single-open-chat dashboard that rule is trivially satisfied, so it
+        reproduces the exact harm this change removes. Session trust speaks for a
+        chat session, never for an
         unattended job; ``hooks.auto_approve_sources`` is the explicit opt-in.
         """
         gateway = _make_gateway()
@@ -304,7 +304,7 @@ class TestLowFidelityChildNeverAutoApproved:
 def _child_identity_event(request_id: str = "req-child-mcp-1") -> LLMEvent:
     """A low-fidelity child MCP event with VERIFIED canonical identity: the
     remote server's tool_call frame streamed no rawInput (args unverified)
-    but its _meta.kiro identity reached the caches (see issue #6163)."""
+    but its _meta.kiro identity reached the caches."""
     ev = LLMEvent(
         kind="permission_request",
         request_id=request_id,

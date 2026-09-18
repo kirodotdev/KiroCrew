@@ -359,12 +359,12 @@ async def _handle_setup_clone(request: web.Request) -> web.StreamResponse:
     def _clone() -> tuple[dict, str]:
         return clone_setup.setup_safe_clone(url, store.scratch_path())
 
-    # `result` is a PARAMETER, not a closure read. It used to be a free variable of this
-    # handler, which broke the moment clone+persist moved inside `_clone_and_persist` to take
-    # the lock: that inner function binds its own local `result`, so the outer cell stayed
-    # empty and every successful setup raised `NameError` (a 500, with the clone on disk and
-    # config.json never written — the app could not be set up at all). Passing it explicitly
-    # makes the dependency visible instead of scope-dependent. Raised by the Opus 5 review.
+    # `result` is a PARAMETER, not a closure read. clone+persist live inside
+    # `_clone_and_persist` so they hold the lock, and that inner function binds its own local
+    # `result` — read as a free variable of this handler, the outer cell stays empty and every
+    # successful setup raises `NameError` (a 500, with the clone on disk and config.json never
+    # written, so the app cannot be set up at all). Passing it explicitly makes the dependency
+    # visible instead of scope-dependent.
     def _persist(result: dict) -> dict[str, Any]:
         current = store.read_json(store.config_path(), {}) or {}
         retargeted = str(current.get("target_url") or "") != url
@@ -634,7 +634,7 @@ async def _handle_finding_detail(request: web.Request) -> web.StreamResponse:
             "status": latest.get("status") or "",
             "note": latest.get("note") or "",
             "ts": latest.get("ts"),
-            # The ledger's field is historically named ``cr``; expose it as ``pr``
+            # The ledger's field is named ``cr``; expose it as ``pr``
             # so the UI speaks one vocabulary, and keep the raw key readable.
             "pr": latest.get("pr") or latest.get("cr") or "",
             "history": history,
@@ -801,7 +801,7 @@ async def _handle_draft_pr(request: web.Request) -> web.StreamResponse:
         try:
             isolated = clone_setup._repository_is_isolated(Path(clone))
         except clone_setup.IsolationProbeError as exc:
-            # Sandbox failure, not an isolation verdict — name it (#8151).
+            # Sandbox failure, not an isolation verdict — name it as such.
             return {"ok": False, "error": str(exc)}
         if not isolated:
             return {"ok": False, "error": "repository isolation check failed — re-run setup"}
@@ -1390,7 +1390,7 @@ async def _handle_run_start(_request: web.Request) -> web.StreamResponse:
         # Before the generic clause: this subclasses RuntimeError, but it is a
         # sandbox-launcher failure, not a config/state conflict — a distinct
         # `code` so a UI branching on it does not render the misleading
-        # push-isolation guidance (#8151). The message is the actionable part.
+        # push-isolation guidance. The message is the actionable part.
         return web.json_response(
             {"code": "sandbox_launcher_failed", "error": str(exc)}, status=409
         )

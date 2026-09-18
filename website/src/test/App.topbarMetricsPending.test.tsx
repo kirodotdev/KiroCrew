@@ -37,7 +37,6 @@ import { safeSetItem } from '../utils/safeStorage'
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
-vi.mock('../pages/AgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => null }))
 vi.mock('../pages/LogsPage', () => ({ default: () => null }))
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => null }))
@@ -112,7 +111,7 @@ describe('App top bar — metrics readout with no frame', () => {
     // the whole test, which is exactly the branch that used to push nothing.
     systemMock.mockReturnValue(new Promise(() => {}))
     renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByLabelText('Gateway connected')
+    await screen.findByLabelText(/Gateway connected/i)
 
     const toggle = openToggle()
     // aria-pressed distinguishes this from the CLOSED state's button, which
@@ -138,7 +137,7 @@ describe('App top bar — metrics readout with no frame', () => {
     let land: (frame: unknown) => void = () => {}
     systemMock.mockReturnValue(new Promise(res => { land = res }))
     renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByLabelText('Gateway connected')
+    await screen.findByLabelText(/Gateway connected/i)
 
     expect(openToggle().getAttribute('aria-pressed')).toBe('true')
     // No reading yet, so nothing but dashes.
@@ -157,7 +156,7 @@ describe('App top bar — metrics readout with no frame', () => {
     // keeps saying so rather than showing indefinite em dashes.
     systemMock.mockRejectedValue(new Error('nope'))
     renderWithProviders(<App />, { route: '/chat' })
-    await screen.findByLabelText('Gateway connected')
+    await screen.findByLabelText(/Gateway connected/i)
 
     expect(await screen.findByText(/metrics unavailable/i)).toBeTruthy()
   })

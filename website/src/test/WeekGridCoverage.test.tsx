@@ -50,6 +50,26 @@ describe('parseCronSlots — interval schedules', () => {
     expect(hours).toEqual([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22])
   })
 
+  describe.each([undefined, null])('minute fallback with every_secs=%s', every_secs => {
+    it.each([
+      ['every 90m', 112],
+      ['every 5m', 168],
+    ])('shows the expected week-grid entries for %s', (schedule, count) => {
+      const slots = parseCronSlots(job({ cron_expr: null, every_secs, schedule }), 'UTC')
+      expect(slots).toHaveLength(count)
+    })
+  })
+
+  it('prefers every_secs over the displayed interval when placing entries', () => {
+    const slots = parseCronSlots(
+      job({ cron_expr: null, every_secs: 7200, schedule: 'every 90m' }),
+      'UTC',
+    )
+    expect(slots).toHaveLength(84)
+    expect([...new Set(slots.map(s => s.hour))].sort((a, b) => a - b))
+      .toEqual([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22])
+  })
+
   it('anchors an hourly interval on the job creation timestamp', () => {
     const slots = parseCronSlots(
       job({ cron_expr: null, every_secs: 3600, created_ts: ANCHOR_TS }),

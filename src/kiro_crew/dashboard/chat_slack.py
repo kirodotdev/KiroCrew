@@ -1,4 +1,4 @@
-"""Slack integration — link sessions, handoff, channel listing."""
+"""Slack integration — link sessions, channel listing."""
 
 from __future__ import annotations
 
@@ -17,14 +17,12 @@ from kiro_crew.dashboard.chat_backfill import (
     select_backfill_messages,
     session_deep_link,
 )
-from kiro_crew.dashboard.chat_persistence import save_slot_off_loop
 from kiro_crew.dashboard.chat_utils import (
     effective_session_key,
     expire_slack_options,
     mint_options_token,
     remember_slack_options,
     slack_options_owner_keys_snapshot,
-    slot_history_key,
 )
 from kiro_crew.dashboard.state import DashboardState, _log_task_exception
 from kiro_crew.messaging.link import SLACK_NAMESPACE
@@ -40,7 +38,6 @@ from kiro_crew.slack.format import (
     render_for_slack,
 )
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
-from kiro_crew.sync_bridge import handoff_to_slack
 
 logger = logging.getLogger(__name__)
 
@@ -711,75 +708,3 @@ async def api_slack_channels(request: web.Request) -> web.Response:
     """GET /api/slack/channels — list channels the bot can reply in."""
     state: DashboardState = request.app["state"]
     return web.json_response(await list_slack_channels(state))
-
-
-async def api_chat_slot_handoff(request: web.Request) -> web.Response:
-    """POST /api/chat/slots/{slot}/handoff — hand off session to Slack DM thread."""
-
-    state: DashboardState = request.app["state"]
-    name = request.match_info.get("slot") or request.match_info.get("name", "")
-    slot = state.get_slot(name) or state._slots.get(name)
-    if not slot:
-        return web.json_response({"error": "not found"}, status=404)
-    if not state.slack_client:
-        return web.json_response({"error": "Slack not connected"}, status=503)
-    if not state.conversation_log:
-        return web.json_response({"error": "no conversation log"}, status=500)
-
-    try:
-        await save_slot_off_loop(state, slot)
-    except Exception:
-        pass
-
-    channel = None
-    try:
-        body = await request.json()
-        channel = body.get("channel")
-    except Exception:
-        pass
-
-    history_key = effective_session_key(slot)
-    transcript_key = slot_history_key(slot)
-    if transcript_key != history_key:
-        # The tab's conversation is stored somewhere other than the session it
-        # runs on -- an unbound channel tab. Handing off would seed the thread
-        # from the channel transcript while every later reply persisted under
-        # the session's own key, splitting one conversation across two files;
-        # a crash before the next slot flush would drop those replies entirely.
-        # Refuse rather than straddle.
-        return web.json_response(
-            {
-                "error": (
-                    "this tab's conversation lives in a channel transcript, so it "
-                    "cannot be handed off to a new Slack thread"
-                ),
-                "code": "transcript_not_own_session",
-            },
-            status=409,
-        )
-    thread_ts = await handoff_to_slack(
-        state.slack_client,
-        state.owner_id,
-        state.conversation_log,
-        history_key,
-        title=slot.title if slot._titled else "",
-        channel=channel,
-        sessions=state.sessions,
-        transcript_key=transcript_key,
-    )
-    if not thread_ts:
-        return web.json_response({"error": "handoff failed"}, status=500)
-
-    sel().log_api_access(
-        caller="dashboard",
-        operation="chat.slot_handoff",
-        outcome="allowed",
-        source="dashboard",
-        resources=slot.key,
-    )
-    return web.json_response({"ok": True, "thread_ts": thread_ts})
-
-
-async def api_handoff_channels(request: web.Request) -> web.Response:
-    """GET /api/handoff-channels — deprecated, use /api/slack/channels instead."""
-    return web.json_response({})

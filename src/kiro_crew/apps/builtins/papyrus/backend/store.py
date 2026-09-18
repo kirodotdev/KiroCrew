@@ -603,7 +603,7 @@ def create_file(project: Path, relative: str, content: str = "") -> None:
         raise ValueError("content too large")
     target.parent.mkdir(parents=True, exist_ok=True)
     # `x` is `O_CREAT | O_EXCL`: it raises FileExistsError itself, which is exactly the
-    # error the probe used to raise, so callers are unchanged. `newline=""` matches
+    # error the probe raises, so callers need no second case. `newline=""` matches
     # `write_file` so a round-tripped document does not accumulate carriage returns.
     with open(target, "x", encoding="utf-8", newline="") as handle:
         handle.write(content)

@@ -473,7 +473,7 @@ class CommandProvider:
             from kiro_crew.platform.context import redact_log_via_context
 
             # Redact BEFORE truncating. Slicing first can cut a credential in
-            # half, and half a token no longer matches the redactors' patterns
+            # half, and half a token does not match the redactors' patterns
             # (an AWS key needs its full 20 chars to match), so the surviving
             # fragment would reach gateway.log and /api/logs verbatim. The
             # 500-char cap is for log volume, so it belongs last.

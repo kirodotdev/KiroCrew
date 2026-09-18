@@ -16,7 +16,15 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 
 from kiro_crew.atomic_write import atomic_write
-from kiro_crew.project_scope import canonical_scope, project_scope_satisfied
+from kiro_crew.lesson_validation import contains_volatile_lesson_fact
+from kiro_crew.memory_startup import require_memory_ready
+from kiro_crew.memory_stores import named_store_operation
+from kiro_crew.project_scope import (
+    canonical_scope,
+    project_scope_satisfied,
+    scope_is_admissible,
+    scope_selector_is_inadmissible,
+)
 
 try:
     from kiro_crew.config.loader import config_dir as _config_dir
@@ -27,6 +35,7 @@ logger = logging.getLogger(__name__)
 
 # ── Constants ──
 
+
 # Fallback data dir, used ONLY when a live ``config_dir()`` lookup is unavailable
 # or raises (see ``LessonStore.__init__`` / ``_reject_sensitive``). This is a pure
 # literal, resolved at use time — it must NOT call ``config_dir()`` at import, or
@@ -34,9 +43,41 @@ logger = logging.getLogger(__name__)
 # migration as an import side effect. The migration stays gated at the single
 # ``ensure_data_home()`` call in the CLI prologue; the live home is resolved
 # lazily via ``config_dir()`` inside ``LessonStore.__init__``. Honors
-# ``KIROCREW_HOME`` only insofar as this fallback is rarely reached — the normal
+# ``KIROCREW_HOME`` only insofar as this fallback is rarely reached — a NAMED
+# memory store cannot land here (see ``_is_owned_store_root``), so the normal
 # path resolves through ``config_dir()``, which does honor the override.
 _DEFAULT_DIR = Path.home() / ".kiro" / "crew"
+
+
+def _is_owned_store_root(base_dir: Path) -> bool:
+    """Is *base_dir* a NAMED memory store's own directory?
+
+    True only for a DIRECT child of ``memory_stores_root()`` — the same parent
+    equality ``memory_stores._named_store_dir`` re-checks after composing a path,
+    so a symlinked component cannot smuggle an outside directory past this. The
+    tightest test that admits a real store: it grants nothing to
+    ``memory_stores/`` itself, to a nested path under a store, or to any other
+    fenced keystone (``profiles/``, ``security_policy.json``).
+
+    Never raises. ``memory_stores_root()`` reads the config home, and a store root
+    that cannot be resolved is simply not owned — the caller then falls through to
+    the ordinary sensitive-path check, which is the safe direction.
+    """
+    try:
+        from kiro_crew.memory_stores import memory_stores_root
+
+        root = memory_stores_root().resolve()
+        candidate = Path(base_dir)
+        # Identity, matching ``memory_stores._named_store_dir``: parent equality
+        # alone accepts a link that redirects one store onto another INSIDE the
+        # root, which would append this crew's corrections to that crew's
+        # lessons.jsonl with the check reporting success.
+        return candidate.resolve() == root / candidate.name
+    except Exception:
+        logger.debug("could not decide store ownership for %s", base_dir, exc_info=True)
+        return False
+
+
 _LESSONS_FILE = "lessons.jsonl"
 _MAX_LESSONS_IN_CONTEXT = 50
 _MAX_LESSONS_TOTAL = 200  # prune oldest when exceeded
@@ -107,7 +148,21 @@ class LessonStore:
         from kiro_crew.security import is_sensitive_path
 
         if base_dir:
-            if is_sensitive_path(str(base_dir)):
+            if _is_owned_store_root(base_dir):
+                # A named memory store's own root. It is inside the keystone
+                # ``memory_stores/`` fence, so ``is_sensitive_path`` answers True
+                # for it — correctly, because that fence is what stops an AGENT
+                # FILE TOOL from reading another crew's memory. This class is not
+                # a tool: it is the store's owner, the same way ``MemoryStore``
+                # opens its own markdown tree directly. Fix the reader, never the
+                # fence; relaxing ``is_sensitive_path`` here would unfence the
+                # subtree for every tool caller too.
+                #
+                # Without this branch per-store lessons are not merely lost, they
+                # are MISFILED: the fallback is a write target, so every crew's
+                # corrections append to the one global ``lessons.jsonl``.
+                self._dir = base_dir
+            elif is_sensitive_path(str(base_dir)):
                 self._reject_sensitive("base_dir", base_dir)
             else:
                 self._dir = base_dir
@@ -125,9 +180,26 @@ class LessonStore:
         else:
             self._dir = _DEFAULT_DIR
         self._path = self._dir / _LESSONS_FILE
+        from kiro_crew.memory_stores import named_store_of_db
+
+        self._memory_store_name = named_store_of_db(self._dir / "memory.db")
         self._lock = _lock_for(self._path)
         # mtime-based cache: (mtime, lessons)
         self._cache: tuple[float, list[Lesson]] | None = None
+
+    @property
+    def path(self) -> Path:
+        """The JSONL file this store reads and writes.
+
+        Public so a reader that needs the FILE rather than parsed rows — the
+        injection audit, which must report an unreadable tier instead of the empty
+        list :meth:`load_all` answers with — resolves the path through the class
+        that owns it. Re-composing ``<base_dir>/lessons.jsonl`` at the caller drops
+        the two fallbacks ``__init__`` applies (a sensitive ``base_dir``, an absent
+        or raising ``config_dir()``), so an audit built that way would report on a
+        file no writer ever writes.
+        """
+        return self._path
 
     def _write_all(self, lessons: list[Lesson]) -> None:
         """Replace the file atomically. The caller MUST hold ``self._lock``.
@@ -137,10 +209,10 @@ class LessonStore:
         ``atomic_write`` renames a unique temp file over the target, so a reader sees
         either the whole old file or the whole new one -- never a half-written one.
         That is what makes the unlocked read in ``load_all`` safe, so no lock has to
-        be added there, and a crash mid-write can no longer truncate the store.
+        be added there, and a crash mid-write cannot truncate the store.
 
         Uses the repo's ``atomic_write`` rather than a hand-rolled temp + rename.
-        Hand-rolling it re-introduced three problems the shared helper already
+        Hand-rolling it re-introduces three problems the shared helper already
         solves: a temp name that two writers could collide on (it uses
         ``tempfile.mkstemp``), a bare ``os.replace`` that raises ``PermissionError``
         when Windows Search or AV holds a handle (it uses ``replace_with_retry``),
@@ -148,8 +220,8 @@ class LessonStore:
         (it applies ``mode`` via ``fchmod_safe``).
 
         The mode is read off the existing file so a restrictive store stays
-        restrictive -- ``write_text`` used to preserve it implicitly by reusing the
-        inode, and swapping the inode silently dropped it. A store being created for
+        restrictive -- ``write_text`` preserves it implicitly by reusing the inode,
+        and swapping the inode drops it. A store being created for
         the first time gets ``0o600``: lesson text is personal content, and nothing
         else needs to read it.
 
@@ -157,6 +229,7 @@ class LessonStore:
         universal-newline translation on write, and this file is read, edited and
         written back on every save.
         """
+        require_memory_ready(self._memory_store_name)
         try:
             mode = stat.S_IMODE(self._path.stat().st_mode)
         except OSError:
@@ -169,7 +242,8 @@ class LessonStore:
         )
         self._cache = None  # invalidate
 
-    def save(self, lesson: Lesson) -> None:
+    @named_store_operation
+    def save(self, lesson: Lesson) -> str:
         """Insert *lesson*, skipping a rule that is already stored.
 
         Deliberately does NOT enrich. Most callers here are automatic --
@@ -178,20 +252,24 @@ class LessonStore:
         explicit refinement (the /api/lessons route, ``kirocrew learn add``)
         should attach a clause, and those call :meth:`save_or_enrich`.
 
-        Kept returning ``None`` so every existing caller is unaffected.
+        Returns the same outcome string as the shared body. Automatic callers use
+        ``refused`` to avoid counting, notifying, or ledgering a lesson that did not
+        persist; callers that ignore the return remain unaffected.
         """
-        self._insert_or_enrich(lesson, enrich=False)
+        return self._insert_or_enrich(lesson, enrich=False)
 
+    @named_store_operation
     def save_or_enrich(self, lesson: Lesson) -> str:
         """Insert *lesson*, or attach its NOT-clause to the record holding the same
-        rule, in ONE lock acquisition. Returns ``inserted``/``enriched``/``unchanged``.
+        rule, in ONE lock acquisition. Returns
+        ``inserted``/``enriched``/``unchanged``/``refused``.
 
         For EXPLICIT refinement only -- see :meth:`save` for why automatic writers
         must not reach this.
 
-        Re-submitting a rule to attach a NOT-clause used to store nothing: the
-        duplicate check matched on the rule alone and returned before looking at
-        ``negative``, so the clause was dropped behind an HTTP 200.
+        Re-submitting a rule to attach a NOT-clause must not fall into the duplicate
+        check, which matches on the rule alone: returning before looking at
+        ``negative`` would drop the clause behind an HTTP 200.
         """
         return self._insert_or_enrich(lesson, enrich=True)
 
@@ -221,6 +299,8 @@ class LessonStore:
         A re-submit carrying NO clause never strips one that is already stored --
         it reports ``unchanged``, matching the vector store for the same case.
         """
+        if contains_volatile_lesson_fact(lesson.rule, lesson.negative):
+            return "refused"
         with self._lock:
             # A whitespace-only clause is no clause. Same defect as the vector store's:
             # `--negative "   "` is truthy, so it would replace a real stored clause
@@ -297,24 +377,89 @@ class LessonStore:
         logger.info("%s lesson: %s", outcome.capitalize(), lesson.rule)
         return outcome
 
-    def remove(self, rule_substring: str) -> bool:
+    @named_store_operation
+    def remove(
+        self, rule_substring: str, repo_scope: str | None = None, *, exact: bool = False
+    ) -> bool:
         """Remove lessons whose rule contains *rule_substring*. Returns True if any removed.
 
-        Holds the lock. It previously did an unlocked read-modify-write, so a
-        concurrent ``save`` could be lost outright -- and without that lock the
-        atomicity :meth:`save_or_enrich` claims would not actually hold.
+        Substring matching on the rule text is deliberate: a user targets a
+        lesson by a fragment of its rule rather than retyping the whole thing
+        (``test_remove_matching`` deletes "Use tool-b" by passing "tool-b").
+        *exact* narrows the text match to the whole rule (case-insensitive,
+        surrounding whitespace ignored): a caller that holds the full rule -- a
+        table row's Delete button -- names ONE row, where the substring path would
+        also take every longer rule containing it ("use tabs" -> "always use
+        tabs"). The scope selector applies identically in both modes.
+
+        A lesson's identity is the pair ``(rule, repo_scope)``: the same rule
+        scoped to a repo and stored globally are two distinct rows, and the
+        selector decides which of them a delete reaches.
+
+        When *repo_scope* is None (the default) the scope is not part of the
+        match: every row whose rule contains the substring is removed. When
+        *repo_scope* is given, a row is removed only when it ALSO carries that
+        scope, compared after ``canonical_scope`` on both sides so
+        trailing-slash and backslash variants fold together (matching the
+        write path's identity). Passing the canonical form of ``None`` -- an
+        empty or whitespace-only selector -- targets the unscoped (global)
+        rows specifically, which is how a caller deletes the global row while
+        leaving a same-rule scoped one in place. A nonempty selector the write
+        surface would refuse -- a bare ``/``, an absolute path, a dot segment
+        -- is refused with :class:`ValueError` rather than canonically folded
+        onto rows the caller never named. A STORED scope that is present but
+        inadmissible marks a scoped-but-broken row, which the injection gate
+        withholds; a scope-selective delete never claims such a row, and the
+        unselective (absent) path is what removes it.
+
+        Holds the lock. An unlocked read-modify-write here would lose a concurrent
+        ``save`` outright -- and without that lock the atomicity
+        :meth:`save_or_enrich` claims would not actually hold.
         """
+        if repo_scope is not None and scope_selector_is_inadmissible(repo_scope):
+            raise ValueError(f"repo_scope does not name a usable scope: {repo_scope!r}")
         with self._lock:
             lessons = self.load_all()
             lower = rule_substring.lower()
-            kept = [le for le in lessons if lower not in le.rule.lower()]
+            wanted_text = lower.strip()
+            # A missing selector leaves scope out of the match. A present one --
+            # including the canonical form of an empty string, which is None and
+            # targets the unscoped rows -- is compared canonically against each
+            # row's own canonical scope, so the two never disagree with the
+            # write path over trailing-slash / backslash forms.
+            scope_selective = repo_scope is not None
+            wanted_scope = canonical_scope(repo_scope) if scope_selective else None
+
+            def _matches(le: Lesson) -> bool:
+                if exact:
+                    if le.rule.lower().strip() != wanted_text:
+                        return False
+                elif lower not in le.rule.lower():
+                    return False
+                if scope_selective:
+                    # A stored scope that is present but inadmissible (an
+                    # imported "/") is scoped-but-broken, not global: the
+                    # injection gate withholds such a row rather than treating
+                    # it as applies-everywhere, so a scope-selective delete
+                    # never claims it -- it would otherwise fold to None and be
+                    # removed by the explicit-global selector. The unselective
+                    # (absent) path still reaches it.
+                    if le.repo_scope is not None and not scope_is_admissible(le.repo_scope):
+                        return False
+                    if canonical_scope(le.repo_scope) != wanted_scope:
+                        return False
+                return True
+
+            kept = [le for le in lessons if not _matches(le)]
             if len(kept) == len(lessons):
                 return False
             self._write_all(kept)
         return True
 
+    @named_store_operation
     def load_all(self) -> list[Lesson]:
         """Load all lessons from the JSONL file. Uses mtime-based caching."""
+        require_memory_ready(self._memory_store_name)
         if not self._path.exists():
             self._cache = None
             return []
@@ -355,20 +500,21 @@ class LessonStore:
         return lessons
 
     def _applicable(self, lessons: list[Lesson], project_dir: str | Path | None) -> list[Lesson]:
-        """Drop lessons whose ``repo_scope`` does not cover *project_dir*.
+        """Drop volatile lessons and lessons outside *project_dir*.
 
-        A lesson with no scope applies everywhere, so an existing store is
-        unaffected. A scoped one is withheld unless the session's project is
-        positively inside the named tree -- the gate fails closed, so a surface
-        with no project loses the scoped lessons rather than inheriting another
-        repository's rules.
+        Existing volatile rows remain readable through ``load_all`` and removable by
+        the user, but never reach a prompt. A lesson with no scope applies everywhere;
+        a scoped one is withheld unless the session's project is positively inside the
+        named tree.
         """
         return [
             le
             for le in lessons
-            if not le.repo_scope or project_scope_satisfied(le.repo_scope, project_dir)
+            if not contains_volatile_lesson_fact(le.rule, le.negative)
+            and (not le.repo_scope or project_scope_satisfied(le.repo_scope, project_dir))
         ]
 
+    @named_store_operation
     def get_context(self, project_dir: str | Path | None = None) -> str:
         """Format lessons as context for injection into prompts.
 

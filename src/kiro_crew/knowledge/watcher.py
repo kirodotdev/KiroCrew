@@ -233,110 +233,126 @@ class KnowledgeWatcher:
                     # about a file it has not read. Deletion is exactly the event
                     # that breaks the mtime heuristic, so read the content instead.
                     if mtime > stored_mtime or row["sync_status"] == "missing":
-                        # Check content hash to avoid re-ingesting touched-but-unchanged files
-                        content_hash = await asyncio.get_running_loop().run_in_executor(
-                            None, self._hash_file, Path(uri)
-                        )
-                        if content_hash != props.get("content_hash"):
-                            logger.info("Source changed: %s", uri)
-                            # Three callbacks the pipeline already offers, so no
-                            # signature change and no blocking get_job_status
-                            # read-back on the event loop:
-                            #
-                            # * ``on_progress`` reports the attempted chunk total
-                            #   once extraction is running -- extract_batch has
-                            #   spent one LLM call per chunk by then, so THAT is
-                            #   the number the sweep budget meters ("caps total
-                            #   extraction calls"). Charging only committed chunks
-                            #   would let a post-extraction partial failure spend
-                            #   the calls while charging nothing.
-                            # * ``on_committed`` fires inside the finalize hop,
-                            #   only on the branch that committed the whole group
-                            #   -- the same latch FolderWatcher detects rollbacks
-                            #   with.
-                            # * ``on_duplicate`` fires when the pre-ingest gate
-                            #   refuses byte-identical content: a terminal success
-                            #   for bookkeeping, though nothing new was written.
-                            committed: list[str] | None = None
-                            refused = False
-                            attempted_chunks = 0
-
-                            def _record_committed(ids: list[str]) -> None:
-                                nonlocal committed
-                                committed = list(ids)
-
-                            def _record_refused(_text_hash: str) -> None:
-                                nonlocal refused
-                                refused = True
-
-                            def _note_extraction(phase: str, done: int, total: int) -> None:
-                                nonlocal attempted_chunks
-                                if phase == "extracting":
-                                    attempted_chunks = int(total)
-
-                            try:
-                                await self.pipeline.ingest_file(
-                                    uri,
-                                    source_id=row["id"],
-                                    namespace=props.get("namespace", "default"),
-                                    embed_priority=PRIORITY_BULK,
-                                    on_progress=_note_extraction,
-                                    on_committed=_record_committed,
-                                    on_duplicate=_record_refused,
-                                    count_toward_import_budget=False,
-                                )
-                            except FileTooLargeError:
-                                # Warning already logged by the pipeline (names the file
-                                # and the config key). Mark the source errored and skip
-                                # persisting mtime/hash so the file is re-evaluated on
-                                # a later scan -- raising knowledge.max_ingest_file_mb
-                                # (config is read live) then recovers it automatically.
-                                # Stamped as an attempt below, so the oversized row
-                                # rotates to the back instead of being re-hashed at
-                                # the front of every sweep.
-                                await asyncio.to_thread(
-                                    self.store.update_source, row["id"], sync_status="error")
-                                await self._stamp_attempt(row["id"])
+                        # The gate is held from the hash hop through the pipeline
+                        # call: those awaits are where an itemless row with a
+                        # terminal status ('missing', or 'error' from an earlier
+                        # attempt) is otherwise reclaimable by the orphan sweep,
+                        # and the hold is what makes the sweep wait instead.
+                        async with self.pipeline.ingestion_in_flight():
+                            # The row came from the snapshot at the top of the
+                            # sweep, read outside the hold; the orphan sweep can
+                            # take it in between. Re-read it under the hold and
+                            # leave a row that is gone alone, so the ingest below
+                            # cannot re-create items for a deleted source.
+                            if await self._store_rows(
+                                "SELECT id FROM sources WHERE id = ?", (row["id"],)
+                            ) == []:
+                                logger.info("Source %s removed before its sync; skipping", row["id"])
                                 continue
-                            except Exception:
-                                # Stamp the attempt even when the pipeline raises:
-                                # the charge in the finally below is real spend,
-                                # and an unstamped row would keep the front of the
-                                # rotation while consuming budget -- exactly the
-                                # starvation the ordering exists to prevent. The
-                                # row-level handler logs the error.
-                                await self._stamp_attempt(row["id"])
-                                raise
-                            finally:
-                                # Charge the attempted extraction count against the
-                                # global sweep budget whatever the commit outcome,
-                                # so both loops draw from one counter and a failed
-                                # finalize cannot make its spend invisible. Runs on
-                                # the FileTooLargeError path too, where it is zero
-                                # (the size guard fires before chunking).
-                                sweep_chunks_used += attempted_chunks
-                            if committed is None and not refused:
-                                # The pipeline rolled back a partial ingest -- it
-                                # invokes on_committed only on the fully-committed
-                                # branch -- and its finalize already marked the
-                                # source 'error'. Leave mtime/content_hash
-                                # unrecorded so a later sweep retries, but stamp
-                                # the attempt: the retry waits its turn behind the
-                                # rows still queued, so a persistently failing row
-                                # is bounded to one served slot per rotation and
-                                # cannot starve the sources behind it.
-                                await self._stamp_attempt(row["id"])
-                                continue
-                        # Merged against the current row inside one worker hop,
-                        # never persisted from this sweep's snapshot: a concurrent
-                        # writer (manual sync, ingest finalize) may have committed
-                        # fresh properties while the ingest ran, and a whole-blob
-                        # write of the snapshot would silently clobber them.
-                        await self._merge_source_props(row["id"], {
-                            "mtime": mtime,
-                            "content_hash": content_hash,
-                            "sweep_attempted_at": datetime.now().isoformat(),
-                        })
+                            # Check content hash to avoid re-ingesting touched-but-unchanged files
+                            content_hash = await asyncio.get_running_loop().run_in_executor(
+                                None, self._hash_file, Path(uri)
+                            )
+                            if content_hash != props.get("content_hash"):
+                                logger.info("Source changed: %s", uri)
+                                # Three callbacks the pipeline already offers, so no
+                                # signature change and no blocking get_job_status
+                                # read-back on the event loop:
+                                #
+                                # * ``on_progress`` reports the attempted chunk total
+                                #   once extraction is running -- extract_batch has
+                                #   spent one LLM call per chunk by then, so THAT is
+                                #   the number the sweep budget meters ("caps total
+                                #   extraction calls"). Charging only committed chunks
+                                #   would let a post-extraction partial failure spend
+                                #   the calls while charging nothing.
+                                # * ``on_committed`` fires inside the finalize hop,
+                                #   only on the branch that committed the whole group
+                                #   -- the same latch FolderWatcher detects rollbacks
+                                #   with.
+                                # * ``on_duplicate`` fires when the pre-ingest gate
+                                #   refuses byte-identical content: a terminal success
+                                #   for bookkeeping, though nothing new was written.
+                                committed: list[str] | None = None
+                                refused = False
+                                attempted_chunks = 0
+
+                                def _record_committed(ids: list[str]) -> None:
+                                    nonlocal committed
+                                    committed = list(ids)
+
+                                def _record_refused(_text_hash: str) -> None:
+                                    nonlocal refused
+                                    refused = True
+
+                                def _note_extraction(phase: str, done: int, total: int) -> None:
+                                    nonlocal attempted_chunks
+                                    if phase == "extracting":
+                                        attempted_chunks = int(total)
+
+                                try:
+                                    await self.pipeline.ingest_file(
+                                        uri,
+                                        source_id=row["id"],
+                                        namespace=props.get("namespace", "default"),
+                                        embed_priority=PRIORITY_BULK,
+                                        on_progress=_note_extraction,
+                                        on_committed=_record_committed,
+                                        on_duplicate=_record_refused,
+                                        count_toward_import_budget=False,
+                                    )
+                                except FileTooLargeError:
+                                    # Warning already logged by the pipeline (names the file
+                                    # and the config key). Mark the source errored and skip
+                                    # persisting mtime/hash so the file is re-evaluated on
+                                    # a later scan -- raising knowledge.max_ingest_file_mb
+                                    # (config is read live) then recovers it automatically.
+                                    # Stamped as an attempt below, so the oversized row
+                                    # rotates to the back instead of being re-hashed at
+                                    # the front of every sweep.
+                                    await asyncio.to_thread(
+                                        self.store.update_source, row["id"], sync_status="error")
+                                    await self._stamp_attempt(row["id"])
+                                    continue
+                                except Exception:
+                                    # Stamp the attempt even when the pipeline raises:
+                                    # the charge in the finally below is real spend,
+                                    # and an unstamped row would keep the front of the
+                                    # rotation while consuming budget -- exactly the
+                                    # starvation the ordering exists to prevent. The
+                                    # row-level handler logs the error.
+                                    await self._stamp_attempt(row["id"])
+                                    raise
+                                finally:
+                                    # Charge the attempted extraction count against the
+                                    # global sweep budget whatever the commit outcome,
+                                    # so both loops draw from one counter and a failed
+                                    # finalize cannot make its spend invisible. Runs on
+                                    # the FileTooLargeError path too, where it is zero
+                                    # (the size guard fires before chunking).
+                                    sweep_chunks_used += attempted_chunks
+                                if committed is None and not refused:
+                                    # The pipeline rolled back a partial ingest -- it
+                                    # invokes on_committed only on the fully-committed
+                                    # branch -- and its finalize already marked the
+                                    # source 'error'. Leave mtime/content_hash
+                                    # unrecorded so a later sweep retries, but stamp
+                                    # the attempt: the retry waits its turn behind the
+                                    # rows still queued, so a persistently failing row
+                                    # is bounded to one served slot per rotation and
+                                    # cannot starve the sources behind it.
+                                    await self._stamp_attempt(row["id"])
+                                    continue
+                            # Merged against the current row inside one worker hop,
+                            # never persisted from this sweep's snapshot: a concurrent
+                            # writer (manual sync, ingest finalize) may have committed
+                            # fresh properties while the ingest ran, and a whole-blob
+                            # write of the snapshot would silently clobber them.
+                            await self._merge_source_props(row["id"], {
+                                "mtime": mtime,
+                                "content_hash": content_hash,
+                                "sweep_attempted_at": datetime.now().isoformat(),
+                            })
                     if row["sync_status"] == "missing":
                         # The file is back, so the marker has to come off, and the
                         # CAS on 'missing' is what decides whether this write is the
@@ -574,11 +590,11 @@ class KnowledgeWatcher:
             # single-flight finalize guarantee; a single-row best-effort write is
             # an acceptable inline cost on this error path.
             try:
-                self.store.db.execute(
+                self.store.db.execute(  # on-loop-io-ok: best-effort finalize in a cancel handler, see comment above
                     "UPDATE ingestion_jobs SET status = ?, error = ?, updated_at = ? WHERE id = ?",
                     (status, str(exc), datetime.now().isoformat(), job_id),
                 )
-                self.store.db.commit()
+                self.store.db.commit()  # on-loop-io-ok: commits the finalize above, same cancel-handler constraint
                 sel().log_tool_invocation(
                     session_key="watcher",
                     agent="knowledge-watcher",

@@ -440,8 +440,8 @@ class ModelStore:
         transfer reads as part of the same setup: the user has just committed to
         local speech-to-text, and a source install with no system FFmpeg cannot
         decode a browser recording or a voice memo at all. The alternative is
-        discovering that at the first upload, which is where the shell command the
-        settings page used to print came from.
+        discovering that at the first upload -- a failure the settings page can only
+        answer with a shell command.
 
         Detached rather than awaited: the caller is a voice session or a settings
         poll waiting on the WEIGHTS, and live PCM never touches the decoder.

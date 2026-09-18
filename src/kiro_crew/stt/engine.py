@@ -852,10 +852,10 @@ def shared_engine(
     load this replaced.
 
     Both bounds default to ``None`` meaning "leave whatever is set", NOT to the
-    module defaults. They used to default to the constants, which made every
-    zero-argument caller silently a WRITER: :func:`prewarm` and :func:`close` ask
-    for the engine without opinions about its configuration, and each call reset
-    an operator's configured window back to 600 s.
+    module defaults: defaulting to the constants would make every zero-argument
+    caller silently a WRITER -- :func:`prewarm` and :func:`close` ask for the
+    engine without opinions about its configuration, and would reset an operator's
+    configured window back to 600 s.
     """
     global _engine
     if _engine is None:

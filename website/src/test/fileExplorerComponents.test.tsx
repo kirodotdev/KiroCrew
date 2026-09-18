@@ -230,6 +230,19 @@ describe('TreeNode', () => {
     expect(screen.getByText('index.ts')).toBeInTheDocument()
   })
 
+  it('surfaces the error, not a perpetual loading label, when a child folder fails to load', async () => {
+    // A childless dir lazy-loads on expand; when that fetch rejects (e.g. a
+    // symlink resolving outside the allow-list) the row must surface the error
+    // through ErrorNotice rather than stay on "loading..." forever.
+    const lockedNode: TreeEntry = { name: 'locked', path: '/home/user/locked', type: 'dir' }
+    vi.mocked(fileExplorerApi.tree).mockRejectedValue(new Error('path not allowed'))
+    renderWithQuery(
+      <TreeNode node={lockedNode} depth={0} expanded={{ '/home/user/locked': true }} toggleExpand={vi.fn()} selectedPath="" onSelect={vi.fn()} gitMap={new Map()} />,
+    )
+    await waitFor(() => expect(screen.getByText('path not allowed')).toBeInTheDocument())
+    expect(screen.queryByText(/loading/i)).not.toBeInTheDocument()
+  })
+
   it('displays git badge when file is modified', () => {
     const gitMap = new Map<string, GitInfo>([
       ['/home/user', { repoRoot: '/home/user', branch: 'main', statuses: { 'app.py': 'M' } }],
@@ -344,6 +357,24 @@ describe('TabStrip', () => {
     )
     await userEvent.click(screen.getByLabelText('New workspace tab'))
     expect(newFolder).toHaveBeenCalled()
+  })
+
+  // Regression: the tab is role="tab" with a Space/Enter activate handler, and
+  // the rename input is a descendant. Space typed into the rename field bubbled
+  // up and re-activated the tab on every keystroke, so a workspace tab could
+  // not be given a multi-word label. The handler now ignores descendant events.
+  it('does not re-activate the tab when Space is typed in the rename input', async () => {
+    const activate = vi.fn()
+    render(
+      <TabStrip folderTabs={folders} fileTabs={[]} activeFolderId="ft-1" activeFileId={null}
+        onActivateFolder={activate} onActivateFile={vi.fn()} onCloseFolder={vi.fn()}
+        onCloseFile={vi.fn()} onNewFolder={vi.fn()} onRenameFolder={vi.fn()} />,
+    )
+    await userEvent.dblClick(screen.getByText('Home'))
+    const input = screen.getByLabelText('Rename workspace tab')
+    activate.mockClear()
+    fireEvent.keyDown(input, { key: ' ' })
+    expect(activate).not.toHaveBeenCalled()
   })
 })
 

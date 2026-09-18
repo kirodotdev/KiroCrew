@@ -36,6 +36,12 @@ interface ModalProps {
    *  renders) still close. Set it while a modal holds unsaved user input, so
    *  grazing the backdrop cannot silently destroy a part-filled form. */
   guardAccidentalDismiss?: boolean
+  /** When true, EVERY dismissal path (X button, Escape, backdrop) is refused
+   *  and the X renders disabled, so the refusal is visible where the user
+   *  presses. Set it while a write the modal owns is in flight: a dismissal
+   *  mid-write unmounts the modal, and a rejection settling after that has
+   *  nowhere to render. The caller keeps its own footer Cancel in step. */
+  dismissDisabled?: boolean
   /** Modal content */
   children: React.ReactNode
 }
@@ -53,9 +59,9 @@ const SPRING = { type: 'spring' as const, stiffness: 500, damping: 35 }
  * therefore capture the restore target at page load and move focus into a
  * dialog that is not on screen.
  */
-function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, children }: ModalDialogProps) {
+function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidth, height, layoutId, dismissDisabled = false, children }: ModalDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null)
-  const dismiss = useCallback(() => onClose(), [onClose])
+  const dismiss = useCallback(() => { if (!dismissDisabled) onClose() }, [dismissDisabled, onClose])
   const reactId = useId()
   const titleId = `${reactId}-title`
 
@@ -140,7 +146,14 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
         <span id={titleId} className="text-base font-semibold text-text-strong truncate">{title}</span>
         <div className="flex items-center gap-1.5 shrink-0">
           {headerActions}
-          <button aria-label={i18nT('components.modal.close')} className="p-1.5 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer" onClick={dismiss}><X size={16} /></button>
+          <button
+            aria-label={i18nT('components.modal.close')}
+            className="p-1.5 rounded-md text-muted hover:text-text hover:bg-bg-hover transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:text-muted disabled:hover:bg-transparent"
+            disabled={dismissDisabled}
+            onClick={dismiss}
+          >
+            <X size={16} />
+          </button>
         </div>
       </div>
       {/* Body — skipped entirely when the caller renders nothing, so a
@@ -161,11 +174,12 @@ function ModalDialog({ onClose, title, ariaLabel, footer, headerActions, maxWidt
   )
 }
 
-export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, ...rest }: ModalProps) {
-  /** Backdrop + Escape only. Suppressed while the caller guards unsaved input. */
+export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDismiss = false, dismissDisabled = false, ...rest }: ModalProps) {
+  /** Backdrop + Escape only. Suppressed while the caller guards unsaved input
+   *  and while every dismissal is refused. */
   const softDismiss = useCallback(() => {
-    if (!guardAccidentalDismiss) onClose()
-  }, [guardAccidentalDismiss, onClose])
+    if (!guardAccidentalDismiss && !dismissDisabled) onClose()
+  }, [guardAccidentalDismiss, dismissDisabled, onClose])
 
   useEffect(() => {
     if (!open) return
@@ -198,7 +212,7 @@ export default function Modal({ open, onClose, maxWidth = 640, guardAccidentalDi
             onClick={softDismiss}
           />
           <div className="fixed inset-0 z-[101] flex items-center justify-center p-8 pointer-events-none">
-            <ModalDialog onClose={onClose} maxWidth={maxWidth} {...rest} />
+            <ModalDialog onClose={onClose} maxWidth={maxWidth} dismissDisabled={dismissDisabled} {...rest} />
           </div>
         </>
       )}

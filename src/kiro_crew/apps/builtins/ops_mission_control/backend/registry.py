@@ -199,12 +199,12 @@ class OpsProviderRegistry:
         the heartbeat or suppress the others, so each source gets its own timeout
         and its failure is reported rather than raised.
 
-        Two things happen around each poll, both of which exist because a failed poll
-        used to be indistinguishable from a quiet one:
+        Two things happen around each poll, both of which exist because otherwise a
+        failed poll is indistinguishable from a quiet one:
 
-        1. **A source in backoff is skipped**, and says so in ``errors``. A provider
-           that returned 429 was previously re-polled at full rate on the very next
-           heartbeat, which is how a rate limit becomes a ban.
+        1. **A source in backoff is skipped**, and says so in ``errors``. Re-polling a
+           provider that returned 429 at full rate on the very next heartbeat is how a
+           rate limit becomes a ban.
         2. **The outcome is recorded in ``poll_health``.** Absence of a signal only
            means "it cleared" if the poll that would have reported it actually
            succeeded; callers that resolve work on absence MUST consult this.
@@ -542,6 +542,7 @@ def _install_public_adapters(registry: OpsProviderRegistry) -> None:
         cloudwatch,
         datadog,
         github_issues,
+        incidentio,
         noop,
         pagerduty,
         schedule_file,
@@ -560,6 +561,11 @@ def _install_public_adapters(registry: OpsProviderRegistry) -> None:
     registry.register_signal_source(pd)
     registry.register_rotation_source(pd)
     registry.register_action_sink(pd)
+
+    inc = incidentio.IncidentIoAdapter()
+    registry.register_signal_source(inc)
+    registry.register_rotation_source(inc)
+    registry.register_action_sink(inc)
 
     dd = datadog.DatadogAdapter()
     registry.register_signal_source(dd)

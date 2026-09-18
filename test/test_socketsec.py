@@ -190,7 +190,7 @@ def test_check_peer_is_self_dispatches_to_the_macos_mechanism(
 ) -> None:
     """With SO_PEERCRED absent, macOS now has a mechanism and other POSIX does not.
 
-    This test previously asserted UNVERIFIABLE unconditionally, with the
+    A prior version asserted UNVERIFIABLE unconditionally, with the
     rationale "there is no macOS CI job to catch a wrong implementation". The
     macOS job added in this change removes that premise, and LOCAL_PEERCRED is
     now wired -- so on a Mac this socketpair peer IS us and the answer is MATCH.

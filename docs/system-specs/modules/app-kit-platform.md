@@ -8,6 +8,149 @@ the publish-facing policy in
 [../../app-kit/publishing-guide.md](../../app-kit/publishing-guide.md); this
 document is the behaviour and the one-way doors.
 
+## Scoped frontend HTTP transport
+
+`useAppApi()` exposes `raw(path, RequestInit)`, `request(path, RequestInit)` and
+JSON verb helpers through one API-path check. The check normalizes the request
+before matching declared patterns using the backend's semantics: a bare prefix
+matches itself and children at a slash boundary, trailing `/*` matches the base
+and its children, and trailing `*` matches a string prefix. Blank declarations
+match nothing; declaration whitespace is stripped. No implicit feature grants
+are added. A trailing slash without `*` follows the backend's literal rule.
+
+`raw` returns a successful `Response` without reading it, preserving binary
+bytes, headers and streams. The caller owns consumption and cancellation;
+streaming callers supply an abort signal and cancel on unmount. `request` and
+JSON helpers retain JSON parsing and empty-response behavior. The generic method
+forwards raw bodies; JSON verb helpers serialize their body argument and keep
+their method authoritative.
+Request options never add a permission. HTTP failures preserve the existing error
+message and expose status plus unparsed response body through the type-only
+`AppApiError` contract; network and parsing failures remain distinct. Both raw
+and JSON transports signal an explicit `403` with `X-Auth-Required: true` to the
+dashboard's installed recovery handler without consuming the response body.
+The handler owns existing single-flight refresh, embedded handoff and banner
+behavior. A document without that handler still throws the original HTTP error;
+there is no SDK-owned credential refresh or automatic request replay.
+
+The host owns session attribution. Chat hosts bind their session; routed app
+pages bind the established `dashboard:ui` page identity. A provided host key
+wins over caller headers; an unbound host rejects caller-selected session keys.
+See the [API reference](../../app-kit/api-reference.md#app-sdk-hooks-dashboard-ui)
+and [trust model](../../architecture/app-platform-trust-model.md) for the method
+contract and the distinction between a frontend guardrail and token enforcement.
+
+## Shared frontend module resolution
+
+External app bundles import shared UI values through `@kirocrew/app-sdk/ui`.
+Its vendor stub exports the same runtime names as the host UI barrel, including
+`SourceBadge`. Settings primitives, `Clickable`, `Modal` and `ErrorNotice` also
+reuse the host implementations rather than copied interaction/focus logic.
+The registry key `@kirocrew/ui` is internal to the host registry,
+not a browser import-map specifier.
+
+`@tanstack/react-query` resolves through the import map to a vendor stub backed
+by the host's existing module instance. Its hooks, providers and context are
+shared with the dashboard; apps must externalize this dependency rather than
+bundle a second copy. Runtime export parity and identity are regression-tested
+against the pinned dependency. That runtime export surface is app-facing: a
+dependency upgrade must preserve those names and their behavior, or ship an
+explicit breaking App Kit migration rather than silently removing exports. The
+export-parity test makes removed or renamed stub bindings fail the host build.
+Apps needing a newly added export declare `minKiroCrewVersion` for the first
+host release supplying it; this minimum-version gate is not protection against
+future incompatible removals. No independent dependency-version negotiation is
+introduced.
+
+## Host-mediated chat launch and cron toggles
+
+`useChatLauncher().openChat` accepts `slotKey` and `autoSend`. Without a target,
+the default sends the message in a new session; `autoSend: false` instead creates
+a new draft session through the existing session controller. With `slotKey`, the
+routed chat activates that exact slot on cold entry and hot navigation before
+filling or sending. Target activation owns the mount fetch, so a previously
+active Redux slot cannot refresh itself over the app's target.
+The controller retains a claimed message through slow
+activation; a rejected switch reports failure and the unsent message together
+in the existing copyable session-open notice, without sending to another slot.
+Failure notices label the retained message and tell the user to copy it to retry;
+unknown targets use a generic session label rather than exposing an internal key.
+A user switch during activation reports cancellation explicitly.
+A targeted draft appends to any unsent text through the shared draft merge helper,
+persists the merged text, and leaves no second prefill to overwrite it on return.
+An existing slot retains its agent. App auto-sends carry only their explicit
+message: staged files, pasted blocks, session links and knowledge remain owned by
+the composer. App text does not resolve composer file, directory or paste tokens.
+It also captures no pending question or folder suggestion on behalf of the user:
+accepted or queued app sends cannot dismiss a blocking ask, explicitly retire a
+stateless card, or age a folder suggestion. Ordinary server-frame retirement of
+stateless cards when a new turn is delivered remains unchanged. Manual composer
+and explicit card-answer actions retain their existing behavior.
+Once the server accepts a message into the interactive queue, the user's
+separate **Cancel and move back to input** action retains the shared queue
+contract: it merges that card's current text into the draft without overwriting
+existing text or sending again. This explicit recovery action is distinct from
+automatic launch-failure or activation-cancellation recovery. Edited entries and
+entries reloaded in another tab retain the same queue behavior.
+A rejected send leaves the composer unchanged and keeps the failed payload in
+the existing page-level, copyable error notice. The notice survives slot switches
+until dismissed, replaced by another action error, or the page is unmounted;
+it is not persisted or sent to the OS notification center. Failed app creation
+uses the same notice with or without an origin slot, without re-arming a new
+session for the next manual send. No failed app turn inserts a synthetic user
+row into a busy slot, so its pending approvals remain visible.
+Embedded chat surfaces never consume the
+dashboard's launch intent. Repeated rendering of a `new=1` navigation consumes
+that new-session request once, including while creation is pending. A failed
+fresh-draft creation retains the claimed prompt for the controller's retry.
+No task-binding metadata or session-authority grant is introduced.
+
+`CronSDK.set_enabled` and `set_enabled_async` delegate to the existing cron
+service's pause/resume transition, preserving the job ID and history. The service
+checks the expected app owner inside its lock after reloading persisted state;
+missing and foreign jobs are refused and the SDK audits ownership denial.
+Sync calls refuse on a running event loop. `update_job` refuses both `enabled`
+and `user_paused` updates explicitly instead of silently ignoring a toggle.
+Callers use the scoped transition method rather than assigning pause fields.
+This validation is deliberately pause-field-only, not a general unknown-key
+validator. Other kwargs such as `script`, `command` and `context_enabled` are not
+made updatable or newly validated here; their underlying service behavior is
+unchanged. Existing app cron permission
+and runtime execution checks remain required.
+
+## App Store source selection
+
+Discover's Sources rail filters the catalog shelf by namespaced source identity.
+External ids are prefixed with `registry:` for filtering and React keys, so even
+a registry named `__builtin__` or `__core__` cannot join a first-party bucket.
+Server-attached `_registry` takes precedence over installed origin. Raw registry
+names remain unchanged for display and metadata lookups.
+Selecting a source composes with text search and category selection; All sources
+clears only the source filter. Removing the selected source clears that filter.
+Source-row counts describe the full catalog population. Category counts and their
+All apps total describe the selected source and search, before category selection;
+zero-count categories remain selectable. The live result count describes the
+intersection of all active filters and announces changes to screen readers.
+Featured placements are hidden during a source filter, so unrelated apps do not
+appear above its results. Source selection never changes trust or review tier.
+Truncated rail names expose the complete name on hover; review explanations stay
+on the surrounding row.
+
+List rows, featured app rows (including collections), and the detail header show
+a visible Source line. Configured labels come from the shared registries query,
+with the pinned row winning an operator-name collision. A missing source label
+falls back to the server-attached registry id, not an endorsement. Details keep
+catalog provenance when merging installed metadata. Local installs show Local
+install even when a catalog listing shares their name. Other installed apps
+absent from the catalog show Unknown rather than claiming official origin;
+a built-in retains its built-in label. The source line describes the current
+catalog listing, not an attestation of an installed clone's bytes. A matched
+registry's known review tier appears beside its source name on every app surface;
+unlisted, local, and unknown sources carry no invented review claim. A failed
+registry-metadata read on the detail page keeps the known id visible and reports
+the failure through an inline ErrorNotice, rather than silently losing review
+information.
+
 ## 0. Three-axis classification: origin, resources, lifecycle
 
 An installed app's `installed.json` carries three **independent** fields, each
@@ -106,6 +249,33 @@ otherwise. Install-status and trust fields are absent from that projection by
 design: `_enrich_with_install_status` and `_apply_trust_fields` run afterwards
 and stamp them server-side, so an index-supplied value for one of them can
 never be read before it is replaced.
+
+The fetched `app.json` that feeds this merge is cached on disk
+(`cache/app-manifests/`), and the cache identity is the row's FULL source
+coordinates, not its name: `_manifest_cache_path` digests the normalized
+credential-free clone origin, the effective ref (always the configured
+branch, plus the pinned commit when the row carries one — non-catalog pins
+are data fidelity, not what the listing fetch resolves, so the branch must
+stay in the key), the repository subdirectory, and the app name into the
+file name. Changing the configured branch is therefore a cache MISS by
+construction, two same-name apps from different repositories never share (or
+poison) each other's cached metadata, and a failed fetch cannot silently
+attach a manifest cached for another branch or repo — the name-keyed
+predecessor could not establish provenance and did all three (#10145). The
+registry-refresh sweep expires caches through the same path derivation, so a
+row whose coordinates changed in the new index expires the OLD coordinates'
+file via the prior index's row. Coordinate churn orphans the old files
+themselves — no reader ever derives their path again — so the write path
+garbage-collects files older than every TTL plus a grace window
+(`_gc_manifest_cache_dir`; the grace is derived from the expiry backdate
+slack so an expired-but-preserved file is never GC-eligible in the same
+breath), which bounds what an index that rotates its coordinates can
+accumulate while staying invisible to reads. Manifest files live in the
+`by-source/` subdirectory and only that subdirectory is swept: registry
+index caches stay at the cache-dir root, making the GC boundary structural —
+an index cannot spell a directory into an app name, where a name-prefix
+convention (skip `_registry_*`) would be imitable by an app literally named
+`_registry_x` and hand a hostile index files the sweep never reclaims.
 
 The client
 (`isVerified`/`sourceLabel` in `website/src/components/appstore/types.ts`)
@@ -557,12 +727,13 @@ it is unbounded third-party code and must not overlap the still-running startup
 hook against partially initialized state.
 
 Normal recovery is to retry after retained startup execution exits. If a startup
-hook is permanently wedged, the operator must **stop the gateway completely**,
-run `kirocrew app disable <name>` while no gateway process can execute app code,
-and then restart the gateway. The CLI command only writes `enabled=false` to
-installed-app metadata; it is not runtime teardown and must not be run against a
-live gateway as evidence that old app code stopped. The disabled app is skipped
-on the next startup, allowing the operator to repair or remove it without
+hook is permanently wedged, `kirocrew app disable <name>` performs runtime
+teardown when it reaches the running Gateway through its owner-only Unix socket;
+a retained hook can still make that live request return the retryable refusal
+above. If the CLI cannot reach that socket, it only records `enabled=false` for
+the next Gateway start. In that file-only case the operator must **stop the
+Gateway completely** before running the command, then restart it: the disabled
+app is skipped on startup, allowing the operator to repair or remove it without
 re-entering the wedged hook.
 
 Graceful gateway shutdown sweeps retained startup ownership for **every enabled
@@ -612,6 +783,12 @@ when the budget fires, and cancelling it then would mean that backend is never
 signalled at all — instead the sweep returns and the stops finish in the
 background. The sweep is not gated on the lifecycle dispatcher being
 initialized, and one app's failing stop does not skip the rest.
+
+The routes' async `app_lifecycle_lock` serializes route handlers only and does
+not imply exclusive backend-lifecycle ownership; any new lifecycle path must
+advance the generation through the public `start_app_backend` or
+`stop_app_backend` entry points, which take `_health_reconcile_lock` and `_lock`
+and call `_advance_lifecycle_locked`, never by mutating `_processes` directly.
 
 ## 8. An app's EventBus only exists with a real broadcast function
 
@@ -708,9 +885,12 @@ would silently delete a dependency the user explicitly chose to keep.
 `GET /api/apps/{name}/uninstall/preview` is the read-only classification that
 feeds the confirm dialog, and it is **additive**: a client that skips it and
 POSTs straight to uninstall gets the same safe default (clean removable, keep
-everything else). The handler exists and is exercised by the dashboard client;
-if a route table refactor drops its registration the dialog silently degrades to
-no preview, since the frontend treats the fetch as best-effort.
+everything else). The route is registered by `register_app_routes` and
+exercised by the dashboard client; `TestUninstallPreview` in
+`test/test_apps_routes_coverage.py` drives it over the router with an HTTP
+test client, so removing the registration fails that test rather than
+degrading silently. The frontend still treats the fetch as best-effort: on
+failure the dialog renders without the dependency panel.
 
 Dependency resolution itself is **non-blocking by design**: no capability manager
 may exist (the public edition ships none), network failures are transient, and
@@ -722,6 +902,20 @@ are reported in separate lists precisely so "absent" stays distinguishable from
 
 Writers: `apps/dependency_ledger.py`, `apps/dependencies.py`;
 `apps/routes.py::handle_uninstall_preview`.
+
+### 11.1 Python runtime dependency installation is serialized
+
+Separately from capability resolution, `apps/backend.py::provision_app_deps`
+serializes each app's Python dependency install with `data/.kirocrew-deps.lock`.
+The installer and the data-preserving uninstall path in `apps/manager.py` both
+first create that lock with `O_CREAT | O_EXCL`. Only `FileExistsError`
+permits reopening the existing file, without creation or truncation flags.
+Both opens retain `O_RDWR`, `O_NOFOLLOW` where supported, and the same pinned
+parent directory descriptor. This avoids concurrent first-create `openat`
+returning `ENOENT` on macOS before callers can reach the file lock. A lock that
+vanishes before reopen is refused, not recreated. The file is never unlinked
+on release; contenders acquire the same lock and reuse the completed install's
+stamp instead of running pip twice.
 
 ## 12. Store visibility is a manifest flag, not a code removal
 
@@ -947,6 +1141,29 @@ stale entry serves the previous value while refreshing.
 `exposeToApps` are list-valued; a JSON scalar is refused rather than coerced,
 because iterating a string yields its characters (`"*"` → the wildcard, and
 `"/api/chat"` → the prefix `"/"`, which matches every path).
+
+**User-session control is explicit.** App-token calls that send messages to
+existing local user-owned sessions, choose generated response options, approve
+or deny tool requests, or change approval modes require an enabled app whose
+live manifest declares `permissions.sessionApproval: true`. The route must also
+be allowed by `permissions.api`. Cron, system, remote, member-mode, and other
+apps' sessions are denied. An app's existing access to its own slots is
+unchanged. Mode changes require an explicit live allowed slot and are limited
+to Normal, Reads and Trust; YOLO is global rather than slot-scoped, so app
+tokens are refused (``app_yolo_forbidden``) for both arming and revoking it.
+Consent is
+captured when the user enables the app, so `update_app` disables an enabled app
+whose new version adds the flag (SEL operation `session_approval_widened`) and
+returns `notice: "session_approval_reconsent"`; the detail page shows that notice
+and the user re-enables the app after seeing the grant. `register_external_app`
+does the same for self-managed apps (a registration that newly declares the flag
+is written disabled, SEL caller `app_register`). App updates retain the prior
+tree until the replacement and its metadata are durable, so a failed update
+restores the old manifest and enabled state together. A replacement manifest
+that removes the flag clears any lingering `sessionApprovalConsentPending` bit.
+This re-gate covers
+`sessionApproval` only; `permissions.api` and `permissions.events` are likewise
+read live and still widen on update without a consent moment (issue #11212).
 
 **Filtering the frame is not always enough.** Two event shapes carry other
 tenants' data inside a payload the gate admits wholesale, so they are narrowed on
@@ -1255,6 +1472,27 @@ already be satisfied by the one write that started it. `default_registries()`
 ships in the wheel, so an `owner` tier is a claim the build makes and the agent
 cannot forge.
 
+**Two axes, kept separate: `trust` and `review`.** `trust` answers "may this
+registry's apps clone with this machine's git credentials?"; `review` answers
+"how thoroughly were these listings reviewed before publication?" and is
+display-only. A `curated` registry at the `index` tier still clones
+credential-free, and a `community` one at the `owner` tier still clones with
+credentials — collapsing the two would make "we read the listings" hand out a
+credential. `review` is one of `""` / `"curated"` / `"community"`, and `label` is a
+display name shown instead of the `name` id. Both are build-only for the same
+reason `owner` is: `GET /api/apps/registries` reports them empty on operator rows
+and the PUT drops them, so a write into agent-writable `config.json` cannot stamp
+a source "Reviewed by the Kiro Crew team". An unrecognised `review` DEGRADES to `""` (no
+claim) and is logged at error level; it never drops the pinned row. This list
+also feeds index fetch, the trusted-host allowlist and install, so dropping would
+let a typo in a display field take a whole registry offline — its apps gone from
+the store, its installs failing, its host out of the clone-trust set. Degrading
+is not the falsely-reassuring outcome it looks like: `""` is what a build that
+never set the field renders, so a mistyped `community` shows an unbadged row
+rather than a trusted-looking one. `label` never
+replaces `name`: the id keys the index cache path and every installed app's
+`_registry` tag, so renaming would orphan installed apps.
+
 Consequences worth stating, because they close off designs that look reasonable:
 
 - The tier is only honoured for a registry that is BOTH build-pinned and in force.
@@ -1554,6 +1792,38 @@ are `_health_check_loop` (bounded startup poll) and `_watch_backend_health`
   recover on its own, so one observation demotes it and the watch stops. An
   **adopted** backend has no `Popen` handle — it belongs to another supervisor —
   and is judged by its health endpoint alone.
+- **An unexpected spawned-process exit is restarted, but never blindly.** After
+  the dead generation's MCP scrub has landed, the supervisor reuses
+  `start_app_backend` so its replacement follows the normal pidfile, health-gate,
+  and MCP-promotion path. It restarts only while the exact record remains tracked,
+  the app is positively enabled (unknown fails closed), and the process-wide gateway
+  shutdown signal is clear; adopted instances are excluded. The first replacement
+  attempt is immediate; subsequent fast-phase failures back off 1s, 2s, 4s … to 30s.
+  After eight fast attempts (0+1+2+4+8+16+30+30 seconds, a 91-second window), the
+  supervisor warns once and retries every 300 seconds for as long as the app stays
+  enabled (disable the app to stop). The fast window covers a per-user service-manager
+  restart lasting about 45 seconds with margin before the coarse steady cadence takes
+  over; it is not a give-up bound. A replacement returns the retry budget to the fast
+  phase only after four consecutive healthy liveness sweeps (about 60 seconds), so a
+  process that passes its startup gate and then repeatedly exits is retried at the
+  steady interval indefinitely while enabled. Every replacement attempt re-vets
+  governance for all apps and admission for non-builtin apps. An affirmative policy
+  denial, admission re-vet error, or platform composition error ends supervision after
+  one warning and a denied SEL record. A governance-evaluator error refuses only that
+  attempt, is audited as an error, and keeps the current fast or steady cadence so the
+  next attempt re-vets. A permitted re-vet is audited too (`app_backend_restart`,
+  `outcome="allowed"`, with the attempt number) before the spawn: the restart exercises
+  the app's execution grant with no operator in the loop, so the SEL trail records the
+  decision rather than leaving it to be inferred from the `app_backend_spawn` that
+  follows. Boot and interactive activation are unchanged. Every deliberate
+  stop and every explicit external start advances a per-app lifecycle generation; the
+  spawn does not. The restart snapshots that generation when it removes the dead record:
+  a later STOP tears down its exact replacement, while a later START adopts/reuses the
+  replacement and supersedes the stale stop. PID-file cleanup is likewise conditional on
+  the exited process's exact `(pid, start_time)` identity, so it cannot erase a successor
+  recorded under the same app name. A failed spawn and a spawn that raises follow the
+  same restore/backoff path. An exit during the startup health gate continues the same
+  retry budget rather than stranding the enabled app.
 - **An HTTP failure from a live process is not decisive.** A backend can be
   briefly busy, so demotion needs `_HEALTH_WATCH_FAILURES` consecutive misses;
   demoting on a single miss would let one slow response take a working app
@@ -1743,9 +2013,40 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   confirmed-scrubbed, so it must never be read as a plain boolean. Each sweep
   reconciles when the verdict changed **or** when that record is behind the verdict.
   The terminal exited-process path consults it too, and does not return until the entry
-  is reconciled or the record is dropped. That path is the one place where giving up is
-  permanent — nothing revisits an exited backend — so returning on an unlanded scrub
-  would strand the dead URL for kiro-cli to dial on every session.
+  is reconciled or the record is dropped. That path hands the dead record to the restart
+  supervision below, and until a replacement publishes nothing else revisits the entry —
+  so returning on an unlanded scrub would strand the dead URL for kiro-cli to dial on
+  every session in the meantime.
+- **An enabled app is restarted until it recovers or is disabled.** An exited spawned
+  backend first gets the fast ramp (immediate, 1, 2, 4, 8, 16, 30, and 30 seconds), then
+  moves to one attempt every 300 seconds for as long as the app stays positively enabled.
+  The transition is warned once per supervision loop — a loop-local latch, not a field
+  on the tracked `AppProcess` — so a replacement that later exits starts a fresh ramp
+  and may warn again. There is deliberately no terminal
+  give-up state: like systemd's `Restart=always`, an enabled service must not remain dead
+  waiting for a human to notice it. Persistent failures are bounded to the slow cadence,
+  and `_restart_attempts` resets only after `_RESTART_STABLE_SWEEPS` healthy checks, so a
+  post-gate flapper cannot regain the fast ramp merely by surviving startup briefly.
+  Every wait is shutdown-aware, and every ramp or steady-state iteration repeats the
+  record identity, enablement, lifecycle-generation, and post-spawn ownership guards.
+- **Restart is driven from the exit observation, not by a per-app single-writer
+  supervisor.** Two alternatives would delete the generation and ownership protocol
+  and were rejected. A periodic level-triggered sweep ("every enabled app with no live
+  process gets one") adds up to one interval of downtime on every exit and needs a
+  second scheduler for the ramp. An event-kicked single-writer supervisor — one actor
+  per app that owns `_processes[name]` and is woken by the same exit — keeps the
+  immediacy and the ramp, but it only deletes the protocol if EVERY writer becomes a
+  message to that actor: `start_app_backend` and `stop_app_backend` are synchronous,
+  result-returning calls whose callers (the routes, the disable rollback, update,
+  uninstall, boot's fixed-port preclaim) depend on the outcome before they continue, so
+  routing them through an actor changes the public lifecycle API for every caller on
+  main rather than the health watch alone. And the actor does not remove the concepts
+  it is meant to replace: an interactive stop arriving during a 300 s backoff wait must
+  preempt that wait, which needs a "which request is current" token — the lifecycle
+  generation under another name — and the interactive spawn must stay single-flighted,
+  which is the STARTING placeholder. The protocol is therefore the price of restarting
+  from within the existing multi-writer lifecycle without redesigning it; a future
+  single-writer redesign remains open and would be a new spec section, not a repair.
 - **The startup poll belongs to ONE generation, bound at the spawn.** The supervisor is
   handed the `AppProcess` itself and derives both name and port from it; every attempt
   re-checks that the record is still the tracked one. A name plus a port are two

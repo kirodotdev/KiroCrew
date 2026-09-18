@@ -13,6 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew import platform_compat
 from kiro_crew.acp.session_handle import WatchdogSettings
 
 
@@ -74,6 +75,92 @@ def _make_manager(pool_size: int = 2, pool_agent: str = "kirocrew", pool_ttl_sec
 # ---------------------------------------------------------------------------
 # _fill_warm_pool
 # ---------------------------------------------------------------------------
+
+
+class TestPrivateMemoryAllocation:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("key", ["cron:review", "subagent:review", "memory-consolidation:review:unique"])
+    async def test_private_session_bypasses_global_pool_and_reuses_own_client(self, key):
+        mgr, factory = _make_manager()
+        private = _make_provider()
+        private._private_memory = True
+        factory.side_effect = None
+        factory.return_value = private
+        mgr._drain_and_claim = AsyncMock()
+        mgr._ensure_cleanup_task = MagicMock()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value="member-review"):
+            provider, is_new, _ = await mgr.get_or_create(key, agent="kirocrew")
+            assert provider is private and is_new
+            mgr.release(key)
+            reused, is_new, _ = await mgr.get_or_create(key, agent="kirocrew")
+            assert reused is private and not is_new
+            mgr.release(key)
+        mgr._drain_and_claim.assert_not_awaited()
+        factory.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_private_binding_refuses_a_preexisting_global_client(self):
+        mgr, _ = _make_manager(pool_size=0)
+        mgr._ensure_cleanup_task = MagicMock()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value=""):
+            old, _, _ = await mgr.get_or_create("cron:review")
+            mgr.release("cron:review")
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value="member-review"):
+            with pytest.raises(RuntimeError, match="isolation does not match"):
+                await mgr.get_or_create("cron:review")
+        assert mgr._sessions["cron:review"].provider is old
+        assert not mgr._sessions["cron:review"].semaphore.locked()
+
+    @pytest.mark.asyncio
+    async def test_factory_cannot_supply_global_runtime_for_private_binding(self):
+        mgr, factory = _make_manager()
+        old = _make_provider()
+        factory.side_effect = None
+        factory.return_value = old
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value="member-review"):
+            with pytest.raises(RuntimeError, match="Provider does not match"):
+                await mgr.get_or_create("cron:review")
+        old.start.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("parent_store", ["", "member-other", "member-review"])
+    async def test_private_task_uses_dedicated_allocation_for_every_parent(self, parent_store):
+        mgr, _ = _make_manager()
+        expected = (_make_provider(), True, False)
+        mgr.get_or_create = AsyncMock(return_value=expected)
+        mgr._get_or_bootstrap_run_runtime = AsyncMock()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", side_effect=lambda key: "member-review" if key == "task:child" else parent_store):
+            result = await mgr.open_task_session("task:parent", "task:child", agent="review", cwd="/work")
+        assert result is expected
+        mgr.get_or_create.assert_awaited_once_with("task:child", agent="review", approval_policy="", cwd="/work")
+        mgr._get_or_bootstrap_run_runtime.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_private_parent_cannot_downgrade_to_an_unbound_task_child(self):
+        mgr, factory = _make_manager()
+        mgr._get_or_bootstrap_run_runtime = AsyncMock()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", side_effect=lambda key: "member-review" if key == "task:parent" else ""):
+            with pytest.raises(RuntimeError, match="trusted child memory binding"):
+                await mgr.open_task_session("task:parent", "task:child")
+        factory.assert_not_called()
+        mgr._get_or_bootstrap_run_runtime.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_private_parent_cannot_supply_a_companion_runtime(self):
+        mgr, _ = _make_manager()
+        with patch("kiro_crew.session_allocation.private_memory_store_for_session", return_value="member-review"):
+            with pytest.raises(RuntimeError, match="dedicated runtime"):
+                await mgr.get_subagent_runtime("parent")
+            with pytest.raises(RuntimeError, match="dedicated runtime"):
+                await mgr._get_or_bootstrap_run_runtime("parent")
+
+    def test_private_provider_is_ineligible_for_sharing(self):
+        mgr, _ = _make_manager()
+        provider = _make_provider()
+        provider._private_memory = True
+        provider.is_session_sharing_eligible = True
+        mgr._sessions["parent"] = SimpleNamespace(provider=provider)
+        assert mgr.is_session_sharing_eligible("parent") is False
 
 
 class TestFillWarmPool:
@@ -365,9 +452,21 @@ class TestGetOrCreatePoolIntegration:
         """The claiming session's crew_agent kwarg reaches rekey so the pooled
         handle's watchdog windows rebind to the claiming crew — the identity
         travels with the session, not the pool key."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
         from kiro_crew.providers.acp import AcpProvider
 
+        def declared_legacy_member():
+            cfg = KiroCrewConfig.load()
+            # This tests a legacy pooled runtime, not private V2 allocation.
+            cfg.agents["pr-reviewer"] = KiroCrewAgentConfig(
+                kiro_agent="kirocrew", memory_store="default"
+            )
+            cfg.save()
+            return cfg.agents
+
+        members = await asyncio.to_thread(declared_legacy_member)
         mgr, factory = _make_manager(pool_agent="kirocrew")
+        mgr._cfg.agents = members
         pooled = _make_provider()
         pooled.__class__ = AcpProvider
         pooled.client = MagicMock()
@@ -385,6 +484,36 @@ class TestGetOrCreatePoolIntegration:
         assert args == ("test-key", "ch-1")
         assert kwargs["crew_agent"] == "pr-reviewer"
         assert isinstance(kwargs["watchdog"], WatchdogSettings)
+
+    def test_capability_preparation_refuses_an_undeclared_canonical_member(self):
+        from kiro_crew.session_capabilities import CapabilityStartupError, prepare_runtime
+
+        with pytest.raises(CapabilityStartupError, match="capability_member_missing"):
+            prepare_runtime("kirocrew", "undeclared-crew", None)
+
+    def test_corrupt_sidecar_refuses_declared_members_with_a_closed_code_only(self):
+        """Enrollment lives in the one shared sidecar, so an unreadable file
+        cannot prove a declared member is unenrolled: every declared member
+        refuses with the closed ``capability_state_unreadable`` code, never a
+        raw parser error, while a session that resolves to no crew never reads
+        the sidecar and still starts."""
+        from kiro_crew import agent_state
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.session_capabilities import CapabilityStartupError, prepare_runtime
+
+        cfg = KiroCrewConfig.load()
+        cfg.agents["legacy-member"] = KiroCrewAgentConfig(
+            kiro_agent="kirocrew", memory_store="default"
+        )
+        cfg.save()
+        path = agent_state._state_path()
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{", encoding="utf-8")
+
+        with pytest.raises(CapabilityStartupError, match="capability_state_unreadable"):
+            prepare_runtime("kirocrew", "legacy-member", None)
+        assert prepare_runtime("kirocrew", "", None).member == ""
+        assert path.read_text(encoding="utf-8") == "{"
 
     @pytest.mark.asyncio
     async def test_skips_pool_when_resume_sid_set(self):
@@ -511,7 +640,7 @@ class TestTTLExpiration:
 
     @pytest.mark.asyncio
     async def test_claim_ttl_discard_logs_info_dead_keeps_warning(self, caplog):
-        """#4052: the claim path follows the same severity rule as the health
+        """The claim path follows the same severity rule as the health
         sweep — a TTL recycle of a healthy provider is INFO, one that also died
         before aging out keeps WARNING. Both are still discarded."""
         import logging
@@ -715,7 +844,7 @@ class TestModelMatchesPoolDefault:
     async def test_unusable_model_is_withheld_not_raised_on_claim(self):
         """A stale slot model must behave the SAME warm as cold.
 
-        Design Review on #1596: the post-claim re-apply carries an INHERITED
+        The post-claim re-apply carries an INHERITED
         value, so letting AcpModelUnavailable escape here would kill the claimed
         provider — while an identical cold start quietly withholds. That makes
         the outcome depend on whether a pooled process happened to exist.
@@ -745,7 +874,7 @@ class TestModelMatchesPoolDefault:
 
     @pytest.mark.asyncio
     async def test_namespaced_pin_resolves_on_claim_like_a_cold_start(self):
-        """#8521: a warm claim must run exactly what a cold start of the pin runs.
+        """A warm claim must run exactly what a cold start of the pin runs.
 
         The pin carries a stale `<namespace>::` qualifier while the pooled
         session advertises the bare id. The cold-start spawn resolves it via
@@ -1481,7 +1610,7 @@ class TestDiscardReaping:
 
     @pytest.mark.asyncio
     async def test_sweep_ttl_discard_logs_info_dead_provider_stays_warning(self, caplog):
-        """#4052: a scheduled TTL recycle of a healthy provider is the pool
+        """A scheduled TTL recycle of a healthy provider is the pool
         working as designed, so its discard line is INFO. Both anomalies keep
         WARNING: a provider that died before aging out (TTL line, dead process)
         and the dead-provider branch below. All three are still reaped."""
@@ -1545,7 +1674,17 @@ class TestDiscardReaping:
         proc = subprocess.Popen(["sleep", "300"])
         try:
             provider = _make_provider()
-            provider._client = SimpleNamespace(_pid=proc.pid)
+            # Model a real ACP provider: the tracked PID lives at
+            # provider._client._pid AND the client records the pid's start
+            # identity, exactly as AcpClient does after start
+            # (client.py: self._start_time = get_process_start_id(self._pid)).
+            # _sync_kill_provider verifies that recorded id against the live one
+            # before signalling the root; a stand-in without it is refused as
+            # unverifiable and the survivor would leak, which is not the
+            # production shape this test exists to exercise.
+            provider._client = SimpleNamespace(
+                _pid=proc.pid, _start_time=platform_compat.get_process_start_id(proc.pid)
+            )
             # Bookkeeping lies: claims dead while the OS process is alive
             provider.is_process_alive = MagicMock(return_value=False)
             provider.shutdown = AsyncMock()  # "ran" but killed nothing
@@ -1573,8 +1712,14 @@ class TestDiscardReaping:
         proc = subprocess.Popen(["sleep", "300"])
         try:
             provider = _make_provider()
-            # Mimic an ACP provider: the tracked PID lives at provider._client._pid
-            provider._client = SimpleNamespace(_pid=proc.pid)
+            # Mimic an ACP provider: the tracked PID lives at
+            # provider._client._pid, and the client records that pid's start
+            # identity the way AcpClient does after start
+            # (client.py: self._start_time = get_process_start_id(self._pid)).
+            # _sync_kill_provider re-verifies it before signalling the root.
+            provider._client = SimpleNamespace(
+                _pid=proc.pid, _start_time=platform_compat.get_process_start_id(proc.pid)
+            )
             provider.is_process_alive = MagicMock(side_effect=lambda: proc.poll() is None)
             provider.shutdown = AsyncMock()  # graceful close that kills nothing
 

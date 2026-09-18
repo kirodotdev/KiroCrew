@@ -33,14 +33,14 @@ import { useAgentSession } from '../apps/issue-radar/lib/agentSession'
 const TITLE = '#4237 · session/new times out'
 
 /** The options object the SUT handed `createSlot`. */
-function createArg(): { folder_id?: string; title?: string } | undefined {
+function createArg(): { folder_id?: string; title?: string; project?: string | null } | undefined {
   const call = dispatch.mock.calls
-    .map((c) => c[0] as { type: string; arg?: { folder_id?: string; title?: string } })
+    .map((c) => c[0] as { type: string; arg?: { folder_id?: string; title?: string; project?: string | null } })
     .find((a) => a.type === 'createSlot')
   return call?.arg
 }
 
-async function open() {
+async function open(workspacePath?: string) {
   const { result } = renderHook(() => useAgentSession())
   return result.current.openSession({
     repoRef: { host: 'github.com', owner: 'acme', repo: 'demo-repo' } as never,
@@ -48,6 +48,7 @@ async function open() {
     title: TITLE,
     prompt: 'seed',
     existing: null,
+    workspacePath,
   })
 }
 
@@ -80,5 +81,23 @@ describe('Issue Radar names the session it opens up front', () => {
     await open()
     expect(apiMock.createChatFolder).not.toHaveBeenCalled()
     expect(createArg()?.folder_id).toBe('repo-1')
+  })
+
+  // The Investigate action forwards the repo's configured workspace_path as the
+  // new slot's `project`, so the chat session opens in the repo's real working
+  // copy instead of the gateway's default cwd -- the whole point of the setting.
+  it('opens the session in the configured workspace path', async () => {
+    await open('/Users/me/code/acme/demo-repo')
+    expect(createArg()?.project).toBe('/Users/me/code/acme/demo-repo')
+  })
+
+  // No configured path must not pin a cwd: it passes `null` so `createSlot` skips
+  // the chatSlotProject call and the slot keeps the gateway default (the
+  // pre-workspace behavior). An empty string would be a real, wrong path.
+  it('passes null when no workspace path is configured', async () => {
+    await open()
+    expect(createArg()?.project).toBeNull()
+    await open('')
+    expect(createArg()?.project).toBeNull()
   })
 })

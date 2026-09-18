@@ -733,7 +733,7 @@ class TestCacheCoversTheFilesystem:
     """The alias map depends on the ledger AND on which files are served, so a
     cache keyed on the ledger alone goes stale in a reachable way: deleting an
     alias leaves the ledger untouched, and the stale map keeps folding hits from
-    a file that no longer exists.
+    a deleted file.
     """
 
     def test_removing_a_served_alias_invalidates_the_cache(self, tmp_path):

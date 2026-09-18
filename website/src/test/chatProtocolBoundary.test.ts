@@ -123,19 +123,26 @@ describe('the protocol surface apps import', () => {
     expect(missing, 'vendor stub must re-export every value the app surface exports').toEqual([])
   })
 
-  it('parses correctly even after the shared regex has been left mid-string', async () => {
-    // The pattern is g-flagged, and `matchAll` seeds its internal clone from `lastIndex` — so a
-    // single `.test()` elsewhere would otherwise make the scan start past the marker and return no
-    // options, which renders the raw `[OPTIONS: …]` to the user with no buttons.
-    const { OPTION_MARKER_RE } = await import('../app-sdk/protocol/optionMarker')
+  it('exposes no shared regex whose lastIndex a caller could leave mid-string', async () => {
+    // The pattern is g-flagged, so a single `.test()` on a shared instance would make
+    // the next `matchAll` start past the marker and return no options — rendering a
+    // raw `[OPTIONS: …]` with no buttons. The module now keeps the pattern private and
+    // clones it per call, so the hazard has no reachable handle rather than being
+    // something every caller must remember. Asserted structurally: what leaks out is
+    // functions and a source STRING, nothing with a `lastIndex`.
+    const marker = await import('../app-sdk/protocol/optionMarker')
     const { parseOptions } = await import('../app-sdk/protocol')
 
-    OPTION_MARKER_RE.test('elsewhere [OPTIONS: X]')  // `$`-anchored: must end at the bracket
-    expect(OPTION_MARKER_RE.lastIndex).toBeGreaterThan(0)
+    const regexExports = Object.entries(marker).filter(([, v]) => v instanceof RegExp)
+    expect(regexExports.map(([k]) => k), 'no exported RegExp to corrupt').toEqual([])
+    expect(typeof marker.OPTION_MARKER_PATTERN_SOURCE).toBe('string')
 
-    const parsed = parseOptions('Pick one [OPTIONS: Alpha|Beta]')
-    expect(parsed.options).toEqual(['Alpha', 'Beta'])
-    expect(parsed.text).toBe('Pick one')
+    // And repeated parses stay stable, which is what the hazard used to break.
+    for (let i = 0; i < 3; i++) {
+      const parsed = parseOptions('Pick one [OPTIONS: Alpha|Beta]')
+      expect(parsed.options).toEqual(['Alpha', 'Beta'])
+      expect(parsed.text).toBe('Pick one')
+    }
   })
 
   it('keeps the mutable regex out of the app surface', () => {

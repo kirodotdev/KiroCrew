@@ -8,6 +8,18 @@ See also the SEL section in [`security.md`](security.md) for the threat-model vi
 
 Storage: `~/.kiro/crew/security_events.jsonl` (append-only JSONL with HMAC-SHA256 chain).
 
+Private member subprocesses keep a separate diagnostic chain in their isolated
+execution log directory: the host path is
+`memory_stores/.execution-logs/member-<random>/audit-<pid>/security_events.jsonl`.
+This host location is hidden from Global V1 and private peers. Linux exposes only
+that execution directory at the child's `agent-logs/`; outer Seatbelt denies peer
+execution paths. The directory choice is established at launch, before protected
+PID publication, so early MCP initialization cannot append to the global chain.
+These are process-local diagnostics with their own keys, not trusted gateway
+audit or session-identity authority. The gateway continues to record memory API
+mutations in its original chain. CLI text logs are persisted beside these local
+chains; write failures remain explicit. V1 storage and verification are unchanged.
+
 ## Event Schema
 
 Each entry records:
@@ -29,7 +41,7 @@ Each entry records:
 | `error` | Error message if failed/denied |
 | `prev_hash` | HMAC of previous entry (chain link) |
 | `entry_hash` | HMAC-SHA256 of this entry |
-| `metadata` | Additional context (approval reason, step index, etc.). Free-form string values are **redacted at write time**: the writer applies `security.redact` (credential + exfiltration-URL passes) to string values at any nesting depth before the entry is hashed and persisted, so caller-supplied text (a search query, a document title) never lands a secret on disk. Keys and non-string values pass through; the caller's dict is never mutated (the writer redacts a copy). The same write-time pass covers the free-form top-level strings `operation` / `resources` / `error` (an exception message can quote a command body or URL); identity-shaped fields (`caller_identity`, `agent`, `source`, `downstream_service`, `request_id`) are constrained vocabularies and stay verbatim. Where a `log_*` helper CLIPS a field to 500 chars it redacts first and clips second: clipping first can cut a credential in half, and the surviving prefix matches no full-token grammar, so the writer's pass could not recover it. The HMAC chain signs the redacted bytes |
+| `metadata` | Additional context (approval reason, step index, etc.). Free-form string values are **redacted at write time**: the writer applies `security.redact` (credential + exfiltration-URL passes) to string values at any nesting depth before the entry is hashed and persisted, so caller-supplied text (a search query, a document title) never lands a secret on disk. Keys and non-string values pass through; the caller's dict is never mutated (the writer redacts a copy). The same write-time pass covers the free-form top-level strings `operation` / `resources` / `error` (an exception message can quote a command body or URL); identity-shaped fields (`caller_identity`, `agent`, `source`, `downstream_service`, `request_id`) are constrained vocabularies and stay verbatim. `outcome` is NOT in the writer's set for the same reason, but `log_api_access` scrubs it at the helper: it reads as a vocabulary and is one for in-tree callers, while an installed app reaches that helper through `ctx.audit`, so the value can be caller text. The pass is the identity function on every in-tree spelling, so no existing row changes. Where a `log_*` helper CLIPS a field to 500 chars it redacts first and clips second: clipping first can cut a credential in half, and the surviving prefix matches no full-token grammar, so the writer's pass could not recover it. The HMAC chain signs the redacted bytes |
 
 The `config_bounds_clamped` event (`outcome=clamped`, `source=background`, `operation=config.load`, `caller_identity=config_loader`) is emitted by `config/loader.py`'s `_log_config_clamp_event` when an out-of-range security-bounded knob (`agent.subagent_auto_max` / `agent.max_subagents` / `agent.subagent_max_turns` / `session.pool_size`) is clamped to its API-enforced ceiling at load time, recording `metadata` `{file_value, clamped_to, min, max}`. Best-effort: a SEL failure never makes config loading raise.
 
@@ -77,6 +89,13 @@ first later touch, on its caller's thread. `critical=True` writes are
 synchronous by design and their call sites still offload themselves when
 reached from the loop.
 
+Private-member authorization denials keep their typed 403 responses even when
+SEL initialization or event submission fails. Their shared denial audit resolves
+the singleton and submits the event in a worker thread, including after an
+unsuccessful startup warm. Audit failure is diagnostic only: it cannot grant
+access or allow the protected handler to read or mutate a resource. Critical
+grant audits retain their audit-or-deny contract.
+
 - **Durability**: eventually-durable, not synchronously-durable — a crash/kill
   can lose at most the events still queued. Acceptable for an audit log; the
   hot path (e.g. per-message skill triggering) no longer pays fsync/lock latency.
@@ -109,9 +128,11 @@ Default 365 days. Pruned daily by heartbeat service (`_PRUNE_TICKS`).
 | Dashboard API | All POST/PUT/DELETE operations via middleware, plus allowed and denied project-skill trust, app-slot, saved-workflow, strict session-monitor read authorization, and in-app update authorization decisions (`update.arm` / `update.approve`; denial audits are best-effort, while a granted approval fails closed when its audit is unwritable) | `dashboard/server.py`, `dashboard/handlers/prompts.py`, `dashboard/handlers/workflows.py`, `dashboard/handlers/autonudge.py`, `dashboard/handlers/updates.py` |
 | ACP worker-pool audit | Per-`tool_call` `auto_approved` `tool_invocation` (`source=subagent`), bounded by `_SEL_AUDIT_TIMEOUT_SECONDS` (5.0s) and offloaded off the event loop so a wedged SEL backend never gates dispatch. Two emitters: the knowledge LLMPool via `AcpClient._maybe_audit_tool_call` (gated on the `audit_source` ctor param, offloaded to `subprocess_executor()`); and **code-review-sage's ReviewPool**, which migrated to the shared `AcpRuntime` (no `audit_source`) and re-emits the same per-tool record itself | `acp/client.py`, `apps/builtins/code_review_sage/sage_lib/review_pool.py` |
 | Structured monitor mutation audit | Critical `monitor_update` / `monitor_stop` invocation records are audit-before-mutation. Both singleton resolution and the synchronous write run in a worker thread, so SEL initialization or disk latency cannot block the gateway event loop | `autonudge_authz.py` |
+| Structured provider probes | Credential-free invocation and completion/failure events; protected-binary resolution failures, revoked GitLab hosts, and incomplete Bitbucket credentials also record `denied`. Denial audit failure never allows the rejected request | `monitoring/provider_cli.py`, `monitoring/gitlab_merge_request.py`, `monitoring/bitbucket_pull_request.py` |
 | Token auth | `internal_auth`, `app_scope_check`, `dashboard_sessions_revoked`, `refresh_token_initial_mint`, `nonce_evicted` (`source=token_auth`) | `dashboard/token_auth.py` |
 | Refresh tokens | `refresh_token_use`, `refresh_token_logout`, `access_cookie_revoked` (`source=refresh_tokens`) | `dashboard/handlers/auth_refresh.py` |
 | ACP transport | `tool_interrupted` per-turn cancellation audit (`source=acp`) | `acp/client.py` |
+| Installed apps | `api_access` rows an app writes about its own decisions via `ctx.audit` (`source=app`, `caller=app:<name>`, `operation=<name>.<verb>`). Attribution is minted from the app name the context was built with, so there is no `caller=` parameter to pass the wrong value into — cooperative, not unforgeable, since in-process hook code can construct another app's SDK or reach `sel()` directly; `record` swallows a write failure, because auditing must not break the operation it only describes; `outcome` is not narrowed to a vocabulary (rewriting it would record something other than what happened), and the SDK adds no scrubbing of its own — `log_api_access` now puts `outcome` through `_redact_and_clip` for every caller, because this seam is what turns that slot from an in-tree constant into caller text and the fix belongs at the boundary all fillers cross | `apps/audit_sdk.py` |
 
 ## APIs
 

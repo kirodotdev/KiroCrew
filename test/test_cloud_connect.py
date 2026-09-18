@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from pathlib import Path
 
 import pytest
@@ -282,24 +283,77 @@ class TestKillProcessTree:
             "time.sleep(30)"
         )
         proc = subprocess.Popen([sys.executable, "-c", script], start_new_session=True)
-        # Wait for the grandchild pid to be recorded.
-        for _ in range(50):
-            if pidfile.exists() and pidfile.read_text(encoding="utf-8").strip():
-                break
-            time.sleep(0.1)
-        child_pid = int(pidfile.read_text(encoding="utf-8").strip())
-        assert _pid_alive(child_pid), "grandchild should be alive before teardown"
+        # Bound BEFORE the try: the pidfile read below raises FileNotFoundError /
+        # ValueError whenever the 5s poll budget expires on a loaded host, and the
+        # finally must still be able to skip the grandchild reap in that case.
+        child_pid: int | None = None
+        child_start_id: str | None = None
+        # Set once the body has PROVEN the grandchild is gone. The finally must not
+        # signal a pid whose death it already confirmed: that pid is free for the
+        # kernel to reassign the instant it exits, so a SIGKILL sent "just in case"
+        # on the passing path is aimed at whatever process now holds the number --
+        # every green run, not a rare race.
+        grandchild_reaped = False
+        try:
+            # Wait for the grandchild pid to be recorded.
+            for _ in range(50):
+                if pidfile.exists() and pidfile.read_text(encoding="utf-8").strip():
+                    break
+                time.sleep(0.1)
+            child_pid = int(pidfile.read_text(encoding="utf-8").strip())
+            # Identity, captured WITH the pid. A pid alone is not a handle: the
+            # kernel may reassign it the moment the process exits, so the reap in
+            # the finally must be able to prove the number still names the process
+            # this test spawned. `None` means unknown, and unknown means do not
+            # signal -- the rule `get_process_start_id`'s own docstring states.
+            child_start_id = pc.get_process_start_id(child_pid)
+            assert _pid_alive(child_pid), "grandchild should be alive before teardown"
 
-        connect._kill_process_tree(proc)
+            connect._kill_process_tree(proc)
 
-        # Both the parent and the grandchild must be gone.
-        assert proc.poll() is not None, "parent should be reaped"
-        # Poll: the tree kill is asynchronous w.r.t. the grandchild exiting.
-        for _ in range(50):
-            if not _pid_alive(child_pid):
-                break
-            time.sleep(0.1)
-        assert not _pid_alive(child_pid), "grandchild (same tree) must also be killed"
+            # Both the parent and the grandchild must be gone.
+            assert proc.poll() is not None, "parent should be reaped"
+            # Poll: the tree kill is asynchronous w.r.t. the grandchild exiting.
+            for _ in range(50):
+                if not _pid_alive(child_pid):
+                    break
+                time.sleep(0.1)
+            assert not _pid_alive(child_pid), "grandchild (same tree) must also be killed"
+            grandchild_reaped = True
+        finally:
+            # `connect._kill_process_tree` is the ONLY reaper in the body above and
+            # it is the code under test, so every failing exit — the pidfile read
+            # raising when the 5s poll budget expires, either assertion, a real
+            # regression in the tree kill — abandons a live `time.sleep(30)`
+            # wrapper AND its grandchild for 30s past the test. Both sit in their
+            # own session thanks to start_new_session=True, i.e. in a group no
+            # run-level sweep of the xdist worker's group can reach. Reap through
+            # `platform_compat` (`killpg` on POSIX, `taskkill /T /F` on Windows) —
+            # an implementation independent of `ssm.kill_port_forward`, so the
+            # broken subject cannot also break its own cleanup. Group first, then
+            # the grandchild by pid, and ONLY when the body did not already prove it
+            # dead: once the wrapper has been reaped, getpgid(proc.pid) fails and the
+            # reparented grandchild is reachable only by its own pid — which is
+            # exactly the regression this test is written to catch.
+            with contextlib.suppress(ProcessLookupError, OSError):
+                pc.kill_process_tree(proc.pid, pc.SIGKILL)
+            # Revalidate identity immediately before the pid-scoped signal: between
+            # the last poll and here the grandchild may have exited and its number
+            # been handed to something else on the host, and this is a SIGKILL.
+            if (
+                child_pid is not None
+                and not grandchild_reaped
+                and child_start_id is not None
+                and pc.get_process_start_id(child_pid) == child_start_id
+            ):
+                with contextlib.suppress(ProcessLookupError, OSError):
+                    pc.kill_pid(child_pid, pc.SIGKILL)
+            if proc.returncode is None:
+                # Bounded: SIGKILL cannot be blocked, so this returns at once —
+                # the ceiling only exists so a wedged wait in a `finally` cannot
+                # replace the real assertion failure with a hang.
+                with contextlib.suppress(subprocess.TimeoutExpired):
+                    proc.wait(timeout=10)
 
     def test_windows_uses_a_tree_kill_not_a_parent_only_terminate(self, monkeypatch):
         """On Windows the group signal can never work, so the tree kill must run.
@@ -358,9 +412,7 @@ class TestKillProcessTree:
         assert str(FakeProc.pid) in argv
         assert not FakeProc.terminated, "parent-only terminate must not be the Windows path"
 
-    def test_windows_tree_kill_tolerates_a_process_object_without_a_pid(
-        self, monkeypatch
-    ) -> None:
+    def test_windows_tree_kill_tolerates_a_process_object_without_a_pid(self, monkeypatch) -> None:
         """A Popen-LIKE stand-in must not raise on the Windows branch.
 
         `kill_port_forward` accepts any object with poll/terminate/wait -- the
@@ -433,6 +485,7 @@ class TestRegistryIntegration:
         assert inst.aws_profile == "dev"
         assert inst.aws_region == "us-west-2"
         assert inst.ssh_host == ""
+        assert inst.provisioner_id == "aws_ec2"
 
     def test_register_instance_is_idempotent_on_relaunch(self, monkeypatch, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -457,6 +510,7 @@ class TestRegistryIntegration:
         assert rec.ttl == "30m"
         assert rec.local_port == 5599
         assert rec.was_connected is True
+        assert rec.provisioner_id == "aws_ec2"
 
     def test_unregister_instance_empty_arg_is_noop(self, monkeypatch, tmp_path):
         from kiro_crew.instances.registry import InstancesRegistry
@@ -501,7 +555,7 @@ class TestRegistryIntegration:
 
 
 class TestIsLaunchedInstance:
-    """Unit coverage for is_launched_instance() — the #3387 correlation check
+    """Unit coverage for is_launched_instance() — the correlation check
     handlers_instances.py uses to lock PATCH's addressing fields."""
 
     def _store(self, monkeypatch, tmp_path):
@@ -570,7 +624,7 @@ class TestIsLaunchedInstance:
     def test_vanished_job_file_is_skipped(self, monkeypatch, tmp_path):
         # The one benign case: a concurrent `cloud destroy` removing a job
         # between the glob and the read. An instance whose launch record is
-        # gone is no longer correlated to anything, so the scan continues to
+        # gone is not correlated to anything, so the scan continues to
         # the remaining jobs rather than refusing the edit.
         store = self._store(monkeypatch, tmp_path)
         gone = store.create(profile="dev", region="us-west-2", size_key="light")

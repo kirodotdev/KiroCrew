@@ -411,9 +411,9 @@ class TestChannelCredentialIsolation:
         (``config.loader.inject_kiro_cli_api_key``) instead of letting it ride
         the inherited environ.
         """
-        from kiro_crew.config.loader import _CREDENTIAL_KEYS, CRED_KIRO_API_KEY
+        from kiro_crew.config.loader import CRED_KIRO_API_KEY, CREDENTIAL_KEYS
 
-        missing = set(_CREDENTIAL_KEYS) - set(_AGENT_DENIED_ENV_KEYS) - {CRED_KIRO_API_KEY}
+        missing = set(CREDENTIAL_KEYS) - set(_AGENT_DENIED_ENV_KEYS) - {CRED_KIRO_API_KEY}
         assert not missing, f"loader credential keys not in agent denylist: {sorted(missing)}"
         # The carve-out stays exactly one key wide and never joins the denylist:
         # a denied KIRO_API_KEY would strip the agent's own credential.
@@ -516,10 +516,14 @@ class TestChannelCredentialIsolation:
 # launcher source rather than a copy, so they cannot drift from what the child
 # actually executes.
 _EXPOSE_BLOCK_START = "expose_data = {}"
-_EXPOSE_BLOCK_END = "# Bind-mount empty dirs over credential paths"
+#: The private-window staging sits between the pre-read and the credential
+#: loop, so the end marker is the staging comment: ending at the credential
+#: loop instead would pull staging into a slice named for the pre-read and
+#: exec it with ``PRIVATE_DIRS`` undefined.
+_EXPOSE_BLOCK_END = "# Private windows: a directory INSIDE a hidden tree that stays"
 #: Structural landmarks the slice must contain, so an edit that moves either
 #: marker and shrinks the block fails HERE rather than leaving the assertions
-#: below vacuously green against a fragment that no longer holds the read.
+#: below vacuously green against a fragment that does not hold the read.
 _EXPOSE_SLICE_LANDMARKS = (
     "for src_path, filename in EXPOSE_FILES:",  # the loop
     "os.path.isfile(src_path)",  # the absent-file guard
@@ -582,8 +586,8 @@ class TestCcExposePreReadIsNonFatal:
 
         The read sits in sandbox setup, so the exception killed the spawn
         outright. Measured consequence on one host: every cc-mode spawn died,
-        which is the whole ``command`` cron kind (``run_command_sandboxed`` uses
-        ``mode="cc"`` while ``run_script_sandboxed`` uses ``mode="standard"``),
+        which is both cron kinds (``run_command_sandboxed`` and
+        ``run_script_sandboxed`` both use ``mode="cc"``),
         and the repeated failures latched three jobs into auto-pause.
         """
         src = tmp_path / "config"
@@ -794,7 +798,7 @@ class TestKnownHostsPreReadFailsClosed:
     def test_an_unreadable_known_hosts_aborts_setup(self, tmp_path: Path) -> None:
         """Unreadable host-trust data must FAIL CLOSED, not degrade.
 
-        This test previously pinned the opposite, and that was a defect. The
+        This must fail closed because the
         launcher injects ``StrictHostKeyChecking=accept-new`` into
         ``GIT_SSH_COMMAND`` (built at sandbox.py:1513-1515, applied at
         sandbox.py:1786-1793) gated only on that variable being unset -- NOT on

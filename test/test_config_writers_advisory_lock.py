@@ -1,4 +1,4 @@
-"""Converted config writers share the advisory lock, so neither side is lost (#8032).
+"""Converted config writers share the advisory lock, so neither side is lost.
 
 ``update_config_locked`` holds an advisory lock on a ``<path>.lock`` sidecar for
 the whole read-modify-write. A writer that instead reads with a bare
@@ -10,7 +10,7 @@ writer and a locked read-modify-write can therefore interleave, and whichever
 renames second publishes a document that never saw the other's change.
 
 Each test here drives one converted writer against a locked writer in the
-interleave that used to lose data, and asserts BOTH changes survive. They fail on
+interleave that loses data, and asserts BOTH changes survive. They fail on
 the pre-conversion shape and pass after it, which is the property that matters:
 "holds a lock" is not observable, "did not lose the other writer's setting" is.
 """
@@ -274,8 +274,8 @@ class TestAForeignSectionIsNeverReplaced:
     ``dict.setdefault``, which on a scalar either raised (slash command) or was
     caught and reported as a save failure (dashboard URL). A callback that
     instead assigns a fresh ``{}`` over that scalar destroys an operator value
-    the step does not own AND reports success -- silent config loss, in the exact
-    shape #8032 exists to stop, reintroduced by the fix for it.
+    the step does not own AND reports success -- silent config loss, the exact
+    failure this suite exists to stop.
 
     A section that is genuinely ABSENT is still created; that is the ordinary
     path and must keep working, so each case is pinned in both directions.
@@ -375,7 +375,7 @@ class TestAForeignSectionIsNeverReplaced:
 
 
 class TestTheSeedWritesNoMetaBlock:
-    """``_ensure_default_agent_in_config`` must not stamp ``meta`` (#8032 round 2).
+    """``_ensure_default_agent_in_config`` must not stamp ``meta``.
 
     The writer it replaced stamped nothing, and this conversion is about the lock
     rather than the document's shape. Without ``stamp_meta=False`` a fresh

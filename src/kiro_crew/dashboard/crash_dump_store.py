@@ -45,8 +45,9 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 
+from kiro_crew import platform_compat
 from kiro_crew.config.paths import config_dir
-from kiro_crew.platform_compat import pid_exists, process_start_time
+from kiro_crew.platform_compat import pid_exists
 
 logger = logging.getLogger(__name__)
 
@@ -279,31 +280,69 @@ def _pid_start_id(pid: int) -> str | None:
 
     A PID probing alive is necessary but not sufficient for ownership: the
     recorded gateway may have exited and the kernel may have handed its PID to
-    an unrelated process. The starttime field (22nd in ``/proc/<pid>/stat``,
-    clock ticks since boot) is fixed for a process's lifetime, so a recorded
-    start ID that no longer matches means the owner is GONE even though the
-    PID is live. Where procfs is absent it falls back to
-    :func:`platform_compat.process_start_time` (``ps`` on macOS/BSD), and
-    returns ``None`` only where neither is readable —
-    callers must then fall back to plain PID liveness (conservative: protects a
-    possibly-reused PID's file rather than risking deletion of a live owner's
-    fd target).
+    an unrelated process. A start identity is fixed for a process's lifetime,
+    so a recorded value that differs from the live probe means the owner is
+    GONE even though the PID is live.
+
+    The identity comes from :func:`platform_compat.get_process_start_id`, the
+    routine this repository already uses wherever a start identity is WRITTEN
+    DOWN and compared back later (``mcp_gateway.claim``, ``session_pid``,
+    ``metrics.sessions``). It answers in-process on every platform it covers —
+    procfs field 22 on Linux, ``libproc`` microsecond start on macOS, and the
+    process creation ``FILETIME`` through a query-only handle on Windows — and
+    never emits whitespace or ``:``, so the recorded value stays one ``# PID:``
+    header token.
+
+    What is NOT consulted is that routine's remaining POSIX leg, ``ps
+    -o lstart=``: 1-second, locale- and TZ-rendered, and documented as safe
+    precisely because "a format or resolution drift can only make the guard
+    decline to act". That is a KILL-guard contract, where a mismatch means do
+    nothing. Both readers of this value act ON a mismatch instead —
+    :func:`sweep_stale_dumps` UNLINKS the dump while faulthandler still holds
+    its fd, and ``cron_inflight.RunningMarker.owner_alive`` reads the same
+    identity to conclude a run was abandoned — so a drifted render destroys a
+    live gateway's evidence rather than declining to act. Two gateways sharing
+    one data home need only differ in ``TZ`` or ``LC_TIME`` to render the same
+    instant differently, and 1-second granularity cannot separate two processes
+    that started in the same second.
+
+    Returns ``None`` where the identity is unknown — a platform the routine
+    does not cover, or a process this one may not introspect. Per that
+    routine's own contract a ``None`` must NOT be read as a mismatch: callers
+    fall back to plain PID liveness (conservative — protects a possibly-reused
+    PID's file rather than risking deletion of a live owner's fd target).
     """
-    try:
-        with open(f"/proc/{pid}/stat", "rb") as f:
-            stat = f.read(4096)
-        # Field 2 (comm) may contain spaces/parens; fields after the LAST ')'
-        # are unambiguous. starttime is field 22 overall -> index 19 after it.
-        tail = stat.rsplit(b")", 1)[1].split()
-        return tail[19].decode("ascii")
-    except (OSError, IndexError, UnicodeDecodeError):
-        pass
-    try:
-        started = process_start_time(pid)
-    except Exception:
-        return None
-    # One whitespace-free token: the header line is parsed by token.
-    return re.sub(r"\s+", "_", started) if started else None
+    return platform_compat.get_process_start_id(pid)
+
+
+#: Shape of a start identity in the CURRENT representation: the digits of a
+#: Linux jiffy count or a Windows creation ``FILETIME``, or macOS's
+#: ``"<seconds>.<microseconds>"``. Deliberately an ALLOWLIST of what this build
+#: writes rather than a denylist of what older ones did: the retired
+#: representation was ``ps -o lstart=`` with whitespace collapsed, whose exact
+#: text is locale- and TZ-dependent, so no property of it can be relied on.
+_CURRENT_START_ID_RE = re.compile(r"\A\d+(?:\.\d+)?\Z")
+
+
+def _start_ids_comparable(recorded: str, current: str) -> bool:
+    """May *recorded* and *current* be compared as the same kind of identity?
+
+    A start identity is only evidence of PID reuse when both sides were
+    produced by the same representation. A gateway that wrote its header
+    before this build recorded a ``ps``-rendered token, which can never equal
+    the value :func:`_pid_start_id` reads now — and every caller acts on a
+    mismatch DESTRUCTIVELY (:func:`sweep_stale_dumps` unlinks the dump whose
+    fd faulthandler still holds; ``cron_inflight`` declares a run abandoned).
+    An overlapping restart across that upgrade is exactly the case
+    :func:`sweep_stale_dumps` documents a live PID as protecting.
+
+    So a value that is not in the current representation is "unknown", not
+    "different", and the caller falls back to plain PID liveness. It is NOT
+    converted: the timezone and locale its writer rendered it under are not
+    recoverable, and guessing them would re-introduce the misjudgement this
+    exists to prevent.
+    """
+    return bool(_CURRENT_START_ID_RE.match(recorded) and _CURRENT_START_ID_RE.match(current))
 
 
 def _dump_owner(dump_path: Path) -> tuple[int, str | None, str | None] | None:
@@ -347,6 +386,12 @@ def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool |
     differs, the owner is confirmed dead (``False``) despite the live PID.
     When either side lacks a start ID (legacy header, no procfs), plain PID
     liveness stands — conservative, since ``True`` only ever protects a file.
+
+    The same conservative stand applies when the two values are not the same
+    KIND of identity: a header written before this build recorded a
+    ``ps``-rendered token that can never equal what is read now, and treating
+    that as a mismatch would unlink the dump of a gateway that is still alive
+    across the upgrade. See :func:`_start_ids_comparable`.
     """
     owner = _dump_owner(dump_path)
     if owner is None:
@@ -360,7 +405,11 @@ def _owner_alive(dump_path: Path, is_pid_alive: Callable[[int], bool]) -> bool |
         return False
     if recorded_start is not None:
         current_start = _pid_start_id(pid)
-        if current_start is not None and current_start != recorded_start:
+        if (
+            current_start is not None
+            and _start_ids_comparable(recorded_start, current_start)
+            and current_start != recorded_start
+        ):
             return False  # PID recycled: live process is not the owner
     return True
 
@@ -521,9 +570,11 @@ def open_dump_file(dumps_dir: Path | None = None) -> DumpFile:
 
     # Use os.open() for a raw fd that is never wrapped in a closable Python
     # buffered layer.  O_WRONLY|O_CREAT|O_TRUNC mirrors open("w") semantics.
+    # Binary mode preserves the header and faulthandler's bytes without CRT
+    # newline translation on Windows, matching the binary dump reader.
     flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC
     if sys.platform == "win32":
-        flags |= os.O_NOINHERIT
+        flags |= os.O_NOINHERIT | os.O_BINARY
     else:
         flags |= os.O_CLOEXEC
     fd = os.open(str(path), flags, 0o644)
@@ -565,6 +616,71 @@ def newest_dump_with_stacks(dumps_dir: Path | None = None) -> Path | None:
         except OSError:
             continue
     return None
+
+
+def dumps_with_stacks(dumps_dir: Path | None = None) -> int:
+    """How many retained dumps carry thread stacks, i.e. how many stalls are on record.
+
+    Two or more inside the retention window is a gateway wedging repeatedly rather
+    than once, which no amount of successful restarting makes historical.
+    Unreadable files are not counted: a count is only evidence when it is of
+    files confirmed to hold stacks.
+    """
+    total = 0
+    for path in _list_dumps(dumps_dir):
+        try:
+            if not _is_header_only(path):
+                total += 1
+        except OSError:
+            continue
+    return total
+
+
+def dump_superseded(dump_path: Path, dumps_dir: Path | None = None) -> bool:
+    """True iff a later LOCAL session's own pre-created file sits after *dump_path*.
+
+    Every gateway start pre-creates a dump file so faulthandler has a stable fd, so
+    such a file is the footprint of a session that began after *dump_path* was
+    written — and while it is still header-only, that session has not wedged. A
+    superseded dump describes a past incident rather than the state of the gateway
+    running now, which is the difference between "this is why the gateway is broken"
+    and "this is what happened on Tuesday".
+
+    A successor only counts as that evidence when all three hold:
+
+    * it is **header-only** — a newer file that itself carries stacks is a second
+      stall, not a session that survived;
+    * its header names **this** PID domain — a data home shared with another host
+      or PID namespace (the case ``sweep_stale_dumps`` and ``rotate_dumps``
+      already model) collects files whose existence says nothing about a local
+      restart; and
+    * it is **readable** — an unreadable file is not evidence of anything.
+
+    Anything short of that returns ``False`` and keeps the stall visible, because
+    every caller acts on ``True`` by downgrading what it reports, and silently
+    reclassifying a real stall as history is the expensive direction.
+    """
+    try:
+        anchor = dump_path.stat().st_mtime
+    except OSError:
+        return False
+    for path in reversed(_list_dumps(dumps_dir)):
+        if path == dump_path:
+            continue
+        try:
+            if path.stat().st_mtime <= anchor:
+                break  # sorted oldest-first, so nothing later remains
+        except OSError:
+            continue
+        owner = _dump_owner(path)
+        if owner is None or owner[1] != _pid_domain():
+            continue  # unattributable, or another host's file
+        try:
+            if _is_header_only(path):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def claim_dump_notification(dump_path: Path, dumps_dir: Path | None = None) -> bool:
@@ -713,6 +829,11 @@ def pid_identity_alive(pid: int, pid_domain: str | None, start_id: str | None) -
     this process or a live PID whose start id matches (or is unknowable on
     either side, the conservative direction). A record without a domain is
     probed locally like a pre-domain header.
+
+    "Unknowable" includes a recorded value that is not the same KIND of
+    identity as the one read now — a marker written before this build carries
+    a ``ps``-rendered token, and calling that a mismatch would report a run
+    that is still executing as abandoned. See :func:`_start_ids_comparable`.
     """
     if pid_domain is not None and pid_domain != _pid_domain():
         return None
@@ -720,7 +841,11 @@ def pid_identity_alive(pid: int, pid_domain: str | None, start_id: str | None) -
         # Before the own-PID shortcut: a restarted gateway can be handed the
         # crashed one's PID, and then "this process" is NOT the writer.
         current = _pid_start_id(pid)
-        if current is not None and current != start_id:
+        if (
+            current is not None
+            and _start_ids_comparable(start_id, current)
+            and current != start_id
+        ):
             return False
     if pid == os.getpid():
         return True

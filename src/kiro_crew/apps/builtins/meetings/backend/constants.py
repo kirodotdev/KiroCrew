@@ -34,7 +34,7 @@ MAX_BATCH_CHARS = 60_000  # per flushed agent batch
 #: about, and each is already capped at ``MAX_TRANSCRIPT_CHARS``.
 #:
 #: The window is the agent-initialization span, measured at ~46s on a real
-#: meeting (issue #4610). Speech finals arrive every few seconds, so a real
+#: meeting. Speech finals arrive every few seconds, so a real
 #: opening lands 15-25 lines here; 200 leaves an order of magnitude of headroom
 #: while bounding the hold at ``200 * MAX_TRANSCRIPT_CHARS`` (~800 KB) for the
 #: one meeting ``MAX_CONCURRENT_MEETINGS`` permits.
@@ -50,7 +50,7 @@ MAX_TITLE_LEN = 300
 MAX_ICS_BYTES = 4 * 1024 * 1024  # refuse absurd .ics payloads
 ICS_FETCH_TIMEOUT_SECS = 20
 #: Redirects are followed MANUALLY so each hop is SSRF-validated, so the chain
-#: needs its own bound (aiohttp's own `max_redirects` no longer applies).
+#: needs its own bound (aiohttp's own `max_redirects` does not apply).
 ICS_MAX_REDIRECTS = 5
 CALENDAR_SYNC_DAYS = 7
 

@@ -1,0 +1,213 @@
+name: CI Runner Watchdog
+
+# Self-healing for CI runs whose CodeBuild-routed job lost its runner.
+#
+# `ci.yml` routes several Linux jobs to an AWS CodeBuild-hosted runner through a
+# label that is specific to one run attempt:
+# `codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}`
+# (computed once, in the `changes` job; docs/ci/ci-and-reviews.md, "CodeBuild-hosted
+# runner (pilot)"). CodeBuild answers each `workflow_job.queued` webhook with one
+# ephemeral just-in-time runner. That runner must open a broker session before it
+# can take the job, and the handshake can fail in a way nothing retries: the broker
+# returns a 500 on the first `CreateSession` having already half-created the
+# session, every retry is refused with "a session for this runner already exists",
+# and `actions/runner` gives up after a hard-coded 4 minutes while the ghost
+# session's server-side expiry takes longer than that (actions/runner#3441, #3624,
+# #2809). The runner exits 0, CodeBuild records the build as SUCCEEDED, and the
+# job is orphaned: its label matches no runner that will ever exist, and
+# `timeout-minutes` only starts once a job is picked up. The run stays
+# `in_progress` until GitHub's own multi-hour queued-job limit.
+#
+# On `main` that is a repository-wide outage, not one red run: the `CI` concurrency
+# group does not cancel in-progress runs on `main`, so every later push is held
+# `pending` behind the orphaned run and then evicted by the next push. One
+# orphaned frontend shard held the group for ten hours and cost eleven `main`
+# verdicts before a human cancelled it.
+#
+# What this workflow does, every 10 minutes: run `scripts/ci/runner_watchdog.py`,
+# which lists queued / in-progress `CI` runs, and for each run older than
+# 15 minutes reads its jobs. A run is ORPHANED when a job is still `queued`,
+# carries a `codebuild-` label, and has waited more than 15 minutes (CodeBuild's
+# measured queue-to-start here is under a minute). Oldest first, at most 5 per
+# tick, the script cancels the run, waits for the cancellation to land, and
+# re-runs it. The re-run is a new attempt: `changes` recomputes the label with the
+# new attempt suffix and GitHub emits fresh `workflow_job.queued` webhooks, so
+# CodeBuild starts fresh runners. It is a FULL re-run, not `rerun-failed-jobs`:
+# the failed-jobs form does not run `changes` again, so it would re-queue the
+# routed jobs under a label whose attempt suffix is stale, and CodeBuild's
+# documentation does not say whether it honours that. One CI round is the price;
+# the alternative was a ten-hour hold.
+#
+# Slow is not dead. A `codebuild-` job queued past the threshold is also what
+# CodeBuild account-concurrency saturation looks like, and re-running saturated
+# runs would only add to the contention. The script tells the two apart by what
+# the OTHER routed jobs are doing, counting only starts AFTER the orphaned job
+# queued (a fleet that was fine before the orphan queued says nothing about the
+# fleet it is waiting on): if a CodeBuild job that did get a runner started in
+# that window, inside the last 30 minutes, after waiting 5 minutes or more, CodeBuild
+# is queueing, every queued job is presumed alive, and the tick reports the runs
+# as `skipped-saturated` and heals nothing. When recent starts were prompt --
+# the normal case here, measured in seconds -- a job that has waited a quarter
+# of an hour is in no queue at all. And when NOTHING has started on CodeBuild
+# in that window (live runs first, then the ten newest completed runs), the
+# evidence is inconclusive: a total fleet outage looks exactly like an orphan
+# from the queued side, and re-running into an outage only discards finished
+# work, so the tick reports `skipped-no-dispatch-evidence`, heals nothing, and
+# points at the documented rollback.
+#
+# Mutations are verified after the fact, because the API has no conditional
+# cancel or re-run: once a cancel lands the run's attempt and conclusion are
+# read back (a run that finished on its own keeps its verdict; one somebody
+# re-ran in the gap is re-run again so nothing is lost), and every re-run is
+# followed by a second newest-of-branch check after a short settle. That lookup
+# matches branch NAMES, which forks share, so it is paged until a run from the
+# same head repository appears and FAILS CLOSED (red tick, run named) if the
+# listing never reaches ours. If a newer run appeared in the window, the re-run
+# is cancelled, that cancellation is waited out (force-cancelled if slow, and a
+# re-run that still has not completed fails the tick rather than being judged
+# around), and the newer run is read until it reaches a terminal state or the
+# settle window closes: a cancelled successor is re-run in its place through
+# the same bracket (so a run landing in ITS window is restored in turn, two
+# levels deep at most) unless a yet-newer run has taken the branch over; one
+# that finished any other way is left alone. A successor still running when
+# the window closes is never called settled (a group cancel can land late; a
+# run mid-cancellation reports in_progress until it does): it, like a
+# successor that cannot be re-run, reds the tick and names the
+# `gh run rerun` to type. A re-run refusal that the run's own state does not
+# explain (nobody else re-ran it) reds the tick the same way.
+#
+# Guard rails, all in the script and all unit-tested (test/test_ci_runner_watchdog.py):
+#   - runs younger than 15 minutes are never actionable (their jobs are still
+#     read, because a slow start inside one is saturation evidence);
+#   - immediately before every re-run the run must still be the newest run of
+#     its branch and event, otherwise re-running it would cancel its successor
+#     through the workflow's own concurrency group;
+#   - fork runs are reported, never touched (forks are never routed to
+#     CodeBuild, and this token could not re-run them anyway);
+#   - a run at attempt 3 or later is reported, never touched -- every
+#     intervention bumps the attempt, so this bounds interventions per run and a
+#     run that keeps orphaning is escalated by the summary rather than looped;
+#   - the verdict is re-derived from a fresh read of the run and its jobs
+#     immediately before the cancel, and the cancel is sent only if the SAME
+#     attempt is still orphaned -- a human who re-ran the run by hand in the
+#     meantime has moved it to a new attempt, and that attempt is left alone;
+#   - a run is never touched twice for the same attempt, by construction: the
+#     intervention changes the attempt, and a run whose cancel or re-run was
+#     refused is left alone until the next tick re-inspects it;
+#   - once a cancel is accepted the script OWNS the run until it is re-run: it
+#     polls every cancelled run to `completed`, escalates to `force-cancel`
+#     after 90 s (a job mid-`always()` step can hold a plain cancel open for
+#     minutes), and re-runs each as it completes; the wait is one shared
+#     5-minute budget, not one per run. The whole tick runs inside the
+#     script's own 9-minute budget, and a re-run -- whose verification can
+#     take up to 4 minutes when a newer run lands in its window and has to
+#     be restored -- is begun only while that much of the budget remains, so
+#     the 12-minute job ceiling below is never what ends a restoration (a
+#     restoration cut off half-way leaves a successor cancelled that no
+#     fingerprint can recover); a re-run that cannot start in time is named
+#     in a `::error::` and left for the recovery pass;
+#   - if that budget is exhausted the run is named in a `::error::` and the job
+#     exits 1, and the NEXT tick's recovery pass re-runs it: that pass reads
+#     recently cancelled `CI` runs, recognises the orphan fingerprint on their
+#     cancelled jobs (`codebuild-` label, no runner name, queued past the
+#     threshold when cancelled), and re-runs only those still the newest run of
+#     their branch -- an older, superseded pull-request run has nothing left to
+#     say, and re-running it would cancel its successor through the group;
+#   - a refused cancel, or a re-run the API refuses (403: someone re-ran it by
+#     hand first), is logged and skipped;
+#   - `dry_run` performs every read and no write.
+#
+# Recovery covers pull-request runs as well as pushes: a heal whose cancel
+# outlives the budget leaves the run cancelled with nobody to re-run it, which
+# is exactly what the pass exists for. Its fingerprint (a cancelled
+# `codebuild-` job that never had a runner and queued past the threshold) is
+# what a healthy run a human stopped never shows, so a deliberate cancel is
+# not resurrected; a human who cancels an ORPHANED run and walks away gets it
+# re-run once, which is what a heal would have done. The recovery pass does
+# NOT obey the saturation/outage hold: that hold protects finished work, and a
+# cancelled orphan has none left -- re-running it into an outage leaves it
+# queued until the fleet returns, whereas holding it would let the recovery
+# window expire and abandon it silently. It runs BEFORE the live heals and
+# takes the per-tick cap first: a cancelled orphan has already lost its
+# verdict, a live one loses nothing by waiting a tick, and served the other
+# way round a sustained backlog of live orphans would starve recovery until
+# the window expired.
+#
+# What it deliberately does NOT act on: a `CI` run in `pending` with ZERO jobs.
+# That run is waiting on its concurrency group, not on a runner -- cancelling it
+# would only discard that push's verdict. The watchdog reports it in the step
+# summary so the reader knows what is holding it, and heals the run that holds
+# the group, which is what releases it.
+#
+# Manual fallback, when this workflow cannot run (Actions saturation holds it
+# queued too) or for a run it declined: `gh run cancel <run-id>`, wait for the run
+# to report `completed`, then `gh run rerun <run-id>` (`--failed` keeps the
+# successful jobs but carries the stale-label caveat above).
+#
+# This job runs on `ubuntu-latest` and must never be routed to CodeBuild: a
+# watchdog for the CodeBuild path cannot depend on the CodeBuild path.
+
+on:
+  schedule:
+    # Every 10 minutes. The orphan threshold is 15 minutes, so a stuck job is
+    # healed within roughly 15-25 minutes of being orphaned.
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Detect and report only; cancel and re-run nothing"
+        type: boolean
+        default: true
+
+permissions:
+  actions: write        # cancel and re-run workflow runs
+  contents: read        # check out the script
+
+env:
+  # The arming flip. While "false", every SCHEDULED tick is a dry run: it
+  # classifies, writes its step summary, and touches nothing -- so the first
+  # live evidence for the detector is a run of summaries against real API
+  # shapes, not a cancellation of a real `main` run. Flip to "true" in a
+  # one-line commit once a few scheduled summaries have classified correctly
+  # (no healthy run called `orphaned`). A manual dispatch is governed by its
+  # own `dry_run` input regardless of this flip, so a maintainer can act on a
+  # stuck run before arming.
+  WATCHDOG_ARMED: "false"
+
+concurrency:
+  # One watchdog at a time, and never cancel the incumbent: a run that is queued
+  # waiting for a runner already holds the group slot, so `cancel-in-progress:
+  # true` would have every tick killed by its successor under exactly the
+  # Actions saturation this workflow exists to survive (the reasoning in
+  # pr-readiness-sweep.yml). GitHub keeps at most one pending run per group, so
+  # overlap collapses on its own.
+  group: ci-runner-watchdog
+  cancel-in-progress: false
+
+jobs:
+  watchdog:
+    name: Unstick orphaned CodeBuild-routed jobs
+    # A fork's copy of this schedule would inspect the fork's own runs, which
+    # are never CodeBuild-routed; spend nothing there.
+    if: github.repository == 'kirodotdev/KiroCrew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts/ci
+
+      - name: Detect orphaned jobs and heal their runs
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # A manual dispatch acts only when its input says so; a scheduled tick
+          # acts only once WATCHDOG_ARMED (top of file) is "true".
+          # Every threshold (15-minute orphan age, 5 runs per tick, attempt cap
+          # of 3, 5-minute shared heal budget, 90-second force-cancel
+          # escalation, 90-minute recovery window, 9-minute tick budget) is a
+          # default of the script itself, spelled once there; the 12-minute
+          # job ceiling above sits over the tick budget with room for checkout
+          # and the summary, and a test pins that ordering.
+          DRY_RUN: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) || (github.event_name != 'workflow_dispatch' && env.WATCHDOG_ARMED != 'true') }}
+        run: python3 scripts/ci/runner_watchdog.py

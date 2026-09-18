@@ -115,42 +115,63 @@ class TestTheCapabilitySetIsItsOwnDecision:
         assert ACP_BACKEND_CLAUDE not in ACP_BACKENDS_POD_HOME_REMAP
         assert ACP_BACKEND_KAS not in ACP_BACKENDS_POD_HOME_REMAP
 
-    def test_neither_spawn_site_gates_the_remap_on_the_sandbox_set(self) -> None:
+    def test_the_client_spawn_does_not_gate_the_remap_on_the_sandbox_set(self) -> None:
         """The regression: reusing ACP_BACKENDS_INTERNAL_SANDBOX for this gate
-        is the conflation, so neither call site may name it for the remap."""
+        is the conflation, so the call site may not name it for the remap."""
         import inspect
 
         from kiro_crew.acp import client as client_mod
-        from kiro_crew.acp import runtime as runtime_mod
 
-        for source in (
-            inspect.getsource(client_mod.AcpClient._spawn),
-            inspect.getsource(runtime_mod.AcpRuntime._spawn_admitted),
-        ):
-            remap_call = source.split("_apply_pod_home_remap(")[1].split(")")[0]
-            assert "ACP_BACKENDS_POD_HOME_REMAP" in remap_call
-            assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in remap_call
+        source = inspect.getsource(client_mod.AcpClient._spawn)
+        remap_call = source.split("_apply_pod_home_remap(")[1].split(")")[0]
+        assert "ACP_BACKENDS_POD_HOME_REMAP" in remap_call
+        assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in remap_call
+
+    def test_the_shared_process_spawn_asks_a_question_of_its_own(self) -> None:
+        """The same conflation, closed one layer down.
+
+        The shared-process spawn asks its host, and the host answers from the
+        remap set. Each question is one property reading one set, so answering
+        "does this host relocate its credential store" with "does it carry its own
+        sandbox" now requires editing the wrong property by name -- a stronger
+        pin than a spawn method that mentions both sets for unrelated reasons.
+        """
+        import inspect
+
+        from kiro_crew.acp import runtime as runtime_mod
+        from kiro_crew.acp.harness._common import MembershipHarness
+
+        spawn = inspect.getsource(runtime_mod.AcpRuntime._spawn_admitted)
+        remap_call = spawn.split("_apply_pod_home_remap(")[1].split(")")[0]
+        assert "self._harness.pod_home_remap" in remap_call
+        assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in remap_call
+
+        answer = inspect.getsource(MembershipHarness.pod_home_remap.fget)
+        assert "ACP_BACKENDS_POD_HOME_REMAP" in answer
+        assert "ACP_BACKENDS_INTERNAL_SANDBOX" not in answer
+
+        sandbox_answer = inspect.getsource(MembershipHarness.internal_sandbox.fget)
+        assert "ACP_BACKENDS_INTERNAL_SANDBOX" in sandbox_answer
+        assert "ACP_BACKENDS_POD_HOME_REMAP" not in sandbox_answer
 
 
 class TestAwsCredentialPointersAreNotExportedIntoThePod:
-    """An earlier revision pinned ``AWS_CONFIG_FILE`` /
-    ``AWS_SHARED_CREDENTIALS_FILE`` back at the real home so a pod agent turn
-    could still reach the operator's file profiles after HOME moved. Naming
-    those files in the child environment IS the leak: the deny matchers work on
-    command text with no variable expansion, so the export is a working alias for
-    a path the sensitive-path fence refuses by name, and the alias is retrievable
-    through an unbounded set of spellings (``$VAR``, ``os.environ['VAR']``,
-    ``$(printenv VAR)``, ``eval``, indirect expansion, a helper script). The
-    alias is deleted at its source instead of matched spelling by spelling.
+    """``AWS_CONFIG_FILE`` / ``AWS_SHARED_CREDENTIALS_FILE`` must not be exported
+    into the pod. Naming those files in the child environment IS the leak: the
+    deny matchers work on command text with no variable expansion, so the export
+    is a working alias for a path the sensitive-path fence refuses by name, and
+    the alias is retrievable through an unbounded set of spellings (``$VAR``,
+    ``os.environ['VAR']``, ``$(printenv VAR)``, ``eval``, indirect expansion, a
+    helper script). The alias is deleted at its source instead of matched spelling
+    by spelling.
 
-    Posture recorded here, corrected in round 9: an ACP agent turn inside a pod
-    has NO inherited AWS credentials on any path. File credentials do not resolve
-    (the pointer exports are gone), and environment credentials do not reach the
-    turn either -- ``sandbox.scrub_agent_subprocess_env`` scrubs the
-    ``AWS_SECRET`` and ``AWS_SESSION`` prefixes from every Kiro/ACP child. An
-    earlier docstring here said env-var credentials were unaffected; that
-    confused the pod GATEWAY's environment (where ``build_pod_env`` does keep
-    ``AWS_*``) with the ACP child's, which is scrubbed after it."""
+    An ACP agent turn inside a pod has NO inherited AWS credentials on any path.
+    File credentials do not resolve (the pointer exports are gone), and
+    environment credentials do not reach the turn either --
+    ``sandbox.scrub_agent_subprocess_env`` scrubs the ``AWS_SECRET`` and
+    ``AWS_SESSION`` prefixes from every Kiro/ACP child. The pod GATEWAY's
+    environment does keep ``AWS_*`` (via ``build_pod_env``), but the ACP child's
+    is scrubbed after it."""
 
     def test_does_not_export_aws_config_file(self, tmp_path: Path) -> None:
         env = _base_pod_env(tmp_path)
@@ -182,22 +203,15 @@ class TestAwsCredentialPointersAreNotExportedIntoThePod:
         assert out["AWS_SESSION_TOKEN"] == "sts-temp"
 
     def test_an_operator_set_pointer_is_removed_too(self, tmp_path: Path) -> None:
-        """The INHERITED pointer, which is the half the first round missed.
+        """An operator-set inherited pointer must be removed too.
 
-        This test previously asserted the opposite -- that an operator-set pointer
-        is "neither created nor stripped here", on the reasoning that it names the
-        operator's own file rather than an alias this function manufactured. That
-        reasoning is wrong about WHO reads it: the value reaches the pod's AGENT,
-        and the agent dereferences it. ``build_pod_env`` keeps ``AWS_*`` on purpose,
-        so an absolute host pointer survives into a child whose ``HOME`` has moved
-        and whose ``.aws/config`` / ``.aws/credentials`` / ``.aws/cli`` are
-        empty-masked under the new home -- the pointer walks around the relocation
-        and the operator's real credentials are disclosed. Whose file it is does not
-        change what following it yields.
-
-        Recorded because a test asserting a vulnerability is how this shipped past
-        one review round: the first fix removed the manufactured export, this test
-        pinned the inherited one in place, and the suite stayed green.
+        The value reaches the pod's AGENT, and the agent dereferences it.
+        ``build_pod_env`` keeps ``AWS_*`` on purpose, so an absolute host pointer
+        would survive into a child whose ``HOME`` has moved and whose
+        ``.aws/config`` / ``.aws/credentials`` / ``.aws/cli`` are empty-masked
+        under the new home -- the pointer walks around the relocation and the
+        operator's real credentials are disclosed. Whose file it is does not change
+        what following it yields.
         """
         env = _base_pod_env(tmp_path)
         env["AWS_CONFIG_FILE"] = "/custom/aws-config"

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import io
 import os
 import threading
 from pathlib import Path
@@ -343,17 +344,25 @@ def test_build_dist_bails_out_when_npm_is_unresolvable(tmp_path, monkeypatch):
 
 
 def test_run_without_env_still_inherits(tmp_path, monkeypatch):
-    """The new `env` parameter defaults to None so existing callers (venv/pip
-    steps) keep inheriting the parent environment unchanged."""
+    """The `env` parameter defaults to None so existing callers (venv/pip steps)
+    keep inheriting the parent environment. The step is spawned with a COPY of
+    it -- the relay assigns `PYTHONIOENCODING` so a Python step encodes what the
+    relay decodes -- and every inherited variable is still present."""
+    monkeypatch.setenv("PROVISION_INHERIT_PROBE", "present")
     captured: dict = {}
 
-    class _CP:
-        returncode = 0
+    class _Proc:
+        def __init__(self, *args, **kwargs):
+            captured["env"] = kwargs["env"]
+            self.stdout = io.StringIO("")
+            self.stderr = io.StringIO("")
 
-    def fake_subprocess_run(cmd, cwd=None, stdout=None, env=None):
-        captured["env"] = env
-        return _CP()
+        def wait(self):
+            return 0
 
-    monkeypatch.setattr(prov.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(prov.subprocess, "Popen", _Proc)
     assert prov._run(["true"], tmp_path) == 0
-    assert captured["env"] is None
+    assert captured["env"]["PROVISION_INHERIT_PROBE"] == "present"
+    assert captured["env"]["PYTHONIOENCODING"] == "utf-8:replace"
+    inherited = {k: v for k, v in captured["env"].items() if k != "PYTHONIOENCODING"}
+    assert inherited == {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}

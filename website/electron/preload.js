@@ -234,6 +234,11 @@ contextBridge.exposeInMainWorld("browserAPI", {
     ipcRenderer.invoke("browser:set-control-owner", panelId, owner),
   getControl: (panelId) => ipcRenderer.invoke("browser:get-control", panelId),
   control: (panelId, op, args) => ipcRenderer.invoke("browser:control", panelId, op, args),
+  // Human-initiated element annotation on the page in the native view:
+  // start/stop pick mode, poll the notes the user typed in the in-page
+  // overlay, remove/edit/clear, capture a screenshot with the markers. Read
+  // through executeJavaScript + capturePage, not the agent control plane.
+  annotate: (panelId, op, args) => ipcRenderer.invoke("browser:annotate", panelId, op, args),
   // Declares that a chat session may host a browser panel, so the agent command
   // channel polls for it even before the Browser tab is ever opened. Grants no
   // authorization — authorization to drive the built-in browser is Browser Mode

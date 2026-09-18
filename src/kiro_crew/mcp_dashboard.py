@@ -20,8 +20,14 @@ that must be grantable separately belongs in a server of its own.
 
 What it controls today is the chat (sidebar) folder tree: read it, create a
 folder, reparent a folder, and file a live session into one. Create and move
-only — no delete and no rename, so nothing here can lose a conversation. Every
-tool is a thin proxy over the dashboard's existing endpoints (loopback +
+only — no delete and no rename, so nothing here can lose a conversation. It also
+controls session TAGS with the same posture: read the vocabulary, create or
+update a tag (rename, recolor, status flag), and add or remove tags on a live
+session — no tag delete, so nothing here can strip a label from every session
+at once, and the assignment is a DELTA the endpoint applies compare-and-set
+against the revision this server read, so an agent never clobbers a tag the
+person clicked on meanwhile. Every tool is a thin proxy over the dashboard's
+existing endpoints (loopback +
 ``X-Internal-Secret``); the endpoints keep owning every tree invariant, and the
 gateway audits each write with the caller's declared component name — this
 server's requests carry ``X-Internal-Caller: kirocrew-dashboard`` (attached
@@ -71,10 +77,15 @@ from urllib.parse import quote
 # to the gateway lives in ``mcp_core``. Importing it costs 341ms/40MB in this
 # process (measured) — under ``mcp_computer``'s own import cost, because
 # mcp_core's heavy dependencies are function-local.
+from kiro_crew.dashboard.chat_folders import (
+    _folder_owner_app,
+    _subtree_holds_foreign_folder,
+)
 from kiro_crew.mcp_core import (
     _get,
     _patch,
     _post,
+    _put,
     _resolve_session_key,
     require_strict_session_key,
 )
@@ -82,9 +93,14 @@ from kiro_crew.mcp_shared import call_tool_with_logging, run_mcp_stdio_loop
 from kiro_crew.platform import redact_via_context as redact
 from kiro_crew.validation import (
     CHAT_FOLDER_CREATE_SCHEMA,
+    CHAT_FOLDER_FILE_SELF_SCHEMA,
     CHAT_FOLDER_MOVE_SCHEMA,
     CHAT_FOLDER_MOVE_SESSION_SCHEMA,
     CHAT_FOLDER_TREE_SCHEMA,
+    CHAT_TAG_ASSIGN_SCHEMA,
+    CHAT_TAG_CREATE_SCHEMA,
+    CHAT_TAG_LIST_SCHEMA,
+    CHAT_TAG_UPDATE_SCHEMA,
     MCP_DASHBOARD_SCHEMAS,
     SESSION_CLOSE_SCHEMA,
     SESSION_CREATE_SCHEMA,
@@ -119,6 +135,11 @@ SESSION_CONTROL_TOOLS: tuple[str, ...] = (
 # too-long-segment test pins.
 _MAX_FOLDER_NAME = 100
 
+# Same mirror for tags: the tag endpoints store ``name[:60]``
+# (``chat_tags._NAME_MAX``), and a silently truncated name is one no later
+# ``chat_tag_assign`` name lookup can match.
+_MAX_TAG_NAME = 60
+
 
 def _tool_definitions() -> list[dict[str, Any]]:
     """The tool surface this server advertises."""
@@ -128,7 +149,11 @@ def _tool_definitions() -> list[dict[str, Any]]:
             "description": (
                 "Show the user's SIDEBAR folder tree — the folders they organize "
                 "their chat sessions in — with the live sessions filed in each one. "
-                "Returns per folder: id, human path, project directory, default "
+                "Folders are listed in the SAME ORDER the sidebar draws them (each "
+                "parent's children in their stored order), so the sequence you read "
+                "here is the one the person sees — which is what makes it safe to "
+                "pick a ``before``/``after`` anchor for chat_folder_move. Returns per "
+                "folder: id, human path, project directory, default "
                 "agent, and how many archived (history) sessions are filed there; "
                 "then one line per live session (slot key + title) nested under it, "
                 "and an '(unfiled)' group for sessions at the top level. Use this to "
@@ -172,14 +197,22 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "chat_folder_move",
             "description": (
-                "Reparent a sidebar folder — nest it under another folder, or move it "
-                "back to the top level. Moves the folder with everything in it "
-                "(sessions and subfolders travel with it); nothing is deleted. "
-                "Cycle-guarded: a folder cannot become its own descendant. "
-                "``folder`` and ``new_parent`` are each a folder id or human path; "
-                "omit ``new_parent`` (or pass 'root') for the top level. An app agent "
-                "may move only a folder it created itself, and only to the top level "
-                "or under another of its own."
+                "Reparent a sidebar folder AND/OR set its position among its "
+                "siblings — nest it under another folder, move it back to the top "
+                "level, or just slide it up or down where it already is. Moves the "
+                "folder with everything in it (sessions and subfolders travel with "
+                "it); nothing is deleted. Cycle-guarded: a folder cannot become its "
+                "own descendant. ``folder`` and ``new_parent`` are each a folder id "
+                "or human path; omit ``new_parent`` (or pass 'root') for the top "
+                "level. For POSITION pass ``before`` or ``after`` (not both) naming "
+                "a SIBLING folder to sit next to — with an anchor and no "
+                "``new_parent`` the anchor chooses the parent, which is how you "
+                "reorder a folder without moving it. chat_folder_tree lists folders "
+                "in the same order the sidebar draws them, so read it first to pick "
+                "the anchor. An app agent may move only a folder it created itself, "
+                "and only to the top level or under another of its own; positioning "
+                "is refused outright when it would renumber siblings the app does "
+                "not own."
             ),
             "inputSchema": {
                 "type": "object",
@@ -188,6 +221,20 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "new_parent": {
                         "type": "string",
                         "description": "Destination parent folder (id or path). Omit / 'root' for top level.",
+                    },
+                    "before": {
+                        "type": "string",
+                        "description": (
+                            "Sit immediately BEFORE this sibling folder (id or path). "
+                            "Mutually exclusive with 'after'."
+                        ),
+                    },
+                    "after": {
+                        "type": "string",
+                        "description": (
+                            "Sit immediately AFTER this sibling folder (id or path). "
+                            "Mutually exclusive with 'before'."
+                        ),
                     },
                 },
                 "required": ["folder"],
@@ -215,6 +262,139 @@ def _tool_definitions() -> list[dict[str, Any]]:
                     "folder": {
                         "type": "string",
                         "description": "Destination folder id or human path. Omit / 'root' to unfile.",
+                    },
+                },
+                "required": ["session"],
+            },
+        },
+        {
+            "name": "chat_folder_file_self",
+            "description": (
+                "File THIS session — the one making the call — into a sidebar "
+                "folder, or unfile it to the top level (omit ``folder`` / pass "
+                "'root'). ``folder`` is a folder id or '/'-separated human path; "
+                "missing path segments are created (mkdir -p), the same way "
+                "session_create's ``folder`` resolves. Use it when you stand up a "
+                "workstream that gets its own folder — a conductor files itself in "
+                "the goal's folder first, then creates its workers with "
+                '``folder="<goal>/<agent>"``, so the person finds the '
+                "conductor and every worker under one heading instead of the "
+                "conductor floating at the top level. Writes ONLY the caller's own "
+                "placement: to file a different session use "
+                "chat_folder_move_session. Metadata only — transcript, model and "
+                "any running turn are untouched; already filed there is a no-op."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "folder": {
+                        "type": "string",
+                        "description": (
+                            "Destination folder id or human path (created if missing). "
+                            "Omit / 'root' to unfile."
+                        ),
+                    },
+                },
+            },
+        },
+        {
+            "name": "chat_tag_list",
+            "description": (
+                "List the sidebar's tag vocabulary: every tag's id, name, color and "
+                "whether it is a STATUS tag (a status tag is what a Trello-style "
+                "column filters on, so a session normally carries one at a time). "
+                "Read-only. Call it before chat_tag_assign to see which tags exist, "
+                "and chat_tag_create when the one you need does not."
+            ),
+            "inputSchema": {"type": "object", "properties": {}},
+        },
+        {
+            "name": "chat_tag_create",
+            "description": (
+                "Create a NEW tag in the sidebar's shared vocabulary. ``name`` is "
+                "matched case-insensitively against existing tags: an existing name "
+                "is returned rather than duplicated, so calling this for a tag that "
+                "already exists is a safe no-op. ``color`` is an optional '#rrggbb'; "
+                "``status`` marks it a status tag (one a Trello-style column can "
+                "filter on). Create only — rename, recolor or reflag with chat_tag_update; "
+                "this server can never delete a tag, so nothing here can lose a label "
+                "the person put on a session."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "Tag name (max 60 chars)."},
+                    "color": {
+                        "type": "string",
+                        "description": "Optional '#rrggbb' color; the dashboard default when omitted.",
+                    },
+                    "status": {
+                        "type": "boolean",
+                        "description": "Mark as a status tag (default false).",
+                    },
+                },
+                "required": ["name"],
+            },
+        },
+        {
+            "name": "chat_tag_update",
+            "description": (
+                "Rename, recolor, or toggle the STATUS flag of an existing tag in the "
+                "sidebar's shared vocabulary. ``tag`` is a tag id or exact name (see "
+                "chat_tag_list); pass any of ``name``, ``color`` ('#rrggbb') or "
+                "``status``. Metadata only: every session carrying the tag keeps it, "
+                "and columns filtering on it keep filtering on it — a rename changes "
+                "the label people see, nothing else. This server can create and "
+                "update tags but never delete one, so nothing here can lose a label "
+                "the person put on a session."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "tag": {"type": "string", "description": "Tag id or exact tag name."},
+                    "name": {"type": "string", "description": "New name (max 60 chars)."},
+                    "color": {"type": "string", "description": "New '#rrggbb' color."},
+                    "status": {
+                        "type": "boolean",
+                        "description": "Whether it is a status tag (one a column can filter on).",
+                    },
+                },
+                "required": ["tag"],
+            },
+        },
+        {
+            "name": "chat_tag_assign",
+            "description": (
+                "Add and/or remove tags on a LIVE chat session. ``session`` is a slot "
+                "key or 'dashboard:<slot>' session key from chat_folder_tree, or a "
+                "session's exact title when that title is unique. ``add`` and "
+                "``remove`` each take tag ids or exact tag names (see chat_tag_list); "
+                "at least one must be non-empty, and a tag must already exist "
+                "(chat_tag_create makes one). This is a DELTA on the session's current "
+                "tags — tags you do not name are kept — and it is applied "
+                "compare-and-set against the tag list this call read, so if the "
+                "person changes the session's tags at the same moment the call fails "
+                "with the current list instead of overwriting their click; re-read and "
+                "retry. Metadata only: the transcript, model and any running turn are "
+                "untouched. ARCHIVED (history) sessions cannot be tagged — revive one "
+                "into the sidebar first."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": {
+                        "type": "string",
+                        "description": "Slot key, 'dashboard:<slot>' session key, or exact unique session title.",
+                    },
+                    "add": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag ids or exact names to add.",
+                    },
+                    "remove": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Tag ids or exact names to remove.",
                     },
                 },
                 "required": ["session"],
@@ -462,6 +642,216 @@ def _chat_folder_children(folders: list[dict], parent_id: str, name: str) -> lis
     ]
 
 
+# The largest integer JavaScript represents exactly (``Number.MAX_SAFE_INTEGER``).
+# The sidebar reads folder rows through ``JSON.parse``, so an ``order`` past this
+# is not the number the store holds; both sides clamp to it so their comparisons
+# agree on rows no sane writer produces but a hand-edited store can.
+_CHAT_FOLDER_ORDER_LIMIT = 2**53 - 1
+
+# A bare ``json.loads`` yields these for ``1e999`` / ``-1e999``; neither is a
+# position, and neither survives the arithmetic a placement does with one.
+_POS_INF = float("inf")
+_NEG_INF = float("-inf")
+
+
+def _chat_folder_order(folder: dict) -> int:
+    """A folder's sidebar sort position. Anything that is not a finite number is 0.
+
+    The endpoint stores whatever int a PATCH hands it and never renumbers, so a
+    row can carry a duplicate order, a gap, or (from an older store) no ``order``
+    key at all. The sidebar tolerates all three; so must every reader here.
+
+    Only a real JSON number is accepted, and the frontend's counterpart accepts
+    exactly the same set. That is deliberate: this value has to sort IDENTICALLY
+    here and in the sidebar, and the two languages' conversions of everything else
+    do not agree — ``int("0x10")`` and ``int("1e3")`` raise where ``Number`` reads
+    16 and 1000, ``int([5])`` raises where ``Number`` reads 5. Rejecting the whole
+    class costs nothing (the endpoint only ever writes an int) and removes the
+    parity question instead of answering it per type.
+
+    A float truncates toward zero, matching ``Math.trunc``, and ``bool`` is
+    excluded even though it is an ``int`` subclass, because ``typeof true`` is not
+    ``'number'`` on the other side. The result is clamped to the range JavaScript
+    represents exactly: Python ints are unbounded, but the sidebar reads the same
+    row through ``JSON.parse``, where ``2**53 + 1`` and ``2**53`` collapse to one
+    value — so without the clamp those two rows compare as ordered here and as
+    EQUAL there, and there the name tie-break decides the pair instead.
+
+    This is a SORT KEY: an escaping exception would abort the whole sort and take
+    down every folder tool rather than one row, so nothing here may raise.
+    """
+    value = folder.get("order")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    if value != value or value in (_POS_INF, _NEG_INF):  # NaN, ±Infinity
+        return 0
+    return max(-_CHAT_FOLDER_ORDER_LIMIT, min(_CHAT_FOLDER_ORDER_LIMIT, int(value)))
+
+
+# A-Z to a-z and nothing else, written out rather than looked up. Every Unicode
+# version ever published maps this range identically, so both sides can fold it
+# without consulting a table — which is the whole reason the fold stops here.
+_ASCII_FOLD = str.maketrans("ABCDEFGHIJKLMNOPQRSTUVWXYZ", "abcdefghijklmnopqrstuvwxyz")
+
+
+def _chat_folder_name_key(folder: dict) -> bytes:
+    """A folder name as the frontend's ``<`` would compare it.
+
+    ``chat_folder_tree`` is where an agent picks a ``before``/``after`` anchor, so a
+    sequence that differs from the rendered one aims the anchor at the wrong gap.
+    That makes this key part of a contract with ``folderTree.bySidebarOrder``, and
+    every operation in it has to mean the same thing in both languages.
+
+    No Unicode-table fold. ``str.lower()`` reads the interpreter's tables and
+    ``String.prototype.toLowerCase()`` reads the browser's, so a character whose case
+    mapping was added or changed between the interpreter's version and the browser's
+    folds differently on the two sides — a skew no code here can close, because
+    neither side owns both tables.
+
+    ``A``-``Z`` fold anyway, through the literal 26-entry table above. That range's
+    case mapping is fixed for every Unicode version ever published and the frontend
+    does the same fold by ARITHMETIC on the code unit, so it carries no version
+    dependency while still ordering ``alpha`` before ``Beta``. The distinction is
+    worth drawing because a store written before ``order`` existed has every sibling
+    tied at 0 — the whole tie-break decides those sidebars, so a fold that only
+    ordered by raw code unit would show them uppercase-first until the first drag.
+
+    ``utf-16-be`` rather than the str itself: Python orders str by CODE POINT while
+    JavaScript orders by UTF-16 CODE UNIT, and the two disagree above U+FFFF — an
+    astral character's surrogates start at 0xD800, so Python sorts U+1F600 after
+    U+FF21 and JavaScript sorts it before. Comparing the big-endian UTF-16 bytes is
+    code-unit order. This is a fixed encoding, not a table lookup, so it carries no
+    version dependency either.
+
+    ``surrogatepass`` because a folder name is persisted JSON and can hold a LONE
+    surrogate, which the strict codec refuses outright — and a raised encoder
+    inside a sort key takes down every folder tool, not one row. Passing it through
+    also keeps the byte-for-byte match: a JavaScript string holds that same lone
+    unit and compares it as 0xD800, which is exactly what these bytes carry.
+
+    A name that is not a ``str`` reads as empty rather than being stringified, and
+    the frontend's counterpart does the same. Stringifying is where the two
+    languages part company: ``str({"a": 1})`` is ``"{'a': 1}"`` where
+    ``String({a: 1})`` is ``"[object Object]"``, and ``str(True)`` is ``"True"``
+    where ``String(true)`` is ``"true"``. Reading the whole class as empty makes
+    both sides agree by construction instead of per type.
+    """
+    name = folder.get("name")
+    text = name if isinstance(name, str) else ""
+    return text.translate(_ASCII_FOLD).encode("utf-16-be", "surrogatepass")
+
+
+def _chat_folder_siblings(folders: list[dict], parent_id: str) -> list[dict]:
+    """Direct children of ``parent_id``, in the order the sidebar renders them.
+
+    The comparator mirrors the sidebar's own (``folderTree.bySidebarOrder`` sorts
+    each parent's children by ``order`` then name), because a caller saying "put
+    this after that" means after what the PERSON SEES. Sorting by ``order`` alone
+    would disagree with the rendered list wherever two siblings share a number,
+    which the store permits.
+
+    The name key is ``_chat_folder_name_key``, which folds ``A``-``Z`` and compares
+    the UTF-16 encoding, so ``Apple`` sorts between ``alpha`` and ``apricot``.
+    Nothing outside that range folds: a wider fold would read each runtime's own
+    Unicode tables, and the sidebar's runtime is not this one — see that function
+    for which mappings are left alone and why.
+    """
+    kids = [f for f in folders if f.get("id") and str(f.get("parent_id") or "") == parent_id]
+    return sorted(kids, key=lambda f: (_chat_folder_order(f), _chat_folder_name_key(f)))
+
+
+# ``ChatSidebar``'s ``renderFolderBlock`` returns nothing for ``depth > 10``, so a
+# row nested deeper is not drawn. The store caps folder COUNT but not nesting, so
+# such a tree is legal rather than corrupt. Only the reported DEPTH is clamped
+# here, never the row: this listing is an agent's one view of the tree and it
+# carries each folder's live sessions, so dropping a folder would hide those
+# sessions to buy indentation parity on a row nobody can see anyway.
+_SIDEBAR_MAX_DRAWN_DEPTH = 10
+
+
+def _chat_folder_render_order(folders: list[dict]) -> list[tuple[str, int]]:
+    """``(folder_id, depth)`` in sidebar render order — pre-order, siblings by order.
+
+    Depth-first from the top level, so a child always follows its parent, which
+    is the shape the sidebar draws. Two defences the sidebar also carries: a row
+    whose ``parent_id`` names a folder absent from this list renders at the top
+    level rather than being dropped, and a parent cycle can neither loop the walk
+    nor swallow the folders caught in it (those are appended at the end).
+
+    Depth is clamped to ``_SIDEBAR_MAX_DRAWN_DEPTH`` so the indentation cannot claim
+    a level the sidebar does not draw. Every row is still listed at that depth: an
+    anchor beside a row the person cannot see writes an ``order`` nobody reads,
+    which is a smaller cost than hiding the folder and the live sessions filed in
+    it from the only tree view an agent gets.
+    """
+    known = {str(f.get("id") or "") for f in folders if f.get("id")}
+    by_parent: dict[str, list[dict]] = {}
+    for folder in folders:
+        if not folder.get("id"):
+            continue
+        parent = str(folder.get("parent_id") or "")
+        by_parent.setdefault(parent if parent in known else "", []).append(folder)
+    for kids in by_parent.values():
+        kids.sort(key=lambda f: (_chat_folder_order(f), _chat_folder_name_key(f)))
+
+    out: list[tuple[str, int]] = []
+    seen: set[str] = set()
+    # Iterative walk: the store caps folder COUNT but not nesting depth, and a
+    # recursive descent would answer a deep chain with a RecursionError.
+    stack: list[tuple[str, int]] = [
+        (str(f.get("id") or ""), 0) for f in reversed(by_parent.get("", []))
+    ]
+    while stack:
+        fid, depth = stack.pop()
+        if not fid or fid in seen:
+            continue
+        seen.add(fid)
+        out.append((fid, min(depth, _SIDEBAR_MAX_DRAWN_DEPTH)))
+        stack.extend((str(f.get("id") or ""), depth + 1) for f in reversed(by_parent.get(fid, [])))
+    for folder in folders:
+        fid = str(folder.get("id") or "")
+        if fid and fid not in seen:
+            seen.add(fid)
+            out.append((fid, 0))
+    return out
+
+
+def _free_slot_order(siblings: list[dict], index: int) -> int | None:
+    """An unused ``order`` that lands a folder at ``index``, or ``None`` if none fits.
+
+    Positioning a folder means writing several rows when the siblings have to be
+    renumbered, and several writes cannot be made atomic from here — so the cheap
+    case is worth taking whenever the store already has room: before the first
+    sibling, after the last, or in a gap between two adjacent ones. Then the whole
+    reposition is ONE write and cannot land half-applied.
+
+    ``siblings`` is the destination's children WITHOUT the folder being placed, in
+    render order. ``None`` means the neighbours are adjacent integers, which is
+    what a sidebar drag leaves behind, and the caller must renumber instead.
+
+    An edge slot at ``±_CHAT_FOLDER_ORDER_LIMIT`` is also not free. The neighbour's
+    order is read back through the same clamp, so a value one past the bound
+    returns as the bound itself — equal to the anchor rather than outside it, which
+    hands the pair to the name tie-break and can place the folder on the wrong
+    side. There is no representable slot there, so the caller renumbers.
+    """
+    if not siblings:
+        return 0
+    if index <= 0:
+        first = _chat_folder_order(siblings[0])
+        return None if first <= -_CHAT_FOLDER_ORDER_LIMIT else first - 1
+    if index >= len(siblings):
+        last = _chat_folder_order(siblings[-1])
+        return None if last >= _CHAT_FOLDER_ORDER_LIMIT else last + 1
+    low = _chat_folder_order(siblings[index - 1])
+    high = _chat_folder_order(siblings[index])
+    # Equal or inverted neighbours leave no room either: the pair is already
+    # separated only by the name tie-break, which no order value can get between.
+    if high - low >= 2:
+        return low + (high - low) // 2
+    return None
+
+
 def _ambiguous_segment_error(seg: str, matches: list[dict]) -> str:
     """Refusal naming the duplicate folders, so the caller can pick one by id."""
     ids = ", ".join(str(m.get("id") or "?") for m in matches)
@@ -689,6 +1079,65 @@ def _resolve_chat_slot_key(ref: str, slots: list[dict]) -> tuple[str, str | None
     )
 
 
+def _resolve_chat_tag_ids(refs: list[str], tags: list[dict]) -> tuple[list[str], str | None]:
+    """Resolve tag references (ids or exact names) to tag ids, in call order.
+
+    Tag ids are minted as ``uuid.uuid4().hex[:12]`` (``chat_tags.create_tag_definition``).
+    A reference is a tag id or a tag's exact name, matched case-insensitively
+    and never as a substring — so a partial or unknown name fails loudly naming
+    the vocabulary instead of tagging with the wrong label. Ids win over names
+    when a tag is NAMED like another's id, since the id is the unambiguous form.
+    Duplicates collapse; an unknown reference fails the whole call, so a delta
+    is applied whole or not at all.
+    """
+    by_id = {str(t["id"]): t for t in tags if isinstance(t.get("id"), str) and t["id"]}
+    by_name: dict[str, list[str]] = {}
+    for t in tags:
+        nm = str(t.get("name") or "").strip().lower()
+        if nm and isinstance(t.get("id"), str) and t["id"]:
+            by_name.setdefault(nm, []).append(str(t["id"]))
+    out: list[str] = []
+    for raw in refs:
+        ref = str(raw or "").strip()
+        if not ref:
+            continue
+        tid = ""
+        if ref in by_id:
+            tid = ref
+        else:
+            named = by_name.get(ref.lower(), [])
+            if len(named) > 1:
+                return [], (
+                    f"{len(named)} tags share the name {redact(ref)} "
+                    f"({', '.join(named)}) — pass the tag id instead"
+                )
+            if named:
+                tid = named[0]
+        if not tid:
+            return [], (
+                f"no tag matches {redact(ref)} — call chat_tag_list for the vocabulary, "
+                "or chat_tag_create to add it"
+            )
+        if tid not in out:
+            out.append(tid)
+    return out, None
+
+
+def _render_chat_tags(tags: list[dict]) -> str:
+    """One line per tag: id, name, color, and the status marker."""
+    if not tags:
+        return "No tags defined yet — chat_tag_create makes one."
+    lines = [f"\U0001f3f7\ufe0f Tag vocabulary — {len(tags)} tag{'' if len(tags) == 1 else 's'}"]
+    # Same coercion as folder rows: ``tags.json`` is loaded verbatim, so a
+    # hand-edited ``order`` must sort as 0 rather than end the tool call.
+    for t in sorted(tags, key=_chat_folder_order):
+        marker = "  [status]" if t.get("status") else ""
+        lines.append(
+            f"- `{t.get('name', '?')}`  id={t.get('id', '?')}  color={t.get('color', '?')}{marker}"
+        )
+    return "\n".join(lines)
+
+
 def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
     """Validate tool arguments against schema. Returns cleaned args."""
     schema = MCP_DASHBOARD_SCHEMAS.get(name)
@@ -771,6 +1220,63 @@ def _caller_app_scope(caller_key: str, rows: list[dict]) -> str | None:
     return ""
 
 
+def _own_chat_slot(caller_key: str, rows: list[dict]) -> tuple[dict, str | None]:
+    """The caller's OWN sidebar slot row, or why it has none to file.
+
+    Resolved from the VERIFIED caller key only, never from an argument: this is
+    what lets ``chat_folder_file_self`` be granted to an unattended conductor
+    where ``chat_folder_move_session`` is withheld — the one placement it can
+    write is its own.
+
+    Only a ``dashboard:<slot>`` key qualifies, and it must name a row that is
+    present. That key IS the slot: the slot key never changes for the life of
+    the tab, so the row this resolves and the row the PATCH lands on are the
+    same object (the endpoint re-checks identity under its lock). A slot bound
+    to a channel or a schedule presents its ``linked_session_key`` instead, and
+    that binding is REBOUND on live slots with no running gate — so a key that
+    matched one slot at this read could name a different conversation by the
+    time the write arrives. Filing on that match would file someone else's
+    session; those callers are refused rather than raced.
+
+    Two more refusals, both for what the placement would mean. A private
+    (incognito / temporary) session is kept out of the sidebar record by the
+    person's choice, and a folder placement is durable sidebar metadata. A crew
+    member's pinned DM thread (``mode == "member"``) is one thread that spans
+    every goal the member ever runs and lives on the Crew page, not in the
+    sidebar tree — so a conductor running AS a member does not file itself; its
+    workers still go under ``<goal>/<agent>`` via ``session_create``.
+    """
+    if not caller_key.startswith("dashboard:"):
+        return {}, (
+            "Error: this session has no sidebar slot to file — only a dashboard "
+            "chat session can be placed in a folder."
+        )
+    slot_key = caller_key.split(":", 1)[1]
+    row: dict | None = None
+    for r in rows:
+        if str(r.get("key") or "") == slot_key:
+            row = r
+            break
+    if row is None:
+        return {}, (
+            "Error: this session has no sidebar slot to file — only a dashboard "
+            "chat session can be placed in a folder."
+        )
+    if str(row.get("mode") or "") == "member":
+        return {}, (
+            "Error: a crew member's pinned DM thread lives on the Crew page and is "
+            "not filed in a sidebar folder — it spans every goal the member runs. "
+            "Skip filing yourself; create your workers with "
+            "session_create's `folder` set to `<goal>/<agent>` instead."
+        )
+    if str(row.get("memory_mode") or "persistent") != "persistent":
+        return {}, (
+            "Error: a private (incognito or temporary) session is kept out of the "
+            "sidebar record and cannot be filed."
+        )
+    return row, None
+
+
 def _visible_chat_slots() -> tuple[list[dict], str | None]:
     """The live sessions these tools may see, private and foreign ones removed.
 
@@ -813,8 +1319,8 @@ def _visible_chat_slots() -> tuple[list[dict], str | None]:
     return [r for r in live if str(r.get("app") or "") == scope], None
 
 
-def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
-    """``(verified_caller_key, error)`` — the key to WRITE under, or why not.
+def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str, str | None]:
+    """``(verified_caller_key, caller_app, error)`` — how to WRITE, or why not.
 
     Folders now carry an owner (``chat_folders._folder_owner_app``), so an app
     HAS a folder of its own to write to and the endpoint bounds each write to
@@ -823,7 +1329,7 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
     authority over everything, and an app keeps read of the whole tree plus
     filing its OWN sessions into any folder.
 
-    So this layer no longer decides the policy — it would be a second copy of a
+    So this layer does not decide the policy — that would be a second copy of a
     rule the endpoint enforces under the store lock, and only the endpoint can
     see the authoritative tree. What stays here is the one question the endpoint
     cannot answer: whether the caller can be placed at all. An unverifiable or
@@ -837,6 +1343,12 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
     app-owned session the walk landing on an ancestor makes the write arrive at
     the endpoint looking like the unconfined person. Every caller of this gate
     must pass what it returns straight to the write.
+
+    ``caller_app`` (``""`` for the person) comes back for the same reason: it is
+    the identity the endpoint will judge each write against, and a caller that
+    must issue SEVERAL writes to keep one call atomic can only check them all up
+    front by holding it. Re-deriving it would mean a second ``/api/chat/slots``
+    fetch, against a roster that may have changed.
     """
     caller_key, strict_err = require_strict_session_key(
         f"Error: cannot verify which session is calling, so {verb} is "
@@ -845,16 +1357,20 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
         server=SERVER_NAME,
     )
     if not caller_key:
-        return "", strict_err
+        return "", "", strict_err
     rows, err = _get_rows("/api/chat/slots")
     if err:
-        return "", f"Error: {err}"
+        return "", "", f"Error: {err}"
     scope = _caller_app_scope(caller_key, rows)
     if scope is None:
-        return "", (
-            f"Error: cannot establish what this caller is allowed to change, so "
-            f"{verb} is refused — a subagent or a scheduled job runs on behalf of "
-            "whatever created it and cannot be granted more than that."
+        return (
+            "",
+            "",
+            (
+                f"Error: cannot establish what this caller is allowed to change, so "
+                f"{verb} is refused — a subagent or a scheduled job runs on behalf of "
+                "whatever created it and cannot be granted more than that."
+            ),
         )
     if scope and not caller_key.startswith("dashboard:"):
         # An app-owned LINKED session -- a channel- or cron-bound slot runs its
@@ -871,13 +1387,17 @@ def _refuse_tree_shaping_if_unverifiable(verb: str) -> tuple[str, str | None]:
         # closed" from "no app owns this caller", and would read the second and
         # apply the person's authority. THIS layer can tell, because it resolved
         # the scope positively a moment ago, so the refusal belongs here.
-        return "", (
-            f"Error: {verb} is refused for a channel- or schedule-bound session "
-            "owned by an app — its identity cannot be re-verified at the point of "
-            "the write, so the folder rules could not be bounded to it. Run this "
-            "from the app's own dashboard session."
+        return (
+            "",
+            "",
+            (
+                f"Error: {verb} is refused for a channel- or schedule-bound session "
+                "owned by an app — its identity cannot be re-verified at the point of "
+                "the write, so the folder rules could not be bounded to it. Run this "
+                "from the app's own dashboard session."
+            ),
         )
-    return caller_key, None
+    return caller_key, scope, None
 
 
 def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
@@ -917,10 +1437,10 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             # are CREATED — and creating folders is tree shaping, so the same
             # gate applies rather than a second authorization path: a caller
             # that could not reshape the tree by creating a folder must not
-            # reach the same write by naming the path here (#6118). The gate's
+            # reach the same write by naming the path here. The gate's
             # verified key is what the segment creation writes under, per its
             # own contract.
-            gate_key, gate = _refuse_tree_shaping_if_unverifiable(
+            gate_key, _gate_app, gate = _refuse_tree_shaping_if_unverifiable(
                 "filing a new session at creation"
             )
             if gate:
@@ -987,8 +1507,8 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
         if info:
             # Two different facts share this reply and must not read alike. A
             # target that was never running has nothing to stop; one whose
-            # cooperative cancel is still in flight IS stopping, and after #5074 a
-            # re-sent stop lands there routinely — telling that caller "nothing to
+            # cooperative cancel is still in flight IS stopping, and a re-sent
+            # stop lands there routinely — telling that caller "nothing to
             # stop" would report the opposite of what happened and invite it to
             # act as though the target were still free-running.
             if resp.get("already_stopping"):
@@ -1120,9 +1640,12 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             f"{'' if len(chat_folders) == 1 else 's'}, {len(chat_slots)} live session"
             f"{'' if len(chat_slots) == 1 else 's'}:"
         ]
-        for fid, fpath in sorted(tree_paths.items(), key=lambda kv: kv[1].lower()):
+        # Sidebar ORDER, not alphabetical. This tool is how an agent reads the
+        # tree before repositioning a folder, so listing it by path would show a
+        # sequence the person never sees and make `before`/`after` a guess.
+        for fid, depth in _chat_folder_render_order(chat_folders):
+            fpath = tree_paths.get(fid, "?")
             row = next((f for f in chat_folders if str(f.get("id")) == fid), {})
-            depth = fpath.count("/")
             meta_bits = []
             if row.get("project_dir"):
                 meta_bits.append(f"project={row['project_dir']}")
@@ -1152,7 +1675,7 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "chat_folder_create":
         args = validate_tool_args(args, CHAT_FOLDER_CREATE_SCHEMA)
-        caller_key, gate = _refuse_tree_shaping_if_unverifiable("creating a folder")
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("creating a folder")
         if gate:
             return gate
         # A '/' in a NAME is what makes a rendered path ambiguous (a folder named
@@ -1210,9 +1733,13 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "chat_folder_move":
         args = validate_tool_args(args, CHAT_FOLDER_MOVE_SCHEMA)
-        caller_key, gate = _refuse_tree_shaping_if_unverifiable("moving a folder")
+        caller_key, caller_app, gate = _refuse_tree_shaping_if_unverifiable("moving a folder")
         if gate:
             return gate
+        before_ref = str(args.get("before") or "").strip()
+        after_ref = str(args.get("after") or "").strip()
+        if before_ref and after_ref:
+            return "Error: pass `before` or `after`, not both — one anchor names one position."
         chat_folders, folders_err = _get_rows("/api/chat/folders")
         if folders_err:
             return f"Error: {folders_err}"
@@ -1221,21 +1748,234 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return f"Error: {fld_err}"
         if not fld_id:
             return "Error: 'root' is not a folder — name the folder to move."
-        dest_id, dest_err = _resolve_chat_folder_id(args.get("new_parent") or "", chat_folders)
-        if dest_err:
-            return f"Error: {dest_err}"
-        d = _patch(
-            f"/api/chat/folders/{fld_id}",
-            {"parent_id": dest_id},
-            session_key=caller_key,
+        anchor_ref = before_ref or after_ref
+        anchor_id = ""
+        if anchor_ref:
+            anchor_id, anchor_err = _resolve_chat_folder_id(anchor_ref, chat_folders)
+            if anchor_err:
+                return f"Error: {anchor_err}"
+            if not anchor_id:
+                return (
+                    "Error: 'root' is not a folder — `before`/`after` names a "
+                    "SIBLING folder to sit next to."
+                )
+            if anchor_id == fld_id:
+                return "Error: a folder cannot be positioned relative to itself."
+        anchor_row = next((f for f in chat_folders if str(f.get("id")) == anchor_id), {})
+        anchor_parent = str(anchor_row.get("parent_id") or "")
+        current_parent = str(
+            next((f for f in chat_folders if str(f.get("id")) == fld_id), {}).get("parent_id") or ""
         )
-        if d.get("error"):
-            # The endpoint owns the cycle guard (a folder cannot move into its
-            # own descendant) — surface its verdict rather than re-deriving it.
-            return f"Error: {d['error']}"
+        if anchor_id and "new_parent" not in args:
+            # An anchor already fixes the sibling set, so "put X after Y" needs no
+            # second reference to the parent Y names — and demanding one would make
+            # repositioning INSIDE a folder impossible to express, since an omitted
+            # ``new_parent`` means the top level.
+            dest_id = anchor_parent
+        else:
+            dest_id, dest_err = _resolve_chat_folder_id(args.get("new_parent") or "", chat_folders)
+            if dest_err:
+                return f"Error: {dest_err}"
+            if anchor_id and anchor_parent != dest_id:
+                return (
+                    "Error: the anchor is not in the destination — `before`/`after` "
+                    "names a SIBLING, so it must already sit directly under "
+                    "`new_parent`. Omit `new_parent` to let the anchor choose the "
+                    "parent."
+                )
+
+        # Placing a folder is ONE write whenever the store already has a free
+        # integer slot at that position — before the first sibling, after the last,
+        # or in a gap. Only when the two neighbours are adjacent integers, which is
+        # what a sidebar drag leaves behind, do the siblings have to be renumbered;
+        # that renumber is contiguous 0..n-1, the same shape a drag writes, so the
+        # two paths leave one convention rather than two.
+        #
+        # The distinction is worth the branch because several writes cannot be made
+        # atomic from here: the endpoint takes one row at a time. The one-write case
+        # therefore cannot land half-applied at all, and the renumber is reserved
+        # for the positions that genuinely need it.
+        order_writes: list[tuple[str, int]] = []
+        if anchor_id:
+            siblings = [
+                f
+                for f in _chat_folder_siblings(chat_folders, dest_id)
+                if str(f.get("id")) != fld_id
+            ]
+            slot = next((i for i, f in enumerate(siblings) if str(f.get("id")) == anchor_id), -1)
+            if slot < 0:
+                return "Error: the anchor folder is no longer where it was — re-read the tree."
+            moving = next(f for f in chat_folders if str(f.get("id")) == fld_id)
+            index = slot if before_ref else slot + 1
+            free = _free_slot_order(siblings, index)
+            if free is not None:
+                # Skip a write that would store the value the row already carries.
+                order_writes = [] if _chat_folder_order(moving) == free else [(fld_id, free)]
+            else:
+                placed = siblings[:index] + [moving] + siblings[index:]
+                order_writes = [
+                    (str(f.get("id")), i)
+                    for i, f in enumerate(placed)
+                    if _chat_folder_order(f) != i
+                ]
+            # The moved folder itself must be owned -- the ONE ownership clause the
+            # write paths cannot re-derive, so it stays in the tool. Positioning is
+            # RELATIVE: renumbering the app's OWN siblings around a folder changes
+            # where that folder renders WITHOUT writing to it (when its own order is
+            # unchanged, `own_pos` is None and no PATCH names it). A caller could
+            # then reposition a folder it does not own by writing only rows it does,
+            # and every write the reorder endpoint sees would be legitimately owned,
+            # leaving nothing for it to refuse. The sibling-row and subtree clauses
+            # of the old predicate genuinely moved to the write paths (the reorder
+            # endpoint re-authorizes each row AND its subtree under the lock); only
+            # this moved-folder clause has no write to hang off, so it is checked
+            # here, before any write, exactly as the base did. A plain reparent is
+            # not gated here because it always writes to the moved folder, so the
+            # PATCH endpoint's own ownership check refuses it.
+            if caller_app:
+                moving_owner = _folder_owner_app(
+                    next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
+                )
+                if moving_owner != caller_app:
+                    return (
+                        "Error: this app does not own the folder it is positioning, "
+                        "so the position is refused. An app may reorder only its own "
+                        "folders; ask the person to set the order of theirs."
+                    )
+                # And its SUBTREE, but ONLY when no write names the moved folder.
+                # Positioning takes the descendants with it, so an app repositioning
+                # a folder it owns whose subtree holds the person's relocates theirs.
+                # When a write DOES name the moved folder (a free-slot order PATCH, or
+                # a reparent), the endpoint's own subtree guard fires on that write --
+                # so the tool must not pre-empt it there. The uncovered case is the
+                # relative renumber: the moved folder's own order is unchanged, so no
+                # write names it, and neither write path sees a row to refuse. That is
+                # the one the tool must catch, exactly as the base's moved-folder
+                # subtree clause did.
+                moved_is_written = any(sid == fld_id for sid, _pos in order_writes)
+                if not moved_is_written and _subtree_holds_foreign_folder(
+                    chat_folders, root_id=fld_id, request_app=caller_app
+                ):
+                    return (
+                        "Error: this folder contains folders this app does not own, "
+                        "and positioning it moves everything inside it, so the "
+                        "position is refused. Ask the person to set the order."
+                    )
+
+        # The moved folder's own position rides along with the reparent: one write
+        # for the row this call is about, so the common case stays a single request.
+        #
+        # ``parent_id`` is omitted when the parent is NOT changing. The endpoint
+        # treats its presence as a reparent and applies the reparent-only rule that
+        # a subtree holding a folder the caller does not own cannot be moved — so
+        # sending the current parent back would make an app's pure reposition fail
+        # on a guard about a move that is not happening.
+        move_body: dict[str, Any] = {}
+        if current_parent != dest_id:
+            move_body["parent_id"] = dest_id
+        own_pos = next((pos for fid, pos in order_writes if fid == fld_id), None)
+        # A renumber writes several sibling rows, and those cannot be made atomic
+        # one PATCH at a time: a refusal partway would leave the person's sidebar
+        # in an order nobody chose. So the moved folder's own position folds into
+        # the reparent PATCH ONLY when it is the single row to write (a free slot
+        # existed); when siblings must be renumbered too, the whole set -- moved
+        # folder included -- goes through the atomic reorder endpoint below, and
+        # the reparent PATCH carries parent_id alone.
+        sibling_writes = [(sid, pos) for sid, pos in order_writes if sid != fld_id]
+        if own_pos is not None and not sibling_writes:
+            move_body["order"] = own_pos
+        # A renumber goes through the atomic reorder endpoint, which refuses the
+        # whole batch if any named row (or its subtree) is not the app's and leaves
+        # the stored order untouched -- so a same-parent reposition needs no
+        # tool-layer pre-check: the endpoint's atomic refusal is complete and no
+        # write can strand.
+        #
+        # The one case that IS exposed is a cross-parent move whose renumber also
+        # needs the reorder: the reparent PATCH commits first (parent_id below),
+        # THEN the reorder can reject, leaving the folder reparented but
+        # unpositioned. For that case only, preflight the endpoint's own per-row
+        # predicate over the whole batch before the reparent commits, so a batch
+        # that would be refused writes nothing at all. This adds no refusal a
+        # legitimate call would not already hit at the endpoint; it only moves the
+        # already-certain refusal ahead of the reparent. Reproduces the reorder
+        # endpoint's check (`chat_folders.api_chat_folder_reorder._apply`): row
+        # owned by the app AND its subtree holds no foreign folder.
+        if caller_app and sibling_writes and "parent_id" in move_body:
+            for sid, _pos in order_writes:
+                row = next((f for f in chat_folders if str(f.get("id")) == sid), {})
+                if _folder_owner_app(row) != caller_app:
+                    return (
+                        "Error: this move would renumber a folder this app does not "
+                        "own, so it is refused before anything is moved. An app may "
+                        "reorder only its own folders; ask the person to set the "
+                        "order of theirs."
+                    )
+                if _subtree_holds_foreign_folder(chat_folders, root_id=sid, request_app=caller_app):
+                    return (
+                        "Error: this move would reposition a folder whose subtree "
+                        "holds folders this app does not own, so it is refused "
+                        "before anything is moved. Ask the person to reorder theirs."
+                    )
+        if move_body:
+            d = _patch(f"/api/chat/folders/{fld_id}", move_body, session_key=caller_key)
+            if d.get("error"):
+                # The endpoint owns the cycle guard (a folder cannot move into its
+                # own descendant) — surface its verdict rather than re-deriving it.
+                return f"Error: {d['error']}"
+        else:
+            # Nothing to write for this row: it is already in the destination and
+            # already holds the position asked for.
+            d = next((f for f in chat_folders if str(f.get("id")) == fld_id), {})
         moved: list[dict] = [f for f in chat_folders if str(f.get("id")) != fld_id]
         moved.append({**d, "id": fld_id})
         dest_path = _chat_folder_paths(moved).get(fld_id) or "(top level)"
+        if sibling_writes:
+            # The renumber, in ONE atomic request. The endpoint applies the whole
+            # list under the folder-store lock, all-or-none, re-validating this
+            # app's ownership of EVERY row inside that lock the way a single PATCH
+            # does -- so ownership lives with the lock-holder rather than a
+            # tool-layer pre-check here, and a refusal leaves the stored order
+            # untouched instead of half-applied. The moved folder's own order
+            # joins the batch here (it is not folded into the reparent PATCH
+            # above), so its position relative to the renumbered siblings lands
+            # in the same transaction.
+            reorder_body = [{"id": sid, "order": pos} for sid, pos in order_writes]
+            shifted = _post(
+                "/api/chat/folders/reorder",
+                {"orders": reorder_body},
+                session_key=caller_key,
+            )
+            if shifted.get("error"):
+                # The reparent (if any) landed and is not in doubt; the ordering
+                # did not -- and, being atomic, left the stored order untouched
+                # rather than partway. Say which half held so the caller can
+                # re-run to finish, matching the success wording's move/reposition
+                # split.
+                landed = (
+                    f"Repositioned folder (id={fld_id})"
+                    if current_parent == dest_id
+                    else f"Moved folder (id={fld_id}) to `{dest_path}`"
+                )
+                return redact(
+                    f"{landed}, but ordering was refused: {shifted['error']}. "
+                    "The stored order is unchanged. Re-run the same call to finish "
+                    "positioning it."
+                )
+        if anchor_id:
+            side = "before" if before_ref else "after"
+            anchor_path = _chat_folder_paths(chat_folders).get(anchor_id) or anchor_id
+            if current_parent == dest_id:
+                # Nothing moved, so saying "moved to <the folder's own path>" would
+                # describe a reparent that did not happen. Name what changed.
+                parent_label = _chat_folder_paths(chat_folders).get(dest_id) or "(top level)"
+                return redact(
+                    f"Repositioned folder (id={fld_id}) {side} `{anchor_path}` "
+                    f"in `{parent_label}`."
+                )
+            return redact(
+                f"Moved folder (id={fld_id}) to `{dest_path}`, positioned {side} "
+                f"`{anchor_path}`."
+            )
         return redact(f"Moved folder (id={fld_id}) to `{dest_path}`.")
 
     if name == "chat_folder_move_session":
@@ -1284,6 +2024,254 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
             return redact(f"Unfiled session `{slot_key}` to the top level.")
         folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
         return redact(f"Moved session `{slot_key}` into `{folder_label}` (id={fld_id}).")
+    if name == "chat_folder_file_self":
+        args = validate_tool_args(args, CHAT_FOLDER_FILE_SELF_SCHEMA)
+        # The destination may not exist yet (mkdir -p, like session_create's
+        # ``folder``), and creating folders is tree shaping — so the same gate,
+        # not a second authorization path. Its verified key is what every write
+        # below carries, per the gate's own contract.
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("filing this session")
+        if gate:
+            return gate
+        rows, rows_err = _get_rows("/api/chat/slots")
+        if rows_err:
+            return redact(f"Error: {rows_err}")
+        own_slot, own_err = _own_chat_slot(caller_key, rows)
+        if own_err:
+            return own_err
+        own_key = str(own_slot.get("key") or "")
+        # The row's ``created`` is the slot's birth stamp, minted once per slot
+        # object. It rides along on the PATCH as a generation token so the
+        # endpoint refuses (409 ``session_gone``) if this tab closed and its key
+        # was recreated for another conversation between this read and the
+        # write — the recreated slot shares the ``dashboard:<key>`` transcript
+        # key, so the history pin alone would let that write through.
+        own_created = str(own_slot.get("created") or "")
+        chat_folders, folders_err = _get_rows("/api/chat/folders")
+        if folders_err:
+            return redact(f"Error: {folders_err}")
+        folder_ref = str(args.get("folder") or "")
+        made_note = ""
+        fld_id = ""
+        if folder_ref and folder_ref != "root":
+            fld_id, created_segments, fld_err = _ensure_chat_folder_path(
+                folder_ref, chat_folders, session_key=caller_key
+            )
+            if created_segments:
+                made_note = f" (created folder path: {'/'.join(created_segments)})"
+            if fld_err:
+                # Segments the walk already created persist and are reported —
+                # the same partial-report posture chat_folder_create and
+                # session_create take, since folder deletion is deliberately not
+                # a capability this server has.
+                return redact(f"Error: {fld_err}{made_note}")
+        # The target is the CALLER's own slot, resolved above from the verified
+        # key — never from an argument — which is what makes this verb safe to
+        # grant where chat_folder_move_session is withheld: it can write no
+        # placement but its own. ``expected_created`` pins the write to the
+        # slot generation resolved above; the endpoint checks it under its lock.
+        patch_body: dict[str, str] = {"folder_id": fld_id}
+        if own_created:
+            patch_body["expected_created"] = own_created
+        d = _patch(
+            f"/api/chat/slots/{quote(own_key, safe='')}/folder",
+            patch_body,
+            session_key=caller_key,
+        )
+        if d.get("error"):
+            return redact(f"Error: {d['error']}{made_note}")
+        if not fld_id:
+            return redact(f"Unfiled this session (`{own_key}`) to the top level.{made_note}")
+        folder_label = _chat_folder_paths(chat_folders).get(fld_id, fld_id)
+        return redact(
+            f"Filed this session (`{own_key}`) in `{folder_label}` (id={fld_id}).{made_note}"
+        )
+    if name == "chat_tag_list":
+        validate_tool_args(args, CHAT_TAG_LIST_SCHEMA)
+        # The vocabulary is one shared list of labels with no per-session or
+        # per-app content in it — nothing here names a session — so it needs no
+        # caller scoping, unlike the slot list every other read here goes through.
+        tags, tags_err = _get_rows("/api/chat/tags")
+        if tags_err:
+            return f"Error: {tags_err}"
+        return redact(_render_chat_tags(tags))
+    if name == "chat_tag_create":
+        args = validate_tool_args(args, CHAT_TAG_CREATE_SCHEMA)
+        # Same gate as the folder writes: it settles whether the caller can be
+        # placed at all and returns the verified key the write must carry. The
+        # app rule itself — an app-scoped caller may not coin a shared tag —
+        # lives in the endpoint (``api_chat_tag_create``), which judges every
+        # transport on the middleware's validated claim; restating it here
+        # would be a second copy that can only drift.
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("creating a tag")
+        if gate:
+            return gate
+        # Agent-authored name landing in durable, re-rendered state — redact
+        # before the write, like folder names. The endpoint stores ``name[:60]``,
+        # and redaction can lengthen a string (a credential becomes a marker), so
+        # the length is checked on what would be stored: a truncated name is one
+        # no later chat_tag_assign name lookup can match.
+        safe_name = redact(str(args["name"])).strip()
+        if not safe_name:
+            return "Error: tag name must not be empty"
+        if len(safe_name) > _MAX_TAG_NAME:
+            return (
+                f"Error: tag name too long after redaction ({len(safe_name)} chars): "
+                f"`{safe_name[:40]}…` — keep it to {_MAX_TAG_NAME} characters or fewer"
+            )
+        tag_body: dict[str, Any] = {"name": safe_name, "status": bool(args.get("status", False))}
+        if args.get("color"):
+            tag_body["color"] = str(args["color"])
+        # The verified key is passed through unchanged, per the gate's contract.
+        d = _post("/api/chat/tags", tag_body, session_key=caller_key)
+        if d.get("error"):
+            if d.get("code") == "app_forbidden":
+                return (
+                    "Error: an app-owned session cannot create a tag — tags are one "
+                    "shared vocabulary with no per-app owner. Use the tags that already "
+                    "exist (chat_tag_list)."
+                )
+            return redact(f"Error: {d['error']}")
+        tid = str(d.get("id") or "?")
+        got_name = str(d.get("name") or safe_name)
+        marker = " (status tag)" if d.get("status") else ""
+        if got_name.lower() != safe_name.lower():
+            # Cannot happen through the endpoint's own dedup (it matches on the
+            # lowered name), but the response is the record: report what exists.
+            return redact(f"Tag `{got_name}` (id={tid}){marker} already covers `{safe_name}`.")
+        return redact(
+            f"Tag `{got_name}` (id={tid}, color={d.get('color', '?')}){marker} is available."
+        )
+    if name == "chat_tag_update":
+        args = validate_tool_args(args, CHAT_TAG_UPDATE_SCHEMA)
+        changes: dict[str, Any] = {}
+        if args.get("name") is not None:
+            # Agent-authored name landing in durable state — redact before the
+            # write and check the stored length, exactly as chat_tag_create does.
+            safe_name = redact(str(args["name"])).strip()
+            if not safe_name:
+                return "Error: tag name must not be empty"
+            if len(safe_name) > _MAX_TAG_NAME:
+                return (
+                    f"Error: tag name too long after redaction ({len(safe_name)} chars): "
+                    f"`{safe_name[:40]}…` — keep it to {_MAX_TAG_NAME} characters or fewer"
+                )
+            changes["name"] = safe_name
+        if args.get("color"):
+            changes["color"] = str(args["color"])
+        if args.get("status") is not None:
+            changes["status"] = bool(args["status"])
+        if not changes:
+            return "Error: pass at least one of ``name``, ``color`` or ``status``"
+        # Same gate as the other vocabulary write: whether the caller can be
+        # placed at all, and the verified key the write must carry. The app
+        # rule lives in the endpoint.
+        caller_key, _caller_app, gate = _refuse_tree_shaping_if_unverifiable("updating a tag")
+        if gate:
+            return gate
+        tags, tags_err = _get_rows("/api/chat/tags")
+        if tags_err:
+            return f"Error: {tags_err}"
+        ids, ref_err = _resolve_chat_tag_ids([str(args["tag"])], tags)
+        if ref_err:
+            return redact(f"Error: {ref_err}")
+        tid = ids[0]
+        before = next((t for t in tags if str(t.get("id")) == tid), {})
+        d = _patch(f"/api/chat/tags/{quote(tid, safe='')}", changes, session_key=caller_key)
+        if d.get("error"):
+            if d.get("code") == "app_forbidden":
+                return (
+                    "Error: an app-owned session cannot change a tag — tags are one "
+                    "shared vocabulary with no per-app owner."
+                )
+            return redact(f"Error: {d['error']}")
+        parts = []
+        if "name" in changes:
+            parts.append(
+                f"renamed `{before.get('name', '?')}` → `{d.get('name', changes['name'])}`"
+            )
+        if "color" in changes:
+            parts.append(f"color {before.get('color', '?')} → {d.get('color', changes['color'])}")
+        if "status" in changes:
+            parts.append(f"status tag: {'yes' if d.get('status') else 'no'}")
+        return redact(f"Updated tag `{d.get('name', '?')}` (id={tid}): {'; '.join(parts)}.")
+    if name == "chat_tag_assign":
+        args = validate_tool_args(args, CHAT_TAG_ASSIGN_SCHEMA)
+        add_refs = [str(x) for x in (args.get("add") or [])]
+        remove_refs = [str(x) for x in (args.get("remove") or [])]
+        if not add_refs and not remove_refs:
+            return "Error: pass at least one tag in ``add`` or ``remove``"
+        tags, tags_err = _get_rows("/api/chat/tags")
+        if tags_err:
+            return f"Error: {tags_err}"
+        add_ids, add_err = _resolve_chat_tag_ids(add_refs, tags)
+        if add_err:
+            return redact(f"Error: {add_err}")
+        remove_ids, remove_err = _resolve_chat_tag_ids(remove_refs, tags)
+        if remove_err:
+            return redact(f"Error: {remove_err}")
+        clash = [t for t in add_ids if t in remove_ids]
+        if clash:
+            return f"Error: {', '.join(clash)} named in both ``add`` and ``remove``"
+        chat_slots, slots_err = _visible_chat_slots()
+        if slots_err:
+            return f"Error: {slots_err}"
+        slot_key, slot_err = _resolve_chat_slot_key(args["session"], chat_slots)
+        if slot_err:
+            return redact(f"Error: {slot_err}")
+        slot_row = next((s for s in chat_slots if str(s.get("key") or "") == slot_key), {})
+        current = [str(t) for t in (slot_row.get("tags") or []) if isinstance(t, str)]
+        new_tags = [t for t in current if t not in remove_ids]
+        for tid in add_ids:
+            if tid not in new_tags:
+                new_tags.append(tid)
+        # Like chat_folder_move_session, this writes to a session OTHER than the
+        # caller's, so identity is resolved STRICTLY and the verified key rides
+        # on the write unchanged — see that tool for why the lenient walk is
+        # unsafe here.
+        caller_key, strict_err = require_strict_session_key(
+            "Error: cannot verify which session is calling, so this tag change is "
+            "refused — tagging another session requires a caller identity the "
+            "gateway can vouch for.",
+            server=SERVER_NAME,
+        )
+        if not caller_key:
+            return strict_err
+        names_by_id = {str(t.get("id") or ""): str(t.get("name") or "?") for t in tags}
+        if new_tags == current:
+            shown = ", ".join(f"`{names_by_id.get(t, t)}`" for t in current) or "none"
+            return redact(f"No change: session `{slot_key}` already carries {shown}.")
+        # The revision the list above was composed on. The endpoint applies the
+        # write compare-and-set against it, so a tag the person toggles between
+        # this read and the PUT is not silently dropped by a wholesale replace —
+        # the call fails 409 ``stale_base`` and is retried on the fresh list.
+        put_body: dict[str, Any] = {"tags": new_tags}
+        base_rev = str(slot_row.get("tags_revision") or "")
+        if base_rev:
+            put_body["base_tags_revision"] = base_rev
+        d = _put(
+            f"/api/chat/slots/{quote(slot_key, safe='')}/tags",
+            put_body,
+            session_key=caller_key,
+        )
+        if d.get("error"):
+            if d.get("code") == "stale_base":
+                return redact(
+                    f"Error: the tags on `{slot_key}` changed while this call was "
+                    "composing its delta (someone else toggled a tag). Nothing was "
+                    "written — call chat_tag_assign again; it re-reads the current list."
+                )
+            return redact(f"Error: {d['error']}")
+        final = [str(t) for t in (d.get("tags") or new_tags) if isinstance(t, str)]
+        shown = ", ".join(f"`{names_by_id.get(t, t)}`" for t in final) or "none"
+        added = ", ".join(f"`{names_by_id.get(t, t)}`" for t in add_ids if t not in current)
+        removed = ", ".join(f"`{names_by_id.get(t, t)}`" for t in remove_ids if t in current)
+        parts = []
+        if added:
+            parts.append(f"added {added}")
+        if removed:
+            parts.append(f"removed {removed}")
+        return redact(f"Session `{slot_key}`: {'; '.join(parts)}. Tags now: {shown}.")
     return f"Error: unknown tool '{name}'"
 
 

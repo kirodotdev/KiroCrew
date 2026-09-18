@@ -328,19 +328,28 @@ and `scopes` (see
 [../reference/kiro-cli/mcp/oauth-token-storage.md](../reference/kiro-cli/mcp/oauth-token-storage.md),
 "`.registration.json`").
 
-**Only a public `clientId` is configurable, and there is no confidential-client
-option.** To skip DCR against a provider that pre-registers clients, set
-`clientId` on the entry: Kiro Crew maps it to the wire field `oauth.clientId`
-(`mcp_utils.kiro_oauth_wire_entry`, and `kiro_entry_client_id` reads it in
-either spelling). That is the whole supported OAuth surface alongside `scopes` —
-there is **no `clientSecret` and no `redirectUri`** on an MCP server entry.
-Do not invent them: kiro-cli **ignores unknown keys silently**, so a secret
-written there buys you nothing, does not make a confidential-client flow work,
-and leaves a real credential sitting in plaintext in a file the agent itself can
-read — the same exposure that rules out putting a bearer token in `headers`
-([../architecture/design-notes/mcp-oauth-ownership.md](../architecture/design-notes/mcp-oauth-ownership.md),
-"Path B"). A provider that cannot accept a public PKCE client is not
-configurable here.
+**Three OAuth fields are configurable on a remote entry, and the dashboard API
+exposes only the public one.** To skip DCR against a provider that pre-registers
+clients, set `clientId` on the entry: Kiro Crew maps it to the wire field
+`oauth.clientId` (`mcp_utils.kiro_oauth_wire_entry`, and `kiro_entry_client_id`
+reads it in either spelling). kiro-cli's `oauth` block also accepts
+`clientSecret` — when it is present alongside `clientId`, DCR is skipped and
+the secret is presented at the token endpoint (a **confidential** client) — and
+`redirectUri`, which pins the loopback listener's host (`127.0.0.1` or
+`localhost`), port and path so it matches a redirect URI registered in a vendor
+console. Neither of those two is settable through `POST /api/mcp/custom`, and
+you should not hand-write them into a custom entry either: a secret written
+there sits in plaintext in a file the agent can read, with nothing owning its
+lifecycle. The supported path for a confidential pre-registered client is a
+**Connections registry provider** with `auth.mode: "preregistered"` — the
+operator enters the client under **Settings → OAuth Apps**, the secret goes to
+the encrypted vault, and Kiro Crew writes all three fields into the emitted
+spec itself (see
+[../system-specs/modules/connections.md](../system-specs/modules/connections.md),
+"Pre-registered OAuth clients", and the runbooks under
+[oauth-app-registration/](oauth-app-registration/README.md)). A provider that is
+not in the registry and cannot accept a public PKCE client is not configurable
+here.
 
 ## Tools register only in a fresh session
 

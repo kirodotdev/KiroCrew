@@ -18,7 +18,6 @@ import { setUpdateProgress, sseConnected, sseDisconnected } from '../store/dashb
 
 vi.mock('../pages/ChatPage', () => ({ default: () => <div data-testid="chat-page">ChatPage</div> }))
 vi.mock('../pages/SystemPage', () => ({ default: () => null }))
-vi.mock('../pages/AgentsPage', () => ({ default: () => null }))
 vi.mock('../pages/ProjectsPage', () => ({ default: () => null }))
 vi.mock('../pages/LogsPage', () => ({ default: () => <div data-testid="logs-page">LogsPage</div> }))
 vi.mock('../pages/DeveloperPage', () => ({ default: () => <div data-testid="developer-page">DeveloperPage</div> }))
@@ -299,6 +298,28 @@ describe('App — update progress overlay', () => {
     act(() => { store.dispatch(sseConnected()) })
     expect(screen.queryByTestId('update-reconnecting')).toBeNull()
     expect(screen.getByText('Page will reconnect when ready…')).toBeInTheDocument()
+  })
+
+  it.each(['failed', 'error'] as const)('treats the %s step as terminal', async (step) => {
+    // The apply worker pushes `failed` from its outer handler and `error` from
+    // its per-step handlers (a fast-forward that will not apply, pip refusing
+    // the merged revision). Both must end the overlay with the failure card:
+    // an unrecognised step rendered as a stall until the five-minute stuck
+    // timer, with the spinner still pulsing above the reason.
+    const { store } = await startUpdate()
+    await screen.findByText('Updating Kiro Crew…')
+
+    act(() => { store.dispatch(setUpdateProgress({ step, detail: 'Fast-forward to 9f8202496fcf failed (git merge --ff-only)' })) })
+
+    const card = screen.getByTestId('update-overlay-error')
+    expect(card.textContent).toContain('Fast-forward to 9f8202496fcf failed')
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeInTheDocument()
+    // No step is "active", and the header glyph is the terminal one, not the
+    // in-progress spinner.
+    expect(screen.queryByText('Page will reconnect when ready…')).toBeNull()
+    const icon = screen.getByTestId('update-overlay-step-icon')
+    expect(icon.className).not.toContain('animate-pulse')
+    expect(icon.className).toContain('text-danger')
   })
 
 })

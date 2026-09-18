@@ -34,6 +34,23 @@ on:
         description: "Semver version to stamp (electron package.json + __init__.py)"
         required: true
         type: string
+      soft_fail_arm64:
+        description: >-
+          Mark the Linux arm64 BUILD leg continue-on-error, so a failed arm64
+          build no longer fails this workflow's caller job and skips the x64
+          Linux publishers with it (#2645). Only the arm64 leg, and only the
+          build: `smoke-linux-packages` never carries it, so a package the
+          smoke rejected still holds every Linux publish.
+
+          nightly.yml passes true. Default false, which is what release.yml
+          keeps: its run records the stable promotion candidate, and all three
+          arm64 Linux roles are REQUIRED there
+          (scripts/release_promotion.py), so publishing x64 alone on that lane
+          would change what a promotable release is -- #1030's question, not
+          this input's.
+        required: false
+        default: false
+        type: boolean
   # Manual build-only probe: builds every platform's artifacts from any ref
   # WITHOUT publishing anything (no callers, no S3, no feeds). Used to
   # validate packaging changes (e.g. a new platform lane) before merge.
@@ -52,6 +69,18 @@ on:
           reproduces the overflow (proven: run 30293292843).
         required: true
         type: string
+      soft_fail_arm64:
+        description: >-
+          Mark the Linux arm64 build leg continue-on-error (default false: a
+          probe SHOULD fail loudly -- hard failure is the validation signal).
+          Declared on BOTH triggers because the continue-on-error expression
+          below reads it on both paths; an input a trigger does not declare
+          evaluates to empty, making the key non-boolean, and GitHub then
+          rejects the whole workflow at startup with zero jobs and no log
+          (pinned by test_job_level_inputs_are_declared_on_every_trigger).
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -59,6 +88,28 @@ permissions:
 jobs:
   build-desktop:
     name: Build Desktop (${{ matrix.os }})
+    # `== true` on both halves is load-bearing, not noise: a bare
+    # `inputs.soft_fail_arm64` yields the raw value, which is non-boolean when a
+    # trigger does not declare the input, and GitHub then rejects the whole
+    # workflow at startup -- the run ends in seconds with zero jobs and no log.
+    # Same reason build-windows.yml compares explicitly.
+    #
+    # WHY ONLY THE arm64 LEG, when the aggregate caller result skips a publisher
+    # for any of four reasons. The other three are not this accident:
+    #   - `smoke-linux-packages` failing is a statement about the bytes being
+    #     published, and it must keep holding BOTH Linux arches. It never
+    #     carries continue-on-error, and because it is x64-only by design it
+    #     cannot run without the x64 package -- so an x64 build failure still
+    #     holds arm64, through the gate rather than through the aggregate.
+    #   - the macOS leg failing must keep holding `sign-and-notarize`, which
+    #     reads only this caller's result. Relaxing it would turn that job's
+    #     clean skip into a red artifact download and buy nothing: mac bytes
+    #     cannot be published when the mac build failed.
+    #   - the x64 leg failing already reddens its own publishers loudly through
+    #     the missing artifact, and the smoke above is the stricter gate.
+    # The arm64 leg is the only one whose failure skips publishers that have
+    # every input they need, which is the whole of #2645.
+    continue-on-error: ${{ inputs.soft_fail_arm64 == true && matrix.soft_fail_eligible == true }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -72,6 +123,11 @@ jobs:
             # artifacts on the run page with equal prominence, so the name is
             # the only place to signal that.
             artifact-name: unsigned-build-darwin-universal
+            # Stated on every leg rather than only where it is true: an absent
+            # matrix key evaluates to empty, which reads the same as false and
+            # hides which leg the switch was meant for. `soft_fail_arm64` can
+            # relax exactly the leg that says true here.
+            soft_fail_eligible: false
             # On macOS, `make desktop` builds the universal app by default:
             # universal Electron shell + both per-arch PBS backends in one
             # DMG. The x86_64 backend slice builds and gates under Rosetta 2,
@@ -86,6 +142,10 @@ jobs:
             # validated against.
           - os: ubuntu-22.04
             artifact-name: build-linux-x64
+            # Ineligible: the x64-only smoke below cannot run without this
+            # leg's package, so relaxing it would only move the same hold from
+            # the aggregate result onto the gate.
+            soft_fail_eligible: false
             # 22.04 (not 24.04) on BOTH Linux legs: the AppImage links against
             # the builder's glibc, so the runner's glibc IS the floor for every
             # user. 22.04 ships 2.35, which covers the long-support distros ARM
@@ -93,6 +153,13 @@ jobs:
             # silently exclude them.
           - os: ubuntu-22.04-arm
             artifact-name: build-linux-arm64
+            # The one eligible leg. When a caller passes soft_fail_arm64 and
+            # this leg fails, the x64 publishers run on their own artifact and
+            # the arm64 publishers still go visibly red: they reach
+            # publish-linux.yml and its download finds no build-linux-arm64.
+            # A missing artifact failing that lane loudly is the point --
+            # nothing skips quietly, and no arm64 key or feed is written.
+            soft_fail_eligible: true
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

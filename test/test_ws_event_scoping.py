@@ -692,7 +692,7 @@ def test_app_token_path_allowed_implicit_ws() -> None:
     """``/api/ws`` is implicitly allowed for all app tokens without an explicit
     permissions.api declaration: every app that uses KiroCrewClient needs it to
     connect, and the WS layer filters events per-app via ws_event_scope.py so
-    connecting no longer grants full event stream access. ``/api/status`` is
+    connecting does not grant full event stream access. ``/api/status`` is
     NOT implicitly allowed — it has no equivalent response filter. The
     reconnect poll that uses it is the dashboard SPA
     (``useDashboardHealthProbe``), which runs on a dashboard-user token and
@@ -1401,7 +1401,7 @@ class TestLiveScopeNarrowing:
         from kiro_crew.dashboard.handlers import updates as upd
         from kiro_crew.dashboard.state import DashboardState
 
-        # Declaration set no longer contains `log` (revoked).
+        # Declaration set does not contain `log` (revoked).
         mod._declared_cache["mochi-pet"] = (time.monotonic(), True, _allowed("slots:own"))
         ws = MagicMock()
         store = {
@@ -2201,7 +2201,7 @@ class TestExposeToCacheNeverBlocksTheLoop:
         )
 
     def test_source_guard_connect_refuses_a_disabled_app(self):
-        """The connect read must be USED to refuse, not just to build a snapshot.
+        """The connect read must drive the refusal, not just build a snapshot.
 
         Reading enablement and then ignoring it is the defect this replaced: the
         initial slots push and the log replay both run before any background
@@ -2598,21 +2598,33 @@ class TestUntaggedOriginIsNotUser:
         )
 
     def test_resume_takes_the_persisted_origin_not_the_resumer(self):
-        """The resume endpoint must read metadata BEFORE creating the slot.
+        """The resume endpoint must read metadata BEFORE it creates the slot.
 
-        It used to create the slot from the request identity and read the history
-        metadata a dozen lines later, so resuming a persisted cron conversation
-        from the dashboard produced a USER-tagged slot and `slots:user` handed its
-        replayed content to any app holding that scope.
+        Creating the slot from the request identity and reading the history
+        metadata a dozen lines later relabels a resumed cron conversation as
+        USER, and `slots:user` then hands its replayed content to any app holding
+        that scope. Resume creates its slot by calling
+        ``_materialise_slot_from_history`` (which owns the ``get_or_create_slot``
+        and passes ``origin=str(meta.get("origin", ""))``), so the invariant is
+        that resume reads ``get_metadata`` before that call. Anchoring on the
+        call site rather than the ``origin=`` string keeps this correct now that
+        the creation lives in the shared helper: the persisted-origin declaration
+        is separately pinned by ``test_every_handler_slot_creation_declares_an_origin``.
         """
         import kiro_crew.dashboard.chat_handlers as _ch
 
         src = Path(_ch.__file__).read_text(encoding="utf-8")
-        meta_read = src.index("meta = state.conversation_log.get_metadata(history_key)")
-        resume_create = src.index('origin=str(meta.get("origin", ""))')
+        # Search from the resume handler's definition so the helper (defined
+        # earlier in the file) is not what the indices land on.
+        resume_def = src.index("async def api_chat_slot_resume(")
+        meta_read = src.index(
+            "meta = state.conversation_log.get_metadata(history_key)", resume_def
+        )
+        resume_create = src.index("_materialise_slot_from_history(", resume_def)
         assert meta_read < resume_create, (
-            "the resume path must read the persisted metadata before it creates "
-            "the slot, or the origin it passes cannot come from that metadata"
+            "the resume path must read the persisted metadata before it calls "
+            "_materialise_slot_from_history, or the origin that call passes cannot "
+            "come from that metadata"
         )
 
     def test_cron_injection_declares_cron(self):
@@ -2675,7 +2687,7 @@ class TestWildcardDeclaration:
 class TestNotificationSourceParsing:
     """The note's field is ``source`` and an app push is ``app:<name>``.
 
-    The gate used to read ``source_app``/``app`` -- keys no emitter writes -- so
+    The gate must not read ``source_app``/``app`` -- keys no emitter writes -- so
     it saw "" for every note and accepted "" as the system stream: one app's
     private push reached any app holding ``notification:system``, and an app
     holding ``notification`` never saw its own.
@@ -3224,7 +3236,7 @@ class TestSubagentBatchFrames:
 
 
 class TestSuppressedDenyCountIsReported:
-    """The dedup comment used to claim suppressed denies were "counted" while
+    """The dedup comment claimed suppressed denies were "counted" while
     the map held only a timestamp — no counter existed. The tally must actually
     reach the trail, so a burst is visible as volume without one SEL write per
     frame (this gate runs per event PER CLIENT on the broadcast hot path)."""

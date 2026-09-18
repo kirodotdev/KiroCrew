@@ -77,7 +77,7 @@ def task_mutation_transaction() -> "threading.Lock":
 
     Hold it only from a worker thread. Meeting deletion takes the same lock so
     an in-flight mutation either finishes before the directory is removed or
-    observes that the meeting no longer exists.
+    observes that the meeting does not exist.
     """
     return _TASKS_LOCK
 
@@ -164,7 +164,7 @@ def _normalize_task(raw: Any) -> dict[str, Any] | None:
         # which is exactly how a credential-shaped id would have crossed the
         # boundary while `description` beside it was scrubbed. Redact BEFORE the
         # truncation, so a marker cannot be sliced in half into something the
-        # scanner no longer recognises.
+        # scanner does not recognise.
         "id": redact(str(raw.get("id") or f"t{uuid.uuid4().hex[:8]}"))[:64],
         "description": description[:_MAX_DESCRIPTION],
         "assignee": redact(str(raw.get("assignee") or "").strip())[:200],

@@ -1,7 +1,7 @@
 """Host-local step-up for the dashboard's in-app wheel update (RFC OQ7).
 
-A dashboard session is NOT sufficient authority to install code: issue #1762
-documents that IP pinning breaks under every same-host proxy, which makes the
+A dashboard session is NOT sufficient authority to install code: IP pinning
+breaks under every same-host proxy, which makes the
 session token an effectively transferable bearer for remote access. Acceptable
 for chat and operations; not for replacing the gateway's own bytes. So the
 in-app Apply is split into two actions with different authority:

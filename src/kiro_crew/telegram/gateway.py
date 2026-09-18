@@ -101,6 +101,9 @@ async def maybe_start_telegram(orch: "GatewayOrchestrator") -> "TelegramClient |
         # set_message_handler avoids the client<->transport construction cycle.
         client.set_message_handler(transport.receive)
         dispatcher.client = client
+        # Handed to the dispatcher so its config applier can push a reloaded
+        # allow-list at the live transport instead of waiting for a restart.
+        dispatcher.transport = transport
 
         # Prove the token with an authenticated call BEFORE reporting the
         # channel as connected — transport.connect() only schedules the

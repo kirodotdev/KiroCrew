@@ -17,7 +17,7 @@ vi.mock('../api/client')
 
 /* SimpleSelect is stubbed for the same reason as CrewEditorSelect.test.tsx and
    WorkspaceModal.test.tsx: it wraps a Radix Select, which commits its selection
-   inside `ReactDOM.flushSync(...)`, and this tab mounts FIVE of them at once —
+   inside `ReactDOM.flushSync(...)`, and this tab mounts several of them at once —
    driving them for real costs an open/close cycle per assertion for a dropdown
    that is not the code under test. What IS under test is CfgSelect's own
    `onChange` (markDirty → setLocal → onSave), which the stub reaches directly.
@@ -74,11 +74,9 @@ const CFG = {
     subagent_max_turns: 100,
     max_subagents: 3,
     subagent_auto_max: 16,
-    conductor_skill: false,
     tool_search: true,
     max_channels: 7,
     max_channel_agents: 5,
-    enforce_denied_commands: 'all',
   },
   session: { timeout_secs: 3600, pool_size: 2, pool_agent: '', pool_ttl_secs: 600 },
   memory: { embedding_provider: 'inherited-embedder' },
@@ -386,7 +384,6 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
   it('applies defaults for the keys an older config file omits', async () => {
     const sparse = clone() as Cfg
     const agent = sparse.agent as Record<string, unknown>
-    delete agent.enforce_denied_commands
     delete agent.tool_search
     const session = sparse.session as Record<string, unknown>
     delete session.pool_size
@@ -397,7 +394,7 @@ describe('KiroCrewCfgTab — select and toggle rows', () => {
     await renderTab()
     expect(num('Pool Size').value).toBe('0')
     expect(toggleFor('MCP Tool Search')).toHaveTextContent('on')
-    expect(optionIn('Enforce Denied Commands', 'all')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.queryByRole('group', { name: /Enforce Denied Commands|enforce_denied_commands/ })).not.toBeInTheDocument()
     // With no default agent configured, the empty pool-agent option falls back
     // to a generic placeholder instead of naming one.
     expect(optionIn('Pool Agent', '(default agent)')).toBeInTheDocument()
@@ -432,7 +429,6 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     await renderTab()
 
     fireEvent.change(num('Max Turns per Subagent'), { target: { value: '150' } })
-    fireEvent.click(screen.getByRole('button', { name: 'Orchestrator Mode' }))
     fireEvent.click(saveBtn())
 
     expect(await screen.findByText('Saved')).toBeInTheDocument()
@@ -440,7 +436,6 @@ describe('KiroCrewCfgTab — subagent settings', () => {
       subagent_max_turns: 150,
       max_subagents: 3,
       subagent_auto_max: 16,
-      conductor_skill: true,
     })
     // onSaved invalidates the config query.
     await waitFor(() => expect(m.kirocrewConfig).toHaveBeenCalledTimes(2))
@@ -518,7 +513,6 @@ describe('KiroCrewCfgTab — subagent settings', () => {
   it('resyncs local edits when a fresh config arrives', async () => {
     const updated = clone()
     updated.agent.subagent_max_turns = 42
-    updated.agent.conductor_skill = true
     seed(CFG, updated)
 
     await renderTab()
@@ -529,7 +523,6 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     // block must follow the server, discarding the uncommitted 150.
     fireEvent.click(toggleFor('Auto Update'))
     await waitFor(() => expect(num('Max Turns per Subagent').value).toBe('42'))
-    expect(screen.getByRole('button', { name: 'Orchestrator Mode' })).toHaveTextContent('Enabled')
     expect(saveBtn()).toBeDisabled()
   })
 
@@ -539,13 +532,11 @@ describe('KiroCrewCfgTab — subagent settings', () => {
     delete agent.subagent_max_turns
     delete agent.max_subagents
     delete agent.subagent_auto_max
-    delete agent.conductor_skill
     seed(sparse)
 
     await renderTab()
     expect(num('Max Turns per Subagent').value).toBe('100')
     expect(num('Max Concurrent Subagents').value).toBe('3')
-    expect(screen.getByRole('button', { name: 'Orchestrator Mode' })).toHaveTextContent('Disabled')
     expect(saveBtn()).toBeDisabled()
   })
 })

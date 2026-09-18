@@ -12,6 +12,11 @@
  * proves the button reaches the real move endpoint — the harness exits non-zero
  * when it does not, which makes it a regression test and not just a camera.
  *
+ * The card carries a prefilled dropdown of every folder (the suggestion
+ * preselected), so beyond the accept/decline contract this also asserts the
+ * dropdown's own promise: picking a different folder and accepting must move to
+ * the PICKED folder, not the suggested one.
+ *
  * Usage: node scripts/capture-folder-suggestion.mjs [outDir]
  */
 import { chromium } from 'playwright'
@@ -62,7 +67,7 @@ const detail = {
   ],
 }
 
-/** Folders the recommender would have been shown. */
+/** Folders the recommender would have been shown — also the dropdown's options. */
 const folders = [
   { id: 'f-kc', name: 'Kiro Crew', order: 0, parent_id: '' },
   { id: 'f-i18n', name: 'i18n', order: 1, parent_id: 'f-kc' },
@@ -173,52 +178,101 @@ async function main() {
     await shot(name)
   }
 
+  const select = () => page.getByTestId('folder-suggestion-select')
+
   const NESTED = { folderId: 'f-i18n', folderName: 'i18n', breadcrumb: 'Kiro Crew › i18n' }
   const ROOT = { folderId: 'f-errands', folderName: 'Errands', breadcrumb: 'Errands' }
 
-  // 1. Nested folder, dark — the common case: glyph, question, ancestry line.
+  // 1. Nested folder, dark — the common case. The dropdown arrives prefilled
+  //    with the suggestion, its option labeled by the full ancestry path.
   await load('dark')
   await pushCard(NESTED)
+  const prefilled = await select().inputValue()
+  const nestedLabel = await select().evaluate(el => el.selectedOptions[0]?.textContent)
   await shot('01-nested-dark')
   await band('02-nested-dark-crop')
 
-  // 2. Root folder — no ancestry line, since it would only repeat the name.
+  // 2. Root folder — the option is the bare name; a path would just repeat it.
   await pushCard(ROOT)
-  await band('03-root-no-breadcrumb-crop')
+  const rootLabel = await select().evaluate(el => el.selectedOptions[0]?.textContent)
+  await band('03-root-bare-name-crop')
 
   // 3. Light theme, to prove the color-mix tokens track the theme.
   await load('light')
   await pushCard(NESTED)
   await band('04-nested-light-crop')
 
-  // 4. Accept — the card must clear AND the real move endpoint must be hit.
+  // 4. Accept untouched — one click must still move to the SUGGESTED folder.
   await page.getByTestId('folder-suggestion-accept').click()
   await page.waitForTimeout(700)
   const goneAfterAccept = (await page.getByTestId('folder-suggestion-card').count()) === 0
   await band('05-after-accept-light')
 
-  // 5. Decline — clears with no API call.
+  // 5. The dropdown's own promise: pick a different folder, accept, and the
+  //    move must target the PICKED folder — not the suggestion.
+  await load('dark')
+  await pushCard(NESTED)
+  await select().selectOption('f-errands')
+  await page.waitForTimeout(300)
+  await band('06-picked-other-folder-dark-crop')
+  await page.getByTestId('folder-suggestion-accept').click()
+  await page.waitForTimeout(700)
+  const goneAfterPickedAccept = (await page.getByTestId('folder-suggestion-card').count()) === 0
+
+  // 6. Decline — clears with no API call.
   const movesBefore = moves.length
   await load('dark')
   await pushCard(NESTED)
   await page.getByTestId('folder-suggestion-decline').click()
   await page.waitForTimeout(700)
   const goneAfterDecline = (await page.getByTestId('folder-suggestion-card').count()) === 0
-  await band('06-after-decline-dark')
+  await band('07-after-decline-dark')
+
+  // 7. 320px viewport — the AUTOSDE narrow-viewport floor. flex-wrap must
+  //    reflow the label, select, and actions into rows: nothing may clip.
+  //    Asserted, not just pictured: no horizontal overflow inside the card,
+  //    and every interactive control fully inside the viewport.
+  await load('dark')
+  await page.setViewportSize({ width: 320, height: 700 })
+  await pushCard(NESTED)
+  const narrowNoOverflow = await page
+    .getByTestId('folder-suggestion-card')
+    .evaluate(el => el.scrollWidth <= el.clientWidth + 1)
+  const narrowControlsInside = await page.evaluate(() => {
+    const ids = ['folder-suggestion-select', 'folder-suggestion-accept', 'folder-suggestion-decline']
+    return ids.every(id => {
+      const r = document.querySelector(`[data-testid="${id}"]`)?.getBoundingClientRect()
+      return !!r && r.width > 0 && r.left >= 0 && r.right <= window.innerWidth + 0.5
+    })
+  })
+  await shot('08-narrow-320-dark')
 
   console.log('--- assertions ---')
+  console.log('dropdown prefilled with the suggestion:', prefilled === 'f-i18n')
+  console.log('nested option labeled by path:', JSON.stringify(nestedLabel))
+  console.log('root option labeled by bare name:', JSON.stringify(rootLabel))
   console.log('accept cleared the card:', goneAfterAccept)
-  console.log('accept called the move API:', JSON.stringify(moves))
+  console.log('picked-accept cleared the card:', goneAfterPickedAccept)
+  console.log('move API calls:', JSON.stringify(moves))
   console.log('decline cleared the card:', goneAfterDecline)
   console.log('decline made no extra API call:', moves.length === movesBefore)
+  console.log('320px: card has no horizontal overflow:', narrowNoOverflow)
+  console.log('320px: all controls inside the viewport:', narrowControlsInside)
 
   await cleanup()
 
-  const ok = goneAfterAccept
+  const ok = prefilled === 'f-i18n'
+    && nestedLabel === 'Kiro Crew › i18n'
+    && rootLabel === 'Errands'
+    && goneAfterAccept
+    && goneAfterPickedAccept
     && goneAfterDecline
-    && moves.length === 1
+    && moves.length === 2
     && moves[0].body?.folder_id === 'f-i18n'
-    && moves[0].path.endsWith(`/${SLOT}/folder`)
+    && moves[1].body?.folder_id === 'f-errands'
+    && moves.every(m => m.path.endsWith(`/${SLOT}/folder`))
+    && narrowNoOverflow
+    && narrowControlsInside
   if (!ok) {
     // Throw, never process.exit(): exit() would skip the catch below, whose
     // cleanup releases the browser and server this run still holds.

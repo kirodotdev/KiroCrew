@@ -7,8 +7,8 @@ Registered at gateway startup by the ``BUILTIN_NAMES`` loop in
 These endpoints do every step that needs a shell or the filesystem — cloning a
 repo, discovering its routes, and rendering screens to PNGs — server-side, so the
 LLM agent never has to. The agent is then only ever asked to reason over finished
-images with no tools, which is why it can no longer stall on a tool-approval
-prompt that the app panel has nowhere to show.
+images with no tools, so it cannot stall on a tool-approval prompt that the app
+panel has nowhere to show.
 
 Routes (browser-facing, same-origin authed):
 
@@ -94,11 +94,10 @@ _CLONE_TTL_SEC = 60 * 60
 
 # ── background job registry ──
 #
-# discover/render used to run inline in the request, so a browser navigating away
-# mid-scan cancelled the fetch and the scan with it. Now the heavy work runs in a
-# DETACHED asyncio task keyed by a job id: the request returns the id immediately
-# and the client polls a GET for the result, so a disconnect can no longer stop
-# the scan. Records live in memory only (a critique is transient) and are swept on
+# The heavy discover/render work runs in a DETACHED asyncio task keyed by a job
+# id: the request returns the id immediately and the client polls a GET for the
+# result, so a browser navigating away mid-scan cancels only the fetch, never the
+# scan. Records live in memory only (a critique is transient) and are swept on
 # the same ~1h TTL the clone dirs use.
 _JOBS: dict[str, dict[str, Any]] = {}
 _JOBS_LOCK = threading.Lock()
@@ -469,7 +468,7 @@ def _sweep_clones() -> None:
     with _PROBE_CACHE_LOCK:
         # A retained probe dir (dc-probe-*) is swept above on the same TTL, but its
         # _PROBE_CACHE entry would otherwise outlive the dir and hand /render a
-        # route->png path for a directory that no longer exists. Purge any cache entry
+        # route->png path for a directory that does not exist. Purge any cache entry
         # whose retained dir was just removed, so the cache never serves a missing PNG.
         if removed:
             stale_handles = [
@@ -788,9 +787,9 @@ def _group_for(path: str) -> str:
 
 
 async def _handle_method(request: web.Request) -> web.Response:
-    # The critique rubric used to be fetched by the agent with fs_read (a tool
-    # call that stalls in the panel). Serve the checklist here so the frontend
-    # can inline it into the tool-free prompt instead.
+    # Serve the critique rubric here so the frontend can inline it into the
+    # tool-free prompt: an agent fetching it with fs_read is a tool call, and a
+    # tool call stalls in the panel.
     def _read() -> dict[str, str]:
         checklist = (_SKILL_DIR / "frameworks/main-checklist.md").read_text(encoding="utf-8")
         return {"checklist": checklist}
@@ -1459,7 +1458,7 @@ async def _handle_render(request: web.Request) -> web.Response:
         if cached is not None:
             token = await asyncio.to_thread(_served_signature, Path(cached["build_dir"]))
             # A missing token means "unknown", not "unchanged", so it must not satisfy
-            # the match: a build output that no longer stats is no evidence it stands
+            # the match: a build output that does not stat is no evidence it stands
             # still. Only the digest is compared — newest_mtime_ns is a discover-time
             # concern. The stored side is never None: _probe_put is only reached with a
             # real digest.

@@ -91,7 +91,7 @@ class TestComponentJsonIsValidatedBeforeInstall:
         base guards it on the merge side -- `_usable_cron_shape` classifies the shape and
         `_merge_crons` skips an unusable file and continues.
 
-        That hand-off is conditional, and this test used to assert it unconditionally. The
+        That hand-off is conditional, and this test must not assert it unconditionally. The
         merger only runs when a live copy EXISTS (`if dst.is_file(): _merge_crons(...)`); the
         sibling `else` copies the bundle's file in verbatim, with no shape guard anywhere
         downstream. So the pre-flight may stand aside only for the case whose guard is real,

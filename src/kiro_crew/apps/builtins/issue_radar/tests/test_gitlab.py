@@ -765,9 +765,10 @@ class TestMrTimelineNotesFetch(unittest.TestCase):
     """The MR timeline reads the notes endpoint ONCE.
 
     GitLab keeps inline (diff) comments in the same notes stream, so the MR
-    timeline both assembles the notes AND promotes the positioned ones. It used to
-    fetch ``{base}/notes`` twice per PR-detail load; ``_assemble_timeline`` now
-    returns the notes it fetched so the promotion reuses that one read."""
+    timeline both assembles the notes AND promotes the positioned ones.
+    ``_assemble_timeline`` returns the notes it fetched so the promotion reuses
+    that one read instead of fetching ``{base}/notes`` a second time per
+    PR-detail load."""
 
     def test_notes_endpoint_is_hit_once(self):
         note = {
@@ -1131,7 +1132,7 @@ class TestClientParity(unittest.TestCase):
     # signatures, so a disagreement is always the OTHER client drifting. Comparing
     # each module against GitHub (not pairwise against each other) also means a
     # failure names the provider that drifted, instead of only reporting that the
-    # three no longer agree.
+    # three disagree.
     REFERENCE = "github"
     CLIENTS = {
         "github": github_client,

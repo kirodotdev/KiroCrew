@@ -93,12 +93,15 @@ const registry = vi.hoisted(() => ({
   getTerminalCwd: vi.fn<(id: string) => string | undefined>(() => undefined),
   connStatus: { value: undefined as 'connected' | 'reconnecting' | 'disconnected' | undefined },
   manualRetry: { value: false },
+  displaced: { value: false },
   useTerminalConnStatus: vi.fn<() => 'connected' | 'reconnecting' | 'disconnected' | undefined>(),
   useTerminalManualRetry: vi.fn<() => boolean>(),
+  useTerminalDisplaced: vi.fn<() => boolean>(),
   retryTerminalConnection: vi.fn<(id: string) => void>(),
 }))
 registry.useTerminalConnStatus.mockImplementation(() => registry.connStatus.value)
 registry.useTerminalManualRetry.mockImplementation(() => registry.manualRetry.value)
+registry.useTerminalDisplaced.mockImplementation(() => registry.displaced.value)
 vi.mock('../utils/terminalRegistry', () => registry)
 
 // Both children own their own xterm hooks and are covered by their own suites;
@@ -116,6 +119,7 @@ import CliPanel, {
   useDeleteTerminalSession,
 } from '../components/CliPanel'
 import { setTerminalFontSize, __resetTerminalFontStore } from '../hooks/useTerminalFont'
+import { setTerminalCloseFailed, useTerminalCloseFailed } from '../hooks/useBottomTerminal'
 import { ansiPaletteFromVars } from '../utils/terminalPalette'
 
 /* ── MutationObserver delivery pin ─────────────────────────────────────────
@@ -257,6 +261,7 @@ beforeEach(() => {
   registry.retryTerminalConnection.mockClear()
   registry.connStatus.value = undefined
   registry.manualRetry.value = false
+  registry.displaced.value = false
   xt.FakeTerminal.instances = []
   xt.FakeFitAddon.instances = []
   touch.value = false
@@ -404,7 +409,12 @@ describe('CliPanel disconnected banner', () => {
   it('renders the disconnected banner with an enabled Reconnect button once the socket is dead', () => {
     registry.connStatus.value = 'disconnected'
     mount()
-    expect(screen.getByRole('status')).toHaveTextContent(DISCONNECTED_LABEL)
+    // Retry exhaustion is a FAILED outcome: it renders through ErrorNotice
+    // (role="alert", agent hand-off on), not the neutral status bar.
+    const notice = screen.getByTestId('cli-panel-disconnected')
+    expect(notice).toHaveAttribute('role', 'alert')
+    expect(notice).toHaveTextContent(DISCONNECTED_LABEL)
+    expect(screen.queryByRole('status')).toBeNull()
     const button = screen.getByRole('button', { name: RECONNECT_LABEL })
     expect(button).toBeInTheDocument()
     expect(button).toBeEnabled()
@@ -442,6 +452,27 @@ describe('CliPanel disconnected banner', () => {
     expect(screen.getByText(DISCONNECTED_LABEL)).toBeInTheDocument()
     expect(screen.queryByText(RECONNECTING_LABEL)).toBeNull()
     expect(screen.getByRole('button', { name: RECONNECT_LABEL })).toBeEnabled()
+  })
+
+  it('names the other window, not a network failure, when the server displaced this socket', () => {
+    // The registry parked the session after the server's `code: 'displaced'`
+    // error frame: the banner must say so (neutral icon) rather than render
+    // the generic disconnected copy, and Reconnect stays available to take
+    // the terminal back deliberately.
+    registry.connStatus.value = 'disconnected'
+    registry.displaced.value = true
+    const { sessionId } = mount()
+    const banner = screen.getByRole('status')
+    expect(banner).toHaveTextContent(i18nT('components.cliPanel.displaced_message'))
+    expect(screen.queryByText(DISCONNECTED_LABEL)).toBeNull()
+    expect(banner.querySelector('.text-danger')).toBeNull()
+    // The button says what it does here -- take the terminal from the other
+    // window -- not "Reconnect", which would imply repairing a broken link.
+    expect(screen.queryByRole('button', { name: RECONNECT_LABEL })).toBeNull()
+    const takeBack = screen.getByRole('button', { name: i18nT('components.cliPanel.use_here') })
+    expect(takeBack).toBeEnabled()
+    fireEvent.click(takeBack)
+    expect(registry.retryTerminalConnection).toHaveBeenCalledWith(sessionId)
   })
 })
 
@@ -554,6 +585,23 @@ describe('CliPanel selection toolbar', () => {
 /* ── copy ─────────────────────────────────────────────────────────────────── */
 
 describe('CliPanel copy action', () => {
+  // copyToClipboard's execCommand fallback gets a genuine chance to run now
+  // that Copy routes through it, so any test asserting a residual failure (or
+  // a successful fallback) must stub execCommand itself — happy-dom's own
+  // implementation is unmocked and unreliable, same as every other clipboard
+  // test in this suite (clipboard.test.ts, clipboardCov80.test.ts).
+  const origExecCommand = Object.getOwnPropertyDescriptor(document, 'execCommand')
+  function stubExecCommand(result: boolean) {
+    Object.defineProperty(document, 'execCommand', {
+      configurable: true,
+      value: vi.fn(() => result),
+    })
+  }
+  afterEach(() => {
+    if (origExecCommand) Object.defineProperty(document, 'execCommand', origExecCommand)
+    else delete (document as unknown as Record<string, unknown>).execCommand
+  })
+
   it('copies the captured text, confirms, then dismisses the toolbar', async () => {
     // Only the timer is faked: vitest's default fake set includes
     // requestAnimationFrame, which would displace the synchronous stub the
@@ -577,24 +625,88 @@ describe('CliPanel copy action', () => {
     }
   })
 
-  it('reports failure and keeps the selection when the clipboard is unavailable', () => {
+  /**
+   * Routed through the shared helper: a missing clipboard API alone no
+   * longer ends the attempt, since the execCommand fallback still gets a
+   * real chance to land the text — confirm only when that also fails.
+   */
+  it('reports failure and keeps the selection when the clipboard is unavailable and the fallback also fails', async () => {
     setClipboard(undefined)
+    stubExecCommand(false)
     const { term, container } = mount()
     term.selection = 'secret-free output'
     endDrag(container, { x: 200, y: 100 })
-    act(() => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
     expect(screen.getByRole('button', { name: COPY_FAILED_LABEL })).toBeInTheDocument()
     expect(term.clearCalls).toBe(0)
   })
 
-  it('reports failure when the clipboard write is rejected', async () => {
+  /**
+   * The residual-failure case pairs with its opposite: when the fallback
+   * DOES land the text despite no async API, the key must confirm success
+   * rather than name a remedy nothing actually needed.
+   */
+  it('confirms success when the clipboard is unavailable but the execCommand fallback lands the text', async () => {
+    setClipboard(undefined)
+    stubExecCommand(true)
+    const { term, container } = mount()
+    term.selection = 'secret-free output'
+    endDrag(container, { x: 200, y: 100 })
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+    expect(screen.getByRole('button', { name: COPIED_LABEL })).toBeInTheDocument()
+  })
+
+  /**
+   * A permission-denied writeText no longer ends the attempt either: the
+   * fallback still gets a real chance, and a working fallback means success,
+   * not failure.
+   */
+  it('confirms success when the clipboard write is rejected but the execCommand fallback lands the text', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] })
+    try {
+      setClipboard({ writeText: vi.fn(() => Promise.reject(new Error('denied'))) })
+      stubExecCommand(true)
+      const { term, container } = mount()
+      term.selection = 'output'
+      endDrag(container, { x: 200, y: 100 })
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
+      expect(screen.getByRole('button', { name: COPIED_LABEL })).toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(900) })
+      expect(term.clearCalls).toBe(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reports failure when the clipboard write is rejected and the fallback also fails', async () => {
     setClipboard({ writeText: vi.fn(() => Promise.reject(new Error('denied'))) })
+    stubExecCommand(false)
     const { term, container } = mount()
     term.selection = 'output'
     endDrag(container, { x: 200, y: 100 })
     await act(async () => { fireEvent.click(screen.getByRole('button', { name: COPY_LABEL })) })
     expect(screen.getByRole('button', { name: COPY_FAILED_LABEL })).toBeInTheDocument()
     expect(term.clearCalls).toBe(0)
+  })
+
+  /**
+   * The reason the fallback was once unusable here: its textarea `select()`
+   * moved focus off whatever the user was working in. The helper now restores
+   * the previously focused element with `{preventScroll:true}`, so the click
+   * target (the Copy button itself) must still hold focus once a
+   * fallback-routed copy completes, and no scratch textarea is left behind.
+   */
+  it('keeps the clicked Copy button focused after a copy that falls back to execCommand', async () => {
+    setClipboard({ writeText: vi.fn(() => Promise.reject(new Error('denied'))) })
+    stubExecCommand(true)
+    const { term, container } = mount()
+    term.selection = 'output'
+    endDrag(container, { x: 200, y: 100 })
+    const copyBtn = screen.getByRole('button', { name: COPY_LABEL })
+    copyBtn.focus()
+    await act(async () => { fireEvent.click(copyBtn) })
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(document.activeElement).toBe(copyBtn)
   })
 })
 
@@ -885,5 +997,20 @@ describe('useDeleteTerminalSession', () => {
     await expect(
       act(async () => { await result.current.mutateAsync('pty-43') }),
     ).rejects.toThrow('Failed to delete terminal session (409)')
+  })
+
+  it('treats 404 as already gone: no error, and the close-failed toast stays down', async () => {
+    // The backend answers 404 once the PTY has been reaped (idle sweep, gateway
+    // restart, a second close racing the first); the shell is stopped, which
+    // is the outcome the user asked for, so the toast must not claim otherwise.
+    setTerminalCloseFailed(false)
+    vi.stubGlobal('fetch', vi.fn(() => Promise.resolve({ ok: false, status: 404 } as unknown as Response)))
+    const { result } = renderHookWithProviders(() => ({
+      del: useDeleteTerminalSession(),
+      failed: useTerminalCloseFailed(),
+    }))
+    await act(async () => { await result.current.del.mutateAsync('pty-44') })
+    expect(result.current.del.isError).toBe(false)
+    expect(result.current.failed).toBe(false)
   })
 })

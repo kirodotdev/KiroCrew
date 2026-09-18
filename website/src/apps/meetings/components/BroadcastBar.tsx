@@ -15,9 +15,11 @@ interface Props {
   onSend: (text: string) => void
   caption?: string
   disabled?: boolean
+  /** Overrides the compose placeholder, e.g. the paused-meeting explanation. */
+  placeholder?: string
 }
 
-export default function BroadcastBar({ onSend, caption, disabled }: Props) {
+export default function BroadcastBar({ onSend, caption, disabled, placeholder }: Props) {
   const ime = useImeGuard()
   const inputRef = useRef<HTMLInputElement>(null)
 
@@ -50,8 +52,8 @@ export default function BroadcastBar({ onSend, caption, disabled }: Props) {
         <Input
           ref={inputRef}
           type="text"
-          placeholder={i18nT('apps.meetings.broadcastBar.placeholder')}
-          aria-label={i18nT('apps.meetings.broadcastBar.placeholder')}
+          placeholder={placeholder ?? i18nT('apps.meetings.broadcastBar.placeholder')}
+          aria-label={placeholder ?? i18nT('apps.meetings.broadcastBar.placeholder')}
           disabled={disabled}
           className="flex-1"
           {...ime.bindEnter({ onEnter: send })}

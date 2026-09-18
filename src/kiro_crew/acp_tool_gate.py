@@ -23,8 +23,12 @@ from __future__ import annotations
 
 from kiro_crew.agent_sdk.backends import (  # noqa: F401 - re-exported for existing importers
     ACP_BACKEND_CODEX,
+    ACP_BACKEND_OPENCODE,
+    ACP_BACKEND_PI,
     Routing,
+    gate_probe_command_for,
     permission_config_for,
+    permission_setting_for,
     routing_for,
 )
 from kiro_crew.agent_sdk.tool_gate import (  # noqa: F401 - re-exported for existing importers
@@ -38,15 +42,19 @@ from kiro_crew.agent_sdk.tool_gate import (  # noqa: F401 - re-exported for exis
     adapter_hidden_credential_dirs,
     enforce_runtime_routing,
     enforce_sandbox_floor,
+    gate_extension_issue,
     is_enforced,
     label_for,
     remediation_for,
     routing_verdict,
+    seeded_setting_issue,
     session_config_issue,
 )
 
 __all__ = [
     "ACP_BACKEND_CODEX",
+    "ACP_BACKEND_OPENCODE",
+    "ACP_BACKEND_PI",
     "ADAPTER_EXPOSED_CREDENTIAL_LEAVES",
     "ADAPTER_OWN_CREDENTIAL_LEAVES",
     "ENFORCED_ROUTINGS",
@@ -58,11 +66,15 @@ __all__ = [
     "adapter_hidden_credential_dirs",
     "enforce_runtime_routing",
     "enforce_sandbox_floor",
+    "gate_extension_issue",
+    "gate_probe_command_for",
     "is_enforced",
     "label_for",
     "permission_config_for",
+    "permission_setting_for",
     "remediation_for",
     "routing_for",
     "routing_verdict",
+    "seeded_setting_issue",
     "session_config_issue",
 ]

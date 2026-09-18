@@ -92,7 +92,7 @@ EXPECTED_SITES = {
     "slack/gateway.py": 3,          # 2 cron + _persist_turn_row helper
                                     # (the helper is the single call site for
                                     # heartbeat + its timeout + monitor + its
-                                    # timeout, extracted in issue #1086)
+                                    # timeout)
     "task_executor.py": 2,          # task step + self-review
     "subagent_manager/run.py": 1,
     "workflows/agent_exec.py": 1,

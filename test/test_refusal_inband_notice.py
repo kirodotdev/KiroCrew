@@ -29,7 +29,9 @@ from kiro_crew.dashboard.chat_runner import (
 )
 from kiro_crew.dashboard.state import (
     _DENY_CAUSE_TEXT,
+    DENY_CAUSE_APPROVAL_NO_BUDGET,
     DENY_CAUSE_APPROVAL_TIMEOUT,
+    DENY_CAUSE_APPROVAL_UNDELIVERABLE,
     DENY_CAUSE_BATCH_CASCADE,
     DENY_CAUSE_HOOK_ERROR,
     DENY_CAUSE_INVALID_NAME,
@@ -254,32 +256,33 @@ class TestFloorDenialExplainsItself:
 
     def test_inline_import_is_denied_at_all(self):
         # Guards the premise of every assertion below.
-        assert self._deny('python -c "import kiro_crew"')
+        assert self._deny('python -c "import kiro_crew.cli"')
 
     def test_reported_pattern_cannot_match_the_command(self):
         # The exact trap: the first line requires a `token` word this command
         # does not contain, so the identifier alone reads as a false reason.
-        command = 'python -c "import kiro_crew"'
+        command = 'python -c "import kiro_crew.cli"'
         first_line = self._deny(command).splitlines()[0]
         assert self.MINT_PATTERN_TAIL in first_line
         assert "token" not in command
 
     def test_second_line_says_the_match_was_structural(self):
-        lines = self._deny('python -c "import kiro_crew"').splitlines()
+        lines = self._deny('python -c "import kiro_crew.cli"').splitlines()
         assert len(lines) >= 2, "floor denial must carry an explanation line"
         assert "structurally" in lines[1]
         assert "argv" in lines[1]
 
     def test_explanation_names_the_import_gate(self):
-        # What the agent needs in order to adapt: it is the IMPORT that is
-        # gated, so retrying with a differently-worded command is futile.
-        note = self._deny('python -c "import kiro_crew"').splitlines()[1]
+        # What the agent needs in order to adapt: it is the IMPORT of the mint
+        # surface that is gated, so retrying with a differently-worded command
+        # that still names the CLI is futile.
+        note = self._deny('python -c "import kiro_crew.cli"').splitlines()[1]
         assert "import" in note
 
     def test_first_line_stays_single_line_and_prefixed(self):
         # RecoveryCard.tsx extracts the pattern with a per-line end-anchored
         # regex, so anything appended to line 1 would be read as the pattern.
-        out = self._deny('python -c "import kiro_crew"')
+        out = self._deny('python -c "import kiro_crew.cli"')
         assert out.startswith("Blocked by security policy: ")
         assert "\n" not in out.splitlines()[0]
 
@@ -328,9 +331,8 @@ class TestRecoveryIsNowAFallback:
     def test_confirmed_in_band_delivery_skips_the_extra_turn(self):
         assert not should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
-            stop_reason="end_turn",
+            user_stopped=False,
             notices_sent=1,
             notices_pending=0,
         )
@@ -340,9 +342,8 @@ class TestRecoveryIsNowAFallback:
         # any model-inference boundary, so the model was told nothing.
         assert should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
-            stop_reason="end_turn",
+            user_stopped=False,
             notices_sent=1,
             notices_pending=1,
         )
@@ -351,33 +352,29 @@ class TestRecoveryIsNowAFallback:
         # Two denies, one notice: the uncovered one has no other way to be told.
         assert should_queue_refusal_recovery(
             [("bash", "denied"), ("fs_write", "blocked")],
-            stopping=False,
             needs_reset=False,
-            stop_reason="end_turn",
+            user_stopped=False,
             notices_sent=1,
             notices_pending=0,
         )
 
     def test_defaults_preserve_pre_existing_behaviour(self):
-        # A caller that knows nothing about notices (harness without steer, and
-        # every existing call site) must behave exactly as before.
-        assert should_queue_refusal_recovery(
-            self.REFUSALS, stopping=False, needs_reset=False, stop_reason="end_turn"
-        )
+        # A caller that knows nothing about notices (harness without steer)
+        # behaves as if nothing was steered: the extra turn is owed.
+        assert should_queue_refusal_recovery(self.REFUSALS, needs_reset=False, user_stopped=False)
 
     def test_user_cancel_still_wins_over_in_band_accounting(self):
         assert not should_queue_refusal_recovery(
             self.REFUSALS,
-            stopping=False,
             needs_reset=False,
-            stop_reason="cancelled",
+            user_stopped=True,
             notices_sent=0,
             notices_pending=0,
         )
 
     def test_no_refusals_never_queues_even_with_notices(self):
         assert not should_queue_refusal_recovery(
-            [], stopping=False, needs_reset=False, stop_reason="end_turn", notices_sent=3
+            [], needs_reset=False, user_stopped=False, notices_sent=3
         )
 
 
@@ -422,6 +419,37 @@ class TestCauseSpecificWording:
         assert "do not immediately reissue" in out.lower()
         assert "budget" not in out.lower()
 
+    def test_approval_no_budget_says_never_shown_not_denied(self):
+        out = build_refusal_steer_notice(
+            "bash",
+            "the turn had no budget left to wait for approval",
+            cause=DENY_CAUSE_APPROVAL_NO_BUDGET,
+        )
+        assert "no budget left to host its approval prompt" in out
+        assert "never judged" in out
+        # The action was never judged, so neither a policy verdict nor the
+        # policy guidance may appear: both would send the model routing around
+        # a call nobody refused.
+        assert "safety policy" not in out
+        assert "allowed alternative" not in out
+        assert "state the permission you need" in out.lower()
+        # Unlike the timeout, the no-reissue advice here IS justified by the
+        # budget: the window is recomputed from what is left of THIS turn, so
+        # an immediately reissued identical call is declined the same way.
+        assert "do not immediately reissue" in out.lower()
+
+    def test_approval_undeliverable_says_delivery_failed_not_denied(self):
+        out = build_refusal_steer_notice(
+            "bash",
+            "the approval prompt could not be delivered to Slack",
+            cause=DENY_CAUSE_APPROVAL_UNDELIVERABLE,
+        )
+        assert "could not be delivered" in out
+        assert "never judged" in out
+        assert "safety policy" not in out
+        assert "allowed alternative" not in out
+        assert "state the permission you need" in out.lower()
+
     def test_policy_wording_is_unchanged_by_default(self):
         # Every pre-existing caller passes no cause; the policy text must be
         # byte-identical to what shipped, or the model's correction changes
@@ -437,10 +465,13 @@ class TestCauseSpecificWording:
         # The cascade's members were never individually judged, so the wording
         # must neither claim a policy verdict nor scope itself to one call: the
         # single notice stands in for every cascaded member of the batch.
+        # The reason below is the batch-framed copy the setter records: the
+        # notice shows it under the CASCADED member's title, so it must speak
+        # about the batch's originating tool, not the member it is shown under.
         out = build_refusal_steer_notice(
             "list_files",
-            "the approval prompt for an earlier tool in this batch went unanswered "
-            "for 600s, so the host declined it",
+            "the host declined an earlier tool of this batch "
+            "(the approval prompt went unanswered for 600s)",
             cause=DENY_CAUSE_BATCH_CASCADE,
         )
         assert "every remaining call in its batch" in out
@@ -688,6 +719,43 @@ class TestEveryHostDenyCallSiteIsWired:
             f"pass refusal_notices= and refusal_reasons=: lines {missing}"
         )
 
+    def test_both_continuation_gates_read_the_live_stop_signal(self):
+        # Both end-of-turn continuation gates take the host's Stop signal, read
+        # LIVE at each call (`_stop_pressed()`), never a snapshot and never the
+        # backend's wire stop reason. A snapshot taken before the awaited Stop
+        # hook goes stale when a Stop presses and resolves during it; a wire
+        # stop reason reads codex's `cancel`-only reject (stopReason
+        # "cancelled", no Stop pressed) as a user cancel -- the silent-stop
+        # defect. Pinned at source level because both sites live inside the
+        # turn coroutine.
+        src = self._src()
+        assert src.count("def _stop_pressed() -> bool:") == 1, "the live Stop signal helper moved"
+        body = src.split("def _stop_pressed() -> bool:", 1)[1][:2000]
+        assert "_stop_generation" in body and "_stop_gen_at_entry" in body
+        # ...and the session-scoped count, so a stop issued on a linked channel
+        # surface (which never touches the slot's own state) is seen too.
+        assert "_session_stop_generation()" in body and "_session_stop_gen_at_entry" in body
+        # refusal recovery: the gate call, and the re-read after the awaited
+        # credential-hint lookup, before the queue write.
+        gate = "if should_queue_refusal_recovery("
+        assert (
+            src.count(gate) == 1
+        ), "the refusal-recovery gate moved or multiplied -- guard is stale"
+        window = src.split(gate, 1)[1][:2400]
+        assert "user_stopped=_stop_pressed()" in window[:600]
+        assert "_stop_reason" not in window[:400], "the gate must not take the wire stop reason"
+        after_await = window.split("await _credential_tool_hint_for(", 1)[1]
+        assert "if _stop_pressed()" in after_await.split("_queue_recovery(", 1)[0]
+        assert "turn_aborted=(_stop_reason == STOP_REASON_CANCELLED)" in window
+        # stop-hook continuation: outer gate and the recheck after the config load.
+        hook_calls = re.findall(
+            r"should_queue_hook_continuation\(\s*needs_session_reset, user_stopped=_stop_pressed\(\)\s*\)",
+            src,
+        )
+        assert (
+            len(hook_calls) == 2
+        ), f"expected the hook gate + its post-await recheck, saw {len(hook_calls)}"
+
     def test_interactive_approved_path_is_wired(self):
         # The sharpest case: the person clicked APPROVE and the host denied
         # anyway, so "user denied tool execution" is not merely unhelpful but
@@ -720,8 +788,8 @@ class TestEveryHostDenyCallSiteIsWired:
         anchor = 'if getattr(slot, "_batch_rejected", False):'
         assert anchor in src, "the cascade site moved -- guard is stale"
         # Window sized for the full cascade block: the audit-first SEL write
-        # (issue #8621) now sits between the anchor and the reject answer, so
-        # the original 3500-char window no longer reached the reject.
+        # now sits between the anchor and the reject answer, so
+        # the original 3500-char window would fall short of the reject.
         block = src.split(anchor, 1)[1][:5200]
         steer_at = block.find("_steer_policy_notice")
         reject_at = block.find("reject_tool(")
@@ -760,30 +828,80 @@ class TestEveryHostDenyCallSiteIsWired:
             (
                 "slack delivery-failure (None branch)",
                 "Linked approval delivery to Slack failed; auto-rejecting tool %r",
-                1000,
+                1100,
+                "DENY_CAUSE_APPROVAL_UNDELIVERABLE",
             ),
             (
                 "slack delivery-failure (except arm)",
                 "Error mirroring approval prompt to Slack",
-                800,
+                900,
+                "DENY_CAUSE_APPROVAL_UNDELIVERABLE",
             ),
-            ("no-budget", "format_approval_no_budget_card()", 400),
-            ("approval timeout", "format_approval_timeout_card(_approval_window)", 400),
+            (
+                "no-budget",
+                "format_approval_no_budget_card()",
+                400,
+                "DENY_CAUSE_APPROVAL_NO_BUDGET",
+            ),
+            (
+                "approval timeout",
+                "format_approval_timeout_card(_approval_window)",
+                400,
+                "DENY_CAUSE_APPROVAL_TIMEOUT",
+            ),
         )
         missing = []
-        for arm, anchor, window in arm_anchors:
+        for arm, anchor, window, constant in arm_anchors:
             assert (
                 src.count(anchor) == 1
             ), f"the {arm} arm's source landmark is no longer unique -- guard is stale"
-            if "_host_deny_cause = (" not in src.split(anchor, 1)[1][:window]:
+            win = src.split(anchor, 1)[1][:window]
+            if f"_host_deny_cause = {constant}" not in win or "_host_deny_reason = " not in win:
                 missing.append(arm)
         assert not missing, (
-            f"these host auto-decline arms no longer record a cause: {missing} -- "
-            "their cascades are again indistinguishable from a user refusal"
+            f"these host auto-decline arms no longer record their cause constant "
+            f"and reason: {missing} -- their declines are again indistinguishable "
+            "from a user refusal"
         )
+        setter = "slot._batch_rejected_cause = ("
         assert (
-            "slot._batch_rejected_cause = _host_deny_cause" in src
+            setter in src and "_host_deny_reason" in src.split(setter, 1)[1][:300]
         ), "the batch setter no longer copies the decline's provenance onto the slot"
+        # The copy must stay BATCH-FRAMED: the cascade notice embeds it under
+        # the cascaded member's title, where the bare per-tool reason would
+        # claim that member's own prompt failed.
+        assert "earlier tool of this batch" in src.split(setter, 1)[1][:300], (
+            "the batch copy lost its batch framing — the cascade notice now "
+            "misattributes the originating decline to the cascaded member"
+        )
+
+    def test_shared_reject_branch_steers_the_host_cause(self):
+        # The three host auto-decline arms (no budget, Slack ts-None, Slack
+        # except) record their cause upstream and funnel into the interactive
+        # rejected branch; the correction is steered there ONCE, gated on the
+        # provenance, BEFORE the rejection is answered. Guarded at source
+        # level because the branch lives inside the turn coroutine, where the
+        # direct unit fixtures of this file cannot reach it.
+        src = self._src()
+        anchor = "# deny-notice-exempt: interactive user denial."
+        assert src.count(anchor) == 1, "the interactive exemption marker moved -- guard is stale"
+        before = src.split(anchor, 1)[0][-1400:]
+        gate = "if _host_deny_cause:"
+        assert gate in before, (
+            "the shared reject branch no longer gates a steer on the " "host-decline provenance"
+        )
+        gated = before.split(gate, 1)[1]
+        assert "_steer_policy_notice(" in gated, "the provenance gate no longer steers"
+        assert (
+            "cause=_host_deny_cause" in gated
+        ), "the shared steer no longer carries the arm's recorded cause"
+        assert (
+            "_host_deny_reason" in gated
+        ), "the shared steer no longer carries the arm's recorded reason"
+        after = src.split(anchor, 1)[1][:1200]
+        assert (
+            "await client.reject_tool(event.request_id)" in after
+        ), "the steer must precede the rejection going on the wire"
 
     def test_flag_and_provenance_clear_together(self):
         # A stale cause is never READ today (the flag gates the only reader and
@@ -816,8 +934,7 @@ class TestEveryHostDenyCallSiteIsWired:
     # the helper scan, and a host-side auto-decline added at such a site hands
     # the model kiro-cli's "User denied tool execution" -- the wrong-attribution
     # class fixed for policy/hook/invalid-name via the steer helpers and still
-    # being paid down branch by branch (the expired-prompt steer is pending as
-    # PR #8508, and #8578 tracks the remaining approval auto-decline paths).
+    # being paid down branch by branch (other approval auto-decline paths are not yet covered).
     # This scan closes the enumeration for chat_runner.py -- the module that
     # answers the dashboard's ``session/request_permission`` -- other modules
     # answer their own surfaces and are out of this guard's scope. Every

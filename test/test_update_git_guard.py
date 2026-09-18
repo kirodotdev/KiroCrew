@@ -25,11 +25,10 @@ def _init_repo(path) -> None:
 class TestUpdateCheckGitGuard:
     """A non-git project dir must never invoke git — it takes the feed path instead.
 
-    The guard itself is unchanged (no "not a git repository" spam from the poller);
-    what changed is where control goes afterwards. A tarball/wheel install used to
-    return early and leave the cache reporting "up to date"; it now compares against
-    its release-channel feed, so these tests stub that seam and assert git stayed
-    out of it.
+    The guard raises no "not a git repository" spam from the poller. A
+    tarball/wheel install does not return early leaving the cache reporting "up
+    to date"; it compares against its release-channel feed, so these tests stub
+    that seam and assert git stays out of it.
     """
 
     @staticmethod

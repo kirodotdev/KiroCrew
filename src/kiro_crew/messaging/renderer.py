@@ -71,7 +71,14 @@ class OutputEvent:
     # tool_call announces it, prompt_choice asks permission for it. Carrying them
     # on the prompt is what lets a renderer name the tool the request is actually
     # about instead of the last one it happened to see.
-    title: str = ""  # tool_call / prompt_choice (tool name / "Running: X")
+    title: str = ""  # tool_call / prompt_choice (display title: derived, or "Running: X")
+    # tool_call: the tool's PROGRAMMATIC identity (`_meta.kiro.toolName`), kept
+    # apart from ``title`` because the title is display copy — derived from the
+    # arguments, localisable, and free to change — while a renderer's behaviour
+    # rules (the Slack `wait` stream rollover) must key on what the tool IS.
+    # Empty when the transport sent no identity; renderers then fall back to the
+    # title, which is what they matched on before the identity travelled.
+    tool_name: str = ""
     tool_kind: str = ""  # tool_call (e.g. "read"/"execute" — drives phase emoji)
     tool_purpose: str = ""  # tool_call / prompt_choice (human-readable purpose)
     options: list[dict[str, Any]] = field(default_factory=list)  # prompt_choice
@@ -101,7 +108,7 @@ class OutputEvent:
 
 
 def chunk_text(text: str, max_chars: int) -> list[str]:
-    """Split ``text`` into chunks no longer than ``max_chars``.
+    """Split ``text`` into chunks of at most ``max_chars`` characters.
 
     Pure helper used by Renderers to honor ``capabilities.max_message_chars``.
     Returns ``[]`` for empty input. A non-positive ``max_chars`` disables
@@ -186,7 +193,7 @@ def display_safe_for(text: str, capabilities: TransportCapabilities) -> str:
 
     Control-tag comments are stripped first, same as :func:`display_safe` —
     the deterministic backstop against a dashboard-authored control tag
-    reaching channel users as literal text (#7948).
+    reaching channel users as literal text.
     """
     text = strip_control_comments(text or "")
     safe, _ = redact_for_display(text, _default_redactor)
@@ -261,7 +268,7 @@ def display_safe(text: str) -> str:
 
     Control-tag comments are stripped first (fence/inline-code aware): channel
     formatters render HTML comments literally, so a dashboard-authored
-    ``<!-- keep-visible -->`` (#7948) or ``deliver:``/``plan_task_id:`` tag
+    ``<!-- keep-visible -->`` or ``deliver:``/``plan_task_id:`` tag
     delivered to a channel would otherwise reach end users as visible text.
     The prompt rule only contains the emitter; this is the deterministic
     backstop on the message itself.
@@ -306,6 +313,58 @@ def credential_redaction_notice(count: int) -> str:
         f"Security notice: {subject} in the message above {verb} replaced with a "
         "redaction placeholder. Any command shown will not work if you paste it "
         "as-is; supply the secret yourself on the machine where you run it."
+    )
+
+
+def redaction_notice(cred_count: int, url_count: int) -> str:
+    """The notice a channel sends after delivering text EITHER redactor rewrote.
+
+    Every channel delivery surface runs two body rewriters over the text it
+    ships -- ``security.redact_exfiltration_urls`` then
+    ``security.redact_credentials`` -- so the placeholder a reader sees can come
+    from either. ``cred_count`` is the number of ``CREDENTIAL_REDACTION_TAGS``
+    placeholders in the delivered text; ``url_count`` is the number of
+    ``EXFILTRATION_REDACTION_TAG_PREFIX`` placeholders (that tag interpolates the
+    redacted domain, so callers count it by prefix, never by equality). Like
+    :func:`credential_redaction_notice`, this carries NO secret bytes and no
+    redacted URL: only the counts are used, so the domain the tag names never
+    reaches the sentence.
+
+    Worded BY KIND because the remedies differ: a credential needs the secret
+    re-entered where the command runs; a rewritten URL needs the original link
+    re-checked from a trusted source. Telling a reader whose URL was rewritten to
+    "supply the secret yourself" names a remedy that cannot help them, which is
+    the gap this closes. The credential-only sentence is delegated to
+    :func:`credential_redaction_notice` unchanged, so a surface that adopts this
+    builder ships byte-identical wording for the case it already covered.
+
+    Same delivery contract as the credential notice: plain text, no markup, no
+    emoji, one string for every channel, sent as its own message BELOW the
+    answer. At least one count must be non-zero -- the caller gates on that, and
+    a zero/zero call is a caller bug rather than a silent empty message.
+    """
+    if cred_count < 0 or url_count < 0 or not (cred_count or url_count):
+        raise ValueError("redaction_notice needs at least one placeholder to describe")
+    if not url_count:
+        return credential_redaction_notice(cred_count)
+    subjects: list[str] = []
+    if cred_count:
+        subjects.append("a credential" if cred_count == 1 else f"{cred_count} credentials")
+    subjects.append("a suspicious URL" if url_count == 1 else f"{url_count} suspicious URLs")
+    subject = " and ".join(subjects)
+    subject = subject[0].upper() + subject[1:]
+    verb = "was" if (cred_count + url_count) == 1 else "were"
+    if cred_count:
+        remedy = (
+            "supply the secret yourself on the machine where you run it, and "
+            "re-check any redacted URL against a trusted source."
+        )
+    else:
+        remedy = "re-check the original URL against a trusted source before using it."
+    return (
+        f"Security notice: {subject} in the message above {verb} replaced with a "
+        f"redaction placeholder. Any command or link shown will not work if you "
+        f"paste it as-is; {remedy}"
     )
 
 
@@ -499,7 +558,7 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
             # when no ``]`` ever arrives the sealed frame re-trims too, so the
             # transient-frame consolation above does not apply. Locating a
             # marker by substring without asking whether it READS as one is
-            # the class #8983 fixed at the directive seam; this is the same
+            # the bug fixed at the directive seam; this is the same
             # rule at the trailer seam. Only the tail-most occurrence can be
             # mid-flight -- a stream appends, so text after an opener means
             # that opener was never in flight -- which is why one viability
@@ -545,6 +604,13 @@ class Renderer(ABC):
     """Maps abstract ``OutputEvent``s onto a transport's native surface."""
 
     channel_type: str = ""
+    #: Programmatic identity of the tool call ``on_tool_call`` is currently
+    #: rendering (``OutputEvent.tool_name``), set by :meth:`dispatch` before the
+    #: hook runs. ``on_tool_call`` receives the DISPLAY title; a renderer whose
+    #: behaviour depends on which tool ran (Slack's ``wait`` stream rollover)
+    #: reads this instead of matching the title. ``""`` when the transport sent
+    #: no identity.
+    current_tool_name: str = ""
 
     def __init__(self, capabilities: TransportCapabilities) -> None:
         self.capabilities = capabilities
@@ -725,6 +791,7 @@ class Renderer(ABC):
         elif event.kind == THINKING:
             await self.on_thinking(event.text)
         elif event.kind == TOOL_CALL:
+            self.current_tool_name = event.tool_name or ""
             await self.on_tool_call(
                 event.tool_call_id, event.title, event.tool_kind, event.tool_purpose
             )
@@ -769,7 +836,7 @@ class SilentRenderer(Renderer):
     ``on_prompt_choice`` is dropped like the rest, matching the Slack gate that
     withholds the linked approval prompt from a disconnected thread: the
     dashboard renders the same prompt, and soliciting a decision in the
-    conversation the user just left would ask where they are no longer looking.
+    conversation the user just left would ask where they are not looking.
     """
 
     def __init__(self, capabilities: Any = None, channel_type: str = "") -> None:

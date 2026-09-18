@@ -1,5 +1,5 @@
 """The spine's agent-reply JSON extraction, consolidated onto the shared
-``llm_helpers._extract_json_of_type`` scanner (#4974).
+``llm_helpers._extract_json_of_type`` scanner.
 
 Locks the call-site behaviors ``_extract_json_array`` / ``_has_json_array``
 provide to ``_discover_surfaces_via_agent``: fenced replies, stray bracketed
@@ -107,7 +107,7 @@ class TestHasJsonArray:
         assert _has_json_array(text) is False
 
     def test_wrapper_plus_instruction_echo_empty_array_reads_unanswered(self) -> None:
-        # GPT round 3: an empty [] embedded in prose is instruction-echo, not a
+        # An empty [] embedded in prose is instruction-echo, not a
         # no-findings answer — counting it suppressed the forcing re-emit and
         # lost the wrapped findings. [] answers only as the whole reply.
         text = '{"findings": [{"file": "a.py"}]} Use [] when none.'
@@ -137,8 +137,7 @@ class TestAdversarialNesting:
         # A reply containing a nesting bomb yields nothing, even when a payload
         # precedes the bomb: a truncated scan cannot certify the payload as
         # unambiguous (a later DIFFERENT payload may follow the bomb), and the
-        # forcing re-emit is the designed recovery. GPT review round 4 — this
-        # flips the earlier keep-the-prefix behavior, which let a worked
+        # forcing re-emit is the designed recovery. Keeping the prefix here would let a worked
         # example launder past the ambiguity refusal.
         text = '[{"file": "a.py"}] ' + "[" * 100_000
         assert _extract_json_array(text) == []

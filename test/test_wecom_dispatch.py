@@ -303,8 +303,8 @@ def _deny_wecom_profile(monkeypatch, tmp_path):
 class TestTurn:
     @pytest.mark.asyncio
     async def test_channels_deny_drops_inbound_message(self, tmp_path, monkeypatch) -> None:
-        # HIGH (GPT round-4 #2): a channels DENY must stop handle_message from
-        # driving a turn. Regression-locks the WeCom inbound chokepoint.
+        # A channels DENY must stop handle_message from driving a turn. This
+        # locks the WeCom inbound chokepoint.
         from kiro_crew.platform import governance_profiles as gp
 
         _deny_wecom_profile(monkeypatch, tmp_path)
@@ -424,7 +424,7 @@ class TestCommands:
     @pytest.mark.asyncio
     async def test_compact_declined_on_auto_managed_backend(self) -> None:
         # A backend that cannot serve /compact gets the informational reply and
-        # compact() is NEVER dispatched (#8156).
+        # compact() is NEVER dispatched.
         provider = FakeProvider([])
         provider.manual_compact_unsupported_backend = "kas"
         sessions = FakeSessions(provider)
@@ -454,7 +454,7 @@ class TestCommands:
     @pytest.mark.asyncio
     async def test_hard_threshold_declines_silently_on_auto_managed_backend(self) -> None:
         # No /compact to dispatch and no notice: the backend compacts on its
-        # own as context fills (#8156).
+        # own as context fills.
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
         )
@@ -471,7 +471,7 @@ class TestCommands:
     @pytest.mark.asyncio
     async def test_soft_nudge_suppressed_on_auto_managed_backend(self) -> None:
         # The nudge advises /compact, which this backend refuses — it compacts
-        # on its own, so there is nothing for the user to act on (#8156).
+        # on its own, so there is nothing for the user to act on.
         provider = FakeProvider(
             [AcpEvent(kind=EVENT_TEXT_CHUNK, text="answer"), AcpEvent(kind=EVENT_COMPLETE)]
         )
@@ -511,9 +511,8 @@ class TestCommands:
     @pytest.mark.asyncio
     @pytest.mark.asyncio
     async def test_link_binds_the_dashboard_mirror(self) -> None:
-        # /link used to be refused outright, on the belief that WeCom could never
-        # push. aibot_send_msg makes the mirror deliverable, so the command now
-        # does what it says.
+        # /link binds the dashboard mirror: aibot_send_msg makes the mirror
+        # deliverable, so the command is not refused as undeliverable.
         client = FakeClient()
         sessions = FakeSessions(FakeProvider([]))
         d = _dispatcher(sessions, FakeCtx(), client)

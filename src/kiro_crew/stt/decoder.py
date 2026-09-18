@@ -2,7 +2,7 @@
 
 A desktop release carries the ``imageio-ffmpeg`` executable inside its own
 interpreter, so it never needs this. A source or Toolbox install carries nothing,
-and the only decoder it could previously reach was a system FFmpeg from a fixed
+and the only decoder it can otherwise reach is a system FFmpeg from a fixed
 set of package-manager directories -- which on a distribution that ships no
 FFmpeg package (Amazon Linux, RHEL without EPEL) does not exist, leaving batch
 voice input permanently broken with a shell command as the only remedy.

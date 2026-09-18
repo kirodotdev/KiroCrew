@@ -85,6 +85,48 @@ kirocrew setup --agent-only
 This regenerates `~/.kiro/agents/kirocrew.json` while preserving your own
 customizations in it.
 
+### Pod commands report Permission denied on the user bus
+
+`kirocrew pod` uses per-user service-manager units. On Linux it must connect to
+`$XDG_RUNTIME_DIR/bus`. Pod verb entry and the Pods row in `kirocrew doctor` run
+`systemctl --user is-system-running` once to test that connection. Low-level unit
+queries do not repeat the probe before each command.
+
+If doctor reports the bus as `sandboxed away`, the socket exists but an outer
+sandbox, such as a container or launcher shim, blocks the current process:
+
+```text
+Failed to connect to bus: Permission denied
+```
+
+Run pod commands from a host shell instead of that sandboxed process:
+
+```bash
+kirocrew doctor
+kirocrew pod status <worktree>
+kirocrew pod up <worktree>
+```
+
+If doctor reports `no user session bus`, or reports the address as stale because
+the socket it names holds nothing, no per-user systemd instance is running for
+this uid, and pods are `systemd --user` units. Start it with the
+`loginctl enable-linger <user>` command doctor prints. That command talks to the
+**system** bus, so it is not self-service on a host that cannot reach a bus at
+all: if it answers `Failed to create bus connection: Permission denied`, run it
+from a host shell, or have an administrator run
+`sudo loginctl enable-linger <uid>` — the numeric uid resolves where a name
+lookup answers `Failed to look up user <user>: No such process`. A Cloud Dev
+Desktop reaches the stale case by exporting `DBUS_SESSION_BUS_ADDRESS` from a
+login session whose manager has since stopped. To preview a worktree with no
+systemd at all, use `./dev-backend.sh`.
+
+Probe and unit operations resolve
+`systemctl` only from trusted system directories and ignore same-named PATH entries. A
+missing trusted executable, missing interpreter, or other failure while executing the
+resolved command is reported as an operational error, not as an absent backend.
+Destructive Dev Fleet cleanup then refuses to remove the worktree. Other Kiro Crew
+features do not depend on the pod service manager.
+
 ### MCP tools not working
 
 `kirocrew doctor` auto-appends missing `tools` / `allowedTools` entries for the
@@ -272,10 +314,20 @@ Common problems:
   corpus because of a typo. Embeddings stay unavailable (keyword search still
   works) until the path is fixed.
 - **Embedding-model dimension mismatch.** Set `memory.embedding_dim` to the output width named in the error. The width is checked at load so a mismatch is a loud refusal rather than an unexplained loss of semantic search.
-- **You swapped models but nothing re-embedded.** The default vector-space
-  identity is derived from the file's name and size, so two different models of
-  identical byte size look the same. Set `memory.embed_model_id` explicitly to
-  distinguish them.
+- **You swapped models but nothing re-embedded.** The vector-space identity
+  is `<label>:sha256:<digest>` of the model file's bytes, so a different model
+  under the same name and size is detected on its own; `memory.embed_model_id`
+  is only the label and cannot pin the old space. Applying the model from the
+  dashboard (Memory → Embedding Model) records the new digest together with
+  `memory.embed_model_stamp`, and an unchanged file reuses that digest at
+  startup without re-reading the weights. A file replaced behind a stale stamp
+  is re-hashed off the event loop. Status reports the model as unverified while
+  that check runs and recovers automatically after it succeeds; applying the
+  model again is not required.
+- **Status warns about inherited legacy vectors.** Older model identities used
+  the file name and size, so they cannot prove which weights produced the
+  vectors. If you changed weights before upgrading, reapply the same file in
+  Memory settings to rebuild inherited vectors while keeping memory text.
 
 ### High memory usage with embeddings
 

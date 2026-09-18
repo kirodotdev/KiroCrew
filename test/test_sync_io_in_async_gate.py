@@ -1,6 +1,6 @@
 """Tests for the sync-IO-in-async ratchet (scripts/check_sync_io_in_async.py).
 
-#3057: nothing in the repository failed when blocking IO was written inside an
+Nothing in the repository failed when blocking IO was written inside an
 ``async def``, so the count grew back after every individual fix -- ~70 on-loop
 ``store.db.execute()`` calls in ``dashboard/handlers/knowledge.py`` against zero
 in ``dashboard/handlers/memory.py`` in the same directory. These tests pin the
@@ -337,12 +337,18 @@ class TestVerdicts:
 
 
 class TestBaselineRatchet:
-    def test_committed_baseline_parses_and_files_exist(self) -> None:
+    def test_committed_baseline_parses_and_is_terminally_empty(self) -> None:
+        # The ratchet is at its terminal state: every legacy site is
+        # offloaded or carries an inline `# on-loop-io-ok:` marker, so the
+        # committed baseline holds no entries. The header-only file must still
+        # parse, and it must STAY empty: a new offender belongs in a thread or
+        # carries the marker, never a resurrected baseline line.
         entries = gate._read_baseline(BASELINE)
-        assert entries, "the committed baseline is empty"
-        for rel, count in entries.items():
-            assert count > 0, f"{rel} is baselined at zero; it should be pruned"
-            assert (ROOT / rel).is_file(), f"baselined path {rel} no longer exists"
+        assert entries == {}, (
+            "the baseline can only shrink; a new on-loop call belongs in a "
+            "thread or carries an inline on-loop-io-ok marker, not a new "
+            f"baseline entry: {entries}"
+        )
 
     def test_missing_baseline_refuses_rather_than_absorbs(self, tmp_path: Path) -> None:
         with pytest.raises(SystemExit):
@@ -403,7 +409,7 @@ class TestReportMode:
 
 class TestExemplarStaysClean:
     def test_the_fully_offloaded_handler_stays_clean(self) -> None:
-        # dashboard/handlers/memory.py is #3057's control case: it wraps every
+        # dashboard/handlers/memory.py is the control case: it wraps every
         # store call in asyncio.to_thread while handlers/knowledge.py next door
         # does not. It must never appear in the baseline.
         rel = "src/kiro_crew/dashboard/handlers/memory.py"

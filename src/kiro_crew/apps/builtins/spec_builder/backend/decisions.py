@@ -273,7 +273,7 @@ def _apply_recorded_answers(
     ``locked``, whatever the state file says about it -- including a pending
     re-emission of the same id. Decisions the agent has dropped from its state
     file are NOT resurrected: there is no card to lock, and synthesising one
-    would put a title on screen that no longer exists anywhere.
+    would put a title on screen that appears nowhere in that state.
     """
     if not recorded or not isinstance(spec_state, dict):
         return spec_state
@@ -379,7 +379,7 @@ def _claim_decision_locked(
                 return _CLAIM_ALIAS_CONFLICT, ""
             # The directory must still verify as ITSELF before anything is recorded
             # under its key. This is the half that keeps the alias-by-spelling hole
-            # closed now that _decision_key no longer resolves: an entry whose spec_dir
+            # closed given that _decision_key does not resolve: an entry whose spec_dir
             # disagrees with realpath is either a directory swapped after indexing or a
             # hand-written index entry spelling one directory two ways, and either way
             # recording under it would mint a second record for documents that already

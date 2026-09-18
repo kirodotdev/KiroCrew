@@ -40,6 +40,38 @@
 import { posixSingleQuote } from './posixQuote'
 
 /**
+ * How long a Run-in-terminal dispatch waits for the freshly minted dock
+ * terminal's PTY to report ready before giving up and rolling the tab back.
+ *
+ * The value is unchanged from the timeout this constant replaced. A slow shell
+ * is not this deadline's problem to solve: reaching it only asks whether the
+ * shell is alive, and a healthy-but-slow one keeps its tab on that answer, so
+ * waiting longer would buy nothing but dead air (#10822). It is a shared
+ * constant so the button's own fallback below can never declare failure before
+ * the dispatcher has ruled.
+ */
+export const RUN_IN_TERMINAL_READY_DEADLINE_MS = 6_000
+
+/**
+ * How long a Run-in-terminal dispatch waits before CONFIRMING that a session
+ * missing from `GET /api/terminal/sessions` is gone rather than still opening.
+ *
+ * The backend reserves the slot with a null placeholder from `ws.prepare()`
+ * until the shell is spawned, and that route skips placeholders -- so a shell
+ * still coming up is simply absent. One bounded re-probe separates the two:
+ * absent twice, this far apart, is gone.
+ */
+export const RUN_IN_TERMINAL_OPENING_GRACE_MS = 2_000
+
+/**
+ * How long RunInTerminalBtn waits for a `mc:run-in-terminal-result` echo
+ * before assuming the request was lost. Strictly after the dispatch deadline:
+ * the only window in which no result can arrive is a lost request (no
+ * listener mounted), and that is what this fallback exists to surface.
+ */
+export const RUN_IN_TERMINAL_RESULT_FALLBACK_MS = RUN_IN_TERMINAL_READY_DEADLINE_MS + 2_000
+
+/**
  * Fence tags that NAME a shell binary, mapped to the program to invoke.
  *
  * The seven tags the button appears on split unevenly. These four name both an

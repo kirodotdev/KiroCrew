@@ -70,7 +70,7 @@ def _write_log(root: Path, lines: list, repo: str | None = TEST_REPO) -> None:
     A dict line gets ``repo`` stamped unless it already names one, because the
     production writers stamp it on EVERY event and a scoped fold admits only events
     that name the repository asked for. An unstamped fixture would therefore
-    exercise a trail that no longer occurs, and would report empty counters for a
+    exercise a trail that does not occur, and would report empty counters for a
     reason unrelated to what these tests assert. Pass ``repo=None`` to build a
     deliberately pre-stamp line, which is what the exclusion tests do.
     """
@@ -120,7 +120,7 @@ def _step(fold_result: fold.PipelineFold, key: str) -> fold.StepCounts:
 
 
 def test_churn_is_counted_separately_from_skipped(tmp_root: Path) -> None:
-    """A review round is PROGRESS inside verify, not a decline. The module keeps
+    """A churn event is PROGRESS inside verify, not a decline. The module keeps
     churn and skipped in different buckets because "a gate ran" and "an item was
     declined" are opposite facts; conflating them makes a working step look like
     a rejecting one. verify has churn events but an empty skipped set, so churn
@@ -431,8 +431,8 @@ def test_pr_extraction_pull_url_anywhere() -> None:
 
 
 def test_pr_extraction_rejects_free_prose() -> None:
-    """Free prose like 'PR 5327 head abc' must yield None. This is deliberate:
-    the same prose field also says things like 'rebased over PR 5191', so a loose
+    """Free prose that merely mentions a PR number must yield None. This is deliberate:
+    the same prose field also says things like 'rebased over that PR', so a loose
     number-grab would produce a confidently WRONG link. Only a structured field
     or a real /pull/ URL is trusted. Assert None for both prose shapes."""
     assert fold._extract_pr({"event": "note", "details": {"text": "PR 5327 head abc"}}) is None
@@ -570,7 +570,7 @@ def test_usage_beyond_the_old_thirty_shard_cap_is_still_summed(
     spend on the OLDEST one, so a 30-newest read drops it."""
     root = wire_sources["root"]
     _write_queue(root, [{"issue": 9, "slot": "s9", "previous_slots": []}])
-    # 40 daily shards, newest 2026-08-24 backwards. Only the oldest carries credits,
+    # 40 daily shards counting back from the newest. Only the oldest carries credits,
     # so the assertion below fails for any read that truncates the tail.
     day = date(2026, 8, 24)
     for i in range(40):
@@ -603,8 +603,8 @@ def test_deeply_nested_record_does_not_crash_the_fold() -> None:
 def test_unreadable_shard_raises_rather_than_under_reporting(
     wire_sources: dict[str, Path],
 ) -> None:
-    """An oversized shard used to be skipped, which dropped that day's rows from a
-    figure presented as the LIFETIME total -- the operator saw a smaller number with
+    """An oversized shard must not be silently skipped, which would drop that day's rows from a
+    figure presented as the LIFETIME total -- the operator would see a smaller number with
     nothing saying it was partial. That is the same defect as the removed 30-shard
     window arriving by another route, and this feature refuses the trade everywhere
     else. Fixture: a good shard plus one past the byte ceiling; the call must FAIL

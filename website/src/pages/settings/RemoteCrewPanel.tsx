@@ -37,6 +37,8 @@ import {
   MoreHorizontal,
   Pencil,
   Play,
+  Cloud,
+  X,
 } from 'lucide-react'
 import {
   api,
@@ -48,6 +50,7 @@ import {
   type CloudCoords,
   type RemoteProvisioner,
 } from '../../api/client'
+import { BUILTIN_PROVISIONER_ID, WARM_SET_CAP_AUTO_CEILING } from '../../utils/remoteCrew'
 import { Card, Btn, Badge, IconButton } from '../../components/ui'
 import { SettingsToggle } from '../../components/settings'
 import {
@@ -85,6 +88,18 @@ import {
 /** A launch job the user is still waiting on (not yet a switchable crew). */
 const IN_PROGRESS: LaunchJob['status'][] = ['pending', 'running', 'awaiting_signin']
 const isInProgress = (j: LaunchJob) => IN_PROGRESS.includes(j.status)
+
+const connectionTypeLabel = (inst: InstanceView): string =>
+  inst.connection_method === 'ssm'
+    ? i18nT('pages.settings.remoteCrewPanel.type_ssm')
+    : i18nT('pages.settings.remoteCrewPanel.type_ssh')
+
+// The badges compress to acronyms (EC2 / SSM / SSH) a first-time reader may
+// not know; the hover title spells out what each one means.
+const connectionTypeHint = (inst: InstanceView): string =>
+  inst.connection_method === 'ssm'
+    ? i18nT('pages.settings.remoteCrewPanel.transport_hint_ssm')
+    : i18nT('pages.settings.remoteCrewPanel.transport_hint_ssh')
 
 /** Remembered across navigation — see the state declarations for why. */
 const CLOUD_PROFILE_KEY = 'mc-cloud-profile'
@@ -322,14 +337,17 @@ function CrewRow({
 }) {
   const connected = inst.status.state === 'connected'
   const isCloud = cloudTag !== null
-  // An SSM machine with no matching launch job is NOT necessarily hand-added: the CLI
-  // launcher registers real cloud crews the same way, and those never produce a launch
-  // job in this gateway's store. Calling them "added by you" and offering the plain
-  // one-click Remove would unregister a live, billing instance and take away the only
-  // place the dashboard could still delete it. We cannot prove which it is, so treat it
-  // as possibly-cloud: same confirm step, and copy that says what Remove does and does
-  // not do.
-  const unverifiedCloud = !isCloud && inst.connection_method === 'ssm' && !!inst.ssm_target
+  // Two persisted signals mark a row possibly-cloud when no launch job matches: an
+  // EC2 stamp (`provisioner_id`), and an SSM target — the CLI launcher registers real
+  // cloud crews the same way, and those never produce a launch job in this gateway's
+  // store. Calling either "added by you" would invite a Remove that unregisters a
+  // live, billing instance and takes away the only place the dashboard could still
+  // delete it. We cannot prove which it is, so treat it as possibly-cloud: same
+  // confirm step, and copy that says what Remove does and does not do.
+  const unverifiedCloud =
+    !isCloud &&
+    (inst.provisioner_id === BUILTIN_PROVISIONER_ID ||
+      (inst.connection_method === 'ssm' && !!inst.ssm_target))
   // A stop/start this row asked for is still in flight.
   const lifecycleBusy = busy === `stop:${cloudTag}` || busy === `start:${cloudTag}`
   // States that occupy the row's second control slot with an inline button.
@@ -346,7 +364,20 @@ function CrewRow({
         <div className="min-w-0">
           <div className="text-text-strong text-sm font-medium truncate">{inst.name}</div>
           <div className="text-[12px] text-muted truncate">
-            <span className="uppercase tracking-wide text-muted-strong">{inst.connection_method === 'ssm' ? 'SSM' : 'SSH'}</span>{' '}
+            {(inst.provisioner_id === BUILTIN_PROVISIONER_ID || isCloud) && (
+              <Badge
+                variant="aim"
+                className="mr-1"
+                title={i18nT('pages.settings.remoteCrewPanel.source_ec2_hint')}
+                aria-label={i18nT('pages.settings.remoteCrewPanel.source_ec2_hint')}
+              >
+                <Cloud className="lucide-inline" />
+                {i18nT('pages.settings.remoteCrewPanel.source_ec2')}
+              </Badge>
+            )}
+            <Badge variant="muted" className="mr-1" title={connectionTypeHint(inst)} aria-label={connectionTypeHint(inst)}>
+              {connectionTypeLabel(inst)}
+            </Badge>
             {target}
             {inst.connection_method === 'ssm' && inst.aws_region ? ` (${inst.aws_region})` : ''} {i18nT('pages.settings.instancesPanel.port_2')} {inst.remote_port}
           </div>
@@ -354,9 +385,14 @@ function CrewRow({
           <div className="text-[11px] text-muted-strong mt-1">
             {isCloud
               ? i18nT('pages.settings.remoteCrewPanel.launched_by_kiro_crew')
-              : unverifiedCloud
-                ? i18nT('pages.settings.remoteCrewPanel.unverified_cloud_note')
-                : `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`}
+              : inst.provisioner_id === BUILTIN_PROVISIONER_ID
+                // An EC2-stamped row wears the EC2 badge, whose hint says it WAS
+                // launched by the EC2 launcher — the caption must agree with the
+                // badge, not hedge about whether AWS resources exist.
+                ? i18nT('pages.settings.remoteCrewPanel.stamped_ec2_note')
+                : unverifiedCloud
+                  ? i18nT('pages.settings.remoteCrewPanel.unverified_cloud_note')
+                  : `${i18nT('pages.settings.remoteCrewPanel.added_by_you')} · ${i18nT('pages.settings.remoteCrewPanel.doesnt_manage')}`}
           </div>
         </div>
       </div>
@@ -739,6 +775,75 @@ export function RemoteCrewPanel() {
   // to the first renderable row below.
   const [persistedProvisioner, setProvisionerId] = usePersistedString(CLOUD_PROVISIONER_KEY, '')
   const [copied, setCopied] = useState<'command' | 'policy' | null>(null)
+  // The Kiro identity the crew signs in as. Preselected from the launching
+  // machine's own sign-in (an Identity Center user gets their organization's
+  // portal, not the Builder ID one) and overridable; the server re-validates.
+  // `identity_region` is the IAM Identity Center region — NOT the EC2 region.
+  const [identityMode, setIdentityMode] = useState<'builder_id' | 'identity_center'>('builder_id')
+  const [identityStartUrl, setIdentityStartUrl] = useState('')
+  const [identityRegion, setIdentityRegion] = useState('')
+  const identityTouched = useRef(false)
+  // Render-visible twin of the ref: an explicit choice must re-render the
+  // Launch gate even when it re-selects the already-checked default.
+  const [identityChosen, setIdentityChosen] = useState(false)
+  const identityQuery = useQuery({
+    queryKey: ['cloud-identity'],
+    queryFn: api.cloudIdentity,
+    staleTime: 60_000,
+    retry: false,
+  })
+  useEffect(() => {
+    // Seed ONCE from the inherited identity; never overwrite a user's edits.
+    if (identityTouched.current) return
+    const suggested = identityQuery.data?.suggested_target
+    if (suggested?.start_url) {
+      setIdentityMode('identity_center')
+      setIdentityStartUrl(suggested.start_url)
+    }
+  }, [identityQuery.data])
+  // Mirrors normalize_start_url on the backend, which is the authority: the
+  // scheme may be omitted (https is assumed), the host is any valid DNS name
+  // (Identity Center portals live in other partitions and on custom domains,
+  // not only <org>.awsapps.com), and characters that would be unsafe on the
+  // remote shell are refused. The form only decides whether Launch is enabled.
+  const identityStartUrlOk = (() => {
+    const v = identityStartUrl.trim()
+    if (!v || /[\s"'`$\\;&|<>(){}[\]*?!~#]/.test(v)) return false
+    if (/^[a-z][a-z0-9+.-]*:\/\//i.test(v) && !/^https:\/\//i.test(v)) return false // http:, ftp:, ...
+    const bare = v.replace(/^https:\/\//i, '')
+    return /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+(\/[^?#]*)?$/i.test(bare)
+  })()
+  const identityRegionOk = /^[a-z]{2}(-[a-z]+)+-\d{1,2}$/.test(identityRegion.trim())
+  // Until the launching computer's identity has been READ (or the user has
+  // made a choice themselves), the Builder ID default is a placeholder, not a
+  // decision: a returning operator with satisfied prerequisites could click
+  // Launch inside that window and send no target, and an Identity Center
+  // preselection that lands a moment later would have been ignored. A read
+  // that could not answer -- the server reports `discovery: 'unknown'`, or the
+  // request itself failed -- is the same placeholder: nothing is known about
+  // this computer's sign-in, so the inline notice explains it and Launch waits
+  // for the user to pick by hand. An Identity Center user whose whoami timed
+  // out must not be launched as Builder ID by a preselection they never saw
+  // was a guess.
+  const identityUnknown = identityQuery.isError || identityQuery.data?.discovery === 'unknown'
+  // The server reports the two unknown causes distinctly: `identity` is null
+  // when whoami did not answer, and carries the Identity Center account type
+  // when the sign-in was read but its portal address was not. The notice names
+  // the one that happened rather than handing the user the disjunction.
+  const identityUnknownCause: 'no_answer' | 'no_portal' | null =
+    identityQuery.data?.discovery === 'unknown'
+      ? identityQuery.data.identity?.account_type === 'IamIdentityCenter' ? 'no_portal' : 'no_answer'
+      : null
+  const identityResolving = (identityQuery.isPending || identityUnknown) && !identityChosen
+  // While nothing is known and the user has not chosen, no radio renders
+  // checked: a checked Builder ID beside a gate that says "choose" reads as a
+  // choice already made. A read identity (or the user's own click) shows one.
+  const identityRadioShown = identityChosen || !identityUnknown
+  const identityOk =
+    !identityResolving && (identityMode === 'builder_id' || (identityStartUrlOk && identityRegionOk))
+  const loginTargetBody = identityMode === 'identity_center'
+    ? { login_target: { license: 'pro', start_url: identityStartUrl.trim(), region: identityRegion.trim() } }
+    : {}
   /** A failed copy, pinned to the checklist row whose button was pressed. */
   const [copyErr, setCopyErr] = useState<{ target: 'command' | 'policy'; message: string } | null>(null)
   const [activeLaunchId, setActiveLaunchId] = useState<string | null>(null)
@@ -759,7 +864,6 @@ export function RemoteCrewPanel() {
   // `seq` counts REBASES, and is used as the form's React key: adopting the current
   // record rewrites the draft's values, and a mounted form cannot re-seed itself.
   const editDraft = useAppSelector(s => s.instances.crewForms?.edit ?? null)
-  const editDirty = editDraft !== null
   // Which row's Edit was refused, not a bare flag: the refusal has to render at
   // the row the user actually clicked. Shown once at the bottom of the Card it
   // could sit off-screen in a long crew list, so the click looked like a no-op.
@@ -774,7 +878,12 @@ export function RemoteCrewPanel() {
   // row disappears on its own when the teardown finishes.
   const [deletingTags, setDeletingTags] = useState<Set<string>>(new Set())
   const [actionErr, setActionErr] = useState<string | null>(null)
-  const [diagNote, setDiagNote] = useState<string | null>(null)
+  // `kind` decides the surface: only `warn` (a negative ladder verdict, or the
+  // tunnel's own `status.error`) is an error. `ok` / `info` describe a state that
+  // has not gone wrong — healthy, or simply not connected yet — and render as a
+  // status note, never as a red ErrorNotice with an agent hand-off. Mirrors
+  // InstancesPanel's classification.
+  const [diagNote, setDiagNote] = useState<{ kind: 'ok' | 'info' | 'warn'; text: string } | null>(null)
   // The diagnosis note's own report, so the hand-off carries the ladder's verdict
   // code and probe chain rather than the `id: reason` string on screen. Held as an
   // object because message text is not an identity: two crews unreachable the same
@@ -939,7 +1048,7 @@ export function RemoteCrewPanel() {
   })
 
   const instances = useMemo(() => instancesQuery.data?.instances ?? [], [instancesQuery.data])
-  const warmCap = instancesQuery.data?.warm_set_cap || 5
+  const warmCap = instancesQuery.data?.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
 
   // A draft outlives its form ON PURPOSE, which means it can also outlive the CREW
   // it belongs to: Remove a crew mid-edit and the draft stays keyed by that id, so
@@ -1001,7 +1110,7 @@ export function RemoteCrewPanel() {
   const cloudTagByInstanceId = useMemo(() => {
     const m = new Map<string, string>()
     for (const j of launches) {
-      if (j.instance_id && (j.provider_id ?? 'aws_ec2') === 'aws_ec2') m.set(j.instance_id, j.tag)
+      if (j.instance_id && (j.provider_id ?? BUILTIN_PROVISIONER_ID) === BUILTIN_PROVISIONER_ID) m.set(j.instance_id, j.tag)
     }
     return m
   }, [launches])
@@ -1038,20 +1147,40 @@ export function RemoteCrewPanel() {
     mutationFn: (id: string) => api.instanceStatus(id, true),
     onMutate: () => { setActionErr(null); setDiagNote(null); setDiagReport(null) },
     onSuccess: (st, id) => {
-      const reason = st.diagnosis?.reason || st.error
-      if (reason) setDiagNote(`${id}: ${reason}`)
+      const code = st.diagnosis?.code
+      // Two verdicts are BENIGN: `ok`, and `not_connected` — which is `ok: false`
+      // on the wire but whose reason is guidance ("click Connect"), not a failure.
+      // Neither may label an error surface or reach the failure report.
+      const benign = code === 'ok' || code === 'not_connected'
+      const failing = st.diagnosis && !benign ? st.diagnosis : undefined
+      // Displayed text, most specific first: a FAILING ladder verdict names the
+      // broken link, so it wins; otherwise the tunnel's live `status.error`; and
+      // only then a benign verdict's own reason. The ladder result is the last
+      // RUN, so a stale "All checks passed" / "click Connect" must never label a
+      // red notice whose real cause is the live error.
+      const reason = failing?.reason || st.error || st.diagnosis?.reason
+      // A benign verdict is only benign while the tunnel has no error of its own.
+      const kind: 'ok' | 'info' | 'warn' =
+        st.error || failing ? 'warn' : code === 'ok' ? 'ok' : code === 'not_connected' ? 'info' : 'warn'
+      if (reason) setDiagNote({ kind, text: `${id}: ${reason}` })
       // Journal unconditionally, healthy verdict included: the recorder's
       // no-failure path is what clears its de-dup signature, so skipping the call
       // on a healthy diagnose would leave the signature standing and suppress the
       // next identical failure. It returns null when there is nothing to describe.
+      // A benign verdict is stripped from the status handed over: the recorder
+      // treats any not-ok verdict as a failure, so `not_connected` would otherwise
+      // be journaled as a system error (the #11110 defect by another path), and a
+      // stale benign verdict beside a live error would decorate that error's
+      // report with a probe chain that says nothing is wrong.
       const inst = instances.find(i => i.id === id)
+      const { diagnosis: _omitted, ...withoutDiagnosis } = st
       setDiagReport(reportInstanceFailure({
         id,
         name: inst?.name || id,
         transport: inst?.connection_method === 'ssm' ? 'ssm' : 'ssh',
-        status: st,
+        status: benign ? withoutDiagnosis : st,
         stage: 'connect',
-        fallbackMessage: reason || '',
+        fallbackMessage: kind === 'warn' ? reason || '' : '',
       }))
     },
     onError: (e, id) => setActionErr(i18nT('pages.settings.instancesPanel.diagnose_failed', { id, error: errMsg(e, i18nT('pages.settings.instancesPanel.unknown_error')) })),
@@ -1276,19 +1405,44 @@ export function RemoteCrewPanel() {
           message here (a refused connect, a failed diagnose, a rejected launch)
           is a gateway-side failure the agent can look into. */}
       {actionErr && <ErrorNotice message={actionErr} onDismiss={() => setActionErr(null)} className="mb-3" askAgent />}
-      {/* A diagnosis names the broken link (`diagnosis.reason`, or the tunnel's
-          own `status.error`), so it is an error surface, not a status line. The
-          structured `report` is passed when the journal produced one, so the
-          hand-off carries the transport and stage rather than a message match. */}
-      {diagNote && (
+      {/* A `warn` diagnosis names the broken link (`diagnosis.reason`, or the
+          tunnel's own `status.error`), so it is an error surface. The structured
+          `report` is passed when the journal produced one, so the hand-off carries
+          the transport and stage rather than a message match. `ok` / `info`
+          describe a state that has not gone wrong and stay a status note — a
+          healthy "All checks passed" must not paint red or offer an agent hand-off. */}
+      {diagNote?.kind === 'warn' && (
         <ErrorNotice
-          message={diagNote}
+          message={diagNote.text}
           report={diagReport ?? undefined}
           askAgent
           onDismiss={() => { setDiagNote(null); setDiagReport(null) }}
           className="mb-3"
           testId="remote-crew-diagnosis"
         />
+      )}
+      {diagNote && diagNote.kind !== 'warn' && (
+        <div
+          role="status"
+          data-testid="remote-crew-diagnosis-status"
+          className={
+            'mb-3 flex items-start gap-2 px-3 py-2 text-[13px] rounded-md border ' +
+            (diagNote.kind === 'ok'
+              ? 'bg-ok/10 text-ok border-ok/30'
+              : 'bg-accent/10 text-accent border-accent/30')
+          }
+        >
+          <Stethoscope size={14} className="lucide-inline mt-0.5 shrink-0" />
+          <span className="flex-1 break-words">{diagNote.text}</span>
+          <button
+            type="button"
+            aria-label={i18nT('pages.settings.instancesPanel.dismiss_diagnosis')}
+            className="shrink-0 opacity-70 hover:opacity-100"
+            onClick={() => { setDiagNote(null); setDiagReport(null) }}
+          >
+            <X size={12} />
+          </button>
+        </div>
       )}
     </>
   )
@@ -1370,7 +1524,12 @@ export function RemoteCrewPanel() {
                     editing={editingId === inst.id}
                     blocked={editBlockedId === inst.id}
                     onEdit={id => {
-                      if (id !== null && editingId !== null && id !== editingId && editDirty) {
+                      // Switching rows would unmount another crew's draft.
+                      if (
+                        id !== null
+                        && editDraft !== null
+                        && id !== editDraft.id
+                      ) {
                         setEditBlockedId(id)
                         return
                       }
@@ -1409,10 +1568,14 @@ export function RemoteCrewPanel() {
                       const next =
                         draft === null
                           ? null
-                          : { id: inst.id, draft, seq: editDraft?.id === inst.id ? editDraft.seq : 0 }
+                          : {
+                              id: inst.id, draft,
+                              seq: editDraft?.id === inst.id ? editDraft.seq : 0,
+                            }
                       // Same values, same action: the report fires on every keystroke,
                       // and dispatching an equal-but-new object re-renders for nothing.
                       if (JSON.stringify(editDraft) === JSON.stringify(next)) return
+                      if (next === null) setEditBlockedId(null)
                       dispatch(setCrewEditForm(next))
                     }}
                     // Clearing editingId without clearing the refusal left the UI
@@ -1627,6 +1790,113 @@ export function RemoteCrewPanel() {
               )}
             </div>
 
+            <div className="mt-4">
+              <div className="text-[13px] text-muted mb-2">{i18nT('pages.settings.remoteCrewPanel.identity')}</div>
+              {identityQuery.isError ? (
+                <>
+                  {/* No hand-off: this notice sits beside the unsaved Identity Center
+                      start-URL and region draft, and the hand-off navigates to chat,
+                      which would unmount the form and discard that draft. The failure is
+                      non-blocking — the only consequence is that the launching computer's
+                      identity could not be read to preselect the radios; the user can
+                      still pick and type the target below. */}
+                  <ErrorNotice
+                    variant="inline"
+                    className="mb-2"
+                    message={i18nT('pages.settings.remoteCrewPanel.identity_lookup_failed')}
+                  />
+                </>
+              ) : identityUnknownCause !== null ? (
+                <>
+                  {/* No hand-off: like the notice above, this sits beside the unsaved
+                      Identity Center start-URL and region draft, and a hand-off navigates
+                      to chat, unmounting the form and discarding that draft. The server
+                      suggests nothing, so no radio is checked until the user picks, and
+                      Launch waits for that pick. The notice names the cause the server
+                      reported: whoami did not answer, or an Identity Center sign-in was
+                      read without its portal address. */}
+                  <ErrorNotice
+                    variant="inline"
+                    className="mb-2"
+                    message={i18nT(
+                      identityUnknownCause === 'no_portal'
+                        ? 'pages.settings.remoteCrewPanel.identity_unknown_no_portal'
+                        : 'pages.settings.remoteCrewPanel.identity_unknown_no_answer',
+                    )}
+                  />
+                </>
+              ) : null}
+              <div className="space-y-2">
+                <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
+                  <input
+                    type="radio"
+                    name="kiro-identity"
+                    className="mt-0.5"
+                    checked={identityRadioShown && identityMode === 'builder_id'}
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
+                    onChange={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('builder_id') }}
+                    // Re-selecting the already-checked default fires no change
+                    // event, but it IS the user's explicit choice, and that
+                    // choice ends the wait for the inherited identity.
+                    onClick={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('builder_id') }}
+                  />
+                  <span>
+                    {i18nT('pages.settings.remoteCrewPanel.identity_builder_id')}
+                    <span className="block text-[12px] text-muted">{i18nT('pages.settings.remoteCrewPanel.identity_builder_id_hint')}</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-2 text-[13px] text-text cursor-pointer">
+                  <input
+                    type="radio"
+                    name="kiro-identity"
+                    className="mt-0.5"
+                    checked={identityRadioShown && identityMode === 'identity_center'}
+                    aria-label={i18nT('pages.settings.remoteCrewPanel.identity_center')}
+                    onChange={() => { identityTouched.current = true; setIdentityChosen(true); setIdentityMode('identity_center') }}
+                  />
+                  <span>
+                    {i18nT('pages.settings.remoteCrewPanel.identity_center')}
+                    <span className="block text-[12px] text-muted">
+                      {identityQuery.data?.discovery !== 'unknown' && identityQuery.data?.identity?.account_type === 'IamIdentityCenter'
+                        ? i18nT('pages.settings.remoteCrewPanel.identity_center_inherited')
+                        : i18nT('pages.settings.remoteCrewPanel.identity_center_hint')}
+                    </span>
+                  </span>
+                </label>
+                {identityMode === 'identity_center' && (
+                  <div className="ml-6 space-y-2">
+                    <label className="block text-[12px] text-muted">
+                      {i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
+                      <input
+                        type="url"
+                        value={identityStartUrl}
+                        aria-label={i18nT('pages.settings.remoteCrewPanel.identity_start_url')}
+                        onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityStartUrl(e.target.value) }}
+                        placeholder="https://example.awsapps.com/start"
+                        spellCheck={false}
+                        aria-invalid={identityStartUrl !== '' && !identityStartUrlOk}
+                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-none focus-visible:border-accent"
+                      />
+                    </label>
+                    <label className="block text-[12px] text-muted">
+                      {i18nT('pages.settings.remoteCrewPanel.identity_region')}
+                      <input
+                        type="text"
+                        value={identityRegion}
+                        aria-label={i18nT('pages.settings.remoteCrewPanel.identity_region')}
+                        onChange={e => { identityTouched.current = true; setIdentityChosen(true); setIdentityRegion(e.target.value) }}
+                        placeholder="us-east-1"
+                        spellCheck={false}
+                        aria-invalid={identityRegion !== '' && !identityRegionOk}
+                        className="mt-1 w-full px-2 py-1.5 text-[13px] font-mono bg-bg border border-border rounded text-text outline-none focus-visible:border-accent"
+                      />
+                      <span className="block mt-1">{i18nT('pages.settings.remoteCrewPanel.identity_region_hint')}</span>
+                    </label>
+                  </div>
+                )}
+              </div>
+            </div>
+
             <div className="mt-4 flex items-start gap-2 rounded-md border border-border bg-bg-elevated px-3 py-2.5">
               <AlertTriangle size={15} className="mt-0.5 shrink-0 text-warn" />
               <div className="text-[12px] text-text">
@@ -1643,10 +1913,18 @@ export function RemoteCrewPanel() {
                   behind a different engine; omitting the id would let the server
                   default to the built-in and provision on the wrong lane. Only
                   an UNKNOWN list (loading or failed) sends the pre-seam body. */}
-              <Btn primary onClick={() => launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey })} disabled={!blockingOk || launchMutation.isPending}>
+              <Btn primary onClick={() => launchMutation.mutate({ ...(selectedProvisioner ? { provider_id: selectedProvisioner.id } : {}), profile, region, size_key: sizeKey, ...loginTargetBody })} disabled={!blockingOk || !identityOk || launchMutation.isPending}>
                 <Rocket className="lucide-inline" /> {launchMutation.isPending ? i18nT('pages.settings.remoteCrewPanel.launching') : i18nT('pages.settings.remoteCrewPanel.launch')}
               </Btn>
-              <span className="text-[12px] text-muted">{blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}</span>
+              <span className="text-[12px] text-muted">
+                {identityResolving
+                  ? identityUnknown
+                    ? i18nT('pages.settings.remoteCrewPanel.identity_choose')
+                    : i18nT('pages.settings.remoteCrewPanel.identity_resolving')
+                  : !identityOk
+                    ? i18nT('pages.settings.remoteCrewPanel.identity_incomplete')
+                    : blockingOk ? i18nT('pages.settings.remoteCrewPanel.ready_in_6') : i18nT('pages.settings.remoteCrewPanel.finish_prereqs')}
+              </span>
             </div>
           </Card>
           </>

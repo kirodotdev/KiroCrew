@@ -883,6 +883,7 @@ class TestPublicAdapterDefaults(unittest.IsolatedAsyncioTestCase):
             cloudwatch,
             datadog,
             github_issues,
+            incidentio,
             pagerduty,
             webhook,
         )
@@ -893,6 +894,7 @@ class TestPublicAdapterDefaults(unittest.IsolatedAsyncioTestCase):
                 cloudwatch.CloudWatchSignalSource(),
                 cloudwatch.CloudWatchEvidenceSource(),
                 pagerduty.PagerDutyAdapter(),
+                incidentio.IncidentIoAdapter(),
                 datadog.DatadogAdapter(),
                 datadog.DatadogEvidenceSource(),
                 github_issues.GitHubIssuesAdapter(),
@@ -906,18 +908,20 @@ class TestPublicAdapterDefaults(unittest.IsolatedAsyncioTestCase):
     async def test_unconfigured_poll_returns_empty(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend.providers import (
             cloudwatch,
+            incidentio,
             pagerduty,
         )
 
         self.assertEqual(await cloudwatch.CloudWatchSignalSource().poll(), [])
         self.assertEqual(await pagerduty.PagerDutyAdapter().poll(), [])
+        self.assertEqual(await incidentio.IncidentIoAdapter().poll(), [])
 
     async def test_public_registry_installs_expected_adapters(self):
         from kiro_crew.apps.builtins.ops_mission_control.backend import registry as reg
 
         reg.reset_registry()
         catalog = {p.id for p in reg.get_registry().catalog()}
-        for expected in ("noop", "always-on", "cloudwatch", "pagerduty", "datadog"):
+        for expected in ("noop", "always-on", "cloudwatch", "pagerduty", "incidentio", "datadog"):
             self.assertIn(expected, catalog)
         reg.reset_registry()
 
@@ -926,10 +930,10 @@ class TestSuppressionIsAlwaysBounded(unittest.IsolatedAsyncioTestCase):
     """A suppression with no expiry hides a live fault until a human remembers it.
 
     This is the property that makes ``act`` a bounded bet rather than an
-    all-or-nothing one: a WRONG silence expires by itself. The shipped Datadog sink
-    used to POST ``/mute`` with ``body={}``, and Datadog reads a missing ``end`` as
-    "mute forever" — so the board showed the incident resolved while the metric stayed
-    bad, with no way back but a human noticing.
+    all-or-nothing one: a WRONG silence expires by itself. POSTing ``/mute`` with
+    ``body={}`` leaves Datadog reading the missing ``end`` as "mute forever" — the
+    board shows the incident resolved while the metric stays bad, with no way back
+    but a human noticing.
     """
 
     def test_a_requested_window_is_clamped_not_honoured_blindly(self):
@@ -1935,7 +1939,7 @@ class TestRunGhTimeoutReapsChild(unittest.IsolatedAsyncioTestCase):
 
     After ``wait_for`` cancels ``communicate()``, a killed child blocked
     writing into a full stderr pipe makes a bare ``wait()`` hang the polling
-    task forever (#5989) — the reap must be a SECOND ``communicate()``.
+    task forever — the reap must be a SECOND ``communicate()``.
     """
 
     async def test_timeout_reaps_child_via_communicate_not_wait(self):
@@ -1945,7 +1949,9 @@ class TestRunGhTimeoutReapsChild(unittest.IsolatedAsyncioTestCase):
         )
 
         class HangProc:
-            pid = 4242
+            # No supported OS can allocate this PID, so the host process table cannot
+            # make the fake child look like it shares the test runner's process group.
+            pid = 99_999_999_999
             returncode: int | None = None
             kill_calls = 0
             wait_calls = 0
@@ -2117,7 +2123,7 @@ class TestTheAppConfigIsNeverPublishedOverAFailedRead(unittest.TestCase):
         self.assertTrue(providers.provider_enabled("pagerduty"))
 
     def test_a_corrupt_config_refuses_the_merge_instead_of_replacing_it(self):
-        """Inverted deliberately: this used to assert repair-on-write.
+        """Refusal, not repair-on-write.
 
         A half-written or hand-broken config still names every provider the operator
         enabled. Replacing it discards that and leaves them re-entering settings they

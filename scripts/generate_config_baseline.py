@@ -52,7 +52,7 @@ def main() -> None:
         "KIROCREW_BASELINE_OUTPUT",
         os.path.join(_repo_root, "config-baseline.json"),
     )
-    with open(out_path, "w", encoding="utf-8") as f:
+    with open(out_path, "w", encoding="utf-8", newline="\n") as f:
         json.dump(baseline, f, indent=2, ensure_ascii=False, cls=_SafeEncoder)
         f.write("\n")
 

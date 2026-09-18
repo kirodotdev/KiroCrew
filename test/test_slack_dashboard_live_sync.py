@@ -265,7 +265,11 @@ class TestDTheQuestionIsRecordedBeforeTheAnswer:
     @pytest.fixture(autouse=True)
     def _quiet_agents(self, monkeypatch):
         monkeypatch.setattr(transport_dispatch, "_get_default_agent", lambda: "")
-        monkeypatch.setattr(transport_dispatch, "_hydrate_thread_overrides", lambda *a, **k: None)
+        monkeypatch.setattr(
+            transport_dispatch,
+            "_hydrate_thread_overrides",
+            AsyncMock(return_value=None),
+        )
         monkeypatch.setattr(transport_dispatch, "_hydrate_conv_flags", lambda *a, **k: None)
         monkeypatch.setattr(transport_dispatch, "_thread_agents", {})
 

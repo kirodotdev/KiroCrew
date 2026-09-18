@@ -197,7 +197,7 @@ def _read_rule_file(path: Path, root: str | os.PathLike[str]) -> bytes | None:
     * the open precedes the validation (``O_NOFOLLOW``, then ``fstat`` on the
       descriptor), so the inode validated is the inode read. That leaves no
       check-then-open window, and it puts the size ceiling on the bytes actually
-      read rather than on a ``stat`` of a path that may no longer be the same
+      read rather than on a ``stat`` of a path that may not still be the same
       file.
 
     Returns the bytes, or ``None`` when the read is refused -- which the caller

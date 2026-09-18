@@ -12,6 +12,7 @@ mandated markdown header; these tests pin the gate and the write path around it.
 
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -113,6 +114,7 @@ def _make_consolidator(memory: MagicMock) -> HistoryConsolidator:
         0,
     )
     log.get_metadata.return_value = {}
+    log.get_metadata_status.return_value = ({}, True)
     log.consolidation_retry_state.return_value = (0, 0.0)
     return HistoryConsolidator(
         log=log,
@@ -214,3 +216,74 @@ class TestConsolidatePlaceholderGuard:
         prompt = llm.call_args.args[0]
         assert prompt.count("OMIT this key entirely") == 2
         assert prompt.count("placeholder word like 'unchanged'") == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("version", (1, 2))
+@pytest.mark.parametrize("include_history", (False, True))
+async def test_only_v1_legacy_consolidation_can_replace_core_documents(
+    tmp_path, monkeypatch, version, include_history
+):
+    """A real V2 store retains its anchors while still admitting new facts."""
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.context import ContextBuilder
+    from kiro_crew.memory import MemoryStore
+    from kiro_crew.memory_stores import memory_store_dir_for, provision_member_memory
+    from kiro_crew.vector_memory import VectorMemoryStore
+
+    store_name = None
+    directory = tmp_path / "global"
+    if version == 2:
+        cfg = KiroCrewConfig.load()
+        cfg.agents["writer"] = KiroCrewAgentConfig()
+        store_name = provision_member_memory(cfg, "writer")
+        cfg.save()
+        directory = memory_store_dir_for(store_name)
+        monkeypatch.setattr(
+            "kiro_crew.member_memory_auth.require_private_memory_execution", lambda: None
+        )
+    memory = MemoryStore(workspace=directory, memory_version=version)
+    memory.init()
+    old_prefs = "# User Preferences\n\n- Preserve every original user quotation.\n"
+    old_projects = "# Active Projects\n\n- Longstanding project guide: review before release.\n"
+    memory.write_preferences(old_prefs)
+    memory.write_projects(old_projects)
+    old_prefs = memory.read_preferences()
+    old_projects = memory.read_projects()
+    vectors = VectorMemoryStore(db_path=directory / "memory.db")
+    vectors.init()
+    try:
+        c = _make_consolidator(memory)
+        c._vector_store = vectors
+        monkeypatch.setattr("kiro_crew.context.store_of_session", lambda *_: store_name)
+        monkeypatch.setattr(ContextBuilder, "ensure_store", AsyncMock(return_value=vectors))
+        monkeypatch.setattr(ContextBuilder, "get_memory_for", lambda *a, **kw: memory)
+        monkeypatch.setattr(ContextBuilder, "get_lessons_for", lambda *a, **kw: None)
+        result = {
+            "preferences_update": "# User Preferences\n\n",
+            "projects_update": "# Active Projects\n\n",
+            "semantic": [
+                {
+                    "key": "user.work_email",
+                    "value": "writer@example.com",
+                    "confidence": 0.9,
+                    "metadata": {"subject": "writer", "predicate": "work_email"},
+                }
+            ],
+        }
+        with patch.object(c, "_call_llm", AsyncMock(return_value=result)) as llm:
+            await c._consolidate("k", include_history=include_history)
+        row = vectors.get_semantic("user.work_email")
+        assert row is not None and json.loads(row["value_json"]) == "writer@example.com"
+        if version == 2:
+            assert memory.read_preferences() == old_prefs
+            assert memory.read_projects() == old_projects
+            prompt = llm.call_args.args[0]
+            assert "member anchors are read-only" in prompt
+            assert old_prefs in prompt and old_projects in prompt
+            assert "The COMPLETE updated preferences file" not in prompt
+        else:
+            assert memory.read_preferences().strip() == "# User Preferences"
+            assert memory.read_projects().strip() == "# Active Projects"
+    finally:
+        vectors.close()

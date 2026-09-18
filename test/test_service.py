@@ -475,7 +475,7 @@ class TestLinuxPrivilegeResolution:
 
     def test_install_raises_clean_error_when_sudo_missing(self, monkeypatch):
         """The reported bug: on a root-only/minimal host without sudo, install
-        used to crash with an uncaught FileNotFoundError. It must raise the
+        must not crash with an uncaught FileNotFoundError; it must raise the
         friendly ServiceInstallError instead."""
         from kiro_crew.service import linux as svc_linux
 
@@ -703,8 +703,7 @@ class TestLinuxServiceWritesUtf8:
     environment file back with ``encoding="utf-8"`` (``linux.py:448``), so the
     round trip crossed two different encodings.
 
-    Reviewer-counted residual from merged #7164, which made the identical
-    argument for the drop-in it did fix.
+    The same argument applies here as to the drop-in case.
     """
 
     def _capture_staged_bytes(self, call, contents: str) -> bytes:
@@ -1090,8 +1089,8 @@ class TestControllerDispatch:
 
     def test_restart_service_returns_false_when_systemd_restart_fails(self):
         # The core false-success bug: an unprivileged/failed `systemctl
-        # restart` exits non-zero, but restart_service() historically returned
-        # True regardless (it never checked restart()'s result), printing a
+        # restart` exits non-zero; restart_service() must not return
+        # True regardless (it must check restart()'s result), or it prints a
         # bogus success. The controller must propagate the restart outcome so
         # the caller falls back to the foreground path instead of assuming the
         # service manager handled it.
@@ -1504,13 +1503,20 @@ class TestLinuxControlPaths:
     def _run_responder(self, *steps_and_results: tuple):
         """Helper: route subprocess.run by inspecting the command being run.
 
-        Each step is (substring_to_match, result_mock). The first step
-        whose substring appears in the command is returned. Anything
+        Each step is (argv_token_to_match, result_mock). The first step whose
+        token equals one of the command's argv elements is returned. Anything
         unmatched returns a default-success mock.
 
         This is more robust than a positional list because ``render_unit``
         also calls ``subprocess.run`` (for ``id -gn``), and the count of
         calls during install is not stable.
+
+        The match is whole-token, never substring: the unit-file write's argv
+        carries a ``tempfile.mkstemp`` path, and that path inherits ``TMPDIR``,
+        which the suite's per-test mode names after the test's own nodeid. A
+        substring match on ``"restart"`` would then select the *write* step of
+        ``test_install_propagates_failure_at_restart`` and the failure under
+        test would never be reached.
         """
         ok = MagicMock(returncode=0, stdout="", stderr="")
 
@@ -1518,9 +1524,9 @@ class TestLinuxControlPaths:
             # subprocess.run is called positionally as run([...], **kwargs).
             # MagicMock side_effect receives the same args, so cmd_list is
             # the list of argv strings.
-            cmd = " ".join(cmd_list) if isinstance(cmd_list, list) else str(cmd_list)
+            tokens = list(cmd_list) if isinstance(cmd_list, list) else [str(cmd_list)]
             for needle, result in steps_and_results:
-                if needle in cmd:
+                if needle in tokens:
                     return result
             return ok
 
@@ -2515,7 +2521,7 @@ class TestAppArmorProfileRendering:
     _EXEC = Path("/opt/kirocrew-venv/bin/kirocrew")
 
     def test_attaches_to_the_given_path_and_nothing_else(self):
-        """The attachment is the whole point (#3463), and it must be exactly the
+        """The attachment is the whole point, and it must be exactly the
         validated launcher path — never the interpreter behind its shebang,
         which is a symlink to the system python: attaching there would grant
         unprivileged userns to EVERY Python process on the host.
@@ -2731,7 +2737,7 @@ class TestAppArmorInstall:
     def test_exec_path_attaches_the_profile_to_the_resolved_launcher(
         self, monkeypatch, durable_dir
     ):
-        """#3463: a valid ``exec_path`` makes the WRITTEN profile text carry an
+        """A valid ``exec_path`` makes the WRITTEN profile text carry an
         attachment to the resolved script, not just a bare named profile.
 
         ``durable_dir`` (not raw ``tmp_path``): on Linux CI the pytest temp dir
@@ -2815,7 +2821,7 @@ class TestAppArmorInstall:
 class TestAppArmorUnitDirective:
     """The retired ``AppArmorProfile=`` directive must never reappear in the unit.
 
-    The profile is attached by path (#3463); when both mechanisms are present,
+    The profile is attached by path; when both mechanisms are present,
     systemd's ``change_onexec`` silently wins and defeats the path attachment.
     """
 
@@ -2834,7 +2840,7 @@ class TestAppArmorUnitDirective:
     def test_install_never_writes_the_directive_even_when_the_host_needs_a_profile(
         self, monkeypatch
     ):
-        """#3463: the unit ``linux.install()`` writes must never carry the
+        """The unit ``linux.install()`` writes must never carry the
         directive — a unit written WITH it silently defeats the path-attached
         profile it installs (systemd's change_onexec wins over the kernel's
         automatic path attachment). Asserted end-to-end through ``install()``,
@@ -2872,7 +2878,7 @@ class TestAppArmorUnitDirective:
     "the systemd service path is Linux-only",
 )
 class TestInstallApparmorProfileAttachesToTheLauncher:
-    """#3463: the service caller must hand ``apparmor.install`` the launcher
+    """The service caller must hand ``apparmor.install`` the launcher
     path and the SERVICE account's uid, not the installer process's own uid."""
 
     def test_passes_kirocrew_bin_as_exec_path_and_threads_expected_uid(self, monkeypatch):
@@ -3204,6 +3210,28 @@ posix_only = pytest.mark.skipif(
 )
 
 
+def _trust_ancestors_above(monkeypatch, base, *, extra=None):
+    """Pin ancestor owners while preserving fixture ownership and permission bits."""
+    owners = dict.fromkeys(base.resolve().parents, 0)
+    owners.update(extra or {})
+    real_stat = Path.stat
+
+    def fake_stat(self, **kwargs):
+        info = real_stat(self, **kwargs)
+        if self not in owners:
+            return info
+
+        class AncestorStat:
+            st_uid = owners[self]
+
+            def __getattr__(self, name):
+                return getattr(info, name)
+
+        return AncestorStat()
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+
+
 class TestLauncherExecPathIsSafeToAttach:
     """An attachment is a permission grant keyed on a path.
 
@@ -3369,8 +3397,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
     A world-writable directory outside the denylist — `/srv/shared` at 0777, a
     group-writable `/opt/apps`, a permissive network mount — would sail past a
     prefix check, and an attachment there lets any local user drop in their own
-    executable and inherit the userns grant. Raised as blocking in review of
-    #1653; these pin the fix.
+    executable and inherit the userns grant. These tests pin that refusal.
     """
 
     def test_a_world_writable_directory_outside_the_denylist_is_refused(
@@ -3382,7 +3409,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         shared.mkdir()
         app = shared / "kirocrew.AppImage"
         app.write_text("#!/bin/sh\n")
-        os.chmod(shared, 0o777)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the lax mode IS the fixture, not the behaviour under test: this stages a world-writable directory outside the prefix denylist precisely so the assertion below can prove validate_exec_path() refuses to attach an AppArmor userns grant there. Removing it deletes the regression test for the blocking finding in #1653.  # noqa: E501
+        os.chmod(shared, 0o777)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- the lax mode IS the fixture, not the behaviour under test: this stages a world-writable directory outside the prefix denylist precisely so the assertion below can prove validate_exec_path() refuses to attach an AppArmor userns grant there. Removing it deletes this regression test.  # noqa: E501
         # Empty the denylist so this can only be caught by the mode walk — the
         # whole point of the finding is that a prefix list does not cover it.
         monkeypatch.setattr(aa, "_UNSAFE_EXEC_PARENTS", ())
@@ -3427,7 +3454,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         assert str(outer) in problem
 
     def test_a_root_owned_system_binary_is_refused(self):
-        """Raised as blocking in review of #1653.
+        """Pins the reviewed refusal behaviour.
 
         The shared-interpreter regex is a BLOCKLIST and blocklists leak: it names
         python, perl, ruby, node and the shells, but not java, mono, dotnet, php,
@@ -3478,7 +3505,7 @@ class TestATakeoverOfTheAttachedPathIsRefused:
 
         assert aa._substitutable_by_others(stand_in) is not None
 
-    def test_a_file_you_own_under_a_tight_chain_is_accepted(self, tmp_path):
+    def test_a_file_you_own_under_a_tight_chain_is_accepted(self, tmp_path, monkeypatch):
         """Positive control: an AppImage you downloaded is owned by you."""
         from kiro_crew.service import apparmor as aa
 
@@ -3487,7 +3514,11 @@ class TestATakeoverOfTheAttachedPathIsRefused:
         os.chmod(app, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- an executable must be executable; the point of this test is that a user-owned 0755 file under a tight chain is ACCEPTED.  # noqa: E501
         # The ancestor chain of a pytest tmp_path is 0700 on macOS but includes
         # /tmp on Linux, so only assert the ownership half here; the mode walk has
-        # its own tests above.
+        # its own tests above. On an NFS host the mount roots stat as uid 65534
+        # (nobody), which the ownership walk would refuse; simulate the normal
+        # root-owned chain above tmp_path so this positive control is not a
+        # test-environment artifact (the fixture's own file keeps its real stat).
+        _trust_ancestors_above(monkeypatch, tmp_path)
         problem = aa._substitutable_by_others(app)
 
         assert problem is None or "world-writable" in problem, problem
@@ -3534,11 +3565,11 @@ class TestATakeoverOfTheAttachedPathIsRefused:
 
 @posix_only
 class TestExpectedUidOverride:
-    """#3463: the systemd service case checks ownership against the SERVICE
+    """The systemd service case checks ownership against the SERVICE
     account, not the installer process's own uid — a different account when
     ``kirocrew service install`` itself runs as root or under ``sudo``."""
 
-    def test_a_file_owned_by_the_expected_uid_is_accepted(self, tmp_path):
+    def test_a_file_owned_by_the_expected_uid_is_accepted(self, tmp_path, monkeypatch):
         from kiro_crew.service import apparmor as aa
 
         app = tmp_path / "kirocrew"
@@ -3546,6 +3577,10 @@ class TestExpectedUidOverride:
         os.chmod(app, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
         real_uid = app.stat().st_uid
 
+        # Simulate the normal root-owned ancestor chain above tmp_path; on an
+        # NFS host the real mount roots stat as uid 65534 (nobody) and would
+        # wrongly fail this accept case (see _trust_ancestors_above).
+        _trust_ancestors_above(monkeypatch, tmp_path)
         problem = aa._substitutable_by_others(app, expected_uid=real_uid)
 
         assert problem is None or "world-writable" in problem, problem
@@ -3554,7 +3589,7 @@ class TestExpectedUidOverride:
     def test_a_file_owned_by_the_installer_but_not_the_expected_account_is_refused(
         self, tmp_path, monkeypatch
     ):
-        """The critical case #3463 exists for: the venv script IS owned by
+        """The critical case: the venv script IS owned by
         whoever is running this Python process (e.g. root, under ``sudo
         kirocrew service install``), but that is not the account the SERVICE
         runs as -- checking against the installer's own uid would wrongly
@@ -3567,6 +3602,10 @@ class TestExpectedUidOverride:
         os.chmod(app, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
         installer_uid = app.stat().st_uid
         monkeypatch.setattr(os, "getuid", lambda: installer_uid, raising=False)
+        # Simulate the normal root-owned ancestor chain above tmp_path so the
+        # accept-half below is not defeated by this NFS host's nobody-owned
+        # (uid 65534) mount roots; the fixture's own file keeps its real owner.
+        _trust_ancestors_above(monkeypatch, tmp_path)
 
         # Accepted against the installer's own uid (legacy AppImage
         # semantics): the OWNERSHIP rule must not fire. Assert only that half —
@@ -3585,7 +3624,7 @@ class TestExpectedUidOverride:
         assert "not by the expected account" in problem
 
     def test_a_foreign_owned_ancestor_is_refused(self, tmp_path, monkeypatch):
-        """GPT review round 2 on #3514: a directory's OWNER can rename or
+        """A directory's OWNER can rename or
         replace what is inside it regardless of the 0o022 mode bits, so a
         tight-mode ancestor owned by a THIRD account (not root, not the
         expected owner) still makes the whole path substitutable — the mode
@@ -3636,20 +3675,12 @@ class TestExpectedUidOverride:
         os.chmod(parent, 0o755)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions  # noqa: E501
         real_uid = app.stat().st_uid
         parent_resolved = parent.resolve()
-        real_stat = Path.stat
 
-        def fake_stat(self, **kwargs):
-            info = real_stat(self, **kwargs)
-            if self == parent_resolved:
-
-                class RootStat:
-                    st_uid = 0
-                    st_mode = info.st_mode
-
-                return RootStat()
-            return info
-
-        monkeypatch.setattr(Path, "stat", fake_stat)
+        # Pin the fixture's own parent to root (the property under test: a
+        # root-owned ancestor stays trusted). The same helper also reports the
+        # ancestors ABOVE tmp_path as root-owned, so this host's nobody-owned
+        # (uid 65534) NFS mount roots do not defeat the assertion.
+        _trust_ancestors_above(monkeypatch, tmp_path, extra={parent_resolved: 0})
 
         problem = aa._substitutable_by_others(app, expected_uid=real_uid)
 
@@ -4236,7 +4267,7 @@ class TestHeadlessApiKeyWarning:
     launchd/systemd hand the gateway a minimal environment, so a key exported in
     the installing shell is absent when the service starts and the readiness
     probe reports a signed-out state on a host where kiro-cli itself is
-    authenticated (issue #3257). The install path warns instead of pretending
+    authenticated. The install path warns instead of pretending
     nothing was lost — and never bakes the credential into the unit.
     """
 

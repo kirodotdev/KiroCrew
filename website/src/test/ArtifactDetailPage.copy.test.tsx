@@ -17,7 +17,10 @@ beforeEach(() => {
 
 vi.mock('../api/client')
 vi.mock('../utils/clipboard', () => ({
-  copyToClipboard: vi.fn().mockResolvedValue(undefined),
+  // The contract: `copyToClipboard` resolves a boolean and never rejects.
+  // `true` = the text actually reached the clipboard. The default mock resolves
+  // `true` so the happy path exercises the boolean-gated confirmation.
+  copyToClipboard: vi.fn().mockResolvedValue(true),
 }))
 // Stub the embedded chat page — covered by its own suites.
 vi.mock('../pages/ChatPage', () => ({
@@ -56,7 +59,7 @@ describe('ArtifactDetailPage copy content', () => {
   beforeEach(() => {
     vi.clearAllMocks()
     localStorage.removeItem('mc-reading-width')
-    vi.mocked(copyToClipboard).mockResolvedValue(undefined)
+    vi.mocked(copyToClipboard).mockResolvedValue(true)
     vi.mocked(api).artifact = vi.fn().mockResolvedValue(mkArtifact())
     vi.mocked(api).artifactVersions = vi
       .fn()
@@ -116,8 +119,10 @@ describe('ArtifactDetailPage copy content', () => {
     expect((iframe.parentElement as HTMLElement).style.maxWidth).toBe('')
   })
 
-  it('shows a brief accessible failure state when clipboard copying rejects', async () => {
-    vi.mocked(copyToClipboard).mockRejectedValueOnce(new Error('clipboard unavailable'))
+  it('shows a brief accessible failure state when the copy reports failure', async () => {
+    // Under the boolean contract `copyToClipboard` never rejects; a failed copy
+    // resolves `false`. The failure UI must key off that, not off a rejection.
+    vi.mocked(copyToClipboard).mockResolvedValueOnce(false)
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
     vi.useFakeTimers()
@@ -138,8 +143,8 @@ describe('ArtifactDetailPage copy content', () => {
 
   it('lets a retry own the status and timeout after a copy failure', async () => {
     vi.mocked(copyToClipboard)
-      .mockRejectedValueOnce(new Error('clipboard unavailable'))
-      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(false)
+      .mockResolvedValueOnce(true)
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
     vi.useFakeTimers()
@@ -159,20 +164,22 @@ describe('ArtifactDetailPage copy content', () => {
   })
 
   it('ignores an older copy attempt that settles after the latest attempt', async () => {
-    let rejectFirst: ((reason?: unknown) => void) | undefined
-    let resolveSecond: (() => void) | undefined
+    let resolveFirst: ((v: boolean) => void) | undefined
+    let resolveSecond: ((v: boolean) => void) | undefined
     vi.mocked(copyToClipboard)
-      .mockImplementationOnce(() => new Promise<void>((_resolve, reject) => { rejectFirst = reject }))
-      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveSecond = resolve }))
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => { resolveFirst = resolve }))
+      .mockImplementationOnce(() => new Promise<boolean>((resolve) => { resolveSecond = resolve }))
     renderRoute()
     await waitFor(() => expect(screen.getByText('CR Queue')).toBeInTheDocument())
 
     fireEvent.click(copyBtn())
     fireEvent.click(copyBtn())
-    await act(async () => { resolveSecond?.() })
+    await act(async () => { resolveSecond?.(true) })
     expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
 
-    await act(async () => { rejectFirst?.(new Error('late failure')) })
+    // The stale first attempt settles late as a failure; the attempt guard must
+    // keep it from clobbering the current 'Copied' state.
+    await act(async () => { resolveFirst?.(false) })
     expect(screen.getByRole('button', { name: 'Copied' })).toBeInTheDocument()
   })
 

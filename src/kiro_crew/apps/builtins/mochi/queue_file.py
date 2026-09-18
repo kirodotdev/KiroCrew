@@ -45,10 +45,9 @@ from kiro_crew.platform_compat import chmod_safe, file_lock
 logger = logging.getLogger(__name__)
 
 #: The queue file's name, owned HERE because this module owns queue file
-#: operations. It used to be defined independently in both ``hooks`` and
-#: ``mcp_server`` — two copies of one literal, which meant renaming the file in
-#: one place left the other reading a path nothing writes, with no error to see.
-#: Every reader now takes it from this single definition.
+#: operations. Every reader takes it from this single definition: with a second
+#: copy of the literal in ``hooks`` or ``mcp_server``, renaming the file in one
+#: place leaves the other reading a path nothing writes, with no error to see.
 QUEUE_FILE = "mochi-queue.json"
 
 # Default TTL for done-task cleanup: 2 hours.

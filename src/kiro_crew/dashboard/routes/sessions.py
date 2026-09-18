@@ -22,6 +22,13 @@ def register(app: web.Application) -> None:
     app.router.add_get(
         "/api/sessions/{id}/agents/{agent_id}/stream", handlers.api_session_agent_stream
     )
+    # Crew log: the projection path is registered first, ahead of the range read
+    # it shares a prefix with, per this module's ordering rule.
+    app.router.add_get(
+        "/api/sessions/{id}/crew-log/projection/{name}",
+        handlers.api_session_crew_log_projection,
+    )
+    app.router.add_get("/api/sessions/{id}/crew-log", handlers.api_session_crew_log)
     app.router.add_get("/api/capability/mcp/registry", handlers.api_capability_mcp_registry)
     app.router.add_post("/api/chat/slots/{slot}/resume", chat.api_chat_slot_resume)
     app.router.add_post("/api/chat/slots/{slot}/approve", chat.api_chat_slot_approve)
@@ -44,6 +51,11 @@ def register(app: web.Application) -> None:
     app.router.add_post("/api/project-scaffold/scan", chat.api_chat_folders_scan)
     app.router.add_post("/api/project-scaffold/create", chat.api_chat_folders_scaffold)
     app.router.add_patch("/api/chat/folders/{id}", chat.api_chat_folder_update)
+    # Atomic multi-folder reorder -- one transaction for a whole sidebar drag or
+    # tool renumber, so a partial failure cannot leave a mix of old and new
+    # order numbers. Registered BEFORE the "{id}" delete so its literal path is
+    # not shadowed by the id parameter.
+    app.router.add_post("/api/chat/folders/reorder", chat.api_chat_folder_reorder)
     app.router.add_delete("/api/chat/folders/{id}", chat.api_chat_folder_delete)
     app.router.add_patch("/api/chat/slots/{slot}/folder", chat.api_chat_slot_folder)
     app.router.add_patch("/api/chat/slots/{slot}/pin", chat.api_chat_slot_pin)
@@ -72,8 +84,6 @@ def register(app: web.Application) -> None:
     app.router.add_put("/api/voice/config", chat.api_voice_config)
     app.router.add_get("/api/voice/voices", chat.api_voice_voices)
     app.router.add_get("/api/voice/system-voices", chat.api_voice_system_voices)
-    app.router.add_post("/api/chat/slots/{slot}/handoff", chat.api_chat_slot_handoff)
-    app.router.add_get("/api/handoff-channels", chat.api_handoff_channels)
     app.router.add_post("/api/chat/slots/{slot}/slack-link", chat.api_chat_slot_slack_link)
     app.router.add_post("/api/chat/slots/{slot}/slack-unlink", chat.api_chat_slot_slack_unlink)
     app.router.add_post("/api/chat/slots/{slot}/slack-pause", chat.api_chat_slot_slack_pause)

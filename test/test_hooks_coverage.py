@@ -13,9 +13,11 @@ filesystem write lands under ``tmp_path``.
 from __future__ import annotations
 
 import json
+import ntpath
 import os
 import platform
 import stat as _stat
+import sys
 import uuid
 from pathlib import Path
 
@@ -390,7 +392,104 @@ class TestValidateFilePath:
         f = _write(tmp_path / "ok.txt", "x")
         assert _same(validate_file_path(str(f)) or "", str(f))
 
-    def _windows(self, monkeypatch, realpath=os.path.realpath):
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (r"\\?\C:\Users\me\.aws\creds", r"C:\Users\me\.aws\creds"),
+            (r"\\?\c:\x", r"c:\x"),
+            ("\\\\?\\C:/x", "C:/x"),
+            (r"\\?\UNC\host\share", r"\\?\UNC\host\share"),
+            (r"\\?\GLOBALROOT\Device\Mup\host\share", r"\\?\GLOBALROOT\Device\Mup\host\share"),
+            (r"C:\plain", r"C:\plain"),
+            ("//host/share", "//host/share"),
+            ("", ""),
+        ],
+        ids=[
+            "drive-local-folds",
+            "lowercase-drive",
+            "forward-slash-remainder",
+            "unc-longform-untouched",
+            "globalroot-untouched",
+            "plain-drive-untouched",
+            "posix-doubled-slash-untouched",
+            "empty",
+        ],
+    )
+    def test_fold_extended_length_local(self, raw, expected):
+        r"""Only a drive-absolute ``\\?\`` remainder folds to a plain
+        local path; ``\\?\UNC\`` and every other extended namespace are left
+        intact so they stay UNC-shaped and fail closed."""
+        from kiro_crew import hooks as hooks_mod
+
+        assert hooks_mod._fold_extended_length_local(raw) == expected
+
+    def test_extended_length_local_secret_path_is_refused(self, monkeypatch):
+        r"""An extended-length credential path is folded at the INPUT and
+        refused as sensitive.
+
+        ``is_unc_shape`` reports ``\\?\C:\`` as non-UNC (it names a local drive,
+        not a share), so the UNC gate does not fire on it. The prefix is folded
+        at the input instead, so the sensitive-path fence sees the plain ``C:\``
+        path and refuses a read of ``\\?\C:\Users\<user>\<secret-dir>\<leaf>``.
+        The probe asserts the fence never sees the ``\\?\`` prefix -- the
+        property that makes the credential leaf recognisable."""
+        from kiro_crew import hooks as hooks_mod
+        from kiro_crew import platform_compat
+
+        seen: list[str] = []
+        secret_dir = "." + "aws"
+
+        def _probe(p):
+            seen.append(p)
+            return secret_dir in p.lower()
+
+        self._windows(monkeypatch)
+        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: False)
+        monkeypatch.setattr(hooks_mod, "is_sensitive_path", _probe)
+        assert validate_file_path("\\\\?\\C:\\Users\\me\\" + secret_dir + "\\creds") is None
+        assert seen, "the sensitive-path fence was never consulted"
+        assert all(not p.startswith("\\\\?\\") for p in seen), seen
+
+    def test_extended_length_local_persona_still_resolves(self, monkeypatch):
+        r"""Non-vacuity: a benign extended-length local path
+        (``\\?\C:\...\persona.md``) must still read -- the fold makes
+        ``is_unc_shape`` see a plain (non-UNC) ``C:\`` path, and the fence
+        passes a non-secret file. Proves the refusal above is the fence firing,
+        not a blanket ``\\?\`` ban."""
+        from kiro_crew import hooks as hooks_mod
+        from kiro_crew import platform_compat
+
+        self._windows(monkeypatch)
+        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: False)
+        monkeypatch.setattr(hooks_mod, "is_sensitive_path", lambda _p: False)
+        assert validate_file_path(r"\\?\C:\Users\me\project\persona.md") is not None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            r"\\?\UNC\evil-host\share\doc.txt",
+            r"\\?\GLOBALROOT\Device\Mup\evil-host\share\doc.txt",
+            r"\\.\PhysicalDrive0",
+        ],
+        ids=["unc-longform", "globalroot", "physicaldrive"],
+    )
+    def test_extended_namespace_input_is_refused_before_resolution(self, monkeypatch, raw):
+        r"""A raw ``\\?\UNC\...``, ``\\?\GLOBALROOT\...`` or ``\\.\device`` input
+        is NOT folded to a local path: it stays UNC-shaped and the UNC
+        trusted-root gate refuses it before any resolution (``realpath`` wired
+        to explode proves the gate returned first)."""
+        from kiro_crew import platform_compat
+
+        def _boom(_p):  # pragma: no cover
+            raise AssertionError("resolution ran on an extended-namespace input")
+
+        self._windows(monkeypatch, realpath=_boom)
+        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
+        assert validate_file_path(raw) is None
+
+    def _windows(self, monkeypatch, realpath=os.path.realpath, path_module=os.path):
         """Simulate the Windows gates without patching the global os.name
         (which would make pathlib dispatch WindowsPath on a POSIX host).
         NOTE: candidate strings stay host-native under this simulation; the
@@ -407,46 +506,118 @@ class TestValidateFilePath:
             "os",
             types.SimpleNamespace(
                 name="nt",
-                sep=os.sep,
+                sep=path_module.sep,
                 # unc_probe_allowed and main's _unc_agents_root memo key read
                 # the environment through this namespace; carry the real
                 # mapping so a stub miss cannot masquerade as a product bug.
                 environ=os.environ,
+                readlink=os.readlink,
                 path=types.SimpleNamespace(
-                    expanduser=os.path.expanduser,
-                    abspath=os.path.abspath,
+                    expanduser=path_module.expanduser,
+                    abspath=path_module.abspath,
                     realpath=realpath,
-                    normcase=os.path.normcase,
-                    normpath=os.path.normpath,
-                    isabs=os.path.isabs,
-                    join=os.path.join,
-                    dirname=os.path.dirname,
+                    normcase=path_module.normcase,
+                    normpath=path_module.normpath,
+                    isabs=path_module.isabs,
+                    join=path_module.join,
+                    dirname=path_module.dirname,
+                    relpath=path_module.relpath,
                 ),
             ),
         )
 
-    def test_linked_ancestor_is_refused_before_realpath(self, tmp_path, monkeypatch):
-        """realpath resolves the whole ancestor chain, so it IS the outbound
-        SMB probe when an ancestor junction targets a UNC share (#5962).
-        Wiring realpath to explode proves the walk returned first."""
+    def test_local_junction_ancestor_is_rewritten_before_realpath(self, monkeypatch):
+        """The exact reported path stays clickable when ``Tasks`` is a local
+        junction. The screen replaces the linked prefix before ``realpath``
+        while preserving the descendant path."""
+        from kiro_crew import hooks as hooks_mod
         from kiro_crew import platform_compat
 
+        raw = (
+            r"C:\wbr\workflow-takeover\Tasks"
+            r"\TASK-2028 - Series Episode Table Revamp\cr-comments.md"
+        )
+        linked = r"C:\wbr\workflow-takeover\Tasks"
+        destination = r"\\?\C:\wbr\workflow-takeover-tasks"
+        expected = (
+            r"C:\wbr\workflow-takeover-tasks"
+            r"\TASK-2028 - Series Episode Table Revamp\cr-comments.md"
+        )
+        seen: list[str] = []
+
+        def _realpath(path):
+            seen.append(path)
+            return path
+
+        self._windows(monkeypatch, realpath=_realpath, path_module=ntpath)
+        monkeypatch.setattr(
+            platform_compat,
+            "first_linked_ancestor",
+            lambda path: linked if ntpath.normcase(path) == ntpath.normcase(raw) else None,
+        )
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: False)
+        monkeypatch.setattr(hooks_mod.os, "readlink", lambda _p: destination)
+        monkeypatch.setattr(hooks_mod, "is_sensitive_path", lambda _p: False)
+
+        assert validate_file_path(raw) == expected
+        assert seen == [expected]
+
+    def test_junction_ancestor_aimed_at_unc_is_refused_before_realpath(self, monkeypatch):
+        """A local-looking junction aimed at an SMB share still refuses before
+        ``realpath`` can start an outbound connection."""
+        from kiro_crew import hooks as hooks_mod
+        from kiro_crew import platform_compat
+
+        raw = r"C:\wbr\workflow-takeover\Tasks\TASK-2028\cr-comments.md"
+        linked = r"C:\wbr\workflow-takeover\Tasks"
+
         def _boom(_p):  # pragma: no cover
-            raise AssertionError("realpath ran before the ancestor walk")
+            raise AssertionError("realpath ran before the ancestor target screen")
 
-        self._windows(monkeypatch, realpath=_boom)
-        monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: str(tmp_path))
-        assert validate_file_path(str(tmp_path / "doc.txt")) is None
+        self._windows(monkeypatch, realpath=_boom, path_module=ntpath)
+        monkeypatch.setattr(
+            platform_compat,
+            "first_linked_ancestor",
+            lambda path: linked if ntpath.normcase(path) == ntpath.normcase(raw) else None,
+        )
+        monkeypatch.setattr(platform_compat, "is_link_or_junction", lambda _p: False)
+        monkeypatch.setattr(
+            hooks_mod.os, "readlink", lambda _p: r"\\evil-host\share", raising=False
+        )
 
-    def test_bypassing_the_ancestor_guard_restores_validation(self, tmp_path, monkeypatch):
-        """Mutation check: with the walk reporting no link, the same path
-        validates again -- the refusal above is attributable to the guard."""
+        assert validate_file_path(raw) is None
+
+    def test_plain_path_still_validates_without_links(self, tmp_path, monkeypatch):
+        """A normal local path still validates when the screen finds no links."""
         from kiro_crew import platform_compat
 
         f = _write(tmp_path / "ok.txt", "x")
         self._windows(monkeypatch)
         monkeypatch.setattr(platform_compat, "first_linked_ancestor", lambda _p: None)
         assert _same(validate_file_path(str(f)) or "", str(f))
+
+    @pytest.mark.skipif(os.name != "nt", reason="junctions exist only on Windows")
+    def test_a_real_local_junction_ancestor_resolves_to_its_target(self, tmp_path):
+        r"""No stubs: a junction ``_winapi.CreateJunction`` made on this host.
+
+        ``os.readlink`` on a real junction answers in the ``\\?\`` extended
+        form, so this is the shape the screen must fold, not the one the
+        simulated tests hand it. The file below the junction validates and the
+        result is the TARGET's path, proving the linked prefix was rewritten
+        rather than refused or resolved through.
+        """
+        import _winapi
+
+        target = tmp_path / "workflow-takeover-tasks"
+        (target / "TASK-2028 - Series Episode Table Revamp").mkdir(parents=True)
+        doc = _write(target / "TASK-2028 - Series Episode Table Revamp" / "cr-comments.md", "x")
+        junction = tmp_path / "Tasks"
+        _winapi.CreateJunction(str(target), str(junction))
+        raw = str(junction / "TASK-2028 - Series Episode Table Revamp" / "cr-comments.md")
+
+        got = validate_file_path(raw)
+        assert got is not None
+        assert _same(got, str(doc))
 
     def test_a_leaf_link_aimed_at_unc_is_refused_before_realpath(self, tmp_path, monkeypatch):
         """A leaf FILE symlink is part of this function's contract (it
@@ -727,7 +898,7 @@ class TestValidateFilePath:
         assert validate_file_path("~/doc.txt") is None
 
     def test_unc_home_sessions_transcript_is_refused(self, monkeypatch):
-        """#6733: a kiro-cli session transcript under a Windows roaming-profile
+        """A kiro-cli session transcript under a Windows roaming-profile
         (UNC) home is refused by the UNC trusted-root gate, because the sessions
         dir is not one of unc_probe_allowed's admitted roots. This is the exact
         refusal the usage page counts as ``refused_transcripts`` instead of
@@ -735,8 +906,8 @@ class TestValidateFilePath:
         string through validate_file_path -- so it runs on a POSIX host; the
         Windows CI shard confirms the native backslash form.
 
-        The fix for #6733 does NOT relax this refusal: admitting the sessions
-        dir to the gate is a separate trust decision (open issue #8079). This
+        This refusal is NOT relaxed: admitting the sessions
+        dir to the gate is a separate trust decision. This
         test therefore pins that the transcript STAYS refused.
         """
         from kiro_crew import platform_compat
@@ -780,14 +951,18 @@ class TestSafeReadFile:
     def test_sensitive_refusal_message_escapes_the_path(self, monkeypatch):
         """The refused path is caller/attacker influenced and the message reaches
         log records via ``exc_info``; a raw newline in it would forge a second
-        record (refs #6371, the #6281/#6315 log-forgery class).
+        record (the log-forgery class).
         """
         forged = "/tmp/pods/wt-evil\nWARNING forged: reclaim authorized"
         # The message carries the RESOLVED path (drive-lettered and
         # backslashed on Windows), so compute the expectation the same way
         # production does.
         resolved = os.path.realpath(os.path.expanduser(forged))
-        monkeypatch.setattr(hooks_mod, "is_sensitive_path", lambda p: True)
+        monkeypatch.setattr(
+            hooks_mod,
+            "sensitive_path_refusal",
+            lambda p, *a, **k: f"Blocked: access to sensitive path: {p}",
+        )
         with pytest.raises(PermissionError, match="sensitive path") as excinfo:
             safe_read_file(forged)
         message = str(excinfo.value)
@@ -1537,9 +1712,8 @@ class TestScriptHookStorePersistence:
         assert store.update(hook.id, {"timeout": 300}).timeout == 300
 
     def test_a_bool_timeout_is_rejected(self, tmp_path):
-        # The deliberate tightening the old test anticipated (issue #5444):
         # ``bool`` is an ``int`` subclass, but ``True`` as a timeout is
-        # meaningless, so the shared validator now rejects it at the update
+        # meaningless, so the shared validator rejects it at the update
         # boundary rather than silently landing a 1-second timeout.
         store = ScriptHookStore(tmp_path)
         hook = store.create({"name": "h1", "command": "true"})
@@ -2122,7 +2296,7 @@ class TestSafeWriteFileNolinkXattrs:
         caller-supplied content, so it shares ``atomic_write``'s allowlist:
         replaying ``security.capability`` there would attach the old file's
         privileges to the new bytes, and ``security.ima``/``security.evm`` are
-        signatures over bytes that no longer exist. The ACL beside them is still
+        signatures over bytes that are gone. The ACL beside them is still
         carried, so this is a filter and not a blanket stop.
         """
         self._require_xattrs()
@@ -2546,3 +2720,97 @@ class TestVerifiedReplaceFileNolink:
         f = _write(tmp_path / "a.txt", "old")
         assert safe_write_file_nolink(str(f), "new") is True
         assert f.read_text(encoding="utf-8") == "new"
+
+
+class TestValidateFilePathRepresentability:
+    """Only an UNREPRESENTABLE path is refused here -- deliberately not more.
+
+    This is a shared chokepoint: `safe_read_file_bytes_nolink` routes through it,
+    and its callers include diagnostics that enumerate a file whose name holds a
+    control character in order to report on it. A broader refusal here turns such
+    a report into "could not be compared" and suppresses the finding, so the
+    control-character class belongs to the boundary that receives the path
+    (`_validate_dashboard_path`) rather than to this function.
+
+    Every caller treats None as the refusal, so a string that got past this point
+    surfaced from the dashboard handlers as an uncaught HTTP 500 rather than a 400.
+    """
+
+    def test_refuses_an_embedded_nul(self):
+        # realpath raises ValueError on it, and no file can be named with one, so
+        # refusing it costs no real name.
+        assert validate_file_path("/tmp/a\x00b") is None
+
+    @pytest.mark.parametrize(
+        "raw",
+        [
+            "/tmp/(a\x1b[2Jb)",
+            "/tmp/a\x9bb",
+            "/tmp/a\rb",
+            "/tmp/a\tb",
+        ],
+    )
+    def test_does_not_refuse_another_control_character(self, raw):
+        # An agent-writeable directory can hold such a name, and a diagnostic
+        # enumerates it to report divergence, escaping the name for display. If
+        # this function refused it, that report would degrade to "could not be
+        # compared" and the divergence would go unreported -- a suppressed
+        # finding, which is worse than the display hazard it would be guarding.
+        assert validate_file_path(raw) is not None
+
+    def test_refuses_a_path_the_platform_cannot_encode(self):
+        """A lone surrogate: refused where the platform's own encoder refuses it.
+
+        Which answer is correct here is a PLATFORM FACT, not a policy choice, and
+        that is the point of asking the encoder rather than listing characters.
+        On POSIX the handler is surrogateescape, which cannot carry U+D800, so
+        realpath would raise and the path is refused. On Windows it is
+        surrogatepass, which carries it -- and an unpaired surrogate can appear in
+        a legal NTFS name, so refusing it there would reject a real file, which is
+        the harm this gate exists to avoid.
+
+        So the expectation is derived from the same encoder the code consults,
+        rather than hardcoded: a fixed answer here would assert POSIX behaviour on
+        Windows and fail against correct code.
+        """
+        raw = "/tmp/\ud800x"
+        try:
+            raw.encode(sys.getfilesystemencoding(), sys.getfilesystemencodeerrors())
+        except (UnicodeError, ValueError):
+            assert validate_file_path(raw) is None
+        else:
+            assert validate_file_path(raw) is not None
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            # Canonically composed and canonically DECOMPOSED spellings of the
+            # same name. macOS stores the decomposed form, so refusing every
+            # string a sanitizer would alter would reject real files there.
+            "caf\u00e9.md",
+            "cafe\u0301.md",
+            # A name may legally end in a space on POSIX.
+            "trailing ",
+            # The reserved-character shape the schema gate was widened for.
+            "One on one (2026) #1.md",
+        ],
+    )
+    def test_accepts_a_representable_name(self, tmp_path, name):
+        target = tmp_path / name
+        target.write_text("x", encoding="utf-8")
+        assert validate_file_path(str(target)) is not None
+
+    def test_accepts_a_surrogate_escaped_raw_byte_name(self, tmp_path):
+        # A filename holding bytes that are not valid UTF-8 arrives
+        # surrogate-escaped. The platform's own filesystem error handler
+        # round-trips that range, so it is a real file rather than a crash, and
+        # must not be refused alongside the lone surrogate above. Reading the
+        # handler from sys rather than hardcoding one is what keeps this true on
+        # Windows, where it is surrogatepass and an unpaired surrogate can appear
+        # in a legal NTFS name.
+        target = tmp_path / "\udc80raw.md"
+        try:
+            target.write_text("x", encoding="utf-8")
+        except (OSError, UnicodeEncodeError):
+            pytest.skip("filesystem refuses non-UTF-8 names")
+        assert validate_file_path(str(target)) is not None

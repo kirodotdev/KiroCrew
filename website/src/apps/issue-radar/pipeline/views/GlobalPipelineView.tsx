@@ -27,6 +27,8 @@ import {
   autoTriagePipelineFoldApi,
   isQueueMigrationPending,
   isUnsupportedForge,
+  stepsHaveActivity,
+  type OverviewResponse,
   type RepoRef,
 } from '../api'
 import { repoScopeKey } from '../../lib/links'
@@ -96,6 +98,41 @@ function ErrorPanel({
       </div>
     </Card>
   )
+}
+
+/** True when the pipeline has anything to put on the board.
+ *
+ * The backend fold emits one `StepCounts` row per member of its STEPS tuple
+ * whether or not any event matched, so `steps.length` is a statement about the
+ * SCHEMA, not about activity -- gating on it left the designed empty state
+ * unreachable and a fresh install rendering six zero-filled columns (#10773).
+ *
+ * `totalEvents` is deliberately consulted first even though it is WHOLE-TRAIL:
+ * a repository-scoped view excludes unattributed events from the per-step
+ * counters, so its steps can all be zero while the trail holds events. Showing
+ * the zero board there is the honest rendering -- the empty state's "no pipeline
+ * activity yet" is a factual claim, and it may only be made when the board
+ * would otherwise be entirely zeros AND the trail itself is empty. A zero-length
+ * `steps` array (never produced by the current backend, but part of the
+ * forward-tolerant contract) has no activity either and still routes to the
+ * empty state, so this predicate subsumes the old `steps.length > 0` gate.
+ *
+ * Returns plain `boolean`, not a type predicate: a guard would narrow
+ * `overview.data` to `undefined` in the "no activity" branches even though the
+ * data is present there, misleading the next edit that wants to read it.
+ */
+function hasPipelineActivity(data: OverviewResponse): boolean {
+  // No steps at all means there is no board to render, whatever the trail says:
+  // this keeps every payload the old gate sent to the empty state going there.
+  if (data.steps.length === 0) return false
+  if (data.totalEvents > 0) return true
+  // A trail whose every line is malformed folds to totalEvents: 0 with a
+  // non-zero unparseable count (the fold counts a bad line and skips it before
+  // incrementing total_events). That trail HAS content, and the board's
+  // unparseable disclosure is exactly what the operator needs to see -- the
+  // empty state would hide the diagnostic behind "no pipeline activity yet".
+  if (data.unparseable > 0) return true
+  return stepsHaveActivity(data.steps)
 }
 
 export default function GlobalPipelineView({ repo }: { repo: RepoRef }) {
@@ -227,7 +264,7 @@ export default function GlobalPipelineView({ repo }: { repo: RepoRef }) {
             // would ship a branch nothing can enter.
             <ErrorPanel testId="atp-overview-error" onRetry={() => void overview.refetch()} />
           )
-        ) : overview.data && overview.data.steps.length > 0 ? (
+        ) : overview.data && hasPipelineActivity(overview.data) ? (
           <PipelineFlow
             overview={overview.data}
             selectedStep={step}

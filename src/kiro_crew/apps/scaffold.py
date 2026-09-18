@@ -174,6 +174,7 @@ Or let KiroCrew manage it via the app manifest backend section.
 """
 import json
 import os
+import sys
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -200,9 +201,23 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+class Server(HTTPServer):
+    """The listener, with the address-reuse flag bound to the platform.
+
+    ``HTTPServer`` hardcodes ``allow_reuse_address = 1``. On POSIX that only
+    waives TIME_WAIT, but on Windows ``SO_REUSEADDR`` also lets a socket bind a
+    port that already has a LIVE listener, so a second copy of this backend
+    would start successfully and the two would split incoming requests.
+    Kiro Crew decides a port collision happened by seeing the child die on its
+    initial bind, so that bind has to be allowed to fail.
+    """
+
+    allow_reuse_address = not sys.platform.startswith("win")
+
+
 if __name__ == "__main__":
     print(f"{{APP_NAME}} backend on port {{PORT}}")
-    HTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
+    Server(("127.0.0.1", PORT), Handler).serve_forever()
 '''
 
 _UI_PACKAGE_JSON_TEMPLATE = """\

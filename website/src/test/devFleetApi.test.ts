@@ -65,3 +65,28 @@ describe('devFleetApi error shape', () => {
     await expect(api.post('/sync', {})).resolves.toEqual({ ok: true, run_id: 'run-1' })
   })
 })
+
+describe('devFleetApi namespaces', () => {
+  // The live-target cutover and the gateway restart are served by the GATEWAY
+  // process, not the sandboxed backend: the pointer they touch is masked from
+  // that backend and everything it spawns. `postGateway` must therefore aim at
+  // `/api/apps/dev-fleet/...` while everything else keeps the reverse-proxied
+  // `/apps/dev-fleet/api/...`. A regression here would put the request back on
+  // a route the backend no longer serves (404) -- or, worse, one it should not.
+  it('postGateway targets the in-gateway namespace', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockImplementation(() =>
+      Promise.resolve(new Response('{"ok":true}', { status: 200 })),
+    )
+    await api.postGateway('/make-live', { path: '/wt' })
+    await api.postGateway('/restart-gateway', {})
+    const urls = spy.mock.calls.map((c) => (typeof c[0] === 'string' ? c[0] : (c[0] as Request).url))
+    expect(urls).toEqual(['/api/apps/dev-fleet/make-live', '/api/apps/dev-fleet/restart-gateway'])
+    expect(api.GATEWAY_BASE).toBe('/api/apps/dev-fleet')
+  })
+
+  it('post keeps the reverse-proxied backend namespace', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('{"ok":true}', { status: 200 }))
+    await api.post('/sync', {})
+    expect(spy.mock.calls[0][0]).toBe('/apps/dev-fleet/api/sync')
+  })
+})

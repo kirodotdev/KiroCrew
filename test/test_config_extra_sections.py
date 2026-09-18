@@ -45,6 +45,29 @@ def test_unknown_section_round_trips(tmp_path, monkeypatch):
     assert cfg.to_dict().get("amazon") == {"midway_flags": "-o -s", "n": [1, 2]}
 
 
+def test_retired_key_is_ignored_dropped_and_never_warned(tmp_path, monkeypatch, caplog):
+    """A stale materialized ``agent_template_pane: false`` cannot disable anything.
+
+    Older builds wrote the key into every saved config, so flipping a default
+    could never reach existing installs. The key is retired instead: the pane
+    renders unconditionally, and a leftover ``false`` on disk must be (a) not
+    parsed into any field, (b) not captured/round-tripped as an extra section,
+    and (c) not reported as an unrecognized top-level key on every load.
+    """
+    cfgp = tmp_path / "config.json"
+    cfgp.write_text(json.dumps({"agent": {"provider": "acp"}, "agent_template_pane": False}))
+    monkeypatch.setattr(L, "config_path", lambda: cfgp)
+    monkeypatch.setattr(L, "config_dir", lambda: tmp_path)
+    monkeypatch.setattr(L, "config_local_path", lambda: tmp_path / "config.local.json")
+
+    with caplog.at_level("WARNING", logger="kiro_crew.config.loader"):
+        cfg = KiroCrewConfig.load()
+    assert not hasattr(cfg, "agent_template_pane")
+    assert "agent_template_pane" not in cfg._extra_sections
+    assert "agent_template_pane" not in cfg.to_dict()
+    assert "agent_template_pane" not in caplog.text
+
+
 def test_extra_sections_never_clobbers_a_known_section():
     """A stale/hostile capture of a known key must not overwrite the real one."""
     c = KiroCrewConfig()

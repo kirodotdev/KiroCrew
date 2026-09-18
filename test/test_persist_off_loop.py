@@ -1,5 +1,5 @@
-"""Build gate + tests: the Slack persist path stays off the event loop (#1699),
-and a slot orders its rows against foreign on-disk rows (#1689).
+"""Build gate + tests: the Slack persist path stays off the event loop,
+and a slot orders its rows against foreign on-disk rows.
 
 ## Why a gate and not just tests
 
@@ -40,6 +40,7 @@ from datetime import datetime
 from unittest.mock import patch
 
 import pytest
+from source_corpus import parsed_candidates
 
 from kiro_crew.history import latest_transcript_ts, monotonic_transcript_ts, transcript_sort_key
 
@@ -149,20 +150,27 @@ def find_violations(source: str, path: str = "<source>") -> list[tuple[str, int]
 
 def collect_repo_violations() -> list[tuple[str, int]]:
     """Scan every ``kiro_crew/**/*.py`` for an on-loop turn persist."""
-    root = _src_root()
-    base = root.parent
+    base = _src_root().parent
     out: list[tuple[str, int]] = []
-    for py in sorted(root.rglob("*.py")):
-        try:
-            src = py.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):  # pragma: no cover - defensive
-            continue
+    # ``find_violations`` cannot report a hit unless ``_bound_names`` bound
+    # something, and every binding it recognises -- the ``from ... import
+    # save_conversation_turn`` alias, or the ``<module>.save_conversation_turn``
+    # attribute call itself -- puts the literal in the file's TEXT. So narrowing
+    # to files holding it drops non-matches only, and the shared corpus parses
+    # just those (a handful) instead of ast.parse-ing all ~1550 modules -- ~3.5 s
+    # per run, because find_violations' early return happens AFTER the parse.
+    # Filtering through ``parsed_candidates`` rather than a raw ``in`` test is
+    # deliberate: it matches on NFKC-normalised text, so an identifier spelled
+    # with a Unicode compatibility homoglyph -- which CPython folds at parse time,
+    # making it a real AST match -- cannot slip past the filter and quietly
+    # un-gate itself.
+    for py, text, _tree in parsed_candidates(require_all=(_BANNED_FUNC,)):
         try:
             rel = str(py.relative_to(base))
         except ValueError:  # pragma: no cover - defensive
             rel = str(py)
         try:
-            out.extend(find_violations(src, rel))
+            out.extend(find_violations(text, rel))
         except SyntaxError:  # pragma: no cover - defensive
             continue
     return out
@@ -338,7 +346,7 @@ async def test_two_concurrent_turns_do_not_interleave(tmp_path) -> None:
     ``save_conversation_turn`` never yields between its two appends, so the pair
     was effectively atomic. Dispatching it to worker threads makes two concurrent
     turns for the same session genuinely interleavable into
-    ``user_A, user_B, assistant_A, assistant_B`` -- turns that no longer pair up,
+    ``user_A, user_B, assistant_A, assistant_B`` -- turns that do not pair up,
     which no timestamp ordering can repair because every row's ``ts`` is
     individually correct.
 
@@ -414,7 +422,7 @@ class TestLatestTranscriptTs:
         )
 
 
-# ── #1689: a slot orders against a foreign on-disk row ───────────────────────
+# ── A slot orders against a foreign on-disk row ─────────────────────────────
 #
 # The behavioural coverage for that lives in test_transcript_row_ordering.py,
 # which owns transcript ordering and already carries the colliding-clock
@@ -453,7 +461,7 @@ def test_all_candidates_corrupt_yields_no_floor(bad: str) -> None:
     assert latest_transcript_ts(bad, bad) is None
 
 
-# ── Restore-read tier: no startup restore read is INLINED on the loop (#895) ──
+# ── Restore-read tier: no startup restore read is INLINED on the loop ────────
 #
 # Same failure family as the persist gate above, opposite direction: a READ this
 # time, and the cost is not a dropped write but a stalled event loop. The startup

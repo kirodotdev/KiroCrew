@@ -422,7 +422,7 @@ class MeetingSession:
     #: Lives on the session, not on the holder, so it is bound to the identity
     #: whose initialization it covers: a session that is replaced or torn down
     #: takes its hold with it, and a later session can never inherit and replay
-    #: lines that were spoken into a meeting that no longer exists.
+    #: lines that were spoken into a meeting that does not exist.
     #:
     #: The recipient set is stored rather than recomputed at drain because the
     #: hold must change WHEN a line is delivered, never WHO it was addressed to.
@@ -432,7 +432,7 @@ class MeetingSession:
     #:
     #: NAMES, not queue objects: an agent disabled mid-initialization has its
     #: queue removed from ``agents``, and holding a reference would enqueue into
-    #: a queue nothing flushes. A name that no longer resolves is simply skipped.
+    #: a queue nothing flushes. A name that does not resolve is simply skipped.
     init_buffer: list[tuple[str, frozenset[str]]] = field(default_factory=list)
     #: How many of the OLDEST held lines the cap displaced. Read at drain time
     #: to size the marker, so a drop is announced once with an exact count
@@ -455,6 +455,15 @@ class MeetingSession:
     #: Live transcript translation, or None when no target language is configured
     #: (the default). Not an ``AgentQueue``: see ``domain/translate.py``.
     translations: "TranslationQueue | None" = field(default=None, init=False)
+    #: Set once, the first time this session's transcript ingress is opened
+    #: (``_ActiveMeeting.resume_dispatches``) — i.e. it finished agent init and
+    #: became genuinely usable. Monotonic: never cleared, because it records that
+    #: the meeting REACHED the ready state, not that it is ready right now
+    #: (ingress toggles off on every suspend). ``abandoned`` reads it to tell a
+    #: meeting retired mid-init (never ready → terminal) apart from an
+    #: established meeting whose idle slots were reaped but resume on the next
+    #: line (was ready → recoverable, must NOT be treated as abandoned).
+    became_ready: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         config = self.config if self.config is not None else store.read_config()
@@ -558,7 +567,7 @@ class MeetingSession:
 
         The agents cannot receive anything yet — they do not know which file they
         own until ``init_agents`` has run — but the speaker is already talking, and
-        refusing the line is what lost the opening of every meeting (issue #4610).
+        refusing the line loses the opening of the meeting.
 
         Normalized and filtered HERE, at arrival, and stored with the recipients of
         this moment: both halves of "what happens to this line" are decided when a
@@ -634,6 +643,39 @@ class MeetingSession:
     @property
     def expired(self) -> bool:
         return (time.time() - self.started_at) > k.MAX_SESSION_DURATION
+
+    @property
+    def abandoned(self) -> bool:
+        """Whether this meeting was retired mid-init and never became usable.
+
+        The case this guards: a gateway-wide session sweep (the dashboard's "Kiro
+        identity changed" reconcile) retires this meeting's agent sessions while
+        it is still initializing, so it holds the single-active-meeting latch
+        with no live slot and never reaches dispatch-ready. Because it is young,
+        :attr:`expired` stays False, so without this signal it wedges the latch
+        as ``status: active`` forever.
+
+        Two conditions, BOTH required:
+
+        * ``not became_ready`` — the meeting never finished init (ingress was
+          never opened). This is what excludes the healthy case an idle sweep
+          creates: an ESTABLISHED meeting that goes quiet past the idle timeout
+          has its agent slots reaped from the session registry too (they are not
+          persistent/channel-exempt), making every ``has_session`` read False —
+          but it already became ready, its slots were reaped with the resume SID
+          preserved, and its next line resumes them via ``get_or_create``. That
+          meeting is recoverable and must NOT read as abandoned.
+        * every installed agent slot is gone from the registry — no live session
+          resolves for any ``slot_key``.
+
+        Returns False when there is no session manager or no installed slot to
+        judge, so expiry/teardown stay in charge and it never fires spuriously.
+        """
+        if self.became_ready:
+            return False
+        if self.sessions is None or not self.agents:
+            return False
+        return not any(self.sessions.has_session(queue.key) for queue in self.agents.values())
 
     @property
     def agents_paused(self) -> bool:

@@ -218,7 +218,7 @@ MAX_DRAFT_COMMENTS = 200
 MAX_THREAD_ENTRIES = 500
 # On-disk ceiling for ONE queue record. The SAME number gates the write and the
 # read deliberately: a record the writer accepts but the reader refuses is a
-# draft the user can no longer see, and silently losing queued work is worse than
+# draft the user cannot see, and silently losing queued work is worse than
 # refusing the append that would have caused it. Kept distinct from
 # `MAX_BODY_BYTES` (which bounds ONE inbound payload) because a record
 # accumulates many payloads over its life — they are equal today, and conflating
@@ -873,12 +873,31 @@ class Handler(http_api.Handler):
 atexit.register(_stop_all_dev_procs)
 
 
+class _Server(ThreadingHTTPServer):
+    """The listener, with the address-reuse flag bound to the platform.
+
+    ``http.server.HTTPServer`` hardcodes ``allow_reuse_address = 1``, and that flag
+    does not mean the same thing on both families. On POSIX it only waives
+    TIME_WAIT so a restart can rebind. On Windows ``SO_REUSEADDR`` additionally
+    lets a socket bind an address that already has a LIVE listener, so a second
+    Design Tweak backend on ``PORT`` would bind successfully and the two would
+    split incoming requests instead of one failing.
+
+    The gateway detects a port collision by checking that the spawned child died on
+    its initial bind (``kiro_crew/apps/backend.py``), which only works while the
+    bind is actually allowed to fail. So the flag is off on Windows and EADDRINUSE
+    is permitted to surface. This mirrors the workflows backend's ``_Server``.
+    """
+
+    allow_reuse_address = IS_POSIX
+
+
 def main() -> int:
     """Create data directories and run the loopback HTTP server."""
 
     QUEUE_DIR.mkdir(parents=True, exist_ok=True)
     HANDLED_DIR.mkdir(parents=True, exist_ok=True)
-    server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
+    server = _Server(("127.0.0.1", PORT), Handler)
     print(f"[{APP_NAME}] listening on http://127.0.0.1:{PORT}  data={DATA_DIR}")
     try:
         server.serve_forever()

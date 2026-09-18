@@ -1,6 +1,6 @@
 """The entity graph is materialised by its first reader, not by construction.
 
-Boot cost, not correctness, is the reason (#8329): ``_load_graph`` full-scans
+Boot cost, not correctness, is the reason: ``_load_graph`` full-scans
 ``entities`` + ``entity_relations`` on the event-loop thread before the socket
 binds. These tests pin the three properties that make the deferral safe rather
 than merely cheaper -- construction does not scan, the first touch is
@@ -308,7 +308,7 @@ class TestLoopReadersMaterialiseOffLoop:
         # The graph must be materialised off-loop BEFORE anything reads it.
         # get_full_graph reads the graph directly (`graph = store.graph` and reads
         # through that local); get_entity_graph delegates the read to
-        # store.get_entity_subgraph, which pins and reads the graph itself (#8692).
+        # store.get_entity_subgraph, which pins and reads the graph itself.
         # Either way the touch that reaches the graph must follow the offload.
         read_tokens = (
             "store.graph.",
@@ -354,7 +354,7 @@ class TestRebuildIsPublishedByReferenceSwap:
     captured ``store.graph`` and iterated it -- or a multi-step reader that
     re-read it across degree ranking then per-node attribute reads -- could
     observe the window between ``clear()`` and the last insert and return an
-    empty or truncated graph (#8692, consequence 1).
+    empty or truncated graph.
 
     The fix builds a fresh ``SimpleDiGraph`` and publishes it with a single
     reference assignment, so the object a reader holds is never mutated. These
@@ -466,7 +466,7 @@ class TestConcurrentIncrementalAddSurvivesARebuild:
 
     ``add_entity`` / ``add_entity_relation`` write the row, commit, and apply an
     incremental ``add_node`` / ``add_edge`` to the live graph. Publishing a
-    rebuild by swapping ``self._graph`` (#8692) means that in-memory add would be
+    rebuild by swapping ``self._graph`` means that in-memory add would be
     LOST if it landed on the old object a rebuild was about to discard: the row is
     in the database, but the in-memory graph misses it until the next full
     rebuild, which in steady-state ingestion may never come. Both the add and the
@@ -549,7 +549,7 @@ class TestEntitySubgraphSharesOnePinnedSnapshot:
     the entity is absent, which ``get_entity_graph`` maps to 404. Because the check
     and the walk share the one captured reference, a rebuild swapping in a fresh
     graph between them cannot let an entity pass the check and then be walked on a
-    different graph (#8692).
+    different graph.
     """
 
     def test_absent_entity_returns_none(self, tmp_path):
@@ -583,7 +583,7 @@ class TestEntitySubgraphSharesOnePinnedSnapshot:
 
 class TestARebuildCannotRestoreAConcurrentlyDeletedWrite:
     """The in-memory graph must agree with the committed rows after an add races
-    a rebuild that removes the same edge (#8692, GPT F1: delete-then-restore).
+    a rebuild that removes the same edge.
 
     ``add_entity_relation`` commits its row and applies the in-memory ``add_edge``
     as ONE ``_graph_lock`` critical section. A delete path (``delete_source_cascade``

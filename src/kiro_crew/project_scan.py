@@ -815,8 +815,8 @@ def _hold_directory(directory: str) -> int | None:
     refuses to rename a directory while anything beneath it is open. Swapping a
     directory (or an ancestor of it) for a junction needs exactly such a rename
     or delete first, so with the handle held the name the checks resolve and the
-    name the listing reads are the same directory — the window this branch
-    used to state as unclosable is closed by holding, not by racing.
+    name the listing reads are the same directory — the window is closed by
+    holding, not by racing.
 
     Returns the handle, to be released with ``_release_directory``; ``None`` on
     a platform where the pinned open makes this unnecessary.

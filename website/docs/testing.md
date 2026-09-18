@@ -18,11 +18,12 @@ npm run test:website      # vitest run --coverage
 npm run test:integration  # vitest run integration/   (the MSW suite only)
 npm run test:watch        # vitest, watch mode
 npm run test:electron     # the Electron node:test suite
+npx playwright install chromium  # one-time E2E browser setup
 npm run test:playwright   # playwright test --headed --workers=1
 npm run test:playwright:headless
 npm run storybook         # component stories on http://127.0.0.1:6006 (loopback only)
 npm run build-storybook   # static build into storybook-static/ (gitignored)
-npx tsc -b                # the real type check
+npx tsc -p tsconfig.app.json   # the real type check
 ```
 
 One trap worth knowing before you trust a green run:
@@ -158,7 +159,7 @@ match when you are debugging a CI-only failure.
 
 - **jscpd** duplication check: copy-pasted code fails the build.
 - Coverage is emitted as cobertura XML from `test:website`.
-- `npx tsc -b` and eslint run as their own blocking steps.
+- `npx tsc -p tsconfig.app.json` and eslint run as their own blocking steps.
 - Coverage runs cap fork workers (`maxWorkers` in `vite.config.ts`) with a
   3072 MB old-space ceiling per worker. The cap leaves room for the Vitest
   coordinator, coverage maps, happy-dom state, and the operating system on a
@@ -173,6 +174,13 @@ The short version holds here too: never fix a flake with a rerun, a longer timeo
 or a weakened assertion. Poll for the condition you actually care about.
 
 ## Determinism: establish the state you assert on
+
+Reset owned API mocks before reseeding per-test defaults. `vi.clearAllMocks()`
+clears call history but preserves queued `mockResolvedValueOnce` and
+`mockRejectedValueOnce` responses. If a test stops before consuming one, that
+response can override the next test's default implementation. Call `mockReset()`
+on those API mocks, then supply the next test's defaults, preserving unrelated
+shared setup mocks.
 
 Every CI-only failure this suite has produced so far reduces to one mistake: **the
 test asserted against a state it did not establish**, and got away with it locally
@@ -334,6 +342,10 @@ of the four runs. Nine were the "real async chain behind the 1000ms default" sha
 above, and got a **named** ceiling next to the helper that owns the wait (`TREE_READY`,
 `PANE_READY`, `NOTICE_READY`; the approval ghost's 150ms settle-guard timer; the
 `['artifact', slug]` fetch). Two were new shapes, and each one is a rule:
+
+For Testing Library's bound `findBy*` queries, pass a named timeout as the third
+argument, for example `screen.findByTestId(id, undefined, PANE_READY)`. The second
+argument configures matching and does not change the wait timeout.
 
 - **A wait that resolves on a row from the WRONG query.** The path bar's `complete` mock
   answers every key with the same entry, so the suggestion row first rendered for the

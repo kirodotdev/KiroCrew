@@ -178,12 +178,11 @@ def render_dropin(checkout: Path) -> str:
 def _write_unit_file_atomic_nofollow(dst: Path, content: str, *, what: str) -> None:
     """Publish one managed systemd file without following planted links.
 
-    Thin wrapper kept for its call sites' readability: the mechanism now lives in
+    Thin wrapper kept for its call sites' readability: the mechanism lives in
     ``pinned_fs.write_file_pinned``, which is the SINGLE no-follow publish path in
-    the tree. This function used to hand-roll it (pin the parent, ``lstat`` through
-    the descriptor, refuse a link or a non-regular file, then ``atomic_write_at``),
-    and the pod boot path grew a second hand-rolled copy independently -- so the
-    two were collapsed onto one implementation rather than gaining a third.
+    the tree (pin the parent, ``lstat`` through the descriptor, refuse a link or a
+    non-regular file, then ``atomic_write_at``). Both this site and the pod boot
+    path delegate to it rather than hand-rolling a copy.
     """
     pinned_fs.write_file_pinned(dst, content, what=what, mode=0o600, refusal=OSError)
 
@@ -193,7 +192,7 @@ def install_dropin(cfg: PodConfig, name: str, checkout: Path) -> Path:
 
     Rewritten on every start rather than created once, so a pod re-``up``ped from
     a different checkout — or one whose venv was rebuilt elsewhere — cannot keep
-    booting a path that no longer exists (the failure mode ``unit_exec_ok``
+    booting a path that does not exist (the failure mode ``unit_exec_ok``
     exists to self-heal for the template).
     """
     dst = dropin_path(cfg, name)
@@ -327,7 +326,7 @@ def unit_is_current(cfg: PodConfig) -> bool:
     """True when the installed unit is one this build is willing to boot.
 
     Three ways it can be stale, and a start self-heals all of them by
-    re-rendering: the baked ExecStart binary no longer exists
+    re-rendering: the baked ExecStart binary does not exist
     (:func:`unit_exec_ok`), the unit still carries a directive this build has
     REMOVED, or it is missing one this build now REQUIRES. All three matter on
     UPGRADE — the unit is written once by ``pod install``, so without these checks

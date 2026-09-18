@@ -1,6 +1,6 @@
 """Command-surface and dispatch fixes shared by the messaging channels.
 
-Four defects, each of which used to surface as "the feature is broken" rather
+Four defects, each of which would surface as "the feature is broken" rather
 than as an error:
 
 1. ``!dashboard 0h`` minted a login link that had already expired, on Discord and

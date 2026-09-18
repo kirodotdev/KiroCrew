@@ -4,7 +4,15 @@ import {
   shellForFenceLang,
   shellBaseName,
   posixSingleQuote,
+  RUN_IN_TERMINAL_READY_DEADLINE_MS,
+  RUN_IN_TERMINAL_RESULT_FALLBACK_MS,
 } from '../utils/fenceShell'
+
+describe('run-in-terminal deadline constants', () => {
+  it('keeps the button fallback strictly after the dispatch deadline, so the button cannot declare failure before the dispatcher has ruled', () => {
+    expect(RUN_IN_TERMINAL_RESULT_FALLBACK_MS).toBeGreaterThan(RUN_IN_TERMINAL_READY_DEADLINE_MS)
+  })
+})
 
 /**
  * A fence tag redirects a snippet only when the running shell genuinely cannot

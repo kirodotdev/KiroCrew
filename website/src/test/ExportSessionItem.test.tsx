@@ -1,21 +1,22 @@
 /**
  * "Export to a file" — the session menu's file-export row.
  *
- * The row is rendered against a plain `Item` stub rather than a live Radix menu:
- * jsdom cannot drive a Radix submenu open (no PointerEvent), the same limitation
- * SendToInstanceSubmenu.test.tsx documents, and what matters here is the
- * disabled / outcome logic rather than the menu shell.
+ * Cheap outcome tests use a plain Item stub. Keyboard tests use a live Radix
+ * dropdown because the contract under test is its roving focus and documented
+ * `onSelect` behavior.
  *
- * Three contracts are locked:
+ * Four contracts are locked:
  *   (1) an incognito or temporary session cannot be exported, and the row SAYS
  *       so instead of offering a click the backend only ever refuses;
  *   (2) the menu stays open and the outcome lands on the row, because a
  *       download's only visible effect is in the browser's own download surface;
- *   (3) a refusal surfaces the endpoint's own message rather than a generic one.
+ *   (3) a refusal surfaces the endpoint's own message rather than a generic one;
+ *   (4) the hand-off is its own menu item, while the export row keeps its action.
  */
 import * as React from 'react'
-import { describe, it, expect, beforeEach, vi } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 
 const mocks = vi.hoisted(() => ({ exportSession: vi.fn() }))
@@ -26,6 +27,17 @@ vi.mock('../api/client', () => ({
 }))
 
 import ExportSessionItem from '../components/ExportSessionItem'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '../components/ui/dropdown-menu'
+import {
+  consumeChatHandoff,
+  installSoftNavigate,
+  __resetErrorJournalForTests,
+  __resetNavSeamForTests,
+} from '../utils/errorReport'
 
 /** A plain stand-in for the Radix menu-item primitive. */
 function StubItem({ title, disabled, onSelect, children }: {
@@ -47,11 +59,26 @@ function StubItem({ title, disabled, onSelect, children }: {
   )
 }
 
+function queryClient() {
+  return new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
+}
+
 function renderRow(memoryMode?: 'persistent' | 'incognito' | 'temporary') {
-  const qc = new QueryClient({ defaultOptions: { queries: { retry: false }, mutations: { retry: false } } })
   return render(
-    <QueryClientProvider client={qc}>
+    <QueryClientProvider client={queryClient()}>
       <ExportSessionItem slotKey="slot-1" Item={StubItem} memoryMode={memoryMode} />
+    </QueryClientProvider>,
+  )
+}
+
+function renderMenu() {
+  return render(
+    <QueryClientProvider client={queryClient()}>
+      <DropdownMenu defaultOpen>
+        <DropdownMenuContent>
+          <ExportSessionItem slotKey="slot-1" Item={DropdownMenuItem} memoryMode="persistent" />
+        </DropdownMenuContent>
+      </DropdownMenu>
     </QueryClientProvider>,
   )
 }
@@ -60,10 +87,23 @@ function row() {
   return screen.getByTestId('row') as HTMLButtonElement
 }
 
+function menuRow() {
+  return screen.getByRole('menuitem', { name: /export to a file/i })
+}
+
 describe('ExportSessionItem', () => {
   beforeEach(() => {
     mocks.exportSession.mockReset()
     mocks.exportSession.mockResolvedValue(undefined)
+    __resetErrorJournalForTests()
+    __resetNavSeamForTests()
+    sessionStorage.clear()
+    installSoftNavigate(() => {})
+  })
+
+  afterEach(() => {
+    __resetNavSeamForTests()
+    vi.restoreAllMocks()
   })
 
   it('offers the export for a persistent session', () => {
@@ -110,9 +150,8 @@ describe('ExportSessionItem', () => {
         }} />
       )
     }
-    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
     render(
-      <QueryClientProvider client={qc}>
+      <QueryClientProvider client={queryClient()}>
         <ExportSessionItem slotKey="slot-1" Item={Recorder} memoryMode="persistent" />
       </QueryClientProvider>,
     )
@@ -152,14 +191,70 @@ describe('ExportSessionItem', () => {
     expect(mocks.exportSession).toHaveBeenCalledTimes(1)
   })
 
-  it('offers the agent hand-off, because an export has no unsaved draft to lose', async () => {
-    // `errors-use-error-notice` mandates the hand-off on a surface whose inputs are
-    // already persisted, which an export is: the navigation destroys nothing.
+  it.each([
+    ['Enter', '{Enter}'],
+    ['Space', ' '],
+  ])('moves from the export row to its hand-off item and activates it with %s', async (_label, key) => {
+    const user = userEvent.setup()
     mocks.exportSession.mockRejectedValue(new Error('this session has no messages to export'))
-    renderRow('persistent')
-    row().click()
-    await waitFor(() => expect(screen.getByRole('alert')).toBeTruthy())
-    expect(screen.getByRole('alert').querySelectorAll('button').length).toBeGreaterThan(0)
+    renderMenu()
+
+    menuRow().focus()
+    await user.keyboard('{Enter}')
+    await screen.findByRole('alert')
+    expect(mocks.exportSession).toHaveBeenCalledTimes(1)
+
+    expect(screen.getAllByRole('menuitem')).toHaveLength(2)
+    await user.keyboard('{ArrowDown}')
+    const handoff = screen.getByRole('menuitem', { name: /^ask the agent$/i })
+    expect(handoff).toHaveFocus()
+    await user.keyboard(key)
+
+    expect(consumeChatHandoff()).toContain('this session has no messages to export')
+    expect(mocks.exportSession).toHaveBeenCalledTimes(1)
+    expect(screen.queryByRole('menu')).not.toBeInTheDocument()
+  })
+
+  it('keeps Enter and pointer activation on the export row while the notice shows', async () => {
+    const user = userEvent.setup()
+    mocks.exportSession.mockRejectedValue(new Error('this session has no messages to export'))
+    renderMenu()
+
+    menuRow().focus()
+    await user.keyboard('{Enter}')
+    await screen.findByRole('alert')
+
+    menuRow().focus()
+    await user.keyboard('{Enter}')
+    await waitFor(() => expect(mocks.exportSession).toHaveBeenCalledTimes(2))
+    await screen.findByRole('alert')
+
+    await user.click(menuRow())
+    await waitFor(() => expect(mocks.exportSession).toHaveBeenCalledTimes(3))
+    expect(consumeChatHandoff()).toBeNull()
+  })
+
+  it('keeps the menu and hand-off visible when hand-off staging fails', async () => {
+    const user = userEvent.setup()
+    mocks.exportSession.mockRejectedValue(new Error('this session has no messages to export'))
+    renderMenu()
+
+    menuRow().focus()
+    await user.keyboard('{Enter}')
+    await screen.findByRole('alert')
+    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
+      throw new Error('quota')
+    })
+
+    expect(screen.getAllByRole('menuitem')).toHaveLength(2)
+    await user.keyboard('{ArrowDown}')
+    const handoff = screen.getByRole('menuitem', { name: /^ask the agent$/i })
+    expect(handoff).toHaveFocus()
+    await user.keyboard('{Enter}')
+
+    expect(consumeChatHandoff()).toBeNull()
+    expect(screen.getByRole('menu')).toBeInTheDocument()
+    expect(handoff).toBeInTheDocument()
   })
 
   it('offers the export when the memory mode is not known yet', () => {

@@ -80,7 +80,7 @@ concurrency:
 jobs:
   ratchet-gates:
     name: Backend ratchet & baseline gates
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 25
     env:
       # Judge the integrated tree, not a diff. See the scope note in the header:
@@ -114,6 +114,17 @@ jobs:
         # interpreter (no venv); --group pulls [dependency-groups].dev.
         run: uv pip install --system -e ".[voice]" --group dev
 
+      # Mirrored from ci.yml backend-lint, and this lane is where it matters most:
+      # an advisory appears because a database was updated, with no diff anywhere,
+      # so main's integrated tree is the only place the count can be observed
+      # drifting on its own. continue-on-error for the same reason as on a PR --
+      # the audit queries that database over the network, and a service blip is not
+      # ratchet drift.
+      - name: Python dependency audit (pinned, report-only)
+        if: ${{ !cancelled() }}
+        continue-on-error: true
+        run: python3 scripts/check_python_audit.py
+
       # Each gate is a SEPARATE step so a failure names exactly which ratchet
       # drifted. Same commands as ci.yml backend-lint, whole-tree scoped, and
       # the set of gate scripts is pinned equal to backend-lint's by
@@ -138,11 +149,13 @@ jobs:
           python3 scripts/check_subprocess_encoding.py --test
           python3 scripts/check_subprocess_encoding.py
 
-      - name: Check comments for change history (gate, baselined)
+      # Whole-tree by construction: the gate sweeps the committed corpus and its
+      # baseline is shrink-only, so main's integrated tree is exactly the question it
+      # answers. Measured here as well as on a PR because a fixture landing clean and a
+      # baseline entry going stale are both drifts nobody's diff shows.
+      - name: Check ACP frame fixtures for host data (gate, baselined)
         if: ${{ !cancelled() }}
-        run: |
-          python3 scripts/check_comment_history.py --test
-          python3 scripts/check_comment_history.py
+        run: python3 scripts/check_acp_frame_host_data.py
 
       - name: Check agent-SDK import boundary (gate, baselined)
         if: ${{ !cancelled() }}
@@ -178,7 +191,7 @@ jobs:
 
   frontend-ceiling:
     name: Frontend eslint ceiling
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -222,7 +235,7 @@ jobs:
   report:
     name: Render ratchet verdict
     needs: [ratchet-gates, frontend-ceiling]
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 10
     # always() so the verdict is rendered even when a gate job failed; the push
     # guard keeps a manual workflow_dispatch from mutating the tracking issue.

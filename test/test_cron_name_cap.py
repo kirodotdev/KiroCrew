@@ -1,8 +1,8 @@
-"""Tests for the cron-job ``name`` cap at the persistence owner (issue #3831).
+"""Tests for the cron-job ``name`` cap at the persistence owner.
 
 ``POST /api/crons`` caps ``name`` at ``MAX_SHORT_STRING`` through
 ``validate_string_field``, and ``PATCH /api/crons/{id}`` gained the same
-validation when #3831's REST half landed (locked by
+validation when the REST half landed (locked by
 ``test/test_cron_patch_name_validation.py``). One layer down the divergence
 remained: ``_build_job`` capped ``message`` but not ``name``, and
 ``_update_job_locked`` assigned ``name`` with only a truthiness guard -- so

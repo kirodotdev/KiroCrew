@@ -206,7 +206,7 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
     the budget rather than not terminating; callers pass a realistic ``limit``.
     One further chunk may exceed ``limit`` itself, and only by its fence
     scaffolding, when a logical line admits no cut clean on both sides: such a
-    line is placed whole whenever the LINE ITSELF is no longer than ``limit``,
+    line is placed whole whenever the LINE ITSELF fits within ``limit``,
     rather than cut into a fence delimiter its source never contained. Eligibility
     measures the line alone, so the chunk holding it adds the reopener line and
     the synthetic closer on top and may pass ``limit`` by exactly that
@@ -265,8 +265,8 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
         # The widest cut at or below ``take``, and whether it is clean on BOTH
         # sides (``clean`` is 0 when no width is). Consulted for EVERY fragment
         # that does not fit, whatever the arithmetic above worked out to: an
-        # arithmetic branch that skipped this was how the ladder below used to be
-        # bypassed at budgets a fence's scaffolding consumes whole. Both read
+        # arithmetic branch that skips this bypasses the ladder below at budgets
+        # a fence's scaffolding consumes whole. Both read
         # only ``frag[: take + 1]``, which is already complete whenever a cut is
         # on the table, so neither answer moves as a still-arriving line grows.
         width = 0 if fits else _safe_cut(fence, frag, take)
@@ -314,7 +314,7 @@ def split_markdown_safe(text: str, limit: int, *, reserve: int = 0) -> list[str]
 
         if not cut:
             # Take the fragment whole: either it fits, or no cut is clean on both
-            # sides and the line it came from is no longer than the caller's full
+            # sides and the line it came from fits within the caller's full
             # ``limit``. That second test measures the LINE alone — not the fence
             # scaffolding it needs, and not what the chunk already holds, which
             # the seal above reduced to the reopen line. So the chunk becomes

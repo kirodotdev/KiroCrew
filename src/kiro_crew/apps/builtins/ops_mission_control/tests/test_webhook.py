@@ -232,10 +232,10 @@ class TestPayloadValidation(_Env):
     def test_peek_does_not_consume_the_queue(self) -> None:
         """A READ must not destroy delivered signals.
 
-        This test used to assert the opposite (`drain` emptying the spool), which is the
-        bug: `poll_all` is called by the Signals-tab read and by the claim-authorization
-        check as well as by the heartbeat, so a "Poll now" click permanently destroyed
-        every queued alert — signature-verified, delivered, and then silently nothing.
+        `drain` emptying the spool on a read is the bug: `poll_all` is called by the
+        Signals-tab read and by the claim-authorization check as well as by the
+        heartbeat, so a "Poll now" click would permanently destroy every queued alert —
+        signature-verified, delivered, and then silently nothing.
         """
         self._send(_body(id="a"))
         self._send(_body(id="b"))
@@ -275,10 +275,10 @@ class TestPayloadValidation(_Env):
 class TestAlertmanagerEnvelope(_Env):
     """The v4 ``{status, alerts:[...]}`` body — the most common machine-readable alert.
 
-    Previously rejected outright: a raw Alertmanager body carries no top-level
-    ``title``/``summary``, so ``signal_from_payload`` returned None and the ingress
-    answered 400 "payload has no title" — while this module's own docstring named
-    Alertmanager as a supported sender.
+    Accepted rather than rejected outright: a raw Alertmanager body carries no top-level
+    ``title``/``summary``, so a title-only read returns None and the ingress answers
+    400 "payload has no title" — for the sender this module's own docstring names as
+    supported.
     """
 
     def setUp(self) -> None:
@@ -442,14 +442,14 @@ class TestAlertmanagerEnvelope(_Env):
 
 
 class TestProviderSideSuppressionIsHonoured(_Env):
-    """Alertmanager publishes suppression two ways, and only one shape used to parse.
+    """Alertmanager publishes suppression two ways, and both shapes must parse.
 
     The v4 webhook envelope sends a scalar ``status``. Anything relaying
     ``GET /api/v2/alerts`` sends the ``gettableAlert`` OBJECT
-    ``{"state": "suppressed", "silencedBy": [...]}``, which the previous scalar-only read
-    stringified — so it normalized to ``unknown`` and ``silencedBy`` was dropped entirely.
-    A sender being perfectly explicit about a human having parked the alert produced a
-    signal indistinguishable from garbage.
+    ``{"state": "suppressed", "silencedBy": [...]}``, which a scalar-only read
+    stringifies — normalizing it to ``unknown`` and dropping ``silencedBy`` entirely.
+    A sender being perfectly explicit about a human having parked the alert then
+    produces a signal indistinguishable from garbage.
     """
 
     def setUp(self) -> None:
@@ -612,9 +612,9 @@ class TestProviderSideSuppressionIsHonoured(_Env):
 class TestRejectStatusMapping(unittest.TestCase):
     """A payload fault is not an auth failure.
 
-    Everything used to return 401, so a sender debugging a bad body was told
-    "Unauthorized" and would re-check credentials that were fine — while a genuine
-    signature failure looked identical to a typo.
+    Answering 401 for everything tells a sender debugging a bad body
+    "Unauthorized", so it re-checks credentials that are fine — and a genuine
+    signature failure looks identical to a typo.
     """
 
     def test_trust_failures_are_401(self) -> None:

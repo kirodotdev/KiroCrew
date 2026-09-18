@@ -616,13 +616,12 @@ Gateway** -- the dashboard's enable action (`on_app_enable`), also re-run at
 gateway startup (`on_gateway_startup`) -- so on that path they go live without
 waiting for a Gateway restart.
 
-`kirocrew app enable` is not that path. The CLI is a separate process with no
-handle on a running Gateway's imported modules, so it cannot load or replace
-hooks: a Gateway that is already up keeps executing the hook module it imported
-earlier, even though the command succeeds and `app info` reports the new
-version. Restart the Gateway, or disable and re-enable the app from the
-dashboard, for hook changes to take effect. The CLI prints this reminder after
-enabling any app that declares `backend.hooks`.
+`kirocrew app enable` and `kirocrew app disable` apply live when a running
+Gateway is reachable through the CLI's owner-only Unix socket (POSIX only),
+including starting or stopping the backend. Otherwise the CLI records the change
+for the next Gateway start. On that file-only path, enabling an app that declares
+`backend.hooks` also prints the hooks reminder so the delayed activation is
+explicit.
 
 **Importing your own modules.** Hook entry files are loaded from their file path
 into a synthetic package named after the app, never via `sys.path`, so use a
@@ -693,6 +692,7 @@ packages at all.
     "cron": true,
     "memory": "app-scoped",
     "network": false,
+    "sessionApproval": false,
     "spawn": false
   }
 }
@@ -707,6 +707,7 @@ packages at all.
 | `permissions.cron` | boolean | Can create cron jobs |
 | `permissions.memory` | string | Memory access: `""` (none), `"app-scoped"`, or `"shared"` |
 | `permissions.network` | boolean | Can make external network requests |
+| `permissions.sessionApproval` | boolean | Controls existing local user sessions: send messages (including generated response-option choices), approve or deny pending tool requests, and change approval modes within the limits below |
 | `permissions.spawn` | boolean | May start a background agent through the host's subagent manager (`ctx.spawn`) |
 
 #### `permissions.spawn` — Background Agents
@@ -726,7 +727,26 @@ the platform does not rate-limit spawns per app today.
 API: `apps/spawn_sdk.py` — `SpawnSDK`, `build_spawn_impl`, `build_done_probe`,
 `SpawnError`.
 
-> **Advisory today, not enforced in-process.** These fields are **not** a runtime sandbox. The validator functions in `apps/permissions.py` (`validate_permissions`, `format_permissions_summary`) are currently **not wired into the install or runtime path** — they are only exercised by unit tests — so the manifest `permissions` block is neither enforced nor even surfaced today: `mcpTools` is not gated at tool dispatch and an empty `mcpTools` list is treated as unrestricted. What actually confines an app today is the HTTP app-token scope (`permissions.api` allowlist, deny-by-default — see `security.md`) plus the OS sandbox. Install-time path traversal is blocked separately by `_check_path_safety(name)` + `manifest.validate()`, not by the permission validator. Full in-process enforcement is tracked in [rfc-app-sandbox-isolation.md](../request-for-change/rfc-app-sandbox-isolation.md).
+> **Not an in-process sandbox.** Most fields remain advisory for app code loaded
+> inside the gateway. The validator functions in `apps/permissions.py`
+> (`validate_permissions`, `format_permissions_summary`) are still **not wired
+> into the install or runtime path** -- they are only exercised by unit tests, so
+> they carry no `sessionApproval` text. `permissions.sessionApproval` is shown on the app detail
+> page and in the install or enable consent dialog. It is enforced for app-token
+> user-session calls, in addition to `permissions.api`. The app must be enabled.
+> The grant reaches existing local user-owned sessions only; cron, system, remote,
+> member-mode, and other apps' sessions are denied. Apps retain their pre-existing
+> access to their own slots. Mode changes must name a live allowed slot and are
+> limited to Normal, Reads and Trust; YOLO is a process-global override and stays
+> dashboard-only. An update that newly adds the flag disables the app until the user
+> enables it again from the detail page, which shows why (this re-gate is specific
+> to `sessionApproval`; see issue #11212 for the other live-enforced fields).
+> Official catalog entries mirror this flag so users see it before
+> install even when the store skips fetching the app manifest. Install-time path
+> traversal is blocked separately by
+> `_check_path_safety(name)` plus `manifest.validate()`. Full in-process
+> enforcement is tracked in
+> [rfc-app-sandbox-isolation.md](../request-for-change/rfc-app-sandbox-isolation.md).
 
 ## Setup Hooks
 

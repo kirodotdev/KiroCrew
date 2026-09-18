@@ -40,6 +40,7 @@ import asyncio
 import json
 import logging
 import os
+import secrets
 from typing import Optional
 
 from kiro_crew import platform_compat
@@ -52,6 +53,37 @@ logger = logging.getLogger(__name__)
 #: so a wedged gatewayd can never stall a claim task past this budget (the
 #: task is fire-and-forget, but leaked tasks pile up).
 _CLAIM_TIMEOUT_SECS = 5.0
+
+#: Env variable carrying a stub's per-session token. Read by
+#: ``mcp_gateway.stub`` and forwarded on the Register frame; see
+#: :func:`mint_stub_session_token` for what it is for.
+STUB_SESSION_TOKEN_ENV = "KIROCREW_STUB_SESSION_TOKEN"
+
+#: Token entropy in bytes. 32 bytes = 256 bits, well above the 128-bit floor
+#: an unguessable per-session name needs: a stub that could guess another
+#: session's token would inherit its identity from gatewayd.
+_TOKEN_BYTES = 32
+
+
+def mint_stub_session_token() -> str:
+    """Return a fresh per-session stub token.
+
+    Every identity channel the stub path had before this token is keyed on the
+    PROCESS TREE — the stub's own ``KIROCREW_SESSION_KEY``/pid-file walk,
+    gatewayd's SO_PEERCRED ``/proc`` walk, and claim-push, which re-targets
+    every connection under a runtime PID. One kiro-cli process hosts many ACP
+    sessions (``agent.session_sharing``: a ``spawn_run`` subagent runs on its
+    parent's process), so all three answer with the PARENT's session for a
+    subagent's stub, and a parent re-claim overwrites whatever the subagent had.
+
+    The token is the per-SESSION name that tree cannot supply: minted here,
+    handed to exactly one ACP session's injected stub entries, and matched by
+    gatewayd against the token a claim carries. It is a bearer name for a
+    session's identity, so it must be unguessable — hence ``secrets`` — and it
+    must never be logged, exported in ``stats()``, or written to the stub
+    fallback journal.
+    """
+    return secrets.token_hex(_TOKEN_BYTES)
 
 
 def classify_session_type(session_key: str) -> str:
@@ -67,7 +99,12 @@ def classify_session_type(session_key: str) -> str:
     return "unknown"
 
 
-def build_claim_frame(pid: int, session_key: str, channel_id: Optional[str]) -> dict:
+def build_claim_frame(
+    pid: int,
+    session_key: str,
+    channel_id: Optional[str],
+    stub_session_token: str = "",
+) -> dict:
     """Assemble the one-shot claim frame sent to gatewayd.
 
     ``pid_start_id`` is the claimed runtime's process start token
@@ -76,8 +113,14 @@ def build_claim_frame(pid: int, session_key: str, channel_id: Optional[str]) -> 
     connection whose PID was recycled to a different process. ``None`` means
     "identity unknown" (Windows, unreadable /proc) and is treated by gatewayd
     as a match, preserving legacy behavior.
+
+    ``stub_session_token`` names ONE of the ACP sessions the runtime hosts
+    (:func:`mint_stub_session_token`), so gatewayd re-targets only that
+    session's stub connections instead of every connection under the PID. Empty
+    omits the field and keeps the PID-wide behavior, which is what a runtime
+    whose sessions carry no token still needs.
     """
-    return {
+    frame = {
         "type": "claim",
         "pid": pid,
         "pid_start_id": platform_compat.get_process_start_id(pid),
@@ -90,6 +133,9 @@ def build_claim_frame(pid: int, session_key: str, channel_id: Optional[str]) -> 
             "channel_id": channel_id or "",
         },
     }
+    if stub_session_token:
+        frame["stub_session_token"] = stub_session_token
+    return frame
 
 
 async def _send_claim_inner(
@@ -97,6 +143,7 @@ async def _send_claim_inner(
     pid: int,
     session_key: str,
     channel_id: Optional[str],
+    stub_session_token: str = "",
 ) -> bool:
     """Unbounded socket round-trip; ``send_claim`` enforces the time budget."""
     # build_claim_frame resolves the runtime's start token from /proc; a
@@ -104,7 +151,12 @@ async def _send_claim_inner(
     # loop (a leaked worker thread on a wedge is survivable; a frozen loop
     # is not). send_claim's aggregate wait_for still bounds this await.
     frame = await asyncio.get_running_loop().run_in_executor(
-        subprocess_executor(), build_claim_frame, pid, session_key, channel_id
+        subprocess_executor(),
+        build_claim_frame,
+        pid,
+        session_key,
+        channel_id,
+        stub_session_token,
     )
     reader, writer = await transport.connect(socket_path)
     try:
@@ -137,6 +189,7 @@ async def send_claim(
     pid: int,
     session_key: str,
     channel_id: Optional[str] = None,
+    stub_session_token: str = "",
 ) -> bool:
     """Send one claim frame to gatewayd. Returns True when acknowledged.
 
@@ -152,7 +205,9 @@ async def send_claim(
     """
     try:
         return await asyncio.wait_for(
-            _send_claim_inner(socket_path, pid, session_key, channel_id),
+            _send_claim_inner(
+                socket_path, pid, session_key, channel_id, stub_session_token
+            ),
             timeout=_CLAIM_TIMEOUT_SECS,
         )
     except (OSError, asyncio.TimeoutError, ValueError) as exc:
@@ -168,6 +223,7 @@ def schedule_claim(
     pid: Optional[int],
     session_key: str,
     channel_id: Optional[str] = None,
+    stub_session_token: str = "",
 ) -> None:
     """Fire-and-forget claim push. Safe to call from sync code (``rekey()``).
 
@@ -189,7 +245,9 @@ def schedule_claim(
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    task = loop.create_task(send_claim(socket_path, pid, session_key, channel_id))
+    task = loop.create_task(
+        send_claim(socket_path, pid, session_key, channel_id, stub_session_token)
+    )
     # Retain a reference so the task is never GC'd mid-flight; discard on done.
     _PENDING.add(task)
     task.add_done_callback(_PENDING.discard)

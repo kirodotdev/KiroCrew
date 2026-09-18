@@ -46,23 +46,26 @@ import sys
 import tempfile
 import time
 import urllib.request
-from collections.abc import Awaitable, Callable, MutableMapping
+from collections.abc import Awaitable, Callable, Coroutine, MutableMapping
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 from kiro_crew import hooks, identity_stores, platform_compat
 from kiro_crew._sqlite_compat import sqlite3
-from kiro_crew.agent_files import AGENT_FILENAME
+from kiro_crew.agent_files import AGENT_FILENAME, LITE_AGENT_FILENAME
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import CRED_KIRO_API_KEY, read_env_file_credential
 from kiro_crew.config.paths import config_dir
+from kiro_crew.executors import kiro_spawn_executor
 from kiro_crew.kiro_cli import (
     find_kiro_cli_candidates,
     known_kiro_cli_dirs,
 )
 from kiro_crew.sandbox import (
     SandboxUnavailableError,
+    corroborate_launcher_refusal,
+    launcher_refusal,
     resource_limit_supervisor_argv,
     sandboxed_spawn_argv,
     shielded_prepare_off_loop,
@@ -70,6 +73,15 @@ from kiro_crew.sandbox import (
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
+
+# Dashboard-facing text for a spec-repair arm that reported success while the
+# overlay still lists missing specs (the no-op-is-failure rule documented on
+# ``repair_agent_specs``). Shared by the main-rebuild and auxiliary arms so the
+# remediation command cannot drift between them.
+_SPECS_STILL_MISSING_ERROR = (
+    "The repair reported success but the specs are still missing. "
+    "Run `kirocrew setup --agent-only --clean` on the gateway host."
+)
 
 OFFICIAL_INSTALL_DOCS_URL = "https://kiro.dev/cli/"
 # The exact command the user runs to sign in. A CODE CONSTANT, never a catalog
@@ -107,8 +119,8 @@ _ACP_SUBCOMMAND = "acp"
 # read-only probes; sized to match the auto-update path's own 120s budget in
 # ``slack/gateway.py`` rather than the 10s probe ceiling.
 _UPDATE_TIMEOUT_SECS = 120
-# Compatibility shim, not live state. Nothing performs an operation any more, but a
-# dashboard loaded BEFORE this change reads ``status.operation.status``
+# Compatibility shim, not live state. Nothing performs an operation any more, but an
+# OLDER dashboard build reads ``status.operation.status``
 # unconditionally in its refetch-interval callback — the optional chain there
 # guards ``status``, not ``operation`` — and that callback runs for every user, not
 # only the first-run gate. A tab left open across a gateway upgrade would therefore
@@ -396,10 +408,15 @@ class ProcessResult:
     timed_out: bool = False
     error: str = ""
     # ``(kind, detail, remedy)`` when the spawn was refused because the sandbox
-    # could not be built — set ONLY from the typed SandboxUnavailableError, never
-    # inferred from host capability. A probe that failed for any other reason
-    # leaves this None, so an unrelated failure can never be misreported as a
-    # sandbox problem.
+    # could not be built. Set from exactly two structural sources and never
+    # inferred from host capability or from the child's text: the typed
+    # SandboxUnavailableError raised BEFORE the spawn, and -- when the launcher
+    # refused AFTER the spawn -- a fresh run of the real launcher around a
+    # trusted no-op (``sandbox.corroborate_launcher_refusal``), which the
+    # candidate's stderr line merely triggers and whose own stderr is the
+    # verdict. A trusted run that succeeds, times out, or refuses over host
+    # state leaves this None, so an unrelated failure can never be misreported
+    # as a sandbox problem, and a child cannot print its way into one.
     sandbox_failure: tuple[str, str, str] | None = None
 
 
@@ -460,8 +477,8 @@ class PrerequisiteStatus:
     sandbox_detail: str = ""
     # Machine-readable host mechanism behind a Linux userns denial — one of the
     # sandbox ``REMEDY_*`` tokens, or "" when unknown. Without it the gate could
-    # only show the raw errno, which is the dead end reported in issue #1660: the
-    # probe knows the fix is an AppArmor profile and the user cannot tell.
+    # only show the raw errno, which is a dead end: the probe knows the fix is an
+    # AppArmor profile and the user cannot tell.
     sandbox_remedy: str = ""
     # The verification probe hit ``_PROBE_TIMEOUT_SECS`` instead of answering. A
     # THIRD condition, distinct from both a missing binary and a sandbox refusal:
@@ -471,9 +488,19 @@ class PrerequisiteStatus:
     # combination that does not merely fail to help, it actively rules out the true
     # cause and sends the operator to reinstall or re-login, neither of which can
     # work on a host whose CLI is installed, signed in, and serving turns the whole
-    # time (issue #4577: 4081 SEL ``probe_version`` events, every one
-    # ``outcome=failed error=timeout``, on exactly such a host).
+    # time (such a host records ``probe_version`` events in SEL with
+    # ``outcome=failed error=timeout`` and nothing else to go on).
     probe_timed_out: bool = False
+    # Why the last version probe did not verify the CLI when NONE of the typed
+    # conditions above (sandbox refusal, timeout) explains it: the probe's own
+    # failure text, or the tail of its output when it exited non-zero. Empty
+    # when the probe passed, never ran (no candidate) or a typed field carries
+    # the cause. Shown verbatim, untranslated — the desktop's "Setup Check
+    # Unavailable" screen otherwise has NOTHING to say about why.
+    probe_error: str = ""
+    # The failed probe's exit status, ``None`` when it did not exit (never ran,
+    # timed out, sandbox refused) or when it passed.
+    probe_status: int | None = None
     # Kiro Crew's own agent specs (~/.kiro/agents/kirocrew*.json). ``ready``
     # requires these on disk, not merely a viable binary and a good ``whoami``:
     # without them kiro-cli answers every ``session/set_mode`` with
@@ -587,6 +614,41 @@ def _terminal_audit_detail(result: ProcessResult, succeeded: bool) -> str:
     return "nonzero exit"
 
 
+#: Longest ``probe_error`` served. The value is a diagnostic line for a status
+#: screen, not a log: the tail of a failing ``--version`` is where the CLI names
+#: its own complaint, and anything longer is a stack trace the screen cannot use.
+_PROBE_ERROR_MAX_CHARS = 400
+
+
+def _probe_failure_text(result: ProcessResult | None) -> str:
+    """What a failed version probe has to say for itself, bounded.
+
+    The typed failures (sandbox refusal, timeout) are reported through their own
+    fields and never reach here. What remains is a probe that RAN and did not
+    verify. The CLI's own output is the text: that is where a launcher wrapper
+    or a broken install names its complaint, and it is what the operator can act
+    on. The spawn layer's ``error`` is only a fallback for a probe that printed
+    nothing -- for an ordinary non-zero exit it is just the generic exit code,
+    which ``probe_status`` already carries and the gate already renders as
+    ``(exit N)``, so appending it here would say the exit code twice. Empty
+    when there is nothing to say (no probe ran, or it passed).
+    """
+
+    if result is None or result.ok:
+        return ""
+    text = (result.output or "").strip() or (result.error or "").strip()
+    # The probe's stdout/stderr is untrusted text that can echo a token or an
+    # authority-bearing URL (a launcher wrapper printing the environment it
+    # sees), and this string travels to the status payload and the setup
+    # screen, so it is redacted BEFORE the cut: truncating first could leave
+    # the recognisable half of a secret in the kept tail.
+    text, _ = redact_credentials(text)
+    text, _ = redact_exfiltration_urls(text)
+    if len(text) > _PROBE_ERROR_MAX_CHARS:
+        text = text[-_PROBE_ERROR_MAX_CHARS:]
+    return text
+
+
 def _canonical_candidate(path: str) -> str:
     try:
         return os.path.realpath(path)
@@ -695,12 +757,12 @@ def snapshot_trusted_acp_executable(
     dispatching on ``argv[0]``, a wrapper reading a sibling registry, or a
     self-updating install whose payload lives beside it.
 
-    An earlier design copied the bytes into a private snapshot (sealed memfd on
-    Linux, verified copy on macOS) to close the resolve-to-exec window in which
-    the file could be swapped. That is deliberately **not** done anymore: it
+    Copying the bytes into a private snapshot (sealed memfd on Linux, verified
+    copy on macOS) would close the resolve-to-exec window in which the file could
+    be swapped. That is deliberately **not** done: it
     defends against an attacker who already has write access to the user's own
     machine — a threat the rest of the product does not defend against either —
-    and the cost was breaking every multi-call and multiplexer install outright.
+    and it breaks every multi-call and multiplexer install outright.
 
     Trust is "the CLI runs": install source, owner, and path do not gate launch,
     so a toolbox / Homebrew / self-updated Kiro CLI launches like any other.
@@ -855,9 +917,7 @@ def _project_identity_database(source: Path, destination: Path) -> bool:
                     if not table_rows:
                         continue
                     placeholders = ",".join("?" * len(table_rows[0]))
-                    staged.executemany(
-                        f'INSERT INTO "{table}" VALUES ({placeholders})', table_rows
-                    )
+                    staged.executemany(f'INSERT INTO "{table}" VALUES ({placeholders})', table_rows)
     except sqlite3.Error:
         with contextlib.suppress(OSError):
             os.unlink(str(destination))
@@ -1185,9 +1245,7 @@ def _auth_store_mappings(
         # them from overwriting each other. macOS/Linux have a single location
         # per product, so no group. (The env-var source-side honouring and the
         # fixed staged side are already applied by ``store_mappings``.)
-        group = (
-            f"win32:{row.product.value}" if platform_name == "win32" else None
-        )
+        group = f"win32:{row.product.value}" if platform_name == "win32" else None
         mappings.append(
             _AuthStoreMapping(
                 source=row.source,
@@ -1209,7 +1267,7 @@ def _ensure_auth_staging_parent(home: Path) -> Path:
     # staging root holds credential material, and moving an unexpected file to a
     # sibling name would leave its (possibly sensitive) contents readable outside
     # the sandbox-hidden staging prefix. unlink() acts on the symlink itself,
-    # never its target. (#561)
+    # never its target.
     if staging_parent.is_symlink() or (staging_parent.exists() and not staging_parent.is_dir()):
         try:
             staging_parent.unlink()
@@ -1219,7 +1277,9 @@ def _ensure_auth_staging_parent(home: Path) -> Path:
             # private directory. Only abort if a non-directory we cannot clear is
             # STILL sitting here; otherwise fall through to the idempotent mkdir.
             # (#561, concurrent-boot race)
-            if staging_parent.is_symlink() or (staging_parent.exists() and not staging_parent.is_dir()):
+            if staging_parent.is_symlink() or (
+                staging_parent.exists() and not staging_parent.is_dir()
+            ):
                 raise OSError(
                     f"Kiro auth staging root {staging_parent} is not a private "
                     "directory and could not be reset"
@@ -1587,8 +1647,8 @@ async def _prepare_sandboxed_spawn(
     """Prepare filesystem-heavy sandbox state on a worker thread.
 
     Delegates to the shared :func:`shielded_prepare_off_loop`, which owns the
-    shield-and-recover pattern (including the repeat-cancellation semantics of
-    #5841) for every async caller of the chokepoint.  The chokepoint call itself
+    shield-and-recover pattern (including its repeat-cancellation semantics)
+    for every async caller of the chokepoint.  The chokepoint call itself
     stays in this module so the ``mode``/``strip_python_env`` policy — and this
     module's own seam over ``sandboxed_spawn_argv`` — remain local.
     """
@@ -1605,6 +1665,66 @@ async def _prepare_sandboxed_spawn(
     )
 
 
+async def _run_on_private_loop(
+    make_coro: Callable[[], Coroutine[Any, Any, ProcessResult]],
+) -> ProcessResult:
+    """Run one spawn on a PRIVATE event loop owned by a worker thread.
+
+    Windows only, and it exists for one call: ``CreateProcess``. CPython performs
+    it SYNCHRONOUSLY on whichever thread asks for the child, and on the Proactor
+    loop there is no await point in between --
+    ``ProactorEventLoop._make_subprocess_transport`` constructs
+    ``_WindowsSubprocessTransport`` before its first ``await waiter``, that
+    constructor calls ``self._start()``, and ``_start`` calls
+    ``windows_utils.Popen`` -> ``subprocess.Popen._execute_child`` ->
+    ``CreateProcess``. So the loop thread is inside ``CreateProcess`` for its
+    whole duration, which on an image with an endpoint-protection filter driver
+    is seconds, and nothing else on that loop advances.
+
+    ``asyncio.to_thread(asyncio.create_subprocess_exec, ...)`` does NOT fix that,
+    which is why the offload is a whole loop rather than one call: that is a
+    coroutine FUNCTION, so the worker thread would only build a coroutine object
+    and hand it back unawaited -- no child is spawned there at all, and awaiting
+    the result on the gateway loop performs the identical on-loop
+    ``CreateProcess``. Nothing narrower works either: asyncio offers no way to
+    adopt an already-spawned ``Popen`` into a subprocess transport, so the only
+    place the spawn can happen off the gateway loop is on another loop.
+
+    A private loop rather than a rewrite to blocking ``Popen`` keeps the Windows
+    retained-tree guarantee byte-for-byte: the descendant tracker, the exact-handle
+    snapshots and the terminate path all still run against a real
+    ``asyncio.subprocess.Process`` on a real Proactor loop, just not this one.
+    ``asyncio.run`` off the main thread is fine on Windows -- it installs signal
+    handlers only on the main thread -- and the loop is closed when the call
+    returns, so none stays bound to the pooled worker. It is spelled through
+    ``asyncio.Runner``, which is literally what ``asyncio.run`` uses internally
+    (same loop creation, same task-cancellation and async-generator shutdown on
+    close), because ``asyncio.run`` would trip test_spawn_audit: that scanner
+    matches ``<spawn module>.<spawn attr>`` and carries ``asyncio`` as a module
+    and ``run`` as an attr in order to catch ``subprocess.run``, so the name
+    collides. Nothing here spawns a child -- the spawn is in ``_run_process``,
+    which the audit already lists -- so allowlisting this function would put a
+    non-spawn in a list of judged-benign spawns. Do not simplify it back.
+
+    Residue, deliberate: a started ``run_in_executor`` future cannot be
+    cancelled, so cancelling the awaiting task does not reach the worker. The
+    child is then reaped by the body's own ``timeout_secs`` rather than at once,
+    and the ``finally`` there still terminates the tree, closes every retained
+    handle and removes the cleanup path -- so a cancel delays the reap, it does
+    not leak a process. Making the cancel prompt needs a signal threaded through
+    that teardown, which is its own change.
+    """
+
+    def _own_loop() -> ProcessResult:
+        with asyncio.Runner() as runner:
+            return runner.run(make_coro())
+
+    return await asyncio.get_running_loop().run_in_executor(
+        kiro_spawn_executor(),
+        _own_loop,
+    )
+
+
 async def _run_process(
     command: str,
     args: list[str],
@@ -1614,13 +1734,37 @@ async def _run_process(
     sandbox_mode: str = _UNVERIFIED_SANDBOX_MODE,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
+    _on_private_loop: bool = False,
 ) -> ProcessResult:
     """Run one fixed argv with bounded output, always inside the OS sandbox.
 
     There is no opt-out: every spawn this module makes is a probe or a Kiro auth
     call, and all of them are sandboxed. Nothing here may run a child
     unsandboxed.
+
+    On Windows this re-enters itself once, on a private event loop owned by a
+    pooled worker thread, because the spawn below reaches ``CreateProcess``
+    synchronously on whatever loop asks for the child -- see
+    :func:`_run_on_private_loop` for why that is the narrowest offload available
+    and why the POSIX path needs none. ``_on_private_loop`` is that re-entry's
+    own marker and is private: nothing outside this function may set it, and a
+    caller that did would put the spawn back on its own loop.
     """
+
+    if platform_compat.IS_WINDOWS and not _on_private_loop:
+        return await _run_on_private_loop(
+            functools.partial(
+                _run_process,
+                command,
+                args,
+                env=env,
+                timeout_secs=timeout_secs,
+                sandbox_mode=sandbox_mode,
+                extra_hidden_dirs=extra_hidden_dirs,
+                extra_visible_dirs=extra_visible_dirs,
+                _on_private_loop=True,
+            )
+        )
 
     if platform_compat.IS_POSIX and not _PROCESS_GROUP_SUPERVISOR_CODE:
         return ProcessResult(ok=False, error=_PROCESS_GROUP_SUPERVISOR_ERROR)
@@ -1665,11 +1809,11 @@ async def _run_process(
             # mutable package path would also let a same-UID agent replace code
             # immediately before an owner-triggered install.
             #
-            # It also carries the resource limits (``--rlimits=``) that used to
-            # ride on ``preexec_fn``. See resource_limit_supervisor_argv: a
+            # It also carries the resource limits (``--rlimits=``) rather than a
+            # ``preexec_fn``. See resource_limit_supervisor_argv: a
             # preexec_fn forces a plain fork() of this multi-threaded gateway and
-            # runs Python in the child before exec, which is how a child wedged
-            # in a futex and pinned the fds it had inherited. The supervisor
+            # runs Python in the child before exec, which can wedge that child
+            # in a futex with the fds it inherited pinned. The supervisor
             # applies the same setrlimits after exec, single-threaded, and the
             # exec'd child inherits them.
             spawn_argv = [
@@ -1815,11 +1959,35 @@ async def _run_process(
             platform_compat.close_process_handle(windows_root_handle)
         await _unlink_off_loop(cleanup_path)
 
+    if proc.returncode == 0:
+        return ProcessResult(ok=True, output=output, returncode=0)
+    # The launcher exits 1 with its refusal on stderr, exactly like a candidate
+    # that exited 1 on its own -- and the candidate can print the launcher's
+    # line: it is the unverified binary this spawn exists to verify. So the
+    # candidate's line is never the verdict. It only decides whether to look
+    # further, and the verdict comes from re-running the real launcher around a
+    # trusted no-op under THIS spawn's own mode and hidden/visible dirs, whose
+    # stderr no child wrote. Only where a launcher ran at all: Windows skips the
+    # wrap, so a ``sandbox:`` line there could only be the candidate's own text.
+    # Off the loop: the trusted run blocks on a subprocess, and a spawn-time
+    # refusal must not stall the gateway.
+    sandbox_failure = None
+    if not platform_compat.IS_WINDOWS and launcher_refusal(output) is not None:
+        sandbox_failure = await asyncio.to_thread(
+            functools.partial(
+                corroborate_launcher_refusal,
+                output,
+                mode=sandbox_mode,
+                extra_hidden_dirs=extra_hidden_dirs,
+                extra_visible_dirs=extra_visible_dirs,
+            )
+        )
     return ProcessResult(
-        ok=proc.returncode == 0,
+        ok=False,
         output=output,
         returncode=proc.returncode,
-        error="" if proc.returncode == 0 else f"process exited with code {proc.returncode}",
+        error=f"process exited with code {proc.returncode}",
+        sandbox_failure=sandbox_failure,
     )
 
 
@@ -2205,6 +2373,40 @@ class KiroPrerequisiteService:
         logger.info("Agent specs repaired from the readiness gate")
         return ""
 
+    async def _repair_auxiliary_specs(self, missing: list[str]) -> str:
+        """Write the missing AUXILIARY required specs. Returns failure text, or ``""``.
+
+        The counterpart to :meth:`_repair_agent_specs` for the required specs
+        other than the main one — today only the lite agent spec. Unlike the
+        main-spec rebuild, this write is NOT in the lost-update class that
+        method's docstring gates on: ``_install_lite_agent_fallback`` is an
+        atomic whole-file JSON write, and no ``tools``/``allowedTools`` half is
+        toggle-merged into the lite spec, so there is no concurrent edit to
+        lose — and the spec is only written here when it is absent anyway.
+
+        An auxiliary name this method does not know how to write is deliberately
+        left alone: it stays missing, and the caller's post-repair overlay
+        reports it through the still-missing error text instead of a false
+        success.
+        """
+
+        def _write() -> None:
+            from kiro_crew.agent import _install_lite_agent_fallback  # circular import
+
+            if LITE_AGENT_FILENAME in missing:
+                _install_lite_agent_fallback()
+
+        try:
+            await asyncio.to_thread(_write)
+        except Exception as exc:
+            logger.error(
+                "Auxiliary agent spec repair from the readiness gate failed",
+                exc_info=True,
+            )
+            return _sanitize_detail(f"{type(exc).__name__}: {exc}")
+        logger.info("Auxiliary agent specs repaired from the readiness gate")
+        return ""
+
     async def repair_agent_specs(self, caller: str = "") -> dict[str, Any]:
         """Repair the managed agent specs, then return the post-repair snapshot.
 
@@ -2242,6 +2444,26 @@ class KiroPrerequisiteService:
             # what the card's button offers.
             repairable = AGENT_FILENAME in missing_before
             if not repairable:
+                auxiliary_missing = [name for name in missing_before if name != AGENT_FILENAME]
+                error = ""
+                if auxiliary_missing:
+                    # Only auxiliary required specs are missing. The main-spec
+                    # gate above keeps rebuild_agent_config away from a present
+                    # main spec, but the auxiliary specs have their own writers
+                    # with no such lost-update class (see
+                    # _repair_auxiliary_specs), so refusing to write them would
+                    # leave the gate blocking on a file the button never
+                    # writes. Runs even when a spec is REJECTED: acceptance is
+                    # only evaluated for PRESENT specs, so a rejected main spec
+                    # and a missing lite spec can coexist, and writing a MISSING
+                    # file rewrites nothing — the lost-update reasoning behind
+                    # the rejection guard does not apply to it.
+                    error = await self._repair_auxiliary_specs(auxiliary_missing)
+                elif not rejected_before:
+                    # Nothing to repair: a concurrent repair already wrote the
+                    # specs. Report, do not write.
+                    before["agent_spec_repair_error"] = ""
+                    return before
                 if rejected_before:
                     # Not a no-op: acceptance is only re-answerable by the binary,
                     # and the stat-only overlay cannot ask it. force=True because
@@ -2251,14 +2473,11 @@ class KiroPrerequisiteService:
                         await self._probe(force=True)
                     except Exception:  # noqa: BLE001 — stale state beats a 500
                         logger.warning("Re-probe of rejected agent specs failed", exc_info=True)
-                    result = await self._agent_spec_overlay(self._snapshot_dict())
-                    result["agent_spec_repair_error"] = ""
-                    return result
-                # Nothing to repair, only an auxiliary spec is missing (which the
-                # main-spec gate deliberately excludes), or a concurrent repair
-                # already wrote it. Report, do not write.
-                before["agent_spec_repair_error"] = ""
-                return before
+                result = await self._agent_spec_overlay(self._snapshot_dict())
+                if not error and auxiliary_missing and (result.get("missing_agent_specs") or []):
+                    error = _SPECS_STILL_MISSING_ERROR
+                result["agent_spec_repair_error"] = error
+                return result
             error = await self._repair_agent_specs()
             if not error and AGENT_FILENAME in rejected_before:
                 # Acceptance is only re-answerable by the binary, and the overlay
@@ -2272,10 +2491,7 @@ class KiroPrerequisiteService:
                     logger.warning("Re-probe after agent-spec repair failed", exc_info=True)
             result = await self._agent_spec_overlay(self._snapshot_dict())
             if not error and (result.get("missing_agent_specs") or []):
-                error = (
-                    "The rebuild reported success but the specs are still missing. "
-                    "Run `kirocrew setup --agent-only --clean` on the gateway host."
-                )
+                error = _SPECS_STILL_MISSING_ERROR
             result["agent_spec_repair_error"] = error
             return result
 
@@ -2679,12 +2895,18 @@ class KiroPrerequisiteService:
                 # cannot build one a perfectly good, already-authenticated CLI
                 # fails verification and must not be reported as missing.
                 #
-                # This keys on the typed failure the spawn actually raised, NOT
-                # on whether the host has a backend. Host capability is not
-                # evidence: _run_process skips the wrap on Windows, and the
-                # allow_unsandboxed_exec opt-in bypasses it, so a broken CLI on
-                # either would otherwise be blamed on the sandbox and lose the
-                # repair actions that would genuinely help.
+                # This keys on what the spawn itself reported, NOT on whether the
+                # host has a backend: the typed SandboxUnavailableError when the
+                # sandbox could not be built before the spawn, or — when the
+                # launcher refused after it (a container that grants the
+                # namespaces but denies the launcher's first mount can pass a
+                # cached boot probe and fail here) — the sandbox's own fresh
+                # probe, which the launcher's stderr line only triggers and
+                # which a candidate's output can therefore never forge. Host
+                # capability is not evidence: _run_process skips the wrap on
+                # Windows, and the allow_unsandboxed_exec opt-in bypasses it, so
+                # a broken CLI on either would otherwise be blamed on the sandbox
+                # and lose the repair actions that would genuinely help.
                 sandbox_failure = version_probe.sandbox_failure if version_probe else None
                 first_candidate = candidates[0] if candidates else ""
                 # Off-loop: _is_runnable_executable realpath()s and stat()s the
@@ -2721,11 +2943,7 @@ class KiroPrerequisiteService:
                     )
                     self._stamp_probe(probe_identity)
                     return self._status
-                if (
-                    version_probe is not None
-                    and version_probe.timed_out
-                    and candidate_runnable
-                ):
+                if version_probe is not None and version_probe.timed_out and candidate_runnable:
                     # A probe that never answered is not evidence of absence. The
                     # spawn was accepted and raised no typed failure, so the
                     # sandbox branch above cannot claim it, and falling through to
@@ -2783,9 +3001,15 @@ class KiroPrerequisiteService:
                     self._last_probe_at = self._clock()
                     self._has_probed = True
                     return self._status
+                # Neither typed condition explains the failure, so carry the
+                # probe's own account of it: without this the bare default below
+                # says only installed=False and the gate has no diagnostic to
+                # show (the desktop "Setup Check Unavailable" dead end).
                 self._status = PrerequisiteStatus(
                     platform=_platform_label(self._platform),
                     initial_setup_complete=self._initial_setup_complete,
+                    probe_error=_probe_failure_text(version_probe),
+                    probe_status=version_probe.returncode if version_probe else None,
                 )
                 self._stamp_probe(probe_identity)
                 return self._status
@@ -2802,9 +3026,7 @@ class KiroPrerequisiteService:
             # cannot even resolve itself without its real-home registry — so the
             # isolated probe reported such CLIs signed-out even though a real
             # session authenticates fine.
-            whoami = await self._audited_identity_probe(
-                self._viable_binary, isolate_home=False
-            )
+            whoami = await self._audited_identity_probe(self._viable_binary, isolate_home=False)
             if whoami.ok:
                 await asyncio.to_thread(self._mark_setup_complete)
             # Acceptance is checked here, on the probe path, because it costs a
@@ -2817,9 +3039,7 @@ class KiroPrerequisiteService:
             rejection_detail = ""
             acp_supported = True
             if whoami.ok:
-                rejected, rejection_detail = await self._probe_spec_acceptance(
-                    self._viable_binary
-                )
+                rejected, rejection_detail = await self._probe_spec_acceptance(self._viable_binary)
                 acp_supported = await self._probe_acp_support(self._viable_binary)
             self._status = PrerequisiteStatus(
                 platform=_platform_label(self._platform),
@@ -2995,9 +3215,7 @@ class KiroPrerequisiteService:
             # deliberately omitted because `update` fetches a binary, it does
             # not authenticate.
             update_environment = dict(probe_environment)
-            update_environment.update(
-                _allowlisted_env(self._environ, _IDENTITY_PROXY_ENV_KEYS)
-            )
+            update_environment.update(_allowlisted_env(self._environ, _IDENTITY_PROXY_ENV_KEYS))
             await self._audit(
                 action="update_cli",
                 outcome="invoked",
@@ -3018,9 +3236,7 @@ class KiroPrerequisiteService:
                     extra_hidden_dirs=self._hidden_probe_dirs,
                 )
             except asyncio.CancelledError:
-                await self._set_terminal_audit(
-                    "update_cli", "failed", "gateway-setup", "cancelled"
-                )
+                await self._set_terminal_audit("update_cli", "failed", "gateway-setup", "cancelled")
                 raise
             except Exception as exc:
                 logger.warning("kiro-cli update failed to run", exc_info=True)

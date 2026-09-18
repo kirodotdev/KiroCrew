@@ -136,6 +136,148 @@ class TestMcpCronListTimezone:
         assert "EDT" in result or "EST" in result
 
 
+class TestMcpCronMutationTimezone:
+    """cron_add and cron_update confirmations use the saved job timezone."""
+
+    @pytest.fixture(autouse=True)
+    def _calls_as_the_fixture_owner(self, monkeypatch) -> None:
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", _TZ_OWNER)
+        monkeypatch.delenv("KIROCREW_CLI", raising=False)
+
+    def test_cron_add_uses_job_timezone(self, tmp_path) -> None:
+        with (
+            patch("kiro_crew.mcp_cron.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cron.published_config_timezone", return_value="America/New_York"),
+        ):
+            result = _call_tool(
+                "cron_add",
+                {
+                    "name": "tz-job",
+                    "message": "hello",
+                    "cron_expr": "0 9 * * *",
+                    "timezone": "Asia/Seoul",
+                },
+            )
+        assert "KST" in result
+        assert "EDT" not in result and "EST" not in result
+
+    def test_cron_update_uses_saved_job_timezone(self, tmp_path) -> None:
+        svc = CronService(base_dir=tmp_path)
+        job = svc.add_job(
+            name="tz-job",
+            message="hello",
+            cron_expr="0 9 * * *",
+            timezone="UTC",
+            session_key=_TZ_OWNER,
+        )
+        with (
+            patch("kiro_crew.mcp_cron.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cron.published_config_timezone", return_value="America/New_York"),
+        ):
+            result = _call_tool(
+                "cron_update",
+                {"job_id": job.id, "timezone": "Asia/Seoul"},
+            )
+        assert "KST" in result
+        assert "EDT" not in result and "EST" not in result
+
+    def test_cron_add_job_in_host_timezone_is_unchanged(self, tmp_path) -> None:
+        with (
+            patch("kiro_crew.mcp_cron.config_dir", return_value=tmp_path),
+            patch("kiro_crew.cron.published_config_timezone", return_value="America/New_York"),
+        ):
+            result = _call_tool(
+                "cron_add",
+                {
+                    "name": "host-tz-job",
+                    "message": "hello",
+                    "cron_expr": "0 9 * * *",
+                    "timezone": "America/New_York",
+                },
+            )
+        assert "EDT" in result or "EST" in result
+
+
+class TestCliCronTimezone:
+    """The CLI list and add confirmations use the returned job timezone."""
+
+    def test_cron_list_uses_job_timezone(self, capsys) -> None:
+        from argparse import Namespace
+
+        from kiro_crew import cli_commands
+
+        job = _make_job(timezone="Asia/Seoul")
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_cls,
+            patch("kiro_crew.cron.published_config_timezone", return_value="America/New_York"),
+        ):
+            mock_cls.return_value.list_jobs.return_value = [job]
+            cli_commands._cron_dispatch(Namespace(cron_action="list"))
+        result = capsys.readouterr().out
+        assert "KST" in result
+        assert "EDT" not in result and "EST" not in result
+
+    def test_cron_add_uses_returned_job_timezone(self, capsys) -> None:
+        from argparse import Namespace
+
+        from kiro_crew import cli_commands
+
+        job = _make_job(timezone="Asia/Seoul")
+        args = Namespace(
+            cron_action="add",
+            every=None,
+            cron_expr="0 9 * * *",
+            channel="",
+            approval_mode="",
+            agent="",
+            silent=False,
+            folder="",
+            name=job.name,
+            message=job.message,
+        )
+        with (
+            patch("kiro_crew.cli_commands.CronService") as mock_cls,
+            patch("kiro_crew.cron.published_config_timezone", return_value="America/New_York"),
+        ):
+            mock_cls.return_value.add_job.return_value = job
+            cli_commands._cron_dispatch(args)
+        result = capsys.readouterr().out
+        assert "KST" in result
+        assert "EDT" not in result and "EST" not in result
+
+
+class TestCronTimezoneDst:
+    """The shared renderer and scheduler agree across a DST boundary."""
+
+    def test_fall_back_boundary_uses_the_next_runs_abbreviation(self) -> None:
+        from datetime import datetime as real_datetime
+
+        from kiro_crew.cron import compute_next_run_ts
+
+        zone = ZoneInfo("America/New_York")
+        fixed_now = real_datetime(2026, 11, 1, 0, 30, tzinfo=zone)
+        job = _make_job(
+            timezone="America/New_York",
+            schedule=CronSchedule(kind="cron", cron_expr="0 1 * * *"),
+        )
+        next_run = compute_next_run_ts(job, now=fixed_now.timestamp())
+        assert next_run is not None
+        next_local = real_datetime.fromtimestamp(next_run, zone)
+
+        class FrozenDateTime(real_datetime):
+            @classmethod
+            def now(cls, tz=None):
+                if tz is None:
+                    return fixed_now.replace(tzinfo=None)
+                return fixed_now.astimezone(tz)
+
+        with patch("kiro_crew.cron.datetime", FrozenDateTime):
+            rendered = format_schedule(job.schedule, tz_name=job.timezone)
+
+        assert next_local.hour == 1 and next_local.minute == 0
+        assert next_local.tzname() in rendered
+
+
 class TestSlackCronListTimezone:
     """Slack cron list keyword uses job.timezone for display."""
 

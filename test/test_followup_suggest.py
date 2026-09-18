@@ -165,12 +165,12 @@ class TestSuggestFollowupSchema:
 
 
 class TestFollowupCallerIsolation:
-    """Round 8 HIGH: an app caller could raise a card on a slot it does not own,
+    """An app caller could raise a card on a slot it does not own,
     and an all-clients broadcast handed it another user's handoff prompts."""
 
     @pytest.mark.asyncio
     async def test_non_owner_dashboard_subject_is_refused(self):
-        """Round 12 BLOCKING: an app claim of "" is necessary, not sufficient.
+        """An app claim of "" is necessary, not sufficient.
 
         A dashboard token minted for a different subject carries ``app == ""``
         and sailed through the round-8 gate, so it could raise cards in the
@@ -226,7 +226,7 @@ class TestFollowupCallerIsolation:
 
     @pytest.mark.asyncio
     async def test_internal_loopback_caller_is_allowed(self):
-        """Round 9: the MCP path authenticates by internal secret and carries NO
+        """The MCP path authenticates by internal secret and carries NO
         app claim, so a bare deny-on-absent gate 403'd every `suggest_followup`."""
         slot = _ChatSlot("test")
         state = _mock_state(slot)
@@ -274,7 +274,7 @@ class TestFollowupCallerIsolation:
 class TestRealMiddlewareIntegration:
     """End-to-end through the REAL auth middleware, not a hand-rolled claims stub.
 
-    Round 9 caught this with a stub-only suite: the loopback internal-secret branch
+    A stub-only suite catches this: the loopback internal-secret branch
     grants the request but sets no app claim, so a deny-on-absent gate refused every
     MCP call. These tests pin the contract at the seam where it actually broke.
     """
@@ -383,7 +383,7 @@ class TestFollowupEndpoint:
 
     @pytest.mark.asyncio
     async def test_credential_shaped_branch_is_dropped_not_broadcast(self):
-        """GPT round 4 HIGH: `branch` skipped the redactors, yet it travels the
+        """`branch` skips the redactors, yet it travels the
         furthest — into a git ref, a directory name, SEL records and logs. A
         credential-shaped value satisfies FOLLOWUP_BRANCH_RE, so the field is
         dropped whenever redaction would alter it; the card then derives a branch

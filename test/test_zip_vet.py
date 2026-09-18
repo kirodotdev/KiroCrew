@@ -1,8 +1,7 @@
 """Tests for the shared untrusted-archive inventory vet (kiro_crew.zip_vet).
 
-The crafted-archive cases here were previously spelled only against
-/api/file-sheet's inline vet (test_file_sheet.py); they now live at the shared
-module, which is what all three untrusted-archive parse sites route through.
+The crafted-archive cases here live at the shared module, which all three
+untrusted-archive parse sites route through.
 
 The load-bearing case is `test_declared_directory_size_is_the_binding_cap`:
 CPython's ZipFile._RealGetContents drives its ZipInfo allocation off the

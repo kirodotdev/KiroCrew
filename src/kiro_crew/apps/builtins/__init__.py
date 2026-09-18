@@ -7,6 +7,9 @@ BUILTIN_NAMES: list[str] = [
     "code_review_sage",
     "crew_companion",
     "design_critique",
+    # Spawned backend AND in-gateway routes: the live-target cutover must run in the
+    # gateway process (gateway_routes.py), so the package exports register_routes.
+    "dev_fleet",
     "issue_radar",
     "meetings",
     "ops_mission_control",
@@ -24,7 +27,7 @@ BUILTIN_NAMES: list[str] = [
 _MIGRATED_BUILTINS: list[str] = [
     "deploy-web",
     "deploy_web",
-    # The auto-triage pipeline is no longer an app: it is one of Issue Radar's
+    # The auto-triage pipeline is not an app: it is one of Issue Radar's
     # dashboards. Dropping it from BUILTIN_NAMES stops it being REGISTERED, but an
     # install that already has it keeps the directory and its installed.json
     # entry -- leaving an App Store card for an app with no manifest behind it,

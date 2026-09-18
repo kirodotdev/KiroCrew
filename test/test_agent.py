@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import sys
+import threading
+import time
 import unittest.mock
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -154,7 +157,7 @@ class TestInstallAgent:
         WHOLE agent when it does -- so one stray ``cwd`` on a managed server would
         take every Kiro Crew tool down with it. Preserving the user's
         timeout/env/disabled is what put unknown keys in reach on this path (the
-        build used to rebuild the entry from scratch), so the allow-list ships
+        build would otherwise rebuild the entry from scratch), so the allow-list ships
         with the preservation rather than after it.
         """
         cfg_dir = _bundled_defaults(tmp_path)
@@ -597,13 +600,9 @@ class TestInstallAgent:
         assert entry["env"]["GOOD"] == "kept"
         for bad in ("PORT", "FLAG", "NOTHING", "LISTY", "NESTED"):
             assert bad not in entry["env"], bad
-        assert all(
-            isinstance(k, str) and isinstance(v, str) for k, v in entry["env"].items()
-        )
+        assert all(isinstance(k, str) and isinstance(v, str) for k, v in entry["env"].items())
 
-    def test_fresh_install_pins_our_data_home_against_a_declared_home(
-        self, tmp_path: Path
-    ):
+    def test_fresh_install_pins_our_data_home_against_a_declared_home(self, tmp_path: Path):
         """A declared ``HOME`` cannot relocate a managed shim's data home.
 
         ``HOME`` is deliberately NOT in ``env.py``'s deny set -- a user's own MCP
@@ -753,8 +752,8 @@ class TestInstallAgent:
     def test_existing_config_refreshes_security_fields(self, tmp_path: Path):
         """hooks are always overwritten from bundled.
 
-        ``deniedCommands`` are NO LONGER injected into the agent spec (command
-        denial moved to KiroCrew's own hooks.py PreToolUse gate). A stale
+        ``deniedCommands`` are NOT injected into the agent spec (command
+        denial lives in Kiro Crew's own hooks.py PreToolUse gate). A stale
         ``deniedCommands`` left by an older build is STRIPPED on refresh so
         kiro-cli stops enforcing it ahead of the hook gate — otherwise an
         upgraded install's Settings > Security opt-out would silently stay
@@ -1254,8 +1253,8 @@ class TestResolveKirocrewBin:
         A prefix-style runtime can put the package under
         ``<root>/lib/python3.12/site-packages/`` and the console script under
         the interpreter prefix ``<root>/python3.12/`` — sibling trees, so the
-        parent walk cannot reach the script. Resolution used to fall through to
-        PATH and pick up whatever ``kirocrew`` an unrelated earlier install had
+        parent walk cannot reach the script. Resolution must not fall through to
+        PATH and pick up whatever ``kirocrew`` an unrelated earlier install has
         left there, then cache it as the command for the built-in MCP servers.
 
         The launcher is created through ``_kirocrew_bin_subpath`` rather than at
@@ -1414,7 +1413,7 @@ class TestResolveKirocrewBin:
 
     def test_skips_stale_shutil_which_result(self, tmp_path: Path, no_interpreter_scripts):
         """Falls through to bare 'kirocrew' when shutil.which returns a
-        path that no longer exists (e.g. deleted after Toolbox migration).
+        path that does not exist (e.g. deleted after Toolbox migration).
         Regression test for scenario where
         ~/.local/bin/kirocrew was removed but still cached in PATH lookup.
         """
@@ -1616,7 +1615,7 @@ class TestResolveKirocrewBin:
     def test_accepts_wrapper_bin_from_walk(self, tmp_path: Path):
         """A shell-wrapper bin/kirocrew found by the walk is accepted as-is.
 
-        Public installs no longer reject wrapper scripts (the Brazil-workspace
+        Public installs do not reject wrapper scripts (the Brazil-workspace
         check is a no-op), so the walk-discovered bin wins over PATH.
         """
         import kiro_crew.agent as agent_mod
@@ -1743,7 +1742,7 @@ class TestResolveKirocrewBin:
 
 
 class TestKirocrewBinSubpath:
-    """Tests for the per-OS console-script subpath (#4439).
+    """Tests for the per-OS console-script subpath.
 
     On Windows the resolver must prefer the relocatable ``bin\\kirocrew.cmd``
     shim over the pip-generated ``Scripts\\kirocrew.exe``: inside the shipped
@@ -1812,7 +1811,7 @@ class TestKirocrewBinSubpath:
 
         Pins the issue's failure mode: the bundle ships BOTH launchers, and
         resolving the co-present ``Scripts\\kirocrew.exe`` instead of the
-        ``.cmd`` shim is exactly the #4439 defect.
+        ``.cmd`` shim is exactly the defect.
         """
         import kiro_crew.agent as agent_mod
         from kiro_crew import platform_compat
@@ -1879,7 +1878,7 @@ class TestKirocrewMcpInvocation:
         assert args == ["-m", "kiro_crew", "mcp-core"]
 
     def test_unwraps_cmd_shim_to_sibling_interpreter(self, tmp_path: Path):
-        """A resolved bin/kirocrew.cmd is never emitted verbatim (#4439).
+        """A resolved bin/kirocrew.cmd is never emitted verbatim.
 
         Mirrors website/electron/main.js: the shim is unwrapped to
         ``<root>/python.exe -s -m kiro_crew <sub>`` so kiro-cli spawns the
@@ -2313,7 +2312,7 @@ class TestKiroHooksFiltering:
         actually meant to be internal (kiro-cli would then reject the whole spec at
         runtime). This ratchet forces an explicit choice: adding a bundled hook key
         means updating either this set (a real event) or _INTERNAL_HOOK_KEYS
-        (Kiro-Crew-internal), never neither (#3362 fail-loud guard)."""
+        (Kiro-Crew-internal), never neither (a fail-loud guard)."""
         from kiro_crew.agent import _BUNDLED_CFG_DIR, _load_json
 
         bundled = _load_json(_BUNDLED_CFG_DIR / "defaults.json")
@@ -2587,13 +2586,11 @@ class TestToolBloatFixes:
 
         assert "@notion" not in config["tools"]
 
-    def test_removed_oauth_hints_do_not_survive_a_rebuild_of_a_managed_entry(
-        self, tmp_path: Path
-    ):
+    def test_removed_oauth_hints_do_not_survive_a_rebuild_of_a_managed_entry(self, tmp_path: Path):
         """Row 3 of the ownership table, through the real rebuild.
 
         The dashboard store owns this name, and the custom-update API removes a
-        hint by DELETING the key. Since the previously-rendered config is the
+        hint by DELETING the key. Since the last-rendered config is the
         merge base and ``dict.update()`` cannot remove anything, absence has to
         mean removed here or the last-rendered grant stays in the spec forever.
         """
@@ -2675,9 +2672,7 @@ class TestToolBloatFixes:
         user_home = tmp_path / "kirocrew_home"
         user_home.mkdir(parents=True, exist_ok=True)
         # Hand-edited garbage under the same name as the global server below.
-        (user_home / "mcp.json").write_text(
-            json.dumps({"mcpServers": {"handmade": "not-a-dict"}})
-        )
+        (user_home / "mcp.json").write_text(json.dumps({"mcpServers": {"handmade": "not-a-dict"}}))
         (tmp_path / "fake_kiro_mcp.json").write_text(
             json.dumps(
                 {
@@ -2698,9 +2693,7 @@ class TestToolBloatFixes:
         assert entry["oauthScopes"] == ["read:user"]
         assert entry["oauth"] == {"clientId": "hand-authored", "issuer": "https://issuer"}
 
-    def test_a_globally_disabled_server_is_not_remounted_by_the_store_entry(
-        self, tmp_path: Path
-    ):
+    def test_a_globally_disabled_server_is_not_remounted_by_the_store_entry(self, tmp_path: Path):
         """An operator disable must survive a same-named dashboard-store entry.
 
         `POST /api/mcp/toggle enabled:false` writes `disabled: true` into the
@@ -2720,11 +2713,7 @@ class TestToolBloatFixes:
         # Kiro global: the operator's disable lives here and only here.
         (tmp_path / "fake_kiro_mcp.json").write_text(
             json.dumps(
-                {
-                    "mcpServers": {
-                        "notion": {"url": "https://mcp.notion.com/mcp", "disabled": True}
-                    }
-                }
+                {"mcpServers": {"notion": {"url": "https://mcp.notion.com/mcp", "disabled": True}}}
             )
         )
 
@@ -2777,9 +2766,7 @@ class TestToolBloatFixes:
         config = json.loads(path.read_text(encoding="utf-8"))
 
         assert "@acme-notion" not in config.get("tools", []), "disabled server must not mount"
-        assert "@acme-notion" not in config.get(
-            "allowedTools", []
-        ), "and must not be auto-approved"
+        assert "@acme-notion" not in config.get("allowedTools", []), "and must not be auto-approved"
 
     def test_an_agent_config_only_server_keeps_its_oauth_hints_verbatim(self, tmp_path: Path):
         """The agent config is a merge source, so its own entries are preserved.
@@ -2887,9 +2874,9 @@ class TestToolBloatFixes:
             assert entry is not None, "the aliased server must stay mounted"
             assert entry.get("oauthScopes") == ["acme:read"], "a live source keeps its scopes"
             assert entry.get("oauth", {}).get("clientId") == "acme-client"
-            assert not [k for k in servers if k.startswith("acme-notion-")], (
-                f"no duplicate sibling may be minted, got {sorted(servers)}"
-            )
+            assert not [
+                k for k in servers if k.startswith("acme-notion-")
+            ], f"no duplicate sibling may be minted, got {sorted(servers)}"
         assert counts[0] == counts[1] == counts[2], f"entry count must not grow: {counts}"
 
     def test_a_slashed_store_name_owns_its_aliased_config_entry(self, tmp_path: Path):
@@ -2898,7 +2885,7 @@ class TestToolBloatFixes:
         The store keeps its own raw (slashed) key while normalization rewrites the
         config key to the alias. Looking the store up by the raw key alone misses
         the owner of the aliased entry, so it reads as unmanaged and the
-        previously-rendered wire hints are preserved verbatim -- an editor clear
+        last-rendered wire hints are preserved verbatim -- an editor clear
         answers 200 and never takes effect, and the now-divergent specs stop
         deduping, minting a fresh sibling on every rebuild.
         """
@@ -2919,15 +2906,15 @@ class TestToolBloatFixes:
         ] == ["acme:read"]
 
         # The user clears the hints in the editor: the store entry keeps its raw
-        # slashed key and simply no longer states any scopes.
+        # slashed key and simply states no scopes.
         store.write_text(json.dumps({"mcpServers": {"acme/notion": {"url": url}}}))
         path = _run_install(tmp_path, cfg_dir)
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
 
         assert "oauthScopes" not in servers["acme-notion"], "the cleared scopes must not survive"
-        assert not [k for k in servers if k.startswith("acme-notion-")], (
-            f"no duplicate sibling may be minted, got {sorted(servers)}"
-        )
+        assert not [
+            k for k in servers if k.startswith("acme-notion-")
+        ], f"no duplicate sibling may be minted, got {sorted(servers)}"
 
     def test_a_malformed_exact_name_does_not_hide_a_valid_aliased_owner(self, tmp_path: Path):
         """A malformed store value contributes nothing -- including no veto.
@@ -2936,7 +2923,7 @@ class TestToolBloatFixes:
         malformed value under the alias key itself. The malformed value states
         nothing, so it must not stand in for the real owner: gating the alias
         lookup on absence alone lets it shadow that owner, the entry reads as
-        unmanaged, and the previously-rendered hints survive a clear.
+        unmanaged, and the last-rendered hints survive a clear.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -2946,9 +2933,7 @@ class TestToolBloatFixes:
         url = "https://mcp.acme.com/mcp"
 
         store.write_text(
-            json.dumps(
-                {"mcpServers": {"acme:@acme/notion": {"url": url, "scopes": ["acme:read"]}}}
-            )
+            json.dumps({"mcpServers": {"acme:@acme/notion": {"url": url, "scopes": ["acme:read"]}}})
         )
         path = _run_install(tmp_path, cfg_dir)
         assert json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["acme-notion"][
@@ -2969,12 +2954,12 @@ class TestToolBloatFixes:
         path = _run_install(tmp_path, cfg_dir)
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
 
-        assert "oauthScopes" not in servers["acme-notion"], (
-            "the valid aliased owner's clear must apply"
-        )
-        assert not [k for k in servers if k.startswith("acme-notion-")], (
-            f"no duplicate sibling may be minted, got {sorted(servers)}"
-        )
+        assert (
+            "oauthScopes" not in servers["acme-notion"]
+        ), "the valid aliased owner's clear must apply"
+        assert not [
+            k for k in servers if k.startswith("acme-notion-")
+        ], f"no duplicate sibling may be minted, got {sorted(servers)}"
 
     def test_an_alias_match_binds_hints_only_to_the_same_server(self, tmp_path: Path):
         """One rule for every alias binding, keyed on the direction of the effect.
@@ -3018,22 +3003,18 @@ class TestToolBloatFixes:
 
         # GRANT site, legitimate case: the aliased entry IS this server (same url).
         (user_home / "mcp.json").write_text(
-            json.dumps(
-                {"mcpServers": {"foo/bar": {"url": user_url, "scopes": ["managed:read"]}}}
-            )
+            json.dumps({"mcpServers": {"foo/bar": {"url": user_url, "scopes": ["managed:read"]}}})
         )
         (tmp_path / "fake_kiro_mcp.json").write_text(
             json.dumps({"mcpServers": {"foo-bar": {"url": user_url}}})
         )
         path = _run_install(tmp_path, cfg_dir)
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
-        assert any(e.get("oauthScopes") == ["managed:read"] for e in servers.values()), (
-            "the same server's hints must still bind through the alias"
-        )
+        assert any(
+            e.get("oauthScopes") == ["managed:read"] for e in servers.values()
+        ), "the same server's hints must still bind through the alias"
 
-    def test_the_disabled_guard_stays_name_based_across_an_alias_collision(
-        self, tmp_path: Path
-    ):
+    def test_the_disabled_guard_stays_name_based_across_an_alias_collision(self, tmp_path: Path):
         """Over-denying is safe; under-denying is the hole tightest-wins closes."""
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -3066,9 +3047,7 @@ class TestToolBloatFixes:
         user_home.mkdir(parents=True, exist_ok=True)
         url = "https://mcp.notion.com/mcp"
         (tmp_path / "fake_kiro_mcp.json").write_text(
-            json.dumps(
-                {"mcpServers": {"notion-2": {"url": url, "oauthScopes": ["hand:write"]}}}
-            )
+            json.dumps({"mcpServers": {"notion-2": {"url": url, "oauthScopes": ["hand:write"]}}})
         )
         (user_home / "mcp.json").write_text(
             json.dumps(
@@ -3131,7 +3110,7 @@ class TestToolBloatFixes:
         server, normalization preserves the managed one under a numeric suffix.
         That suffixed key matches neither the store key nor its alias, so an
         ownership lookup that stops there reads the entry as unmanaged and
-        preserves hints the store no longer states -- the clear stops applying to
+        preserves hints the store does not state -- the clear stops applying to
         exactly the server the store owns.
         """
         cfg_dir = _bundled_defaults(tmp_path)
@@ -3162,9 +3141,7 @@ class TestToolBloatFixes:
         servers = json.loads(path.read_text(encoding="utf-8"))["mcpServers"]
 
         stale = [
-            k
-            for k, e in servers.items()
-            if e.get("url") == managed_url and "oauthScopes" in e
+            k for k, e in servers.items() if e.get("url") == managed_url and "oauthScopes" in e
         ]
         assert not stale, f"the owner's clear must reach its suffixed entry, stale in {stale}"
 
@@ -3174,8 +3151,8 @@ class TestToolBloatFixes:
         Two store entries can alias to the same slug, so keying the index by alias
         alone keeps only one of them. The other server's collision-suffixed entry
         then finds a candidate whose transport does not match, reads as unmanaged,
-        and keeps a grant its owner cleared -- and because the stale copy no longer
-        dedups against the freshly rendered one, each rebuild mints another sibling.
+        and keeps a grant its owner cleared -- and because the stale copy does not
+        dedup against the freshly rendered one, each rebuild mints another sibling.
         """
         cfg_dir = _bundled_defaults(tmp_path)
         user_home = tmp_path / "kirocrew_home"
@@ -5122,12 +5099,12 @@ class TestSpecEnvPathIsExpandedOnEmit:
         monkeypatch.setenv("PATH", os.pathsep.join([_abs("usr", "bin"), _abs("bin")]))
         cfg_dir = _bundled_defaults(tmp_path)
         servers = {"wrapped": {"command": "/opt/wrapped", "env": {"PATH": _abs("opt", "shims")}}}
-        first = _run_install_mcp_merge(
-            tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers
-        )["mcpServers"]["wrapped"]["env"]["PATH"]
-        second = _run_install_mcp_merge(
-            tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers
-        )["mcpServers"]["wrapped"]["env"]["PATH"]
+        first = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers)[
+            "mcpServers"
+        ]["wrapped"]["env"]["PATH"]
+        second = _run_install_mcp_merge(tmp_path, cfg_dir, cc_servers={}, kiro_servers=servers)[
+            "mcpServers"
+        ]["wrapped"]["env"]["PATH"]
         assert first == second
         assert len(first.split(os.pathsep)) == len(set(first.split(os.pathsep)))
 
@@ -5137,7 +5114,7 @@ class TestRebuildReconcileRetainsEnabledAppServers:
     manifest-derived MCP server just because it is absent from on-disk — a clean
     rebuild (or a missing/empty config) starts with an empty on_disk, and the
     app's tools would vanish. It must drop a server only when its app is
-    confirmed no longer enabled (a concurrent deregister).
+    confirmed not enabled (a concurrent deregister).
 
     Pinned by source inspection: the reconcile is an inline block in
     ``install_agent`` gated on ``is_kirocrew_json`` (the written path equalling
@@ -5332,7 +5309,7 @@ class TestRefreshDynamicFieldsSyncsConfigModel:
 
 
 class TestResetAgentModel:
-    """The explicit way back to the shipped default (#2559).
+    """The explicit way back to the shipped default.
 
     Ownership of a spec's ``model`` cannot be inferred -- a value an older
     build's propagation wrote and one the user typed in are identical on disk --
@@ -5504,7 +5481,7 @@ def test_ensure_agent_materialized_swallows_errors(tmp_path, monkeypatch):
 
 
 class TestAgentSpecPathRejectsTraversal:
-    """``agent_spec_path`` validates the name BEFORE the path join (#4911 review).
+    """``agent_spec_path`` validates the name BEFORE the path join.
 
     The path it returns is one ``reset_agent_model`` then WRITES, and the CLI
     takes the name from a user-supplied ``--agent``, so a traversal would rewrite
@@ -5558,7 +5535,7 @@ class TestSpecPathRefusesSymlinks:
 
     Following one copies the target's contents into the agents directory, which
     launders a file the reader may not otherwise be allowed to open into a freely
-    readable location (#4911 review).
+    readable location.
     """
 
     @requires_symlinks
@@ -5607,7 +5584,7 @@ class TestSpecPathRefusesSymlinks:
 
 
 class TestSpecPathPrefersTheDeclaredName:
-    """A declared ``name`` wins over a matching filename (#4911 review).
+    """A declared ``name`` wins over a matching filename.
 
     The caller WRITES to the path this returns, so selecting ``<name>.json``
     when that file declares a different agent clears the wrong agent's pin and
@@ -5623,9 +5600,7 @@ class TestSpecPathPrefersTheDeclaredName:
         monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
         return agents
 
-    def test_a_filename_declaring_another_agent_is_not_selected(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_a_filename_declaring_another_agent_is_not_selected(self, tmp_path: Path, monkeypatch):
         """The resolver prefers the declared name. (The WRITE path additionally
         refuses this state outright -- see TestResetRefusesAnAmbiguousName --
         because the runtime's choice between the two files is undefined.)"""
@@ -5646,7 +5621,7 @@ class TestSpecPathPrefersTheDeclaredName:
     ):
         """`foo.json` declaring `bar`, with nothing declaring `foo`: the runtime
         matches it by STEM, so it is the live spec for `--agent foo` and refusing
-        it would leave a live pin unresettable (#4911 review)."""
+        it would leave a live pin unresettable."""
         import kiro_crew.agent as agent_mod
 
         agents = self._dir(tmp_path, monkeypatch)
@@ -5659,9 +5634,7 @@ class TestSpecPathPrefersTheDeclaredName:
         assert spec_path.name == "foo.json"
         assert previous == "m"
 
-    def test_the_filename_is_accepted_when_it_declares_no_name(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_the_filename_is_accepted_when_it_declares_no_name(self, tmp_path: Path, monkeypatch):
         import kiro_crew.agent as agent_mod
 
         agents = self._dir(tmp_path, monkeypatch)
@@ -5679,7 +5652,7 @@ class TestSpecPathPrefersTheDeclaredName:
 
 
 class TestResetRefusesAnAmbiguousName:
-    """Two specs claiming one name is refused, not guessed (#4911 review).
+    """Two specs claiming one name is refused, not guessed.
 
     The runtime resolver accepts EITHER a declared-name match or a filename
     match and iterates an unordered glob, so which of the two is live is
@@ -5687,9 +5660,7 @@ class TestResetRefusesAnAmbiguousName:
     model from a spec nothing reads.
     """
 
-    def test_a_declared_match_plus_a_filename_match_is_refused(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_a_declared_match_plus_a_filename_match_is_refused(self, tmp_path: Path, monkeypatch):
         import kiro_crew.agent as agent_mod
 
         agents = tmp_path / "agents"
@@ -5730,7 +5701,7 @@ class TestResetRefusesAnAmbiguousName:
 
     def test_two_specs_declaring_the_same_name_is_refused(self, tmp_path: Path, monkeypatch):
         """Same undefined-liveness argument as the filename collision: the
-        runtime iterates unordered, so a writer cannot pick (#4911 review)."""
+        runtime iterates unordered, so a writer cannot pick."""
         import kiro_crew.agent as agent_mod
 
         agents = tmp_path / "agents"
@@ -5756,7 +5727,7 @@ class TestResetRefusesAnAmbiguousName:
 
 
 class TestSpecReadsAreSizeCapped:
-    """Spec reads go through the hardened, size-capped gate (#4911 review).
+    """Spec reads go through the hardened, size-capped gate.
 
     The agents directory is user-writable and shared with other tools, so an
     oversized file there must be refused rather than slurped into memory. Uses a
@@ -5781,9 +5752,7 @@ class TestSpecReadsAreSizeCapped:
         with pytest.raises(FileNotFoundError):
             agent_mod.reset_agent_model("kirocrew")
 
-    def test_a_normal_sized_spec_under_the_same_cap_still_resets(
-        self, tmp_path: Path, monkeypatch
-    ):
+    def test_a_normal_sized_spec_under_the_same_cap_still_resets(self, tmp_path: Path, monkeypatch):
         """The A-side of the cap test: proves the refusal above is the SIZE, not
         the lowered cap breaking every read."""
         import kiro_crew.agent as agent_mod
@@ -5802,7 +5771,7 @@ class TestSpecReadsAreSizeCapped:
 
 
 class TestResetOutputEscapesUntrustedPaths:
-    """A spec FILENAME is untrusted input too (#4911 review).
+    """A spec FILENAME is untrusted input too.
 
     The declared-name scan returns whichever file declares the requested name, so
     its path is attacker-shaped even though the requested name is
@@ -5855,17 +5824,11 @@ class TestResetOutputEscapesUntrustedPaths:
 
         agents = tmp_path / "agents"
         agents.mkdir()
-        (agents / "kirocrew.json").write_text(
-            json.dumps({"name": "other"}), encoding="utf-8"
-        )
-        (agents / "elsewhere.json").write_text(
-            json.dumps({"name": "kirocrew"}), encoding="utf-8"
-        )
+        (agents / "kirocrew.json").write_text(json.dumps({"name": "other"}), encoding="utf-8")
+        (agents / "elsewhere.json").write_text(json.dumps({"name": "kirocrew"}), encoding="utf-8")
         monkeypatch.setattr(agent_mod, "kiro_agents_dir_path", lambda: agents)
         # Inject the hostile path as the CONFLICTING file, portably.
-        monkeypatch.setattr(
-            agent_mod, "_conflicting_spec_for", lambda n, c, d: Path(self.HOSTILE)
-        )
+        monkeypatch.setattr(agent_mod, "_conflicting_spec_for", lambda n, c, d: Path(self.HOSTILE))
 
         with pytest.raises(ValueError) as exc:
             agent_mod.reset_agent_model("kirocrew")
@@ -5890,7 +5853,7 @@ class TestResetOutputEscapesUntrustedPaths:
 
 
 class TestSelHookRejectedRedaction:
-    """#5582: ``_sel_hook_rejected`` must redact ``command`` before its 200-char cut.
+    """``_sel_hook_rejected`` must redact ``command`` before its 200-char cut.
 
     The old spelling sliced ``command[:200]`` inside the f-string and redacted
     the assembled message afterwards, so a credential cut at the boundary lost
@@ -5930,3 +5893,728 @@ class TestSelHookRejectedRedaction:
         _sel_hook_rejected("preToolUse", "c" * 250, "denied")
         assert len(events) == 1
         assert events[0].resources == f"event=preToolUse command={'c' * 200}"
+
+
+@contextmanager
+def _fork_env(tmp_path: Path):
+    """Patch agent module globals for fork-refresh tests, mirroring _run_install.
+
+    Yields ``(kiro_dir, prompt_path)``. The bundled defaults carry
+    ``hooks={"preToolUse": "audit"}`` and a prompt.md, so a refresh can rewrite
+    hooks and a ``file://`` prompt.
+    """
+    cfg_dir = _bundled_defaults(tmp_path)
+    kiro_dir = tmp_path / "kiro_agents"
+    kiro_dir.mkdir(exist_ok=True)
+    prompt = cfg_dir / "prompt.md"
+    mc_config = tmp_path / "empty_mc_config.json"
+    mc_config.write_text(json.dumps({"agent": {"kiro_hooks_autoimport": False}}))
+    _user_home = tmp_path / "kirocrew_home"
+    patches = [
+        patch.multiple(
+            "kiro_crew.agent",
+            KIRO_AGENTS_DIR=kiro_dir,
+            _BUNDLED_CFG_DIR=cfg_dir,
+            _KIROCREW_BIN="/usr/bin/kirocrew",
+            _MANAGED_MCP_SERVERS=_DEFAULT_MANAGED_MCPS,
+            _KIRO_MCP_JSON=tmp_path / "fake_kiro_mcp.json",
+            _CC_MCP_JSON=tmp_path / "fake_cc_mcp.json",
+        ),
+        patch("kiro_crew.agent._user_dir", lambda: _user_home),
+        patch("kiro_crew.agent._prompt_path", return_value=prompt),
+        patch("kiro_crew.agent._shipped_defaults", return_value=cfg_dir / "defaults.json"),
+        patch("kiro_crew.agent._project_dir", return_value=None),
+        patch("kiro_crew.agent._aim_skill_paths", return_value=[]),
+        patch("kiro_crew.agent.shutil.which", side_effect=lambda c, **kw: c),
+        patch("kiro_crew.agent._mc_config_path", return_value=mc_config),
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
+        yield kiro_dir, prompt
+
+
+class TestForkModeRefresh:
+    """`_refresh_dynamic_fields(..., fork=True)` protects a crew's private copy:
+    an inline prompt and the deniedCommands guardrails are the human's, so they
+    are left alone; a still-machine-shaped `file://` prompt is refreshed."""
+
+    def test_inline_prompt_preserved_in_fork_mode(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        config = {"prompt": "You are a bespoke reviewer.", "mcpServers": {}}
+        with _fork_env(tmp_path):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=True)
+
+        assert config["prompt"] == "You are a bespoke reviewer."
+
+    def test_file_uri_prompt_refreshed_in_fork_mode(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        # Managed-shaped stale pointer (old data home): healed.
+        config = {"prompt": "file:///old-home/.kiro/crew/prompt.md", "mcpServers": {}}
+        with _fork_env(tmp_path) as (_kiro, prompt):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=True)
+            assert config["prompt"] == f"file://{prompt}"
+            # Same BASENAME at a non-managed location: a real user reference,
+            # preserved (name identity alone destroyed these).
+            custom = {"prompt": "file:///Users/someone/Documents/prompt.md", "mcpServers": {}}
+            agent_mod._refresh_dynamic_fields(custom, gated_off=frozenset(), fork=True)
+            assert custom["prompt"] == "file:///Users/someone/Documents/prompt.md"
+
+    def test_prompt_always_overwritten_when_not_fork(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        config = {"prompt": "human words that would be clobbered", "mcpServers": {}}
+        with _fork_env(tmp_path) as (_kiro, prompt):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=False)
+
+        assert config["prompt"] == f"file://{prompt}"
+
+    def test_denied_commands_kept_in_fork_mode(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        config = {
+            "prompt": "inline",
+            "mcpServers": {},
+            "toolsSettings": {"execute_bash": {"deniedCommands": ["curl"]}},
+        }
+        with _fork_env(tmp_path):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=True)
+
+        assert config["toolsSettings"]["execute_bash"]["deniedCommands"] == ["curl"]
+
+    def test_denied_commands_stripped_when_not_fork(self, tmp_path: Path):
+        """Control: on a non-fork refresh the legacy guardrails ARE stripped."""
+        import kiro_crew.agent as agent_mod
+
+        config = {
+            "prompt": "inline",
+            "mcpServers": {},
+            "toolsSettings": {"execute_bash": {"deniedCommands": ["curl"]}},
+        }
+        with _fork_env(tmp_path):
+            agent_mod._refresh_dynamic_fields(config, gated_off=frozenset(), fork=False)
+
+        assert "toolsSettings" not in config
+
+
+class TestRefreshForkedTemplates:
+    """`_refresh_forked_templates` refreshes only forks whose forked_from CHAIN
+    reaches an owned template (kirocrew*) AND whose `private_to` crew is really
+    bound to them in config.json — the sidecar is agent-writable, so lineage
+    alone must never drive a write to a spec file."""
+
+    @staticmethod
+    def _seed_binding(*bindings: tuple[str, str]) -> None:
+        """Persist config.json with each (crew, kiro_agent) binding."""
+        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+        cfg = KiroCrewConfig()
+        cfg.agents = {crew: KiroCrewAgentConfig(kiro_agent=agent) for crew, agent in bindings}
+        cfg.save()
+
+    def _write_fork(self, kiro_dir: Path, name: str, **extra) -> Path:
+        spec = {"name": name, "prompt": "file:///old-home/.kiro/crew/prompt.md", "mcpServers": {}}
+        spec.update(extra)
+        path = kiro_dir / f"{name}.json"
+        path.write_text(json.dumps(spec), encoding="utf-8")
+        return path
+
+    def test_kirocrew_origin_fork_is_refreshed(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            path = self._write_fork(kiro_dir, "my-crew", hooks={"old": "hook"})
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        assert result["prompt"] == f"file://{prompt}"
+        assert result["hooks"] == {"preToolUse": "audit"}
+        # Managed MCP servers seeded from defaults.
+        assert "kirocrew-cron" in result["mcpServers"]
+        assert "kirocrew-core" in result["mcpServers"]
+
+    def test_spawn_gate_holds_fork_backed_agent_until_refresh_settles(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """F2 redesign: the refresh is deferred off the boot
+        path; the spawn path fails closed — require_fork_governance waits on
+        the settled event and ABORTS on a recorded failure or timeout."""
+        import kiro_crew.agent as agent_mod
+
+        waits: list[float] = []
+
+        class _PendingEvent:
+            def is_set(self) -> bool:
+                return False
+
+            def wait(self, timeout: float | None = None) -> bool:
+                waits.append(timeout or 0)
+                return True
+
+        monkeypatch.setattr(agent_mod, "_fork_refresh_settled", _PendingEvent())
+        monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset())
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            self._write_fork(kiro_dir, "my-crew")
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            agent_mod.require_fork_governance("my-crew")
+            # Non-fork agents never wait: the gate is fork-scoped.
+            agent_mod.require_fork_governance("plain-agent")
+
+        assert waits == [agent_mod._FORK_REFRESH_WAIT_SECS]
+
+    def test_spawn_gate_aborts_on_refresh_failure_or_timeout(self, tmp_path: Path, monkeypatch):
+        """F1: a failed or timed-out refresh must ABORT the
+        fork-backed spawn, never release it onto stale grants."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (_kiro_dir, _prompt):
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+
+            # Recorded per-fork failure -> abort.
+            monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset({"my-crew"}))
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved):
+                agent_mod.require_fork_governance("my-crew")
+
+            # Pass-level death ("*") blocks every fork.
+            monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset({"*"}))
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved):
+                agent_mod.require_fork_governance("my-crew")
+
+            # Timeout (wait returns False) -> abort, not release.
+            monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset())
+
+            class _NeverSettles:
+                def wait(self, timeout: float | None = None) -> bool:
+                    return False
+
+            monkeypatch.setattr(agent_mod, "_fork_refresh_settled", _NeverSettles())
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved):
+                agent_mod.require_fork_governance("my-crew")
+
+    def test_spawn_gate_refuses_fork_shadowed_by_project_spec(self, tmp_path: Path, monkeypatch):
+        """kiro-cli resolves --agent against <cwd>/.kiro/agents
+        first, so a checkout declaring the fork's name would execute an
+        ungoverned project copy while the gate validated the global one. A
+        shadowed fork is refused; non-fork shadowing stays allowed."""
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_fork_refresh_settled", threading.Event())
+        agent_mod._fork_refresh_settled.set()
+        monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset())
+
+        project = tmp_path / "checkout"
+        agents_dir = project / ".kiro" / "agents"
+        agents_dir.mkdir(parents=True)
+        (agents_dir / "my-crew.json").write_text(
+            json.dumps({"name": "my-crew", "autoApprove": ["*"]}), encoding="utf-8"
+        )
+
+        with _fork_env(tmp_path) as (_kiro_dir, _prompt):
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved, match="project"):
+                agent_mod.require_fork_governance("my-crew", project_dir=project)
+            # The same fork with no shadow (or no project dir) passes.
+            agent_mod.require_fork_governance("my-crew", project_dir=tmp_path / "clean")
+            agent_mod.require_fork_governance("my-crew")
+            # Non-fork agents shadowed by a project spec are the documented
+            # discovery feature, not a governance breach.
+            (agents_dir / "plain-agent.json").write_text(
+                json.dumps({"name": "plain-agent"}), encoding="utf-8"
+            )
+            agent_mod.require_fork_governance("plain-agent", project_dir=project)
+
+    def test_spawn_gate_resolves_stem_bindings_to_declared_names(self, tmp_path: Path, monkeypatch):
+        """lineage is keyed by declared name, but a binding can
+        carry the file stem — the gate must resolve the stem before concluding
+        "not a fork", and the failure check must also key on the declared name."""
+        import kiro_crew.agent as agent_mod
+
+        monkeypatch.setattr(agent_mod, "_fork_refresh_settled", threading.Event())
+        agent_mod._fork_refresh_settled.set()
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            # Fork file whose STEM differs from its declared name; lineage is
+            # recorded under the declared name, as the fork endpoint writes it.
+            spec = {"name": "my-crew", "prompt": "file:///x/p.md", "mcpServers": {}}
+            (kiro_dir / "my-crew-file.json").write_text(json.dumps(spec), encoding="utf-8")
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+
+            # A recorded failure under the DECLARED name blocks the stem binding.
+            monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset({"my-crew"}))
+            with pytest.raises(agent_mod.ForkGovernanceUnresolved):
+                agent_mod.require_fork_governance("my-crew-file")
+
+            # With a clean refresh the stem binding passes like the declared one.
+            monkeypatch.setattr(agent_mod, "_fork_refresh_failed", frozenset())
+            agent_mod.require_fork_governance("my-crew-file")
+
+            # A stem resolving to a NON-fork spec stays fast-path allowed.
+            plain = {"name": "plain-agent", "prompt": "file:///x/p.md", "mcpServers": {}}
+            (kiro_dir / "plain-file.json").write_text(json.dumps(plain), encoding="utf-8")
+            agent_mod.require_fork_governance("plain-file")
+
+    def test_queued_refresh_keeps_gate_closed_until_last_pass(self, monkeypatch):
+        """with two overlapping refresh passes, the first one
+        finishing must NOT re-open the spawn gate — the queued pass carries
+        the policy change that triggered it, so the settled event may only be
+        set when no pass remains pending."""
+        import kiro_crew.agent as agent_mod
+
+        started_first = threading.Event()
+        release_first = threading.Event()
+        release_second = threading.Event()
+        calls: list[int] = []
+
+        def _blocking_pass(*, gated_off=None):
+            calls.append(len(calls))
+            if len(calls) == 1:
+                started_first.set()
+                assert release_first.wait(5)
+            else:
+                assert release_second.wait(5)
+
+        monkeypatch.setattr(agent_mod, "_refresh_forked_templates_locked", _blocking_pass)
+        monkeypatch.setattr(agent_mod, "_fork_refresh_settled", threading.Event())
+        monkeypatch.setattr(agent_mod, "_fork_refresh_pending", 0)
+
+        first = threading.Thread(target=agent_mod._refresh_forked_templates)
+        first.start()
+        assert started_first.wait(5)
+        second = threading.Thread(target=agent_mod._refresh_forked_templates)
+        second.start()
+        # The queued pass registers before contending for the pass lock.
+        for _ in range(500):
+            if agent_mod._fork_refresh_pending == 2:
+                break
+            time.sleep(0.01)
+        assert agent_mod._fork_refresh_pending == 2
+
+        # First pass finishes while the second is still pending: gate stays shut.
+        release_first.set()
+        for _ in range(500):
+            if agent_mod._fork_refresh_pending == 1:
+                break
+            time.sleep(0.01)
+        assert agent_mod._fork_refresh_pending == 1
+        assert not agent_mod._fork_refresh_settled.is_set()
+
+        # Last pass finishes: gate re-opens.
+        release_second.set()
+        first.join(5)
+        second.join(5)
+        assert agent_mod._fork_refresh_settled.is_set()
+
+    def test_refresh_records_per_fork_failure_and_continues(self, tmp_path: Path, monkeypatch):
+        """adjudication: one fork's write error must neither
+        strand later forks unrefreshed nor release that fork's session gate."""
+        import kiro_crew.agent as agent_mod
+
+        real_write = agent_mod._atomic_json_write
+
+        def _failing_write(path, config):
+            if "a-crew" in str(path):
+                raise OSError("disk says no")
+            real_write(path, config)
+
+        monkeypatch.setattr(agent_mod, "_atomic_json_write", _failing_write)
+
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            path_a = self._write_fork(kiro_dir, "a-crew")
+            path_b = self._write_fork(kiro_dir, "b-crew")
+            agent_state.set_fork_info("a-crew", forked_from="kirocrew", private_to="a-crew")
+            agent_state.set_fork_info("b-crew", forked_from="kirocrew", private_to="b-crew")
+            self._seed_binding(("a-crew", "a-crew"), ("b-crew", "b-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+            result_b = json.loads(path_b.read_text(encoding="utf-8"))
+            result_a = json.loads(path_a.read_text(encoding="utf-8"))
+
+        # The later fork was still refreshed despite a-crew's write error…
+        assert result_b["prompt"] == f"file://{prompt}"
+        # …the failed fork's file kept its old contents…
+        assert result_a["prompt"] == "file:///old-home/.kiro/crew/prompt.md"
+        # …and only the failed fork is blocked from spawning.
+        assert agent_mod._fork_refresh_failed == frozenset({"a-crew"})
+
+    def test_refresh_resolves_spec_by_declared_name(self, tmp_path: Path):
+        """F2: a fork whose file stem differs from its declared
+        name must still be refreshed (resolver, not `<name>.json`)."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            # File stem 'odd-stem' declares name 'my-crew'.
+            spec = {
+                "name": "my-crew",
+                "prompt": "file:///old-home/.kiro/crew/prompt.md",
+                "mcpServers": {},
+            }
+            path = kiro_dir / "odd-stem.json"
+            path.write_text(json.dumps(spec), encoding="utf-8")
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+            result = json.loads(path.read_text(encoding="utf-8"))
+
+        assert result["prompt"] == f"file://{prompt}"
+        assert agent_mod._fork_refresh_failed == frozenset()
+
+    def test_sync_refresh_holds_the_spawn_gate_for_its_whole_pass(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """F1: a SYNCHRONOUS refresh (rebind, setup) must clear
+        the settled event for its complete lifecycle, so a concurrent spawn
+        cannot consume a fork mid-pass. Observed from inside the pass via the
+        ceiling hook."""
+        import kiro_crew.agent as agent_mod
+
+        gate_states: list[bool] = []
+
+        def _recording_ceiling(config: dict, *, source: str) -> None:
+            gate_states.append(agent_mod._fork_refresh_settled.is_set())
+
+        monkeypatch.setattr(agent_mod, "_apply_allowed_tools_ceiling", _recording_ceiling)
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            self._write_fork(kiro_dir, "my-crew")
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        # Mid-pass the gate was HELD (event cleared)…
+        assert gate_states == [False]
+        # …and re-set once accounting finished.
+        assert agent_mod._fork_refresh_settled.is_set()
+
+    def test_unreadable_lineage_fails_closed(self, tmp_path: Path, monkeypatch):
+        """F2: a sidecar read failure must refuse the spawn, not
+        treat the agent as an ordinary non-fork."""
+        import kiro_crew.agent as agent_mod
+
+        def _broken_read(name: str):
+            raise OSError("sidecar unreadable")
+
+        monkeypatch.setattr(agent_mod.agent_state, "get_fork_info", _broken_read)
+        with pytest.raises(agent_mod.ForkGovernanceUnresolved):
+            agent_mod.require_fork_governance("any-agent")
+
+    def test_reset_agent_model_reads_and_writes_under_the_spec_lock(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """reset's complete read-modify-write must hold
+        agents_spec_lock, with the spec read INSIDE it — a pre-lock snapshot
+        written back would re-persist grants a concurrent refresh stripped."""
+        import kiro_crew.agent as agent_mod
+
+        lock_held = {"now": False}
+        events: list[tuple[str, bool]] = []
+
+        @contextlib.contextmanager
+        def _recording_lock(_dir):
+            lock_held["now"] = True
+            try:
+                yield
+            finally:
+                lock_held["now"] = False
+
+        real_read = agent_mod._read_spec_capped
+        real_write = agent_mod._atomic_json_write
+
+        def _spy_read(path):
+            events.append(("read", lock_held["now"]))
+            return real_read(path)
+
+        def _spy_write(path, data):
+            events.append(("write", lock_held["now"]))
+            real_write(path, data)
+
+        monkeypatch.setattr(agent_mod, "agents_spec_lock", _recording_lock)
+        monkeypatch.setattr(agent_mod, "_read_spec_capped", _spy_read)
+        monkeypatch.setattr(agent_mod, "_atomic_json_write", _spy_write)
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            spec = kiro_dir / "my-agent.json"
+            spec.write_text(json.dumps({"name": "my-agent", "model": "old-pin"}), encoding="utf-8")
+            _path, previous = agent_mod.reset_agent_model("my-agent")
+
+        assert previous == "old-pin"
+        # Both halves of the RMW ran with the lock held.
+        assert ("read", True) in events
+        assert ("write", True) in events
+
+    def test_deferred_refresh_clears_then_sets_the_settled_event(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            path = self._write_fork(kiro_dir, "my-crew", hooks={"old": "hook"})
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod.rebuild_agent_config(refresh_forks="defer")
+            # The background pass re-sets the event when it finishes; the
+            # refresh itself must have run (fork re-plumbed).
+            assert agent_mod._fork_refresh_settled.wait(timeout=10)
+            result = json.loads(path.read_text(encoding="utf-8"))
+        assert result["hooks"] == {"preToolUse": "audit"}
+
+    def test_custom_origin_fork_is_left_untouched(self, tmp_path: Path):
+        """UNCORROBORATED lineage (no config.json binding) drives no write at
+        all — the sidecar is agent-writable, so lineage alone never qualifies.
+        the orphan IS recorded as a failure, so sessions on it
+        stay blocked until a rebind re-corroborates and refreshes it."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            path = self._write_fork(kiro_dir, "cust-crew", hooks={"old": "hook"})
+            agent_state.set_fork_info(
+                "cust-crew", forked_from="user-template", private_to="cust-crew"
+            )
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        # A fork of a non-owned template inherits no machine plumbing.
+        assert result["prompt"] == "file:///old-home/.kiro/crew/prompt.md"
+        assert result["hooks"] == {"old": "hook"}
+        assert result["mcpServers"] == {}
+        # Fail-closed without a write: the orphan may not start sessions.
+        assert "cust-crew" in agent_mod._fork_refresh_failed
+        with pytest.raises(agent_mod.ForkGovernanceUnresolved):
+            agent_mod.require_fork_governance("cust-crew")
+
+    def test_corroborated_custom_origin_fork_gets_governance_without_plumbing(
+        self, tmp_path: Path, monkeypatch
+    ):
+        """origin gates ONLY the plumbing refresh. A corroborated
+        fork of a CUSTOM template still gets the governance passes — its
+        allowedTools/autoApprove face the same ceiling, and no other writer
+        sanitizes the file. The ceiling is a no-op on an ungoverned host, so
+        observe it through the module's monkeypatch alias."""
+        import kiro_crew.agent as agent_mod
+
+        seen: list[str] = []
+
+        def _recording_ceiling(config: dict, *, source: str) -> None:
+            seen.append(source)
+            config["mcpServers"]["rogue"].pop("autoApprove", None)
+
+        monkeypatch.setattr(agent_mod, "_apply_allowed_tools_ceiling", _recording_ceiling)
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            path = self._write_fork(
+                kiro_dir,
+                "cust-crew",
+                hooks={"old": "hook"},
+                mcpServers={"rogue": {"command": "x", "autoApprove": ["a"]}},
+            )
+            agent_state.set_fork_info(
+                "cust-crew", forked_from="user-template", private_to="cust-crew"
+            )
+            self._seed_binding(("cust-crew", "cust-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        # No plumbing: prompt and hooks stay the user's own.
+        assert result["prompt"] == "file:///old-home/.kiro/crew/prompt.md"
+        assert result["hooks"] == {"old": "hook"}
+        # Governance ran and its edit persisted.
+        assert seen == ["fork-refresh:cust-crew"]
+        assert "autoApprove" not in result["mcpServers"]["rogue"]
+
+    def test_unavailable_custom_prompt_is_preserved(self, tmp_path: Path):
+        """a custom file-backed prompt that is temporarily
+        unavailable (unmounted drive) must NOT be misread as dangling and
+        replaced — only pointers naming the managed prompt file are healed."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            custom = self._write_fork(kiro_dir, "my-crew")
+            spec = json.loads(custom.read_text(encoding="utf-8"))
+            # A user prompt at a path that does not exist right now.
+            spec["prompt"] = "file:///Volumes/nas/my-own-instructions.md"
+            custom.write_text(json.dumps(spec), encoding="utf-8")
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+            result = json.loads(custom.read_text(encoding="utf-8"))
+
+        # Preserved verbatim — not healed to the managed URI. (The sibling —
+        # a stale MANAGED pointer being healed — is locked by
+        # test_kirocrew_origin_fork_is_refreshed above.)
+        assert result["prompt"] == "file:///Volumes/nas/my-own-instructions.md"
+
+    def test_custom_prompt_named_prompt_md_is_preserved(self, tmp_path: Path):
+        """the managed file is called prompt.md — the natural
+        custom name too. Identity must come from managed LOCATIONS, so a
+        custom reference merely sharing the basename survives the refresh."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            custom = self._write_fork(kiro_dir, "my-crew")
+            spec = json.loads(custom.read_text(encoding="utf-8"))
+            spec["prompt"] = "file:///Users/someone/Documents/prompt.md"
+            custom.write_text(json.dumps(spec), encoding="utf-8")
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+            result = json.loads(custom.read_text(encoding="utf-8"))
+
+        # Same basename, non-managed location: preserved verbatim. (The
+        # managed-shaped stale pointer being healed is locked by
+        # test_kirocrew_origin_fork_is_refreshed via the fixture default.)
+        assert result["prompt"] == "file:///Users/someone/Documents/prompt.md"
+
+    def test_source_checkout_prompt_preserved_but_site_packages_healed(self, tmp_path: Path):
+        """a bare "/kiro_crew/" spelling also matches a source
+        CHECKOUT of this repo, where prompt.md is a custom file — only the
+        installed-package spellings identify a place the managed prompt has
+        actually lived."""
+        import kiro_crew.agent as agent_mod
+
+        checkout = "file:///workspace/kiro_crew/prompt.md"
+        wheel = "file:///old-venv/lib/python3.12/site-packages/kiro_crew/prompt.md"
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            for name, uri in (("crew-a", checkout), ("crew-b", wheel)):
+                copy = self._write_fork(kiro_dir, name)
+                spec = json.loads(copy.read_text(encoding="utf-8"))
+                spec["prompt"] = uri
+                copy.write_text(json.dumps(spec), encoding="utf-8")
+                agent_state.set_fork_info(name, forked_from="kirocrew", private_to=name)
+            self._seed_binding(("crew-a", "crew-a"), ("crew-b", "crew-b"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+            got_a = json.loads((kiro_dir / "crew-a.json").read_text(encoding="utf-8"))
+            got_b = json.loads((kiro_dir / "crew-b.json").read_text(encoding="utf-8"))
+
+        # The checkout path is a user's custom prompt: preserved verbatim.
+        assert got_a["prompt"] == checkout
+        # The stale wheel path is a place the managed prompt really lived: healed.
+        assert got_b["prompt"] == f"file://{prompt}"
+
+    def test_fork_of_fork_chain_reaching_owned_is_refreshed(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, prompt):
+            self._write_fork(kiro_dir, "mid")
+            leaf = self._write_fork(kiro_dir, "leaf")
+            agent_state.set_fork_info("mid", forked_from="kirocrew", private_to="c1")
+            agent_state.set_fork_info("leaf", forked_from="mid", private_to="c2")
+            self._seed_binding(("c1", "mid"), ("c2", "leaf"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        # The leaf's chain (leaf -> mid -> kirocrew) reaches an owned root.
+        assert json.loads(leaf.read_text(encoding="utf-8"))["prompt"] == f"file://{prompt}"
+
+    def test_forged_lineage_without_binding_never_writes(self, tmp_path: Path):
+        """A sidecar entry whose crew is NOT bound to the spec drives no write:
+        the agent-writable sidecar alone must not rewrite an arbitrary spec."""
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            victim = self._write_fork(kiro_dir, "custom-spec")
+            agent_state.set_fork_info("custom-spec", forked_from="kirocrew", private_to="crewA")
+            # crewA exists but is bound elsewhere — the lineage is forged.
+            self._seed_binding(("crewA", "some-other-agent"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        assert (
+            json.loads(victim.read_text(encoding="utf-8"))["prompt"]
+            == "file:///old-home/.kiro/crew/prompt.md"
+        )
+
+    def test_cycle_in_chain_does_not_hang_and_skips(self, tmp_path: Path):
+        import kiro_crew.agent as agent_mod
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            a = self._write_fork(kiro_dir, "a")
+            b = self._write_fork(kiro_dir, "b")
+            # a -> b -> a: never reaches an owned root; must terminate, not loop.
+            agent_state.set_fork_info("a", forked_from="b", private_to="ca")
+            agent_state.set_fork_info("b", forked_from="a", private_to="cb")
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        # Neither is refreshed (no owned root); both left as written.
+        assert (
+            json.loads(a.read_text(encoding="utf-8"))["prompt"]
+            == "file:///old-home/.kiro/crew/prompt.md"
+        )
+        assert (
+            json.loads(b.read_text(encoding="utf-8"))["prompt"]
+            == "file:///old-home/.kiro/crew/prompt.md"
+        )
+
+    def test_refresh_runs_governance_passes_before_write(self, tmp_path: Path, monkeypatch):
+        """The fork-refresh writer must filter allowedTools through the ceiling
+        and strip ungoverned autoApprove — the two paths that never reach the
+        PreToolUse gate. A fork carrying grants the ceiling later tightened
+        against must not persist them verbatim (security-class regression)."""
+        import kiro_crew.agent as agent_mod
+
+        ceiling_calls: list[str] = []
+
+        def fake_ceiling(config: dict, *, source: str) -> None:
+            ceiling_calls.append(source)
+            config["allowedTools"] = ["kept-by-ceiling"]
+
+        def fake_strip(servers: dict) -> dict:
+            return {"stripped": {"command": "x"}}
+
+        monkeypatch.setattr(agent_mod, "_apply_allowed_tools_ceiling", fake_ceiling)
+        monkeypatch.setattr(agent_mod, "_strip_ungoverned_auto_approve", fake_strip)
+
+        with _fork_env(tmp_path) as (kiro_dir, _prompt):
+            path = self._write_fork(kiro_dir, "my-crew", allowedTools=["stale-grant"])
+            agent_state.set_fork_info("my-crew", forked_from="kirocrew", private_to="my-crew")
+            self._seed_binding(("my-crew", "my-crew"))
+            agent_mod._refresh_forked_templates(gated_off=frozenset())
+
+        result = json.loads(path.read_text(encoding="utf-8"))
+        assert ceiling_calls == ["fork-refresh:my-crew"]
+        assert result["allowedTools"] == ["kept-by-ceiling"]
+        assert result["mcpServers"] == {"stripped": {"command": "x"}}
+
+
+class TestForkPromptRefreshGuard:
+    """On a fork, only the MANAGED prompt pointer is refreshed: a live custom
+    file:// prompt is user content and must survive, exactly like an inline
+    prompt — dropping it is a security-class defect."""
+
+    def test_custom_live_file_prompt_preserved_on_fork(self, tmp_path):
+        from kiro_crew.agent import _refresh_dynamic_fields
+
+        custom = tmp_path / "my-prompt.md"
+        custom.write_text("custom", encoding="utf-8")
+        config = {"prompt": f"file://{custom}"}
+        _refresh_dynamic_fields(config, fork=True)
+        assert config["prompt"] == f"file://{custom}"
+
+    def test_dangling_file_prompt_repaired_on_fork(self, tmp_path):
+        from kiro_crew.agent import _prompt_path, _refresh_dynamic_fields
+
+        # A MANAGED-shaped pointer at a gone location (moved data home) is the
+        # repair case. Identity comes from the location spelling, not from
+        # existence: an arbitrary dangling path could be a user's unmounted
+        # drive and must be preserved (GPT rounds 18/26).
+        config = {"prompt": f"file://{tmp_path / 'gone' / '.kirocrew' / 'prompt.md'}"}
+        _refresh_dynamic_fields(config, fork=True)
+        assert config["prompt"] == f"file://{_prompt_path()}"
+
+        custom = {"prompt": f"file://{tmp_path / 'gone' / 'my-notes.md'}"}
+        _refresh_dynamic_fields(custom, fork=True)
+        assert custom["prompt"] == f"file://{tmp_path / 'gone' / 'my-notes.md'}"
+
+    def test_managed_pointer_still_refreshed_and_inline_preserved_on_fork(self):
+        from kiro_crew.agent import _prompt_path, _refresh_dynamic_fields
+
+        managed = {"prompt": f"file://{_prompt_path()}"}
+        _refresh_dynamic_fields(managed, fork=True)
+        assert managed["prompt"] == f"file://{_prompt_path()}"
+
+        inline = {"prompt": "You are a helpful crew."}
+        _refresh_dynamic_fields(inline, fork=True)
+        assert inline["prompt"] == "You are a helpful crew."

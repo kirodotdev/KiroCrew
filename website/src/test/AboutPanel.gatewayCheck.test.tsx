@@ -318,6 +318,57 @@ describe('AboutPanel gateway update check', () => {
     expect(screen.getByRole('button', { name: /copy command/i })).toBeTruthy()
   })
 
+  it('uses fresh check arm capability before the status frame catches up', async () => {
+    const command = "curl -fsSL https://download.crew.kiro.dev/cli.sh | sh"
+    store.dispatch(sseStatus({
+      ...BLANK_STATUS,
+      update_can_arm: false,
+      update_managed_by: 'kirocrew',
+    } as never))
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      error_code: null,
+      managed_by: 'kirocrew',
+      can_apply: false,
+      can_arm: true,
+      channel: 'stable',
+      latest_version: '0.7.0',
+      remediation: { kind: 'command', message: '', command },
+    })
+    mountWeb()
+    await pressCheck()
+
+    expect(await screen.findByTestId('in-app-update')).toBeTruthy()
+    expect(screen.getByRole('button', { name: /update to v0\.7\.0/i })).toBeTruthy()
+    expect(screen.queryByTestId('manual-update-instructions')).toBeNull()
+  })
+
+  it('uses fresh ineligible check capability over stale armable status', async () => {
+    const command = "curl -fsSL https://download.crew.kiro.dev/cli.sh | sh"
+    store.dispatch(sseStatus({
+      ...BLANK_STATUS,
+      update_can_arm: true,
+      update_managed_by: 'kirocrew',
+    } as never))
+    stubFetch({
+      check_status: 'succeeded',
+      update_available: true,
+      error_code: null,
+      managed_by: 'kirocrew',
+      can_apply: false,
+      can_arm: false,
+      channel: 'stable',
+      latest_version: '0.7.0',
+      remediation: { kind: 'command', message: '', command },
+    })
+    mountWeb()
+    await pressCheck()
+
+    expect(await screen.findByTestId('manual-update-instructions')).toBeTruthy()
+    expect(screen.queryByTestId('in-app-update')).toBeNull()
+  })
+
   it('the available-version line shows the folded display value, keeping the raw stamp off screen', async () => {
     // A promoted stable candidate keeps its rc stamp in latest_version (that is
     // what arm/apply key on); the check response carries the folded sibling

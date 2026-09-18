@@ -82,11 +82,34 @@ class TestVaultProbe:
         assert line is not None
         assert line.startswith("social/Google")
         assert "refresh token present" in line and "usable" in line
+        # The EXACT suffix, not just the word: doctor's vault-owned auth row keys
+        # its health glyph on endswith("-> usable") (cli_doctor._doctor_agent_auth),
+        # so a reword here would silently flip healthy rows to a warning there.
+        assert line.endswith("-> usable")
         assert "at-value" not in line and "rt-value" not in line
         TokenStore(data_home).save(_token(expires_in=-60, refresh_token=None))
         line = describe_vault_identity()
         assert line is not None
         assert "access token expired" in line and "NOT usable" in line
+        assert not line.endswith("-> usable")
+
+    def test_describe_reports_issuer_rejection_without_changing_the_spawn_verdict(self, data_home):
+        """A refresh the issuer refused is a diagnosis for the user, not a demotion:
+        doctor says so and names the remedy, while the spawn-time predicate still
+        chooses the Crew identity (a refresh token is present). Nothing hands the
+        spawn back to kiro-cli's login behind the user's back."""
+        store = TokenStore(data_home)
+        store.save(_token(expires_in=-60))
+        store.mark_refresh_rejected("social")
+        line = describe_vault_identity()
+        assert line is not None
+        assert "refresh REJECTED by issuer" in line
+        assert "sign-in expired" in line and "sign in again" in line
+        # Doctor keys its vault-owned glyph on endswith("-> usable"): this verdict
+        # must never carry that suffix, or a rejected sign-in renders green there.
+        assert not line.endswith("-> usable")
+        assert "at-value" not in line and "rt-value" not in line
+        assert vault_holds_identity() is True
 
     def test_unreadable_vault_degrades_to_no_identity(self, data_home, caplog):
         """A vault error must not fail the spawn; it falls back to cli-owned."""

@@ -11,6 +11,7 @@
  */
 import { describe, it, expect } from 'vitest'
 import reducer, { setQuestionCard, setQuestionDraft, retireStatelessQuestion, captureStatelessCard, resolveQuestionCard, clearQuestionCard, sseChatMessage, appendMessage, appendSlotMessage, appendQueuedMessage, removeQueuedMessage, cancelQueuedMessage } from '../store/chatSlice'
+import { reconcileQuestions } from '../hooks/useWebSocket'
 
 const initial = reducer(undefined, { type: '@@INIT' })
 
@@ -84,16 +85,19 @@ describe('question card state', () => {
 
 /**
  * A STATELESS card (no ask_id — `post_question_card`, the agent ended its turn
- * on it) is answered by "the next message". So the frame that starts the
- * slot's next turn — a real user message, or an auto-nudge cycle moving the
- * session on — consumes that answer channel and must drop the card. The
- * observed defect: a monitored session asked via ask_question, the nudge loop
- * injected the next turn, and the orphaned card sat above the composer
- * indefinitely, inviting an answer no turn was waiting for.
+ * on it) is answered by "the next message the USER sends". So a `user` frame is
+ * that answer channel being spent, and it retires the card.
  *
- * Server-owned cards (ask_id) are exempt: their lifecycle is the
- * `question_card_resolved` broadcast, and clearing one on a mid-turn steer
- * frame would strand the blocked tool call with no card to answer.
+ * A `nudge` frame is not. It used to be in the retiring set, and the defect that
+ * cost was worse than the one it fixed: a monitored session's card was deleted
+ * out from under the user by the next auto-nudge cycle, while the question was
+ * still unanswered and the same agent was still there to read the answer. An
+ * unanswered card is retired by the user answering it or by Dismiss — nothing
+ * else.
+ *
+ * Server-owned cards (ask_id) are exempt from this path entirely: their
+ * lifecycle is the `question_card_resolved` broadcast, and clearing one on a
+ * mid-turn steer frame would strand the blocked tool call with no card.
  */
 describe('stateless card staleness on turn-consuming frames', () => {
   const legacy = (slot: string, state = initial) => withCard(slot, undefined, state)
@@ -104,17 +108,28 @@ describe('stateless card staleness on turn-consuming frames', () => {
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 
-  it('a nudge frame on the slot drops its stateless card (active path)', () => {
-    // The reported bug: auto-nudge cycle fires, agent moves on, card lingers.
+  it('a nudge frame on the slot KEEPS its stateless card (active path)', () => {
+    // The reported bug this replaces the old expectation: the nudge loop fired,
+    // the card vanished, and the user came back to a question they could no
+    // longer answer. A nudge wakes the same agent in the same conversation, so
+    // the answer channel is intact and the card must stay.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
     state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 3]\ncheck the PR' }))
-    expect(state.pendingQuestions['chat-1']).toBeUndefined()
+    expect(state.pendingQuestions['chat-1']).toBeDefined()
   })
 
   it('drops the stateless card on the non-active (grid pane) path too', () => {
     let state = { ...legacy('chat-1'), activeSlot: 'other-slot' }
-    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 2]\ngo' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'answered from the pane' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
+  })
+
+  it('a nudge frame KEEPS the card on the non-active (grid pane) path too', () => {
+    // Both hand-synced appliers must agree, or a pane and the single-chat view
+    // disagree about whether the same question is still answerable.
+    let state = { ...legacy('chat-1'), activeSlot: 'other-slot' }
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 2]\ngo' }))
+    expect(state.pendingQuestions['chat-1']).toBeDefined()
   })
 
   it('a server-owned (ask_id) card survives user and nudge frames', () => {
@@ -302,32 +317,32 @@ describe('stateless card staleness on turn-consuming frames', () => {
 
   it('an active custom-answer draft blocks retirement; clearing it resumes', () => {
     // GPT round-9 / UX: the typed custom answer lives only in QuestionCard's
-    // component state — auto-retiring the card mid-typing (a nudge frame on a
-    // monitored session) would silently destroy the user's work. While
-    // draftActive, turn-consuming frames must leave the card; once the draft
-    // is cleared, staleness resumes on the next one.
+    // component state, so a retirement mid-typing would silently destroy the
+    // user's work. While draftActive, even a `user` frame leaves the card;
+    // once the draft is cleared, retirement resumes on the next one.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
     state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
-    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge] keep going' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'something else entirely' }))
     expect(state.pendingQuestions['chat-1']).toBeDefined()
-    // Draft cleared -> the next turn-consuming frame retires the card.
+    // Draft cleared -> the next user frame retires the card.
     state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: false }))
-    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge] keep going 2' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'and another' }))
     expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 
   it('a fresh, structurally identical replacement preserves draft protection', () => {
     // GPT round-11: a fresh identical card keeps the mounted component (keyed
     // by payload), so the user's local draft SURVIVES the swap — resetting
-    // draftActive here would let the next nudge silently destroy it. A fresh
-    // DIFFERENT payload remounts (draft genuinely gone), so it starts clean.
+    // draftActive here would let the next user frame silently destroy it. A
+    // fresh DIFFERENT payload remounts (draft genuinely gone), so it starts
+    // clean.
     let state = { ...legacy('chat-1'), activeSlot: 'chat-1' }
     const questions = state.pendingQuestions['chat-1'].questions
     state = reducer(state, setQuestionDraft({ slot: 'chat-1', active: true }))
     // Fresh delivery of the IDENTICAL payload (e.g. the agent re-asks).
     state = reducer(state, setQuestionCard({ slot: 'chat-1', questions, fresh: true }))
     expect(state.pendingQuestions['chat-1'].draftActive).toBe(true)
-    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge] onward' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'unrelated send' }))
     expect(state.pendingQuestions['chat-1']).toBeDefined()
     // Fresh delivery of a DIFFERENT payload remounts the card: clean slate.
     const other = [{ question: 'Different?', options: [{ label: 'Yes' }] }]
@@ -356,5 +371,96 @@ describe('card re-dispatch vs replacement', () => {
       questions: [{ question: 'A different ask?', options: [{ label: 'Yes' }] }],
     }))
     expect(state.pendingQuestions['chat-1']?.questions[0].question).toBe('A different ask?')
+  })
+})
+
+/**
+ * The reported defect, end to end: a monitored conductor session called
+ * `ask_question`, ~10 auto-nudge cycles ran, and by the time the user came back
+ * the card was gone and the question had never been answered.
+ *
+ * Two halves, one cause. The nudge frame retired the card in this reducer, and
+ * the same role set on the server deleted the `/api/ask-question/pending`
+ * record — so a reload had nothing to rehydrate from either. These tests pin
+ * both halves: later turns leave the card alone, and the reload reconcile brings
+ * it back into a fresh store.
+ */
+describe('an unanswered stateless card survives later turns and a reload', () => {
+  const rehydrateFromPending = (
+    slot: string,
+    cardId: string,
+    state: typeof initial,
+  ) => {
+    // What useWebSocket.syncPendingQuestions does with a /pending row: decide
+    // through the real reconcile, then dispatch the add it returns.
+    const { add, drop } = reconcileQuestions(
+      state.pendingQuestions,
+      state.pendingQuestions,
+      [{ slot, card_id: cardId, questions: QUESTIONS }],
+      [],
+    )
+    expect(drop).toEqual([])
+    let next = state
+    for (const q of add) {
+      next = reducer(next, setQuestionCard({
+        slot: q.slot as string,
+        card_id: q.card_id,
+        questions: q.questions as typeof QUESTIONS,
+      }))
+    }
+    return next
+  }
+
+  it('survives ten nudge cycles and the assistant turns between them', () => {
+    let state = { ...withCard('chat-1', undefined), activeSlot: 'chat-1' }
+    for (let cycle = 1; cycle <= 10; cycle++) {
+      state = reducer(state, sseChatMessage({
+        slot: 'chat-1', role: 'nudge', content: `[auto-nudge cycle ${cycle}]\ncheck the PR`,
+        meta: { mid: `n-${cycle}` },
+      }))
+      state = reducer(state, sseChatMessage({
+        slot: 'chat-1', role: 'assistant', content: `cycle ${cycle}: still red`,
+        meta: { mid: `a-${cycle}` },
+      }))
+    }
+    expect(state.pendingQuestions['chat-1']).toBeDefined()
+    expect(state.pendingQuestions['chat-1'].questions).toEqual(QUESTIONS)
+  })
+
+  it('comes back into a fresh store from the /pending snapshot (reload)', () => {
+    // A reload starts with an empty store: the card is a one-shot broadcast, so
+    // this reconcile is the ONLY thing that can put it back on screen.
+    const state = rehydrateFromPending('chat-1', 'card-a', { ...initial, activeSlot: 'chat-1' })
+    expect(state.pendingQuestions['chat-1']).toBeDefined()
+    expect(state.pendingQuestions['chat-1'].serverCardId).toBe('card-a')
+  })
+
+  it('stays after a reload that lands mid-nudge-loop', () => {
+    // The exact sequence the user hit: ask, nudges, switch away (reload of the
+    // pane state), come back — and then more nudges.
+    let state = { ...withCard('chat-1', undefined), activeSlot: 'chat-1' }
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 1]\ngo', meta: { mid: 'n-1' } }))
+    state = rehydrateFromPending('chat-1', 'card-a', { ...initial, activeSlot: 'chat-1' })
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 2]\ngo', meta: { mid: 'n-2' } }))
+    expect(state.pendingQuestions['chat-1']).toBeDefined()
+  })
+
+  it('is still retired by the user answering it', () => {
+    // The fix must not turn the card into something that never goes away: the
+    // user's own next message is exactly what it was waiting for.
+    let state = { ...withCard('chat-1', undefined), activeSlot: 'chat-1' }
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 1]\ngo' }))
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'user', content: 'use the assets branch' }))
+    expect(state.pendingQuestions['chat-1']).toBeUndefined()
+  })
+
+  it('is still retired by an explicit dismiss after nudges', () => {
+    // Dismiss (PendingQuestionCard.dismissStateless) is the other exit, and the
+    // one that now carries the "stale card" case the nudge retirement covered.
+    let state = { ...withCard('chat-1', undefined), activeSlot: 'chat-1' }
+    state = reducer(state, sseChatMessage({ slot: 'chat-1', role: 'nudge', content: '[auto-nudge cycle 1]\ngo' }))
+    const delivery = state.pendingQuestions['chat-1'].cardId!
+    state = reducer(state, retireStatelessQuestion({ slot: 'chat-1', expected: delivery }))
+    expect(state.pendingQuestions['chat-1']).toBeUndefined()
   })
 })

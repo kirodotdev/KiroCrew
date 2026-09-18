@@ -188,7 +188,7 @@ async def test_loop_without_stall_evidence_fires_normally(svc, _nosleep):
 
 @pytest.mark.asyncio
 async def test_cycle_cap_wins_over_stall(svc, _nosleep):
-    """A loop also out of cycles reports the bound it historically would have.
+    """A loop also out of cycles reports its cycle-cap bound, not the stall.
 
     The stall check is evaluated last precisely so it cannot relabel an
     existing terminal outcome.

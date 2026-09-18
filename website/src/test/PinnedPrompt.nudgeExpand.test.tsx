@@ -2,14 +2,16 @@ import { describe, it, expect, vi } from 'vitest'
 import { render, screen } from '@testing-library/react'
 import PinnedPrompt from '../pages/chat/PinnedPrompt'
 
-// A pinned nudge shows a short "cycle N" label and carries no images, so neither
-// the clamp gate nor the image gate fires. Without an explicit flag the expand
-// affordance never mounts and the instruction body it was handed is unreachable.
+// A short prompt whose preview already fits (a one-line paste token, say) shows a
+// short label and carries no images, so neither the clamp gate nor the image gate
+// fires. Without an explicit flag the expand affordance never mounts and the
+// fuller body it was handed is unreachable. (Nudge rows are no longer pinned; the
+// flag is generic to any prompt whose body exceeds its flattened preview.)
 function renderBanner(over: Partial<Parameters<typeof PinnedPrompt>[0]> = {}) {
   return render(
     <PinnedPrompt
-      text="Auto-nudge · cycle 17"
-      fullText="Babysit PR #4449. Check CI and review comments…"
+      text="first second third"
+      fullText={'first\nsecond\nthird — and the line the preview flattened away'}
       images={[]}
       pushUp={0}
       bannerH={40}
@@ -35,7 +37,7 @@ describe('PinnedPrompt expand affordance', () => {
 
   it('reveals the body once expanded', () => {
     renderBanner({ bodyBeyondPreview: true, expanded: true })
-    expect(screen.getByText(/Babysit PR #4449/)).toBeTruthy()
+    expect(screen.getByText(/the line the preview flattened away/)).toBeTruthy()
   })
 
   it('calls onToggleExpanded when the chevron is pressed', () => {

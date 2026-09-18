@@ -53,6 +53,8 @@ import time
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, cast
 
+from kiro_crew.config import live
+from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid, transcript_stem
 from kiro_crew.messaging.approval import PendingApprovals, SessionApprovalDecider
 from kiro_crew.messaging.attachments import append_attachment_context
@@ -61,11 +63,13 @@ from kiro_crew.messaging.commands import compact_unsupported_backend, compact_un
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
+    admit_inbound_callback,
     build_directive_consumer,
     drive_turn,
     inbound_permitted,
 )
 from kiro_crew.messaging.driver import APPROVAL_INTERACTIVE
+from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import (
     CHAT_TYPE_DIRECT,
     CHAT_TYPE_FORUM,
@@ -104,6 +108,7 @@ if TYPE_CHECKING:
     from kiro_crew.history import ConversationLog
     from kiro_crew.session import SessionManager
     from kiro_crew.webex.client import WebexClient
+    from kiro_crew.webex.transport import WebexTransport
 
 logger = logging.getLogger(__name__)
 
@@ -232,7 +237,17 @@ class WebexDispatcher:
         self.conv_log = conv_log
         self.approval_mode = approval_mode
         self.client: "WebexClient | None" = None
+        # Set by maybe_start_webex after construction (same construction-cycle
+        # reason as ``client``); the config applier pushes reloaded authorization
+        # fields at it.
+        self.transport: "WebexTransport | None" = None
         self._conv = ConversationState(seed_fn=self._seed_gen)
+        # Held on self: the watcher holds the owner WEAKLY, so a subscription
+        # dropped here would be collected and the applier would silently stop
+        # firing.
+        self._config_sub = live.watch_section(
+            self, "webex", "messaging", target="transport", name="WebexDispatcher"
+        )
         self._queue = ReceiptQueue()
         # What the newest options card offered, per conversation. Owned HERE and
         # not by the renderer: that card is the last thing a turn sends, so every
@@ -252,7 +267,7 @@ class WebexDispatcher:
         in the room root. Webex threads are FLAT, so the inbound's ``parentId`` is
         already the root and there is no nesting to resolve.
         """
-        return inbound.parent_id if self.cfg.webex.reply_in_thread else ""
+        return inbound.parent_id if self._live_cfg().webex.reply_in_thread else ""
 
     async def _reply(
         self, inbound: "WebexInbound", text: str, *, self_minted: bool = False
@@ -318,6 +333,21 @@ class WebexDispatcher:
         email = inbound.person_email
         room_id = inbound.room_id
         text = inbound.text
+        reply_parent = self._reply_parent(inbound)
+        inbound_route = InboundRoute(
+            conversation_id=room_id,
+            text=inbound.text,
+            user_id=email,
+            thread_id=(reply_parent if inbound.room_type != ROOM_DIRECT else ""),
+            message_id=inbound.message_id,
+            attachments_dropped=len(inbound.file_urls),
+        )
+        if not await admit_inbound_callback(
+            self.sessions,
+            channel_type="webex",
+            route=inbound_route,
+        ):
+            return
 
         # ── Card press intercept ──
         # A press is not a message: it carries no text, so every path below would
@@ -431,8 +461,8 @@ class WebexDispatcher:
             sessions=self.sessions,
             key=route,
             session_key_for=self._session_key,
-            idle_minutes=self.cfg.messaging.idle_reset_minutes,
-            daily_reset_hour=self.cfg.messaging.daily_reset_hour,
+            idle_minutes=int(self._live_cfg().messaging.idle_reset_minutes),
+            daily_reset_hour=int(self._live_cfg().messaging.daily_reset_hour),
             on_busy=lambda sk: self._handle_busy(inbound, sk, body, override_mode),
         )
         if resolved_key is None:
@@ -448,7 +478,6 @@ class WebexDispatcher:
         agent = self._resolve_agent()
         # The SAME derivation the dispatcher's own sends use, so the answer and
         # every ack about it cannot end up in different places.
-        reply_parent = self._reply_parent(inbound)
 
         # A decider only exists under INTERACTIVE: in auto/trust the driver's own
         # ladder approves without ever asking, and posting a prompt nobody needs
@@ -508,6 +537,7 @@ class WebexDispatcher:
                 ChannelTurn(
                     channel_type="webex",
                     session_key=session_key,
+                    inbound_route=inbound_route,
                     # Session-directive consumer: monitor_start / autonudge_stop /
                     # ... return a marker TurnDriver decodes; apply it against THIS
                     # turn's session key (dashboard-only directives stay refused
@@ -587,7 +617,7 @@ class WebexDispatcher:
         if not self.sessions.is_busy(session_key):
             await self.handle_message(inbound)
             return
-        mode = override_mode or self.cfg.messaging.queue_mode
+        mode = override_mode or str(self._live_cfg().messaging.queue_mode)
         # Steer forwards TEXT ONLY, so steering a message that carries files would
         # acknowledge a fold while silently dropping every attachment. Queue it
         # instead — even under an explicit ``/steer`` — so the files reach the
@@ -817,7 +847,7 @@ class WebexDispatcher:
             self._resolve_agent(),
             route,
             gen=0,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self.cfg.messaging.dm_scope),
             chat_type=_chat_type_of(route),
         )
         return transcript_stem(bucket)
@@ -994,13 +1024,50 @@ class WebexDispatcher:
             return
         await self._reply(inbound, _APPROVAL_NOT_PENDING)
 
+    # ── Live config ────────────────────────────────────────────────────────
+
+    def _live_cfg(self) -> "KiroCrewConfig":
+        """The config in force NOW, for a per-turn read.
+
+        The watcher's snapshot when it is armed, else a fingerprint-cached
+        ``load()`` (two stats on a hit), else the boot copy. Falling back to
+        ``self.cfg`` rather than raising keeps a turn running when the config
+        file is momentarily unreadable: a threshold or a thread toggle is not an
+        authorization decision, and the boot value is the one the operator last
+        had in force.
+
+        ``_sender_allowed`` is the ONE authorization caller of this, and it is
+        deny-by-default against whichever roster it reads, so the boot fallback
+        can only ever be the roster the operator last had in force -- never an
+        empty one and never a wider one.
+        """
+        return live.current(self.cfg, log_prefix="webex")
+
+    def _thresholds(self) -> tuple[int, int]:
+        """``(soft, hard)`` context thresholds from the live config.
+
+        Re-runs the loader's own pair normalization, because reading the two
+        fields live without it can leave ``soft > hard`` and make the soft nudge
+        unreachable -- ``_maybe_notice`` tests ``pct >= hard`` first.
+        """
+        section = self._live_cfg().webex
+        return _normalize_threshold_pair(
+            int(getattr(section, "soft_threshold_pct", 80)),
+            int(getattr(section, "hard_threshold_pct", 95)),
+        )
+
     def _sender_allowed(self, email: str) -> bool:
         """Whether *email* is on the channel's allow-list. Deny-by-default.
 
         Re-derived here rather than read off the transport because a press does
-        not flow through ``receive``; an empty allow-list authorizes nobody.
+        not flow through ``receive``; an empty allow-list authorizes nobody. Read
+        LIVE so a roster edit reaches a card press on the same reload that
+        reaches the inbound path, instead of leaving the two copies disagreeing
+        until a restart. A degraded read falls back to the boot roster, which is
+        the last one the operator had in force -- never a wider one.
         """
-        allowed = {e.lower() for e in (self.cfg.webex.allowed_emails or []) if e}
+        section = self._live_cfg().webex
+        allowed = {e.lower() for e in (getattr(section, "allowed_emails", None) or []) if e}
         return bool(email) and email.lower() in allowed
 
     def _bot_name(self) -> str:
@@ -1138,7 +1205,7 @@ class WebexDispatcher:
                         # reach the one turn that answers them.
                         files.extend(str(u) for u in (item[2].get("webex_file_urls") or []))
                     else:
-                        # Once one message no longer fits, defer it AND
+                        # Once one message does not fit, defer it AND
                         # everything behind it, so queue order stays exact.
                         remainder.append(item)
                 for _ts, rtext, rkw in remainder:
@@ -1499,7 +1566,7 @@ class WebexDispatcher:
             self._resolve_agent(),
             route,
             gen=gen,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self.cfg.messaging.dm_scope),
             chat_type=_chat_type_of(route),
         )
 
@@ -1509,7 +1576,7 @@ class WebexDispatcher:
             channel="webex",
             agent=self._resolve_agent(),
             user_id=route,
-            dm_scope=self.cfg.messaging.dm_scope,
+            dm_scope=str(self.cfg.messaging.dm_scope),
             chat_type=_chat_type_of(route),
         )
 
@@ -1543,15 +1610,16 @@ class WebexDispatcher:
         """
         route = _route_of(inbound)
         pct = self.sessions.check_context_usage(session_key, provider)
-        if pct >= self.cfg.webex.soft_threshold_pct:
-            # Capability gate (#8156): no forced compaction to run and the
+        soft_pct, hard_pct = self._thresholds()
+        if pct >= soft_pct:
+            # Capability gate: no forced compaction to run and the
             # soft nudge's /compact advice cannot work — the backend compacts
             # on its own as context fills.
             unsupported = compact_unsupported_backend(provider)
             if unsupported:
                 logger.debug("Webex: context notice skipped — %s compacts itself", unsupported)
                 return
-        if pct >= self.cfg.webex.hard_threshold_pct:
+        if pct >= hard_pct:
             self._conv.clear_awaiting(route)
             ok, detail = await self._compact_provider(provider)
             await self._reply(
@@ -1563,7 +1631,7 @@ class WebexDispatcher:
                     "Reply `/new` to start fresh."
                 ),
             )
-        elif pct >= self.cfg.webex.soft_threshold_pct and not self._conv.is_awaiting(route):
+        elif pct >= soft_pct and not self._conv.is_awaiting(route):
             self._conv.set_awaiting(route)
             await self._reply(
                 inbound,
@@ -1621,7 +1689,7 @@ class WebexDispatcher:
             if provider is None:
                 await self._reply(inbound, "ℹ️ There's no conversation to compact yet.")
                 return
-            # Capability gate (#8156, mirroring the dashboard's #7800 gate): a
+            # Capability gate (mirroring the dashboard's gate): a
             # backend that cannot serve a manual /compact treats the prompt as
             # ordinary text and never answers, so dispatching would strand the
             # bounded wait. Informational, never an error.

@@ -72,7 +72,7 @@ class _FakeReq:
 
     def __init__(self, body=None, *, match_info=None, query=None, headers=None, json_exc=None):
         self._body = {} if body is None else body
-        # When set, ``json()`` raises this instead of decoding ``_body`` — used to
+        # When set, ``json()`` raises this instead of decoding ``_body``, to
         # exercise the widened catch set (LookupError for an unknown charset codec,
         # UnicodeDecodeError for undecodable bytes) and to prove transport errors
         # propagate rather than being swallowed as a 400.
@@ -894,8 +894,8 @@ class TestAdapters:
 
     @pytest.mark.asyncio
     async def test_put_config_non_object_body_is_body_shape_400(self):
-        # Previously reachable bug: a non-object body collapsed to {}, so
-        # validate_field ran on profile=""/region="" and answered
+        # A non-object body must not collapse to {}: that makes validate_field
+        # run on profile=""/region="" and answer
         # "400 invalid config: ..." — a field error for a body-shape mistake.
         resp = await handlers._handle_put_config(_FakeReq([]))
         assert resp.status == 400

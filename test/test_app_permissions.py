@@ -4,6 +4,7 @@ from __future__ import annotations
 from kiro_crew.apps.manifest import AppManifest, Permissions
 from kiro_crew.apps.permissions import (
     PermissionCheck,
+    app_can_manage_session_approvals,
     check_tool_permission,
     format_permissions_summary,
     validate_permissions,
@@ -102,6 +103,37 @@ class TestFormatSummary:
         )
         summary = format_permissions_summary(m)
         assert "No special permissions" in summary
+
+
+class TestSessionApprovalPermission:
+    def test_enabled_app_with_grant_is_allowed(self, monkeypatch):
+        manifest = AppManifest(
+            name="test",
+            version="1.0.0",
+            displayName="T",
+            description="T",
+            permissions=Permissions(sessionApproval=True),
+        )
+        monkeypatch.setattr("kiro_crew.apps.permissions.is_app_enabled", lambda name: name == "test")
+        monkeypatch.setattr("kiro_crew.apps.permissions.get_app_manifest", lambda _name: manifest)
+
+        assert app_can_manage_session_approvals("test") is True
+
+    def test_disabled_app_is_denied(self, monkeypatch):
+        monkeypatch.setattr("kiro_crew.apps.permissions.is_app_enabled", lambda _name: False)
+        assert app_can_manage_session_approvals("test") is False
+
+    def test_missing_grant_is_denied(self, monkeypatch):
+        manifest = AppManifest(
+            name="test",
+            version="1.0.0",
+            displayName="T",
+            description="T",
+        )
+        monkeypatch.setattr("kiro_crew.apps.permissions.is_app_enabled", lambda _name: True)
+        monkeypatch.setattr("kiro_crew.apps.permissions.get_app_manifest", lambda _name: manifest)
+
+        assert app_can_manage_session_approvals("test") is False
 
 
 class TestPermissionCheck:

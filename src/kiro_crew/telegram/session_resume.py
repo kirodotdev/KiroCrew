@@ -18,6 +18,7 @@ from kiro_crew.messaging.session_resume import (
     SessionChoice,
     SessionResumeController,
     same_bucket_origin_keys,
+    session_title_of,
 )
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -237,6 +238,17 @@ class TelegramSessionResume:
             thread_id=str(thread_id) if thread_id is not None else None,
         )
 
+    def reconfigure(self, allowed_user_ids: set[int]) -> None:
+        """Re-derive ``owner_id`` from a reloaded ``telegram.allowed_user_ids``.
+
+        The third copy of the allow-list (transport, dispatcher, here) and the one
+        that decides who may list dashboard sessions, so it has to move with the
+        other two: an operator who adds a second identity must lose ``/sessions``
+        immediately. Same one-identity rule as construction -- none or several
+        leaves ``owner_id`` empty and ``is_owner`` refuses everyone.
+        """
+        self.owner_id = next(iter(allowed_user_ids)) if len(allowed_user_ids) == 1 else 0
+
     def is_owner(self, user_id: int, chat_id: int, chat_type: str) -> bool:
         return bool(self.owner_id) and (
             chat_type == "private" and user_id == self.owner_id and chat_id == user_id
@@ -304,14 +316,8 @@ class TelegramSessionResume:
         return released
 
     async def _title_of(self, session_key: str) -> str:
-        title = ""
-        if self.conv_log is not None:
-            try:
-                meta = await asyncio.to_thread(self.conv_log.get_metadata, session_key)
-                title = str((meta or {}).get("title") or "")
-            except Exception:
-                logger.debug("Telegram resume: title lookup failed", exc_info=True)
-        return title or session_key.removeprefix("dashboard:")
+        """The stored title for *session_key*, read off-loop, with a stable fallback."""
+        return await asyncio.to_thread(session_title_of, self.conv_log, session_key, "Telegram")
 
     async def show_picker(
         self,

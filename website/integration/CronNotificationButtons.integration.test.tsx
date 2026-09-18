@@ -32,7 +32,7 @@ describe('Cron Notification Buttons', () => {
     return store
   }
 
-  it('renders "Continue session" when slot is present', async () => {
+  it('renders "Go to Chat" when slot is present', async () => {
     const user = userEvent.setup()
     const n = makeNotification({ job_id: 'cron-1', slot: 'slot-abc' })
     renderWithNotification(n, [makeSlot()])
@@ -41,7 +41,7 @@ describe('Cron Notification Buttons', () => {
     await user.click(screen.getByText('Cron result'))
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /continue session/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /go to chat/i })).toBeInTheDocument()
     })
   })
 
@@ -57,7 +57,7 @@ describe('Cron Notification Buttons', () => {
     })
   })
 
-  it('shows only "Continue session" when both job_id and slot present (mutual exclusivity)', async () => {
+  it('shows only "Go to Chat" when both job_id and slot present (mutual exclusivity)', async () => {
     const user = userEvent.setup()
     const n = makeNotification({ job_id: 'cron-1', slot: 'slot-abc' })
     renderWithNotification(n, [makeSlot()])
@@ -65,7 +65,7 @@ describe('Cron Notification Buttons', () => {
     await user.click(screen.getByText('Cron result'))
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /continue session/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /go to chat/i })).toBeInTheDocument()
     })
     expect(screen.queryByRole('button', { name: /view last result/i })).not.toBeInTheDocument()
   })
@@ -80,21 +80,21 @@ describe('Cron Notification Buttons', () => {
     await waitFor(() => {
       expect(screen.getByText(/source/i)).toBeInTheDocument()
     })
-    expect(screen.queryByRole('button', { name: /continue session/i })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /go to chat/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /view last result/i })).not.toBeInTheDocument()
   })
 
-  it('"Continue session" dispatches switchSlot and navigates to /chat', async () => {
+  it('"Go to Chat" dispatches switchSlot and navigates to /chat', async () => {
     const user = userEvent.setup()
     const n = makeNotification({ job_id: 'cron-1', slot: 'slot-abc' })
     const store = renderWithNotification(n, [makeSlot()])
 
     await user.click(screen.getByText('Cron result'))
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /continue session/i })).toBeInTheDocument()
+      expect(screen.getByRole('button', { name: /go to chat/i })).toBeInTheDocument()
     })
 
-    await user.click(screen.getByRole('button', { name: /continue session/i }))
+    await user.click(screen.getByRole('button', { name: /go to chat/i }))
 
     expect(mockedNavigate).toHaveBeenCalledWith('/chat')
     expect(store.getState().chat.activeSlot).toBe('slot-abc')
@@ -122,20 +122,21 @@ describe('Cron Notification Buttons', () => {
     })
   })
 
-  it('hides "Go to Chat" when cron-specific "Continue session" is shown (dedup)', async () => {
+  it('renders exactly one "Go to Chat" when the cron-specific branch and directSlot both apply (dedup)', async () => {
     const user = userEvent.setup()
     // Notification has both job_id AND slot — triggers the dedup condition
     const n = makeNotification({ job_id: 'cron-1', slot: 'slot-abc' })
-    // Slot exists in store — would normally show "Go to Chat" via directSlot
+    // Slot exists in store — the directSlot branch would ALSO render "Go to Chat"
     renderWithNotification(n, [makeSlot()])
 
     await user.click(screen.getByText('Cron result'))
 
+    // The cron-specific branch and the directSlot branch now share one label
+    // (both just switchSlot + navigate), so dedup is proven by count: the
+    // directSlot branch must be suppressed, or two identical buttons render.
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: /continue session/i })).toBeInTheDocument()
+      expect(screen.getAllByRole('button', { name: /go to chat/i })).toHaveLength(1)
     })
-    // "Go to Chat" should be suppressed because cron-specific button takes priority
-    expect(screen.queryByRole('button', { name: /go to chat/i })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /resume chat/i })).not.toBeInTheDocument()
   })
 })

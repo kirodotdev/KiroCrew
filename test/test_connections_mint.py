@@ -808,7 +808,7 @@ async def test_a_watcher_never_writes_to_a_row_it_does_not_own(monkeypatch: pyte
     }
     mint._mints["notion"] = live
 
-    # A watcher left over from a superseded flow: its token no longer names the
+    # A watcher left over from a superseded flow: its token does not name the
     # row the slug now points at, so it must leave that row alone.
     stale_token = "f" * 32
     assert live["token"] != stale_token
@@ -2531,7 +2531,7 @@ async def test_cancel_mint_is_fenced_by_the_row_token():
     client = _FakeClient.instances[-1]
 
     # A stale tab carries a token for a row this flow replaced: refuse to dispose
-    # the row that is no longer theirs. The row must SURVIVE intact -- both the
+    # the row that is not theirs. The row must SURVIVE intact -- both the
     # table entry and the process holding the redeemable URL.
     assert await mint.cancel_mint("notion", "not-the-token") is False
     assert mint.pending_mint_for("notion") is not None

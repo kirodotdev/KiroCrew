@@ -1,9 +1,9 @@
-"""Tests for the background session-title refresh (#1846, reworked per review).
+"""Tests for the background session-title refresh.
 
 The feature: instead of a ``set_session_title`` tool exposed to every chat, the
 existing background auto-title flow is made flexible — an AUTO title is
 re-examined at bounded user-turn milestones via the same ``_bg`` one-liner
-path, and swapped when the model says the old name no longer fits.
+path, and swapped when the model says the old name does not fit.
 
 Locked-in invariants:
 
@@ -314,7 +314,7 @@ class TestManualRegenerateWindow:
     async def test_manual_regenerate_prompts_from_the_recent_tail(self, monkeypatch):
         """Regenerating the title of a long session must build the prompt from
         the LAST conversational messages, mirroring the refresh window: the
-        user reaches for the control when the current name no longer fits, and
+        user reaches for the control when the current name does not fit, and
         the recent tail is where the current topic lives. The trailing run of
         tool/status rows a tool-heavy turn appends must not starve the window
         — the slice is taken over conversational rows, not raw rows. Without

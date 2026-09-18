@@ -339,12 +339,12 @@ class TestCallIsNotABypass:
             if node.func.attr == "dispatch_tool":
                 dispatch_calls += 1
         assert dispatch_calls >= 1, "the CLI must execute tools via tools.dispatch_tool"
-        # NOTHING may read the desktop through the service any more. ``list_apps``
-        # used to be allowed here as "a diagnostic in the operator's own terminal",
-        # but the agent can run this command with bash — so it was an ungated read
-        # of every window TITLE that worked with the feature disabled, in an
-        # unattended session, and under a policy banning computer use (reviewer
-        # finding). Only ``doctor``'s two capability probes remain, and neither
+        # NOTHING may read the desktop through the service. ``list_apps`` does not
+        # qualify as "a diagnostic in the operator's own terminal": the agent can
+        # run this command with bash, which makes it an ungated read of every
+        # window TITLE that works with the feature disabled, in an unattended
+        # session, and under a policy banning computer use. Only ``doctor``'s two
+        # capability probes are allowed, and neither
         # returns any desktop content.
         service_attrs = {
             node.func.attr

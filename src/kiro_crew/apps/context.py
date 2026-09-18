@@ -14,9 +14,11 @@ from pathlib import Path
 from typing import Any
 
 from kiro_crew.apps.app_storage import AppStorage
+from kiro_crew.apps.audit_sdk import AuditSDK
 from kiro_crew.apps.cron_sdk import CronSDK
 from kiro_crew.apps.event_bus import EventBus
 from kiro_crew.apps.job_sdk import JobSDK
+from kiro_crew.apps.scrub_sdk import ScrubSDK
 from kiro_crew.apps.spawn_sdk import SpawnSDK
 
 
@@ -67,6 +69,22 @@ class AppContext:
     spawn: SpawnSDK | None = None
     job: JobSDK | None = None
     health: AppHealthStatus = field(default_factory=AppHealthStatus)
+    # NOT `| None`, unlike every SDK above: those grant a capability and stay None
+    # until the manifest asks for it, while this one only removes sensitive data
+    # from a string the app already holds. An app that had to check for None would
+    # get a silent no-redaction path on the else branch, and an app refused the
+    # seam would ship its own regexes -- the outcome the seam exists to prevent.
+    # See scrub_sdk.ScrubSDK. The default needs no app name to invent because the
+    # SDK carries none, so a hand-built context gets the same scrubber the factory
+    # would hand it rather than one attributed to an app that does not exist.
+    scrub: ScrubSDK = field(default_factory=ScrubSDK)
+    # `| None` like the capability SDKs above and UNLIKE `scrub`, though nothing
+    # gates it either: a default instance would have to invent an app name, and a
+    # row attributed to an app that does not exist defeats the attribution this
+    # SDK is for -- whereas a scrubber carries no identity, so it can have one.
+    # `build_app_context` always populates it, so a context built by the factory
+    # never sees None.
+    audit: AuditSDK | None = None
 
 
 def build_app_context(
@@ -142,4 +160,7 @@ def build_app_context(
         storage=app_storage,
         spawn=spawn_sdk,
         job=job_sdk,
+        # Both unconditional: see the fields' comments on AppContext.
+        scrub=ScrubSDK(),
+        audit=AuditSDK(app_name),
     )

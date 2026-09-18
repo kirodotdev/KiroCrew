@@ -117,7 +117,7 @@ def test_a_symlink_at_the_name_still_names_itself_in_the_refusal(
     """Exclusive creation reports EEXIST for a link, so the message is classified.
 
     "something already exists" would be a worse diagnosis than the two messages this
-    used to give, and the classification happens after the refusal, so it cannot be
+    check gives, and the classification happens after the refusal, so it cannot be
     raced into permitting anything.
     """
     victim = tmp_path / "precious.txt"

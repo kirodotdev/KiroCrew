@@ -95,6 +95,10 @@ class TestWorkspaceArgparse:
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            # cli_commands binds config_dir at import, so the loader patch above
+            # does not reach it. Create now materializes its directory, so that
+            # binding has to point at a real one.
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             unittest.mock.patch(
                 "sys.argv",
                 [
@@ -112,6 +116,29 @@ class TestWorkspaceArgparse:
         out = capsys.readouterr().out
         assert "Created workspace: newws" in out
 
+    def test_create_materializes_the_workspace_directory(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A registered workspace whose directory is absent is a latent outage.
+
+        The V2 private-memory layout resolves EVERY declared workspace strictly
+        and refuses to start ANY private member when one is missing, so a create
+        that writes only the config entry breaks members unrelated to it.
+        """
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "newws"],
+            ),
+        ):
+            main()
+        assert "Created workspace: newws" in capsys.readouterr().out
+        assert (tmp_path / "workspace-newws").is_dir(), "config entry without a directory"
+
     def test_create_accepts_copy_from(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
     ) -> None:
@@ -122,6 +149,9 @@ class TestWorkspaceArgparse:
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            # cli_commands binds config_dir at import, so the loader patch above
+            # does not reach it -- and this create now does real filesystem work.
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             unittest.mock.patch(
                 "sys.argv",
                 [
@@ -144,9 +174,13 @@ class TestWorkspaceArgparse:
     ) -> None:
         """Req 6.3: update accepts positional name and --dir."""
         cfg_path = _write_config(tmp_path, _base_config())
+        # The destination must exist: an update REFUSES a dir that is not there,
+        # because a declared-but-missing workspace refuses every private member.
+        (tmp_path / "new-path").mkdir()
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             unittest.mock.patch(
                 "sys.argv",
                 ["kirocrew", "workspace", "update", "staging", "--dir", "new-path"],
@@ -155,6 +189,27 @@ class TestWorkspaceArgparse:
             main()
         out = capsys.readouterr().out
         assert "Updated workspace: staging" in out
+
+    def test_update_refuses_a_dir_that_is_missing_or_not_a_directory(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Rebinding to an unusable path arms a fleet-wide private-memory refusal."""
+        cfg_path = _write_config(tmp_path, _base_config())
+        (tmp_path / "a-file").write_text("not a directory", encoding="utf-8")
+        for target in ("never-created", "a-file"):
+            with (
+                unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+                unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+                unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+                unittest.mock.patch(
+                    "sys.argv",
+                    ["kirocrew", "workspace", "update", "staging", "--dir", target],
+                ),
+                pytest.raises(SystemExit) as exc_info,
+            ):
+                main()
+            assert exc_info.value.code == 1, target
+            assert "create it first" in capsys.readouterr().err, target
 
     def test_delete_accepts_positional_name(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -270,6 +325,119 @@ class TestWorkspaceCreate:
         assert exc_info.value.code == 1
         err = capsys.readouterr().err
         assert "not found" in err
+
+    def test_failed_copy_create_leaves_the_installed_tree_in_place(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A failed config write after the copied tree is installed leaves it, and says so.
+
+        Same rule as the dashboard handler and the plain-create directory: a
+        concurrent create can already have adopted and registered the destination,
+        so deleting it is the unsafe option. The retained path is named on stderr.
+        """
+        (tmp_path / "workspace-staging").mkdir()
+        (tmp_path / "workspace-staging" / "notes.md").write_text("source", encoding="utf-8")
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "kiro_crew.config.loader.write_config_atomically",
+                side_effect=OSError("no space left on device"),
+            ),
+            unittest.mock.patch(
+                "sys.argv",
+                ["kirocrew", "workspace", "create", "--name", "copied", "--copy-from", "staging"],
+            ),
+            pytest.raises(OSError),
+        ):
+            main()
+        assert (
+            tmp_path / "workspace-copied" / "notes.md"
+        ).is_file(), "the installed tree was deleted after the config write failed"
+        assert "copied" not in json.loads(cfg_path.read_text(encoding="utf-8"))["workspaces"]
+        err = capsys.readouterr().err
+        assert "leaving" in err and str(tmp_path / "workspace-copied") in err
+
+    def test_create_materializes_a_tilde_dir_where_the_validator_judged_it(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A ``~``-spelled dir under the data home is created where it was validated.
+
+        ``_ws_dir_resolves_inside_home`` expands ``~`` before judging containment.
+        Composing the destination as ``config_dir() / ws_dir`` afterwards would
+        materialize ``<home>/~/...`` instead -- a path validation never looked at --
+        and refuse a dir the validator had just accepted.
+        """
+        home = tmp_path / "home"
+        crew = home / ".kiro" / "crew"
+        crew.mkdir(parents=True)
+        cfg_path = _write_config(crew, _base_config())
+        with (
+            # Windows ``expanduser`` reads USERPROFILE, not HOME (test_agent_spec_hardened_reads).
+            unittest.mock.patch.dict("os.environ", {"HOME": str(home), "USERPROFILE": str(home)}),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=crew),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=crew),
+            unittest.mock.patch(
+                "sys.argv",
+                [
+                    "kirocrew",
+                    "workspace",
+                    "create",
+                    "--name",
+                    "tilde",
+                    "--dir",
+                    "~/.kiro/crew/workspace-tilde",
+                ],
+            ),
+        ):
+            main()
+        assert "Created workspace: tilde" in capsys.readouterr().out
+        assert (crew / "workspace-tilde").is_dir(), "the tilde dir was not created where validated"
+        assert not (crew / "~").exists(), "a literal '~' directory was created"
+
+    def test_copy_from_absent_source_materializes_a_tilde_dir_where_validated(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The copy-from branch composes its destination like the plain branch.
+
+        A source workspace whose directory is absent stages nothing, so the
+        create falls through to the plain materialization. With a ``~``-spelled
+        ``--dir`` that fallback must land on the directory validation resolved,
+        not on a literal ``~`` under the data home while the tilde string is
+        registered -- an entry every private member would then fail on.
+        """
+        home = tmp_path / "home"
+        crew = home / ".kiro" / "crew"
+        crew.mkdir(parents=True)
+        cfg_path = _write_config(crew, _base_config())  # 'staging' has no directory
+        with (
+            # Windows ``expanduser`` reads USERPROFILE, not HOME (test_agent_spec_hardened_reads).
+            unittest.mock.patch.dict("os.environ", {"HOME": str(home), "USERPROFILE": str(home)}),
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=crew),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=crew),
+            unittest.mock.patch(
+                "sys.argv",
+                [
+                    "kirocrew",
+                    "workspace",
+                    "create",
+                    "--name",
+                    "copied",
+                    "--copy-from",
+                    "staging",
+                    "--dir",
+                    "~/.kiro/crew/workspace-copied",
+                ],
+            ),
+        ):
+            main()
+        assert "Created workspace: copied" in capsys.readouterr().out
+        assert (crew / "workspace-copied").is_dir(), "the fallback did not create the validated dir"
+        assert not (crew / "~").exists(), "a literal '~' directory was created"
 
 
 # ── Update errors (Req 5.7) ──
@@ -472,6 +640,39 @@ class TestWorkspaceDirContainmentMessage:
         assert "data home" in err
         assert "Traceback" not in err and "RuntimeError" not in err
 
+    def test_copy_from_unknown_tilde_user_refuses_instead_of_crashing(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The copy-from branch validates an unknown tilde user before expanding it."""
+        bad_dir = "~nosuchuser_kc/x"
+        cfg_path = _write_config(tmp_path, _base_config())
+        with (
+            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
+            unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
+            unittest.mock.patch(
+                "sys.argv",
+                [
+                    "kirocrew",
+                    "workspace",
+                    "create",
+                    "--name",
+                    "copied",
+                    "--copy-from",
+                    "staging",
+                    "--dir",
+                    bad_dir,
+                ],
+            ),
+            pytest.raises(SystemExit) as exc_info,
+        ):
+            main()
+
+        assert exc_info.value.code == 1
+        err = capsys.readouterr().err
+        assert "data home" in err
+        assert "Traceback" not in err and "RuntimeError" not in err
+
     def test_data_home_root_refused_in_both_forms(self, monkeypatch, tmp_path: Path) -> None:
         """The root is refused whether written absolute OR as a tilde path.
 
@@ -487,15 +688,15 @@ class TestWorkspaceDirContainmentMessage:
         monkeypatch.setenv("HOME", str(tmp_path.parent))
 
         # Absolute form of the root.
-        assert cc._ws_dir_resolves_inside_home(str(tmp_path)) is False
+        assert cc._ws_dir_resolves_inside_home(str(tmp_path)) is None
         # Tilde form resolving to the same root (the bypass).
-        assert cc._ws_dir_resolves_inside_home(f"~/{tmp_path.name}") is False
+        assert cc._ws_dir_resolves_inside_home(f"~/{tmp_path.name}") is None
         # Self-referential relative forms that also land on the root.
-        assert cc._ws_dir_resolves_inside_home(".") is False
-        assert cc._ws_dir_resolves_inside_home("") is False
+        assert cc._ws_dir_resolves_inside_home(".") is None
+        assert cc._ws_dir_resolves_inside_home("") is None
         # A real descendant is still fine.
-        assert cc._ws_dir_resolves_inside_home("workspace-ok") is True
-        assert cc._ws_dir_resolves_inside_home("ws/nested/ok") is True
+        assert cc._ws_dir_resolves_inside_home("workspace-ok") is not None
+        assert cc._ws_dir_resolves_inside_home("ws/nested/ok") is not None
 
     def test_root_dir_cli_refuses_with_message(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -548,7 +749,7 @@ class TestWorkspaceDirContainmentMessage:
 
         home = Path.home() / ".kiro" / "crew"
         monkeypatch.setattr(cc, "config_dir", lambda: home)
-        assert cc._ws_dir_resolves_inside_home(keystone) is False
+        assert cc._ws_dir_resolves_inside_home(keystone) is None
 
     @pytest.mark.parametrize("ok_dir", ["workspace", "workspace-ok", "ws/nested/ok"])
     def test_ordinary_workspace_dirs_still_allowed(self, monkeypatch, ok_dir: str) -> None:
@@ -557,7 +758,7 @@ class TestWorkspaceDirContainmentMessage:
 
         home = Path.home() / ".kiro" / "crew"
         monkeypatch.setattr(cc, "config_dir", lambda: home)
-        assert cc._ws_dir_resolves_inside_home(ok_dir) is True
+        assert cc._ws_dir_resolves_inside_home(ok_dir) is not None
 
     def test_guard_fails_closed_on_unresolvable_path(self, monkeypatch, tmp_path: Path) -> None:
         """Any resolution failure returns False (deny), never propagates."""
@@ -570,7 +771,7 @@ class TestWorkspaceDirContainmentMessage:
                 raise RuntimeError("Could not determine home directory.")
 
         monkeypatch.setattr(cc, "Path", lambda _s: _Boom())
-        assert cc._ws_dir_resolves_inside_home("~whoever/x") is False
+        assert cc._ws_dir_resolves_inside_home("~whoever/x") is None
 
     def test_absolute_dir_inside_home_is_accepted(
         self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
@@ -606,13 +807,13 @@ class TestWorkspaceDirContainmentMessage:
             main()
 
 
-# ── #4767: CLI CRUD writes are locked deltas, not whole-document saves ──
+# ── CLI CRUD writes are locked deltas, not whole-document saves ──
 
 
 class TestCliCrudIsLockedDelta:
     """The CLI CRUD commands persist via ``update_config_locked`` deltas.
 
-    Round 7 of the #4767 review: the old load -> mutate dataclass ->
+    The old load -> mutate dataclass ->
     ``cfg.save()`` shape re-serialized the command's stale snapshot, so a
     change another process landed between the load and the save was silently
     erased. A delta on the document read inside the flock cannot lose it.
@@ -622,6 +823,10 @@ class TestCliCrudIsLockedDelta:
         with (
             unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
             unittest.mock.patch("kiro_crew.config.loader.config_dir", return_value=tmp_path),
+            # cli_commands binds config_dir at import, so the loader patch above
+            # does not reach it. Create now materializes its directory, so that
+            # binding has to point at a real one.
+            unittest.mock.patch("kiro_crew.cli_commands.config_dir", return_value=tmp_path),
             unittest.mock.patch("sys.argv", ["kirocrew", *argv]),
         ):
             main()
@@ -699,7 +904,7 @@ class TestCliCrudIsLockedDelta:
         ), "the CLI overwrote a workspace the racer created first"
 
 
-# ── #4767 round 8: in-lock default re-checks + staged copy_from install ──
+# ── in-lock default re-checks + staged copy_from install ──
 
 
 class TestCliRound8Hardening:

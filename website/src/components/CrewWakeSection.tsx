@@ -57,6 +57,7 @@ function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
           </Badge>
           <div className="min-w-0 flex-1">
             <div className="truncate text-[12.5px] text-text-strong">{job.name}</div>
+            {!job.member_id && <span className="text-[11px] text-muted">{i18nT('pages.kiroCrewAgentsPage.uses_global_memory_v1')}</span>}
             {(last || next) && (
               <div className="text-[10.5px] text-muted">
                 {[last, next].filter(Boolean).join(' · ')}
@@ -108,8 +109,9 @@ function WakeRow({ job, onChanged }: { job: CronJob; onChanged: () => void }) {
   )
 }
 
-export default function CrewWakeSection({ crew, isDefaultCrew, onDraftChange, onSavingChange, onRequestCancel }: {
+export default function CrewWakeSection({ crew, agentTemplate, isDefaultCrew, onDraftChange, onSavingChange, onRequestCancel }: {
   crew: string
+  agentTemplate?: string
   isDefaultCrew: boolean
   /** Reports whether the create form holds unsaved TYPED work, so the host
    *  editor can fold it into its own unsaved-state accounting (dirty dot,
@@ -181,14 +183,11 @@ export default function CrewWakeSection({ crew, isDefaultCrew, onDraftChange, on
   const onCreated = useCallback(() => {
     // The saved job should be visible where it was made: close the form and
     // let the refreshed list carry the evidence that the save happened. The
-    // form unmounts before it can report saving=false (its host on the
-    // Schedule page unmounts WITH it, so it never needs to), so the flag is
-    // cleared here — a stale true would render the next create's button as a
-    // permanently disabled "Saving…".
-    setSavingDraft(false)
+    // form clears its own saving flag before calling this (it reports
+    // saving=false on every outcome), so there is nothing to unlearn here.
     setCreating(false)
     void refetch()
-  }, [refetch, setCreating, setSavingDraft])
+  }, [refetch, setCreating])
 
   // A failed fetch leaves `jobs` empty, which would otherwise render the
   // affirmative "nothing wakes this crew" — a false statement about the crew
@@ -318,6 +317,9 @@ export default function CrewWakeSection({ crew, isDefaultCrew, onDraftChange, on
             agents={[]}
             defaultAgent=""
             lockedAgent={crew}
+            /* Unconditional: JobForm applies the default-crew rule itself. */
+            memberId={crew}
+            providerAgent={agentTemplate}
             onSaved={onCreated}
             externalSubmit
             submitRef={submitRef}

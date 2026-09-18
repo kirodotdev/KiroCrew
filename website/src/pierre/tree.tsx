@@ -35,7 +35,7 @@ export function TreeSkeleton() {
   )
 }
 
-export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, searchQuery, mode, selectedPath }: {
+export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, searchQuery, mode, selectedPath, persistExpansion }: {
   projectDir: string
   onFileOpen?: (absPath: string) => void
   /** Right-click "Add to context" on a row — forwards the ABSOLUTE path and
@@ -47,10 +47,20 @@ export function PierreWorkspaceTree({ projectDir, onFileOpen, onAddToContext, se
   mode?: 'all' | 'changed'
   /** Absolute path of the host's open file — echoed as the tree selection. */
   selectedPath?: string | null
+  /** Remember and restore expanded directories across remounts (all mode only).
+   *  Opt-in per host; hosts that omit it keep collapsed-by-default. */
+  persistExpansion?: boolean
 }) {
+  // Remount on mode change: initial expansion is fixed at model creation.
+  // A persisting host also remounts on an in-place projectDir change — the
+  // model, the reset guard, and the capture subscription are all per-instance,
+  // so reusing them across projects would leak one project's expansion into
+  // another's view (and into its remembered set). Hosts that do not persist
+  // keep the mode-only key, and with it their exact current behavior.
+  const key = persistExpansion ? [mode ?? 'all', projectDir].join('\u0000') : (mode ?? 'all')
   return (
     <Suspense fallback={<TreeSkeleton />}>
-      <TreeImpl key={mode ?? 'all'} projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} />
+      <TreeImpl key={key} projectDir={projectDir} onFileOpen={onFileOpen} onAddToContext={onAddToContext} searchQuery={searchQuery} mode={mode} selectedPath={selectedPath} persistExpansion={persistExpansion} />
     </Suspense>
   )
 }

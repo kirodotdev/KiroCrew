@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import { motion } from 'framer-motion'
 import { useNavigate } from 'react-router-dom'
 import { ShieldCheck, BookOpen, Handshake, Rocket, Check, Clock } from 'lucide-react'
@@ -8,9 +8,10 @@ import { useAppDispatch, useAppSelector } from '../store'
 import { changeApprovalMode } from '../store/dashboardSlice'
 import { safeSetItem } from '../utils/safeStorage'
 import { settingsPath } from './settingsPath'
-import ErrorNotice from './ErrorNotice'
+import ErrorNotice, { ErrorNoticeMenuItem } from './ErrorNotice'
 
 import { i18nT } from '../i18n/t'
+import { activeElementIsEditable } from '../utils/editableTarget'
 /** Single source of truth for approval-mode presentation.
  *
  *  Only the language-INDEPENDENT metadata (key, icon, colour) lives at module
@@ -113,6 +114,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
    *  spend it forever unseen. Falls back to onNudgeDismiss when unset. */
   onNudgeHide?: () => void
 }) {
+  const policyRefusedId = useId()
   const dispatch = useAppDispatch()
   const navigate = useNavigate()
   const yoloDuration = useAppSelector(s => s.dashboard.status?.yolo_duration)
@@ -275,12 +277,19 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
             offers. `inline` because this sits inside the menu's own flow rather
             than as a boxed banner. */}
         {policyRefused && (
-          <ErrorNotice
-            variant="inline"
-            askAgent
-            className="px-2 py-1.5"
-            message={i18nT('components.approvalModePicker.mode_disabled_by_policy')}
-          />
+          <>
+            <ErrorNotice
+              id={policyRefusedId}
+              variant="inline"
+              className="px-2 py-1.5"
+              message={i18nT('components.approvalModePicker.mode_disabled_by_policy')}
+            />
+            <ErrorNoticeMenuItem
+              Item={DropdownMenuItem}
+              message={i18nT('components.approvalModePicker.mode_disabled_by_policy')}
+              describedBy={policyRefusedId}
+            />
+          </>
         )}
         {yoloConfirm > 0 && (
           <>
@@ -347,8 +356,7 @@ export default function ApprovalModePicker({ mode, slotKey, compact, openSignal,
         // completion, so the user may already be typing in the composer —
         // leave their caret alone and let the callout sit passively.
         onOpenAutoFocus={e => {
-          const a = document.activeElement as HTMLElement | null
-          if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT' || a.isContentEditable)) e.preventDefault()
+          if (activeElementIsEditable()) e.preventDefault()
         }}
         // Return focus to the picker trigger on dismissal instead of dropping
         // it on <body> — unless the dismissal opened the menu, which manages

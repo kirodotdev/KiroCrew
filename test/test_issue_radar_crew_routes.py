@@ -77,7 +77,7 @@ CREW_ROUTES: tuple[tuple[str, str], ...] = (
     ("POST", "/issue/comment"),
 )
 
-#: Endpoints this app used to expose to hold an issue for a human, and must not
+#: Endpoints that would hold an issue for a human, which this app must not
 #: expose again. Kept as an explicit table rather than deleted with their tests: the
 #: registrar is checked against ``CREW_ROUTES`` by name, so a re-added handler under
 #: a path nobody enumerates would pass every other test in this file silently.
@@ -2019,11 +2019,11 @@ class TestSettings(_CrewRouteCase):
                 self.assertEqual(_payload(res)["code"], "invalid_settings")
 
 
-# ── the endpoints that used to hold work for a human ──────────────────────
+# ── the endpoints that would hold work for a human ──────────────────────
 
 
 class TestNothingWaitsForAHuman(_CrewRouteCase):
-    """A crew never parks an issue on a person, so neither endpoint that used to
+    """A crew never parks an issue on a person, so neither endpoint that would
     express that exists: no queue of held items, and no channel for a human to
     answer a crew mid-turn.
 

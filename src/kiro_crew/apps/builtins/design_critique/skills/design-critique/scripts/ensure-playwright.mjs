@@ -15,14 +15,34 @@
  *   const pw = await getPlaywright({ autoInstall: false })  // never install
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { createRequire } from 'node:module'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
-const PW_VERSION = '1.47.2' // last line that supports Node 18
+const PW_VERSION = '1.58.2' // matches website/package.json; must be >= 1.48 for routeWebSocket (ssrf-guard.mjs refuses without it) and needs a modern Node (repo docs say >= 22)
 const CACHE = process.env.DC_PW_DIR || join(homedir(), '.cache', 'kirocrew-design-critique')
 const PW_ENTRY = join(CACHE, 'node_modules', 'playwright', 'index.js')
+
+// ssrf-guard.mjs refuses to run without routeWebSocket (Playwright >= 1.48), so
+// resolving an older build would only trade a silent fail-open for a permanent
+// refusal. Gate every resolution path on the version actually found: too old
+// (or unreadable) falls through to the pinned install instead of returning a
+// build the guard must reject. A host that cached the old 1.47.2 pin therefore
+// self-heals -- the install step below upgrades the cache in place.
+const MIN_PW = [1, 48]
+function pwVersionUsable(pkgJsonPath) {
+  try {
+    const v = JSON.parse(readFileSync(pkgJsonPath, 'utf8')).version || ''
+    const m = /^(\d+)\.(\d+)/.exec(v)
+    if (!m) return false
+    const maj = Number(m[1]), min = Number(m[2])
+    return maj > MIN_PW[0] || (maj === MIN_PW[0] && min >= MIN_PW[1])
+  } catch {
+    return false
+  }
+}
 
 // Playwright is CJS; a dynamic import may put the API on `.default`.
 function normalize(mod) {
@@ -33,10 +53,16 @@ function normalize(mod) {
 }
 
 export async function getPlaywright({ autoInstall = true } = {}) {
-  // 1. resolvable from the normal module paths?
-  try { const m = normalize(await import('playwright')); if (m) return m } catch { /* not here */ }
-  // 2. present in the cache dir?
-  if (existsSync(PW_ENTRY)) {
+  // 1. resolvable from the normal module paths (only when it can provide the
+  //    routeWebSocket the SSRF guard requires)?
+  try {
+    const pkg = createRequire(import.meta.url).resolve('playwright/package.json')
+    if (pwVersionUsable(pkg)) { const m = normalize(await import('playwright')); if (m) return m }
+  } catch { /* not here */ }
+  // 2. present in the cache dir? An old cached pin (e.g. the former 1.47.2)
+  //    fails the version gate and falls through, so the install below
+  //    replaces it rather than leaving capture permanently refused.
+  if (existsSync(PW_ENTRY) && pwVersionUsable(join(CACHE, 'node_modules', 'playwright', 'package.json'))) {
     try { const m = normalize(await import(pathToFileURL(PW_ENTRY).href)); if (m) return m } catch { /* fallthrough */ }
   }
   if (!autoInstall) return null

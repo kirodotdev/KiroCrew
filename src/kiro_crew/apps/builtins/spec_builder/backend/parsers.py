@@ -78,7 +78,7 @@ def _redact_and_truncate(text: str, max_chars: int) -> str:
     """Scrub like ``_redact``, then truncate — never ``_redact(x[:n])``.
 
     Truncating first can cut a credential at the boundary, leaving a fragment
-    the redaction regexes no longer match, so the raw remainder would leak.
+    the redaction regexes do not match, so the raw remainder would leak.
     Fails CLOSED exactly like ``_redact``: with no security module there is no
     way to scrub, so withhold the text rather than serving a bounded raw slice.
     """
@@ -96,8 +96,8 @@ def _usable_name(name: str) -> bool:
     same grammar `create` enforces, because it becomes a slot key and a session
     filename downstream. And it must survive `_redact` unchanged: index.json is
     agent-writable, so a credential can be parked in the KEY, and `GET /specs`
-    returns the key as `"name"`. Scrubbing it would produce a name that no longer
-    matches the directory the entry points at, so the entry goes instead.
+    returns the key as `"name"`. Scrubbing it would produce a name that does not
+    match the directory the entry points at, so the entry goes instead.
     """
     return _valid_name(name) and _redact(name) == name
 

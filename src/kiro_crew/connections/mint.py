@@ -17,8 +17,8 @@ challenging.
 Because the process is held while nothing claims it as a session, its PID is
 registered with the orphan-sweep protection set for exactly that span. Without
 it the periodic sweep reaps the mint once it ages past the spawn grace, which
-takes the verifier and the listener with it and leaves a published URL that can
-no longer be redeemed.
+takes the verifier and the listener with it and leaves a published URL that
+cannot be redeemed.
 
 INVARIANT: no filesystem operation in this module executes on the event loop.
 
@@ -371,7 +371,7 @@ def _write_mint_agent_spec(slug: str) -> tuple[str, str]:
     """
     agents_dir = _agent.kiro_agents_dir_path()
     alias = mcp_server_alias(slug)
-    # Hardened reader (#6736). A REFUSED main spec (oversize, sensitive symlink,
+    # Hardened reader. A REFUSED main spec (oversize, sensitive symlink,
     # non-object) must NOT reach the main-agent fallback: that fallback spawns
     # ``kiro-cli --agent kirocrew``, and the child would reload the very file the
     # gateway just refused to read -- uncapped and unguarded. Raising instead
@@ -543,7 +543,7 @@ async def _mint_watcher(
     the disproven pair is still on disk and a bare ``grant_observed`` would see it
     on the FIRST tick, five seconds in, flip the row to ``granted`` and dispose the
     process holding the PKCE verifier and the loopback listener. That is the very
-    lie this flow exists to prevent, plus a consent URL that can no longer be
+    lie this flow exists to prevent, plus a consent URL that cannot be
     redeemed. ``require_proof`` is carried SEPARATELY from ``baseline`` on purpose:
     an unreadable capture stat yields no baseline, and inferring "no disproof" from
     that absence is what let the resurrection path reopen.
@@ -638,7 +638,7 @@ async def cancel_mint(slug: str, token: str | None = None) -> bool:
 
     ``token`` fences a stale tab. The table is keyed by slug, so a sibling tab
     connecting the same provider REPLACES the row; a cancel carrying the caller's
-    own row token refuses to dispose a row that is no longer theirs. A cancel
+    own row token refuses to dispose a row that is not theirs. A cancel
     with no token disposes whatever row is current -- a caller that never held a
     token cannot distinguish rows, so its intent is only "cancel this provider".
 
@@ -1072,8 +1072,8 @@ def _agent_spec_entry_missing(slug: str) -> bool:
     through ``asyncio.to_thread``.
     """
     agents_dir = _agent.kiro_agents_dir_path()
-    # Hardened reader (#6736): a refused main spec reads as absent, so the entry
-    # counts as missing -- the same degrade-as-absent direction as before.
+    # Hardened reader: a refused main spec reads as absent, so the entry
+    # counts as missing -- the same degrade-as-absent direction.
     spec = (
         _read_agent_spec(
             agents_dir / AGENT_FILENAME,

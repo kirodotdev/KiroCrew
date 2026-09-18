@@ -1,4 +1,4 @@
-"""TurnDriver session-directive consumption (#4540).
+"""TurnDriver session-directive consumption.
 
 ``TurnDriver`` never consumed ``EVENT_TOOL_RESULT``, so on every standalone
 messaging transport (Telegram, Discord, standalone Slack, iMessage, Teams,
@@ -365,6 +365,30 @@ class TestNativeSubAgentIsolation:
         )
         assert spy.applied == [("autonudge_stop", {"reason": "done"})]
 
+    def test_parent_own_tool_call_is_not_isolated(self):
+        """The isolation set is fed by activity events, so a parent frame must yield none.
+
+        kiro-cli carries the parent turn's own tool-call chunk on
+        ``_kiro.dev/session/update`` under the parent's own sessionId and
+        toolCallId (recorded live in
+        ``test/fixtures/acp_frames/kiro/session.jsonl``). The handle answers that
+        frame with no activity event, which is what keeps the parent's own
+        toolCallId out of this set -- otherwise every directive tool in an
+        ordinary messaging turn refuses itself as native_subagent_isolation. This
+        pins the driver end of that contract: given no activity event, the same
+        call applies.
+        """
+        spy = _SpyConsumer()
+        _run(
+            [
+                _core_call("autonudge_stop", tcid="tc-parent-own"),
+                _result(_directive("autonudge_stop", {"reason": "done"}), tcid="tc-parent-own"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+            spy,
+        )
+        assert spy.applied == [("autonudge_stop", {"reason": "done"})]
+
 
 # ── Channel applier boundary (apply_session_directive with slot=None) ─────────
 
@@ -500,9 +524,9 @@ class TestChannelApplierBoundary:
     async def test_dashboard_only_directives_refused_on_channel_transport(
         self, kind, no_dashboard_tabs
     ):
-        """SECURITY INVARIANT (#4540): _DASHBOARD_ONLY_DIRECTIVES stay DENIED
-        for non-dashboard sessions — the channel consumer must not widen the
-        gate. set_project left this set (#3543): it is refused on the channel
+        """SECURITY INVARIANT: _DASHBOARD_ONLY_DIRECTIVES stay DENIED for
+        non-dashboard sessions — the channel consumer must not widen the gate.
+        ``set_project`` is NOT in this set: it is refused on the channel
         transport by the slot-less gate instead, pinned below."""
         state = _ChannelDirectiveState(sessions=_ChannelSessions("x"))
         result = await apply_session_directive(
@@ -580,8 +604,8 @@ class TestBuildDirectiveConsumer:
         consumer built before the attachment still sees it."""
         seen: list[tuple] = []
 
-        async def _spy(state, slot, session_key, kind, args):
-            seen.append((state, slot, session_key, kind, args))
+        async def _spy(state, slot, session_key, kind, args, *, producer_is_channel):
+            seen.append((state, slot, session_key, kind, args, producer_is_channel))
             return "ok"
 
         monkeypatch.setattr(
@@ -601,11 +625,12 @@ class TestBuildDirectiveConsumer:
         dispatcher.dashboard_state = dashboard_state
         await consume("monitor_start", dict(MONITOR_ARGS))
         assert len(seen) == 1
-        state, slot, session_key, kind, args = seen[0]
+        state, slot, session_key, kind, args, producer_is_channel = seen[0]
         assert state is dashboard_state
         assert slot is None
         assert session_key == "discord:kirocrew:direct:42"
         assert (kind, args) == ("monitor_start", MONITOR_ARGS)
+        assert producer_is_channel is True
 
     @pytest.mark.asyncio
     async def test_falls_back_to_sessions_stand_in(self, monkeypatch):
@@ -613,8 +638,8 @@ class TestBuildDirectiveConsumer:
         fail-closed sessions-backed stand-in, never None."""
         seen: list = []
 
-        async def _spy(state, slot, session_key, kind, args):
-            seen.append(state)
+        async def _spy(state, slot, session_key, kind, args, *, producer_is_channel):
+            seen.append((state, producer_is_channel))
             return "ok"
 
         monkeypatch.setattr(
@@ -624,17 +649,20 @@ class TestBuildDirectiveConsumer:
         consume = build_directive_consumer(session_key="slack:1755000000.1", sessions=sessions)
         await consume("autonudge_stop", {})
         assert len(seen) == 1
-        state = seen[0]
+        state, producer_is_channel = seen[0]
         assert isinstance(state, _ChannelDirectiveState)
         assert state.sessions is sessions
         assert state._slots == {} and state.channel_transports == {}
+        assert producer_is_channel is True
 
 
 class TestSilentDropIsDiagnosable:
-    """The identity gate refuses correctly but used to refuse SILENTLY, so an
-    ACP backend that emits no ``_meta.kiro`` was indistinguishable from nothing
-    happening. The refusal must stay a refusal AND leave a log line naming the
-    identity it saw. Diagnostic only: no test here may show an effect applying.
+    """The identity gate must refuse AUDIBLY, not silently.
+
+    A silent refusal makes an ACP backend that emits no ``_meta.kiro``
+    indistinguishable from nothing happening at all. The refusal stays a refusal
+    AND leaves a log line naming the identity it saw. Diagnostic only: no test
+    here may show an effect applying.
     """
 
     def test_missing_backend_identity_logs_what_it_saw(self, caplog):

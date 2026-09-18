@@ -134,7 +134,7 @@ class TestSessionsSummarizeHandler:
             # New activity in the session — mtime advances, cache is stale.
             sig = log.session_mtime("alpha")  # what the first call cached against
             log.append("alpha", "user", "a new turn changes the transcript")
-            move_transcript_past(log, "alpha", sig)  # don't rely on the OS tick (#2981)
+            move_transcript_past(log, "alpha", sig)  # don't rely on the OS tick
             await c.post("/api/sessions/summarize", json={"keys": ["alpha"]})
         assert len(created) == 2
 
@@ -142,7 +142,7 @@ class TestSessionsSummarizeHandler:
     async def test_summarize_never_rewrites_session_file(self, tmp_path):
         """The summary cache lives in a sidecar, never the session JSONL.
 
-        Regression for the data-loss race: summarizing must not read-modify-write
+        Summarizing must not read-modify-write
         the session log (an append landing mid-rewrite would be clobbered) and
         must not bump its mtime (which would reorder list_sessions)."""
         log = ConversationLog(base_dir=tmp_path)

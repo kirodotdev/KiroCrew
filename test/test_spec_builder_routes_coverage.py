@@ -470,7 +470,7 @@ class TestIndexStore:
 
     def test_a_credential_shaped_key_is_dropped_rather_than_scrubbed(self, tmp_path):
         # GET /specs returns the key as "name"; scrubbing it would produce a name
-        # that no longer matches the directory the entry points at.
+        # that would not match the directory the entry points at.
         _write_index({CRED_NAME: _entry(tmp_path / "a"), "ok": _entry(tmp_path / "b")})
         assert list(r._load_index()) == ["ok"]
 
@@ -941,8 +941,8 @@ class TestPrepareHandoff:
         spec = tmp_path / "spec"
         spec.mkdir()
         (spec / "tasks.md").symlink_to(outside)
-        # is_file() FOLLOWS the link, so the gate used to pass and the autonomous
-        # run then edited a file outside the spec directory.
+        # is_file() FOLLOWS the link, so a naive gate passes and the autonomous
+        # run edits a file outside the spec directory.
         ready, _sentinel = r._prepare_handoff(spec)
         assert ready is False
 
@@ -1186,8 +1186,8 @@ class TestTouchSpec:
 
     @pytest.mark.asyncio
     async def test_an_entry_reserved_for_deletion_is_treated_as_already_gone(self, tmp_path):
-        # A message landing mid-delete used to stamp the doomed entry and get a
-        # non-None return, which every caller reads as "the spec is live".
+        # A message landing mid-delete must not stamp the doomed entry and return
+        # non-None, which every caller reads as "the spec is live".
         _write_index(
             {
                 "demo": _entry(
@@ -1860,7 +1860,7 @@ class _Slot:
 
     def queue_append(self, message: str, *, meta=None, directive_user_origin: bool) -> None:
         assert directive_user_origin is False
-        # The relay stamps the admission-time containment snapshot (#5911); an
+        # The relay stamps the admission-time containment snapshot; an
         # app slot records app=True so its own queued turns keep draining.
         assert isinstance(meta, dict)
         self._queue.append(message)
@@ -1920,7 +1920,7 @@ class TestEnsureWorkerSlot:
 
     @pytest.mark.asyncio
     async def test_denied_name_audit_redacts_before_truncating(self, tmp_path, _quiet_sel):
-        """#5582: a credential straddling the 64-char audit cut must not leak.
+        """A credential straddling the 64-char audit cut must not leak.
 
         The old spelling ``_redact(name[:64])`` sliced first, so a key cut at
         the boundary lost its tail, stopped matching the credential regex, and
@@ -2322,7 +2322,7 @@ class TestSerializeMessages:
 
     @pytest.mark.asyncio
     async def test_a_tool_line_credential_straddling_the_cut_is_not_leaked(self):
-        """#5582: a credential straddling the 200-char cut must not leak.
+        """A credential straddling the 200-char cut must not leak.
 
         The old spelling ``_redact(first[:200])`` sliced first, so a key cut at
         the boundary lost its tail, stopped matching the credential regex, and
@@ -3102,7 +3102,7 @@ class TestHandleCreate:
         self, tmp_path
     ):
         # One response for "missing", "not a directory" and "sensitive" so the
-        # endpoint cannot be used to probe the filesystem.
+        # endpoint cannot probe the filesystem.
         out = await r._handle_create(
             _mk("POST", "specs", body={"name": "demo", "working_dir": str(tmp_path / "gone")})
         )
@@ -3787,8 +3787,8 @@ class TestHandleHandoff:
 
     @pytest.mark.asyncio
     async def test_no_autonudge_service_fails_closed_with_503(self, tmp_path, _quiet_sel):
-        # This used to swallow the failure and run an autonomous turn WITHOUT
-        # passing the authorization chokepoint at all.
+        # Without the service this must fail closed, not swallow the failure and
+        # run an autonomous turn WITHOUT passing the authorization chokepoint.
         with _ready_handoff():
             out = await r._handle_handoff(_handoff_request(tmp_path, _State()))
         assert out.status == 503 and _body(out)["code"] == "autonudge_unavailable"
@@ -3914,7 +3914,7 @@ class TestHandleHandoff:
             out = await r._handle_handoff(_handoff_request(tmp_path, _State()))
         assert out.status == 409 and _body(out)["code"] == "spec_changed_during_start"
         # Ours arrives after the delete's own by-name teardown, so it must be
-        # removed here or it nudges a spec that no longer exists.
+        # removed here or it nudges a spec that is already gone.
         assert remove.await_args.kwargs["only_loop_id"] == "loop-1"
 
     @pytest.mark.asyncio
@@ -4093,8 +4093,8 @@ class TestHandleDelete:
 
     @pytest.mark.asyncio
     async def test_a_failed_archive_aborts_the_delete(self, tmp_path):
-        # The conversation is the user's data; a failed history write used to be
-        # logged at DEBUG while the delete returned 200.
+        # The conversation is the user's data; a failed history write must abort
+        # the delete, not be logged at DEBUG while the delete returns 200.
         _write_index({"demo": _entry(tmp_path / "demo")})
         with (
             mock.patch.object(r, "_remove_nudge_loop", mock.AsyncMock()),

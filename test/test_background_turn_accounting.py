@@ -593,7 +593,7 @@ if __name__ == "__main__":
 
 class _ClaudeStats:
     """Claude-seam per-turn stats: ``credits`` stays 0 and the billing travels
-    through ``to_turn_usage()`` (the stats -> event contract from #6757)."""
+    through ``to_turn_usage()`` (the stats -> event contract)."""
 
     def __init__(self, usage) -> None:
         self.credits = 0.0
@@ -605,7 +605,7 @@ class _ClaudeStats:
 
 class TestClaudeSeamBackgroundAccounting(unittest.IsolatedAsyncioTestCase):
     async def test_a_cost_only_turn_still_writes_its_row(self):
-        """The #6758 shape: cost_usd billed with credits and both token counts
+        """This shape: cost_usd billed with credits and both token counts
         at zero. Dropping the gate's cost_usd conjunct, or bypassing the
         duck-typed to_turn_usage read in _attempt_usage (whose credits-only
         fallback zeroes every claude dimension), makes this fail."""

@@ -156,7 +156,7 @@ COMPACTED_TEXT = "Context compacted."
 COMPACT_BUSY_TEXT = "Still working on the last message; try /compact again shortly."
 COMPACT_NOTHING_TEXT = "There's no conversation to compact yet."
 COMPACT_FAILED_TEXT = "Couldn't compact the context; please try again."
-#: The capability refusal (#8156): informational, never an error. This surface
+#: The capability refusal: informational, never an error. This surface
 #: keeps its plain-text voice; the wording tracks
 #: ``messaging.commands.compact_unsupported_reply``.
 COMPACT_AUTO_MANAGED_TEXT = (

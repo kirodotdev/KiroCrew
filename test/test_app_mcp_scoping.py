@@ -5,7 +5,7 @@ The shared ``~/.kiro/settings/mcp.json`` is read by everything else under
 MCP servers there leaked private app tools into surfaces that never installed
 the app. These tests pin the fix: registration targets the agent config, the
 shared file is left alone, and a ``clean`` rebuild re-derives app entries from
-the enabled apps' manifests (the shared file can no longer supply them).
+the enabled apps' manifests (the shared file does not supply them).
 """
 
 from __future__ import annotations
@@ -22,7 +22,7 @@ def fake_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     """Point the module-level ~/.kiro paths at a tmp home.
 
     The paths are module constants resolved at import time, so they are patched
-    directly rather than via ``HOME`` (which they no longer consult).
+    directly rather than via ``HOME`` (which they do not consult).
     """
     from kiro_crew.apps import bridges
 
@@ -201,10 +201,16 @@ class TestGrantVersusGovernance:
         """
         from types import SimpleNamespace
 
-        from kiro_crew.platform.governance import _ceiling_mentions_mcp_server
+        from kiro_crew.platform.governance import (
+            ScopedRuleset,
+            _ceiling_mentions_mcp_server,
+        )
 
-        # deny-mode ruleset naming ONE tool under the server
-        ruleset = SimpleNamespace(mode="deny", allow=(), deny=("@srv/delete",))
+        # deny-mode ruleset naming ONE tool under the server. A REAL ruleset, not
+        # a namespace with the same fields: the reader asks the control for its
+        # patterns, so a stand-in that cannot answer proves nothing about a
+        # composed ceiling, which is the shape a second policy tier produces.
+        ruleset = ScopedRuleset(mode="deny", deny=("@srv/delete",))
         ceiling = SimpleNamespace(get=lambda scope: ruleset if scope == "mcp" else None)
 
         assert _ceiling_mentions_mcp_server(ceiling, "srv") is True
@@ -215,9 +221,12 @@ class TestGrantVersusGovernance:
         """Allow-mode listing a subset must not let the whole server through."""
         from types import SimpleNamespace
 
-        from kiro_crew.platform.governance import _ceiling_mentions_mcp_server
+        from kiro_crew.platform.governance import (
+            ScopedRuleset,
+            _ceiling_mentions_mcp_server,
+        )
 
-        ruleset = SimpleNamespace(mode="allow", allow=("@srv/read",), deny=())
+        ruleset = ScopedRuleset(mode="allow", allow=("@srv/read",))
         ceiling = SimpleNamespace(get=lambda scope: ruleset if scope == "mcp" else None)
         assert _ceiling_mentions_mcp_server(ceiling, "srv") is True
 
@@ -225,9 +234,12 @@ class TestGrantVersusGovernance:
         """`@srv-other` must not count as an opinion about `@srv`."""
         from types import SimpleNamespace
 
-        from kiro_crew.platform.governance import _ceiling_mentions_mcp_server
+        from kiro_crew.platform.governance import (
+            ScopedRuleset,
+            _ceiling_mentions_mcp_server,
+        )
 
-        ruleset = SimpleNamespace(mode="deny", allow=(), deny=("@srv-other",))
+        ruleset = ScopedRuleset(mode="deny", deny=("@srv-other",))
         ceiling = SimpleNamespace(get=lambda scope: ruleset if scope == "mcp" else None)
         assert _ceiling_mentions_mcp_server(ceiling, "srv") is False
 
@@ -325,7 +337,7 @@ class TestRebuildSurvival:
     """A clean rebuild must re-derive app servers from the manifests.
 
     Before the fix the entries were mirrored in from the shared file; now that
-    apps no longer write it, the manifests are the only source — so without this
+    apps do not write it, the manifests are the only source — so without this
     re-derivation a clean rebuild would silently drop every app's tools.
     """
 
@@ -493,8 +505,8 @@ class TestBothWritePointsConsultTheCeiling:
     """`allowedTools` is written in TWO places; one predicate governs both.
 
     Auto-approve is the only path that never reaches `hooks.on_tool_call`, so a
-    list written without consulting the ceiling is a set of tools the ceiling can
-    no longer refuse. Closing that in app-agent materialization
+    list written without consulting the ceiling is a set of tools the ceiling
+    cannot refuse. Closing that in app-agent materialization
     (`apps/bridges.py`) left the OTHER writer — the host agent's shared-MCP sync
     in `agent.py` — appending every user-installed server's `@ref` unconditionally,
     so on a governed host the primary agent kept the whole bypass. These pin that
@@ -915,7 +927,7 @@ class TestTemplateGrantsAreCeilingFilteredAtBuild:
     own file (``_install_research_agent``) shipped the template's floor-gated
     builtins (``fs_read``, ``code``, …) on a blanket auto-approve list —
     ``code`` auto-approved means unrestricted edits that never reach the
-    PreToolUse gate (#7401). Filtering at the constructor holds the invariant
+    PreToolUse gate. Filtering at the constructor holds the invariant
     by the predicate rather than by each installer's author remembering it.
     """
 

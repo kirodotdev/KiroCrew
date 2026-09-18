@@ -15,7 +15,7 @@ single digit -- so a malformed *real* stamp only fails on the nightly run):
   ``YYYYMMDDHHMMSS`` identifier (~2.0e13) always overflowed, while ``YYYYMMDD``
   (~2.0e7) and ``HHMMSS`` (<= 235959) as SEPARATE identifiers always fit. The
   target is now NSIS, which imposes neither this bound nor NuGet's 20-character
-  prerelease cap, so the constraint is no longer live -- but the assertion is
+  prerelease cap, so the constraint does not bind the NSIS target -- the assertion is
   kept as a regression guard: shortening the stamp buys nothing, and any future
   NuGet-based target (msi, appx) would re-impose it silently.
 * **Channel routing** -- the literal ``-nightly.`` substring is what
@@ -240,7 +240,7 @@ def test_documented_probe_example_satisfies_the_same_rules() -> None:
     """
     # Both workflows document a probe stamp, and the version-format hazards
     # these examples guard were Squirrel's -- so it is the WINDOWS workflow
-    # whose example historically had to satisfy them. Checking only
+    # whose example must satisfy them. Checking only
     # build-desktop.yml would leave the example that matters unguarded.
     for workflow in (DESKTOP_WORKFLOW, WINDOWS_WORKFLOW):
         text = workflow.read_text(encoding="utf-8")

@@ -2,7 +2,7 @@
 
 ``OrchestratorConfig`` carried only ``stage_timeout_seconds``. That bounds ONE
 stage, and a plan multiplies it: ten stages at the 30-minute default is a five-hour
-unattended run with nothing to stop it (issue #1783). ``max_plan_duration_seconds``
+unattended run with nothing to stop it. ``max_plan_duration_seconds``
 is the ceiling for the run, checked at each stage boundary — not mid-turn, because
 the running stage already has its own ceiling and cutting between stages leaves
 every finished stage captured on disk and resumable.
@@ -307,7 +307,7 @@ class TestPlanWatchdogStopsTheLoop:
 
         slot = _make_slot(titles=("One", "Two"))
         # The shape the gateway leaves behind: a tracker with no budgets, which the
-        # loop did not build and therefore used to skip the load for.
+        # loop did not build and therefore skips the load for.
         slot._orch_tracker = OrchestrationTracker()
         assert slot._orch_tracker.budgets_unset is True
         _stage_turns(monkeypatch)

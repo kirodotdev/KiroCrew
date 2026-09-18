@@ -1,9 +1,9 @@
 """Writing a stage result must not run on the gateway event loop.
 
-``_stage_loop`` captures each finished stage to disk. That capture used to be one
-synchronous call on the loop: it walked ``slot.messages``, redacted every
-assistant segment, created the session directory and wrote the file — so a slow
-disk or a large stage blocked every other session on the gateway (issue #1783).
+``_stage_loop`` captures each finished stage to disk. Done as one synchronous
+call on the loop — walking ``slot.messages``, redacting every assistant segment,
+creating the session directory and writing the file — a slow disk or a large
+stage would block every other session on the gateway.
 
 Only the parts that CAN cross a thread boundary do. The message walk stays on the
 loop because ``slot.messages`` is live state the loop mutates; the redaction and

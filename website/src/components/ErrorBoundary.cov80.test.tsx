@@ -145,4 +145,17 @@ describe('ErrorBoundary', () => {
     render(<ErrorBoundary><Nameless /></ErrorBoundary>)
     expect(vi.mocked(recordError).mock.calls[0][0]).toMatchObject({ message: 'ZzqNamedError' })
   })
+
+  it('retryOnly suppresses the Ask-the-agent hand-off but keeps Try Again', () => {
+    // Inside an editor holding unsaved state (the crew sheet's template pane),
+    // the hand-off is a hard navigation that discards the draft — retryOnly is
+    // the contract that a contained crash cannot turn into data loss.
+    const { rerender } = render(
+      <ErrorBoundary retryOnly><Boom shouldThrow /></ErrorBoundary>,
+    )
+    expect(screen.queryByRole('button', { name: 'Ask the agent' })).not.toBeInTheDocument()
+    rerender(<ErrorBoundary retryOnly><Boom shouldThrow={false} /></ErrorBoundary>)
+    fireEvent.click(screen.getByRole('button', { name: 'Try Again' }))
+    expect(screen.getByText('zzq-recovered')).toBeInTheDocument()
+  })
 })

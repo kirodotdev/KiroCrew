@@ -36,8 +36,10 @@ from kiro_crew.providers.base import (
     LLMEvent,
     LLMProvider,
 )
+from kiro_crew.sandbox import SandboxCeilingUnsealable
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.terminal_safe import safe_terminal_line
 
 logger = logging.getLogger(__name__)
 
@@ -328,11 +330,46 @@ async def _chat(message: str | None, model: str | None, agent: str | None = None
 
 
 def _run_chat(message: str | None, model: str | None, agent: str | None = None) -> None:
-    """Run chat at the sync CLI boundary and render SIGINT as a clean exit."""
+    """Run chat at the sync CLI boundary and render SIGINT as a clean exit.
+
+    Also renders a fail-closed SANDBOX REFUSAL as a message rather than a traceback.
+    The sandbox launcher raises ``SandboxCeilingUnsealable`` from its ceiling
+    materialisers when a governance ceiling cannot be made sealable — a symlink or a second hard link on the live-target pointer
+    is the shape an ordinary snapshot tool produces — and that refusal is deliberately
+    NOT in the ``AcpError`` hierarchy, so ``_stream_and_print``'s handler never sees it
+    and it escaped here as an unhandled exception. The remedy was technically on screen,
+    buried under a stack trace that reads as a Kiro Crew crash, which is the wrong thing
+    to tell an operator whose actual problem is one extra file link.
+
+    Printed verbatim: the exception's own text names the path and the one-step fix, and a
+    summary here would be a second wording of it that could drift.
+
+    The launcher entry point is named by ROLE above, not by its identifier: the spawn audit
+    classifies a function as sandbox-routed by matching that identifier as a substring of
+    the whole enclosing source, docstrings included, and this function's only spawn-shaped
+    call is ``asyncio.run``. Spelling it here makes the audit demand a resource-limit
+    ``preexec_fn`` and a cgroup scope for a child this function never creates, and makes
+    this function's own ``BENIGN_SPAWNS`` entry read as stale.
+    """
     try:
         asyncio.run(_chat(message, model, agent=agent))
     except KeyboardInterrupt:
         print("\nBye! 👻")
+    except SandboxCeilingUnsealable as exc:
+        # Escaped HERE as well as in the formatters that build these sentences, and the
+        # duplication is the point: this handler takes ANY builder of this exception,
+        # including ones in modules it does not own, and several embed a filename read
+        # from agent-writable state (``os.listdir`` of the md-notebook staging dir) where
+        # every byte but "/" and NUL is legal. Defusing at each builder keeps a NEW SINK
+        # safe; defusing at the sink keeps a NEW BUILDER safe. Only both cover both.
+        # ``safe_terminal_line`` strips controls without quoting, so the remedy's path and
+        # ``find`` invocation stay copyable -- see ``_print_wrapped``'s docstring.
+        print(f"\n❌ {safe_terminal_line(str(exc))}", file=sys.stderr)
+        print(
+            "   Run `kirocrew doctor` to see this before the next spawn.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
 
 def _can_prompt(interactive: bool) -> bool:
@@ -503,6 +540,24 @@ def _unverifiable_shell(event: LLMEvent) -> bool:
         # Trusted signal: the gate's own deny-by-default backstop covers an
         # unrecoverable command from here.
         return False
+    # One narrow escape: a trusted MCP transport identity. When the preceding
+    # ``tool_call``'s cache write recovered a non-empty server/tool pair from an
+    # adapter-authored source (``mcp_identity_trusted`` is set only by that
+    # cache-hit path, never from the permission payload), the call is proven
+    # MCP-served -- and an MCP-served tool is not a host shell command, so there
+    # are no command bytes for this gate to verify. It has to sit ABOVE the
+    # payload-``kind`` check below, not only inside the unclassified branch: an
+    # adapter may label its MCP approvals ``kind="execute"`` (codex-acp does),
+    # and the classified-non-shell call would otherwise be refused on that
+    # label alone. A backend that omits ``kind`` on its MCP frames is covered
+    # the same way. The ORDER of the two returns is the invariant, not any
+    # exclusivity of the flags: a kiro-cli frame with ``kind="execute"`` AND a
+    # server name classifies as shell with a trusted identity, so it must hit
+    # the ``is_shell`` return above first, where the shell gate's own
+    # deny-by-default backstop governs. Moving this escape above that return
+    # would let such a frame skip the command-bytes check.
+    if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
+        return False
     # No classification happened AT ALL: the preceding ``tool_call`` carried no
     # resolvable ``kind``, so nothing was cached and ``is_shell`` is the miss
     # default rather than a resolved "not a shell tool". Reading the payload's own
@@ -511,19 +566,6 @@ def _unverifiable_shell(event: LLMEvent) -> bool:
     # behind it. An absent classification is not a negative one -- the same
     # distinction ``child_low_fidelity`` already draws on this flag.
     if not event.shell_classified:
-        # One narrow escape: a trusted MCP transport identity. When the
-        # preceding ``tool_call``'s cache write recovered a non-empty
-        # ``_meta.kiro`` server/tool pair (``mcp_identity_trusted`` is set only
-        # by that cache-hit path, never from the permission payload), the call
-        # is proven MCP-served -- and an MCP-served tool is not a host shell
-        # command, so there are no command bytes for this gate to verify. A
-        # backend that omits ``kind`` on its MCP frames would otherwise have
-        # every such tool auto-denied here. This waives nothing shell-shaped:
-        # a frame whose ``kind`` resolved to execute cached ``is_shell`` True
-        # and took the trusted-signal branch above, where the shell gate's own
-        # deny-by-default backstop governs.
-        if event.mcp_identity_trusted and event.mcp_server_name and event.tool_name:
-            return False
         return True
     # Normalised before the shared check so a cosmetic variant still denies --
     # widening a fail-closed test is safe in a way widening an allow is not.
@@ -891,8 +933,8 @@ async def _answer_permission(
         # provider is torn down with the session, so the unanswered request dies
         # with it.
         #
-        # The AUDIT is a different matter, and an earlier version of this comment
-        # wrongly generalised the transport rule to cover it. It is not a
+        # The AUDIT is a different matter, and the transport rule above does NOT
+        # cover it. It is not a
         # transport: it is local SEL I/O with a bounded caller, and running it
         # synchronously here blocks the loop -- which still owns the ACP reader
         # and stderr-drain tasks -- for as long as the audit store takes. Cold

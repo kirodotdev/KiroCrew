@@ -87,21 +87,17 @@ def pid_file_name(port: int) -> str:
     return f"{_MARKER_PREFIX}{int(port)}{_PID_SUFFIX}"
 
 
-def _start_file_name(port: int) -> str:
-    """File name of the start-identity sidecar for a gateway serving *port*.
-
-    Mirrors :func:`pid_file_name`. Private because the token is only ever read
-    through :func:`read_pid_record_path`, which derives this name from the pid
-    path it was handed -- so no consumer outside this module needs to spell it.
-    """
-    return f"{_MARKER_PREFIX}{int(port)}{_START_SUFFIX}"
-
-
 def _start_path_for(path: Path) -> Path:
     """Start-identity sidecar sitting beside the pid sidecar at *path*.
 
-    One derivation rule shared by the writer and the reader, so the two cannot
-    drift apart on where the token lives.
+    The one derivation rule in this module, shared by the writer and every
+    reader, so the two cannot drift apart on where the token lives.
+
+    Keyed on the pid PATH rather than on a port because the pid sidecar is not
+    always inside this process's ``run/``: a pod keeps its own in an isolated
+    data home (``pod.runtime._pod_pid_record_path``), which a bare port cannot
+    name. ``test_pod_api.py`` re-spells the ``.start`` suffix literally, on
+    purpose, as a tripwire for renaming it here without updating its readers.
     """
     return path.with_suffix(_START_SUFFIX)
 
@@ -167,17 +163,30 @@ def _pid_record(pid: int) -> str:
 
 
 def _run_dir() -> Path:
-    """Return ``<config_dir>/run`` (created ``0700``); mirrors sandbox._ensure_run_dir."""
+    """Return ``<config_dir>/run`` (created owner-only); mirrors sandbox._ensure_run_dir.
+
+    ``restrict_dir_to_owner``, not ``os.chmod(0o700)``: on POSIX the two are the
+    same call, but a mode is meaningless on Windows, where a bare chmod leaves
+    the directory on the inherited DACL. This directory holds the gateway's
+    credential, its pid — the identity a client checks before trusting a port —
+    and the marker naming an executable mint will exec, so it must be owner-only
+    on every platform. The directory helper is also what makes the sidecars
+    safe: its Windows grants carry ``(OI)(CI)``, so files created inside inherit
+    owner-only, which ``atomic_write(mode=0o600)`` cannot deliver there.
+
+    Best-effort by contract, unlike the fail-loud helper it calls: ``_run_dir``
+    is reached through :func:`secret_path` on the dashboard's startup path, and
+    a directory that cannot be tightened (owned by another uid, an unresolvable
+    SID) must not take the gateway down.
+    """
     d = config_dir() / "run"
     d.mkdir(parents=True, exist_ok=True)
     try:
-        # exist_ok does not re-apply mode on an existing dir — enforce 0700 so the
-        # marker (which names an executable mint will exec) isn't world-writable.
-        # 0o700 (owner-only) is deliberate for a dir holding an exec'd path;
-        # semgrep's 0o644 default is wrong for a private dir (mirrors sandbox.py).
-        os.chmod(d, 0o700)  # nosemgrep
+        # exist_ok does not re-apply the mode/DACL to an existing dir, so tighten
+        # unconditionally rather than only on the create.
+        platform_compat.restrict_dir_to_owner(d)
     except OSError:
-        pass
+        logger.debug("could not restrict run dir %s to its owner", d, exc_info=True)
     return d
 
 
@@ -458,7 +467,7 @@ def write_marker(port: int) -> None:
     unique ``mkstemp`` (``O_EXCL``, mode ``0600``) temp then ``os.replace``.
     Using the shared helper — rather than a predictable ``<name>.tmp`` — closes a
     same-user symlink-TOCTOU: a pre-planted ``gateway-<port>.bin.tmp`` symlink
-    can no longer redirect the write to truncate another file. Never raises — a
+    cannot redirect the write to truncate another file. Never raises — a
     failed write just leaves mint on the candidate search and discovery on the
     default port.
     """
@@ -503,7 +512,7 @@ def prune_markers(*, keep_port: int) -> None:
 
     It removes the marker, the pid sidecar and that pid's start identity, but
     NEVER the credential, because ``_gateway_owns_port`` cannot tell a dead
-    gateway from an unprovable one. It
+    gateway from an unprovable one. That check
     fails closed by RETURNING FALSE -- non-POSIX returns False outright, and a
     missing or throwing listener-lookup tool is folded into False as well -- so
     False means "ownership not proven", not "process gone". Deleting on False
@@ -549,7 +558,7 @@ def clear_marker(port: int) -> None:
     and leaving it beside a pid file a later gateway rewrites is exactly the
     stale-token pairing the freshness check exists to refuse.
 
-    The credential goes too: it names a generation that no longer owns the port,
+    The credential goes too: it names a generation that does not own the port,
     so leaving it behind would let a client authenticate with a value the next
     owner never had. A crash still leaves all four (nothing runs), which is why
     every consumer verifies ownership rather than trusting presence.

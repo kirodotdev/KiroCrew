@@ -435,9 +435,9 @@ async def _git(
     except SandboxUnavailableError as exc:
         # Translated, not bypassed. See `GitSandboxUnavailable` — the wrap is what
         # keeps an agent-written repo config from reaching a shell on the one path
-        # that deliberately keeps `~/.ssh` visible. Previously this escaped as an
-        # unhandled 500, so on a Windows host (no sandbox backend exists there)
-        # every clone/commit/push/pull reported "internal error" and named no fix.
+        # that deliberately keeps `~/.ssh` visible. Unhandled, this escapes as a 500,
+        # so on a Windows host (no sandbox backend exists there) every
+        # clone/commit/push/pull reports "internal error" and names no fix.
         _audit(args[0] if args else "run", str(cwd), "denied", error="sandbox unavailable")
         raise GitSandboxUnavailable(str(exc)) from exc
     # A push/pull must never block on an interactive credential prompt: the

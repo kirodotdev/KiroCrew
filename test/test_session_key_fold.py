@@ -1,9 +1,9 @@
 """Regression tests for the Slack session-key alias fold.
 
-Since the channel-neutral transport refactor (commit 67602204), Slack thread
+Slack thread
 sessions have two key forms: the legacy bare ``thread_ts`` and the canonical
 ``slack:<ts>`` form (``messaging/link.py``). The ``SessionMap`` thread index
-returns canonical keys while first-message derivation historically registered
+returns canonical keys while first-message derivation registers
 the bare form, so the second in-thread message missed the live session in
 ``SessionManager._sessions``, the disk resume was rejected by kiro-cli
 ("Session is active in another process"), and a brand-new context-free session

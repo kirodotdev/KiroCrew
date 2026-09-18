@@ -96,6 +96,34 @@ class Ruling:
             raise ValueError("channel is only meaningful for a no-channel Ruling")
 
 
+@dataclass(frozen=True)
+class SessionProjection:
+    """What one ``session/new`` needs from the agent spec, wire and non-wire apart.
+
+    ``params`` is the wire face -- exactly :meth:`AgentConfigMirror.session_params`.
+    ``denied_tools`` is a CLIENT OBLIGATION the same parse produced and the wire
+    must not carry: the ``(server, tool)`` pairs, server spelled as the backend
+    registers it, whose calls the client refuses when the backend asks permission
+    for them. Kept beside the params rather than inside them because the params
+    dict is sent to the adapter verbatim, and a Crew-private key on it is one
+    strict-schema release away from failing the whole request. Empty for a backend
+    that honours the spec's per-tool restrictions itself or through a file Crew
+    writes; the codex mirror is the one that fills it.
+    """
+
+    params: dict[str, Any]
+    denied_tools: frozenset[tuple[str, str]] = frozenset()
+    derived_spec_snapshot: Any = None
+    """The ``agent.DerivedSpecSnapshot`` the ``mcpServers`` array was built from.
+
+    A second client obligation the wire must not carry: for a derived agent the
+    array in ``params`` IS the spec the host consumes, so the client re-verifies this
+    snapshot once the host has taken it (the ``session/new`` / ``session/load``
+    response) and ends the session on a change. ``None`` for an agent that mirrors
+    nothing, and for a mirror that built no array.
+    """
+
+
 class AgentConfigMirror(ABC):
     """Projects the agent spec onto ONE backend's native configuration.
 
@@ -149,6 +177,32 @@ class AgentConfigMirror(ABC):
         ``_session_mcp_servers`` are that pair.
         """
         return {}
+
+    def session_projection(self, agent: str | None, **kwargs: Any) -> SessionProjection:
+        """Structured face: the wire params PLUS what the client must enforce itself.
+
+        The client calls THIS, not :meth:`session_params`, so it stays
+        backend-agnostic at the seam: every mirror answers with one shape, and a
+        mirror with nothing off-wire to say answers with the wire params alone,
+        which is what this default does. A mirror that derives a client obligation
+        from the same spec parse (codex's per-tool deny set) overrides it and keeps
+        :meth:`session_params` as ``self.session_projection(...).params`` so the two
+        faces cannot drift.
+
+        ``stub_elements`` may arrive in ``kwargs``: the shared MCP gateway's broker
+        stubs for this session, which the client holds because it owns the overlay.
+        A MIRRORED backend receives its stubs only through here -- the client's
+        shared append (``AcpClient._pooled_mcp_servers``) is inert for every
+        mirrored backend, precisely so an unnarrowed append cannot re-add what a
+        projection withheld -- so a mirror places them itself, under its own
+        withhold rules. This default ignores them, and that is the fail-CLOSED
+        direction: a new mirror that does not decide stub placement ships a
+        backend the gateway cannot pool onto, which is visible and harmless,
+        rather than one that mounts stubs no allowlist filtered.
+        Same blocking allowance and the same wiring obligation as
+        :meth:`session_params`.
+        """
+        return SessionProjection(params=self.session_params(agent, **kwargs))
 
     def write_files(self, agent: str | None, **kwargs: Any) -> None:
         """File face: write the native config files this backend loads itself.

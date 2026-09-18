@@ -1,7 +1,7 @@
 import { useCallback } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { api, ApiError, type BrowserViewData } from '../api/client'
+import { api, ApiError, type BrowserOpenData, type BrowserViewData } from '../api/client'
 
 /** Query key for the browser view's status. */
 export const BROWSER_VIEW_KEY = ['browserView'] as const
@@ -96,6 +96,29 @@ export function useBrowserView(enabled: boolean) {
     startMutation.mutate()
   }, [startMutation])
 
+  /**
+   * The address bar's launcher. On the non-native transport an external site can
+   * only render in the gateway host's own browser, so the panel hands the typed
+   * URL to the gateway, which starts the view if needed and runs the CLI.
+   *
+   * The answer carries the post-attempt view status, which is written straight
+   * into the cache like `start`'s is: a success must frame the view NOW, not
+   * after the next 5s poll, or the click looks like it did nothing. Written on
+   * failure too — the view may well be up while the browser launch failed, and
+   * the status is the truth either way.
+   */
+  const openMutation = useMutation({
+    mutationFn: ({ url, sessionKey }: { url: string; sessionKey: string }) =>
+      api.openInBrowser(url, sessionKey),
+    onSuccess: (data: BrowserOpenData) => {
+      if (data.view) queryClient.setQueryData(BROWSER_VIEW_KEY, data.view)
+    },
+  })
+
+  const open = useCallback((url: string, sessionKey: string) =>
+    openMutation.mutateAsync({ url, sessionKey }),
+  [openMutation])
+
   const refresh = useCallback(() => {
     void queryClient.invalidateQueries({ queryKey: BROWSER_VIEW_KEY })
   }, [queryClient])
@@ -113,6 +136,9 @@ export function useBrowserView(enabled: boolean) {
     startError: startMutation.error,
     /** The request went through but the view still is not running. */
     startDidNotTake,
+    /** Open a URL in the gateway host's browser (the address bar's launcher).
+     *  Resolves with the gateway's verdict; rejects on a transport/HTTP error. */
+    open,
     /** Re-read the status now (the retry affordance on a failed/absent view). */
     refresh,
   }

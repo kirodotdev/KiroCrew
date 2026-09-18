@@ -63,13 +63,10 @@ _POSIX_PATH_SHAPE = {
     "test_safe_dir_still_accepts_absolute_and_tilde",
 }
 
-#: Process-control timing previously listed ``test_cancelled_git_is_killed_...``
-#: here. Its root cause was not Windows at all: the sandbox-preparation thread
-#: hop sat inside the window its wait bounds, so it timed out on any heavily
-#: parallel shard (it went red on Linux 3.10 too). The hop is stubbed in the test
-#: now, so the entry is gone rather than carried as a reason that no longer
-#: applies. If Windows reds on it again it is a genuinely different failure and
-#: belongs back here with that reason stated.
+#: An entry belongs here only when Windows itself is the cause. A process-control
+#: timeout whose sandbox-preparation thread hop sits inside the window its wait
+#: bounds goes red on any heavily parallel shard, Linux included, and the fix is
+#: stubbing that hop in the test rather than listing the test here.
 
 _WINDOWS_GAPS = _POSIX_SENTINEL_PINNING | _POSIX_PATH_SHAPE
 

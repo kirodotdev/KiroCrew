@@ -328,8 +328,7 @@ class TestNeutralizeOrigin:
 
     def test_an_unreadable_config_is_not_treated_as_a_breach(self, git: FakeGit) -> None:
         """The clone is gone (swept, or the watcher lost the race) — there is nothing to
-        assert, and refusing here would strand a watcher on a directory that no longer
-        exists."""
+        assert, and refusing here would strand a watcher on a directory that does not exist."""
         git.raise_on = ("get-url",)
         assert W.assert_origin_neutralized("/clone") == (True, [])
 

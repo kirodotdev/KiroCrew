@@ -1,11 +1,9 @@
-"""Regression guard for issue #1050: module-scope ``kiro_crew.agent`` imports.
+"""Module-scope ``kiro_crew.agent`` imports stay at module scope.
 
-The four modules below historically used function-local
-``from kiro_crew.agent import ...`` statements, several justified by
-``# circular import`` comments that misstated the real import graph
-(``kiro_crew.agent`` imports nothing from ``kiro_crew.dashboard.*`` or
-``kiro_crew.session``).  The imports were hoisted to module scope; these
-tests keep them there and prove no cycle exists in either load order.
+The four modules below import ``from kiro_crew.agent import ...`` at module
+scope. ``kiro_crew.agent`` imports nothing from ``kiro_crew.dashboard.*`` or
+``kiro_crew.session``, so no import cycle exists; these tests keep the imports
+at module scope and prove no cycle exists in either load order.
 
 Order-dependent cycles only surface in a fresh interpreter, not under a
 bare import in an already-warm test process — hence the subprocess runs.

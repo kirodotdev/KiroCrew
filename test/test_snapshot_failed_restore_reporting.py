@@ -81,7 +81,7 @@ class TestAMidMutationIoFailureIsReportedNotRaised:
         The failure is injected on the copy of `memory.db` -- the FIRST core file the
         phase mutates -- so `crons` is a genuinely later target the loop never reaches.
         (The move-aside now goes through pinned descriptors rather than `shutil.move`, so
-        the old `shutil.move` hook no longer intercepts it; failing the copy of an earlier
+        the `shutil.move` hook does not intercept it; failing the copy of an earlier
         target is the current-shape way to leave a later one untouched.)
         """
         original = _real_db(tmp_path / "live.db")
@@ -179,8 +179,8 @@ class TestTheIntegrityCheckLeavesNoOpenHandle:
             tf.add(str(payload), arcname=payload.name)
 
         # crons installs first and is a creation; config then fails before being saved.
-        # The move-aside is descriptor-pinned now, so the old `shutil.move` hook no longer
-        # intercepts the restore; failing the copy of `config.json` is the current-shape
+        # The move-aside is descriptor-pinned, so the `shutil.move` hook does not
+        # intercept the restore; failing the copy of `config.json` is the current-shape
         # way to make config fail AFTER crons was fully created. copy_file_pinned is the
         # copy on both platforms.
         #

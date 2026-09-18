@@ -1,7 +1,9 @@
 """HTTP handlers for /side: ephemeral Q&A attached to a parent slot.
 
 Sidecar buffer on ``slot._side``; isolated ``side:{slot.key}`` LLM session;
-tool calls hard-rejected via ``REJECT_ALL``. Side messages never enter
+read-only tool calls auto-approved and everything else hard-rejected via
+``READ_ONLY`` (the Reads approval mode's classifier with reject as the
+fallback instead of the approval card). Side messages never enter
 ``slot.messages`` or any persistent store.
 """
 
@@ -17,6 +19,7 @@ from typing import Any
 from aiohttp import web
 
 from kiro_crew.acp.client import AcpAuthRequired
+from kiro_crew.acp_backends import ACP_BACKENDS_SIDE_READONLY
 from kiro_crew.agent_discovery import warm_project_agent_names
 from kiro_crew.config.loader import (
     KiroCrewConfig,
@@ -24,6 +27,7 @@ from kiro_crew.config.loader import (
     resolve_agent_bindings,
 )
 from kiro_crew.dashboard.side_context import build_side_message
+from kiro_crew.dashboard.side_readonly_spec import ReadOnlySpecError, publish_readonly_spec
 from kiro_crew.dashboard.side_state import (
     MAX_SIDE_QUEUE,
     STEER_CONSUMED,
@@ -34,6 +38,7 @@ from kiro_crew.dashboard.side_state import (
 from kiro_crew.dashboard.state import DashboardState
 from kiro_crew.dashboard.ws import broadcast_side_queue, broadcast_side_result
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.hooks import HookManager
 from kiro_crew.llm_helpers import (
     PromptBusyExhaustedError,
     ToolApprovalPolicy,
@@ -51,9 +56,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _side_session_key(slot_key: str) -> str:
-    """Return the isolated ACP session key for a side turn."""
-    return f"side:{slot_key}"
+def _side_session_key(slot_key: str, gen: str = "") -> str:
+    """Return the isolated ACP session key for a side turn.
+
+    ``side:<slot>:<gen>`` when the sidecar's generation is known (every live
+    path), so a sidecar that was closed and reopened never shares a session with
+    a turn still finishing on its predecessor: the old task can only destroy,
+    acquire or release ITS generation's key. The bare ``side:<slot>`` form is the
+    legacy spelling, kept for a caller with no sidecar in hand.
+    """
+    return f"side:{slot_key}:{gen}" if gen else f"side:{slot_key}"
 
 
 def _dispatch_side_turn(state: DashboardState, slot, question: str) -> str:
@@ -225,7 +237,10 @@ async def _try_side_steer(state: DashboardState, slot, question: str) -> str | N
     requeues it. The caller then reads its OWN entry's state, so it never has to
     infer an outcome from an absence.
     """
-    provider = state.sessions.get_provider(_side_session_key(slot.key))
+    side = slot._side
+    if side is None:
+        return None
+    provider = state.sessions.get_provider(_side_session_key(slot.key, side.gen))
     if provider is None or not getattr(provider, "supports_steer", False):
         return None
     steer = getattr(provider, "steer", None)
@@ -284,12 +299,18 @@ async def _run_side_turn(
         _recover_app_agent_binding,
     )
 
-    side_key = _side_session_key(slot.key)
     # The sidecar this turn belongs to. Every later mutation is gated on the slot
     # still pointing at THIS object, so a close+reopen part-way through can never
-    # have the old turn settle or requeue onto the replacement's state.
+    # have the old turn settle or requeue onto the replacement's state — and the
+    # ACP session is keyed by this sidecar's generation for the same reason.
     side_at_start = slot._side
-    message = build_side_message(slot, question, is_first_turn=is_first_turn)
+    if side_at_start is None:
+        logger.info("Side turn dropped: no sidecar on slot=%s run_id=%s", slot.key, run_id)
+        return
+    side_key = _side_session_key(slot.key, side_at_start.gen)
+    # The prompt envelope is built below, once the harness is known: the boundary
+    # it states (read-only allowance vs. no tools) follows the approval policy
+    # the turn will actually run under.
     chunks: list[str] = []
     # Rolling-buffer redactor for the live side stream. broadcast_side_result
     # already redacts each frame, but per-frame redaction alone misses a secret
@@ -356,13 +377,45 @@ async def _run_side_turn(
         # after this block). Captured inside the try so the raise lives OUTSIDE
         # it and is not swallowed by the resolve except.
         _app_agent_unresolved = False
+        # ONE reading of the slot's project and agent for the whole turn. The
+        # derivation below is checked against a project (the shadow scan of its
+        # ``.kiro/agents``), the session is spawned in a project (kiro-cli
+        # resolves ``--agent`` against that scope first), and the binding names
+        # a project: all three must be the same one. Read live, a project change
+        # landing during an await would have the check run against the old
+        # project and the spawn happen in the new one, loading a file the check
+        # never saw. A change is picked up by the NEXT turn, whose binding then
+        # differs and cold-starts under its own derivation.
+        project: str | None = slot.project or None
+        slot_agent: str | None = slot.agent or None
+        # The READ_ONLY policy's classifier is the gateway's ONE live hook gate,
+        # the same object the main chat consults (``chat_runner`` reads
+        # ``state.context_builder.hooks``). Settings > Security hot-reloads that
+        # object (``handlers/security._reload_live_hooks``), so a deny added
+        # mid-turn binds an in-flight side turn exactly as it binds the parent
+        # slot, and no per-turn manager is built here — building one would read
+        # the keystone ``denied_commands.json`` synchronously on the event loop
+        # and freeze the opt-out state at turn start. A host with no context
+        # builder has no gate: READ_ONLY then fails closed and rejects every
+        # tool call (``read_only_policy_no_hooks``) rather than classifying
+        # against a default manager that carries none of the operator's rules.
+        side_hooks: HookManager | None = (
+            state.context_builder.hooks if state.context_builder is not None else None
+        )
+        # The selected harness, read from the same config load that resolves the
+        # agent. ``None`` when the load failed: the harness is then unknown, and
+        # the read-only allowance below is granted by positive membership only.
+        side_backend: str | None = None
         try:
             cfg = KiroCrewConfig.load()
+            side_backend = cfg.agent.acp_backend
             # Warm off-loop, resolve inline — same reasoning as the main chat path
             # (offloading the resolver itself would swallow a StopIteration into a
             # Future and hang the await).
-            await warm_project_agent_names(slot.project, operation="side_panel", source="dashboard")
-            bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
+            await warm_project_agent_names(
+                project or "", operation="side_panel", source="dashboard"
+            )
+            bindings = resolve_agent_bindings(cfg, slot_agent, project)
             kiro_agent = bindings.kiro_agent
             # SELF-HEAL an app-owned slot whose agent did not resolve, on the same
             # two escalating rungs `_run_chat` uses, for the same reason: an app's
@@ -386,12 +439,10 @@ async def _run_side_turn(
                         slot.key,
                         exc_info=True,
                     )
-                bindings = resolve_agent_bindings(cfg, slot.agent or None, slot.project or None)
+                bindings = resolve_agent_bindings(cfg, slot_agent, project)
                 kiro_agent = bindings.kiro_agent
                 if not bindings.requested_resolved:
-                    bindings = await _recover_app_agent_binding(
-                        cfg, slot, project=slot.project or None
-                    )
+                    bindings = await _recover_app_agent_binding(cfg, slot, project=project)
                     kiro_agent = bindings.kiro_agent
             _app_agent_unresolved = bool(slot._app) and not bindings.requested_resolved
         except Exception:
@@ -411,28 +462,150 @@ async def _run_side_turn(
         # turn aborts without ever creating a session or dispatching an agent.
         if _app_agent_unresolved:
             raise _AppAgentNotLoaded(
-                f"The app agent '{slot.agent or ''}' isn't loaded yet — "
+                f"The app agent '{slot_agent or ''}' isn't loaded yet — "
                 "try again in a moment, or restart the gateway."
             )
 
-        provider, _is_new, _resumed = await state.sessions.get_or_create(
+        # Whether this turn may EXECUTE read-only tools is a positive capability
+        # of the harness (``ACP_BACKENDS_SIDE_READONLY``, harness-parity H6),
+        # never a negation: the allowance rests on the derived kiro-cli agent
+        # spec below, and another backend's own pre-approval surface
+        # (claude-agent-acp ``permissions.allow`` / ``bypassPermissions``) is
+        # one neither the spec nor the gate can see, so a call it pre-approves
+        # would run with no READ_ONLY decision and no SEL row. Off the set — or
+        # with the harness unknown because the config never loaded — the turn
+        # runs the pre-allowance posture: the base agent under REJECT_ALL, and
+        # the prompt and fallback say tools are unavailable here.
+        tools_available = side_backend is not None and side_backend in ACP_BACKENDS_SIDE_READONLY
+        if tools_available:
+            # The side session runs under ``<agent>--readonly``: the resolved
+            # agent's spec with every backend-side grant emptied
+            # (``allowedTools: []``, no ``autoApprove``, no ``toolsSettings``
+            # ``allowed*``/``trusted*``/``auto*``, no ``includeMcpJson``, an
+            # empty KAS policy, no lifecycle hooks). kiro-cli approves a granted
+            # tool itself and never raises a permission request, so under the
+            # parent's own spec the READ_ONLY gate below would never see the
+            # user's main-chat grants — cron removals included. With the derived
+            # spec every call kiro-cli does not trust natively raises a request
+            # and the gate judges it (kiro-cli runs ``fs_read`` itself — a read,
+            # so the guarantee holds outside the gate). Derived
+            # from the live base spec on every turn (regenerated when the base
+            # changes, written only when the content differs) and published
+            # into the kiro agent registry, the only place kiro-cli loads agents
+            # from; see ``side_readonly_spec``. File I/O, so off the loop. FAIL
+            # CLOSED: a turn whose spec cannot be produced is refused below
+            # (``ReadOnlySpecError``) — it never runs under the base agent.
+            base_agent = kiro_agent or slot_agent or "kirocrew"
+            published = await asyncio.to_thread(publish_readonly_spec, base_agent, project)
+            side_agent: str | None = published.name
+            approval_policy = ToolApprovalPolicy.READ_ONLY
+            binding = (published.name, project or "", published.digest)
+        else:
+            side_agent = kiro_agent or slot_agent
+            approval_policy = ToolApprovalPolicy.REJECT_ALL
+            binding = (side_agent or "", project or "", "reject_all")
+
+        # The derivation suspended this task; a close (or close+reopen) may have
+        # landed meanwhile. A stale task must not touch any session: its own
+        # generation's session was destroyed by the close, and the replacement's
+        # lives under another key it must never acquire.
+        if slot._side is not side_at_start:
+            logger.info(
+                "Side turn dropped before acquisition: sidecar replaced for slot=%s run_id=%s",
+                slot.key,
+                run_id,
+            )
+            return
+
+        # ``get_or_create`` reuses a live session for this key whatever agent or
+        # cwd the call asks for, and kiro-cli read the spec at spawn. A session
+        # retained from an earlier turn on THIS sidecar may therefore be running
+        # under another agent (the slot's agent changed), in another project (its
+        # files, its governance profile), or under a derived spec whose content
+        # the base has since changed. None of those may serve this turn: when the
+        # binding recorded on the sidecar is not exactly this one — or a live
+        # session exists that no sidecar binding vouches for — the session is
+        # destroyed and the acquisition below cold-starts under the derived spec.
+        # The key is this sidecar's alone, so no other turn shares the session.
+        if state.sessions.get_provider(side_key) is not None and side_at_start.binding != binding:
+            logger.info(
+                "Side turn: rebinding side session for slot=%s (agent/cwd/spec changed); "
+                "cold-starting under %s",
+                slot.key,
+                side_agent,
+            )
+            await state.sessions.destroy(side_key)
+            # The destroy suspended this task too: a close landing meanwhile
+            # destroyed this same key, and acquiring it again would leave a
+            # session no sidecar owns.
+            if slot._side is not side_at_start:
+                logger.info(
+                    "Side turn dropped after rebind: sidecar replaced for slot=%s run_id=%s",
+                    slot.key,
+                    run_id,
+                )
+                return
+
+        provider, is_new, resumed = await state.sessions.get_or_create(
             side_key,
-            agent=kiro_agent or slot.agent or None,
+            agent=side_agent,
             # The session must run in the slot's project directory for a
             # project-scope agent resolved above to be loadable at all:
             # kiro-cli resolves --agent against $PWD/.kiro/agents, so creating
             # the side session without this cwd has set_mode reject the very
             # name resolve_agent_bindings just returned. Mirrors
             # chat_runner._run_chat, which passes the same cwd for the same
-            # reason.
-            cwd=slot.project or None,
+            # reason. The derived spec itself lives in the user-level registry,
+            # which kiro-cli searches after the project scope.
+            cwd=project,
         )
         acquired_key = side_key
+        # ``get_or_create`` suspended this task as well. A close landing during
+        # it destroyed this key — before or after the creation completed — so
+        # the session just acquired belongs to no sidecar and nothing else will
+        # ever destroy it. The finally releases the lease; the session goes now.
+        if slot._side is not side_at_start:
+            logger.info(
+                "Side turn dropped after acquisition: sidecar replaced for slot=%s run_id=%s",
+                slot.key,
+                run_id,
+            )
+            await state.sessions.destroy(side_key)
+            return
+        side_at_start.binding = binding
+        # The full envelope (instructions, parent snapshot, side history, the
+        # boundary prompt) goes to a session that has no framing yet. That is
+        # the sidecar's first turn — and equally a session cold-started on a
+        # later turn: the rebind above, or an eviction after the provider died.
+        # A follow-up into a live session, or one kiro-cli resumed with its own
+        # history, gets the bare question. Judged on what ``get_or_create``
+        # actually did, not on the sidecar's transcript alone, so the model
+        # behind a fresh process is never handed a bare question with nothing
+        # telling it where it is or what it may do.
+        message = build_side_message(
+            slot,
+            question,
+            is_first_turn=is_first_turn or (is_new and not resumed),
+            tools_available=tools_available,
+        )
         try:
             response_text = await stream_and_collect(
                 provider,
                 message,
-                approval_policy=ToolApprovalPolicy.REJECT_ALL,
+                # Reads-mode semantics with reject as the fallback on kiro-cli:
+                # provably read-only calls run, everything else is refused (side
+                # chat has no approval card to fall back to); REJECT_ALL on any
+                # other harness (see ``tools_available`` above). The gate's
+                # identity is the SIDE key: ``sel._infer_source`` classifies
+                # ``side:*`` as the dashboard surface, so a dashboard-bound
+                # governance profile binds this turn exactly as it binds the
+                # parent slot, while SEL rows and the ACP session stay keyed to
+                # the side session rather than the parent's.
+                approval_policy=approval_policy,
+                hooks=side_hooks,
+                session_key=side_key,
+                agent=slot_agent or "kirocrew",
+                app=slot._app or "",
                 on_chunk=_on_chunk,
                 on_steer_consumed=_on_steer_consumed,
             )
@@ -463,9 +636,20 @@ async def _run_side_turn(
             return
 
         if not chunks:
+            # Same vocabulary as the composer footer
+            # (``pages.chat.sideChat.context_only_tools_unavailable`` on
+            # kiro-cli, ``…_backend`` elsewhere): the strings describe one
+            # boundary and must not drift.
             response_text = (
-                "Tool and MCP execution is intentionally unavailable in Side Chat. "
-                "Ask in the main chat if you want me to use tools or take action."
+                (
+                    "Side Chat is read-only: lookups work here, but changes don't. "
+                    "Use the main chat to take action."
+                )
+                if tools_available
+                else (
+                    "Side Chat can't use tools on this agent backend. "
+                    "Use the main chat to take action."
+                )
             )
             logger.info(
                 "Side turn produced no text (tool rejection): " "slot=%s run_id=%s",
@@ -531,6 +715,41 @@ async def _run_side_turn(
             run_id=run_id,
             role="assistant",
             content=str(exc),
+            is_error=True,
+            final=True,
+        )
+    except ReadOnlySpecError as exc:
+        # Terminal for this turn, and never a fallback to the base agent: without
+        # the derived spec the READ_ONLY gate would not see the base agent's
+        # grants, so refusing is the only safe answer. No session was created, so
+        # there is nothing to release; the queue is not held, because the spec is
+        # re-derived per turn and the next question is a real retry. The stable
+        # code is for the operator: it goes in the log line, not in the panel,
+        # where a user's vocabulary belongs.
+        logger.warning(
+            "Side turn refused: read-only agent spec unavailable (%s) for slot=%s run_id=%s: %s",
+            exc.code,
+            slot.key,
+            run_id,
+            exc.detail,
+        )
+        try:
+            sel().log_api_access(
+                caller=slot._app or "dashboard",
+                operation="chat.side_turn",
+                outcome="denied",
+                source="dashboard",
+                resources=f"slot={slot.key} run_id={run_id} code={exc.code}",
+                error=f"read-only agent spec unavailable: {exc.detail}",
+            )
+        except Exception:  # noqa: BLE001 — the refusal must reach the panel regardless
+            logger.debug("SEL audit unavailable for side-turn refusal", exc_info=True)
+        broadcast_side_result(
+            state,
+            slot_key=slot.key,
+            run_id=run_id,
+            role="assistant",
+            content="Side Chat couldn't start. Try again, or use the main chat.",
             is_error=True,
             final=True,
         )
@@ -759,12 +978,9 @@ async def api_side_turn(request: web.Request) -> web.Response:
                             f"question_len={len(question)}"
                         ),
                     )
-                    return web.json_response(
-                        {"ok": True, "steered": True, "run_id": run_before}
-                    )
+                    return web.json_response({"ok": True, "steered": True, "run_id": run_before})
                 if ledger == STEER_PENDING and (
-                    side_before.last_run_id == run_before
-                    and not side_before.is_complete
+                    side_before.last_run_id == run_before and not side_before.is_complete
                 ):
                     # Genuinely in flight, consumption unproven. Report that
                     # instead of claiming delivery: the outcome arrives as a frame
@@ -942,15 +1158,11 @@ async def _read_side_queue_body(request: web.Request) -> str | web.Response:
     """Parse ``{"content": str}`` from a side-queue edit. Returns the trimmed
     content, or the error response to send."""
     if not request.body_exists:
-        return web.json_response(
-            {"error": "missing JSON body", "code": "missing_body"}, status=400
-        )
+        return web.json_response({"error": "missing JSON body", "code": "missing_body"}, status=400)
     try:
         body = await request.json()
     except Exception:
-        return web.json_response(
-            {"error": "invalid JSON body", "code": "invalid_body"}, status=400
-        )
+        return web.json_response({"error": "invalid JSON body", "code": "invalid_body"}, status=400)
     if not isinstance(body, dict):
         return web.json_response(
             {"error": "body must be a JSON object", "code": "invalid_body"},
@@ -989,9 +1201,7 @@ def _resolve_side_queue_slot(
     state: DashboardState = request.app["state"]
     slot = state._slots.get(request.match_info["slot"])
     if not slot:
-        return None, web.json_response(
-            {"error": "not found", "code": "slot_not_found"}, status=404
-        )
+        return None, web.json_response({"error": "not found", "code": "slot_not_found"}, status=404)
     own = _check_slot_ownership(request, slot, operation)
     if own is not None:
         return None, own
@@ -1116,9 +1326,13 @@ async def api_side_close(request: web.Request) -> web.Response:
         return own
 
     was_open = slot._side is not None and slot._side.open
+    # The key belongs to the sidecar being closed: read its generation before
+    # the sidecar is dropped, so a reopen (a new generation, a new key) that
+    # lands while the destroy below is in flight is never the one destroyed.
+    closing_gen = slot._side.gen if slot._side is not None else ""
     slot._side = None
 
-    side_key = _side_session_key(slot.key)
+    side_key = _side_session_key(slot.key, closing_gen)
     try:
         await state.sessions.destroy(side_key)
     except Exception:

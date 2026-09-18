@@ -65,6 +65,19 @@ the cheaper model's output as the one they asked for.
 - **Pickers** MUST list options from `GET /api/models`, the advertised set, never a
   static in-code list. A hand-maintained list offers models the account cannot run and
   hides the ones it can.
+- `dashboard.model_picker_hidden_models` is a presentation preference over that
+  advertised set. It filters only the interactive ChatPage and ChatPane pickers;
+  `auto` and each slot's active model remain visible. Settings defaults, role and
+  fallback selectors, the bulk switcher, crew editors, and app-specific selectors
+  continue to receive the complete advertised list. Storing hidden IDs rather than
+  visible IDs means a newly advertised model appears by default. The picker links
+  to this setting until the first successful visibility save; merely opening
+  Settings or a failed save does not dismiss it. The server stores that fact in
+  `dashboard.model_picker_configured`, migrating an existing non-empty hidden list
+  as already configured. Select-all and deselect-all update the current advertised
+  set with one write, keep `auto` selected, and preserve hidden IDs absent from the
+  current catalog. Enabling the configured effort default moves the slider thumb to
+  that level before the setting write completes.
 - **Pin a cheaper model** only through `agent.role_models.<role>` (`background`,
   `subagent`), read by `AgentConfig.resolve_model(role)` in `config/sections.py`. Roles
   default to `"auto"` and deliberately do NOT inherit `agent.model`, so a user's chat

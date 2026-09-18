@@ -1,11 +1,11 @@
 """Behavioural tests for pr-readiness.yml's server-side disposition gate.
 
-Issue #6658: the one-lane / one-rationale-per-finding disposition rule was
-mechanical only for a writer running the prepare-pr loop. A writer who skipped
-that loop could post a blanket single-rationale ``target=gpt`` record, which
-codex-review.yml's adjudication ledger admits with full downgrade power, while
-nothing on the merge path objected. Readiness publishes the repository's sole
-required status, so evaluating the rule there is what binds every writer.
+The one-lane / one-rationale-per-finding disposition rule is mechanical only
+for a writer running the prepare-pr loop. A writer who skips that loop can post
+a blanket single-rationale ``target=gpt`` record, which codex-review.yml's
+adjudication ledger admits with full downgrade power, and nothing on the merge
+path objects. Readiness publishes the repository's sole required status, so
+evaluating the rule there is what binds every writer.
 
 These tests extract the real "Evaluate disposition records" step and execute it
 with ``gh`` replaced by a stub, against the REAL ``pr_status.py``
@@ -204,7 +204,7 @@ def gate(tmp_path: Path) -> GateRunner:
 
 class TestTheStepEvaluatesTheRealRule:
     def test_a_blanket_record_is_reported_as_a_violation(self, gate: GateRunner):
-        """The exact gap #6658 names: a writer-authored record naming the GPT
+        """The gap the gate closes: a writer-authored record naming the GPT
         lane but claiming no span, while that lane has a live finding."""
         proc, outputs = gate.run(
             comments=[

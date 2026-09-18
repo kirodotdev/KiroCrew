@@ -1,4 +1,4 @@
-"""Guards for the pod-e2e ``--video`` hang (issue #645).
+"""Guards for the pod-e2e ``--video`` hang.
 
 A spec that passed in 16s must never be lost to an unbounded browser teardown,
 so these tests pin the three mechanisms that make that impossible:
@@ -200,7 +200,7 @@ def test_normal_recording_is_transcoded(driver, tmp_path, monkeypatch):
     reason="/proc walk is Linux-only",
 )
 def test_descendant_pids_finds_a_grandchild(driver):
-    """A wedged run used to leave the driver + ~19 chromium processes behind."""
+    """A wedged run leaves the driver + ~19 chromium processes behind."""
     child = subprocess.Popen(
         [sys.executable, "-c", "import subprocess,sys,time;"
          "subprocess.Popen([sys.executable,'-c','import time;time.sleep(20)']);"
@@ -548,8 +548,8 @@ def test_teardown_bail_row_matches_the_summary_grep(driver, tmp_path):
 def test_missing_playwright_interpreter_fails_the_run():
     """A run that captured ZERO screenshots must not report a green summary.
 
-    The FE phase used to `warn` when KIROCREW_PW_PY was unset, so the summary
-    said "N passed, 0 failed" with no evidence on disk — which is how "capture
+        A `warn` when KIROCREW_PW_PY is unset produces a summary that says
+        "N passed, 0 failed" with no evidence on disk — which is how "capture
     is in flight" becomes a believable but false statement. It must `fail`.
     """
     lines = _runner_text().splitlines()

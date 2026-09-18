@@ -322,34 +322,46 @@ class TestDigestHoldSecs:
 
 
 class TestCheckMemoryAvailable:
-    def test_parses_mem_available(self) -> None:
-        text = "MemTotal:       1000 kB\nMemAvailable:    8388608 kB\n"
-        with patch.object(sa, "safe_read_file", return_value=text):
-            ok, gb = sa.check_memory_available(min_gb=4.0)
+    def test_parses_mem_available(self, tmp_path: Path) -> None:
+        f = tmp_path / "meminfo"
+        f.write_text("MemTotal:       1000 kB\nMemAvailable:    8388608 kB\n")
+        ok, gb = sa.check_memory_available(min_gb=4.0, path=str(f))
         assert ok is True
         assert gb == 8.0
 
-    def test_below_threshold_reports_not_ok(self) -> None:
-        text = "MemAvailable:    1048576 kB\n"
-        with patch.object(sa, "safe_read_file", return_value=text):
-            ok, gb = sa.check_memory_available(min_gb=4.0)
+    def test_below_threshold_reports_not_ok(self, tmp_path: Path) -> None:
+        f = tmp_path / "meminfo"
+        f.write_text("MemAvailable:    1048576 kB\n")
+        ok, gb = sa.check_memory_available(min_gb=4.0, path=str(f))
         assert (ok, gb) == (False, 1.0)
 
-    def test_sensitive_path_fails_open(self) -> None:
-        with patch.object(sa, "safe_read_file", side_effect=PermissionError):
+    def test_path_gate_not_consulted(self, tmp_path: Path) -> None:
+        """The fixed kernel path is read with plain open, never the gate."""
+        f = tmp_path / "meminfo"
+        f.write_text("MemAvailable:    8388608 kB\n")
+        with (
+            patch("kiro_crew.hooks.safe_read_file", side_effect=AssertionError),
+            patch("kiro_crew.hooks.is_sensitive_path", side_effect=AssertionError),
+        ):
+            assert sa.check_memory_available(min_gb=4.0, path=str(f)) == (True, 8.0)
+
+    def test_permission_error_fails_open(self) -> None:
+        with patch("builtins.open", side_effect=PermissionError):
             assert sa.check_memory_available() == (True, -1.0)
 
     def test_read_error_fails_open(self) -> None:
-        with patch.object(sa, "safe_read_file", side_effect=OSError):
+        with patch("builtins.open", side_effect=OSError):
             assert sa.check_memory_available() == (True, -1.0)
 
-    def test_malformed_line_fails_open(self) -> None:
-        with patch.object(sa, "safe_read_file", return_value="MemAvailable:  notanumber kB\n"):
-            assert sa.check_memory_available() == (True, -1.0)
+    def test_malformed_line_fails_open(self, tmp_path: Path) -> None:
+        f = tmp_path / "meminfo"
+        f.write_text("MemAvailable:  notanumber kB\n")
+        assert sa.check_memory_available(path=str(f)) == (True, -1.0)
 
-    def test_missing_key_fails_open(self) -> None:
-        with patch.object(sa, "safe_read_file", return_value="MemTotal: 12 kB\n"):
-            assert sa.check_memory_available() == (True, -1.0)
+    def test_missing_key_fails_open(self, tmp_path: Path) -> None:
+        f = tmp_path / "meminfo"
+        f.write_text("MemTotal: 12 kB\n")
+        assert sa.check_memory_available(path=str(f)) == (True, -1.0)
 
 
 class TestReadIntFile:
@@ -837,7 +849,7 @@ class TestSampleLiveCounts:
         assert (info.last_procs, info.last_stubs) == (7, 6)
 
     def test_one_walk_per_agent_not_one_per_metric(self) -> None:
-        """The whole point of #3970: RSS, CPU and both counts come off ONE walk.
+        """The whole point: RSS, CPU and both counts come off ONE walk.
 
         Patching the shared sample is not enough to prove that — a sweep that
         still called three readers would also pass the assertions above. Count
@@ -1105,10 +1117,10 @@ class TestReadSurfaces:
         assert mgr.task_memory_rows() == []
 
     def test_task_memory_rows_redact_before_truncate(self) -> None:
-        """#5582: a credential straddling the 80-char cut must not leak a fragment.
+        """A credential straddling the 80-char cut must not leak a fragment.
 
         The old spelling ``_redact(a.task[:80])`` sliced first, so a key cut at
-        the boundary lost its tail and no longer matched the credential regex —
+        the boundary loses its tail and does not match the credential regex —
         the raw prefix escaped into the session-memory surface.
         The fabricated AKIA-shaped literal is inlined rather than bound to a
         ``secret``-named variable, which would trip CodeQL's name-based
@@ -1143,6 +1155,30 @@ class TestReadSurfaces:
         mgr = _manager(max_concurrent=7)
         mgr._running_count = 4
         assert (mgr.max_concurrent, mgr.running_count) == (7, 4)
+
+    @pytest.mark.asyncio
+    async def test_pending_work_count_covers_post_slot_lifecycle_tasks(self) -> None:
+        mgr = _manager()
+        release = asyncio.Event()
+        recovery = asyncio.create_task(release.wait())
+        report = asyncio.create_task(release.wait())
+        followup = asyncio.create_task(release.wait())
+        reconcile = asyncio.create_task(release.wait())
+        completed = asyncio.create_task(asyncio.sleep(0))
+        await completed
+        mgr._running_count = 0
+        mgr._queue = [{"parent_session_key": "dash:1"}]
+        mgr._tasks = {"run:recovery": recovery, "done": completed}
+        mgr._report_tasks = {report}
+        mgr._followup_watchers = {"run": followup}
+        mgr._reconcile_task = reconcile
+        mgr._abandoned_state_writers = {"state-writer"}
+        try:
+            # queue + recovery + report + follow-up + reconciliation + writer
+            assert mgr.pending_work_count == 6
+        finally:
+            release.set()
+            await asyncio.gather(recovery, report, followup, reconcile)
 
 
 class TestQueueDepth:

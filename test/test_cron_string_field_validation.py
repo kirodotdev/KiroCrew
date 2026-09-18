@@ -1,7 +1,7 @@
 """Tests for the table-driven string-field validation at the cron persistence
-chokepoint (issue #5782).
+chokepoint.
 
-``_build_job`` and ``_update_job_locked`` now iterate a single
+``_build_job`` and ``_update_job_locked`` iterate a single
 ``_CRON_STRING_FIELD_CAPS`` table to enforce type+length on every
 caller-supplied string field. These tests lock that guarantee:
 
@@ -333,6 +333,8 @@ class TestAntiDrift:
     # - last_posted_hash: set by dedup logic when a Slack post is delivered
     # - last_failure_hash: set by dedup logic when a failure notification fires
     # - approval_mode: validated by a separate finite-set check, not length
+    # - memory_store: resolved internally from trusted member/session identity;
+    #   never accepted from a cron creation or update caller
     _RUNTIME_ONLY_FIELDS: frozenset[str] = frozenset(
         {
             "id",
@@ -343,6 +345,7 @@ class TestAntiDrift:
             "last_posted_hash",
             "last_failure_hash",
             "approval_mode",
+            "memory_store",
         }
     )
 

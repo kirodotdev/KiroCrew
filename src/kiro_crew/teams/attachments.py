@@ -395,8 +395,8 @@ def inline_image_name(caption: str, file: OutboundFile) -> str:
     character an ``AKIA…`` key id or a ``ghp_…`` token needs, and extraction has
     already cut the path out of the answer body -- so for an empty caption this name
     is the ONLY surviving sink. Scanning the source too is not belt-and-braces: the
-    64-char cut below can slice a token down to a prefix the scanner no longer
-    matches, which would ship most of a secret past a check on the result alone.
+    64-char cut below can slice a token down to a prefix the scanner does not
+    match, which would ship most of a secret past a check on the result alone.
     """
     raw = caption.strip() or os.path.basename(file.path)
     suffix = _INLINE_SUFFIX.get(file.mime, ".png")

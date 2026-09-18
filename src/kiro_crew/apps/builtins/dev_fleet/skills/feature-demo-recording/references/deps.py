@@ -61,7 +61,7 @@ def _ffmpeg_dirs() -> list[pathlib.Path]:
     """Resolved per call, not at import.
 
     A module-level list holding a home-derived path is still an import-time data
-    home resolution, which the repo's isolation floor rejects (issue #874): a test
+    home resolution, which the repo's isolation floor rejects: a test
     that imports this module would bind the operator's real home.
     """
     return [_home() / ".local/bin"]

@@ -22,7 +22,7 @@ _REPO = Path(__file__).resolve().parents[1]
 
 # Built at runtime so this guard's own source does not contain the needles.
 # ``full_load`` is fenced alongside the obvious ones: FullLoader is the
-# historically exploitable path (it still constructs arbitrary Python objects
+# known-exploitable path (it still constructs arbitrary Python objects
 # through tags), so leaving it out would let a future call site walk straight
 # through this fence.
 _NEEDLES = tuple(

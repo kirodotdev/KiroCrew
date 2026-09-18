@@ -32,11 +32,24 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from kiro_crew.acp.types import STOP_REASON_COMPACTION_FAILED
+from kiro_crew.agent_sdk.drivers.acp_vocab import classify_stop_reason
+from kiro_crew.context import session_store_for_turn
 from kiro_crew.executors import run_in_embed_pool
-from kiro_crew.hooks import HOOK_REPLY, TOOL_AUTO_APPROVE, TOOL_DENY, event_is_spawn_run
+from kiro_crew.hooks import (
+    HOOK_REPLY,
+    TOOL_AUTO_APPROVE,
+    TOOL_DENY,
+    event_is_spawn_run,
+    hook_gate_kwargs,
+)
+from kiro_crew.memory_stores import UnknownMemoryStore
 from kiro_crew.messaging.driver import DirectiveConsumer, TurnDriver
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
-from kiro_crew.messaging.inbound_spool import InboundRoute, spool_refused_turn
+from kiro_crew.messaging.inbound_spool import (
+    InboundRoute,
+    spool_refused_turn,
+    spool_refused_turn_sync,
+)
 from kiro_crew.messaging.link import (
     DM_SCOPE_UNIFIED,
     ChannelLink,
@@ -45,7 +58,12 @@ from kiro_crew.messaging.link import (
     is_channel_session_key,
 )
 from kiro_crew.messaging.renderer import SilentRenderer
-from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    redact,
+    redact_credentials,
+    redact_exfiltration_urls,
+    redact_local_paths,
+)
 from kiro_crew.sel import sel
 
 # Imported from the leaf that DEFINES it rather than through kiro_crew.session:
@@ -55,6 +73,104 @@ from kiro_crew.sel import sel
 from kiro_crew.session_allocation import SessionClosingError
 
 logger = logging.getLogger(__name__)
+
+
+async def admit_inbound_callback(
+    sessions: Any,
+    *,
+    channel_type: str,
+    route: InboundRoute | None,
+    restricted: bool | Callable[[], Awaitable[bool]] = False,
+) -> bool:
+    """Reserve one handler task or durably refuse it before pre-turn effects.
+
+    A callable restriction is resolved only after admission refuses the task.
+    Resume-capable channels use that form because their effective session takes
+    an awaited routing decision to determine. The upstream client handler task
+    remains census-visible during that decision, while the happy path keeps the
+    synchronous reserve-before-effects boundary and pays no routing lookup.
+    """
+    reserve = getattr(sessions, "reserve_inbound_callback", None)
+    if not callable(reserve):
+        # Compatibility for focused embedders/test doubles that are not a
+        # SessionManager. Production channel dispatch always receives the real
+        # facade, whose structural contract requires this method.
+        return True
+    reservation = reserve()
+    if reservation is None:
+        try:
+            refusal_restricted = bool(await restricted()) if callable(restricted) else restricted
+        except Exception:
+            logger.warning(
+                "%s: could not resolve refused callback privacy; suppressing durable spool",
+                channel_type,
+                exc_info=True,
+            )
+            refusal_restricted = True
+        if not refusal_restricted:
+            if getattr(sessions, "update_restart_fenced", False):
+                spool_refused_turn_sync(channel_type=channel_type, route=route)
+            else:
+                await spool_refused_turn(channel_type=channel_type, route=route)
+        return False
+    task = asyncio.current_task()
+    if task is None:
+        reservation.release()
+        raise RuntimeError("inbound callback has no owning asyncio task")
+    task.add_done_callback(lambda _done: reservation.release())
+    return True
+
+
+class _InboundCallbackAdmission:
+    """Explicit callback lease for dispatchers running on a long-lived task."""
+
+    def __init__(
+        self,
+        sessions: Any,
+        *,
+        channel_type: str,
+        route: InboundRoute | None,
+        restricted: bool,
+    ) -> None:
+        self._sessions = sessions
+        self._channel_type = channel_type
+        self._route = route
+        self._restricted = restricted
+        self._reservation: Any = None
+
+    async def __aenter__(self) -> bool:
+        reserve = getattr(self._sessions, "reserve_inbound_callback", None)
+        if not callable(reserve):
+            return True
+        self._reservation = reserve()
+        if self._reservation is not None:
+            return True
+        if not self._restricted:
+            if getattr(self._sessions, "update_restart_fenced", False):
+                spool_refused_turn_sync(channel_type=self._channel_type, route=self._route)
+            else:
+                await spool_refused_turn(channel_type=self._channel_type, route=self._route)
+        return False
+
+    async def __aexit__(self, _exc_type: Any, _exc: Any, _tb: Any) -> None:
+        if self._reservation is not None:
+            self._reservation.release()
+
+
+def hold_inbound_callback(
+    sessions: Any,
+    *,
+    channel_type: str,
+    route: InboundRoute | None,
+    restricted: bool = False,
+) -> _InboundCallbackAdmission:
+    """Hold callback census ownership only for the surrounding async scope."""
+    return _InboundCallbackAdmission(
+        sessions,
+        channel_type=channel_type,
+        route=route,
+        restricted=restricted,
+    )
 
 
 @dataclass
@@ -222,6 +338,14 @@ class ChannelTurn:
     the spool and its refusal path is byte-identical to before.
     """
 
+    inbound_restricted: bool = False
+    """Suppress durable refusal spooling for an incognito/temporary session.
+
+    The dispatcher resolves this against the final session key before entering
+    the shared turn pipeline. It covers the later ``SessionClosingError`` race,
+    after callback admission succeeded but before the provider turn opened.
+    """
+
 
 #: Every spelling a channel accepts for "abort the running turn". The union of
 #: the per-channel command tables (``/stop`` and ``/cancel`` everywhere, plus
@@ -274,7 +398,7 @@ async def inbound_permitted(
 
     A PURE cancellation is the one exemption, matching the native Slack route's
     ``!stop`` carve-out: a denied channel must still be able to halt a runaway
-    session it previously STARTED, and on a channel with no interactive buttons
+    session it already STARTED, and on a channel with no interactive buttons
     (``max_buttons=0``) the typed cancel is the only affordance there is, so
     gating it makes the off-switch unreachable exactly when it is needed. Nothing
     else is exempt -- a restart is not a cancellation.
@@ -308,14 +432,7 @@ def build_tool_gate(ctx_builder: Any, *, session_key: str, agent: str) -> Callab
             getattr(event, "title", "") or "",
             session_key=session_key,
             agent=agent,
-            tool_kind=getattr(event, "tool_kind", "") or "",
-            raw_params=getattr(event, "raw_tool_params", None),
-            diff_path=getattr(event, "diff_path", "") or "",
-            command=getattr(event, "shell_command", None),
-            is_shell=bool(getattr(event, "is_shell", False)),
-            mcp_server_name=getattr(event, "mcp_server_name", "") or "",
-            mcp_tool_name=getattr(event, "tool_name", "") or "",
-            mcp_identity_trusted=bool(getattr(event, "mcp_identity_trusted", False)),
+            **hook_gate_kwargs(event),
         )
         if result.action == TOOL_DENY:
             return "deny"
@@ -393,7 +510,14 @@ def build_directive_consumer(
         state: Any = getattr(dispatcher, "dashboard_state", None)
         if state is None:
             state = _ChannelDirectiveState(sessions=sessions)
-        result = await apply_session_directive(state, None, session_key, kind, args)
+        result = await apply_session_directive(
+            state,
+            None,
+            session_key,
+            kind,
+            args,
+            producer_is_channel=True,
+        )
         # The channel surface never renders tool results, so the applier's
         # confirmation has no user-facing sink here; this log is the operator's
         # record (the applier itself SEL-audits every outcome). Failures log at
@@ -455,6 +579,93 @@ def conversation_is_muted(sessions: Any, turn: ChannelTurn) -> bool:
     return delivery_is_muted(sessions, turn.session_key, turn.channel_type)
 
 
+def consume_reinjection(sessions: Any, session_key: str) -> bool:
+    """Read-and-clear the one-shot post-compaction re-injection flag.
+
+    ``session_compaction`` marks it after a successful in-place compaction,
+    because compaction drops the session-start context (skills index, member
+    section, response preferences). The turn that consumes it passes the value
+    to ``build_message`` as ``needs_reinjection`` so that context comes back
+    exactly once. Every channel turn loop reads it through this one helper: a
+    per-channel copy of the turn loop that skips it re-injects nothing after
+    ``/compact``.
+
+    Defensive on the accessor: a session stand-in that predates the flag gets
+    the safe ``False``, never an AttributeError on a real inbound message.
+    """
+    consume = getattr(sessions, "consume_needs_reinjection", None)
+    return bool(consume(session_key)) if callable(consume) else False
+
+
+def stop_reason_landed(stop_reason: str | None) -> bool:
+    """Whether the turn that ended with *stop_reason* landed, for re-injection.
+
+    ``None`` means no completion was observed at all -- the stream exhausted or
+    was cut without an ``EVENT_COMPLETE`` -- and that is never landed: nothing
+    proves the prompt reached the conversation. A string is a completion's
+    stop reason, judged as an allowlist through the one stop-reason classifier
+    every completion consumer shares: only a ``succeeded`` class (``end_turn``,
+    or an empty reason from a provider that never populates the field) proves
+    the prompt -- and the re-injected context it carried -- is now part of the
+    conversation. Every other terminal is a turn the backend did not complete:
+    ``cancelled`` (the backend drops a cancelled turn from its transcript),
+    ``stale_recover`` and ``error: tool stall`` (synthetic completions for a
+    wedged turn), ``refusal`` and the ``error:`` family. All of those leave the
+    consumed flag to be re-armed.
+    """
+    if stop_reason is None:
+        return False
+    return classify_stop_reason(stop_reason).is_success
+
+
+def driver_turn_landed(driver: Any) -> bool:
+    """:func:`stop_reason_landed` for a completed ``TurnDriver.run``.
+
+    ``run`` returns normally on every terminal the backend synthesises a
+    completion for, a user cancel included, and also when the stream simply
+    ends without one, so the driver records both the stop reason and whether a
+    completion was observed. Defensive on the attributes, like every other
+    read on the driver seam, in the fail-safe direction: a stand-in that
+    reports no completion is not landed, so the worst case is one extra
+    re-injection rather than a lost one.
+    """
+    if not getattr(driver, "completion_observed", False):
+        return stop_reason_landed(None)
+    return stop_reason_landed(getattr(driver, "last_stop_reason", "") or "")
+
+
+def rearm_reinjection(sessions: Any, session_key: str, *, consumed: bool, landed: bool) -> None:
+    """Put the one-shot flag back when this turn consumed it but never landed.
+
+    The flag is cleared BEFORE ``build_message``, so a turn that then dies -- a
+    provider error, a driver fault, a cancel -- has discarded the prompt that
+    carried the re-injected context, and without this the session runs without
+    its skills index (and a member DM without its rules) until the next
+    compaction. This is the contract the dashboard runner already keeps in its
+    own ``finally`` (``chat_runner``: re-arm when consumed and not landed); the
+    channel loops share it so the two paths cannot disagree.
+
+    ``landed`` means the turn was recorded a success. A cancelled turn is NOT
+    landed: the backend drops a cancelled turn from its own transcript, so the
+    context it carried is gone with it. Call from the turn's ``finally`` so every
+    exit path is covered. Never raises: a failure to re-arm is logged and the
+    turn's own outcome stands.
+    """
+    if not consumed or landed:
+        return
+    mark = getattr(sessions, "mark_needs_reinjection", None)
+    if not callable(mark):
+        return
+    try:
+        mark(session_key)
+    except Exception:
+        logger.debug(
+            "re-arming post-compaction re-injection failed session=%s",
+            session_key,
+            exc_info=True,
+        )
+
+
 def hook_auto_reply(ctx_builder: Any, text: str) -> str | None:
     """The canned answer a user-defined ``on_message`` hook gives *text*, else None.
 
@@ -501,6 +712,10 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
     renderer = turn.renderer
     session_key = turn.session_key
     _acquired = False
+    # Post-compaction re-injection bookkeeping for the finally: whether this
+    # turn consumed the one-shot flag, and whether it landed (recorded success).
+    needs_reinjection = False
+    _turn_landed = False
     # Enforced governance backstop. Channels SHOULD gate earlier (before any
     # side effect such as a command ack or a generation bump — see the weixin
     # dispatcher, which checks before parse_command), but the pipeline rechecks
@@ -557,6 +772,9 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # always did. Widening the call for everyone would make the new field's
         # cost fall on channels that gain nothing from it.
         extra: dict[str, Any] = {"model": turn.model} if turn.model else {}
+        # A linked member session must validate its own memory before a cold
+        # provider start. The same identity is then used for this turn's prompt.
+        memory_store = await session_store_for_turn(ctx_builder, session_key)
         provider, is_new, resumed = await sessions.get_or_create(
             session_key, agent=turn.agent, channel_id=turn.conversation_id, **extra
         )
@@ -637,6 +855,20 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # Publish this turn's session identity so managed MCP tools resolve
         # X-Session-Key; one shared writer lives in messaging.identity.
         await publish_turn_identity(sessions, session_key)
+        # This conversation's own silo, from the session's RECORDED binding and
+        # never from ``turn.agent``: that field carries a kiro-cli template id, a
+        # namespace disjoint from ``cfg.agents``, so a store derived from it
+        # resolves to ``default`` for exactly the crew that configured otherwise.
+        # Resolved on the shared seam rather than per adopter for the same reason
+        # ``minimal_context`` is: every channel on this pipeline has the same
+        # exposure, and one that forgot would silently read the operator's memory.
+        # The member tier was prepared before provider acquisition; unavailable
+        # private memory refuses the turn instead of substituting global memory.
+        # A compaction drops session-start context. Read-and-clear the one-shot
+        # flag so this turn re-injects that context exactly once. The finally
+        # re-arms it if this turn never lands.
+        needs_reinjection = consume_reinjection(sessions, session_key)
+
         # Off-loop: build_message embeds the episodic query (blocking urllib).
         full_message, _ = await run_in_embed_pool(
             ctx_builder.build_message,
@@ -645,9 +877,12 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
             session_key,
             channel_id=turn.conversation_id,
             agent=turn.agent,
+            memory_store=memory_store,
             resumed=resumed,
+            needs_reinjection=needs_reinjection,
             minimal_context=turn.minimal_context,
             runtime_source=turn.channel_type,
+            context_provider=provider,
         )
 
         driver = TurnDriver(
@@ -700,6 +935,10 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
                 session_key,
                 exc_info=True,
             )
+        # The prompt (with any re-injected context) reached the model and the
+        # turn completed, so the finally must NOT restore the one-shot flag --
+        # unless the user cancelled it, which discards that prompt.
+        _turn_landed = driver_turn_landed(driver)
         if turn.persist is not None:
             try:
                 await asyncio.to_thread(turn.persist, turn.user_text, accumulated, is_new)
@@ -770,12 +1009,25 @@ async def drive_turn(turn: ChannelTurn, *, sessions: Any, ctx_builder: Any) -> N
         # quote those rules back into the group in the restart notice. A route
         # whose text is empty is a media-only entry (or nothing), not a cue to
         # reach for the prompt.
-        await spool_refused_turn(channel_type=turn.channel_type, route=turn.inbound_route)
+        if not turn.inbound_restricted:
+            await spool_refused_turn(channel_type=turn.channel_type, route=turn.inbound_route)
+    except UnknownMemoryStore as exc:
+        logger.warning("%s member memory unavailable: %s", turn.channel_type, exc)
+        try:
+            await renderer.on_text_chunk(redact_local_paths(redact(str(exc)))[0][:1000])
+            await renderer.on_done()
+        except Exception:
+            logger.warning("%s: could not display memory refusal", turn.channel_type, exc_info=True)
     except Exception:
         logger.exception("%s transport_dispatch: error handling message", turn.channel_type)
         if _acquired:
             await sessions.record_failure(session_key)
     finally:
+        # A turn that consumed the post-compaction flag but never landed
+        # discarded the prompt carrying the re-injected context; put the flag
+        # back so the next turn re-injects it. First, because nothing below
+        # depends on it and it must run on every exit path.
+        rearm_reinjection(sessions, session_key, consumed=needs_reinjection, landed=_turn_landed)
         # Always finalize the turn, even if get_or_create raised before the
         # semaphore was held. Only release if we actually acquired it.
         #

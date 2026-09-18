@@ -1,14 +1,14 @@
 """Tests for the boot_platform call in the cron child launcher preamble.
 
 Script crons execute in a fresh interpreter built by the launcher preamble in
-``cron_script.run_script_sandboxed``. The preamble never installed a
-``PlatformContext``, so under a non-standalone (companion/enterprise) profile the
-child's first platform-aware operation reached ``current_context()`` with a
-non-standalone profile and no installed context, and failed closed (issue #6431).
+``cron_script.run_script_sandboxed``. The preamble must install a
+``PlatformContext``: without one, under a non-standalone (companion/enterprise)
+profile the child's first platform-aware operation reaches ``current_context()``
+with a non-standalone profile and no installed context, and fails closed.
 
-Every test here drives the REAL launcher through ``run_script_sandboxed``. An
-earlier revision of this file spawned hand-written child scripts that called
-``boot_platform`` themselves; those re-proved library behavior already pinned by
+Every test here drives the REAL launcher through ``run_script_sandboxed``.
+Hand-written child scripts that call ``boot_platform`` themselves would only
+re-prove library behavior already pinned by
 ``test_platform_context.py`` / ``test_cpp_wiring_standalone.py`` /
 ``test_security.py`` and passed with the production change reverted, so they
 guarded nothing. The two cases below are mutation-verified against the three

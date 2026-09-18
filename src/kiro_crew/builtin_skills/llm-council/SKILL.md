@@ -1,6 +1,6 @@
 ---
 name: llm-council
-description: Convene a cross-vendor LLM council — the main session acts as Chairman and spawns several subagents, each pinned to a DIFFERENT model (Anthropic / OpenAI / DeepSeek / Zhipu / Qwen / etc. via kiro-cli). Three modes — synthesis (independent answers merged into one), vote (structured ballots + majority tally), and adversarial (red-team a target artifact into a SHIP/REVISE/REJECT verdict). Use for hard, high-stakes, ambiguous, or subjective questions, group decisions, or reviews where a second (and third) opinion from different model families adds real signal.
+description: Use for hard, high-stakes, ambiguous, or subjective questions, group decisions, or reviews where a second (and third) opinion from different model families adds real signal. Convene a cross-vendor LLM council — the main session acts as Chairman and spawns several subagents, each pinned to a DIFFERENT model (Anthropic / OpenAI / DeepSeek / Zhipu / Qwen / etc. via kiro-cli). Three modes — synthesis (independent answers merged into one), vote (structured ballots + majority tally), and adversarial (red-team a target artifact into a SHIP/REVISE/REJECT verdict).
 triggers: ask the council, convene the council, council on this, panel of models, vote on this, models vote, red-team, adversarial review, other models say, cross-check with other models, second opinion from multiple models
 inject_on_trigger: false
 ---
@@ -218,23 +218,9 @@ backend — `kas_permissions.allowed_tools_to_permissions` converts it into a KA
 inline policy that is then ceiling-clamped, and shipped in-process callers pass it —
 it is simply not reachable from `spawn_run`.
 
-> **Future work: expose `allowed_tools` on `spawn_run`.** Surface the per-subagent
-> tool allowlist the ACP backend already enforces, so council members are
-> config-scoped to the read-only research set above instead of relying on a prompt
-> guardrail.
-
 ## Presenting to the user
 
 Show each member's output labeled by **model** (transparency — only the Chairman's
 *judging* is brand-blind). Then: synthesis → the final answer + dissent/confidence
 note; vote → the tally + verdict; adversarial → the consolidated verdict + required
 changes.
-
-## Ceiling / upgrade path
-
-Prompt-and-orchestration only — no Kiro Crew core changes. If it proves valuable,
-promote to a first-class `council` MCP tool over `SubagentManager` (which already
-accepts a per-subagent `model=`) or a `workflow_run` template — a monitorable,
-one-call primitive with per-member model + mode selection, and a read-only tool
-**trust profile** (the future work above) so members are config-scoped, not
-prompt-scoped.

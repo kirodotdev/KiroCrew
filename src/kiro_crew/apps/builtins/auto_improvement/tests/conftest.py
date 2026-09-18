@@ -22,8 +22,9 @@ and still failed in CI. Measured: ``git var GIT_AUTHOR_IDENT`` with both config 
 
 Setting the identity through the ENVIRONMENT fixes it for every subprocess without touching
 any repository's config, and mirrors what several tests in this directory already do inline
-(``test_suite_scope.py``, ``test_dogfood_learnings.py``). ``autouse`` + ``session`` scope so a
-test that shells out to git cannot forget it. Deliberately NOT a real address, so a commit
+(``test_suite_scope.py``, ``test_dogfood_learnings.py``). ``autouse`` and function-scoped: a
+test that shells out to git cannot forget it, and the identity is undone with the test, so a
+later suite on the same xdist worker never inherits it. Deliberately NOT a real address, so a commit
 that escaped a temporary directory would be obvious in a log.
 
 ## Why the data home is redirected here
@@ -33,7 +34,7 @@ that escaped a temporary directory would be obvious in a log.
 against. ``write_json_atomic`` REPLACES the document rather than merging, so the live
 ``target_url``/``target_display`` are dropped and ``clone`` is left naming a pytest temporary
 directory that is reaped when the session ends. The app's page then renders with no repository,
-and calibration refuses because the configured clone no longer exists.
+and calibration refuses because the configured clone does not exist.
 
 Nothing in the suite fails when that happens — the damage lands outside the assertions — so the
 redirect is ``autouse``: a per-file opt-in fixture only protects the files that remember to ask
@@ -45,6 +46,7 @@ one.
 from __future__ import annotations
 
 import os
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -61,17 +63,18 @@ _GIT_IDENTITY = {
 }
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _git_identity_for_production_commit_paths() -> None:
-    """Give every ``git commit`` in this suite an identity, on any host.
+@pytest.fixture(autouse=True)
+def _git_identity_for_production_commit_paths(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
+    """Provide missing git identity fields only for the current test.
 
-    ``os.environ`` directly rather than ``monkeypatch``: that fixture is function-scoped and
-    this has to hold for the whole session, including subprocesses launched from module-level
-    helpers. Pre-existing values are left alone so a developer who has deliberately exported
-    an identity keeps it.
+    Git subprocesses inherit these fields, so a longer-lived patch would give
+    unrelated tests on the same worker an identity they did not request.
+    Explicitly exported values are left unchanged.
     """
     for key, value in _GIT_IDENTITY.items():
-        os.environ.setdefault(key, value)
+        if key not in os.environ:
+            monkeypatch.setenv(key, value)
+    yield
 
 
 @pytest.fixture(autouse=True)

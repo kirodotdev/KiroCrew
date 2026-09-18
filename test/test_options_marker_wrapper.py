@@ -1,4 +1,4 @@
-"""Tests for Markdown-wrapped ``[OPTIONS:]`` markers (#9110).
+"""Tests for Markdown-wrapped ``[OPTIONS:]`` markers.
 
 A model sometimes wraps the whole marker line in inline code or emphasis --
 ``` `[OPTIONS: A | B]` ``` or ``**[OPTIONS: A | B]**``. The wrapper character
@@ -20,10 +20,9 @@ regression risk (a widened grammar swallowing genuine prose):
 
 from __future__ import annotations
 
-import time
-
 import pytest
 
+from conftest import assert_rejected_without_backtracking
 from kiro_crew.constants import (
     MARKER_WRAPPERS,
     OPTIONS_RE_LINE,
@@ -107,9 +106,9 @@ class TestScopeStaysTight:
         assert [s.strip() for s in match.group("labels").split("|")] == ["Alpha", "Beta"]
 
     def test_multiline_emphasis_closer_is_not_consumed(self):
-        # GPT round 4: emphasis opened on a PRIOR line, closed abutting the
-        # marker's closer. The trailing run was not opened by the marker, so
-        # the marker must not match at all -- the emphasis pair survives.
+        # Emphasis opened on a PRIOR line, closed abutting the marker's closer:
+        # the trailing run was not opened by the marker, so the marker must not
+        # match at all -- the emphasis pair survives.
         text = "**Choose one\n[OPTIONS: Alpha | Beta]**"
         assert OPTIONS_RE_LINE.search(text) is None
         assert OPTIONS_RE_TRAILER.search(text) is None
@@ -124,7 +123,7 @@ class TestScopeStaysTight:
 
     def test_labels_group_contract(self):
         # The ``lwrap`` conditional group precedes ``labels``, so positional
-        # ``group(1)`` no longer means the labels: every consumer reads
+        # ``group(1)`` is not the labels: every consumer reads
         # ``group("labels")`` and iterates with ``finditer``.
         for pattern in (OPTIONS_RE_LINE, OPTIONS_RE_TRAILER):
             match = pattern.search("`[OPTIONS: A | B]`")
@@ -163,9 +162,9 @@ class TestStreamingSplitAgrees:
         assert suffix == "[OPTIONS: A"
 
     def test_hide_partial_cut_takes_a_line_leading_wrapper_along(self):
-        # GPT round-3 finding on 5b593b50a: the streaming trim cut a partial
-        # marker at its ``[`` and published the stray leading wrapper for the
-        # frame. The cut now applies the same line-leading rule as the grammar.
+        # The streaming trim can cut a partial marker at its ``[``; it must not
+        # publish the stray leading wrapper for the frame, so the cut applies
+        # the same line-leading rule as the grammar.
         visible, choices = split_options_trailer("body\n**[OPTIONS: A", hide_partial=True)
         assert visible == "body"
         assert choices == []
@@ -190,10 +189,14 @@ class TestNoRedosRegression:
 
     def test_adversarial_wrapper_runs_stay_linear(self):
         # CWE-1333: the new optional groups must not create a second parse of
-        # long runs around a marker that never completes.
-        evil = ("`" * 100_000) + "[OPTIONS:" + ("\t" * 100_000) + "x"
-        start = time.perf_counter()
-        assert OPTIONS_RE_LINE.search(evil) is None
-        assert OPTIONS_RE_TRAILER.search(evil) is None
-        elapsed = time.perf_counter() - start
-        assert elapsed < 1.0, f"marker match too slow ({elapsed:.2f}s) — may backtrack"
+        # long runs around a marker that never completes. Both runs -- the
+        # leading wrapper run and the trailing tab run -- grow with the pump;
+        # see conftest.assert_rejected_without_backtracking for why this is a
+        # thread-CPU ramp rather than a 1.0 s wall clock.
+        def reject(text: str) -> None:
+            assert OPTIONS_RE_LINE.search(text) is None
+            assert OPTIONS_RE_TRAILER.search(text) is None
+
+        assert_rejected_without_backtracking(
+            reject, lambda n: ("`" * n) + "[OPTIONS:" + ("\t" * n) + "x"
+        )

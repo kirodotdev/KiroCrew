@@ -102,7 +102,7 @@ def _load_for_update() -> list[dict[str, Any]]:
     truncated ledger under-reports access that is still working. The error
     propagates and the mutation is abandoned instead.
 
-    Corruption propagates too (#7805, mirroring #7794): a document that failed
+    Corruption propagates too: a document that failed
     to parse carries nothing to merge into, but "cannot merge into" is not
     "safe to destroy". A truncated file still holds most of its records
     verbatim, and replacing it discards the operator's only chance to recover

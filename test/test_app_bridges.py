@@ -290,7 +290,7 @@ class TestAgentRegistration:
         """A rebuild must never destroy the working config before its replacement
         is durable.
 
-        The refresh used to unlink any existing file first, then write. On a
+        Unlinking any existing file before writing is the hazard: on a
         startup reconciliation that hit a disk-full write, the unlink had already
         removed the config and the write failed — so the agent DISAPPEARED. A
         regular file is now left in place for atomic_write's rename to swap, so a
@@ -1757,7 +1757,7 @@ class TestStdioInterpreterResolution:
 
 class TestBackendSharesTheInterpreterPolicy:
     """The backend launcher and the stdio MCP registration must keep answering
-    identically — two divergent interpreter policies is the defect #1807 names.
+    identically — two divergent interpreter policies are a defect.
     These pin the shared helper to the backend's historical behaviour, so a
     change to the helper's answer fails here rather than shipping a silent
     policy fork."""
@@ -3914,7 +3914,7 @@ class TestRebuildPreservesTheLiveMcpSpec:
         class _M:
             mcpServers = {"srv": {"url": "http://127.0.0.1:9100/mcp"}}  # illustrative
 
-        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec: spec)
+        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec, *, audit=True: spec)
         import kiro_crew.apps.bridges as bridges
         import kiro_crew.apps.manager as manager
 
@@ -3934,8 +3934,9 @@ class TestRebuildPreservesTheLiveMcpSpec:
 
         class _M:
             mcpServers = {"srv": {"url": "http://127.0.0.1:9100/mcp"}}
+            backend = SimpleNamespace(entryPoint="backend.py")
 
-        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec: spec)
+        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec, *, audit=True: spec)
         import kiro_crew.apps.bridges as bridges
         import kiro_crew.apps.manager as manager
 
@@ -3952,7 +3953,7 @@ class TestRebuildPreservesTheLiveMcpSpec:
         class _M:
             mcpServers = {"srv": {"command": "run", "args": ["x"]}}
 
-        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec: spec)
+        monkeypatch.setattr(agent, "_ceiling_filtered_spec", lambda ref, spec, *, audit=True: spec)
         import kiro_crew.apps.bridges as bridges
         import kiro_crew.apps.manager as manager
 
@@ -4072,7 +4073,7 @@ class TestRegisterPrunesUpgradedAwayResources:
         assert (app_env["kiro_agents"] / "test-app--my-agent.json").is_file()
 
         # Simulate resources a PRIOR manifest version registered that the current
-        # manifest no longer declares.
+        # manifest does not declare.
         ghost_link = app_env["kiro_agents"] / "test-app--ghost.json"
         ghost_link.write_text("{}", encoding="utf-8")
         with bridges_mod._mcp_lock():
@@ -4386,7 +4387,7 @@ class TestRegisterAgentsSnapshotUpkeep:
         assert calls == []
 
     def test_refresh_is_scheduled_even_when_nothing_was_registered(self, monkeypatch):
-        # A re-registration whose manifest no longer declares an agent (or that
+        # A re-registration whose manifest does not declare an agent (or that
         # follows a prune) writes nothing. Skipping the rescan there would leave
         # the removed name dispatchable in memory, and kiro-cli would silently
         # fall back to its own default for a name it cannot load.
@@ -4410,7 +4411,7 @@ class TestRegisterAgentsSnapshotUpkeep:
 
 
 class TestRefreshAppAgentsReportsIoFailures:
-    """A partial agent rewrite is not a reconciled one (#5726 review).
+    """A partial agent rewrite is not a reconciled one.
 
     `_register_agents` skips a failing agent and continues, so a write that hit ENOSPC
     left the agent JSON holding the dead MCP url while the caller was told the refresh
@@ -4492,7 +4493,7 @@ class TestRefreshAppAgentsReportsIoFailures:
 
 
 class TestDemotionKeepsBackendIndependentServers:
-    """A dead HTTP backend must not take an app's stdio tools with it (#5726 review).
+    """A dead HTTP backend must not take an app's stdio tools with it.
 
     stdio/command servers are launched by kiro-cli itself and have no port to be dead.
     Blanket-deregistering every `<app>:` entry on demotion removed working tools for a
@@ -4573,7 +4574,7 @@ class TestScrubFallsBackWhenTheManifestCannotSay:
 
 
 class TestLifecycleWritersShareTheHealthSerialization:
-    """Both families of writer hold one lock (#5726 review).
+    """Both families of writer hold one lock.
 
     An app's mcp.json entries and its materialized agents are written by the lifecycle
     paths here AND by the backend's health watch. Unserialized, the two can interleave
@@ -4708,7 +4709,7 @@ class TestRenderFailureIsClassifiedByCause:
 
 
 class TestScrubNeverDeletesMaterializedAgents:
-    """The scrub fallback must not delete agent files (#5726 review).
+    """The scrub fallback must not delete agent files.
 
     Deleting them is unrecoverable — it takes the user-owned fields
     `_preserve_user_agent_edits` carries across every refresh — while what it would
@@ -4793,7 +4794,7 @@ class TestUnreadableManifestIsNotASilentRegistration:
 
 
 class TestScrubDoesNotRematerializeAgents:
-    """The scrub must not write agents (#5726 review).
+    """The scrub must not write agents.
 
     `reregister_app_mcp_servers` calls `_register_agents` internally, so routing the
     scrub through it re-materialized this app's agent configs BEFORE the caller's

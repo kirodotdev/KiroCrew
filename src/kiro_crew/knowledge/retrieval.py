@@ -15,6 +15,7 @@ except ImportError:
     import sqlite3
 
 from .._sqlite_compat import fts5_cjk_match_groups, is_cjk_char
+from .embedder import embedder_signature
 from .store import KnowledgeStore
 
 logger = logging.getLogger(__name__)
@@ -63,6 +64,15 @@ _STOPWORDS = frozenset({
 # dominate when the keyword leg returns weak/literal junk.
 VECTOR_RRF_WEIGHT = 2.0
 
+# Opt OUT of the vector leg's embedding-space predicate, for a caller holding a
+# bare ``callable(str) -> list[float]`` with no declarable vector-space identity
+# (ad-hoc probes and the tests of the dimension guard itself). It has to be NAMED
+# and PASSED rather than reachable by omission: the predicate fails OPEN, so an
+# absent signature scores every space against every query and nothing goes red.
+# Spelled with characters a signature cannot contain -- they are lowercase hex
+# digests -- so it can never collide with a real one.
+ANY_EMBEDDING_SPACE = "<any-embedding-space>"
+
 
 def _stored_item_ids(raw: str | bytes | None) -> Any:
     """A state row's ``item_ids`` JSON column, decoded as stored.
@@ -80,13 +90,52 @@ def _stored_item_ids(raw: str | bytes | None) -> Any:
         return []
 
 
+def vector_leg(embedder) -> tuple[Any, str | None]:
+    """The vector leg's ``(query embedder, stored-signature)`` pair, resolved together.
+
+    A query vector may only be scored against item vectors from the SAME
+    embedding space, and the signature is the only thing that establishes it —
+    so the two values are resolved in one place and handed to
+    :class:`HybridRetriever` together, rather than each call site wiring an
+    embedder and separately remembering to wire its identity. ``None`` in (no
+    embedder, or the model is not available yet) gives ``(None, None)``: the leg
+    is off and search answers from FTS5 + graph.
+    """
+    if embedder is None:
+        return None, None
+    return embedder.embed, embedder_signature(embedder)
+
+
 class HybridRetriever:
     """FTS5 keyword + graph traversal + optional vector search, fused with RRF."""
 
-    def __init__(self, store: KnowledgeStore, embedder=None):
-        """store: KnowledgeStore instance. embedder: optional callable(str) -> list[float]."""
+    def __init__(self, store: KnowledgeStore, embedder=None, *, embed_sig: str | None = None):
+        """store: KnowledgeStore instance. embedder: optional callable(str) -> list[float].
+
+        ``embed_sig`` is the :func:`~kiro_crew.knowledge.embedder.embed_signature`
+        value the query vectors belong to; only items stamped with it are scored
+        (see :meth:`_vector_search`). Resolve the pair through :func:`vector_leg`,
+        which cannot hand back one without the other.
+
+        Wiring an embedder REQUIRES a signature, because the predicate it feeds
+        fails OPEN: an omitted one scores every stored vector, including
+        old-space vectors of the same width, and no assertion anywhere goes red
+        for it. So the mistake is a ``ValueError`` at construction — a cost paid
+        once per call site, by a caller that already holds the embedder the
+        signature is read from — and the deliberate unfiltered case is spelled
+        :data:`ANY_EMBEDDING_SPACE`. Without an embedder the leg is off and the
+        signature is moot, so ``None`` stands there.
+        """
+        if embedder is not None and not embed_sig:
+            raise ValueError(
+                "HybridRetriever(embedder=...) requires embed_sig: an unpinned vector leg "
+                "scores stored vectors from any embedding space, including a foreign one of "
+                "the same width. Resolve the pair with retrieval.vector_leg(embedder), or "
+                "pass embed_sig=ANY_EMBEDDING_SPACE to score every space deliberately."
+            )
         self.store = store
         self.embedder = embedder
+        self.embed_sig = embed_sig
 
     def search(
         self,
@@ -246,6 +295,11 @@ class HybridRetriever:
         - the aggregate artifact source -> ``artifact_slug`` + ``artifact_name``
           (from ``artifact_item_state``), so a citation can name the artifact
           and deep-link to ``/artifacts/<slug>``.
+        - the aggregate agent source -> ``source_uri`` is REPLACED with the
+          document's own stored locator (from ``agent_item_state``), since the
+          aggregate row's ``agent://`` is a control uri, not a citation. Rows
+          written before the locator was stored carry NULL and keep the
+          aggregate uri.
         - every other source type -> nothing extra; ``source_uri`` is already the
           document locator (uploads, quip, etc.).
 
@@ -274,6 +328,8 @@ class HybridRetriever:
                        and meta[sid]["source_type"] in ("local_folder", "obsidian_vault")]
         artifact_sids = [sid for sid in sid_list if sid in meta
                          and meta[sid]["source_type"] == "artifact"]
+        agent_sids = [sid for sid in sid_list if sid in meta
+                      and meta[sid]["source_type"] == "agent"]
 
         item_to_file: dict[str, str] = {}
         for sid in folder_sids:
@@ -293,6 +349,17 @@ class HybridRetriever:
                 for item_id in _stored_item_ids(row["item_ids"]):
                     item_to_artifact[item_id] = (row["slug"], row["name"])
 
+        item_to_agent_uri: dict[str, str] = {}
+        for sid in agent_sids:
+            for row in self.store.db.execute(
+                "SELECT source_uri, item_ids FROM agent_item_state WHERE source_id = ?",
+                (sid,),
+            ).fetchall():
+                if not row["source_uri"]:
+                    continue  # legacy row: the aggregate uri stands
+                for item_id in _stored_item_ids(row["item_ids"]):
+                    item_to_agent_uri[item_id] = row["source_uri"]
+
         for result in results:
             sid = result.get("source")
             row = meta.get(sid) if isinstance(sid, str) else None
@@ -306,6 +373,9 @@ class HybridRetriever:
             artifact = item_to_artifact.get(result["id"])
             if artifact:
                 result["artifact_slug"], result["artifact_name"] = artifact
+            agent_uri = item_to_agent_uri.get(result["id"])
+            if agent_uri:
+                result["source_uri"] = agent_uri
 
     def _keyword_search(
         self,
@@ -364,8 +434,8 @@ class HybridRetriever:
         so it is treated as a literal FTS5 string -- the user's input never
         contributes FTS5 operators (parameterized quoting). Stopwords are dropped
         and the remaining tokens OR-joined
-        so natural-language queries no longer require every
-        literal token to appear in a matching document.
+        so natural-language queries need not have every
+        literal token appear in a matching document.
 
         A CJK run is one whitespace token but several words, so it expands to its
         adjacent-character phrases instead of being matched whole; queries with
@@ -437,6 +507,19 @@ class HybridRetriever:
     ) -> list[tuple[str, int]] | None:
         """Brute-force cosine similarity against stored embeddings. Returns None if no embedder.
 
+        Candidate selection pins ``embedding_sig`` to the query's own embedding
+        space (``embed_sig``, which the constructor requires alongside an
+        embedder). This is the READ-SIDE REFUSAL that makes an embedding-model
+        change safe: a vector from another space that happens to have the SAME
+        WIDTH is invisible to the dimension guard below, so without the predicate
+        it is cosine-scored against this query and returned with a confident
+        score. A NULL signature — an item never stamped — is likewise unproven
+        and drops out until the sig-gated rebuild re-stamps it. The KB degrades
+        to FTS5 + graph rather than serving stale vectors.
+
+        :data:`ANY_EMBEDDING_SPACE` is the one value that drops the predicate,
+        and only a caller with no declarable identity may pass it.
+
         ``source_id`` narrows candidates to items of one source via a
         parameterized WHERE clause (never string interpolation). ``namespace``
         narrows to items carrying that ``items.namespace`` label the same way;
@@ -450,6 +533,9 @@ class HybridRetriever:
             return None
         sql = "SELECT id, embedding FROM items WHERE embedding IS NOT NULL AND status = 'active'"
         params: list[object] = []
+        if self.embed_sig != ANY_EMBEDDING_SPACE:
+            sql += " AND embedding_sig = ?"
+            params.append(self.embed_sig)
         if source_id is not None:
             # Ownership OR location — same membership rule as _keyword_search.
             sql += (

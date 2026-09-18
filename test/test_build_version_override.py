@@ -19,13 +19,17 @@ Pinned here: the shape rule (only the base, or the base plus ``.N`` numeric
 segments over a bare numeric base, is honoured; anything else is refused with
 a warning and the base stays); the file resolution (absent, blank, unreadable,
 foreign, valid); and the reach -- in a fresh interpreter importing a package
-that carries the file, the dashboard's import-time copies, ``version_display``
-and ``--version`` all report the stamp, and the governance floor sees it too.
+that DECLARES A PINNED BARE RELEASE and carries the file, the dashboard's
+import-time copies, ``version_display`` and ``--version`` all report the stamp,
+and the governance floor sees it too. The reach half synthesizes the package it
+imports, so this checkout's own ``__version__`` is not an input to any
+assertion here -- see ``_PINNED_BASE``.
 """
 
 from __future__ import annotations
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -39,6 +43,32 @@ from kiro_crew import _build_version_override as build_version_override
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC = REPO_ROOT / "src"
 PKG_DIR = SRC / "kiro_crew"
+
+# The version the reach tests' synthesized package DECLARES. Pinned here, never
+# read from ``kiro_crew.__version__``, because a stamp is honoured only over a
+# BARE numeric base: an expectation computed from the checkout (``f"{live}.12"``)
+# holds on ``main``, which declares a bare release, and fails on any checkout
+# that does not -- an insider release branch declares ``X.Y.Z-rc.N`` by contract
+# (docs/build/release.md), and that is the branch ``release.yml``'s
+# ``release-candidate-tests`` runs this whole suite over for every prerelease
+# tag; a nightly tree carries ``.dev<stamp>``, an insider wheel its own suffix.
+# The fixture below writes that package's ``__init__.py``, so it already OWNS
+# this input; pinning it is what makes this file's verdict the same on every
+# branch.
+#
+# MUST NOT be ``9.9.9``: ``test_a_refused_file_leaves_every_copy_on_the_base``
+# uses ``9.9.9.1`` as its deliberately FOREIGN stamp, and a base of ``9.9.9``
+# would silently turn that into a valid build of the base and invert the test.
+_PINNED_BASE = "0.6.0"
+
+# The same base in the spelling the release lanes declare, for the refusal half:
+# ``<prerelease>.N`` is not a PEP 440 release, so the stamp must be refused.
+_PINNED_PRERELEASE_BASE = "0.6.0-rc.1"
+
+# The one assignment line ``__init__.py`` holds, pinned by
+# ``test_the_assignment_line_is_still_the_first_version_match`` and rewritten by
+# the release lanes' own sed. Anchored the same way here.
+_VERSION_LINE = re.compile(r'^__version__ = "[^"]*"', re.MULTILINE)
 
 
 # ── build_version_override: the shape rule ──────────────────────────────────
@@ -165,19 +195,29 @@ def test_an_undecodable_file_keeps_the_base(tmp_path) -> None:
 # ── reach: a fresh interpreter importing a package that carries the file ────
 
 
-def _stamped_package_root(tmp_path: Path, stamp: str | None) -> Path:
+def _stamped_package_root(tmp_path: Path, stamp: str | None, base: str = _PINNED_BASE) -> Path:
     """A ``kiro_crew`` package that IS the source tree's, with the file beside it.
 
-    ``__init__.py`` is a byte copy of the real one (the code under test) plus a
+    ``__init__.py`` is a byte copy of the real one (the code under test) apart
+    from its ``__version__`` literal, which is rewritten to *base*, plus a
     ``__path__`` line that points submodule resolution back at ``src/kiro_crew``,
     so ``kiro_crew.dashboard...`` imports the real modules while
     ``kiro_crew.__file__`` -- the anchor the stamp is read beside -- is the
     copy. Nothing is written into the source tree, and no symlink is needed.
+
+    The literal is REWRITTEN rather than inherited so the declared version is an
+    input this fixture owns instead of one the checkout supplies; ``_PINNED_BASE``
+    carries why that matters.
     """
     root = tmp_path / "pkgroot"
     pkg = root / "kiro_crew"
     pkg.mkdir(parents=True)
     init_src = (PKG_DIR / "__init__.py").read_text(encoding="utf-8")
+    init_src, rewritten = _VERSION_LINE.subn(f'__version__ = "{base}"', init_src, count=1)
+    # Load-bearing: a refactor that moved or renamed the literal would otherwise
+    # silently hand the tests the checkout's own version back and recreate the
+    # branch-dependent expectation the pin exists to remove.
+    assert rewritten == 1, "no __version__ assignment found in kiro_crew/__init__.py"
     (pkg / "__init__.py").write_text(
         init_src + f"\n__path__.append({str(PKG_DIR)!r})\n", encoding="utf-8"
     )
@@ -186,8 +226,10 @@ def _stamped_package_root(tmp_path: Path, stamp: str | None) -> Path:
     return root
 
 
-def _fresh_interpreter(tmp_path: Path, stamp: str | None, code: str) -> subprocess.CompletedProcess:
-    root = _stamped_package_root(tmp_path, stamp)
+def _fresh_interpreter(
+    tmp_path: Path, stamp: str | None, code: str, base: str = _PINNED_BASE
+) -> subprocess.CompletedProcess:
+    root = _stamped_package_root(tmp_path, stamp, base)
     env = dict(os.environ)
     # The stamped package root first; the parent's sys.path follows only for
     # third-party deps. No bytecode: the child must leave nothing behind, in
@@ -228,44 +270,99 @@ def _parse(out: str) -> dict[str, str]:
     return dict(line.split(" ", 1) for line in out.strip().splitlines())
 
 
+def _every_copy(value: str, channel: str) -> dict[str, str]:
+    """The whole ``_REACH_PROBE`` payload when every reader agrees on *value*.
+
+    Spelled as one dict so a reader that stops reporting is a failure rather
+    than a key nobody asserts.
+    """
+    return {
+        "version": value,
+        "updates": value,  # -> the About chip's version_display
+        "ws": value,  # -> the reload-on-upgrade compare
+        # -> the About chip. A fresh interpreter holds no feed answer, so
+        # ``_display_local_version`` has no channel to key the fold on; and on
+        # ``<base>.N`` the stable fold would be the identity anyway, because
+        # ``base_version`` keeps a fourth numeric segment.
+        "display": value,
+        "health": value,  # -> /api/health identity for the desktop guard
+        "channel": channel,
+    }
+
+
+def test_an_unstamped_package_reports_its_declared_version_silently(tmp_path) -> None:
+    """The baseline every ordinary install runs on: no file, so the declared
+    version stands everywhere -- and NOTHING is logged.
+
+    The silence is the half nothing else holds. ``_apply_build_version_file``
+    returns the base from an ``except (OSError, ValueError)`` that deliberately
+    does not warn, because absent is the normal case, and
+    ``test_no_file_keeps_the_base`` above only checks its RETURN value; folding
+    the absent branch into the refusal branch would print a ``BUILD_VERSION``
+    warning at import for every user of the project and no other test would
+    notice.
+    """
+    proc = _fresh_interpreter(tmp_path, None, _REACH_PROBE)
+    assert proc.returncode == 0, proc.stderr
+    assert _parse(proc.stdout) == _every_copy(_PINNED_BASE, "stable")
+    assert BUILD_VERSION_FILENAME not in proc.stderr
+
+
 def test_the_stamp_reaches_every_import_time_copy(tmp_path) -> None:
     """The property the file exists for: a package carrying it names the build
-    everywhere a user can read a version."""
-    base = _fresh_interpreter(tmp_path / "a", None, _REACH_PROBE)
-    assert base.returncode == 0, base.stderr
-    got_base = _parse(base.stdout)
-    stamped = f"{got_base['version']}.12"
+    everywhere a user can read a version.
 
-    proc = _fresh_interpreter(tmp_path / "b", stamped + "\n", _REACH_PROBE)
+    The expectation is a literal over ``_PINNED_BASE``, so it is the same on
+    every branch this runs on.
+    """
+    stamped = f"{_PINNED_BASE}.12"
+    proc = _fresh_interpreter(tmp_path, stamped + "\n", _REACH_PROBE)
     assert proc.returncode == 0, proc.stderr
-    got = _parse(proc.stdout)
-    assert got["version"] == stamped
-    assert got["updates"] == stamped  # -> the About chip's version_display
-    assert got["ws"] == stamped  # -> the reload-on-upgrade compare
-    assert got["display"] == stamped  # base_version is the identity on <base>.N
-    assert got["health"] == stamped  # -> /api/health identity for the desktop guard
-    assert got["channel"] == "stable"  # no prerelease marker: still a stable build
+    # "stable": a <base>.N stamp carries no prerelease marker, so a stamped
+    # build classifies exactly as its base would.
+    assert _parse(proc.stdout) == _every_copy(stamped, "stable")
     assert BUILD_VERSION_FILENAME not in proc.stderr
 
 
 def test_a_refused_file_leaves_every_copy_on_the_base(tmp_path) -> None:
-    base = _fresh_interpreter(tmp_path / "a", None, _REACH_PROBE)
-    got_base = _parse(base.stdout)
-    proc = _fresh_interpreter(tmp_path / "b", "9.9.9.1\n", _REACH_PROBE)
+    """A stamp naming some other base changes nothing, and says so once.
+
+    The expectation is the declared base spelled out rather than a second
+    unstamped run's output: comparing two runs cannot distinguish "refused
+    because foreign" from "refused because this base takes no suffix at all",
+    which is a real state (see the prerelease test below).
+    """
+    proc = _fresh_interpreter(tmp_path, "9.9.9.1\n", _REACH_PROBE)
     assert proc.returncode == 0, proc.stderr
-    assert _parse(proc.stdout) == got_base
+    assert _parse(proc.stdout) == _every_copy(_PINNED_BASE, "stable")
     assert BUILD_VERSION_FILENAME in proc.stderr  # the one warning, on stderr
+
+
+def test_a_stamp_over_a_prerelease_base_is_refused_end_to_end(tmp_path) -> None:
+    """The release lanes' own case, on the real import path: a release branch,
+    a nightly tree and an insider wheel all declare a prerelease version, and
+    ``<prerelease>.N`` is not a PEP 440 release. The stamp is refused with one
+    warning, every copy stays on the declared base, and the base still reads as
+    the insider channel. ``test_a_prerelease_base_takes_no_suffix`` pins the
+    rule; this pins that the import path honours it.
+    """
+    proc = _fresh_interpreter(
+        tmp_path,
+        f"{_PINNED_PRERELEASE_BASE}.12\n",
+        _REACH_PROBE,
+        base=_PINNED_PRERELEASE_BASE,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert _parse(proc.stdout) == _every_copy(_PINNED_PRERELEASE_BASE, "insider")
+    assert BUILD_VERSION_FILENAME in proc.stderr
 
 
 def test_the_cli_version_flag_reports_the_build(tmp_path) -> None:
     """``kirocrew --version`` is an argparse ``action="version"`` that reads
     ``__version__`` at parser build; it inherits the stamp with no CLI change."""
-    base = _fresh_interpreter(
-        tmp_path / "a", None, "import kiro_crew; print(kiro_crew.__version__)"
-    )
-    stamped = f"{base.stdout.strip()}.12"
+    stamped = f"{_PINNED_BASE}.12"
     proc = _fresh_interpreter(
-        tmp_path / "b",
+        tmp_path,
         stamped,
         "import sys\nsys.argv = ['kirocrew', '--version']\n"
         "from kiro_crew.cli import main\n"
@@ -286,14 +383,11 @@ def test_the_governance_floor_sees_the_stamp(tmp_path) -> None:
         "print('version', kiro_crew.__version__)\n"
         "print('required', ug.update_required(updates._local_version))\n"
     )
-    base = _fresh_interpreter(
-        tmp_path / "a", None, "import kiro_crew; print(kiro_crew.__version__)"
-    )
-    core = base.stdout.strip()
-    proc = _fresh_interpreter(tmp_path / "b", f"{core}.12\n", code)
+    stamped = f"{_PINNED_BASE}.12"
+    proc = _fresh_interpreter(tmp_path, f"{stamped}\n", code)
     assert proc.returncode == 0, proc.stderr
     got = _parse(proc.stdout)
-    assert got["version"] == f"{core}.12"
+    assert got["version"] == stamped
     # Unpinned in this environment: no floor, so not required. The point is
     # that the floor is evaluated over the STAMPED copy, the same value the
     # gateway's `_running_version` and the status payload carry.
@@ -389,9 +483,10 @@ def test_the_assignment_line_is_still_the_first_version_match() -> None:
     """``build-wheel.yml`` / ``build-desktop.yml`` / ``build-windows.yml`` sed the
     FIRST ``__version__ = "..."`` line, ``nightly.yml`` greps the first line
     naming ``__version__``, and the git-checkout update path regexes the same.
-    The stamp code must not put another candidate ahead of the assignment."""
-    import re
+    The stamp code must not put another candidate ahead of the assignment.
 
+    ``_stamped_package_root`` rewrites that same one line, so this is also what
+    makes its ``count=1`` substitution unambiguous."""
     src = (PKG_DIR / "__init__.py").read_text(encoding="utf-8")
     first_mention = next(line for line in src.splitlines() if "__version__" in line)
     assert re.fullmatch(r'__version__ = "[^"]+"', first_mention), first_mention

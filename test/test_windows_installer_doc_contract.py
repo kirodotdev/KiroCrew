@@ -1,19 +1,20 @@
-"""The Windows install guide may not claim CI coverage the workflow skips.
+"""The Windows install guide's CI claim and `build.yml` must describe one reality.
 
-``.github/scripts/test-windows-installer.ps1`` can start the just-installed
-bundled interpreter and wait for ``/api/ready``. The installer job in
-``build.yml`` cannot use that: it compiles the NSIS package over a synthetic
-``@echo off`` backend payload, so there is no bundled Python and no bytecode
-cache to probe, and it therefore passes ``-SkipGatewayValidation``.
+``build.yml``'s installer job bundles a real python-build-standalone runtime
+carrying the wheel ``build-wheel`` produced, and runs
+``.github/scripts/test-windows-installer.ps1`` with NO skip flag, so the
+installed gateway's readiness probe is a per-PR gate. Documentation that claims
+LESS coverage than CI has is still documentation a maintainer weighs a packaging
+change against, so the guide may not describe that probe as skipped.
 
-``docs/guides/windows-install.md`` asserted the opposite — that CI runs the
-readiness probe "rather than only a synthetic import benchmark". A reader (or a
-maintainer weighing a packaging change) would take that as a standing guarantee.
+The two halves are pinned against each other:
 
-These tests pin the two halves against each other so the claim cannot drift
-back: what the workflow actually invokes, and what the guide is allowed to say
-about it. If a future change makes CI run the probe for real, the first test
-fails and the guide can be restored in the same commit.
+* what the workflow actually invokes, and that its payload can support it;
+* what the guide is allowed to say, which must not describe the
+  probe as skipped.
+
+If a change reintroduces a stub payload, the payload test fails and names the
+reason rather than leaving the guide quietly wrong.
 """
 
 from __future__ import annotations
@@ -48,19 +49,64 @@ def guide() -> str:
     return _read(INSTALL_GUIDE)
 
 
-def test_the_installer_job_skips_gateway_validation(workflow: str) -> None:
-    """The premise the guide's wording depends on, asserted rather than assumed."""
-    invocations = re.findall(r"test-windows-installer\.ps1[^\n']*", workflow)
+def _invocations(workflow: str) -> list[str]:
+    """Every `run:` line that invokes the installer script."""
+    return re.findall(r"test-windows-installer\.ps1[^\n']*", workflow)
+
+
+def test_the_installer_job_runs_gateway_validation(workflow: str) -> None:
+    """The premise the guide's wording now depends on, asserted not assumed.
+
+    A comment mentioning the flag is fine and expected; passing it is not. The
+    match is therefore against the INVOCATION text only, not the whole file.
+    """
+    invocations = _invocations(workflow)
     assert invocations, "build.yml no longer invokes the Windows installer script"
-    assert all(
-        "-SkipGatewayValidation" in call for call in invocations
-    ), f"an installer invocation now runs gateway validation: {invocations}"
+    skipped = [call for call in invocations if "-SkipGatewayValidation" in call]
+    assert not skipped, (
+        "an installer invocation skips gateway validation again; the guide claims "
+        f"it runs per PR: {skipped}"
+    )
 
 
-def test_the_synthetic_payload_is_why_it_is_skipped(workflow: str) -> None:
-    """The skip is a property of the payload, not an arbitrary flag."""
-    assert "kirocrew.cmd" in workflow
-    assert "@echo off" in workflow
+def test_the_payload_can_actually_boot_a_gateway(workflow: str) -> None:
+    """Dropping the flag is only honest while the payload has an interpreter.
+
+    The stub had no ``python.exe``, so the skip was a property of the payload
+    rather than an arbitrary flag. Pin the three things that replaced it: the
+    wheel is consumed, a real interpreter is provisioned, and the measured
+    import closure is precompiled so the script's pyc floor has something to
+    find. Without this test, deleting the assembly step would leave a green
+    invocation that fails only on a Windows runner.
+    """
+    assert "needs: build-wheel" in workflow, "the job does not consume the built wheel"
+    assert "cpython-3.12-windows-x86_64-none" in workflow, "no PBS interpreter is provisioned"
+    assert "precompile_windows.py" in workflow, "the gateway import closure is not precompiled"
+
+
+def test_the_fake_backend_keeps_readiness_offline() -> None:
+    """Readiness must not depend on a real model, a network or a sign-in.
+
+    Asserted on the SCRIPT, which owns the gateway leg's environment: the ACP
+    backend is pointed at the fake one shipping inside the payload under test.
+    A future edit that drops this makes the 30-second ceiling depend on a model
+    download and turns a real gate into a flake.
+    """
+    script = _read(INSTALLER_SCRIPT)
+    assert "KIROCREW_KIRO_BIN" in script
+    assert "kiro_crew.testing.fake_acp_backend" in script
+    assert "KIROCREW_SKIP_MODEL_DOWNLOAD" in script
+
+
+def test_the_readiness_probe_still_exists(workflow: str) -> None:
+    """The guide's wording is load-bearing on the probe existing at all."""
+    script = _read(INSTALLER_SCRIPT)
+    assert "/api/ready" in script
+    # The floor is passed explicitly because this job omits the voice extras the
+    # script's 1000 default describes. A caller that stops passing it would
+    # redden on a Windows runner for a reason unrelated to the artifact.
+    assert "MinStartupPycs" in script
+    assert "-MinStartupPycs" in " ".join(_invocations(workflow))
 
 
 def _readiness_sentences(guide: str) -> list[str]:
@@ -68,52 +114,65 @@ def _readiness_sentences(guide: str) -> list[str]:
     return [s for s in re.split(r"(?<=[.])\s+", guide) if "/api/ready" in s]
 
 
-def test_the_guide_discloses_that_ci_skips_the_readiness_probe(guide: str) -> None:
-    """The residual this file exists for.
+def test_the_guide_does_not_describe_the_probe_as_skipped(guide: str) -> None:
+    """The residual this file exists for, inverted.
 
-    Phrased as a positive requirement rather than "must not say CI": the guide
-    is allowed — and now expected — to mention CI here, provided it says in the
-    same breath that the installer job passes ``-SkipGatewayValidation``.
-    Reinstating the old unqualified claim drops that token and reddens this.
+    The guide must describe the readiness probe, and no sentence describing it
+    may claim the installer job skips it. Leaving the old disclosure in place
+    after the skip was removed understates the coverage a reader is relying on.
     """
     sentences = _readiness_sentences(guide)
     assert sentences, "the guide no longer describes the readiness probe at all"
-    for sentence in sentences:
-        assert "SkipGatewayValidation" in sentence, (
-            "the guide describes the readiness probe without disclosing that the "
-            f"installer job skips it: {sentence.strip()!r}"
-        )
-
-
-def test_the_readiness_probe_still_exists_for_real_artifact_runs() -> None:
-    """The guide's replacement wording is also load-bearing.
-
-    It says the check runs on a real artifact rather than in CI. That is only
-    honest while the script still carries the probe behind the flag.
-    """
-    script = _read(INSTALLER_SCRIPT)
-    assert "SkipGatewayValidation" in script
-    assert "/api/ready" in script
+    stale = [s for s in sentences if "SkipGatewayValidation" in s and "no longer" not in s]
+    assert not stale, (
+        "the guide still presents the readiness probe as skipped in CI, but the "
+        f"installer job runs it: {[s.strip() for s in stale]}"
+    )
 
 
 def test_the_guide_check_can_actually_fail(guide: str) -> None:
     """Self-check: a scan that matches nothing would pass as green.
 
-    Re-runs the guide predicate against the exact sentence this change removed,
-    so a future edit that breaks the split or the pattern is caught here rather
-    than silently exempting the guide.
+    Re-runs the guide predicate against the exact disclosure this change
+    removed, so a future edit that breaks the sentence split or the pattern is
+    caught here rather than silently exempting the guide.
     """
     removed = (
-        "CI starts the just-installed bundled interpreter against an isolated "
-        "data home and requires `/api/ready` within 30 seconds, so both the "
-        "packaged caches and the full gateway handoff are covered rather than "
-        "only a synthetic import benchmark."
+        "What `build.yml` enforces on every push is the native installer's "
+        "performance ceiling and its install-location contract, and it runs the "
+        "script with `-SkipGatewayValidation`."
     )
-    # The predicate above must reject this sentence, or it proves nothing: it
-    # is picked up as a readiness sentence and carries no skip disclosure.
-    assert _readiness_sentences(removed) == [removed]
-    assert "SkipGatewayValidation" not in removed
+    # The predicate must REJECT this sentence, or it proves nothing: it is picked
+    # up as a readiness sentence only when it mentions the probe, so assert both
+    # halves of the shape it is meant to catch.
+    disclosure = "It requires `/api/ready` but the job passes `-SkipGatewayValidation`."
+    assert _readiness_sentences(disclosure) == [disclosure]
+    assert "SkipGatewayValidation" in disclosure
     # Compare on collapsed whitespace: the guide hard-wraps and indents its
     # bullets, so a raw substring test would pass without the sentence ever
     # having been removed.
     assert removed not in re.sub(r"\s+", " ", guide)
+
+
+def test_the_windows_smoke_install_is_gated_on_a_real_artifact() -> None:
+    """``needs`` alone cannot see a soft-failed build.
+
+    ``build-windows`` runs under ``continue-on-error`` on publish runs, and a job
+    that failed under it still reports success to its dependents, so the smoke
+    install would download an artifact that was never uploaded and redden exactly
+    the release run ``soft_fail`` keeps green. The gate is an output the build
+    sets only after the upload step succeeded.
+    """
+    import yaml
+
+    text = (ROOT / ".github" / "workflows" / "build-windows.yml").read_text(encoding=_ENCODING)
+    jobs = yaml.safe_load(text)["jobs"]
+    build, smoke = jobs["build-windows"], jobs["smoke-install-windows"]
+    assert build["outputs"]["artifact_uploaded"] == "${{ steps.uploaded.outputs.uploaded }}"
+    step_ids = [s.get("id") for s in build["steps"]]
+    upload_idx = next(
+        i for i, s in enumerate(build["steps"]) if s.get("name") == "Upload desktop artifact"
+    )
+    assert step_ids.index("uploaded") > upload_idx, "the marker step must follow the upload"
+    assert smoke["needs"] == "build-windows"
+    assert smoke["if"] == "needs.build-windows.outputs.artifact_uploaded == 'true'"

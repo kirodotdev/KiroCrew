@@ -160,7 +160,7 @@ class TestPodApiMethodParsing:
     def test_the_six_canonical_methods_are_advertised_in_help(self, monkeypatch, tmp_path, capsys):
         """The method surface is documented in help, not enforced by argparse.
 
-        `choices=` used to reject an unknown verb here, which meant argparse
+        `choices=` would reject an unknown verb here, which meant argparse
         answered with its own usage prose and exit 2 — escaping the fixed-key
         JSON envelope `pod api` promises on every exit. Validation moved to
         `pod.runtime.pod_api`, which reports through that envelope, so the
@@ -175,5 +175,5 @@ class TestPodApiMethodParsing:
         rendered = out + err
         for method in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"):
             assert method in rendered, method
-        # argparse must no longer be the thing that refuses a bad verb.
+        # argparse must not be the thing that refuses a bad verb.
         assert "choose from" not in rendered

@@ -1,7 +1,7 @@
 """Failure-reporting fidelity for subagents.
 
 A subagent that dies must say WHAT killed it. These tests pin the three places
-that previously flattened that information: the exception rendering, the
+that would otherwise flatten that information: the exception rendering, the
 durable tombstone, and the native-card truncation.
 """
 

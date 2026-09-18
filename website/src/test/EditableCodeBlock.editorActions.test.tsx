@@ -46,7 +46,7 @@ vi.mock('../components/CodeBlock', () => ({
   ),
 }))
 
-vi.mock('../utils/clipboard', () => ({ copyCode: vi.fn(() => Promise.resolve()) }))
+vi.mock('../utils/clipboard', () => ({ copyCode: vi.fn(() => Promise.resolve(true)) }))
 
 import { copyCode } from '../utils/clipboard'
 import EditableCodeBlock from '../components/EditableCodeBlock'
@@ -141,8 +141,10 @@ describe('EditableCodeBlock scratch copy', () => {
     openEditor()
     const idle = copyButton().getAttribute('aria-label')
     fireEvent.click(copyButton())
+    // The copy is awaited before the confirmation flips, so the label change
+    // lands a microtask after the click rather than in the same tick.
+    await waitFor(() => expect(copyButton().getAttribute('aria-label')).not.toBe(idle))
     const copied = copyButton().getAttribute('aria-label')
-    expect(copied).not.toBe(idle)
     expect(copyButton().getAttribute('title')).toBe(copied)
 
     await waitFor(() => expect(copyButton().getAttribute('aria-label')).toBe(idle), { timeout: 4000 })

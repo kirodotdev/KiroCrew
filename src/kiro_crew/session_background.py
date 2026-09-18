@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator, Callable, MutableMapping, Set
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Protocol
 
+from kiro_crew.agent_sdk.tool_search import ToolSearchSettings
 from kiro_crew.metrics.sessions import (
     END_REASON_RECYCLED,
     discard_session_start,
@@ -56,7 +57,7 @@ class _BackgroundRuntime(Protocol):
 
     async def spawn(self) -> None: ...
 
-    async def kill(self, expected: bool = False) -> None: ...
+    async def kill(self, expected: bool = False, reason: str = "") -> None: ...
 
     async def create_session(self, *, agent: str) -> object: ...
 
@@ -77,6 +78,8 @@ class _BackgroundOwner(Protocol):
     _start_sem: asyncio.Semaphore
 
     async def _ensure_background(self) -> None: ...
+
+    def _advance_session_generation(self, key: str) -> int: ...
 
     def _configured_bg_backend_raw(self) -> str | None: ...
 
@@ -254,6 +257,7 @@ class BackgroundSessionRuntime:
                     agent=background_agent,
                 )
                 self._owner._sessions[background_key] = sess
+                self._owner._advance_session_generation(background_key)
                 try:
                     await record_session_started(background_key)
                 except BaseException:
@@ -263,6 +267,7 @@ class BackgroundSessionRuntime:
                     # crash at the next boot.
                     if self._owner._sessions.get(background_key) is sess:
                         del self._owner._sessions[background_key]
+                        self._owner._advance_session_generation(background_key)
                     await discard_session_start(background_key)
                     raise
                 logger.info("Background session created")
@@ -505,17 +510,29 @@ class BackgroundSessionRuntime:
                     # its PID tracking + sweep-protection shield.
                     if self._bg_runtime is not None:
                         try:
-                            await self._bg_runtime.kill()
+                            await self._bg_runtime.kill(
+                                expected=True, reason="background runtime reap"
+                            )
                         except Exception:
                             logger.debug(
                                 "get_bg_session: dead _bg runtime kill failed",
                                 exc_info=True,
                             )
+                    agent_cfg = self._owner._cfg.agent
                     runtime = AcpRuntime(
                         agent=self._deps.runtime_agent,
-                        sandbox_mode=getattr(self._owner._cfg.agent, "sandbox", "auto"),
+                        sandbox_mode=getattr(agent_cfg, "sandbox", "auto"),
                         acp_backend=configured_backend,
                         expect_mcp_reports=False,
+                        # Same operator choice the foreground provider threads in;
+                        # on a wire-settings host the runtime sends it explicitly
+                        # (gated on the background agent's own loader grant)
+                        # rather than leaving it to the host's default.
+                        tool_search=ToolSearchSettings.from_config(
+                            getattr(agent_cfg, "tool_search", True),
+                            getattr(agent_cfg, "tool_search_min_pct", None),
+                            getattr(agent_cfg, "tool_search_min_tokens", None),
+                        ),
                     )
                     await runtime.spawn()
                     self._bg_runtime = runtime
@@ -538,7 +555,9 @@ class BackgroundSessionRuntime:
                 async with self._bg_runtime_lock:
                     if self._bg_runtime is not None and not self._bg_runtime.is_alive():
                         try:
-                            await self._bg_runtime.kill()
+                            await self._bg_runtime.kill(
+                                expected=True, reason="background runtime reap"
+                            )
                         except Exception:
                             logger.debug(
                                 "get_bg_session: dead _bg runtime kill failed",
@@ -641,6 +660,7 @@ class BackgroundSessionRuntime:
         # deliberately cycle-scoped, never per concurrently gathered task.
         async with self._owner._lock:
             old = self._owner._sessions.pop(heartbeat_key, None)
+            self._owner._advance_session_generation(heartbeat_key)
             if old:
                 # Same tick as the pop, before the shutdown await. An unrecorded
                 # removal here does not merely lose a sample: the start crumb

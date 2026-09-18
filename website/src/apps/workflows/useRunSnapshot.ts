@@ -22,6 +22,7 @@ export interface RunSnapshot {
   status: 'running' | 'finished' | 'failed' | 'cancelled' | string
   result?: unknown
   error?: string | null
+  error_code?: string | null
   event_count?: number
   source?: string
   source_format?: 'python' | 'task-plan'

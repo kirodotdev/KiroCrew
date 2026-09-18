@@ -8,6 +8,7 @@ configured.
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import types
 from unittest.mock import MagicMock, patch
@@ -31,12 +32,14 @@ def _reset_module_state(tmp_path, monkeypatch):
     enterprise._validated_enterprise_id = ""
     enterprise._allowed_team_ids = set()
     enterprise._allowlist_configured = False
+    enterprise._configured_ids = set()
     with patch.object(enterprise, "sel", return_value=MagicMock()):
         yield
     enterprise._validated_team_id = ""
     enterprise._validated_enterprise_id = ""
     enterprise._allowed_team_ids = set()
     enterprise._allowlist_configured = False
+    enterprise._configured_ids = set()
 
 
 def _install_fake_slack_sdk(resp: dict | None = None, *, raise_exc: bool = False):
@@ -106,7 +109,7 @@ def test_self_identity_cached_from_auth_test_and_reset_on_failure(tmp_path):
     The accessor must answer "" after a failed re-validation: the trusted-bot
     admission fails CLOSED on an unverified self identity, so a stale cached
     id surviving a failed auth.test would report an identity the current
-    token no longer proves.
+    token does not prove.
     """
     resp = {
         "team_id": "T_GOOD",
@@ -179,9 +182,9 @@ def test_auth_test_failure_reader_exception_fails_closed_not_crash(tmp_path):
 def test_degraded_read_refuses_swapped_non_grid_workspace(tmp_path):
     """A degraded read must not admit whichever workspace authenticated.
 
-    The reachable shape GPT named. `candidate = enterprise_id or team_id`, so on
-    a NON-Grid workspace the candidate IS the bare team_id -- which used to be
-    the one id a degraded read admitted. A bot token pointing at a foreign
+    `candidate = enterprise_id or team_id`, so on
+    a NON-Grid workspace the candidate IS the bare team_id -- the one id a
+    degraded read must refuse to admit unaided. A bot token pointing at a foreign
     workspace therefore validated against itself and the operator's restriction
     silently stopped applying, while startup still reported success.
 
@@ -469,11 +472,11 @@ def test_auth_test_failure_with_allowlist_and_bad_config_load_fails_closed(tmp_p
 def test_auth_test_failure_unreadable_config_no_extra_ids_fails_closed(tmp_path):
     """auth.test fails AND config is unreadable, no extra_ids -> deny.
 
-    BEHAVIOUR CHANGE. This branch used to swallow the config-read error, leave
+    This branch must not swallow the config-read error, leave
     the allowlist empty, and read that as "no restriction configured" -- which
     ACCEPTS an unverifiable workspace. An unreadable config cannot be told apart
     from a configured restriction, so it must not be read as permission: this
-    path now fails closed like the startup path. A genuinely ABSENT config still
+    path fails closed like the startup path. A genuinely ABSENT config still
     defaults open (next test).
     """
     (tmp_path / "config.json").write_text("}{ broken", encoding="utf-8")
@@ -632,12 +635,12 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Fail-closed: a corrupt config.json silently reopens the allowlist (#3945).
+# Fail-closed: a corrupt config.json must not silently reopen the allowlist.
 #
 # KiroCrewConfig.load() degrades a torn/corrupt config to a *defaults* object
-# instead of raising, so allowed_enterprise_ids comes back empty -- which the
-# old code could not tell apart from "operator configured no allowlist" and so
-# fell back to default-open. These tests exercise the REAL loader against a
+# instead of raising, so allowed_enterprise_ids comes back empty -- which must
+# not be read as "operator configured no allowlist", the default-open path.
+# These tests exercise the REAL loader against a
 # genuinely malformed file on disk.
 # --------------------------------------------------------------------------
 
@@ -645,7 +648,7 @@ def test_governance_posture_empty_enterprise_id_ok_when_not_pinned(tmp_path):
 def test_corrupt_config_json_fails_closed(tmp_path):
     """A malformed config.json must fail CLOSED, not reopen the allowlist.
 
-    Regression for #3945: writes a malformed config.json, then asserts
+    Writes a malformed config.json, then asserts
     check_message_origin() REFUSES a foreign team_id (and still admits the
     validated one). Without the fix _allowlist_configured flips False and the
     foreign origin is accepted default-open.
@@ -942,3 +945,148 @@ class TestTrustedBotAdmission:
         assert enterprise.trusted_bot_admission("B_PEER", live) == (True, "")
         live.clear()
         assert enterprise.trusted_bot_admission("B_PEER", live) == (False, "untrusted_bot")
+
+
+# --------------------------------------------------------------------------
+# The two layers match the SAME allowlist against DIFFERENT id spaces
+#
+# ``validate_enterprise`` compares ``enterprise_id or team_id``, so an
+# org-level ``E…`` entry satisfies startup and the boot logs "Enterprise
+# validation OK".  ``check_message_origin`` compares ``event["team"]``, which
+# ``events.py`` sets from the Socket Mode envelope's ``team_id`` -- always a
+# WORKSPACE id, which an ``E…`` entry can never equal.  So on Enterprise Grid
+# an allowlist holding only the org id arms the gate (any entry leaves
+# default-open) while nothing inbound can match it: every DM is denied and
+# startup reports success.  These tests pin the warning that makes that state
+# audible, and pin that it stays purely diagnostic.
+# --------------------------------------------------------------------------
+
+
+_GRID_AUTH_TEST = {
+    "enterprise_id": "E_ORG",
+    "team_id": "T_INSTALL",
+    "team": "Sandbox Co",
+    "url": "https://x",
+}
+
+
+def _warnings(caplog) -> str:
+    return "\n".join(
+        r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING
+    )
+
+
+def test_grid_org_id_only_warns_that_it_admits_no_message(tmp_path, caplog):
+    """The reporter's config: only the Grid ORG id is listed.
+
+    Startup must still pass (the org id IS the validated workspace's
+    enterprise), and every child workspace must still be denied -- the warning
+    changes nothing about admission.  What it adds is the one fact the boot was
+    missing: the entry the operator supplied cannot admit an inbound message,
+    and the only origin that can is a workspace they never listed.
+    """
+    _write_allowlist(tmp_path, ["E_ORG"])
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.enterprise"):
+        with _install_fake_slack_sdk(_GRID_AUTH_TEST):
+            assert enterprise.validate_enterprise("xoxb-token") is True
+
+    warned = _warnings(caplog)
+    assert "E_ORG" in warned
+    assert "T_INSTALL" in warned
+    assert "allowed_enterprise_ids" in warned
+
+    # Admission is byte-identical to before: diagnostic only, never widening.
+    assert enterprise._allowlist_configured is True
+    assert enterprise.check_message_origin("T_CHILD_SANDBOX") is False
+    assert enterprise.check_message_origin("T_OTHER_CHILD") is False
+    assert enterprise.check_message_origin("T_INSTALL") is True
+
+
+def test_workspace_ids_without_the_org_id_disable_slack_and_say_why(tmp_path, caplog):
+    """The opposite omission, which fails LOUDLY but with the wrong remedy.
+
+    Startup checks the ORG id, so a Grid allowlist of child workspace ids alone
+    refuses validation and `init_socket_mode` disables Slack outright.  The
+    pre-existing error reads "your workspace is not allowed", which points the
+    operator at their workspace ids -- the very ids that are already correct for
+    the per-message gate.  The added line names the actual missing entry.
+    """
+    _write_allowlist(tmp_path, ["T_CHILD_SANDBOX"])
+    with caplog.at_level(logging.ERROR, logger="kiro_crew.slack.enterprise"):
+        with _install_fake_slack_sdk(_GRID_AUTH_TEST):
+            assert enterprise.validate_enterprise("xoxb-token") is False
+
+    logged = "\n".join(r.getMessage() for r in caplog.records)
+    assert "only workspace id(s)" in logged
+    assert "E_ORG" in logged
+
+
+def test_non_grid_workspace_allowlist_stays_quiet(tmp_path, caplog):
+    """Lower bound: the ordinary single-workspace case must stay silent.
+
+    Off Grid ``auth.test`` returns no ``enterprise_id``, so the candidate falls
+    back to the workspace id and one ``T…`` entry satisfies both gates.  Without
+    this the warning could be "simplified" into firing whenever an allowlist
+    exists, which would train operators to ignore it.
+    """
+    _write_allowlist(tmp_path, ["T_CORP"])
+    resp = {"enterprise_id": "", "team_id": "T_CORP", "team": "Corp", "url": "https://c"}
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.enterprise"):
+        with _install_fake_slack_sdk(resp):
+            assert enterprise.validate_enterprise("xoxb-token") is True
+
+    assert "admit no inbound message" not in _warnings(caplog)
+    assert enterprise.check_message_origin("T_CORP") is True
+
+
+def test_org_id_alongside_workspace_ids_is_the_working_grid_config(tmp_path, caplog):
+    """Both kinds listed is the ONLY Grid config that works, and it is quiet.
+
+    The ``E…`` entry is load-bearing for startup and the ``T…`` entry for
+    messages, so neither is redundant and there is nothing to warn about.  This
+    is also the remedy both new messages name, so it pins that the remedy
+    actually resolves the state they complain about.
+    """
+    _write_allowlist(tmp_path, ["E_ORG", "T_CHILD_SANDBOX"])
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.enterprise"):
+        with _install_fake_slack_sdk(_GRID_AUTH_TEST):
+            assert enterprise.validate_enterprise("xoxb-token") is True
+
+    assert "admit no inbound message" not in _warnings(caplog)
+    assert enterprise.check_message_origin("T_CHILD_SANDBOX") is True
+
+
+def test_hot_reload_warns_too(tmp_path, caplog):
+    """The same footgun is reachable by editing config on a running gateway.
+
+    ``reload_allowed_team_ids`` re-runs the validated read, so the warning has
+    one owner and covers the hot-apply path as well as boot -- an operator who
+    "tidies" the allowlist down to the org id is told at the moment of the edit
+    rather than at the next restart, by which time the cause is far away.
+    """
+    _write_allowlist(tmp_path, ["E_ORG", "T_CHILD_SANDBOX"])
+    with _install_fake_slack_sdk(_GRID_AUTH_TEST):
+        assert enterprise.validate_enterprise("xoxb-token") is True
+    assert enterprise.check_message_origin("T_CHILD_SANDBOX") is True
+
+    _write_allowlist(tmp_path, ["E_ORG"])
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.enterprise"):
+        assert enterprise.reload_allowed_team_ids() is False
+
+    warned = _warnings(caplog)
+    assert "E_ORG" in warned
+    assert enterprise.check_message_origin("T_CHILD_SANDBOX") is False
+
+
+def test_degraded_config_does_not_warn_about_admitting_nothing(tmp_path, caplog):
+    """A refused config admits nothing BY DESIGN and already says so loudly.
+
+    Adding this warning there would attribute a deliberate fail-closed refusal
+    to the operator's id shapes, which is a different (and wrong) diagnosis.
+    """
+    (tmp_path / "config.json").write_text("}{ broken", encoding="utf-8")
+    with caplog.at_level(logging.WARNING, logger="kiro_crew.slack.enterprise"):
+        with _install_fake_slack_sdk(_GRID_AUTH_TEST):
+            assert enterprise.validate_enterprise("xoxb-token") is False
+
+    assert "admit no inbound message" not in _warnings(caplog)

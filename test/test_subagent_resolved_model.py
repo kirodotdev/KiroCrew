@@ -1,7 +1,7 @@
 """The model a spawned sub-agent actually ran on is read back and surfaced.
 
-A model-pinned review whose real model is unverifiable is not much of a pin
-(#3582). ``SubagentManager`` reads the live session's PUBLIC ``served_model``
+A model-pinned review whose real model is unverifiable is not much of a pin.
+``SubagentManager`` reads the live session's PUBLIC ``served_model``
 accessor and carries the resolved id on ``SubagentInfo.resolved_model``, which
 rides the ``subagent_spawn`` / ``subagent_done`` frames and the completion meta.
 

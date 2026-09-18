@@ -44,12 +44,12 @@ Node is only needed to *build* the dashboard. The prebuilt wheel, the DMG, the
 AppImage, and the Linux `.deb` / `.rpm` packages all ship the dashboard already
 bundled, so end users of those artifacts need neither Node nor a compiler.
 
-### Agent backend: `kiro-cli` (required)
+### Default agent backend: `kiro-cli`
 
-Kiro Crew drives an LLM through the **`kiro-cli`** agent over the
+Kiro Crew drives the default agent through **`kiro-cli`** over the
 [Agent Client Protocol](https://github.com/zed-industries/agent-client-protocol)
-(ACP). It is the only provider: `agent.provider` is fixed to `acp`, and the
-gateway spawns `kiro-cli acp --agent <name>`.
+(ACP). Other ACP backends can be selected with `agent.acp_backend`, but a fresh
+configuration uses Kiro and the gateway spawns `kiro-cli acp --agent <name>`.
 
 Install `kiro-cli` per its own docs, put it on your `PATH`, and log in:
 
@@ -59,8 +59,10 @@ kiro-cli login
 
 If `kiro-cli` is not on `PATH`, spawning a session fails with
 `kiro-cli not found in PATH`. On the first dashboard launch the **Set up Kiro**
-page walks through installing the CLI and completing device-code sign-in.
-`kirocrew doctor` reports both the binary and the login state.
+page detects the missing prerequisite, links to the official Kiro CLI setup
+guide, and shows the login commands to run yourself. Kiro Crew does not download
+the CLI or start its login flow. `kirocrew doctor` reports both the binary and
+the login state.
 
 ### Embeddings: nothing to install
 
@@ -82,6 +84,28 @@ hatches exist for mirrored or airgapped installs:
 
 `memory.embedding_provider` accepts only `llama_cpp`; any other value in an old
 config is coerced to it on load.
+
+Global V1 retains its existing session-start memory retrieval. Crew Member V2
+injects current persona, permanent rules and admitted project guides every turn;
+facts and past experiences are retrieved through the explicit `memory_recall`
+tool. All stores share one model and inference worker. The interactive
+`memory.embedding_threads` default is 4; `memory.embedding_bulk_threads` remains
+1. Explicit settings are honored up to the host's CPU count. Bulk threads may
+be 0 to inherit the normal setting. Background jobs share the configured bulk
+duty cycle, while waiting interactive queries take priority. A full inference
+queue leaves new rows pending and permits keyword retrieval, so additional
+members do not create unbounded native work.
+
+Private V2 execution requires `agent.sandbox=auto` and working Linux/WSL namespaces
+or macOS outer Seatbelt. Native Windows, unconfined execution, unsupported MCP
+backends and Kiro internal delegation refuse private member turns with a reason.
+The owner can still manage memory in the dashboard. Existing members, including
+the default assistant selection, keep their declared V1 memory after upgrading.
+To opt in, open Crew Manager, select the member, open **Workspace · Memory**, and
+choose **Create private memory**. The new V2 store starts empty; previous V1
+stores remain available for an explicit copy of selected starting knowledge.
+Check the execution requirements above before choosing V2. New members receive
+V2 automatically, and an existing V2 member never falls back to V1 on failure.
 
 ## Install paths
 
@@ -130,7 +154,7 @@ curl -fsSL https://download.crew.kiro.dev/cli.sh | sh
 
 ```bash
 curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --channel insider
-curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.1.0
+curl -fsSL https://download.crew.kiro.dev/cli.sh | sh -s -- --version 0.6.0
 ```
 
 `stable` suits everyone, `insider` is for power users who want features days to
@@ -139,6 +163,30 @@ untested `main` HEAD for us and contributors. The
 [Release channels](../../README.md#release-channels) table has the full
 comparison; re-running the installer with a different `--channel` is how a CLI
 install moves between lanes.
+
+#### Pinning an exact version
+
+**The minimum pinnable release is `0.1.2`.** `--version` resolves an immutable
+per-version signed manifest, and a pinned install fails closed when that
+manifest does not exist. Manifest signing was enabled during the `0.1.x` line,
+so `0.1.0` and `0.1.1` are published but carry no signed manifest and cannot be
+installed by the installer. Every release from `0.1.2` onward can be pinned.
+
+**These two releases will not be backfilled.** Signing an already-published
+digest today would create a fresh attestation for bytes that no signing
+pipeline produced, which asserts a provenance the project cannot re-establish
+after the fact. [SECURITY.md](../../SECURITY.md) already limits active support
+to the latest release, so the trust surface would widen for two releases that
+are several minor versions behind current `stable` and are supported by nobody.
+Their artifacts stay published and their `SHA256SUMS` stays fetchable for
+archival inspection, but the installer has no checksum-only path, so it will
+not install them.
+
+If a rollback runbook pins `0.1.0` or `0.1.1`, change it to `0.1.2` or later,
+or drop `--version` to take the current `stable` release. A pinned run that
+cannot resolve a manifest prints this policy and that remedy rather than only
+the URL it tried, because the same failure also covers a version string that
+was never published at all.
 
 The installer verifies the wheel's digest against the signed manifest and
 refuses to install on a mismatch; there is no checksum-only fallback. It uses
@@ -177,6 +225,23 @@ installer never pipes an unsigned third-party script into a shell: uv is
 fetched as a tarball and verified against pinned digests, exactly like the
 wheel itself. When it finishes it prints the next step: `kirocrew gateway` to
 start now, or `kirocrew service install` to run it as a service.
+
+Dependencies are installed from **prebuilt wheels only** (`pip
+--only-binary=:all:`), so the install never needs a C compiler or `-dev`
+headers on the host. pip picks the newest release of each dependency that
+publishes a wheel the host can run; on a host where no release does (its glibc
+is older than every candidate's manylinux floor, or the architecture has no
+wheel), the installer stops before any build starts and names the platform and
+the packages, instead of failing deep inside a compiler run. Use a newer host,
+or — on a host that does have a toolchain and the headers — opt back into
+compiling with `KIROCREW_ALLOW_SOURCE_BUILDS=1`. The same policy applies to
+`install.sh`'s editable install (the dependency set only; the local kirocrew
+tree is still built) and to the update engine that builds the shadow venv for
+`kirocrew update` on a managed-venv install. The opt-in is not remembered: the
+update engine reads it from the environment the gateway runs under, so a host
+that installed with it must also carry it there (in the service unit for a
+`kirocrew service install`), or its next update that pulls a wheel-less
+dependency refuses with the same platform message.
 
 ### b. From source (development)
 
@@ -343,7 +408,9 @@ on Linux, and an assisted NSIS Setup.exe on Windows, under
 drag-to-Applications layout carrying the opening animation's artwork. The
 Windows wizard keeps native controls and its
 per-user default while carrying matching Kiro Crew artwork through its sidebar
-and header. On macOS the default is ONE universal DMG: the Electron shell is
+and header. Its Finish page links to the external Kiro CLI setup guide and names
+the login command required by the default agent before offering to launch Kiro
+Crew. On macOS the default is ONE universal DMG: the Electron shell is
 lipo-merged, and the backend, which cannot be lipo-merged, ships as two complete
 PBS trees selected at launch by `process.arch`. The x86_64 backend is built
 under Rosetta 2, so a universal build needs an Apple-Silicon host;
@@ -428,6 +495,14 @@ app" interstitial.
 ## First run
 
 After installing by any path:
+
+Install Kiro CLI from <https://kiro.dev/cli/> and sign in for the default agent:
+
+```bash
+kiro-cli login
+```
+
+Then start Kiro Crew:
 
 ```bash
 kirocrew setup            # interactive wizard
@@ -882,6 +957,7 @@ sandbox probe names the failing step so you can tell them apart:
 | `unshare` fails and `kernel.unprivileged_userns_clone=0` | Debian-family legacy knob (defaults to 1 since Debian 11) | Set it to 1 |
 | `unshare` fails `EINVAL` / `ENOSYS` | Kernel built without `CONFIG_USER_NS` | None short of a different kernel |
 | Fails inside Docker/Podman | The container's seccomp filter denies `unshare` | Container run flags, **not** host config |
+| Both `unshare` steps pass, `mount(MS_REC\|MS_PRIVATE)` on `/` fails `EACCES` (or `EPERM`) | The container runtime's default AppArmor profile (`deny mount`), or a seccomp filter without `mount`; the Kubernetes default on AppArmor nodes | `--security-opt apparmor=unconfined` / Pod `appArmorProfile: Unconfined` plus a seccomp profile permitting `unshare` and `mount`, or `agent.sandbox_allow_unsandboxed_exec=true` — see [Kubernetes and AppArmor](docker.md#kubernetes-and-apparmor) |
 | RHEL/Fedora/Rocky/AL2023 | SELinux, not AppArmor | userns is enabled there; the profile is inert |
 
 To see which step is failing on your host:
@@ -895,8 +971,8 @@ sb.reset_backend(); print(sb.detect_backend(), sb._last_unshare_failure)"
 `kirocrew doctor` reports the same verdict without the one-liner, and the
 dashboard's **Sandbox unavailable** screen names the mechanism and the command
 for it directly — the probe classifies the failing step into one of
-`apparmor_userns`, `max_user_namespaces`, `userns_denied` or `no_user_ns`, which
-is the row of the table above that applies to you.
+`apparmor_userns`, `max_user_namespaces`, `userns_denied`, `no_user_ns` or
+`mount_denied`, which is the row of the table above that applies to you.
 
 ## Troubleshooting
 

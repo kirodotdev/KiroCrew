@@ -4,11 +4,9 @@ the client-visible ``error`` field.
 The dashboard renders the ``error`` field of a 4xx/5xx JSON body verbatim into a
 localized UI, so raw driver/exception text (which can carry filesystem paths, SQL
 fragments, or hostnames) must never reach the client, and the prose is
-untranslatable besides. The fix at each site is the subtraction PR #5600 shipped
-in ``knowledge.import_bundle``: a generic fixed ``error`` message plus a
-machine-readable ``code``, with the exception detail going to the server log.
-
-Follow-up from the First Principles review on PR #5600. See issue #5644.
+untranslatable besides. Each site uses the same subtraction: a generic fixed
+``error`` message plus a machine-readable ``code``, with the exception detail
+going to the server log.
 
 These are source-level guards rather than end-to-end handler drives: the eight
 sites live in six handlers with six different app-setup requirements, and the
@@ -60,7 +58,7 @@ def _formats_an_exception(value: ast.expr) -> bool:
     validated request value or a fixed limit constant (``{name!r}``,
     ``{_MAX_STUB_BATCH}``) -- those carry no internal detail. What must never
     reach the client is the caught exception itself, conventionally bound as
-    ``exc``, ``e`` or ``err``. This mirrors the reviewer's own grep on PR #5600
+    ``exc``, ``e`` or ``err``. This mirrors the grep
     (``error.*\\{(exc|e|err)\\}``) but is stricter: it also unwraps a ``BoolOp``
     or conditional so ``{exc.strerror or exc}`` is caught, a spelling that grep
     (and a naive matcher) misses. Flag a ``FormattedValue`` whose interpolated

@@ -291,8 +291,7 @@ def test_summarization_failed_emits_failed_and_does_not_reset() -> None:
 def test_summarization_failed_arms_the_post_failure_budget() -> None:
     # KAS is a third producer of a failed compaction status on the SAME dispatch
     # loop, so it must arm the bounded post-failure wait — otherwise a KAS turn
-    # abandoned after failed summarization still drains to the turn ceiling
-    # (issue #3583).
+    # abandoned after failed summarization still drains to the turn ceiling.
     handle = _handle(ACP_BACKEND_KAS)
     assert handle._compaction_failed_at is None
     _update(

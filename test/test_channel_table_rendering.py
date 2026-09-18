@@ -880,7 +880,7 @@ class TestDeliveryFraming:
         body = [f"| Row 000 | Bearer {token} | {'x' * 30} |"]
         # Grown to fill the cap rather than to a fixed row count: WeCom's budget is
         # derived from its 20480-BYTE reply limit, so a hardcoded 700 rows was sized
-        # against a cap that no longer exists and the "fits the cap" premise silently
+        # against a cap that does not exist and the "fits the cap" premise silently
         # inverted. Derived, the test keeps its meaning whatever the budget becomes.
         index = 1
         while len(header + "\n".join(body)) + 24 < cap:

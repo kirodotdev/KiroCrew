@@ -15,10 +15,12 @@
  * the chip shows the marker for an inherited default, the bare alias for a pin,
  * and that the raw alias still drives the chip's switch tooltip.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
+import i18next from 'i18next'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
 import { agentOrDefaultLabel } from '../utils/agentLabel'
+import '../i18n/all'
 
 vi.mock('../api/client', () => ({ api: {} }))
 
@@ -50,6 +52,7 @@ function agentChipText(): string {
 
 describe('ChatInput — agent chip inherited-default marker', () => {
   beforeEach(() => vi.clearAllMocks())
+  afterEach(async () => { await i18next.changeLanguage('en') })
 
   it('marks an inherited default so it differs from a pin to the same alias', () => {
     // agent-less slot resolving to `kirocrew` -> the call site composes this.
@@ -64,6 +67,42 @@ describe('ChatInput — agent chip inherited-default marker', () => {
     expect(agentChipText()).toBe(inherited)
     expect(agentChipText()).toContain('kirocrew')
     expect(agentChipText()).toContain('default')
+  })
+
+  it('shows the built-in default alias once when a remote-bound slot inherits it', () => {
+    const inherited = agentOrDefaultLabel(undefined, 'default')
+    renderWithProviders(
+      <ChatInput
+        {...props({
+          agentName: 'default',
+          agentLabel: inherited,
+          agentIsInheritedDefault: true,
+        })}
+      />,
+    )
+
+    expect(agentChipText()).toBe('default')
+    expect(agentChipText()).not.toContain('default · default')
+    expect(agentChip()).toHaveAttribute('title', expect.stringContaining('follows the default'))
+  })
+
+  it('keeps the literal fallback while no default has loaded', async () => {
+    await i18next.changeLanguage('zh-CN')
+    expect(agentOrDefaultLabel(undefined, '')).toBe('default')
+  })
+
+  it('keeps the real alias when the localized default marker differs', async () => {
+    await i18next.changeLanguage('zh-CN')
+    const defaultLabel = i18next.t('components.agentSelector.default')
+    expect(defaultLabel).not.toBe('default')
+    expect(agentOrDefaultLabel(undefined, 'default')).toBe(`default · ${defaultLabel}`)
+  })
+
+  it('keeps a named alias marked when it matches the localized marker', async () => {
+    await i18next.changeLanguage('de')
+    const defaultLabel = i18next.t('components.agentSelector.default')
+    expect(defaultLabel).not.toBe('default')
+    expect(agentOrDefaultLabel(undefined, defaultLabel)).toBe(`${defaultLabel} · ${defaultLabel}`)
   })
 
   it('shows the bare alias when the slot is pinned to that agent', () => {

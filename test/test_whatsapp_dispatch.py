@@ -272,6 +272,8 @@ def _make(provider=None, busy=False, transport_fail=False, **session_kwargs):
 
 
 _DM = "447700900000@s.whatsapp.net"
+
+
 _GROUP = "12345-67890@g.us"
 
 
@@ -324,6 +326,34 @@ def test_new_command_starts_a_fresh_session_without_a_turn():
     assert any("fresh session" in t.lower() for _, t in transport.sent)
 
 
+def test_update_pause_spools_dm_new_before_generation_side_effects(monkeypatch):
+    import kiro_crew.messaging.dispatch as dispatch
+
+    d, _client, sessions, transport = _make(provider=FakeProvider())
+    sessions.reserve_inbound_callback = lambda: None
+    inbound = _msg("/new")
+    transport.pending_original[id(inbound)] = ("/new", 0)
+    spooled: list[tuple[str, Any]] = []
+
+    async def capture(*, channel_type, route):
+        spooled.append((channel_type, route))
+
+    monkeypatch.setattr(dispatch, "spool_refused_turn", capture)
+    before = d._session_key(_DM)
+
+    asyncio.run(d.handle_message(inbound))
+
+    assert d._session_key(_DM) == before
+    assert sessions.reserved_generations == []
+    assert transport.sent == []
+    assert len(spooled) == 1
+    channel_type, refused = spooled[0]
+    assert channel_type == "whatsapp"
+    assert refused is not None
+    assert refused.conversation_id == _DM
+    assert refused.text == "/new"
+
+
 def test_compact_command_compacts_in_place_without_a_turn():
     provider = FakeProvider()
     d, _client, sessions, transport = _make(provider=provider)
@@ -336,7 +366,7 @@ def test_compact_command_compacts_in_place_without_a_turn():
 
 def test_compact_command_declined_on_auto_managed_backend():
     # A backend that cannot serve /compact gets the informational reply and
-    # compact() is NEVER dispatched (#8156).
+    # compact() is NEVER dispatched.
     provider = FakeProvider()
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, sessions, transport = _make(provider=provider)
@@ -358,7 +388,7 @@ def test_compact_none_capability_preserves_dispatch():
 
 def test_the_hard_threshold_declines_silently_on_auto_managed_backend():
     # No /compact to dispatch and no notice: the backend compacts on its own
-    # as context fills (#8156).
+    # as context fills.
     provider = FakeProvider("answered")
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, _sessions, transport = _make(provider=provider, context_pct=96.0)
@@ -369,7 +399,7 @@ def test_the_hard_threshold_declines_silently_on_auto_managed_backend():
 
 def test_the_soft_nudge_is_suppressed_on_auto_managed_backend():
     # The nudge advises /compact, which this backend refuses — it compacts on
-    # its own, so there is nothing for the user to act on (#8156).
+    # its own, so there is nothing for the user to act on.
     provider = FakeProvider("answered")
     provider.manual_compact_unsupported_backend = "kas"
     d, _client, _sessions, transport = _make(provider=provider, context_pct=85.0)

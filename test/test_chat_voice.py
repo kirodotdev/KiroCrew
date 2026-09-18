@@ -60,8 +60,7 @@ class TestVoiceConfig:
 
         The guard is `read_bounded_json`, the shared helper that already owns this
         for the endpoints routed through it, so the code asserted is its
-        ``body_not_object`` rather than a fifth private spelling — the divergence
-        tracked on issue #5587.
+        ``body_not_object`` rather than a fifth private spelling.
 
         ``None`` reaches the 400 through the parse branch instead, which reports
         ``invalid_json``; asserted separately rather than folded in, so this test
@@ -212,7 +211,7 @@ class TestVoiceConfig:
 
     @pytest.mark.asyncio
     async def test_get_config_auto_speak_independent_of_enabled(self, tmp_path, monkeypatch):
-        # Regression test: `autoSpeak` used to alias `global_enabled`, so a user
+        # `autoSpeak` must not alias `global_enabled`: if it did, a user
         # with voice enabled but auto-speak off would still get auto-spoken
         # replies (and vice versa). The two must be reported independently.
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -269,9 +268,9 @@ class TestVoiceConfig:
     async def test_put_config_updates_auto_speak_independently_of_enabled(
         self, tmp_path, monkeypatch
     ):
-        # Regression test: PUT {"autoSpeak": ...} used to flip `global_enabled`
+        # PUT {"autoSpeak": ...} must not flip `global_enabled`
         # (the primary voice switch) instead of the dedicated `auto_speak` field —
-        # so unchecking "Auto-speak responses" in Settings silently disabled
+        # otherwise unchecking "Auto-speak responses" in Settings silently disables
         # voice entirely, including the manual speak button.
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
         mock_vc = MagicMock(
@@ -1022,7 +1021,7 @@ class TestVoiceVoices:
         """After a timeout kills the describe-voices child, the cleanup must
         call ``communicate()`` -- not ``wait()`` -- so that PIPE buffers are
         drained. A child blocked writing to a full stderr PIPE would hang the
-        request handler if only ``wait()`` were used (#5975)."""
+        request handler if only ``wait()`` were used."""
         import asyncio
 
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -1416,7 +1415,7 @@ def test_every_body_field_the_config_put_reads_goes_through_a_validator():
     # Note what is NOT here: bare ``bool``. It never raises, which reads as safe,
     # but bool("false") is True -- a caller sending the string "false" would
     # persist the opposite setting. Totality is not truth-preservation, and that
-    # mistaken reasoning is exactly what this list previously encoded.
+    # mistaken reasoning is exactly what this list must not encode.
     SANCTIONED = {
         "validated_config_bool",
         "validated_config_string",

@@ -437,3 +437,60 @@ class TestPeerCapabilityCarrier:
         with pytest.raises(ValueError):
             await mgr.peer_capability("nobita", "/api/agents/evil")
         mgr._peer_target.assert_not_called()
+
+    @staticmethod
+    async def _timeout_used_for(path: str, monkeypatch) -> float:
+        """The ``ClientTimeout.total`` ``peer_capability`` builds for *path*.
+
+        The session is faked at the module seam, so the read never opens a
+        socket: the fake raises on entry and the call degrades to the ordinary
+        ``capability_unreachable`` answer after the timeout has been captured.
+        """
+        from kiro_crew.instances import ssh_tunnel_manager as stm
+
+        mgr = stm.SshTunnelManager.__new__(stm.SshTunnelManager)
+        mgr._peer_target = MagicMock(return_value=("http://127.0.0.1:1" + path, "cookie"))
+        mgr._peer_cookie_header = MagicMock(return_value={"Cookie": "c=1"})
+
+        captured: list[float] = []
+
+        class _FakeSession:
+            def __init__(self, *, timeout):
+                captured.append(timeout.total)
+                raise ConnectionResetError("captured; go no further")
+
+        monkeypatch.setattr(stm.aiohttp, "ClientSession", _FakeSession)
+        ok, payload = await mgr.peer_capability("nobita", path)
+        assert ok is False and payload["code"] == "capability_unreachable"
+        assert len(captured) == 1
+        return captured[0]
+
+    @pytest.mark.asyncio
+    async def test_the_models_read_gets_the_long_cold_path_budget(self, monkeypatch):
+        """`/api/models` runs under the 20s budget, not the shared 8s one.
+
+        The peer's cold model discovery is itself bounded at ~15s (sandbox
+        detection + `kiro-cli chat --list-models`); an 8s client budget kills
+        every cold read and reports a healthy peer as unreachable, which reads
+        as an empty remote model picker.
+        """
+        from kiro_crew.instances.constants import (
+            DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS,
+            DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS,
+        )
+
+        total = await self._timeout_used_for("/api/models", monkeypatch)
+        assert total == DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS
+        # The split only means something while the models budget clears the
+        # peer's ~15s worst case and the shared budget stays the short one.
+        assert DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS >= 15.0
+        assert DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS < DEFAULT_MODELS_CAPABILITY_PROXY_TIMEOUT_SECS
+
+    @pytest.mark.asyncio
+    async def test_the_cheap_reads_keep_the_short_budget(self, monkeypatch):
+        """The four state-backed reads still settle at the 8s budget."""
+        from kiro_crew.instances.constants import DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS
+
+        for path in ("/api/version", "/api/agents", "/api/effort-levels", "/api/workspaces"):
+            total = await self._timeout_used_for(path, monkeypatch)
+            assert total == DEFAULT_CAPABILITY_PROXY_TIMEOUT_SECS, path

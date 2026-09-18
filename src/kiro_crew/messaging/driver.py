@@ -53,6 +53,7 @@ from kiro_crew.monitoring.completion import (
 )
 from kiro_crew.security import StreamRedactor, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.tool_call_title import derive_tool_call_title
 
 logger = logging.getLogger(__name__)
 
@@ -95,9 +96,8 @@ _MAX_STEER_MARKER_CHARS = 16_384
 #: from ``constants`` rather than respelled: it answers "could this unterminated
 #: tail still become a marker?", which is the question the drain below has to ask
 #: before it holds text back. Sourcing the pattern from the one place the grammar
-#: is written keeps the two probes from drifting apart -- a divergence a reviewer
-#: flagged on #9117 and which ``test_the_two_spellings_of_the_grammar_agree``
-#: now pins.
+#: is written keeps the two probes from drifting apart -- a divergence
+#: ``test_the_two_spellings_of_the_grammar_agree`` pins.
 #:
 #: Recompiled with ``IGNORECASE`` because THIS module's recognizer carries it:
 #: ``constants``' copy is case-sensitive on purpose (it probes the exact
@@ -348,7 +348,7 @@ class TurnDriver:
         ignored exactly as before.
     closing_gate:
         Optional synchronous gate invoked immediately before the provider stream
-        starts. Callers use it to reject a lease that shutdown can no longer
+        starts. Callers use it to reject a lease that shutdown cannot
         drain, and may also reject a structured monitor whose conversation
         generation changed. It must not await: the gate, monitor acceptance, and
         the stream's synchronous turn registration are one event-loop span.
@@ -400,6 +400,12 @@ class TurnDriver:
         # Terminal stop reason of the last run() — read by the dispatcher's
         # post-turn bookkeeping (e.g. COMPACTION_FAILED -> session reset).
         self.last_stop_reason: str = ""
+        # Whether run() saw an EVENT_COMPLETE at all. ``last_stop_reason`` is
+        # "" both before any completion and for a completion that carries no
+        # reason, and the two mean opposite things to the post-compaction
+        # re-injection bookkeeping (no completion: the prompt never landed; an
+        # empty reason: a normal end of turn), so the presence is kept apart.
+        self.completion_observed: bool = False
         # Synchronous pre-registration shutdown gate, supplied by the dispatcher
         # as a zero-arg closure over its SessionManager and session key. It lives
         # HERE rather than at each call site because the only placement that is
@@ -527,11 +533,37 @@ class TurnDriver:
                 _purpose = _redact(getattr(event, "tool_purpose", ""))
                 if event.tool_call_id and _purpose:
                     tool_purposes[str(event.tool_call_id)] = _purpose
+                # The channel's task label is the same argument-derived title
+                # the dashboard row shows (tool_call_title mirrors
+                # website/src/utils/toolCallTitle.ts): `List files in src`
+                # rather than the literal command, `Session send: <target>`
+                # rather than `@server/tool`. When nothing better can be said
+                # it is the raw command cut to ~80 chars; the approval prompt
+                # below still carries the verbatim ``tool_input``.
+                #
+                # Derived from ``tool_input`` ONLY — the transport-redacted
+                # string — never from ``raw_tool_params``: the derivation cuts
+                # and whitespace-collapses argument text, and a credential cut
+                # that way escapes the redactors that run on the finished
+                # title, so unredacted input would leak key-body bytes into a
+                # persisted channel status.
+                _derived = derive_tool_call_title(
+                    title=event.title or "",
+                    kind=getattr(event, "tool_kind", "") or "",
+                    raw_input=getattr(event, "tool_input", "") or "",
+                    is_shell=bool(getattr(event, "is_shell", False)),
+                    tool_name=getattr(event, "tool_name", "") or "",
+                    mcp_server=getattr(event, "mcp_server_name", "") or "",
+                )
                 await self.renderer.dispatch(
                     OutputEvent(
                         kind=TOOL_CALL,
                         tool_call_id=event.tool_call_id,
-                        title=_redact(event.title),
+                        title=_redact(_derived.title or event.title),
+                        # Programmatic identity travels beside the display title
+                        # so a renderer's behaviour rules (Slack's `wait` stream
+                        # rollover) key on the tool, not on derived copy.
+                        tool_name=getattr(event, "tool_name", "") or "",
                         tool_kind=getattr(event, "tool_kind", ""),
                         tool_purpose=_purpose,
                     )
@@ -754,6 +786,7 @@ class TurnDriver:
                 # sent end_turn) and needs a session reset the driver cannot
                 # perform itself (it holds no session key).
                 self.last_stop_reason = event.stop_reason or ""
+                self.completion_observed = True
                 if self.monitor_completion is not None and is_monitor_completion_evidence(
                     event.stop_reason,
                     synthetic=event.synthetic_completion,

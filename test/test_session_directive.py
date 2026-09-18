@@ -1,4 +1,4 @@
-"""Tests for the session-directive protocol and forgery gate (issue #755).
+"""Tests for the session-directive protocol and forgery gate.
 
 ``session_directive`` is the stateless wire format the session-bound MCP
 tools use in the gateway-off topology: the tool validates its arguments and
@@ -26,6 +26,7 @@ _CASES = {
     "suggest_followup": {"items": [{"title": "t", "prompt": "p"}]},
     "ask_question": {"questions": [{"question": "Which approach?", "options": [{"label": "A"}]}]},
     "reset_conversation": {},
+    "chat_tag": {"set_state": "review"},
 }
 
 

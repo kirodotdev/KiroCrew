@@ -151,6 +151,14 @@ def _lookup(entry: str) -> tuple[str, bool | None]:
         # entry carrying one can never match. Named separately because the lookup
         # below would otherwise report it as a plain rename.
         return "carries an xdist @group suffix, which node ids never have", None
+    # Params are OPTIONAL in this list (a line may name ONE parametrization of a test
+    # whose params do not all fail), and the index below is keyed by the test's
+    # function, so the suffix is dropped for the existence check. Whether a NAMED
+    # parametrization still exists is not decidable from the AST -- those ids come
+    # from whatever the parametrize argument evaluates to at collection time -- and
+    # the strict xfail is what catches a stale one: a param absent from the current
+    # parametrize set is simply never marked, and one that starts passing reds the job.
+    rest = rest.split("[")[0]
     index = _file_index(path)
     if index is None:
         return "file could not be parsed", None

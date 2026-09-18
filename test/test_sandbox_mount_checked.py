@@ -42,7 +42,7 @@ from kiro_crew.sandbox import _build_launcher_script
 # all of them raise AttributeError on Windows. Guarded rather than listed in
 # ``test/windows-expected-failures.txt``: that list is a burn-down backlog of gaps to
 # close, and a POSIX-only launcher is a permanent platform boundary. The sibling
-# launcher suites take the same route -- see ``test_sandbox_argv.py`` (#2041).
+# launcher suites take the same route -- see ``test_sandbox_argv.py``.
 pytestmark = pytest.mark.skipif(
     sys.platform == "win32",
     reason="_build_launcher_script uses POSIX-only os.getuid (#2041)",
@@ -57,22 +57,27 @@ _HELPER_END = "REAL_UID = "
 #: temp artifact lands under pytest's tmp_path).
 _PROP_START = "        # Private mount propagation"
 _PROP_END = "        # Pick a tmpfs-backed source dir"
-#: The three hiding mounts: credential dirs, sensitive files, ~/.ssh.
-_HIDE_START = "        # Bind-mount empty dirs over credential paths"
+#: The private-window staging plus the three hiding mounts: credential dirs,
+#: sensitive files, ~/.ssh. Staging is inside the slice because the credential
+#: loop READS ``_private_stage`` to carve a window's placeholder out of the
+#: empty stand-in, so a slice that started at the hiding loops would exec a
+#: fragment with that name undefined.
+_HIDE_START = "        # Private windows: a directory INSIDE a hidden tree that stays"
 _HIDE_END = "        # Scrub sensitive env vars"
 
 #: What the extracted region must contain. Without this a marker rename would
 #: shrink a slice and leave every assertion below vacuously green against a
-#: fragment that no longer holds the guard. Deliberately STRUCTURAL, not the
+#: fragment that fails to hold the guard. Deliberately STRUCTURAL, not the
 #: guard EXPRESSION: pinning a call's exact text here would make the break-arm
 #: that reverts that call fail on the landmark instead of on its assertion, and
 #: the call form is already pinned once, on purpose, by
 #: ``test_every_tier_routes_all_four_mounts_through_the_guard``.
 _LANDMARKS = (
     "# Private mount propagation",  # the propagation site
+    "for p in PRIVATE_DIRS:",  # the private-window staging loop
     "for d in SENSITIVE_DIRS:",  # the credential-dir loop
     "for d in READONLY_DIRS:",  # the read-only exposure loop
-    "for d in WRITABLE_DIRS:",  # the write carve-out loop (#8653, fail-open)
+    "for d in WRITABLE_DIRS:",  # the write carve-out loop (fail-open)
     "for f in SENSITIVE_FILES:",  # the sensitive-file loop
     "if HIDE_SSH and os.path.isdir(SSH_DIR):",  # the .ssh block
     "sandbox: BLOCKED",  # the refusal
@@ -133,6 +138,7 @@ def _run(
     err: int = errno.EPERM,
     script: str | None = None,
     writable_dirs: list[str] | None = None,
+    private_dirs: list[str] | None = None,
 ) -> tuple[_FakeLibc, str | None]:
     """Run the mount region. Returns ``(fake_libc, refusal_message_or_None)``.
 
@@ -182,9 +188,12 @@ def _run(
         "expose_data": {},
         "EXPOSE_FILES": [],
         "SENSITIVE_DIRS": [str(aws)],
+        # Empty by default for the same reason as WRITABLE_DIRS: a private
+        # window stages its own bind, which would shift the call numbering.
+        "PRIVATE_DIRS": list(private_dirs or []),
         "READONLY_DIRS": [str(cache)],
         # Empty by default so the six-site call numbering above stays stable;
-        # the carve-out tests inject their own entry (#8653).
+        # the carve-out tests inject their own entry.
         "WRITABLE_DIRS": list(writable_dirs or []),
         "SENSITIVE_FILES": [str(lone)],
         "SSH_DIR": str(ssh),
@@ -290,7 +299,7 @@ def test_the_refusal_names_the_deliberate_opt_out(tmp_path: Path) -> None:
     assert "sandbox_level" in refusal
 
 
-def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
+def test_every_tier_routes_all_eight_mounts_through_the_guard() -> None:
     """No tier may keep a raw, unchecked ``_libc.mount`` call site.
 
     Break-arm: ``reintroduce_raw`` (one site reverted to the raw call).
@@ -304,11 +313,15 @@ def test_every_tier_routes_all_six_mounts_through_the_guard() -> None:
             if "_libc.mount(" in line and "source, target, None, flags, None" not in line
         ]
         assert raw == [], f"{level}: unchecked mount call(s): {raw}"
-        assert script.count("_mount_or_die(") == 7  # 1 def + 6 call sites
+        # 1 def + 8 call sites: propagation, credential dirs, the read-only
+        # bind and its sealing remount, sensitive files, ~/.ssh, and the private
+        # window's two -- staging its real contents out before the parent is
+        # masked, then binding them onto the placeholder inside the stand-in.
+        assert script.count("_mount_or_die(") == 9
 
 
 # --------------------------------------------------------------------------
-# Write carve-out (#8653): the ONE access-WIDENING pair, and it fails OPEN
+# Write carve-out: the ONE access-WIDENING pair, and it fails OPEN
 # --------------------------------------------------------------------------
 
 
@@ -339,7 +352,7 @@ def test_a_failed_carveout_mount_degrades_open(
 ) -> None:
     """The carve-out pair WIDENS access, so its failure must not refuse.
 
-    A refused carve-out means the path stays sealed -- the pre-#8653 behavior,
+    A refused carve-out means the path stays sealed -- the default behavior,
     whose one consequence is an unwritable probe temp dir. The spawn must
     proceed (the remaining hiding mounts still run and still refuse on their
     own failures), and the operator gets the classifier's ADVISORY severity,
@@ -432,7 +445,7 @@ def test_break_arms_falsify_each_assertion(tmp_path: Path, arm: str) -> None:
     script = _mutate(arm)
 
     if arm == "drop_errno":
-        # `errno %d` gone: the errno assertion can no longer hold. The message
+        # `errno %d` gone: the errno assertion cannot hold. The message
         # is now malformed (%-args outnumber the placeholders), so a TypeError
         # here is the same evidence as a missing number.
         try:

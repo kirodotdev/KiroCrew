@@ -1,7 +1,7 @@
 /**
  * CrewPageView — one crew's page: who it is, what it is holding, and what it did.
  *
- * Five regions, top to bottom (the layout is `temp-screenshots/crews-mock/02-crew-page-*.png`):
+ * Five regions, top to bottom:
  *
  *   1. header       identity + derived state + the three actions
  *   2. extra prompt the crew's standing instruction, verbatim
@@ -195,7 +195,7 @@ function StatBlock({ label, value, note, colorClass, testId }: {
         label={label}
         value={value}
         colorClass={colorClass}
-        className="rounded-b-none border-b-0 pb-1.5 hover:translate-y-0 hover:border-border"
+        className="rounded-b-none border-b-0 pb-1.5 hover:border-border"
         data-testid={testId}
       />
       <div

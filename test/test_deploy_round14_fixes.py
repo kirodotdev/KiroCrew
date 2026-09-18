@@ -1,4 +1,4 @@
-"""Tests for deploy Round 14 fixes.
+"""Tests for three deploy fixes.
 
 F1: reaper.sh must not treat transient CloudFront errors as "distribution
     gone" (only NoSuchDistribution may fall through to bucket/OAC deletion).

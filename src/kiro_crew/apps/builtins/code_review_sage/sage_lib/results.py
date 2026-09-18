@@ -131,9 +131,9 @@ def validate_result(record: dict) -> list[str]:
         # text (gate_verdict, design_risk, criticality, design_headline, problem,
         # why_it_matters, solution_assessment), and the readers consume them as
         # text: `.strip()` in classify, `html.escape()` in the renderer. Accepting
-        # a number here let both crash on a record this function had approved --
-        # and it also skipped the verdict-vocabulary check below, because that
-        # check used to be guarded by an isinstance() test that a number failed.
+        # a number here would let both crash on a record this function approved --
+        # and it would also skip the verdict-vocabulary check below, which is
+        # guarded by an isinstance() test that a number fails.
         # Refusing the record is the fail-closed direction: a numeric phase1 value
         # is malformed per the contract, and a rejected record is re-reviewed
         # rather than rendered half-broken.
@@ -147,9 +147,9 @@ def validate_result(record: dict) -> list[str]:
         # so execution reaches this line with the bad value still in hand, and
         # `not in VALID_VERDICTS` tests a SET — an unhashable list/dict would raise
         # TypeError inside the validator whose whole job is to report malformed
-        # records. It is no longer a hole the way it was under the "any scalar" rule:
-        # every non-string value now fails the string check above, so the guard only
-        # suppresses a duplicate complaint, never the only one.
+        # records. It is not a hole, because every non-string value fails the string
+        # check above, so the guard only suppresses a duplicate complaint, never the
+        # only one.
         if isinstance(p1.get("gate_verdict"), (str, type(None))) \
                 and p1.get("gate_verdict") not in VALID_VERDICTS:
             errs.append(f"phase1.gate_verdict must be one of {sorted(VALID_VERDICTS)}")
@@ -188,8 +188,8 @@ def validate_result(record: dict) -> list[str]:
             # `line` is checked in the loop above rather than here, so a missing key
             # and a wrong-typed one produce one message each, not two for the latter.
             # The renderer and every consumer treat it as a line number, and the
-            # report redactor no longer exempts it -- a credential written into it as
-            # a string used to ride that exemption to the dashboard.
+            # report redactor does not exempt it -- a credential written into it as a
+            # string would ride such an exemption to the dashboard.
     # `counts` and `blast_radius` are read with `.get()` in pipeline.py,
     # report.py and review_driver.py. A worker that wrote either as a list or a
     # scalar passed validation, was adopted, and then aborted the run with an
@@ -408,12 +408,12 @@ def adopt_from_shared(change_id: str, root: Path | None = None,
             str(src), str(shared), max_bytes=_RECORD_MAX_BYTES)
     if raw is None:
         return False
-    # Validate BEFORE touching the destination. Round 13 replaced an atomic
-    # os.replace with an O_TRUNC write to close a symlink hole, and in doing so
-    # gave up all-or-nothing semantics: a malformed payload truncated whatever
-    # valid record was already there, and read_result then raised on the wreckage
-    # so no retry could recover it. Parse first, and only a record that is really
-    # for THIS change is allowed to land.
+    # Validate BEFORE touching the destination. The publish is an O_TRUNC write
+    # rather than an atomic os.replace, to close a symlink hole, so it has no
+    # all-or-nothing semantics: a malformed payload truncates whatever valid record
+    # is already there, and read_result then raises on the wreckage so no retry can
+    # recover it. Parse first, and only a record that is really for THIS change is
+    # allowed to land.
     try:
         parsed = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, ValueError):

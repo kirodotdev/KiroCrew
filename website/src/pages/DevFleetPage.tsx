@@ -21,7 +21,7 @@ import { setPendingInput } from '../store/chatSlice'
 import {
   Server, RefreshCw, Play, Square, ExternalLink, ChevronRight, Trash2,
   LoaderCircle, Check, Video, X,
-  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Info, AlertTriangle, ShieldAlert,
+  Ellipsis, RotateCw, FileText, GitCommit, Rocket, Undo2, Info, AlertTriangle, ShieldAlert,
 } from 'lucide-react'
 import * as api from './devFleetApi'
 import { ApiError } from '../api/client'
@@ -47,9 +47,25 @@ const _actionErrorListeners = new Set<(msg: string) => void>()
 // clears it on dismiss, so a failure that landed while the user was elsewhere
 // is still on the page when they come back, not only in the notification bell.
 let _lastActionError: string | null = null
-/** Test seam: the latest-error slot is module state, so a suite that fails an
- *  action in one test would otherwise seed the next test's page with it. */
-export function __resetDevFleetNoticesForTests(): void { _lastActionError = null }
+const UNDO_DISMISSED_STORAGE_KEY = 'kc-dev-fleet-undo-dismissed'
+
+function readDismissedUndoKey(): string | null {
+  try { return window.sessionStorage.getItem(UNDO_DISMISSED_STORAGE_KEY) }
+  catch { return null }
+}
+
+function persistDismissedUndoKey(key: string | null): void {
+  try {
+    if (key == null) window.sessionStorage.removeItem(UNDO_DISMISSED_STORAGE_KEY)
+    else window.sessionStorage.setItem(UNDO_DISMISSED_STORAGE_KEY, key)
+  } catch { /* sessionStorage can be unavailable in hardened browsers */ }
+}
+
+/** Test seam: the latest-error slot and dismissal receipt are module/browser state. */
+export function __resetDevFleetNoticesForTests(): void {
+  _lastActionError = null
+  persistDismissedUndoKey(null)
+}
 let _toastSeq = 1
 
 function notify(msg: string, opts?: { type?: 'success' | 'error' | 'info' }) {
@@ -80,12 +96,59 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
 // stalls in one band, then jumps. An indeterminate spinner plus the step name
 // and elapsed time is the honest signal.
 const STEP_MARKER_RE = /^::step::(\d+)::(.+)$/
+// The tail of a FAILED step's stderr, re-emitted by the sync runner under its own
+// marker. It exists because output ORDER in the runner's single pipe is not
+// evidence: a child block-buffers stdout to a pipe and writes stderr unbuffered,
+// so the stdout buffer flushes at EXIT -- after the diagnostic. A refused
+// `git merge --ff-only` therefore ENDS with `Updating <old>..<new>`, so a bare
+// "last output line" rule names that progress line as the reason Pull+Build
+// failed. These markers name the failure from the stream diagnostics arrive on.
+const STEPERR_MARKER_RE = /^::steperr::(\d+)::([\s\S]*)$/
 // The failure diagnosis arrives on the run as `cause`, derived by the gateway
 // from the exit code -- never parsed out of this stream, which also carries
-// worktree-controlled build output. So the log needs no marker handling.
+// worktree-controlled build output. `::steperr::` does NOT change that: it is
+// the raw log tail, rendered as such, and never sets `lastIsCause`.
 
 function filterStepMarkers(lines: string[]): string[] {
-  return lines.filter((l) => !STEP_MARKER_RE.test(l))
+  // Both markers are protocol. `::steperr::` lines are also DUPLICATES -- the
+  // runner already streamed each stderr line into the log -- so dropping them
+  // keeps the log panel a faithful transcript rather than one with its tail
+  // repeated.
+  return lines.filter((l) => !STEP_MARKER_RE.test(l) && !STEPERR_MARKER_RE.test(l))
+}
+
+/**
+ * The failure text for a finished sync OR provision run, from its output alone.
+ *
+ * Both runners emit the same `::steperr::` markers for the step that failed, so
+ * the two failure notices are named by one rule rather than two.
+ *
+ * Prefers the failing step's stderr tail (`::steperr::`) over the last output
+ * line. The last line is only a good guess when the failing process wrote
+ * nothing to stdout: npm prints its diagnosis FIRST and its "a complete log of
+ * this run can be found in ..." pointer LAST, and git prints `Updating a..b` to
+ * stdout before a refused fast-forward errors on stderr -- so in both cases the
+ * final line is the least informative one produced. Falls back to that last-line
+ * rule for a run from a gateway that emits no `::steperr::` markers.
+ */
+function syncFailureTail(out: string[]): string {
+  const stderrTail = out
+    .map((l) => STEPERR_MARKER_RE.exec(l)?.[2])
+    // Blank texts are dropped, not merely trimmed away later: the runner only
+    // ever emits non-blank lines, so a `::steperr::0::` with nothing after it can
+    // only be a step printing the marker itself — and an all-blank tail would
+    // resolve to `''`, which `ErrorNotice` renders as NOTHING. That would let a
+    // build script hide the failure notice, which is a bigger gift than the
+    // verbatim-output echo it already had.
+    .filter((t): t is string => !!t && !!t.trim())
+  if (stderrTail.length) return stderrTail.join('\n')
+  // The fallback must exclude BOTH markers, not just `::step::`. A run whose only
+  // `::steperr::` lines were blank (the forgery above) leaves them as the last
+  // lines of the output, and a fallback that skipped only step markers would
+  // then render the raw marker as the failure text.
+  return [...out].reverse().find(
+    (l) => l?.trim() && !STEP_MARKER_RE.test(l) && !STEPERR_MARKER_RE.test(l),
+  ) || ''
 }
 
 /* ─── Restart identity handshake ─── */
@@ -159,9 +222,15 @@ async function awaitGatewayBackGlobal(capturedId: string | null): Promise<'reloa
 
 /* ─── Provision progress model ─── */
 // The last non-blank output line — the "current activity" shown inline.
+// `::steperr::` markers are protocol, not activity: they are skipped so the
+// poll that observes them while the run is still `running` does not promote a
+// raw marker as the current step.
 function lastLine(lines: string[] | undefined): string {
   if (!lines) return ''
-  for (let i = lines.length - 1; i >= 0; i--) { if (lines[i]?.trim()) return lines[i] }
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const l = lines[i]
+    if (l?.trim() && !STEPERR_MARKER_RE.test(l)) return l
+  }
   return ''
 }
 
@@ -283,7 +352,7 @@ function ProvLogPre({ lines, streaming }: { lines: string[]; streaming: boolean 
     if (streaming && ref.current) ref.current.scrollTop = ref.current.scrollHeight
   }, [lines, streaming])
   return (
-    <pre ref={ref} style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', minWidth: 640 } as CSSProperties}>{lines.join('\n') || '(no output yet)'}</pre>
+    <pre ref={ref} style={{ margin: '2px 0 8px 32px', padding: '8px 10px', maxHeight: 180, overflow: 'auto', fontSize: 11, lineHeight: 1.45, background: 'var(--bg)', border: '1px solid var(--border)', borderRadius: 8, whiteSpace: 'pre-wrap', wordBreak: 'break-all', minWidth: 640 } as CSSProperties}>{filterStepMarkers(lines).join('\n') || '(no output yet)'}</pre>
   )
 }
 
@@ -693,7 +762,8 @@ interface Worktree {
   // Per-pod system resources (running pods on Linux only); absent otherwise.
   pod_resources?: PodResources | null
 }
-interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; manual_restart?: string; fleet_totals?: FleetTotals }
+interface UndoTarget { name: string; path: string }
+interface FleetData { worktrees: Worktree[]; error?: string; needs_setup?: boolean; main_repo?: string; main_repo_inferred?: boolean; base_branch?: string; sync_run_id?: string; build_pending?: boolean; gateway_service_active?: boolean; gateway_service_reason?: string | null; pods_available?: boolean; pods_unavailable_reason?: string | null; serving_install_reason?: string | null; staged_target?: string | null; staged_cancel_available?: boolean; undo_target?: UndoTarget | null; live_state_known?: boolean; manual_restart?: string; fleet_totals?: FleetTotals }
 // `lastIsCause` distinguishes the two things `last` can hold. A gateway-composed
 // diagnosis is decision-critical prose ending in the action to take, so it must
 // not render in the muted 11.5px monospace the raw log tail uses.
@@ -917,6 +987,10 @@ export default function DevFleetPage() {
   // so they cannot be selected or copied and a long message vanishes mid-read —
   // keep the text on the page until it is dealt with.
   const [gatewayError, setGatewayError] = useState<string | null>(null)
+  // Dismissal is scoped to one current→previous pair. A later Make Live changes
+  // the key and automatically reveals the new banner without persisting UI-only
+  // state into the keystone live-target pointer.
+  const [dismissedUndoKey, setDismissedUndoKey] = useState<string | null>(readDismissedUndoKey)
   const [podLogs, setPodLogs] = useState<Record<string, string>>({})
   const [podLogsLoading, setPodLogsLoading] = useState<Record<string, boolean>>({})
   const rebaseTimersRef = useRef<Record<string, ReturnType<typeof setTimeout>>>({})
@@ -984,6 +1058,12 @@ export default function DevFleetPage() {
   // row (the busy flag is per-worktree, the hazard is process-wide).
   const makeLivePending = Object.entries(busy).some(([k, v]) => v && k.endsWith(':makelive'))
   const gatewayMutating = restarting || makeLivePending
+  // The gateway could not report which checkout is live or staged (see the notice
+  // above the rows). With no row marked live, the "not live" guard on Make live would
+  // otherwise offer a cutover on every row — the already-live one included — chosen
+  // against a state nobody knows. Make live is disabled for the whole outage; the
+  // notice's Ask-the-agent hand-off is the recovery path.
+  const liveStateUnknown = fleet?.live_state_known === false
   // The worktree a cutover is staged onto (live-target pointer written, gateway
   // not yet restarted into it), but only while the backend would ACCEPT the
   // pointer-only cancel: on a drivable host /make-live refuses it
@@ -1032,12 +1112,10 @@ export default function DevFleetPage() {
         const t0 = run.started ? run.started * 1000 : Date.now()
         const out = run.output || []
         // Same preference as the two poll paths: a reported cause outranks the
-        // last output line, which for npm is its log-file pointer. Missing it
+        // step's stderr tail, which outranks the last output line. Missing it
         // here meant a page RELOAD after a failed build showed the uninformative
         // line even though the diagnosis was stored on the run.
-        const last = run.cause
-          || [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l))
-          || ''
+        const last = run.cause || syncFailureTail(out)
         if (run.status === 'running') {
           setSyncRun({ rid, status: 'running', lines: out, startedAt: t0, stepLabel: run.step_label })
           pollSyncRun(rid, t0)
@@ -1130,9 +1208,7 @@ export default function DevFleetPage() {
       if (!run) continue
       const t0 = run.started ? run.started * 1000 : startedAt
       const out = run.output || []
-      const last = run.cause
-        || [...out].reverse().find((l: string) => l?.trim() && !STEP_MARKER_RE.test(l))
-        || ''
+      const last = run.cause || syncFailureTail(out)
       if (run.status === 'done' || run.status === 'timeout') {
         const okRun = run.exit_code === 0
         setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last, lastIsCause: Boolean(run.cause) })
@@ -1171,13 +1247,10 @@ export default function DevFleetPage() {
       }
       const out = run.output || []
       const t0 = run.started ? run.started * 1000 : startedAt
-      // Prefer the cause a step reported over the last output line. npm prints
-      // its diagnosis FIRST and its "a complete log of this run can be found
-      // in ..." pointer LAST, so the last line is the least informative one it
-      // produces — which is what this used to surface on every failed build.
-      const last = run.cause
-        || [...out].reverse().find((l) => l?.trim() && !STEP_MARKER_RE.test(l))
-        || ''
+      // Prefer the cause a step reported, then the failing step's stderr tail,
+      // then the last output line -- see `syncFailureTail` for why the last line
+      // is the worst of the three.
+      const last = run.cause || syncFailureTail(out)
       if (run.status === 'done' || run.status === 'timeout') {
         const okRun = run.exit_code === 0
         setSyncRun({ rid, status: okRun ? 'done' : 'error', lines: out, startedAt: t0, exit: run.exit_code, last, lastIsCause: Boolean(run.cause) })
@@ -1194,7 +1267,7 @@ export default function DevFleetPage() {
             notify(i18nT('pages.devFleetPage.build_finished_restarting_gateway'), { type: 'success' })
             setRestarting(true)
             setGatewayError(null)
-            api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
+            api.postGateway<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
               .then(async (r) => {
                 if (!r?.ok) {
                   const msg = r?.error || i18nT('pages.devFleetPage.restart_failed')
@@ -1582,7 +1655,7 @@ export default function DevFleetPage() {
     setRestarting(true)
     setGatewayError(null)
     try {
-      const r = await api.post<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
+      const r = await api.postGateway<{ ok?: boolean; error?: string; start_id?: string | null }>('/restart-gateway', {})
       if (!r?.ok) {
         const msg = r?.error || i18nT('pages.devFleetPage.restart_failed')
         notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); return
@@ -1598,15 +1671,16 @@ export default function DevFleetPage() {
     }
   }
 
-  async function makeLive(w: Worktree) {
+  async function makeLive(w: Worktree | UndoTarget, opts?: { undo?: boolean }) {
+    const undoing = opts?.undo === true
     // Only the already-live row is blocked. Main is a valid target when it is
     // NOT live (after a cutover to a feature worktree, this is the way back).
     // The live row is a valid target too while a cutover is staged onto another
     // worktree: re-confirming the running checkout as the live target is how
     // the stage is cancelled (the backend re-pins the pointer; nothing
     // restarts), and it is the only cancel the dashboard can offer.
-    const cancellingStage = !!w.is_live && !!stagedWorktree
-    if (w.is_live && !cancellingStage) return
+    const cancellingStage = !undoing && !!('is_live' in w && w.is_live) && !!stagedWorktree
+    if ('is_live' in w && w.is_live && !cancellingStage) return
     if (!w.path) { notify(i18nT('pages.devFleetPage.cannot_resolve_worktree_path_for_name', { name: w.name }), { type: 'error' }); return }
     // The dialog must not promise an automatic restart on a host where Dev Fleet
     // cannot drive the service: there the cutover only STAGES, and the operator
@@ -1614,21 +1688,29 @@ export default function DevFleetPage() {
     // so the copy cannot drift from what actually happens.
     const canRestart = fleet?.gateway_service_active === true
     const ok = await askConfirm(
-      cancellingStage
-        ? i18nT('pages.devFleetPage.cancel_staged_cutover_2')
-        : i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
-      cancellingStage
-        ? i18nT('pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', { name: w.name, staged: stagedWorktree?.name ?? '' })
-        : canRestart
-          ? i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this')
-          : i18nT('pages.devFleetPage.stages_the_code_behind_the_live_dashboard_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
-      cancellingStage
-        ? { confirmLabel: i18nT('pages.devFleetPage.cancel_staged_cutover'), cancelLabel: i18nT('pages.devFleetPage.keep_cutover') }
-        : { confirmLabel: i18nT('pages.devFleetPage.make_live') })
+      undoing
+        ? i18nT('pages.devFleetPage.undo_to_name', { name: w.name })
+        : cancellingStage
+          ? i18nT('pages.devFleetPage.cancel_staged_cutover_2')
+          : i18nT('pages.devFleetPage.make_name_live', { name: w.name }),
+      undoing
+        ? canRestart
+          ? i18nT('pages.devFleetPage.switches_the_live_dashboard_back_to_name_and_restarts', { name: w.name })
+          : i18nT('pages.devFleetPage.stages_name_as_the_live_target_to_finish_the_undo', { name: w.name, cmd: fleet?.manual_restart || 'kirocrew restart' })
+        : cancellingStage
+          ? i18nT('pages.devFleetPage.keeps_name_the_live_target_and_discards_the_stag', { name: w.name, staged: stagedWorktree?.name ?? '' })
+          : canRestart
+            ? i18nT('pages.devFleetPage.swaps_the_code_behind_the_live_dashboard_to_this')
+            : i18nT('pages.devFleetPage.stages_the_code_behind_the_live_dashboard_manual', { cmd: fleet?.manual_restart || 'kirocrew restart' }),
+      undoing
+        ? { confirmLabel: i18nT('pages.devFleetPage.undo_to_name', { name: w.name }) }
+        : cancellingStage
+          ? { confirmLabel: i18nT('pages.devFleetPage.cancel_staged_cutover'), cancelLabel: i18nT('pages.devFleetPage.keep_cutover') }
+          : { confirmLabel: i18nT('pages.devFleetPage.make_live') })
     if (!ok) return
     setFlag(w.name + ':makelive', true)
     try {
-      const r = await api.post<{
+      const r = await api.postGateway<{
         ok?: boolean; error?: string; start_id?: string | null
         staged_only?: boolean; cancelled?: boolean; notice?: string
       }>('/make-live', cancellingStage && stagedWorktree?.path
@@ -1636,12 +1718,16 @@ export default function DevFleetPage() {
         // refuses (stage_changed) if another tab re-staged between the dialog
         // and this POST, instead of silently discarding a stage never seen.
         ? { path: w.path, expected_staged: stagedWorktree.path }
-        : { path: w.path })
+        : undoing
+          ? { path: w.path, undo: true }
+          : { path: w.path })
       if (!r?.ok) {
         // Same treatment as a failed restart: this branch surfaces
         // restart_detached's message, which names a remedy the operator has to
         // act on — useless in a 7s toast.
-        const msg = r?.error || i18nT('pages.devFleetPage.make_live_failed')
+        const msg = r?.error || i18nT(undoing
+          ? 'pages.devFleetPage.undo_make_live_failed'
+          : 'pages.devFleetPage.make_live_failed')
         notify(msg, { type: 'error' }); setGatewayError(msg); setFlag(w.name + ':makelive', false); return
       }
       // Stage cancelled: the pointer is re-pinned at the running checkout and
@@ -1674,7 +1760,10 @@ export default function DevFleetPage() {
       await awaitGatewayBack(r.start_id ?? null)
       setFlag(w.name + ':makelive', false)
     } catch (e: unknown) {
-      const msg = `${i18nT('pages.devFleetPage.make_live_failed')}: ${(e as Error)?.message || String(e)}`
+      const operation = i18nT(undoing
+        ? 'pages.devFleetPage.undo_make_live_failed'
+        : 'pages.devFleetPage.make_live_failed')
+      const msg = `${operation}: ${(e as Error)?.message || String(e)}`
       notify(msg, { type: 'error' }); setGatewayError(msg); setRestarting(false); setFlag(w.name + ':makelive', false)
     }
   }
@@ -1693,6 +1782,28 @@ export default function DevFleetPage() {
   const wts = fleet?.worktrees || []
   const running = wts.filter((w) => w.running).length
   const needsProv = wts.filter((w) => !w.is_main && !w.has_dist).length
+  const undoTarget = fleet?.undo_target?.path ? fleet.undo_target : null
+  const undoCurrent = undoTarget ? wts.find((w) => w.is_live && w.path) || null : null
+  const undoKey = undoCurrent && undoTarget
+    ? JSON.stringify([undoCurrent.path, undoTarget.path])
+    : null
+  const showUndoBanner = !!undoKey && dismissedUndoKey !== undoKey
+  // A dismissal covers exactly one completed cutover. The moment the fleet
+  // reports a different pair -- or none, because Switch back consumed the
+  // history or another cutover overwrote it -- the receipt is spent. Without
+  // this, "feature -> main, dismiss, back to main, feature again" recreates the
+  // same path pair and the new cutover's banner would inherit the old dismissal.
+  // Only a loaded, non-errored fleet payload can spend it: a reload must not
+  // wipe the receipt before the fleet arrives, and an undo target whose live
+  // row has not resolved yet is unknown, not different.
+  useEffect(() => {
+    if (dismissedUndoKey == null || !fleet || fleetError || fleet.error) return
+    if (undoTarget && !undoCurrent) return
+    if (undoKey !== dismissedUndoKey) {
+      setDismissedUndoKey(null)
+      persistDismissedUndoKey(null)
+    }
+  }, [dismissedUndoKey, fleet, fleetError, undoKey, undoTarget, undoCurrent])
   const error = fleetError ? (fleetError as Error).message : fleet?.error || null
   // Whether pods can run on this host. Default TRUE when the field is absent so
   // a dashboard talking to an older dev-fleet backend keeps its pod controls.
@@ -1814,7 +1925,13 @@ export default function DevFleetPage() {
         // back. Consistent with makeLive()'s guard: shown iff the row is NOT live.
         if (!w.is_live && !w.is_staged) {
           out.push(
-            <Btn key="makelive" onClick={() => makeLive(w)} disabled={gatewayMutating} title={i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}>
+            <Btn
+              key="makelive"
+              onClick={() => makeLive(w)}
+              disabled={gatewayMutating || liveStateUnknown}
+              title={liveStateUnknown ? i18nT('pages.devFleetPage.live_state_unknown') : i18nT('pages.devFleetPage.repoint_the_live_gateway_back_at_main_restarts_t')}
+              data-testid={liveStateUnknown ? 'fleet-make-live-disabled-unknown' : undefined}
+            >
               {iconLabel(<Rocket size={13} className="lucide-inline" />, i18nT('pages.devFleetPage.make_live'))}
             </Btn>
           )
@@ -1860,7 +1977,7 @@ export default function DevFleetPage() {
       // hide it on exactly the hosts it exists to serve.
       // Hidden on the already-staged row: there it only re-stages, and next
       // to Cancel staged cutover it misreads as "complete the cutover now".
-      !w.is_live && !w.is_staged ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating, title: i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
+      !w.is_live && !w.is_staged ? { label: i18nT('pages.devFleetPage.make_live'), icon: <Rocket size={13} className="lucide-inline" />, onClick: () => makeLive(w), disabled: gatewayMutating || liveStateUnknown, title: liveStateUnknown ? i18nT('pages.devFleetPage.live_state_unknown') : i18nT('pages.devFleetPage.repoint_the_live_gateway_at_this_worktree_restar') } : null,
       // The cancel counterpart: only while THIS row is live and a cutover is
       // staged onto another worktree. Ungated on podsAvailable for the same
       // reason as Make live — cancelling touches only the live-target pointer.
@@ -1932,14 +2049,22 @@ export default function DevFleetPage() {
       <div style={{ gridColumn: '4 / -1', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8, minWidth: 0 } as CSSProperties}>
         {/* A gateway-composed diagnosis (lastIsCause) is the one line the user
             has to act on, so it is the notice's message and wraps in full. When
-            the backend gave no diagnosis the message is the raw log tail — the
-            full log is one click away in the Log panel. Inputs are all in git,
+            the backend gave no diagnosis the message is the failing step's
+            stderr tail (or, from a gateway that emits no `::steperr::` markers,
+            the raw log tail) — the full
+            log is one click away in the Log panel. Inputs are all in git,
             so the hand-off loses nothing. The notice takes its own line
             (`basis-full`) so the Log / dismiss pair below it stays a two-control
-            row (max-two-buttons-per-row). */}
+            row (max-two-buttons-per-row).
+            `whitespace-pre-wrap` on the message only: a stderr tail is several
+            lines and git's is indented to associate paths with their headline,
+            so collapsing it would run "would be overwritten by merge:" straight
+            into the file name. The inline variant does not pre-wrap by default
+            and must not start doing so for every other consumer. */}
         <ErrorNotice
           title={i18nT('pages.devFleetPage.pull_build_failed')}
           message={syncRun.last}
+          messageClassName="whitespace-pre-wrap"
           variant="inline"
           askAgent
           className="basis-full min-w-0 flex-wrap select-text"
@@ -1961,15 +2086,21 @@ export default function DevFleetPage() {
       <Clickable aria-label={i18nT('pages.devFleetPage.toggle_provision_log')} onClick={() => toggleProvLog(w.name)} style={{ background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', fontSize: 11, padding: 2 } as CSSProperties}>{open ? i18nT('pages.devFleetPage.log') : i18nT('pages.devFleetPage.log_2')}</Clickable>
     )
     if (pr.failed) {
-      // Failed action, inputs all on disk (the worktree) — hand-off on. The log
-      // tail is the message; the full log stays one click away via `logToggle`,
-      // which sits on its own line under the notice: the notice already carries
-      // two controls (hand-off + dismiss), the row's cap (max-two-buttons-per-row).
+      // Failed action, inputs all on disk (the worktree) — hand-off on. The
+      // failing step's stderr tail is the message (or, from a gateway whose
+      // provision emits no `::steperr::` markers, the raw log tail — see
+      // `syncFailureTail` for why the last line alone names a progress line);
+      // the full log stays one click away via `logToggle`, which sits on its own
+      // line under the notice: the notice already carries two controls
+      // (hand-off + dismiss), the row's cap (max-two-buttons-per-row).
+      // `whitespace-pre-wrap` on the message only: a stderr tail is several
+      // lines, and collapsing them would run pip's headline into its remedy.
       return (
         <div style={{ gridColumn: '4 / -1', display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'flex-end', gap: 8, minWidth: 0 } as CSSProperties}>
           <ErrorNotice
             title={pr.exit != null ? i18nT('pages.devFleetPage.provision_failed_exit_code', { code: pr.exit }) : i18nT('pages.devFleetPage.provision_failed')}
-            message={lastLine(pr.lines) || i18nT('pages.devFleetPage.provision_failed')}
+            message={syncFailureTail(pr.lines) || i18nT('pages.devFleetPage.provision_failed')}
+            messageClassName="whitespace-pre-wrap"
             variant="inline"
             askAgent
             onDismiss={() => { void dismissProv(w.name) }}
@@ -2104,7 +2235,24 @@ export default function DevFleetPage() {
     ? <ErrorNotice title={i18nT('pages.devFleetPage.discovery_error')} message={error} askAgent testId="fleet-discovery-error" />
     : <ErrorNotice title={i18nT('pages.devFleetPage.backend_unavailable')} message={error} askAgent testId="fleet-backend-error" />
   else if (!wts.length) body = <EmptyState icon={<Server size={28} className="lucide-inline" />} title={i18nT('pages.devFleetPage.no_worktrees_found')} subtitle={i18nT('pages.devFleetPage.nothing_under_the_worktrees_root_yet')} />
-  else body = <div>{columnHeader}{visible.map(renderRow)}{legacyToggle}</div>
+  // Worktrees are discovered from git independently of the live-target pointer,
+  // so a gateway that cannot report which checkout is live still yields rows.
+  // Rendering those rows with no badge would read as "nothing is live" — the
+  // opposite remedy (stage a cutover) from the true one (check the gateway) — so
+  // the unknown state is an error notice above the list, never a bare list.
+  else body = (
+    <div>
+      {fleet?.live_state_known === false && (
+        <ErrorNotice
+          title={i18nT('pages.devFleetPage.live_state_unknown')}
+          message={i18nT('pages.devFleetPage.live_state_unknown_help')}
+          askAgent
+          testId="fleet-live-state-unknown"
+        />
+      )}
+      {columnHeader}{visible.map(renderRow)}{legacyToggle}
+    </div>
+  )
 
   const confirmDialog = (
     <Modal open={!!confirmReq} onClose={() => settleConfirm(false)} title={confirmReq?.title ?? ''} maxWidth={confirmReq?.width || 400} footer={<><Btn onClick={() => settleConfirm(false)}>{confirmReq?.cancelLabel || i18nT('pages.devFleetPage.cancel')}</Btn><Btn primary={!confirmReq?.danger} danger={!!confirmReq?.danger} onClick={() => settleConfirm(true)}>{confirmReq?.confirmLabel || i18nT('pages.devFleetPage.confirm')}</Btn></>}>
@@ -2357,6 +2505,36 @@ export default function DevFleetPage() {
                 <Info size={13} className="lucide-inline shrink-0" />
                 <span>{i18nT('pages.devFleetPage.the_primary_checkout_this_fleet_is_discovered_fr')}:</span>
                 <code className="min-w-0 break-all rounded bg-bg-elevated px-1.5 py-0.5 text-text-strong select-text">{fleet.main_repo}</code>
+              </div>
+            )}
+            {showUndoBanner && undoTarget && undoCurrent && (
+              <div
+                role="status"
+                aria-live="polite"
+                data-testid="make-live-undo-banner"
+                className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-3 rounded-md border border-ok/40 bg-ok-subtle px-3 py-2.5 mt-3 text-[12.5px] leading-relaxed text-text-strong"
+              >
+                <div className="flex min-w-0 flex-1 items-center gap-2">
+                  <Undo2 className="lucide-inline h-4 w-4 shrink-0 text-ok" aria-hidden />
+                  <span className="min-w-0 break-words">
+                    {i18nT('pages.devFleetPage.live_checkout_changed_to_name', { name: undoCurrent.name })}
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 self-end sm:self-auto">
+                  <Btn onClick={() => makeLive(undoTarget, { undo: true })} disabled={gatewayMutating}>
+                    {iconLabel(<Undo2 className="lucide-inline h-3.5 w-3.5" aria-hidden />, i18nT('pages.devFleetPage.undo_to_name', { name: undoTarget.name }))}
+                  </Btn>
+                  <Clickable
+                    aria-label={i18nT('pages.devFleetPage.dismiss')}
+                    onClick={() => {
+                      setDismissedUndoKey(undoKey)
+                      persistDismissedUndoKey(undoKey)
+                    }}
+                    className="inline-flex h-8 w-8 items-center justify-center rounded-md text-muted hover:bg-bg-hover hover:text-text"
+                  >
+                    <X className="lucide-inline h-4 w-4" aria-hidden />
+                  </Clickable>
+                </div>
               </div>
             )}
             {/* Restart / make-live failures. The message can be a pair of

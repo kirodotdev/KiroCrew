@@ -168,7 +168,7 @@ describe('an app card', () => {
   it('shows the app provenance on its row', () => {
     mount({ apps: [app('hero-app', { tags: ['research'] })] })
     expect(screen.getByText(/Research & Writing/)).toBeTruthy()
-    expect(screen.getByText(/Kiro Crew/)).toBeTruthy()
+    expect(screen.getByText('Kiro Crew registry')).toBeTruthy()
   })
 
   it('renders exactly one row', () => {

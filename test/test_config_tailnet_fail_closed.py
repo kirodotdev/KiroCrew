@@ -7,8 +7,8 @@ layer that quietly replaced a malformed value with the default handed the
 dashboard to every tailnet peer holding a token, where before only an
 allowlisted login was admitted, with no denial and no error surfaced.
 
-Same shape as the publish destination allowlist (#4057, #3615) and the Slack
-enterprise allowlist (#3945): an open default means "empty" is indistinguishable
+Same shape as the publish destination allowlist and the Slack
+enterprise allowlist: an open default means "empty" is indistinguishable
 from "the operator configured nothing", so emptiness can never be read as
 consent. These tests pin the three layers that have to cooperate --
 validation preserving the evidence, the loader recording it, the gate reading it.

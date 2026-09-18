@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import ChatInput from '../components/ChatInput'
+import { ComposerVoiceSliceOverride } from '../chat-core/composer/Composer'
 import { api } from '../api/client'
 import { SlotProvider } from '../providers/SlotContext'
 import type { PasteBlock } from '../utils/pasteTokens'
@@ -606,7 +607,7 @@ describe('ChatInput dictation: Escape cancels from anywhere', () => {
 
   it('a document-level Escape cancels an in-flight recording', () => {
     const onVoiceCancel = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceCancel={onVoiceCancel} onVoiceToggle={vi.fn()} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceCancel: onVoiceCancel, onVoiceToggle: vi.fn() }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     // Deliberately dispatched on document, not the textarea: starting a
     // recording leaves focus on the mic button, so a textarea-scoped listener
     // would advertise "Esc to cancel" and do nothing.
@@ -616,14 +617,14 @@ describe('ChatInput dictation: Escape cancels from anywhere', () => {
 
   it('falls back to the toggle handler when no dedicated cancel is supplied', () => {
     const onVoiceToggle = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceToggle={onVoiceToggle} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceToggle: onVoiceToggle }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onVoiceToggle).toHaveBeenCalledTimes(1)
   })
 
   it('defers to an open dialog — Escape belongs to the topmost dismissible surface', () => {
     const onVoiceCancel = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceCancel={onVoiceCancel} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceCancel: onVoiceCancel }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     const dialog = document.createElement('div')
     dialog.setAttribute('role', 'dialog')
     document.body.appendChild(dialog)
@@ -637,14 +638,14 @@ describe('ChatInput dictation: Escape cancels from anywhere', () => {
 
   it('ignores a key that is not Escape', () => {
     const onVoiceCancel = vi.fn()
-    renderWithProviders(<ChatInput {...base} voiceRecording onVoiceCancel={onVoiceCancel} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ voiceRecording: true, onVoiceCancel: onVoiceCancel }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(document, { key: 'a' })
     expect(onVoiceCancel).not.toHaveBeenCalled()
   })
 
   it('does nothing while no recording is in flight', () => {
     const onVoiceCancel = vi.fn()
-    renderWithProviders(<ChatInput {...base} onVoiceCancel={onVoiceCancel} />)
+    renderWithProviders(<ComposerVoiceSliceOverride inputProps={{ onVoiceCancel: onVoiceCancel }}><ChatInput {...base} /></ComposerVoiceSliceOverride>)
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(onVoiceCancel).not.toHaveBeenCalled()
   })

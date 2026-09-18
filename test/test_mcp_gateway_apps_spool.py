@@ -219,10 +219,10 @@ class TestWriteSpool:
         tokens, so the file must never exist unprotected with content in it.
 
         atomic_write(restrict_to_owner=True) locks the TEMP file down before
-        any byte reaches it (the previous hand-rolled os.open at the final
-        path published the content first and applied the Windows DACL only
-        afterwards, issue #5285). Asserted by measuring the file's SIZE at
-        lockdown time — zero means no payload byte existed yet.
+        any byte reaches it (a hand-rolled os.open at the final path would
+        publish the content first and apply the Windows DACL only afterwards).
+        Asserted by measuring the file's SIZE at lockdown time — zero means no
+        payload byte existed yet.
         """
         from kiro_crew import platform_compat
 
@@ -433,9 +433,9 @@ def _tool(name: str, visibility=...) -> dict:
 class TestVisibilityAllows:
     """SEP-1865 audience semantics, asserted for BOTH directions together.
 
-    The two directions used to be separate implementations with opposite
-    defaults, and the app-side one denied on absence while citing the spec as
-    its reason. Testing them as a table is what keeps them honest.
+    The two directions are easy to drift into separate implementations with
+    opposite defaults, where one denies on absence while citing the spec as its
+    reason. Testing them as a table is what keeps them honest.
     """
 
     @pytest.mark.parametrize(
@@ -833,7 +833,7 @@ async def test_disabled_listing_still_refreshes_declarations(monkeypatch):
     await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg)
     assert backend._apps_declared_uris == {"draw": "ui://srv/old.html"}
 
-    # Apps off; the server's new listing no longer declares the resource.
+    # Apps off; the server's new listing does not declare the resource.
     monkeypatch.setenv(MCP_APPS_ENV_FLAG, "0")
     msg2 = {"jsonrpc": "2.0", "id": 2, "result": {"tools": [_tool("draw")]}}
     await backend._maybe_intercept_ui_result(_listing_pending("s1"), msg2)
@@ -1210,8 +1210,7 @@ class TestInterceptDecision:
     @pytest.mark.asyncio
     async def test_is_error_result_never_intercepts_either_form(self, spool_tmp, monkeypatch):
         """A FAILED tool call must never spawn a render — checked before the
-        result-side _meta.ui form is even read (was previously only guarding
-        the declared-uri fallback)."""
+        result-side _meta.ui form is even read."""
         from kiro_crew.mcp_gateway.backend import MCP_APPS_ENV_FLAG
         monkeypatch.setenv(MCP_APPS_ENV_FLAG, "1")
         backend = _make_backend()

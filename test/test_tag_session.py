@@ -318,6 +318,30 @@ class TestAutoTagFlagSetBeforeSave:
         assert flag_at_save == [True]
         assert len(slot.tags) == 1
 
+    async def test_refused_save_rolls_back_with_fresh_revision(self, tmp_path, monkeypatch):
+        """A rebind mid-persist rolls the provisional tag back under a FRESH
+        revision (not the prior one a client that saw the leaked provisional
+        frame already treats as stale) and broadcasts the rollback."""
+        state = _make_state()
+        slot = _make_slot(project="/x/repos/MyRepo")
+        slot.tags_revision = "rev-prior"
+
+        async def _refuse(*_args, **_kwargs):
+            return False
+
+        monkeypatch.setattr("kiro_crew.dashboard.chat_auto_tag.save_slot_off_loop", _refuse)
+
+        async def _sync_to_thread(fn, *args, **kwargs):
+            return fn(*args, **kwargs)
+
+        with patch("kiro_crew.dashboard.chat_tags.asyncio.to_thread", side_effect=_sync_to_thread):
+            with patch("kiro_crew.dashboard.state.config_dir", return_value=tmp_path):
+                await maybe_auto_tag(state, slot)
+
+        assert slot.tags == []
+        assert slot.tags_revision != "rev-prior"
+        state.push_slots_update.assert_called()
+
 
 # ── Concurrent calls produce one definition ─────────────────────────────────
 

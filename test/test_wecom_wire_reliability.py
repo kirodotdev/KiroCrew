@@ -1,7 +1,7 @@
 """WeCom long-connection reliability contracts.
 
-Each class here pins one way the channel used to lose a turn, or deliver one it
-should not have, on the WebSocket surface:
+Each class here pins one way the channel can lose a turn, or deliver one it
+should not, on the WebSocket surface:
 
 * a redelivered callback ran the whole turn a second time;
 * a group message ran inside the sender's private DM session;

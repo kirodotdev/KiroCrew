@@ -1,7 +1,7 @@
 """Snapshot's creation-side SQLite staging: read-only, descriptor-verified, WAL-complete.
 
-Issue #5451. Two claims were made about `snapshot_main`'s database staging, and they need
-opposite treatment, which is why they are tested separately here.
+Two claims about `snapshot_main`'s database staging need opposite treatment, which
+is why they are tested separately here.
 
 The FIRST is real and these tests pin it: the core-file staging path opened the live
 database by name and READ-WRITE. That is not merely more authority than a backup needs --
@@ -127,7 +127,7 @@ def _manifest(archive: Path) -> dict:
 
 
 class TestStagingDoesNotWriteToTheLiveDatabase:
-    """The regression tests for #5451's first failure mode."""
+    """Snapshot staging does not write to the live database."""
 
     def test_a_snapshot_leaves_the_live_database_byte_identical(
         self, home: Path, tmp_path: Path
@@ -237,9 +237,9 @@ class TestStagingDoesNotWriteToTheLiveDatabase:
         proving nothing. The DEFAULT route does not resolve: `_default_home()` returns
         `Path.home() / ".kiro" / "crew"` verbatim. Patching `_mc_dir` reproduces that shape.
 
-        Stated plainly: with the checkpoint removed there is no longer a guard above the
-        try for this to discriminate, so it is now a behavioural contract test rather than a
-        regression test for that specific line. It is kept because a symlinked data home
+        Stated plainly: with no checkpoint there is no guard above the
+        try for this to discriminate, so this is a behavioural contract test, not a
+        line-specific one. It is kept because a symlinked data home
         must not crash the command however the internals are arranged.
         """
         if not pinned_fs.supports_pinned_walk():
@@ -327,7 +327,7 @@ class TestACorruptCoreDatabaseFailsInsteadOfPruningAGoodBackup:
     ) -> None:
         """A source lost between the probe and the copy is reported by name.
 
-        The two `sqlite3.connect` calls used to sit OUTSIDE the try that translates errors
+        The two `sqlite3.connect` calls must sit INSIDE the try that translates errors
         into `DatabaseCopyFailed`. `snapshot_main` handles `PinnedPathRefusal`,
         `UnsafeComponentRoot`, `DatabaseCopyFailed` and `_ArchiveTooLarge` -- not a bare
         `sqlite3.OperationalError` -- so the command exited on a traceback instead of naming

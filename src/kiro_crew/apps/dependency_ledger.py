@@ -2,7 +2,7 @@
 
 Tracks which apps installed which external dependencies (capability-manager
 MCP servers, skills, agents) so that uninstall can safely clean up dependencies
-that are no longer referenced by any app.
+that no app references any more.
 
 All reads/writes use ``fcntl.flock()`` for concurrency safety, consistent
 with KiroCrew's existing file locking patterns.  Read-modify-write cycles

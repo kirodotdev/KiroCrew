@@ -82,13 +82,12 @@ _DIR_MODE = 0o700
 #: not progressing holds its signal unworked, and the failure is silent — so every
 #: pre-terminal state is sweepable, including ``needs_human``.
 #:
-#: ``needs_human`` was previously excluded, which made the app's quietest failure:
+#: Excluding ``needs_human`` makes the app's quietest failure:
 #: ``LEGAL_TRANSITIONS`` legalises ``needs_human -> stale`` *specifically* so "an
 #: incident nobody ever answers must not pin a signal as claimed forever"
 #: (``models.py``), and ``dispatch.py`` counts every non-stale non-terminal incident
-#: as owning its signal — so an unanswered question meant the alarm was never
-#: re-claimed, on machinery that looked deliberate. The edge existed, was unit-tested
-#: as a legal move, and was never traversed.
+#: as owning its signal — so an unanswered question means the alarm is never
+#: re-claimed, on machinery that looks deliberate.
 _SWEEPABLE_STATUSES: frozenset[str] = frozenset(
     {STATUS_DISPATCHED, STATUS_INVESTIGATING, STATUS_NEEDS_HUMAN}
 )
@@ -349,18 +348,15 @@ def _read_index_for_update() -> dict[str, Incident]:
     each one -- and in ``act`` mode a duplicate investigation is a second real
     write against the operator's production paging. The per-incident markdown
     logs survive on disk but nothing indexes them any more, and an open incident
-    that is no longer listed is never swept, resolved, or answered.
+    that is not listed is never swept, resolved, or answered.
 
-    Corruption propagates too, which began as a DELIBERATE divergence from the four
-    merged siblings of this idiom (``library.py``, ``shares.py``, ``secrets.py``,
-    ``policy_store.py``), which then read an unparseable document as empty.
-    Their justification was real -- a document that failed to parse carries nothing
-    to merge into -- but "cannot merge into" is not "safe to destroy". A truncated
+    Corruption propagates too, the same way it does in the four merged siblings of
+    this idiom (``library.py``, ``shares.py``, ``secrets.py``, ``policy_store.py``).
+    "A document that failed to parse carries nothing to merge into" is a real
+    observation, but "cannot merge into" is not "safe to destroy". A truncated
     index still holds most of its records verbatim, and replacing it discards the
     operator's only chance to recover them by hand. Refusing costs one skipped
-    mutation and a visible error; overwriting costs the records, silently. Found in
-    review (GPT 5.6). The siblings received the same treatment in #7805, so the
-    divergence is closed and this paragraph is its record, not its tracker.
+    mutation and a visible error; overwriting costs the records, silently.
     """
     try:
         raw = json.loads(index_path().read_text(encoding="utf-8"))
@@ -705,9 +701,9 @@ def counts_by_status() -> dict[str, int]:
 #: Closed incidents kept in the dispatch index. Open ones are NEVER pruned regardless
 #: of this cap — live work must not vanish because history is long.
 #:
-#: This exists because making a resolved alarm re-claimable (see ``claim``) removed the
-#: accidental ceiling that "one incident per alarm, forever" used to provide. A genuinely
-#: flapping alarm on the 2-minute dispatch cadence now mints a new incident per flap, and
+#: This exists because a resolved alarm is re-claimable (see ``claim``), so there is no
+#: accidental ceiling from "one incident per alarm, forever". A genuinely flapping alarm
+#: on the 2-minute dispatch cadence mints a new incident per flap, and
 #: every claim re-reads and re-writes the WHOLE index — measured superlinear: 50 entries
 #: → 6ms/claim, 450 → 53ms. Left unbounded, a month of one flapping alarm projects to
 #: ~21,600 incidents, and `/incidents` returns every one of them to the dashboard.
@@ -941,14 +937,14 @@ def decide_proposal(incident_id: str, *, approve: bool, digest: str = "") -> dic
     through the normal ``authorize_action`` gate so approving cannot bypass autonomy.
 
     **The whole read-check-write runs under ``_IndexLock``, so exactly one caller can move a
-    proposal out of ``pending``.** It previously read through ``get_incident``, tested the
-    state, and wrote through ``update_fields`` — three separate index accesses with no lock
+    proposal out of ``pending``.** Reading through ``get_incident``, testing the state, and
+    writing through ``update_fields`` would be three separate index accesses with no lock
     held across them, so two approvals arriving together (a double-click, a retried request,
-    two operators, Slack plus the dashboard) both observed ``pending``, both were told "ok",
-    and the caller executed the provider action TWICE. Acking twice is untidy; resolving or
-    silencing twice is a duplicated write on someone else's production tooling, and a second
-    ``silence`` re-arms a suppression window the first one had already bounded. Found in
-    review.
+    two operators, Slack plus the dashboard) would both observe ``pending``, both be told
+    "ok", and the caller would execute the provider action TWICE. Acking twice is untidy;
+    resolving or silencing twice is a duplicated write on someone else's production
+    tooling, and a second ``silence`` re-arms a suppression window the first one had
+    already bounded.
 
     This is the same compare-and-set ``claim`` already uses for the same reason — a claim
     and an approval are both "exactly one winner" decisions on shared JSON.
@@ -1043,13 +1039,13 @@ def expire_stale_proposals(*, now: str = "") -> list[str]:
     decorative; auto-rejecting would quietly drop work the operator may still want. So
     the proposal stops ASKING and says so, and the agent is free to re-propose.
 
-    **The whole sweep runs under ``_IndexLock``** — the same fix, and the same reasoning, as
-    ``decide_proposal`` one function up. It previously read the index, tested each proposal's
-    state, and wrote through ``update_fields``: separate index accesses with no lock held
-    across them. So the heartbeat could read an expired draft, a concurrent
-    ``/incident/proposal`` request revise or decide it, and this stale write then stamp
-    ``expired`` over the newer state — silently reverting an operator's decision, or replacing
-    a re-proposed draft with a dead one the agent had already superseded. Found in review.
+    **The whole sweep runs under ``_IndexLock``** — the same reasoning as ``decide_proposal``
+    one function up. Unlocked, this would read the index, test each proposal's state, and
+    write through ``update_fields`` as separate accesses: the heartbeat could read an
+    expired draft, a concurrent ``/incident/proposal`` request revise or decide it, and this
+    stale write then stamp ``expired`` over the newer state — silently reverting an
+    operator's decision, or replacing a re-proposed draft with a dead one the agent had
+    superseded.
 
     Mutating under the lock also means the recheck is authoritative: each proposal is re-read
     from the locked index rather than from the pre-lock snapshot, so only a proposal that is

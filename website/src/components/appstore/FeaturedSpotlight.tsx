@@ -27,9 +27,10 @@ import Clickable from '../Clickable'
 import AppIcon from '../AppIcon'
 import { gradientFor } from './gradient'
 import { categoryFor } from './categories'
-import { useHeroArt } from './useHeroArt'
+import { useHeroArt, type InstalledArtSource } from './useHeroArt'
 import { useEditorialArt, type EditorialArtwork } from './useEditorialArt'
-import { sourceLabel, isVerified, type RegistryApp } from './types'
+import { isVerified, type RegistryApp } from './types'
+import AppSource, { type SourceName } from './AppSource'
 import { appDisplayName, appDescription } from './appManifest'
 import { needsDesktopApp } from '../../lib/electron'
 
@@ -53,6 +54,7 @@ import { i18nT } from '../../i18n/t'
  */
 function FeaturedAppRow({
   app,
+  sources,
   secondary,
   busy,
   onOpen,
@@ -60,6 +62,7 @@ function FeaturedAppRow({
   onEnable,
 }: {
   app: RegistryApp
+  sources?: SourceName[]
   /** The line under the name. The app's description, or its provenance meta. */
   secondary: string
   busy?: boolean
@@ -98,6 +101,7 @@ function FeaturedAppRow({
             on this same surface, so the gate still asserts both on every row of
             the list below. */}
         <p data-i18n-opaque className="text-[12px] text-muted truncate" title={secondary}>{secondary}</p>
+        <AppSource app={app} sources={sources} />
       </div>
     </>
   )
@@ -162,12 +166,14 @@ function FeaturedAppRow({
 export default function FeaturedSpotlight({
   type,
   apps,
+  sources,
   title,
   blurb,
   artwork,
   curated = false,
   layout = 'stacked',
   compact = false,
+  leadInstalled,
   onOpenApp,
   onGet,
   onEnable,
@@ -177,6 +183,7 @@ export default function FeaturedSpotlight({
   type: 'app' | 'collection'
   /** Every app in the placement, in the curator's order. Never empty. */
   apps: RegistryApp[]
+  sources?: SourceName[]
   /** The curator's theme. Present for a collection, absent for a single app. */
   title?: string
   /** Curator copy, preferred over the app's own description when present. */
@@ -221,6 +228,15 @@ export default function FeaturedSpotlight({
    * fallback row reads as secondary beside the lead.
    */
   compact?: boolean
+  /**
+   * The LEAD app's installed record, when it is installed — the local
+   * second-chance art source for `useHeroArt` (#6887): a registry hero that
+   * fails to LOAD swaps once to the app's own on-disk art instead of
+   * degrading straight to the gradient. Only the lead's art fills the band,
+   * so only the lead's record is threaded. Omitted (a non-installed lead, or
+   * a caller that has no installed list), the hook stays behaviour-identical.
+   */
+  leadInstalled?: InstalledArtSource
   onOpenApp: (name: string, e?: React.MouseEvent | React.KeyboardEvent) => void
   onGet: (name: string) => void
   onEnable: (name: string) => void
@@ -236,7 +252,7 @@ export default function FeaturedSpotlight({
   // app rather than being skipped -- React forbids the skip, and `useHeroArt`
   // answers "no art" for no app, which is the same answer it gives for an app
   // shipping none.
-  const hero = useHeroArt(lead)
+  const hero = useHeroArt(lead, leadInstalled)
   const editorial = useEditorialArt(artwork)
   // Unconditional like the art hooks above: the early return below sits between
   // this and the compact branch that reads it, and React forbids the skip.
@@ -309,7 +325,7 @@ export default function FeaturedSpotlight({
         <img
           src={artSrc}
           alt={editorial.src ? editorial.alt : ''}
-          className="absolute inset-0 w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
+          className="absolute inset-0 w-full h-full object-cover"
           onError={onArtError}
         />
       ) : (
@@ -406,13 +422,14 @@ export default function FeaturedSpotlight({
           <FeaturedAppRow
             key={a.name}
             app={a}
+            sources={sources}
             /* A collection row describes the app, since the card's copy already
                carries the theme. A single-app card has already shown the
                description above, so its row carries provenance instead. */
             secondary={
               isCollection
                 ? appDescription(a)
-                : `${a.author} · ${categoryFor(a.tags)} · ${i18nT('components.appstore.featuredSpotlight.v')}${a.installedVersion || a.version} · ${sourceLabel(a)}`
+                : `${a.author} · ${categoryFor(a.tags)} · ${i18nT('components.appstore.featuredSpotlight.v')}${a.installedVersion || a.version}`
             }
             busy={busyName === a.name}
             /* Only a collection's rows are interactive; on a single-app card the
@@ -486,7 +503,7 @@ export default function FeaturedSpotlight({
                 <img
                   src={artSrc}
                   alt={editorial.src ? editorial.alt : ''}
-                  className="absolute inset-0 w-full h-full object-cover group-hover:scale-[1.02] transition-transform duration-300"
+                  className="absolute inset-0 w-full h-full object-cover"
                   onError={onArtError}
                 />
               </div>
@@ -538,6 +555,7 @@ export default function FeaturedSpotlight({
                   <FeaturedAppRow
                     key={a.name}
                     app={a}
+                    sources={sources}
                     secondary={appDescription(a)}
                     busy={busyName === a.name}
                     onOpen={e => onOpenApp(a.name, e)}

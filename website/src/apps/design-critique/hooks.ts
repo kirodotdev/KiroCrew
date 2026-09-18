@@ -1,23 +1,12 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import type { Toast } from './types'
+import { useReducedMotion } from '../../hooks/useReducedMotion'
 
 // Honour prefers-reduced-motion — no sweep/spin animation for people who ask
-// for less.
+// for less. Thin alias over the shared live reader (one reader for the whole
+// dashboard); kept as a local name so this app's call sites stay unchanged.
 export function useReduceMotion(): boolean {
-  const [reduce, setReduce] = useState(false)
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const mq = window.matchMedia('(prefers-reduced-motion: reduce)')
-    setReduce(mq.matches)
-    const on = (e: MediaQueryListEvent) => setReduce(e.matches)
-    if (mq.addEventListener) mq.addEventListener('change', on)
-    else mq.addListener(on)
-    return () => {
-      if (mq.removeEventListener) mq.removeEventListener('change', on)
-      else mq.removeListener(on)
-    }
-  }, [])
-  return reduce
+  return useReducedMotion()
 }
 
 // Two-panel shell collapses to stacked layout under 760px.

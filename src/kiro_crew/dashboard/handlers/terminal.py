@@ -15,13 +15,14 @@ import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
 
 from aiohttp import web
 
 from kiro_crew import platform_compat
 from kiro_crew.config.loader import config_path
 from kiro_crew.dashboard import terminal_commands
+from kiro_crew.dashboard.handlers._shared import require_owner_dashboard_request
 from kiro_crew.dashboard.origin import check_origin, mark_audit_claimed
 from kiro_crew.executors import discovery_executor, subprocess_executor
 from kiro_crew.hooks import validate_file_path
@@ -58,6 +59,32 @@ _MAX_SESSIONS = 12
 _MAX_SESSION_ID_LEN = 64
 _ORPHAN_TIMEOUT_S = 900  # 15 min with no WS → reap PTY (grace window for reload/network drops; in-app nav keeps the WS alive)
 _SCROLLBACK_MAX = 50 * 1024  # 50KB ring buffer per session for reconnect replay
+# Unlocked catch-up rounds let a candidate converge while PTY recording keeps
+# flowing to the current owner. The last round runs its send under output_lock,
+# so takeover always converges even against a continuously streaming PTY; the
+# earlier rounds only shorten how long that final pause has to be.
+_TAKEOVER_CATCH_UP_ROUNDS = 8
+# A candidate owns no session state while replay is in progress. Bound each
+# replay frame so one backpressured socket cannot monopolize replace_lock and
+# prevent a later healthy reconnect.
+_TAKEOVER_REPLAY_SEND_TIMEOUT_S = 5.0
+# The final ready frame runs while output publication is paused. Bound that
+# pause so a candidate with a wedged transport cannot stall PTY draining.
+_TAKEOVER_READY_TIMEOUT_S = 5.0
+# Reconnect cleanup is advisory after ownership has either failed or moved.
+# Bound each transport operation so a wedged peer cannot retain its handler or
+# hold replace_lock indefinitely.
+_TERMINAL_WS_CLEANUP_TIMEOUT_S = 1.0
+# Advisory control frames (title, cwd, pong) ride the owner's transport lock.
+# Bound lock acquisition plus the send so the singleton title poller can never
+# park behind a displaced socket's blocked write or a wedged owner transport.
+_OWNER_CONTROL_SEND_TIMEOUT_S = 2.0
+# Sent once to each displaced socket when a newer connection is published, so
+# the displaced window learns why its socket ended and not only the audit log.
+# The machine-readable ``code`` lets the frontend stop its automatic redial for
+# that socket: two live windows must not displace each other in a loop.
+_STALE_OWNER_ERROR_MESSAGE = "Another connection owns this terminal session"
+_STALE_OWNER_ERROR_CODE = "displaced"
 
 
 def _sel():
@@ -186,14 +213,364 @@ class _TerminalSession:
     # Serializes concurrent WS writes (reader loop + title poller + pong);
     # aiohttp's WebSocket writer is not safe for concurrent sends.
     send_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    # Serializes WebSocket→PTY writes across handlers. A reconnect attaches a
-    # new WS handler by assignment (``existing.ws = ws``) without waiting for
-    # the previous handler's write loop to exit, so two handlers can hold
-    # in-flight writes for the same PTY at once. Each frame's bytes must land
-    # contiguously — ``_write_all`` may need several ``os.write`` calls when
-    # the tty input buffer backpressures — so the whole frame is written under
-    # this lock.
+    # The sole PTY reader races its transport child against this event. Takeover
+    # signals it at publication, releasing the reader even when the displaced
+    # socket is blocked on its old send lock or inside flow control.
+    output_send_cancel: asyncio.Event | None = None
+    # Counts PTY output bytes over the session lifetime. Reconnect uses it to
+    # catch output produced while replay awaits the candidate socket.
+    output_bytes: int = 0
+    # Linearizes output recording and owner publication. Socket sends never hold
+    # this lock except the bounded final ready frame, so a slow client cannot
+    # normally stop the PTY reader from recording bytes for reconnect replay.
+    output_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Serializes reconnect candidates without coupling takeover to the current
+    # owner's socket writes or an in-flight PTY write.
+    replace_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Serializes client-to-PTY input and resize across handlers. A displaced
+    # handler may keep draining its socket after reconnect, so each operation
+    # must confirm ownership while holding this lock. It also keeps a frame
+    # contiguous when ``_write_all`` needs several ``os.write`` calls.
     write_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+def _release_terminal_ws_identity(
+    sess: _TerminalSession,
+    ws: web.WebSocketResponse,
+) -> None:
+    """Detach ``ws`` as owner if it still is one, arming the orphan reaper.
+
+    Identity-guarded: a later reconnect may already have replaced ``sess.ws``,
+    and clearing it unconditionally would silence PTY output to that owner.
+    """
+    if sess.ws is ws:
+        sess.ws = None
+        sess.last_ws_disconnect = time.monotonic()
+
+
+async def _send_owner_control_frame(
+    sess: _TerminalSession,
+    ws: web.WebSocketResponse,
+    payload: dict[str, Any],
+) -> bool:
+    """Send one advisory control frame to ``ws`` only while it owns ``sess``.
+
+    Captures the transport lock ``ws`` was published with, re-confirms
+    ownership after acquiring it (takeover rotates ``sess.send_lock`` and may
+    have displaced ``ws`` while this caller waited), and bounds the whole
+    acquire-plus-send so a blocked displaced transport cannot park the caller.
+    Returns ``True`` only when the frame was handed to the owner's transport.
+    """
+    if sess.ws is not ws or ws.closed:
+        return False
+    send_lock = sess.send_lock
+
+    async def send_under_lock() -> bool:
+        async with send_lock:
+            if sess.ws is not ws or ws.closed:
+                return False
+            await ws.send_str(json.dumps(payload))
+            return True
+
+    try:
+        return await asyncio.wait_for(
+            send_under_lock(), timeout=_OWNER_CONTROL_SEND_TIMEOUT_S
+        )
+    except (ConnectionResetError, RuntimeError, OSError, asyncio.TimeoutError):
+        return False
+
+
+async def _close_terminal_ws_bounded(
+    ws: web.WebSocketResponse,
+    *,
+    error_message: str | None = None,
+    error_code: str | None = None,
+) -> None:
+    """Best-effort terminal WebSocket cleanup with bounded transport waits."""
+    if ws.closed:
+        return
+    if error_message is not None:
+        frame: dict[str, Any] = {"type": "error", "message": error_message}
+        if error_code is not None:
+            frame["code"] = error_code
+        try:
+            await asyncio.wait_for(
+                ws.send_str(json.dumps(frame)),
+                timeout=_TERMINAL_WS_CLEANUP_TIMEOUT_S,
+            )
+        except (ConnectionResetError, RuntimeError, OSError, asyncio.TimeoutError):
+            pass
+    if ws.closed:
+        return
+    try:
+        await asyncio.wait_for(
+            ws.close(),
+            timeout=_TERMINAL_WS_CLEANUP_TIMEOUT_S,
+        )
+    except (ConnectionResetError, RuntimeError, OSError, asyncio.TimeoutError):
+        pass
+
+
+async def _replace_terminal_ws(
+    sess: _TerminalSession,
+    ws: web.WebSocketResponse,
+) -> bool:
+    """Replay retained output, then publish ``ws`` as the sole session owner."""
+    async with sess.replace_lock:
+        async with sess.output_lock:
+            sent_output_bytes = sess.output_bytes
+            retained_output = bytes(sess.scrollback)
+
+        def catch_up_span() -> int | None:
+            """Bytes this candidate still lacks, or None when a live owner would
+            see a gap because the bounded ring already lost some of them."""
+            missing = sess.output_bytes - sent_output_bytes
+            if missing > len(sess.scrollback):
+                if sess.ws is not None:
+                    # The ring overtook this candidate during replay. Keep
+                    # the current owner rather than publish with a gap.
+                    return None
+                # Nobody is attached: deliver what the ring still holds
+                # rather than refuse the owner's only window.
+                return len(sess.scrollback)
+            return missing
+
+        async def catch_up_once() -> bool:
+            nonlocal sent_output_bytes
+            current_output_bytes = sess.output_bytes
+            if current_output_bytes == sent_output_bytes:
+                return True
+            missing = catch_up_span()
+            if missing is None:
+                return False
+            if missing:
+                await asyncio.wait_for(
+                    ws.send_bytes(bytes(sess.scrollback[-missing:])),
+                    timeout=_TAKEOVER_REPLAY_SEND_TIMEOUT_S,
+                )
+            sent_output_bytes = current_output_bytes
+            return True
+
+        # PTY output continues to the current owner while output_bytes records
+        # what this unpublished candidate still needs.
+        try:
+            if retained_output:
+                await asyncio.wait_for(
+                    ws.send_bytes(retained_output),
+                    timeout=_TAKEOVER_REPLAY_SEND_TIMEOUT_S,
+                )
+            for round_index in range(_TAKEOVER_CATCH_UP_ROUNDS):
+                final_round = round_index == _TAKEOVER_CATCH_UP_ROUNDS - 1
+                if not final_round:
+                    # Unlocked rounds keep PTY recording flowing to the current
+                    # owner while this candidate catches up.
+                    if not await catch_up_once():
+                        return False
+                async with sess.output_lock:
+                    if final_round:
+                        # Output cannot advance while output_lock is held, so
+                        # this one bounded send converges even against a
+                        # continuously streaming PTY (`tail -f`, a verbose
+                        # build). Without it a reload with no live owner could
+                        # never reattach until the stream paused.
+                        missing = catch_up_span()
+                        if missing is None:
+                            return False
+                        if missing:
+                            await asyncio.wait_for(
+                                ws.send_bytes(bytes(sess.scrollback[-missing:])),
+                                timeout=_TAKEOVER_REPLAY_SEND_TIMEOUT_S,
+                            )
+                        sent_output_bytes = sess.output_bytes
+                    elif sess.output_bytes != sent_output_bytes:
+                        continue
+                    next_send_lock = asyncio.Lock()
+                    if sess.shell_ready:
+                        # The handler cannot read candidate input until this
+                        # function returns. Send ready before publication so a
+                        # failed transport leaves the healthy owner in place;
+                        # output cannot advance while output_lock is held.
+                        await asyncio.wait_for(
+                            ws.send_str(
+                                json.dumps(
+                                    {
+                                        "type": "ready",
+                                        "shell": sess.shell,
+                                        "fence_shells": sess.fence_shells,
+                                    }
+                                )
+                            ),
+                            timeout=_TAKEOVER_READY_TIMEOUT_S,
+                        )
+                    displaced_ws = sess.ws
+                    stale_output_cancel = sess.output_send_cancel
+                    sess.output_send_cancel = None
+                    if stale_output_cancel is not None:
+                        stale_output_cancel.set()
+                    # Rotate the transport lock so an in-flight send to the
+                    # displaced socket cannot block the new owner.
+                    sess.send_lock = next_send_lock
+                    sess.ws = ws
+                    sess.last_ws_disconnect = None
+                    sess.last_title = None
+                    sess.last_cwd = None
+                    sess.frames_dirty = True
+                if displaced_ws is not None and displaced_ws is not ws:
+                    # Closing outside output_lock wakes an idle displaced
+                    # handler without pausing PTY recording or publication.
+                    # The one coarse error frame tells that window why its
+                    # socket ended; later stale frames add only an audit.
+                    try:
+                        await _close_terminal_ws_bounded(
+                            displaced_ws,
+                            error_message=_STALE_OWNER_ERROR_MESSAGE,
+                            error_code=_STALE_OWNER_ERROR_CODE,
+                        )
+                    except BaseException:
+                        # Only cancellation escapes the bounded close. The
+                        # candidate's handler is ending before it reaches its
+                        # own identity-guarded teardown, so detach it here or
+                        # the session would keep a dead owner the orphan
+                        # reaper never sees.
+                        _release_terminal_ws_identity(sess, ws)
+                        raise
+                return True
+            raise AssertionError("unreachable: the final catch-up round always publishes or returns")
+        except (ConnectionResetError, RuntimeError, OSError, asyncio.TimeoutError):
+            # The candidate disappeared before takeover completed. Keep the
+            # previous owner and disconnect state authoritative.
+            return False
+
+
+async def _record_and_forward_terminal_output(
+    sess: _TerminalSession,
+    data: bytes,
+) -> None:
+    """Record one PTY read and forward it to the current owner."""
+    send_task: asyncio.Task[None] | None = None
+    cancel_event: asyncio.Event | None = None
+    async with sess.output_lock:
+        became_ready = _consume_ready_marker(sess, data)
+        if sess.winpty is not None and not sess.shell_ready:
+            sess.shell_ready = True
+            became_ready = True
+        sess.scrollback.extend(data)
+        sess.output_bytes += len(data)
+        sess.frames_dirty = True
+        if len(sess.scrollback) > _SCROLLBACK_MAX:
+            sess.scrollback = sess.scrollback[-_SCROLLBACK_MAX:]
+        live = sess.ws
+        send_lock = sess.send_lock
+        if live is not None and not live.closed:
+
+            async def forward_to_owner() -> None:
+                async with send_lock:
+                    if sess.ws is not live or live.closed:
+                        return
+                    await live.send_bytes(data)
+                    if became_ready and sess.ws is live:
+                        try:
+                            await live.send_str(
+                                json.dumps(
+                                    {
+                                        "type": "ready",
+                                        "shell": sess.shell,
+                                        "fence_shells": sess.fence_shells,
+                                    }
+                                )
+                            )
+                        except (ConnectionResetError, RuntimeError, OSError):
+                            pass
+
+            send_task = asyncio.create_task(forward_to_owner())
+            cancel_event = asyncio.Event()
+            sess.output_send_cancel = cancel_event
+
+    if send_task is not None and cancel_event is not None:
+        cancel_wait = asyncio.create_task(cancel_event.wait())
+        try:
+            done, _pending = await asyncio.wait(
+                (send_task, cancel_wait),
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+            if cancel_wait in done and not send_task.done():
+                send_task.cancel()
+            result = (await asyncio.gather(send_task, return_exceptions=True))[0]
+            if isinstance(result, asyncio.CancelledError):
+                return
+            if isinstance(result, (ConnectionResetError, RuntimeError, OSError)):
+                return
+            if isinstance(result, BaseException):
+                raise result
+        finally:
+            cancel_wait.cancel()
+            if not send_task.done():
+                send_task.cancel()
+            await asyncio.gather(send_task, cancel_wait, return_exceptions=True)
+            async with sess.output_lock:
+                if sess.output_send_cancel is cancel_event:
+                    sess.output_send_cancel = None
+
+
+async def _write_terminal_input(
+    sess: _TerminalSession,
+    ws: web.WebSocketResponse,
+    data: bytes,
+) -> bool:
+    """Write one owner frame to the PTY; reject frames from displaced sockets."""
+    async with sess.write_lock:
+        if sess.ws is not ws:
+            return False
+        if sess.winpty is not None:
+            # ConPTY's write buffers the full payload and returns len(data)
+            # unconditionally (see conpty.WindowsPty.write).
+            await asyncio.get_running_loop().run_in_executor(
+                None, sess.winpty.write, data,
+            )
+        else:
+            # Read the fd once before the offload: a concurrent kill sets the
+            # fd to -1 before close, so os.write raises OSError.
+            await asyncio.get_running_loop().run_in_executor(
+                None,
+                _write_all,
+                sess.master_fd,  # wokeignore:rule=master
+                data,
+            )
+        if b"\r" in data or b"\n" in data:
+            # A submitted line may be a `cd`, so invalidate state derived from
+            # the previous working directory only after an accepted write.
+            sess.cwd_probe = None
+            sess.frames_dirty = True
+        return True
+
+
+async def _resize_terminal(
+    sess: _TerminalSession,
+    ws: web.WebSocketResponse,
+    cols: int,
+    rows: int,
+) -> bool:
+    """Resize the PTY only when ``ws`` still owns the session."""
+    async with sess.write_lock:
+        if sess.ws is not ws:
+            return False
+        sess.cols = cols
+        sess.rows = rows
+        if sess.winpty is not None:
+            try:
+                sess.winpty.resize(cols, rows)
+            except OSError:
+                pass
+        else:
+            try:
+                fcntl.ioctl(
+                    sess.master_fd,  # wokeignore:rule=master
+                    termios.TIOCSWINSZ,
+                    struct.pack("HHHH", rows, cols, 0, 0),
+                )
+            except OSError:
+                pass
+        return True
 
 
 def _get_registry(request: web.Request) -> dict[str, _TerminalSession | None]:
@@ -616,8 +993,20 @@ def _pty_child_env(extra: dict[str, str]) -> dict[str, str]:
     user's own unsandboxed shell (see the spawn comment below), so
     ``SSH_AUTH_SOCK``, the AWS vars and the rest of the credential-bearing
     environment must survive or git-over-SSH and the AWS CLI break in it.
+
+    One variable is ADDED: ``BASH_SILENCE_DEPRECATION_WARNING=1``. macOS ships
+    Bash 3.2, which prints a three-line "the default interactive shell is now
+    zsh" notice on every interactive start. In this panel that banner is pure
+    noise: it lands at the top of the transcript of a terminal the user opened
+    inside Kiro Crew, it says nothing about Kiro Crew, and it repeats on every
+    session. It also precedes the readiness marker, so it is the first thing any
+    consumer of the stream has to skip. A user who wants the notice keeps it by
+    exporting the variable themselves with an empty value, which this respects:
+    an existing value of any kind wins, so this only fills a gap. The variable
+    means nothing to other shells and to Bash on other platforms.
     """
     env = {**os.environ, **extra}
+    env.setdefault("BASH_SILENCE_DEPRECATION_WARNING", "1")
     for key in list(env):
         if any(key.startswith(prefix) for prefix in _PYTHON_ENV_PREFIXES):
             del env[key]
@@ -828,7 +1217,30 @@ async def _kill_session(sess: _TerminalSession) -> None:
                 sess.proc.kill()
             except ProcessLookupError:
                 pass
-            await sess.proc.wait()
+            # BOUNDED, because SIGKILL is not the end of the story on a PTY. A
+            # shell blocked writing into a controller buffer nobody drains sits
+            # in a tty write inside the kernel, and the pending SIGKILL only
+            # tears it down once it leaves that sleep, which needs a READ on the
+            # controller fd. The read that would free it is this session's
+            # reader task, so a session whose reader has already ended (an
+            # OSError on the fd, an EOF, a cancellation) hands an unbounded
+            # wait() a child that cannot exit until the close further down runs.
+            # That is a deadlock inside a request handler: the handler is lost
+            # for the life of the process, and on the shutdown path it wedges
+            # the whole teardown. Give up on the reap instead, name the pid, and
+            # let the rest of teardown run: closing the controller fd is itself
+            # what releases the wedged write, and the child watcher reaps the
+            # exit afterwards.
+            try:
+                await asyncio.wait_for(
+                    sess.proc.wait(), timeout=platform_compat.REAP_TIMEOUT_SECS
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "terminal: session %s pid %s did not exit %ss after SIGKILL; "
+                    "continuing teardown without reaping it",
+                    sess.session_id, sess.proc.pid, platform_compat.REAP_TIMEOUT_SECS,
+                )
     # os.close() on a PTY controller fd can still BLOCK in the kernel when the far
     # end is wedged (uninterruptible sleep, or a child this process may not
     # signal). Run it on the dedicated subprocess pool, never the event loop, so a
@@ -896,6 +1308,9 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
             resources=str(request.remote),
         )
         return web.Response(status=401, text="Unauthorized")
+    owner_denied = await require_owner_dashboard_request(request, "terminal.ws.open")
+    if owner_denied is not None:
+        return owner_denied
     if not _is_enabled(request):
         _sel().log_api_access(
             caller=caller,
@@ -983,33 +1398,21 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
 
     if existing:
         # Reconnect to existing PTY.
-        # Replay scrollback BEFORE assigning ws to prevent read_pty from
-        # forwarding live data before replay completes.
-        if existing.scrollback:
-            # Replay the ring buffer verbatim. It holds the raw stream, and the
-            # client runs its own incremental decoder, so a character the
-            # buffer's head cut in half is the client's to render — the server
-            # never decodes and so cannot desynchronize from it.
-            await ws.send_bytes(bytes(existing.scrollback))
-        existing.ws = ws
-        existing.last_ws_disconnect = None
-        # A fresh client starts with empty title/cwd state; clear the dedup
-        # markers so the next poll re-pushes both frames even when unchanged.
-        existing.last_title = None
-        existing.last_cwd = None
-        existing.frames_dirty = True
+        replaced = await _replace_terminal_ws(existing, ws)
+        if not replaced:
+            _sel().log_api_access(
+                caller=caller,
+                operation="terminal.ws.reconnect",
+                outcome="error",
+                source="dashboard",
+                resources=f"session={session_id},takeover_failed=1",
+            )
+            await _close_terminal_ws_bounded(
+                ws,
+                error_message="Terminal reconnect failed",
+            )
+            return ws
         sess = existing
-        if existing.shell_ready:
-            try:
-                async with existing.send_lock:
-                    if existing.ws is ws and not ws.closed:
-                        await ws.send_str(json.dumps({
-                            "type": "ready",
-                            "shell": existing.shell,
-                            "fence_shells": existing.fence_shells,
-                        }))
-            except (ConnectionResetError, RuntimeError, OSError):
-                pass
         _sel().log_api_access(
             caller=caller,
             operation="terminal.ws.reconnect",
@@ -1195,46 +1598,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                 data = await loop.run_in_executor(None, reader)
                 if not data:
                     break
-                became_ready = _consume_ready_marker(sess, data)
-                sess.scrollback.extend(data)
-                sess.frames_dirty = True
-                if len(sess.scrollback) > _SCROLLBACK_MAX:
-                    sess.scrollback = sess.scrollback[-_SCROLLBACK_MAX:]
-                # Capture the socket into a local and re-check it after the lock
-                # await: `sess.ws` is set to None by the WS handler on
-                # disconnect, so touching it after a suspension point can raise
-                # AttributeError, which `except OSError` does NOT catch — that
-                # would kill this task and stop PTY draining and scrollback
-                # capture for a session the client may yet reconnect to. Same
-                # capture-and-revalidate rule the title poller already follows.
-                live = sess.ws
-                if live is not None and not live.closed:
-                    # Forward the read byte-for-byte. The server never decodes
-                    # PTY output: xterm.js runs its own incremental decoder, so
-                    # a multi-byte character split across two reads is
-                    # reassembled on the client and no read boundary can turn
-                    # one into U+FFFD.
-                    async with sess.send_lock:
-                        if sess.ws is not live or live.closed:
-                            continue  # client went away while we waited
-                        await live.send_bytes(data)
-                        # ConPTY has no foreground-process-group probe. Its first
-                        # output is the earliest portable startup signal, so do
-                        # not release queued input before output reaches the client.
-                        if sess.winpty is not None and not sess.shell_ready:
-                            sess.shell_ready = True
-                            became_ready = True
-                        if became_ready:
-                            try:
-                                await live.send_str(json.dumps({
-                                    "type": "ready",
-                                    "shell": sess.shell,
-                                    "fence_shells": sess.fence_shells,
-                                }))
-                            except (ConnectionResetError, RuntimeError, OSError):
-                                # Preserve shell_ready so a reconnect can receive
-                                # the frame even if this socket disappeared here.
-                                pass
+                await _record_and_forward_terminal_output(sess, data)
         except OSError:
             pass
 
@@ -1246,38 +1610,20 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         async for msg in ws:
             if msg.type == web.WSMsgType.BINARY:
                 try:
-                    # A reconnect can leave the previous handler's write loop
-                    # draining its socket while this one starts; the lock keeps
-                    # each frame's bytes contiguous on the PTY even when
-                    # _write_all needs several os.write calls to land them.
-                    async with sess.write_lock:
-                        if sess.winpty is not None:
-                            # ConPTY's write buffers the full payload and returns
-                            # len(data) unconditionally (see conpty.WindowsPty.write),
-                            # so there is no short-write count to loop over here.
-                            await asyncio.get_running_loop().run_in_executor(
-                                None, sess.winpty.write, msg.data,
-                            )
-                        else:
-                            # Read the fd once before the offload: a concurrent kill
-                            # sets the fd to -1 before close, so os.write then
-                            # raises OSError and the loop below breaks — matching the
-                            # single-write behavior this replaces.
-                            await asyncio.get_running_loop().run_in_executor(
-                                None,
-                                _write_all,
-                                sess.master_fd,  # wokeignore:rule=master
-                                msg.data,
-                            )
+                    accepted = await _write_terminal_input(sess, ws, msg.data)
                 except OSError:
                     break
-                # A submitted line may be a `cd`. Drop the completion route's
-                # cwd memo so the next completion re-probes the shell rather
-                # than resolving against the directory the user just left —
-                # the memo's TTL alone leaves a window where it would.
-                if b"\r" in msg.data or b"\n" in msg.data:
-                    sess.cwd_probe = None
-                    sess.frames_dirty = True
+                if not accepted:
+                    _sel().log_api_access(
+                        caller=caller,
+                        operation="terminal.ws.input",
+                        outcome="denied",
+                        source="dashboard",
+                        resources=f"session={session_id},stale_owner=1",
+                    )
+                    # The displaced handler ends here: later stale frames are
+                    # never read, so one denial audit is the ceiling per socket.
+                    break
             elif msg.type == web.WSMsgType.TEXT:
                 try:
                     ctrl = json.loads(msg.data)
@@ -1289,26 +1635,17 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
                         rows = min(max(int(ctrl.get("rows", 24)), 1), 200)
                     except (ValueError, TypeError):
                         continue
-                    sess.cols = cols
-                    sess.rows = rows
-                    if sess.winpty is not None:
-                        try:
-                            sess.winpty.resize(cols, rows)
-                        except OSError:
-                            pass
-                    else:
-                        try:
-                            fcntl.ioctl(
-                                sess.master_fd,  # wokeignore:rule=master
-                                termios.TIOCSWINSZ,
-                                struct.pack("HHHH", rows, cols, 0, 0),
-                            )
-                        except OSError:
-                            pass
+                    if not await _resize_terminal(sess, ws, cols, rows):
+                        _sel().log_api_access(
+                            caller=caller,
+                            operation="terminal.ws.resize",
+                            outcome="denied",
+                            source="dashboard",
+                            resources=f"session={session_id},stale_owner=1",
+                        )
+                        break
                 elif ctrl.get("type") == "ping":
-                    if not ws.closed:
-                        async with sess.send_lock:
-                            await ws.send_str(json.dumps({"type": "pong"}))
+                    await _send_owner_control_frame(sess, ws, {"type": "pong"})
             elif msg.type in (web.WSMsgType.CLOSE, web.WSMsgType.ERROR):
                 break
     finally:
@@ -1317,9 +1654,7 @@ async def api_terminal_ws(request: web.Request) -> web.WebSocketResponse | web.R
         # its own window) REPLACES sess.ws while this displaced handler is
         # still draining; unconditionally clearing it here would silence PTY
         # output to the freshly attached socket.
-        if sess.ws is ws:
-            sess.ws = None
-            sess.last_ws_disconnect = time.monotonic()
+        _release_terminal_ws_identity(sess, ws)
         _sel().log_api_access(
             caller=caller,
             operation="terminal.ws.disconnect",
@@ -1343,6 +1678,11 @@ async def api_terminal_create(request: web.Request) -> web.Response:
             resources=str(request.remote),
         )
         return web.Response(status=401, text="Unauthorized")
+    owner_denied = await require_owner_dashboard_request(
+        request, "terminal.session.create"
+    )
+    if owner_denied is not None:
+        return owner_denied
     if not _is_enabled(request):
         _sel().log_api_access(
             caller=caller,
@@ -1422,6 +1762,11 @@ async def api_terminal_redact(request: web.Request) -> web.Response:
             resources=str(request.remote),
         )
         return web.Response(status=401, text="Unauthorized")
+    owner_denied = await require_owner_dashboard_request(
+        request, "terminal.selection.redact"
+    )
+    if owner_denied is not None:
+        return owner_denied
     if not _is_enabled(request):
         _sel().log_api_access(
             caller=caller,
@@ -1800,6 +2145,9 @@ async def api_terminal_complete(request: web.Request) -> web.Response:
             resources=str(request.remote),
         )
         return web.Response(status=401, text="Unauthorized")
+    owner_denied = await require_owner_dashboard_request(request, "terminal.complete")
+    if owner_denied is not None:
+        return owner_denied
     if not _is_enabled(request):
         _log_complete(caller, "denied", "feature_disabled")
         return web.Response(status=403, text="Terminal panel disabled")
@@ -1987,6 +2335,11 @@ async def api_terminal_delete(request: web.Request) -> web.Response:
             resources=str(request.remote),
         )
         return web.Response(status=401, text="Unauthorized")
+    owner_denied = await require_owner_dashboard_request(
+        request, "terminal.session.delete"
+    )
+    if owner_denied is not None:
+        return owner_denied
     if not _is_enabled(request):
         _sel().log_api_access(
             caller=caller,
@@ -2044,6 +2397,11 @@ async def api_terminal_list(request: web.Request) -> web.Response:
             resources=str(request.remote),
         )
         return web.Response(status=401, text="Unauthorized")
+    owner_denied = await require_owner_dashboard_request(
+        request, "terminal.session.list"
+    )
+    if owner_denied is not None:
+        return owner_denied
     if not _is_enabled(request):
         _sel().log_api_access(
             caller=caller,
@@ -2141,20 +2499,25 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 # offload in _kill_session) so one stuck read can never freeze
                 # the gateway event loop. Both probes share one cwd lookup via
                 # the session's memo.
-                # The WS can detach (sess.ws = None) while an executor probe is
-                # in flight — capture + revalidate the socket after EACH hop so
-                # a disconnect can never AttributeError the singleton poller.
+                # The WS can detach (sess.ws = None) or be displaced by a
+                # reconnect while an executor probe is in flight — capture +
+                # revalidate the socket after EACH hop, and let the bounded
+                # owner-checked sender re-confirm identity under the transport
+                # lock so a displaced socket never receives a frame and a
+                # blocked transport can never park the singleton poller.
                 title = await loop.run_in_executor(subprocess_executor(), _session_title, sess)
                 ws = sess.ws
                 if ws is None or ws.closed:
                     continue
                 if title and title != sess.last_title:
-                    sess.last_title = title
-                    try:
-                        async with sess.send_lock:
-                            await ws.send_str(json.dumps({"type": "title", "text": title}))
-                    except (ConnectionResetError, RuntimeError, OSError):
-                        pass
+                    # Advance the dedup marker only after the frame was handed
+                    # to the owner's transport: a timed-out or failed send must
+                    # not suppress the retry, or chat handoff would label output
+                    # with a stale title/cwd until the value changes again.
+                    if await _send_owner_control_frame(
+                        sess, ws, {"type": "title", "text": title}
+                    ):
+                        sess.last_title = title
                 # Live cwd (full path) rides the same poll: the frontend uses it
                 # to attribute terminal output handed off to chat. Pushed only
                 # on change, like the title.
@@ -2163,11 +2526,9 @@ async def poll_terminal_titles(app: web.Application) -> None:
                 if ws is None or ws.closed:
                     continue
                 if cwd and cwd != sess.last_cwd:
-                    sess.last_cwd = cwd
-                    try:
-                        async with sess.send_lock:
-                            await ws.send_str(json.dumps({"type": "cwd", "path": cwd}))
-                    except (ConnectionResetError, RuntimeError, OSError):
-                        pass
+                    if await _send_owner_control_frame(
+                        sess, ws, {"type": "cwd", "path": cwd}
+                    ):
+                        sess.last_cwd = cwd
     except asyncio.CancelledError:
         pass

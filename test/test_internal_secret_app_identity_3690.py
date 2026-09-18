@@ -1,4 +1,4 @@
-"""Issue #3690 -- the internal-secret transport must carry an app identity.
+"""The internal-secret transport must carry an app identity.
 
 App-ownership checks gate on ``request["app"]``. The app-token branch publishes
 it; the internal-secret branch (the managed MCP set) carried no app claim at
@@ -22,6 +22,8 @@ below:
 
 from __future__ import annotations
 
+import json
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -287,7 +289,7 @@ class TestAKeyNamingAMissingSlotIsNotProofOfThePerson:
     have confined it is exactly what got popped when the tab closed.
 
     One writer, one reader: the route that publishes ``source="system"``.
-    Deliberately not applied in the middleware -- a popped slot no longer says
+    Deliberately not applied in the middleware -- a popped slot does not say
     whose tab it was, so a central refusal would also refuse the person's own
     in-flight calls on every internal route.
     """
@@ -480,6 +482,69 @@ class TestAStatelessCronKeyResolvesToItsJob:
         assert derive_caller_app({}, "subagent:", None, {"": _Sub("x")}) == ""
 
 
+class TestContinuationCallerIdentity:
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("app", ["", "file-explorer"])
+    async def test_active_continuation_resolves_the_canonical_caller(self, app: str) -> None:
+        run = SimpleNamespace(
+            id="followup", conversation_key="subagent:original", done=False, queued=False, app=app
+        )
+        store = await _grant("subagent:original", {}, subagents={"followup": run})
+        if app:
+            assert store["app"] == app
+            assert store["is_dashboard_user"] is False
+        else:
+            assert "app" not in store
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("invalid", ["done", "queued", "other_key", "ambiguous"])
+    async def test_only_one_executing_continuation_can_establish_the_caller(
+        self, invalid: str
+    ) -> None:
+        run = SimpleNamespace(
+            id="followup",
+            conversation_key="subagent:original",
+            done=False,
+            queued=False,
+            app="file-explorer",
+        )
+        registry = {"followup": run}
+        if invalid in {"done", "queued"}:
+            setattr(run, invalid, True)
+        elif invalid == "other_key":
+            run.conversation_key = "subagent:original-other"
+        else:
+            registry["duplicate"] = SimpleNamespace(**vars(run))
+        mw = token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+        req, _ = _request("subagent:original", {}, subagents=registry)
+        resp = await mw(req, _ok)
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "caller_record_missing"
+
+    @pytest.mark.asyncio
+    async def test_unreadable_continuation_registry_fails_closed(self) -> None:
+        registry = MagicMock()
+        registry.get.return_value = None
+        registry.values.side_effect = RuntimeError("registry unavailable")
+        mw = token_auth_middleware(internal_paths=INTERNAL, internal_secret=SECRET)
+        req, _ = _request("subagent:original", {}, subagents=registry)
+        resp = await mw(req, _ok)
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "caller_record_missing"
+
+    @pytest.mark.asyncio
+    async def test_original_app_record_keeps_its_authority(self) -> None:
+        run = SimpleNamespace(
+            id="followup", conversation_key="subagent:original", done=False, queued=False, app=""
+        )
+        store = await _grant(
+            "subagent:original",
+            {},
+            subagents={"original": _Sub("file-explorer"), "followup": run},
+        )
+        assert store["app"] == "file-explorer"
+
+
 class TestADelegatedCallerWhoseRecordIsGoneIsRefused:
     """A ``cron:``/``subagent:`` key names recorded work, and that record is where
     its owner lives -- so absence is "the proof of who this runs for is gone",
@@ -500,6 +565,10 @@ class TestADelegatedCallerWhoseRecordIsGoneIsRefused:
             "a cron whose job was deleted mid-run kept the dashboard user's "
             "reach; the deleted record was the only proof of its owner"
         )
+        assert json.loads(resp.body) == {
+            "error": "Forbidden",
+            "code": "caller_record_missing",
+        }
 
     @pytest.mark.asyncio
     async def test_a_subagent_missing_from_the_registry_is_refused(self) -> None:
@@ -507,6 +576,10 @@ class TestADelegatedCallerWhoseRecordIsGoneIsRefused:
         req, _ = _request("subagent:gone", {}, subagents={})
         resp = await mw(req, _ok)
         assert resp.status == 403
+        assert json.loads(resp.body) == {
+            "error": "Forbidden",
+            "code": "caller_record_missing",
+        }
 
     @pytest.mark.asyncio
     async def test_a_live_record_is_admitted(self) -> None:

@@ -15,7 +15,7 @@ import { Provider } from 'react-redux'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { useWebSocket } from '../hooks/useWebSocket'
 import { store } from '../store'
-import { setActiveSlot, clearMessages } from '../store/chatSlice'
+import { setActiveSlot, clearSlotState } from '../store/chatSlice'
 import { api } from '../api/client'
 
 vi.mock('../api/client', () => ({
@@ -72,7 +72,11 @@ describe('useWebSocket auto-speak after a segment reset', () => {
 
   afterEach(() => {
     vi.unstubAllGlobals()
-    store.dispatch(clearMessages())
+    // Tests share the singleton store. A test that ends without chat_done
+    // leaves the slot's replay floor (`lastChunkSeq`) set, and the reducer would
+    // drop the next test's opening chunks as replays; clearSlotState resets the
+    // floor along with the rows and run state.
+    store.dispatch(clearSlotState())
     store.dispatch(setActiveSlot(null))
   })
 

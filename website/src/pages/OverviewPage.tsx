@@ -1,25 +1,31 @@
-import { type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { lazy, Suspense, type ReactNode } from 'react'
+import { Link, useSearchParams } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { ArrowLeft, ArrowRight, BarChart3, Brain, Clock } from 'lucide-react'
 import { useAppSelector } from '../store'
 import { useUptime } from '../hooks/useUptime'
 import { api } from '../api/client'
 import type { WakaTimeStats } from '../api/client'
-import { Card, CardTitle, StatCard, Btn } from '../components/ui'
+import { Card, CardTitle, StatCard, Btn, ContentSkeleton } from '../components/ui'
 import { TunnelStatus } from '../components/TunnelStatus'
 import { TailnetMobileCard } from '../components/TailnetMobileCard'
 import ErrorBoundary from '../components/ErrorBoundary'
 import ErrorNotice from '../components/ErrorNotice'
+import { useGuardedLeave } from '../components/NavigationLeaveGuard'
 import { getOverviewStatCards } from './overviewStatCards'
 import { getOverviewPanel } from './overviewPanel'
 import { isOverviewBuiltinSuppressed } from './overviewBuiltins'
-import { MemoryTab, UsageTab, WakaTimeTab } from './overview'
+import { KIRO_SIGN_IN_BACKEND, KIRO_SIGN_IN_PATH } from './developer/kiroSignInLink'
+import { UsageTab, WakaTimeTab } from './overview'
 import { useProvider } from '../providers'
-import type { NormalizedUsage } from '../providers'
+import { providerUsageQuery } from '../api/providerUsageQuery'
 
 import { i18nT } from '../i18n/t'
 import { fmtDuration } from '../i18n/format'
+
+// The record editor and recovery tools are needed only inside this drill-in.
+// Keep them out of the dashboard shell's initial bundle.
+const MemoryTab = lazy(() => import('./overview/MemoryTab'))
 /**
  * Settings > Overview — mission control.
  *
@@ -42,18 +48,19 @@ function fmtNum(n: number | undefined | null): string {
 }
 
 /** Back link + drill-in content, mirroring the Channels back affordance. */
-function DrillIn({ title, onBack, children }: { title: string; onBack: () => void; children: ReactNode }) {
+function DrillIn({ title, onBack, children, hideTitle = false }: { title: string; onBack: () => void; children: ReactNode; hideTitle?: boolean }) {
+  const leave = useGuardedLeave()
   return (
     <div>
-      <button
-        onClick={onBack}
+      <Btn
+        onClick={() => leave(onBack)}
         aria-label={i18nT('pages.overviewPage.back_to_overview')}
         className="flex items-center gap-1.5 text-[13px] font-medium text-accent bg-transparent border-none cursor-pointer px-0 py-1 mb-2 hover:underline"
       >
-        <ArrowLeft size={14} />
+        <ArrowLeft className="lucide-inline" />
         {i18nT('pages.overviewPage.overview')}
-      </button>
-      <div className="text-xl font-bold tracking-tight text-text-strong mb-3">{title}</div>
+      </Btn>
+      {!hideTitle && <div className="text-xl font-bold tracking-tight text-text-strong mb-3">{title}</div>}
       {children}
     </div>
   )
@@ -62,11 +69,7 @@ function DrillIn({ title, onBack, children }: { title: string; onBack: () => voi
 /** Usage summary card — shares the query cache with the Usage drill-in. */
 function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
   const provider = useProvider()
-  const { data, isError, error } = useQuery<NormalizedUsage>({
-    queryKey: ['provider-usage', provider.id],
-    queryFn: () => provider.fetchUsage(),
-    enabled: provider.capabilities.usageBilling,
-  })
+  const { data, isError, error } = useQuery(providerUsageQuery(provider))
   const b = data?.billing
   const today = data?.sessions.today
   return (
@@ -77,14 +80,13 @@ function UsageSummaryCard({ onOpen }: { onOpen: () => void }) {
           {i18nT('pages.overviewPage.view_details')} <ArrowRight size={12} />
         </button>
       </CardTitle>
+      {provider.capabilities.usageBilling && isError && (
+        <ErrorNotice title={data ? i18nT('pages.sessionsTab.could_not_refresh') : undefined} message={error?.message} askAgent testId="overview-usage-error" />
+      )}
       {!provider.capabilities.usageBilling ? (
         <div className="text-[13px] text-muted">{i18nT('pages.overviewPage.usage_tracking_is_not_available_for')} {provider.displayName}.</div>
-      ) : isError ? (
-        // askAgent on: a read of the provider's usage report; the card holds no
-        // input. Without this branch a rejected fetch left the skeleton up forever.
-        <ErrorNotice message={error?.message} askAgent testId="overview-usage-error" />
       ) : !data ? (
-        <div className="skeleton h-14 rounded" />
+        !isError && <div className="skeleton h-14 rounded" />
       ) : (
         <div className="flex flex-col gap-2">
           <div className="text-[13px] text-muted">
@@ -198,6 +200,36 @@ export const STAT_LABEL_KEY: Record<StatId, string> = {
   lessons: 'pages.overviewPage.stat_lessons',
 }
 
+/**
+ * Signpost to the Kiro sign-in card's home, Developer > Agent Backend
+ * (`KIRO_SIGN_IN_PATH`), shown only while KAS is the selected backend: those
+ * users read token expiry on this page by habit, and the card now sits beside
+ * the switch that picks KAS. Everyone else sees nothing -- the identity does not
+ * concern the Kiro CLI or Claude backends, so a pointer would be noise for them.
+ * Renders no element (not an empty wrapper) when hidden, so the layout above the
+ * guided cards keeps no stray gap.
+ */
+function KiroSignInMovedPointer() {
+  const cfgQ = useQuery<{ agent?: { acp_backend?: string } }>({
+    queryKey: ['kirocrewConfig'],
+    queryFn: () => api.kirocrewConfig(),
+  })
+  if (cfgQ.data?.agent?.acp_backend !== KIRO_SIGN_IN_BACKEND) return null
+  return (
+    <div className="mb-6">
+      <Link
+        to={KIRO_SIGN_IN_PATH}
+        className="text-[12px] leading-snug text-accent hover:underline"
+        data-testid="kiro-sign-in-moved"
+      >
+        {i18nT('pages.overviewPage.kiro_sign_in_moved')}
+        {' '}
+        <ArrowRight size={12} className="lucide-inline" />
+      </Link>
+    </div>
+  )
+}
+
 export default function OverviewPage() {
   const status = useAppSelector(s => s.dashboard.status)
   const connected = useAppSelector(s => s.dashboard.connected)
@@ -215,7 +247,15 @@ export default function OverviewPage() {
   }, { replace: true })
 
   if (view === 'memory') {
-    return <DrillIn title={i18nT('pages.overviewPage.memory')} onBack={() => setView(null)}><MemoryTab refreshTrigger={refreshTrigger} /></DrillIn>
+    const selectedStore = params.get('store') || ''
+    return <DrillIn title={i18nT('pages.overviewPage.memory')} hideTitle={!!selectedStore && selectedStore !== 'default'} onBack={() => setView(null)}>
+      <Suspense fallback={<ContentSkeleton rows={6} />}><MemoryTab refreshTrigger={refreshTrigger} selectedStore={selectedStore} onStoreNavigate={store => setParams(previous => {
+        const next = new URLSearchParams(previous)
+        if (store) next.set('store', store)
+        else next.delete('store')
+        return next
+      }, { replace: true })} /></Suspense>
+    </DrillIn>
   }
   if (view === 'usage') {
     return <DrillIn title={i18nT('pages.overviewPage.usage')} onBack={() => setView(null)}><UsageTab /></DrillIn>
@@ -285,6 +325,9 @@ export default function OverviewPage() {
           ErrorBoundary and the spacing wrapper so a suppressed build renders no
           element at all — leaving the `mb-6` div behind would keep a 24px gap
           where the card used to be. The core suppresses nothing. */}
+      <ErrorBoundary scope="overview-kiro-sign-in-moved" fallback={null}>
+        <KiroSignInMovedPointer />
+      </ErrorBoundary>
       {!isOverviewBuiltinSuppressed('tailnet-mobile') && (
         <ErrorBoundary scope="overview-tailnet-mobile" fallback={null}>
           <div className="mb-6">

@@ -213,7 +213,7 @@ class TestAugmentedPath:
 
 
 class TestExtraMcpPathDirs:
-    """The MCP binary search path must be extensible (issue #5083).
+    """The MCP binary search path must be extensible.
 
     A launcher installed into a directory ``_EXTRA_PATH_DIRS`` does not guess
     resolves nowhere on a systemd gateway's PATH, so the server never starts and
@@ -1253,8 +1253,8 @@ class TestSanitizeSpecEnvReservedNamespace:
         ``KIROCREW_SESSION_KEY``/``KIROCREW_HOST_PID`` are two of the three
         sources ``_resolve_session_key_strict`` accepts *on the grounds that an
         agent cannot write them*; ``KIROCREW_OWNER_ID`` is the Slack owner.
-        ``KIROCREW_CLI`` was the cron admin-bypass flag, whose consumer #6624
-        deleted rather than re-grounded (nothing in ``src/`` set it); it is kept in
+        ``KIROCREW_CLI`` was the cron admin-bypass flag, whose consumer was
+        deleted rather than re-grounded (nothing in ``src/`` sets it); it is kept in
         this list because the deny is on the NAMESPACE, and a key-by-key list is
         exactly what would fail open for the next identity variable added.
         """
@@ -1385,7 +1385,7 @@ class TestKnownKiroCliDirsIsPureInItsHome:
     pins one ``(platform, home, environ)`` reading and passes it to BOTH the
     resolve and the "kiro-cli not found (searched ...)" diagnostic, so that the
     directories named are the directories walked. With a live re-read in the
-    middle, the two can disagree -- which is the split-read class #5048 and #6986
+    middle, the two can disagree -- the same split-read class
     fixed at the call sites, surviving one level down.
     """
 

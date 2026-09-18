@@ -78,6 +78,23 @@ describe('api instances methods', () => {
     expect(fetchMock.mock.calls[0][0]).toBe('/api/instances/a%2Fb/status')
   })
 
+  it('instanceChatSlots reads the hub route, NOT the peer through the proxy', async () => {
+    // The URL is the contract here. Reading `/proxy/api/chat/slots` — which this
+    // did first — returns the peer's list UNFILTERED, and the peer lists the slots
+    // this hub drives for its own remote-EXECUTION bindings. The sidebar then
+    // renders one conversation twice and cannot dedupe it, because the correlating
+    // `remote_slot` is deliberately never projected to the browser. So the hub
+    // route that applies that filter is the only correct one to call.
+    fetchMock.mockResolvedValue(okJson([{ key: 'peer-1' }]))
+    const rows = await api.instanceChatSlots('cd-1')
+    expect(rows).toEqual([{ key: 'peer-1' }])
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(url).toBe('/api/instances/cd-1/chat-slots')
+    expect(url).not.toContain('/proxy/')
+    // GET by omission, as every read on this client is.
+    expect(init?.method).toBeUndefined()
+  })
+
   it('surfaces a 403 disabled response as ApiError', async () => {
     fetchMock.mockResolvedValue({
       ok: false,

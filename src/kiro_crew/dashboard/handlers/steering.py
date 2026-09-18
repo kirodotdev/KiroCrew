@@ -144,6 +144,41 @@ def _sel():
     return _pkg.sel()
 
 
+def _audit_unread(tool_name: str, tool_kind: str, outcome: str, metadata: dict) -> None:
+    """SEL-record content a read gate would not hand back.
+
+    A silent fallback is what makes a planted alias invisible: the surface keeps
+    answering — an entry with no description, a 404 — so nothing above it can see
+    that a read was refused rather than merely empty. SEL is operator-side and
+    unreachable through the endpoint, so recording the event here leaves the HTTP
+    response no more of an oracle than it already was.
+
+    *outcome* is coarse on purpose, and the coarseness is the gate's rather than
+    a choice: ``safe_read_file_bytes_nolink`` judges and reads through ONE
+    descriptor and answers a bare ``None`` — a refused inode (hardlinked,
+    non-regular, escaped its root, sensitive) and an ordinary read failure are
+    indistinguishable there, and re-``stat``-ing the path to tell them apart
+    would be another by-name look at the input these reads exist to stop
+    trusting. So the audit line records THAT the bytes were withheld, never why.
+    Same wrapper as ``prompts._audit_unread``, kept module-local like ``_sel``.
+
+    Best-effort: a listing or a detail view must not fail because an audit write
+    did.
+    """
+    try:
+        _sel().log_tool_invocation(
+            session_key="",
+            agent="api",
+            source="dashboard",
+            tool_name=tool_name,
+            tool_kind=tool_kind,
+            outcome=outcome,
+            metadata=metadata,
+        )
+    except Exception:  # noqa: BLE001 — an audit write must not break the response
+        logger.debug("Could not audit an unread %s", tool_kind, exc_info=True)
+
+
 def _redact_meta(text: str) -> str:
     """Redact credentials + exfiltration URLs from listing metadata.
 
@@ -240,6 +275,11 @@ def _head_meta(path: Path, within_root: Path, cap: int = 2048) -> dict[str, str]
     except (OSError, FileTooLargeError):
         return _empty_meta()
     if raw is None:
+        # The entry keeps its slot with no description — byte-identical in the
+        # response to a document that has none, so the listing is no oracle for
+        # which files the gate protects. The withholding is recorded operator-side
+        # instead; see _audit_unread for why the outcome names no cause.
+        _audit_unread("api_steering_list", "steering", "error", {"path": str(path)})
         return _empty_meta()
     truncated = len(raw) > cap
     head = raw[:cap].decode("utf-8", errors="replace")
@@ -1176,7 +1216,16 @@ async def api_steering_detail(request: web.Request) -> web.Response:
                 status=413,
             )
         if err is not None:
-            _audit("not_found")
+            if err == "readfailed":
+                # The descriptor gate refused the bytes (or the read failed)
+                # AFTER the key resolved. Answered below as the very 404 an
+                # unknown key answers, so the response is no oracle — but
+                # audited as ``error`` rather than ``not_found``, or the
+                # operator's log would call a withheld read a typo. Coarse on
+                # purpose; see _audit_unread.
+                _audit_unread("api_steering_read", "steering", "error", {"key": key})
+            else:
+                _audit("not_found")
             return web.json_response({"error": "not found"}, status=404)
         _audit("ok")
         # Content is returned verbatim, NOT credential-redacted, and that is

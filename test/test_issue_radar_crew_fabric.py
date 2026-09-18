@@ -7,7 +7,7 @@ MUTATION-VERIFIED assertion recorded in the PR write-up (break the code, watch t
 test go red, restore):
 
   * **The live phase is the record's, authoritative — never the max timeline
-    index.** A review round-trip ends LEFT of where it has been, so keying the head
+    index.** A review can send an item LEFT of where it has been, so keying the head
     off the furthest column reached puts the item in a phase it already left.
   * **Off-spine phases are an ``exit``, not a timeline entry**, and the exit stands
     only when the item's live phase is itself off-spine (a reopen clears it).
@@ -320,7 +320,7 @@ class FoldTest(unittest.TestCase):
         item = _fold_item(self.root, 5120)
 
         self.assertEqual(item["phase"], "awaiting-ci")  # on-spine now
-        self.assertIsNone(item["exit"])  # the yield no longer holds
+        self.assertIsNone(item["exit"])  # the yield does not hold
         self.assertEqual(item["reopens"], 1)  # implementing re-entered after the exit
         # yielded is off-spine, so it never appears in the timeline spine.
         self.assertNotIn("yielded", [t["phase"] for t in item["timeline"]])

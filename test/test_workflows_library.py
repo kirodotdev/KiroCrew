@@ -245,3 +245,22 @@ def test_collision_suffix_stays_inside_the_slug_limit(tmp_path) -> None:
     assert len(first["slug"]) == 64
     assert len(second["slug"]) == 64
     assert second["slug"].endswith("-2")
+
+
+# ── _slugify hash fallback ─────────────────────────────────────────
+
+
+def test_slugify_non_ascii_names_derive_distinct_stable_slugs() -> None:
+    from kiro_crew.workflows.library import _slugify
+
+    chinese = _slugify("\u4f1a\u8bae\u7eaa\u8981")
+    japanese = _slugify("\u8cb7\u3044\u7269\u30ea\u30b9\u30c8")
+    assert chinese.startswith("workflow-")
+    assert chinese != japanese
+    assert chinese == _slugify("\u4f1a\u8bae\u7eaa\u8981")
+
+
+def test_slugify_ascii_names_are_unchanged() -> None:
+    from kiro_crew.workflows.library import _slugify
+
+    assert _slugify("Debug Project") == "debug-project"

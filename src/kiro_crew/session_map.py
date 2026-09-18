@@ -47,8 +47,8 @@ SESSION_MAP_FILENAME = "session_map.json"
 # Resolved per call, never captured at import: an import-time binding freezes
 # the data home and defeats pod isolation, the lazy legacy-home migration and
 # test isolation. The name below is an opt-in override (None = live home) so
-# existing monkeypatch call sites keep working. See config.md "Data Home" and
-# issue #874; dashboard/handlers/usage.py is the reference implementation.
+# existing monkeypatch call sites keep working. See config.md "Data Home";
+# dashboard/handlers/usage.py is the reference implementation.
 _KIRO_SESSIONS_DIR: Path | None = None
 
 
@@ -498,7 +498,7 @@ class SessionMap:
         - on a thread running an event loop: mark dirty and schedule ONE
           debounced flush task. The task serializes under the lock and does the
           disk write in a worker thread, so the loop never pays the write
-          inline (issue #2405). A mutation landing while a flush is in flight
+          inline. A mutation landing while a flush is in flight
           re-marks dirty, and the task loops until it observes a clean map, so
           a trailing mutation is never dropped.
         - no running loop (CLI, tests, worker threads): write inline on the
@@ -1071,7 +1071,7 @@ class SessionMap:
             # One more dirty-mark after the rebuild. ``_save`` is loop-aware:
             # on prune's only production path (``start_pool`` on the startup
             # loop) the saves coalesce into one deferred flush whose disk
-            # write runs on a worker thread (#2405) — the loop still pays the
+            # write runs on a worker thread — the loop still pays the
             # serialize, never the write. A ``batched_save`` here would write
             # inline at batch exit on that same loop.
             self._save()
@@ -1624,7 +1624,7 @@ class SessionMap:
           from the CANONICAL row -- the session's own -- never through
           ``_mirror_key``. That conversation is permanent, so the flag cannot be
           orphaned by its target disappearing; it CAN be orphaned by the lookup
-          moving, which is what keying it to the mirror binding used to do.
+          moving, which is what keying it to the mirror binding would do.
         * ``origin=False`` requires an explicit ``mirror`` dict, and follows the
           binding through ``_mirror_key``.
         """

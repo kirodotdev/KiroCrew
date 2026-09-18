@@ -114,7 +114,7 @@ def release_channel() -> str:
     update check, and ``config_dir()`` is resolve-AND-MAINTAIN -- it refreshes the
     recovery breadcrumb and re-runs the leftover-archive sweep, which can
     ``shutil.rmtree``. Doing that on the event loop as a side effect of asking
-    where a directory is, is issue #1057.
+    where a directory is is the blocking hazard this avoids.
     """
     try:
         raw = (data_home() / "channel").read_text(encoding="utf-8", errors="replace")

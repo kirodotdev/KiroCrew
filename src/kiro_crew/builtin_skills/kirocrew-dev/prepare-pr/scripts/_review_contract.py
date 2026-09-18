@@ -28,7 +28,7 @@ def sha_matches(stamp_sha, head_sha):
       which is the freshness guard the marker exists for.
     * An ELIDED head is the transcription artifact: a stamp that drops a
       CONTIGUOUS MIDDLE span and splices the head's own prefix to its own
-      suffix. Observed on PR 4107, where the Design lane wrote 25 characters
+      suffix. In one case the Design lane wrote 25 characters
       (the head's first 14 followed by its last 11) and every consumer read the
       PR as BLOCKED while PR Readiness was green.
 
@@ -39,7 +39,7 @@ def sha_matches(stamp_sha, head_sha):
     the head's own. That keeps the guard the strict match was protecting -- a
     well-formed reference to another commit cannot pass, because it would have
     to begin with 7+ characters of THIS head and end with this head's tail --
-    while a mangling of the current head no longer fails closed.
+    while a mangling of the current head does not fail closed.
 
     Lives here rather than once per entrypoint script: it arrived as a
     byte-identical pair pinned by a parity test, which is exactly the

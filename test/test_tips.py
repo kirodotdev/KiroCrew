@@ -781,8 +781,8 @@ class TestCatalogAllowlist:
     reach users — internal architecture/incident docs must never be included.
     """
 
-    # Names that must never be offered as a tip. The first and last no longer
-    # exist in the packaged tree -- they moved to docs/ -- and are kept here so a
+    # Names that must never be offered as a tip. The first and last do not
+    # exist in the packaged tree -- they live in docs/ -- and are kept here so a
     # future re-add cannot land as a user-facing tip by default.
     _INTERNAL_DOCS = {
         "app-platform-trust-model.md",
@@ -852,7 +852,7 @@ class TestStateFilePermissions:
         On Windows the POSIX mode bits are a no-op, so the owner-only DACL from
         ``restrict_to_owner`` is the only protection; applying it after the
         rename left the state readable under the inherited ACL for the write
-        window (issue #5285). Asserted by measuring the file's SIZE at lockdown
+        window. Asserted by measuring the file's SIZE at lockdown
         time — zero means no payload byte existed yet. A post-write stat passes
         on the buggy ordering too, so it would not be a regression test.
         """
@@ -2052,7 +2052,7 @@ class TestDocLinkSplit:
     """ "doc" is a tip's dismissal identity; "doc_link" is a rendering-only
     "learn more" hint. The two must never share one field: a curated tip that
     set `doc` to a catalog-owned doc silently took the catalog's tip for that
-    doc down with it on a single dismissal (issue #3524).
+    doc down with it on a single dismissal.
 
     The companion ratchet (a curated tip must never claim a catalog doc as its
     dismissal identity) lives in TestCuratedTips.
@@ -2407,7 +2407,7 @@ class TestFeedbackErrorCodes:
 
     The prose stays where it is and keeps its meaning — it is demoted to
     advisory, not removed — so an existing client that only reads ``error`` is
-    unaffected. What changes is that a client no longer has to match English to
+    unaffected. What changes is that a client does not have to match English to
     tell "the body was not JSON" from "that action does not exist".
     """
 

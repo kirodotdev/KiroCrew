@@ -17,7 +17,6 @@ import React from 'react'
 
 // Tab bodies are irrelevant; the rail + pane wiring is what is under test.
 vi.mock('../pages/KiroCrewAgentsPage', () => ({ default: () => <div /> }))
-vi.mock('../pages/AgentsPage', () => ({ default: () => <div /> }))
 vi.mock('../pages/HooksPage', () => ({ default: () => <div /> }))
 vi.mock('../pages/connections/ConnectionsPage', () => ({ default: () => <div /> }))
 vi.mock('../pages/overview', () => ({

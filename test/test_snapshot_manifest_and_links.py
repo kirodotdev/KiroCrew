@@ -84,10 +84,10 @@ class TestSymlinkedTreeRootsAreRefused:
         (dest / "workspace/memory").symlink_to(outside, target_is_directory=True)
         monkeypatch.setenv("KIROCREW_HOME", str(dest))
 
-        # Strengthened contract. This previously asserted a SUCCESSFUL restore that
-        # merely left the link alone — but the databases were replaced before the tree
-        # loop reached the link, so "success" meant memory split between the old and new
-        # versions with no warning. The refusal now happens before any mutation.
+        # A linked destination root is refused before any mutation. Otherwise the
+        # databases get replaced before the tree loop reaches the link, so a
+        # "successful" restore would split memory between the old and new versions
+        # with no warning.
         rc = restore_main([str(tarball), "--components", "memory", "--mode", "replace", "--force"])
         assert rc == 1, "a linked destination root produced a 'successful' restore"
         assert (outside / "keepme.txt").read_text() == "not ours to delete\n"

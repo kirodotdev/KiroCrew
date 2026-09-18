@@ -90,7 +90,7 @@ class TestCreateEmbedderFromConfig:
         assert emb.content_budget == _EMBED_CONTENT_BUDGET
 
     def test_legacy_none_provider_still_gets_embedder(self):
-        # Embeddings are always-on: a legacy "none" (previously-disabled)
-        # config still yields an embedder (the loader coerces the provider).
+        # Embeddings are always-on: a legacy "none" (disabled) config still
+        # yields an embedder, because the loader coerces the provider.
         emb = create_embedder_from_config({"memory": {"embedding_provider": "none"}})
         assert emb is not None

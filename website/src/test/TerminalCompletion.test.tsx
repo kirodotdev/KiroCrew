@@ -16,6 +16,7 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
   let keyHandler: (e: KeyboardEvent) => boolean = () => true
   let row = line
   let wrapped = false
+  let hasSel = false
   /** Cell widths, sparse: anything unset is an ordinary single-width cell. */
   const widths = new Map<number, number>()
   /** Cell strings, sparse: anything unset is one code unit wide. */
@@ -67,9 +68,12 @@ function makeTerm(line: string, cursorX: number, opts: { openTerminal?: boolean 
       return { dispose: () => { renderCbs.splice(renderCbs.indexOf(cb), 1) } }
     },
     attachCustomKeyEventHandler: (h: (e: KeyboardEvent) => boolean) => { keyHandler = h },
+    hasSelection: () => hasSel,
   }
   return {
     term: term as unknown as Terminal,
+    /** Give (or clear) an active selection, the way a mouse drag does for real. */
+    setSelection: (v: boolean) => { hasSel = v },
     /** Rewrite the cursor's screen row (what the shell's echo does for real). */
     setLine: (next: string) => { row = next },
     /** Move the fake cursor (the shell's own echo does this for real). */
@@ -555,6 +559,71 @@ describe('TerminalCompletion', () => {
     })
   })
 
+  describe('Ctrl+Shift+C copy shortcut', () => {
+    /* The chord must work with NO menu open — that is the everyday copy case —
+     * so these tests never call trigger(). jsdom has no execCommand; the stub
+     * stands in for the native `copy` event route that xterm's own listener
+     * serialises the selection into. */
+    let execCommand: ReturnType<typeof vi.fn>
+    beforeEach(() => {
+      execCommand = vi.fn(() => true)
+      document.execCommand = execCommand as unknown as typeof document.execCommand
+    })
+    afterEach(() => {
+      delete (document as { execCommand?: unknown }).execCommand
+    })
+
+    function mount() {
+      const line = `${PROMPT}cd zzz`
+      const h = makeTerm(line, line.length)
+      renderCompletion(h.term)
+      return h
+    }
+
+    it('with a selection, fires the native copy and consumes the chord', () => {
+      const h = mount()
+      h.setSelection(true)
+      const r = h.key({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true })
+      expect(execCommand).toHaveBeenCalledExactlyOnceWith('copy')
+      expect(r.passedThrough).toBe(false)
+      expect(r.prevented).toBe(true)
+    })
+
+    it('matches the physical key on layouts whose C position types another glyph', () => {
+      const h = mount()
+      h.setSelection(true)
+      // Cyrillic layout: e.key is 'с', but the physical key still reports KeyC.
+      const r = h.key({ key: 'с', code: 'KeyC', ctrlKey: true, shiftKey: true })
+      expect(execCommand).toHaveBeenCalledExactlyOnceWith('copy')
+      expect(r.passedThrough).toBe(false)
+    })
+
+    it('with no selection, passes the chord through untouched', () => {
+      const h = mount()
+      const r = h.key({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true })
+      expect(execCommand).not.toHaveBeenCalled()
+      expect(r.passedThrough).toBe(true)
+      expect(r.prevented).toBe(false)
+    })
+
+    it('leaves plain Ctrl+C alone — that is the shell interrupt', () => {
+      const h = mount()
+      h.setSelection(true)
+      const r = h.key({ key: 'c', code: 'KeyC', ctrlKey: true })
+      expect(execCommand).not.toHaveBeenCalled()
+      expect(r.passedThrough).toBe(true)
+      expect(r.prevented).toBe(false)
+    })
+
+    it('leaves Ctrl+Alt+Shift+C and Meta+Shift+C alone', () => {
+      const h = mount()
+      h.setSelection(true)
+      expect(h.key({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true, altKey: true }).passedThrough).toBe(true)
+      expect(h.key({ key: 'C', code: 'KeyC', ctrlKey: true, shiftKey: true, metaKey: true }).passedThrough).toBe(true)
+      expect(execCommand).not.toHaveBeenCalled()
+    })
+  })
+
   describe('suppression', () => {
     /** A row the trigger should refuse; returns the mock so callers assert on it. */
     async function attempt(
@@ -851,6 +920,18 @@ describe('TerminalCompletion', () => {
       expect(sent).toEqual([])
     })
 
+    it('consumes the post-composition Tab without accepting the suggestion', async () => {
+      const h = await open()
+      h.compositionEnd()
+      const r = h.key({ key: 'Tab' })
+      // Native composition flags are already clear, so the grace latch owns
+      // both halves: the menu must not accept Tab, and xterm/browser must not
+      // pass it on to the PTY as shell completion.
+      expect(r.passedThrough).toBe(false)
+      expect(r.prevented).toBe(true)
+      expect(sent).toEqual([])
+    })
+
     it('still accepts on a plain Enter once composition is over', async () => {
       const h = await open()
       h.compositionEnd()
@@ -858,6 +939,15 @@ describe('TerminalCompletion', () => {
       vi.setSystemTime(Date.now() + 1000)
       await act(async () => { expect(pick(h).passedThrough).toBe(false) })
       expect(sent).toEqual(['s/'])
+    })
+
+    it('still completes on a plain Tab once composition is over', async () => {
+      const h = await open()
+      h.compositionEnd()
+      // Past the grace window: this Tab belongs to the menu again.
+      vi.setSystemTime(Date.now() + 1000)
+      await act(async () => { expect(h.key({ key: 'Tab' }).passedThrough).toBe(false) })
+      expect(sent).toEqual(['s'])
     })
 
     // Regression: this child's effects run BEFORE the parent's `term.open()`, so

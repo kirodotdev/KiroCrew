@@ -131,12 +131,40 @@ def _sdk_path() -> str | None:
 #: Prefixes a compiler may live under. Anything outside these is refused even if
 #: ``xcrun`` names it, because the gateway executes what the compiler produces.
 _TRUSTED_TOOLCHAIN_PREFIXES = (
-    "/Applications/Xcode.app/",
-    "/Applications/Xcode-beta.app/",
     "/Library/Developer/",
     "/usr/bin/",
     "/usr/libexec/",
 )
+
+#: `/Applications` itself, for the Xcode bundle rule below.
+_APPLICATIONS_DIR = "/Applications/"
+
+
+def _xcode_bundle_prefix(real: str) -> str | None:
+    """The `/Applications/Xcode*.app` bundle *real* lives in, or None.
+
+    An Xcode bundle carries its VERSION in practice -- `Xcode_16.4.app`, with
+    `Xcode.app` a symlink to whichever is the default. That is the layout on every
+    GitHub macOS runner and on any machine holding more than one Xcode, so a
+    literal `/Applications/Xcode.app/` prefix matched nothing once `realpath`
+    resolved the link, and a genuine toolchain was refused.
+
+    Anchored to exactly ONE path component, so nothing deeper under
+    `/Applications` can widen it, and it grants no trust by itself: the caller
+    still walks from the compiler up to this bundle root requiring root ownership
+    with no group or other write at every level. `/Applications` is `775
+    root:admin`, so an admin-group user CAN create a bundle beside a real one --
+    and it is owned by that user, which is what the walk refuses.
+    """
+    if not real.startswith(_APPLICATIONS_DIR):
+        return None
+    head, _, rest = real[len(_APPLICATIONS_DIR) :].partition("/")
+    # `rest` must be non-empty for the same reason the literal prefixes carried a
+    # trailing slash: the bundle DIRECTORY is not itself a compiler or an SDK.
+    if not rest or not head.startswith("Xcode") or not head.endswith(".app"):
+        return None
+    return f"{_APPLICATIONS_DIR}{head}/"
+
 
 #: Wall-clock ceiling for one helper run. Generous relative to observed runtimes
 #: (sub-second per 10s of audio) because a first-ever run may block on asset install.
@@ -188,6 +216,8 @@ def _is_trusted_toolchain(path: str) -> bool:
     except OSError:
         return False
     prefix = next((p for p in _TRUSTED_TOOLCHAIN_PREFIXES if real.startswith(p)), None)
+    if prefix is None:
+        prefix = _xcode_bundle_prefix(real)
     if prefix is None:
         return False
     stop = prefix.rstrip("/")
@@ -398,7 +428,7 @@ async def _sandboxed_off_loop(argv: list[str]) -> tuple[list[str], dict[str, str
 
     Delegates to the shared :func:`sandbox.shielded_prepare_off_loop`, which
     owns the shield-and-recover pattern (worker-thread hop + settle-then-unlink
-    under cancellation, repeat-cancellation safe per #5841) for every async
+    under cancellation, repeat-cancellation safe) for every async
     caller of the chokepoint.  Preparation stays behind :func:`_sandboxed` so
     this module keeps owning its own ``mode="strict"`` + ``_build_env()``
     policy.  ``SandboxUnavailableError`` still propagates to the caller
@@ -704,7 +734,7 @@ async def _to_native_audio(
                 pass
             raise
     finally:
-        # The authenticated handle must outlive the spawn (#8918): every branch
+        # The authenticated handle must outlive the spawn: every branch
         # above has already reaped the child (``communicate`` on success,
         # kill-and-reap on failure) or never spawned one, so the staged image
         # can be released now — off the loop, unconditionally, instead of by

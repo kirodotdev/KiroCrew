@@ -1,7 +1,7 @@
 """Round-9 findings: four blocking, fixed as enforcement points where a rule was
 missing one, and as ordinary fixes where the defect was one-off.
 
-Two of round 9's findings were the recurring class, and each showed *where* my
+Two findings were the recurring class, and each showed *where* my
 previous enforcement point sat wrong:
 
 * `_measurable_count` guarded leaf VALUES while nested OBJECT access stayed raw, so

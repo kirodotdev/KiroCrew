@@ -35,6 +35,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2, RefreshCw } from 'lucide-react'
 import { Trans } from 'react-i18next'
 import { api } from '../api/client'
+import { WARM_SET_CAP_AUTO_CEILING } from '../utils/remoteCrew'
 import { SettingsLink } from './SettingsLink'
 import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { clearPaneReady, removeWarm, setActiveId, setPaneReady, setUnread, setWarm } from '../store/instancesSlice'
@@ -43,7 +44,7 @@ import { parseLoopbackOriginPort, resolveTunnelOrigin } from '../lib/tunnelOrigi
 import { frameDocumentState, paneLog, safePaneUrl } from '../lib/paneLog'
 import { clearPaneHttpCache, paneOriginFor } from '../lib/paneCache'
 import { connectInstanceInto } from '../lib/connectInstance'
-import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH } from '../lib/electron'
+import { LINUX_CAPTION_CONTROLS_WIDTH, TRAFFIC_LIGHT_INSET_PX, WIN_CAPTION_OVERLAY_WIDTH, WIN_CAPTION_RESERVE_PX } from '../lib/electron'
 import { isEmbeddedPane } from '../lib/embedded'
 import ErrorNotice from './ErrorNotice'
 import { errMessage } from '../utils/thunkError'
@@ -105,6 +106,20 @@ function ttlToSeconds(ttl: string): number {
 }
 
 export default function InstancesViewport({ macInset = false }: { macInset?: boolean } = {}) {
+  // Windows counterpart of `macInset`: the caption overlay is a shell property,
+  // not a window state, so it derives straight from the platform flag rather
+  // than arriving as a prop.
+  const winInset = isWinElectron
+  // Inset for the HOST-rendered InstanceTabBar strips atop the loading/error
+  // overlays: clear of the macOS traffic lights on the left, and of the
+  // Windows titleBarOverlay caption buttons on the right — those strips are
+  // the topmost header while an overlay is up, exactly like the pane header.
+  const stripInsetStyle = macInset || winInset
+    ? {
+        ...(macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : null),
+        ...(winInset ? { paddingRight: WIN_CAPTION_RESERVE_PX } : null),
+      }
+    : undefined
   const dispatch = useAppDispatch()
   const queryClient = useQueryClient()
   const warm = useAppSelector(s => s.instances.warm)
@@ -150,7 +165,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
     refetchInterval: 60_000,
     enabled: !embedded,
   })
-  const warmCap = instancesQuery.data?.warm_set_cap || 5
+  const warmCap = instancesQuery.data?.warm_set_cap || WARM_SET_CAP_AUTO_CEILING
 
   // Current warm map in a ref so the refresh callback (used by the long-lived
   // postMessage listener) always sees the latest ports without re-subscribing.
@@ -807,7 +822,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
 
   // Build the switcher model relayed to the embedded pane `id`: the full tab
   // list (same rule as the local inline bar), which tab is active, this pane's
-  // OWN tunnel status (for its readout capsule), and the macOS inset.
+  // OWN tunnel status (for its readout capsule), and the platform insets.
   const buildModelFor = useCallback(
     (id: string) => {
       const insts = instancesQuery.data?.instances ?? []
@@ -827,7 +842,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           }
         : null
       return {
-        type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, focusMode,
+        type: 'mc-host-model', v: 1, tabs, activeId, self, macInset, winInset, focusMode,
         electron: isElectron,
         // Array, not the Set itself: structured clone rejects a Set across this
         // boundary in some engines and the receiver validates element-wise anyway.
@@ -835,7 +850,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
         stableOrder,
       }
     },
-    [instancesQuery.data, warm, unread, activeId, macInset, focusMode, pinnedCrews, stableOrder],
+    [instancesQuery.data, warm, unread, activeId, macInset, winInset, focusMode, pinnedCrews, stableOrder],
   )
 
   // Post the model into one embedded pane, addressed to its exact loopback
@@ -892,7 +907,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
   // to a loopback frame.
   useEffect(() => {
     for (const id of Object.keys(warm)) postModelTo(id)
-  }, [warm, activeId, unread, macInset, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
+  }, [warm, activeId, unread, macInset, winInset, instancesQuery.data, postModelTo, pinnedCrews, stableOrder])
 
   // Keep warm iframes mounted across Local<->remote switches (hide-not-unmount).
   // Also render when the active tab is a remote instance with no warm iframe
@@ -998,7 +1013,23 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // the same rejection). Local (top-level) use is unaffected.
           // Loopback-only, and the pane already runs our own token-authed SPA,
           // so delegating these grants nothing a same-origin top-level load
-          // wouldn't already. clipboard-read is deliberately NOT delegated:
+          // wouldn't already. display-capture follows the same rule: without
+          // it, getDisplayMedia() rejects in the pane while the snip
+          // affordances still RENDER, because the presence gate
+          // (isScreenSnipSupported) only checks the function exists -- true
+          // inside iframes -- so ChatPage's snip flow, WebPreviewPanel's
+          // crop-to-chat and MochiSnipHost all die on click with
+          // NotAllowedError. Delegation only lets the pane ASK. In a browser
+          // the engine's own source picker decides. In the packaged app the main
+          // process decides, and capture-trust.js authorizes by identity -- a
+          // registered capture surface, its own main frame, still on its
+          // registered origin -- so a pane is refused there rather than answered
+          // with the whole desktop from one gesture. That is deliberately not a
+          // frame-position test: a page inside this iframe could navigate the top
+          // frame and inherit its position. Making pane capture WORK under
+          // Electron needs an in-app picker naming the requesting frame, which is
+          // a separate change.
+          // clipboard-read is by contrast still NOT delegated:
           // read is the more sensitive grant class and exceeds this fix's
           // clipboard-write scope. The pane's Paste key (TerminalKeyBar's
           // readText) therefore still fails inside embedded panes, visibly,
@@ -1006,7 +1037,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
           // left as a maintainer decision.
           // allowFullScreen mirrors the legacy attribute some engines still
           // require alongside the Permissions-Policy delegation.
-          allow="microphone; fullscreen; clipboard-write"
+          allow="microphone; fullscreen; clipboard-write; display-capture"
           allowFullScreen
           onLoad={e => {
             // Fires for the initial about:blank too, which is why a load event is
@@ -1065,7 +1096,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               strip is the user's sole way to reach Local or another instance. */}
           <InstanceTabBar
             variant="strip"
-            style={macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : undefined}
+            style={stripInsetStyle}
           />
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="flex flex-col items-center gap-3 text-center">
@@ -1087,7 +1118,7 @@ export default function InstancesViewport({ macInset = false }: { macInset?: boo
               clear of the macOS traffic lights when this strip is topmost. */}
           <InstanceTabBar
             variant="strip"
-            style={macInset ? { paddingLeft: TRAFFIC_LIGHT_INSET_PX } : undefined}
+            style={stripInsetStyle}
           />
           <div className="flex-1 flex items-center justify-center p-6">
             <div className="max-w-md w-full flex flex-col items-center gap-3 text-center">

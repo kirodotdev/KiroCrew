@@ -36,7 +36,7 @@ class TestArgvBuilders:
     def test_argv_heads_resolved_absolutely_under_minimal_path(self, monkeypatch, tmp_path):
         """``build_port_forward_argv`` must resolve the CLI absolutely under a
         GUI-launched gateway's minimal PATH via the deploy engine's shared
-        well-known-dirs resolver (#4770)."""
+        well-known-dirs resolver."""
         import os as _os
 
         if _os.name == "nt":
@@ -87,7 +87,7 @@ class TestOpenPortForward:
         ``session-manager-plugin``: it looks that up by name against the child's
         inherited PATH at start-session time, which under a GUI-launched gateway
         is the minimal launchd one — so the tunnel died inside a correctly
-        resolved ``aws`` (#5392).
+        resolved ``aws``.
         """
         from kiro_crew.deploy import engine
 
@@ -173,7 +173,7 @@ class TestOpenPortForward:
 
 
 class TestSessionManagerPluginProbe:
-    """#5392: the probe must agree with what the spawn actually does.
+    """The probe must agree with what the spawn actually does.
 
     Reported against a shipped desktop build: the plugin was installed at
     /usr/local/bin/session-manager-plugin and worked in a shell, but the

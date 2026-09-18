@@ -22,6 +22,22 @@ SLACK_MAX_TEXT = 39_000
 # rationale. Per-choice whitespace is stripped by extract_options().
 _OPTIONS_RE = OPTIONS_RE_LINE
 
+
+#: The kirocrew-core ``wait`` tool as each transport spells it: direct MCP, the
+#: pooled gateway namespacing, and the ``mcp__<server>__<tool>`` form. Enumerated
+#: rather than suffix-matched so a third-party server's own ``wait`` tool
+#: (``third-party___wait``) never rolls the stream over.
+WAIT_IDENTITIES = frozenset(["wait", "kirocrew-core___wait", "mcp__kirocrew-core__wait"])
+
+
+def is_wait_identity(tool_name: str) -> bool:
+    """True when a tool's programmatic name is the kirocrew-core ``wait`` tool,
+    in any of the spellings in :data:`WAIT_IDENTITIES`. A single underscore is
+    not a separator, so ``wait_for_ci`` stays a different tool, and a foreign
+    server's ``wait`` is a different tool too."""
+    return (tool_name or "").strip().lower() in WAIT_IDENTITIES
+
+
 # Action ID prefix for OPTIONS buttons
 OPTIONS_ACTION_PREFIX = "options_choice_"
 
@@ -40,15 +56,19 @@ LINK_DASHBOARD_ACTION = "mc_link_dashboard"
 
 
 def extract_options(text: str) -> tuple[str, list[str]]:
-    """Extract OPTIONS choices from LLM response and strip the tag.
+    """Extract OPTIONS choices and remove the marker span from the response.
 
-    Returns (cleaned_text, choices). If no OPTIONS found, choices is empty.
+    Text before and after the marker is kept, matching the other readers of
+    ``OPTIONS_RE_LINE``. Returns (cleaned_text, choices). If no OPTIONS is found,
+    choices is empty.
     """
     m = _OPTIONS_RE.search(text)
     if not m:
         return text, []
     choices = [c.strip() for c in m.group("labels").split("|") if c.strip()]
-    cleaned = text[: m.start()].rstrip()
+    before = text[: m.start()].rstrip()
+    after = text[m.end() :].strip()
+    cleaned = before + ("\n" + after if after else "") if before else after
     return cleaned, choices
 
 

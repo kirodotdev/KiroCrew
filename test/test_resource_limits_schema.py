@@ -1,6 +1,6 @@
-"""``resource_limits`` schema, its single parse site, and the traps it closes (#3474).
+"""``resource_limits`` schema, its single parse site, and the traps it closes.
 
-This block used to have no dataclass and no validation: four consumers each read
+Without a shared dataclass and validation, four consumers each read
 the raw dict and invented their own parse rule, so the two mechanisms that share
 ``max_processes`` / ``max_memory_mb`` disagreed about what ``0`` means with
 nothing in the tree recording it. These tests pin the parse rule, pin that each
@@ -129,7 +129,7 @@ class TestParseRule:
         assert parsed.max_processes == 0
 
     def test_a_fraction_that_would_truncate_to_zero_is_refused(self):
-        """#3474's trap. ``int(0.5) == 0``, and ``0`` already MEANS something on
+        """``int(0.5) == 0``, and ``0`` already MEANS something on
         both paths -- "leave inherited" on one, "use the default" on the other --
         so truncating would silently reinterpret the operator's value."""
         parsed = ResourceLimitsConfig.from_raw({"max_processes": 0.5, "max_memory_mb": 0.25})
@@ -275,7 +275,7 @@ class TestCgroupConsumerUnchanged:
                 unittest.mock.patch.object(sb, "_probe_cgroup_scope", return_value=(True, "")),
                 unittest.mock.patch.object(sb, "_reconcile_slice_memory_high_off_thread"),
                 unittest.mock.patch.object(sb, "_cpu_controller_delegated", return_value=True),
-                # #2602 pins the wrapper through ``trusted_system_bin`` before
+                # This pins the wrapper through ``trusted_system_bin`` before
                 # wrapping; an unresolvable systemd-run (e.g. Windows CI) now
                 # degrades to an unwrapped argv with no ceilings at all. Pin the
                 # resolution so this test keeps exercising the ceiling-emitting
@@ -301,8 +301,8 @@ class TestCgroupConsumerUnchanged:
 
     def test_an_unresolvable_wrapper_degrades_to_unwrapped_not_to_a_zero_ceiling(self):
         """Negative control for the wrapper-pin mock above: when the
-        ``systemd-run`` pin cannot resolve (the reality on Windows, where #7183
-        turned this file red), ``cgroup_scope_argv`` returns argv UNCHANGED --
+        ``systemd-run`` pin cannot resolve (the reality on Windows),
+        ``cgroup_scope_argv`` returns argv UNCHANGED --
         its documented fail-open, pinned in depth by
         ``test_sandbox_argv.py::test_cgroup_wrapper_is_absolute_or_refused``.
         Asserting it here too keeps the ceiling test above honest: the
@@ -425,8 +425,8 @@ class TestRlimitConsumer:
 
     def test_a_fraction_falls_back_to_the_default_instead_of_disabling(self):
         """``int(0.5) == 0`` is this path's "leave inherited" sentinel, so a
-        fractional request used to silently remove the ceiling the operator was
-        asking for. It now lands on the documented default."""
+        fractional request would silently remove the ceiling the operator asked
+        for, so it lands on the documented default instead."""
         from kiro_crew.security import _RLIMIT_DEFAULTS, resource_limit_spec
 
         spec = dict(resource_limit_spec({"resource_limits": {"max_open_files": 0.5}}))
@@ -484,10 +484,9 @@ class TestOverlayOwnership:
         assert "max_memory_mb" not in written.get("resource_limits", {})
 
     def test_a_NORMALIZED_overlay_limit_stays_out_of_the_base_config(self, tmp_path: Path):
-        """The reported shape: a fractional overlay value is normalized to 512 on
-        load, so a raw-value comparison no longer matches 512.5 and the override
-        was persisted into config.json -- the exact leak the subtraction exists to
-        prevent."""
+        """A fractional overlay value is normalized to 512 on load, so a raw-value
+        comparison does not match 512.5 and the override is persisted into
+        config.json -- the exact leak the subtraction exists to prevent."""
         written = self._save_with_overlay(
             tmp_path, {"agent": {"model": "m"}}, {"resource_limits": {"max_memory_mb": 512.5}}
         )
@@ -517,9 +516,9 @@ class TestOverlayOwnership:
 
 
 class TestSingleParseSite:
-    """Drift guard. The defect in #3474 was not any one parse rule -- it was that
-    there were four of them, so a contributor tightening one could not see the
-    others. A fifth reader must fail this test rather than be discovered later."""
+    """Drift guard. The risk is not any one parse rule -- it is having several, so
+    a contributor tightening one cannot see the others. A fifth reader must fail
+    this test rather than be discovered later."""
 
     def test_no_module_outside_the_section_parser_parses_these_keys_itself(self):
         src = Path(__file__).resolve().parent.parent / "src" / "kiro_crew"

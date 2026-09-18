@@ -1,4 +1,4 @@
-"""Transport-level regression tests for session directives (#755).
+"""Transport-level tests for session directives.
 
 These lock the hops that the existing seam tests CANNOT see. Those tests build
 ``AcpEvent`` objects directly with ``tool_output`` already set to a pristine
@@ -9,14 +9,14 @@ feature shipped dead with 21,840 tests green.
 Each test here drives a REAL boundary end-to-end:
 
 * ``build_tool_response`` — the MCP server's single response exit point, which
-  used to strip every category-``Cf`` character and so removed the sentinel's
-  U+2063 prefix before the response reached the wire.
+  must not strip every category-``Cf`` character, or it removes the sentinel's
+  U+2063 prefix before the response reaches the wire.
 * ``_build_tool_result_event`` — the ACP result parser, whose ``rawOutput``
-  ``Json`` branch used to ``json.dumps`` the MCP content envelope, escaping the
-  payload's quotes and non-ASCII so the marker line could not be parsed.
+  ``Json`` branch must not ``json.dumps`` the MCP content envelope, which escapes the
+  payload's quotes and non-ASCII so the marker line cannot be parsed.
 
 These pin the kiro-cli marker path only. A backend that reshapes the result body
-(KAS re-serialises, duplicates and caps it) is no longer a transport concern for
+(KAS re-serialises, duplicates and caps it) is not a transport concern for
 directives: the out-of-band record is claimed by the tool CALL's input digest,
 never by anything read out of the result -- see
 ``test_session_directive_input_digest.py``.
@@ -181,7 +181,7 @@ class TestMcpAppMarkerSurvivesResultCuts:
     """The MCP App render marker must survive both truncation cuts in
     ``_build_tool_result_event`` — the per-part 4000-char cut and the 8000-char
     join cut — or ``mcp_apps_render.find_marker`` never sees it and the app
-    never mounts (issue #6606). The gateway prepends the marker at offset 0 of
+    never mounts. The gateway prepends the marker at offset 0 of
     the first text block, and the parser re-injects it after the join cut."""
 
     def _marker(self) -> str:

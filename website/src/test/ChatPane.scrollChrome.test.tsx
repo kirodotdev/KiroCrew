@@ -1,17 +1,17 @@
 // Feature: ChatPane wears the shared transcript scroll chrome.
 //
-// ChatPane (split-view panes AND the Crew Members thread that reuses it) now
-// delegates stick-to-bottom follow to the shared useChatScrollFollow hook and
-// mounts the shared EdgeFade / JumpToBottomButton chrome. These tests pin the
-// wiring at the host level:
+// ChatPane (split-view panes AND the Crew Members thread that reuses it)
+// delegates stick-to-bottom follow to the virtualized transcript behind
+// ChatMessageList (chat-core P5-e) and mounts the shared EdgeFade /
+// JumpToBottomButton chrome. These tests pin the wiring at the host level:
 //   1. both edge fades render (top under the header, bottom above the bars),
 //   2. the jump-to-bottom pill appears once the user scrolls up and jumping
 //      lands back at the bottom,
-//   3. the scroller owns the hook's onScroll (the pill state is scroll-driven).
+//   3. the scroller's scroll events drive the pill state.
 //
 // The follow DECISIONS themselves (release/re-engage/shrink re-pin) are pinned
-// by useChatScrollFollow.test.tsx; duplicating them here would test the hook
-// twice through a heavier harness.
+// by FollowController.test.ts and the virtualizer's own tests; duplicating them
+// here would test the hook twice through a heavier harness.
 
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, act, screen } from '@testing-library/react'
@@ -99,10 +99,42 @@ function fakeGeom(el: HTMLElement, initial: { scrollTop: number; scrollHeight: n
   })
   Object.defineProperty(el, 'scrollHeight', { configurable: true, get: () => state.scrollHeight })
   Object.defineProperty(el, 'clientHeight', { configurable: true, get: () => state.clientHeight })
+  // The virtualizer writes through scrollTo; route it to the faked position.
+  el.scrollTo = ((opts: ScrollToOptions | number) => {
+    state.scrollTop = typeof opts === 'number' ? opts : (opts.top ?? state.scrollTop)
+  }) as HTMLElement['scrollTo']
   return state
 }
 
-beforeEach(() => vi.clearAllMocks())
+// The virtualized transcript applies its bottom pin on the next animation
+// frame (so the tail rows it just mounted have real heights first) and reads
+// the resulting position back through the scroll event, as a browser would
+// deliver it. The test drives both by hand.
+interface QueuedFrame { id: number; cb: FrameRequestCallback }
+let frames: QueuedFrame[] = []
+let nextId = 1
+let originalRaf: typeof requestAnimationFrame
+let originalCancel: typeof cancelAnimationFrame
+
+function flushFrames() {
+  const pending = frames.splice(0)
+  act(() => { pending.forEach(f => f.cb(16)) })
+}
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  frames = []
+  nextId = 1
+  originalRaf = globalThis.requestAnimationFrame
+  originalCancel = globalThis.cancelAnimationFrame
+  globalThis.requestAnimationFrame = ((cb: FrameRequestCallback) => { const id = nextId++; frames.push({ id, cb }); return id }) as typeof requestAnimationFrame
+  globalThis.cancelAnimationFrame = ((id: number) => { frames = frames.filter(f => f.id !== id) }) as typeof cancelAnimationFrame
+})
+
+afterEach(() => {
+  globalThis.requestAnimationFrame = originalRaf
+  globalThis.cancelAnimationFrame = originalCancel
+})
 
 describe('ChatPane shared scroll chrome', () => {
   it('renders both edge fades around the transcript scroller', () => {
@@ -133,7 +165,10 @@ describe('ChatPane shared scroll chrome', () => {
     act(() => { state.scrollTop = 100; scroller.dispatchEvent(new Event('scroll')) })
     const pill = screen.getByLabelText('Scroll to bottom')
     act(() => { pill.click() })
+    flushFrames()
     expect(state.scrollTop).toBe(600)
+    // The browser reports the programmatic scroll back as a scroll event.
+    act(() => { scroller.dispatchEvent(new Event('scroll')) })
     expect(screen.queryByLabelText('Scroll to bottom')).toBeNull()
   })
 })

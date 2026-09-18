@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom'
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type MouseEvent, type RefObject } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent, type RefObject } from 'react'
 import type { ChatSection } from '../../hooks/useChatNavigation'
 import { i18nT } from '../../i18n/t'
 import { stripMd } from '../../components/notifications/notifMeta'
@@ -67,12 +67,18 @@ function hasSafeLeftGutter(scroller: HTMLDivElement): boolean {
   return !!contentRect && contentRect.left - scrollerRect.left >= MIN_GUTTER_PX
 }
 
+/** Marker length in px. The hovered marker grows to just over twice the
+ *  resting length and the neighbours taper off by roughly half per step, so
+ *  the rail reads as a lens rather than a single lit tick. 32 is the ceiling:
+ *  the rail sits 8px in from the pane edge and the content column may start
+ *  as close as `MIN_GUTTER_PX`, so anything longer would run under the text. */
 function markerWidth(index: number, selected: number | null): number {
   if (selected === null) return 14
   const distance = Math.abs(index - selected)
-  if (distance === 0) return 26
-  if (distance === 1) return 20
-  if (distance === 2) return 16
+  if (distance === 0) return 32
+  if (distance === 1) return 25
+  if (distance === 2) return 19
+  if (distance === 3) return 16
   return 14
 }
 
@@ -427,13 +433,7 @@ export default function TurnNavigationMinimap({
           role="tooltip"
           data-testid="turn-navigation-preview"
           className="fixed z-[100] max-w-[calc(100vw-5rem)] rounded-lg border border-border bg-bg-elevated px-3 py-2 text-left shadow-xl pointer-events-auto select-text"
-          style={{
-            top: previewTop,
-            left: previewLeft,
-            width: PREVIEW_WIDTH_PX,
-            borderLeftColor: 'var(--accent)',
-            borderLeftWidth: 3,
-          } as CSSProperties}
+          style={{ top: previewTop, left: previewLeft, width: PREVIEW_WIDTH_PX }}
           onMouseEnter={clearClose}
           onMouseLeave={scheduleClose}
         >

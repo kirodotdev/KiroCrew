@@ -208,13 +208,14 @@ async def test_mark_recovered_registry_write_off_the_loop_thread(
     mgr = SshTunnelManager(registry)  # type: ignore[arg-type]
     # The double carries a pid: _mark_recovered persists the rebuilt child's
     # forwarder_pid alongside was_connected in its single hint write.
-    mgr._tunnels["some-instance"] = _tunnel_double("some-instance")
+    double = _tunnel_double("some-instance")
+    mgr._tunnels["some-instance"] = double
     # Pin the forwarder-identity branch REACHABLE: it is the widest route to the
     # hint write, and the only one that reads tunnel.status.local_port, so the
     # offload assertion below covers the whole write path on every platform.
     _pin_forwarder_identity(monkeypatch, reachable=True)
 
-    await mgr._mark_recovered("some-instance")
+    await mgr._mark_recovered("some-instance", double, 0)
 
     assert registry.write_threads, "the recovery hint write never happened"
     assert all(t is not loop_thread for t in registry.write_threads)
@@ -228,7 +229,7 @@ async def test_mark_recovered_skips_the_write_for_an_untracked_instance() -> Non
     registry = _RecordingRegistry()
     mgr = SshTunnelManager(registry)  # type: ignore[arg-type]
 
-    await mgr._mark_recovered("disconnected-instance")
+    await mgr._mark_recovered("disconnected-instance", _tunnel_double("disconnected-instance"), 0)
 
     assert registry.write_threads == [], (
         "recovery persisted was_connected=True for an instance no longer tracked"
@@ -259,7 +260,8 @@ async def test_cancelled_persist_waits_for_the_worker_write(
     late write race a subsequent locked write (e.g. a disconnect's reset)."""
     registry = _BlockingRegistry()
     mgr = SshTunnelManager(registry)  # type: ignore[arg-type]
-    mgr._tunnels["inst"] = _tunnel_double("inst")
+    inst_double = _tunnel_double("inst")
+    mgr._tunnels["inst"] = inst_double
     # Pin the forwarder-identity branch UNREACHABLE: the subject here is the
     # cancellation window around the BLOCKED registry write, so this wants the
     # shortest deterministic route to it. Taking the identity branch instead
@@ -267,7 +269,7 @@ async def test_cancelled_persist_waits_for_the_worker_write(
     # sleep window below for no gain — test 1 above covers that branch.
     _pin_forwarder_identity(monkeypatch, reachable=False)
 
-    task = asyncio.create_task(mgr._mark_recovered("inst"))
+    task = asyncio.create_task(mgr._mark_recovered("inst", inst_double, 0))
     await asyncio.sleep(0.05)  # the worker write is submitted and blocked
     task.cancel()
     await asyncio.sleep(0.05)  # cancellation delivered

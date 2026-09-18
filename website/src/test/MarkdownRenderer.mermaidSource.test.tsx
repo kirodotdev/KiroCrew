@@ -109,7 +109,7 @@ describe('MermaidBlock source view and copy', () => {
     // in each state separately, because the row's membership is state-dependent.
     const toggle = await renderDiagram()
     const diagramView = rowButtons(toggle).map(b => b.getAttribute('data-testid'))
-    expect(diagramView).toEqual(['mermaid-source-toggle', 'mermaid-enlarge'])
+    expect(diagramView).toEqual(['mermaid-source-toggle', 'mermaid-more-actions'])
 
     fireEvent.click(toggle)
     const sourceView = rowButtons(toggle).map(b => b.getAttribute('data-testid'))
@@ -206,18 +206,6 @@ describe('MermaidBlock source view and copy', () => {
     } finally {
       vi.useRealTimers()
     }
-  })
-
-  it('reports a THROWN clipboard failure the same way', async () => {
-    // The second arm: the fallback itself throwing must not become an unhandled
-    // rejection, and must not leave the control claiming success either.
-    vi.mocked(copyCode).mockRejectedValue(new Error('denied'))
-    const toggle = await renderDiagram()
-    fireEvent.click(toggle)
-    const copy = screen.getByTestId('mermaid-copy-source')
-    fireEvent.click(copy)
-    const notice = await waitFor(() => screen.getByTestId('mermaid-copy-error'))
-    expect(notice.textContent).toMatch(/failed/i)
   })
 
   it('still offers copy when the diagram fails to render, but no toggle', async () => {

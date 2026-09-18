@@ -25,17 +25,26 @@ from __future__ import annotations
 import ast
 import contextlib
 import errno
+import functools
 import json
 from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
+from source_corpus import candidate_sources, src_root
 
 from kiro_crew.cron import CronService, CronStoreBusy, CronStoreUnreadable
 from kiro_crew.messaging.commands import cron_remove_all_reply
+
+# One xdist worker for the whole module: the two ratchets at the bottom derive from
+# ONE module-cached scan of src/. Under `--dist loadgroup` an unmarked module is spread
+# across workers and each worker re-pays that scan. One group PER FILE, never shared:
+# a shared group would serialize unrelated modules onto one worker.
+pytestmark = pytest.mark.xdist_group(name="tree_scan_test_cron_store_unreadable_boundaries")
 
 # An unreadable store: valid-looking JSON bytes that are not valid UTF-8, so
 # `_load` fails in the widened handler and `_load_failed` is set. The record it
@@ -89,6 +98,72 @@ async def test_dashboard_create_translates_unreadable_store(tmp_path: Path) -> N
 
     # The refusal is the point: the pre-existing record is still on disk.
     assert b'"j-keep"' in (tmp_path / "crons.json").read_bytes()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schedule", [{"every": 300}, {"cron": "0 * * * *"}])
+@pytest.mark.parametrize("member", ["unknown", "broken"])
+async def test_dashboard_create_refuses_unavailable_member_without_mutation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schedule: dict, member: str
+) -> None:
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+
+    config = KiroCrewConfig()
+    config.agents["broken"] = KiroCrewAgentConfig(
+        kiro_agent="kirocrew", memory_store="missing-store"
+    )
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: config))
+    svc = await CronService.create(base_dir=tmp_path)
+    keep = await svc.add_job_async("keep", "existing task", every_secs=300)
+    before = (tmp_path / "crons.json").read_bytes()
+    refresh = Mock()
+    async with _dashboard_client(svc) as client:
+        client.app["state"].push_refresh = refresh
+        resp = await client.post(
+            "/api/crons",
+            json={"name": "private", "message": "member task", "member_id": member, **schedule},
+        )
+        assert resp.status == 400
+        body = await resp.json()
+        assert body["code"] == "invalid_cron"
+        reason = (
+            "unknown Crew Member" if member == "unknown" else "missing or invalid memory binding"
+        )
+        assert reason in body["error"]
+    refresh.assert_not_called()
+    assert (tmp_path / "crons.json").read_bytes() == before
+    reloaded = await CronService.create(base_dir=tmp_path)
+    assert [job.id for job in reloaded.list_jobs()] == [keep.id]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("schedule", [{"every": 300}, {"cron": "0 * * * *"}])
+async def test_dashboard_create_keeps_valid_member_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, schedule: dict
+) -> None:
+    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+    from kiro_crew.memory_stores import provision_member_memory
+
+    config = KiroCrewConfig()
+    config.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    store = provision_member_memory(config, "writer")
+    monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: config))
+    svc = await CronService.create(base_dir=tmp_path)
+    refresh = Mock()
+    async with _dashboard_client(svc) as client:
+        client.app["state"].push_refresh = refresh
+        resp = await client.post(
+            "/api/crons",
+            json={"name": "private", "message": "member task", "member_id": "writer", **schedule},
+        )
+        assert resp.status == 200
+        body = await resp.json()
+        assert body["ok"] is True
+    refresh.assert_called_once_with("crons")
+    reloaded = await CronService.create(base_dir=tmp_path)
+    job = reloaded.get_job(body["id"])
+    assert job is not None
+    assert (job.member_id, job.memory_store) == ("writer", store)
 
 
 # ── Positive B: the CLI boundary -- the reproduction named by review ──
@@ -459,7 +534,7 @@ def test_a_transient_read_failure_does_not_brick_an_unchanged_store(tmp_path: Pa
 # this app own?" answers zero for a reason that has nothing to do with ownership.
 # App uninstall reads that zero as authoritative and deletes the app, while the
 # app's still-ENABLED jobs sit on disk and resume the moment the store parses
-# again -- now owned by an app that no longer exists.
+# again -- now owned by an app that does not exist.
 #
 # The vacuous-pass trap specific to these tests: asserting `_jobs == []` over an
 # unreadable store passes with AND without the fix, because the empty list is
@@ -846,8 +921,8 @@ def test_a_read_failure_refuses_an_ack_without_consuming_it(tmp_path: Path) -> N
 # drain returns at `if not to_remove` having already emptied the queue. The
 # requeue arm is never reached.
 #
-# The docstring line "an id no longer present was already removed elsewhere, so
-# dropping it is correct" is what makes this subtle: it is true only when the
+# The production rationale -- that an absent id was "already removed elsewhere, so
+# dropping it is correct" -- is what makes this subtle: it is true only when the
 # load SUCCEEDED. Under a failed load, absence means the list is unknown, not
 # empty, and dropping the intent lets the repaired store re-run a completed
 # one-shot and notify a second time.
@@ -1021,45 +1096,47 @@ def _scan_module_for_read_decide_write(source: str, rel: str) -> list[tuple[str,
     return found
 
 
-def _read_decide_write_callers() -> list[tuple[str, str, int, bool]]:
-    """Scan the shipped package for read-decide-write cron callers.
+@functools.lru_cache(maxsize=1)
+def _read_decide_write_callers() -> tuple[tuple[str, str, int, bool], ...]:
+    """Scan the shipped package for read-decide-write cron callers, once.
 
     ``cron.py`` is excluded because it IS the service: its internals reach the
     store directly and are guarded by `_sync_for_write`, not by the public probe.
     Tests are excluded because a test may model a bad caller deliberately.
+
+    Cached because two ratchets consume the identical result and the scan is the
+    expensive part of this module; the result is a few tuples, so retaining it
+    costs nothing. Sourced from ``test/source_corpus.py`` rather than a private
+    ``rglob`` + ``read_text``: a match needs a function that calls BOTH a
+    ``_CRON_READS`` name and a ``_CRON_WRITES`` name, so a file whose text lacks
+    either set entirely cannot match and is never a false negative to skip. The
+    corpus NFKC-folds text and needles the way CPython folds identifiers, so a
+    homoglyph spelling of a method is still caught. The corpus reads UTF-8
+    strictly (PEP 3120) and records, rather than swallows, a file it cannot
+    decode, so this scan cannot go blind on one platform's default codec.
     """
-    src_root = Path(__file__).resolve().parents[1] / "src" / "kiro_crew"
+    root = src_root()
+    writers = {path for path, _text in candidate_sources(require_any=sorted(_CRON_WRITES))}
     callers: list[tuple[str, str, int, bool]] = []
-    for path in sorted(src_root.rglob("*.py")):
-        # `.as_posix()`, NOT `str(path)`: `str()` renders the OS-NATIVE separator, so
-        # on Windows this string is `src\kiro_crew\...`. That broke this scan two ways
-        # at once, both Windows-only. The `/tests/` filter below never fired, so the
-        # Windows shard silently scanned a DIFFERENT file set than Linux; and the
-        # backslash-spelled `rel` matched no key in the forward-slash-keyed
-        # `_EXEMPT_READ_DECIDE_WRITE`, which made the enforcement report all five
-        # exempt callers as unprobed while the hygiene test simultaneously reported
-        # all five exemptions as stale -- two contradictory failures from one lookup
-        # miss. POSIX is the portable spelling and the one the table is keyed in, so
-        # normalise here rather than branching on the platform.
-        text = path.as_posix()
-        if path.name == "cron.py" or "__pycache__" in text:
+    for path, text in candidate_sources(require_any=sorted(_CRON_READS)):
+        if path not in writers:
             continue
-        if "/tests/" in text or path.name.startswith("test_"):
+        # `.as_posix()`, NOT `str(path)`: `str()` renders the OS-native separator, so on
+        # Windows the `/tests/` filter below would never fire and the backslash-spelled
+        # `rel` would match no key in the forward-slash-keyed `_EXEMPT_READ_DECIDE_WRITE`
+        # -- reporting every exempt caller as unprobed and every exemption as stale at
+        # once. POSIX is the portable spelling and the one the table is keyed in.
+        posix = path.as_posix()
+        if path.name == "cron.py" or "__pycache__" in posix:
             continue
-        rel = path.relative_to(src_root.parents[1]).as_posix()
-        # `encoding="utf-8"` explicitly, NOT the platform default. Without it this
-        # read uses cp1252 on Windows, whose codec is named `charmap`, and any
-        # source file holding a byte cp1252 leaves undefined raises
-        # UnicodeDecodeError -- so these guard tests failed on the Windows shard
-        # while Linux and macOS passed. Measured on this tree: 95 of the 1002
-        # scanned files raise under cp1252, the first being `acp/client.py`, where
-        # the offending 0x90 is the third byte of `←` (U+2190) in a docstring.
-        # Strict rather than errors="replace": Python source is UTF-8 by
-        # definition (PEP 3120), every scanned file decodes cleanly today, and a
-        # file that genuinely did not is a fault worth raising -- `ast.parse`
-        # below could not do anything useful with mojibake anyway.
-        callers.extend(_scan_module_for_read_decide_write(path.read_text(encoding="utf-8"), rel))
-    return callers
+        if "/tests/" in posix or path.name.startswith("test_"):
+            continue
+        # Keyed as `src/kiro_crew/...` from the package root, not from the checkout,
+        # so the exemption keys resolve identically for an editable and an installed
+        # package layout.
+        rel = "src/kiro_crew/" + path.relative_to(root).as_posix()
+        callers.extend(_scan_module_for_read_decide_write(text, rel))
+    return tuple(callers)
 
 
 def test_the_read_and_write_name_sets_still_match_the_service() -> None:

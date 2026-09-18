@@ -217,13 +217,17 @@ def test_env_line_paste_is_stripped(tmp_path: Path, monkeypatch) -> None:
 
 
 def test_allow_all_users_save_and_strict_boolean(tmp_path: Path, monkeypatch) -> None:
-    """allow_all_users persists as a strict boolean; truthy strings rejected."""
+    """allow_all_users persists as a strict boolean; truthy strings rejected.
+
+    The flag is applied to the running transport by the config watcher, so the
+    save must NOT promise a restart the operator does not need.
+    """
     import kiro_crew.dashboard.handlers.messaging as mod
 
     (status_body, _env) = _client_put(mod, monkeypatch, tmp_path, {"allow_all_users": True})
     status, body = status_body
     assert status == 200
-    assert body["restart_required"] is True
+    assert body["restart_required"] is False
     cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert cfg["wecom"]["allow_all_users"] is True
 
@@ -402,6 +406,54 @@ def test_clear_config_write_failure_does_not_leave_env_cleared(
     # content was cleared.
     assert f"WECOM_SECRET={SECRET}" in env.read_text(encoding="utf-8")
     monkeypatch.delenv("WECOM_SECRET", raising=False)
+
+
+def test_the_config_and_env_writes_run_under_the_live_config_hold(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A SET that widens the allow-list AND rotates a credential commits two
+    files. The whole transaction runs under ``live.hold()`` -- like the Teams,
+    Webex and Feishu savers -- so the watcher cannot apply the widened roster
+    to the running transport while the .env write is still in flight (and may
+    yet fail and roll the config back)."""
+    import kiro_crew.agent as _agent
+    import kiro_crew.dashboard.handlers.messaging as mod
+    from kiro_crew.config import live
+
+    env = tmp_path / ".env"
+    cfg_path = tmp_path / "config.json"
+    env.write_text("WECOM_BOT_ID=old-bot-id\nWECOM_SECRET=old-secret\n", encoding="utf-8")
+    cfg_path.write_text(json.dumps({"wecom": {"enabled": True}}), encoding="utf-8")
+
+    held_at: list[str] = []
+    watcher = live.watch()
+    real_json_write = _agent._atomic_json_write
+    real_env_write = mod._write_env_off_loop
+
+    def _json_write(path, data):
+        held_at.append(f"config:{watcher._hold_depth}")
+        real_json_write(path, data)
+
+    async def _env_write(updates):
+        held_at.append(f"env:{watcher._hold_depth}")
+        await real_env_write(updates)
+
+    monkeypatch.setattr(_agent, "_atomic_json_write", _json_write)
+    monkeypatch.setattr(mod, "_write_env_off_loop", _env_write)
+    monkeypatch.delenv("WECOM_SECRET", raising=False)
+    monkeypatch.delenv("WECOM_BOT_ID", raising=False)
+
+    (status, _body), _ = _client_put(
+        mod,
+        monkeypatch,
+        tmp_path,
+        {"allowed_user_ids": ["zhangsan"], "bot_id": BOT_ID, "secret": SECRET},
+    )
+    assert status == 200
+    assert held_at == ["config:1", "env:1"], held_at
+    assert watcher._hold_depth == 0  # released once the transaction committed
+    monkeypatch.delenv("WECOM_SECRET", raising=False)
+    monkeypatch.delenv("WECOM_BOT_ID", raising=False)
 
 
 def test_set_config_write_failure_leaves_consistent_pair(

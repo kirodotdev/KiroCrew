@@ -130,10 +130,10 @@ class TestSafeRunId(_RootTest):
                              f"{raw!r} escaped runs_root")
 
     def test_run_dir_dotdot_is_contained(self):
-        # Regression: the _UNSAFE_RUN_ID character filter treats '.' as SAFE, so a
-        # run id of exactly '..' used to pass through unchanged and run_dir('..')
-        # resolved to the parent data/ dir — escaping runs_root entirely. The
-        # all-dots rejection in safe_run_id is what closes that.
+        # The _UNSAFE_RUN_ID character filter treats '.' as SAFE, so a run id of
+        # exactly '..' passes through it unchanged and run_dir('..') resolves to the
+        # parent data/ dir — escaping runs_root entirely. The all-dots rejection in
+        # safe_run_id is what closes that.
         rr = store.runs_root(self.root).resolve()
         for raw in ("..", ".", "...", "./.."):
             self.assertEqual(store.run_dir(raw, self.root).resolve().parent, rr,

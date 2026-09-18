@@ -3,8 +3,8 @@
  *  deviceScaleFactor 1, so the bytes are a real PNG at exactly w x h with no
  *  encoder of our own. The aspect ratio is the whole point of the fixture —
  *  and generating it in-browser keeps a harness self-contained: it never reads
- *  another feature's committed screenshots, which the temp-screenshots cleanup
- *  workflow prunes on a schedule. */
+ *  another feature's captured screenshots, which live in a gitignored local
+ *  dir and are uploaded as PR attachments rather than committed. */
 export async function mockShot(browser, w, h) {
   const page = await browser.newPage({ viewport: { width: w, height: h }, deviceScaleFactor: 1 })
   await page.setContent(`<!doctype html><style>

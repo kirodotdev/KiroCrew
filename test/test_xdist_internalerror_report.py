@@ -1,4 +1,4 @@
-"""Regression tests for the xdist INTERNALERROR terminal report (issue #2803).
+"""Regression tests for the xdist INTERNALERROR terminal report.
 
 When a second pytest-timeout worker kill lands in one ``--dist loadgroup``
 shard, xdist's loadscope scheduler can die with an INTERNALERROR at exit 3

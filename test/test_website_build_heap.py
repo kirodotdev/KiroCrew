@@ -2,7 +2,7 @@
 
 Background
 ----------
-``website``'s production build (``tsc -b && vite build``) peaks around 2.8 GB of
+``website``'s production build (``tsc -p tsconfig.app.json && vite build``) peaks around 2.8 GB of
 RSS, and rollup's chunk-rendering phase is where it spikes. Node picks a default
 old-space ceiling from total system memory, so the limit differs per runner: the
 16 GB ubuntu-22.04 runner gets ~4 GB and finishes, while the 7 GB macos-14 arm64
@@ -70,9 +70,12 @@ def test_build_script_invokes_vite_through_node():
 
 
 def test_type_check_still_runs_before_the_bundle():
-    """`tsc -b` is the only thing that type-checks the app (the root tsconfig is
-    references-only), so it must stay ahead of the bundle step."""
+    """`tsc -p tsconfig.app.json` is the only thing that type-checks the app (the
+    root tsconfig is references-only), so it must stay ahead of the bundle step."""
     script = _build_script()
-    assert script.index("tsc -b") < script.index("vite"), (
+    assert "tsc -p tsconfig.app.json" in script, (
+        "the build no longer names the app project for its type check"
+    )
+    assert script.index("tsc -p") < script.index("vite"), (
         "the bundle is built before types are checked"
     )

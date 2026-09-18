@@ -22,6 +22,7 @@ from kiro_crew.agent import (
     rebuild_agent_config,
 )
 from kiro_crew.agent_discovery import _read_agent_spec
+from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import (
     FORWARD_DECLARED_ENV_DEFAULT,
@@ -816,6 +817,28 @@ async def api_mcp_servers(request: web.Request) -> web.Response:
     return web.json_response(result)
 
 
+def _agent_mcp_server_names(agent: str) -> list[str] | None:
+    """The sorted ``mcpServers`` names of the user-level spec declaring *agent*.
+
+    ``None`` when no spec declares that name. A thread-side read: it walks the
+    agents directory and parses specs (both forms) until the first match.
+    """
+    for f in iter_agent_spec_files(kiro_agents_dir_path(), ordered=False):
+        spec = _read_agent_spec(
+            f,
+            operation="api_mcp_active",
+            source="dashboard",
+        )
+        if spec is None:
+            continue
+        if spec.get("name") == agent:
+            # ``mcpServers: null`` (or any non-mapping) declares no servers; it
+            # must answer an empty list, not a 500 from ``sorted(None)``.
+            servers = spec.get("mcpServers")
+            return sorted(servers) if isinstance(servers, dict) else []
+    return None
+
+
 async def api_mcp_active(request: web.Request) -> web.Response:
     """GET /api/mcp/active — return MCP servers for the current agent.
 
@@ -838,22 +861,14 @@ async def api_mcp_active(request: web.Request) -> web.Response:
         except Exception:
             pass
 
-    # Non-kirocrew agent: read from agent config
+    # Non-kirocrew agent: read from agent config. The lookup walks the agents
+    # directory and reads specs until the name matches, so it runs in a thread:
+    # a large directory must not stall every other request on the loop.
     if agent and agent != "kirocrew":
-        for f in kiro_agents_dir_path().glob("*.json"):
-            spec = _read_agent_spec(
-                f,
-                operation="api_mcp_active",
-                source="dashboard",
-            )
-            if spec is None:
-                continue
-            if spec.get("name") == agent:
-                agent_mcps = spec.get("mcpServers", {})
-                return web.json_response(
-                    [{"name": n, "enabled": True} for n in sorted(agent_mcps)]
-                )
-        return web.json_response([])
+        agent_mcps = await asyncio.to_thread(_agent_mcp_server_names, agent)
+        if agent_mcps is None:
+            return web.json_response([])
+        return web.json_response([{"name": n, "enabled": True} for n in agent_mcps])
 
     # Kirocrew / default: read from global mcp.json
     from kiro_crew.mcp_discovery import list_servers  # noqa: F811
@@ -1072,9 +1087,7 @@ async def api_mcp_quarantine_clear(request: web.Request) -> web.Response:
     if err is not None:
         return err
     if not name:
-        return web.json_response(
-            {"error": "name is required", "code": "name_required"}, status=400
-        )
+        return web.json_response({"error": "name is required", "code": "name_required"}, status=400)
 
     try:
         removed = await asyncio.to_thread(mcp_quarantine.clear, name)
@@ -1853,6 +1866,20 @@ def _find_server_spec_anywhere(name: str) -> dict | None:
         or {}
     )
     if found is not None:
+        # The rendered spec is a PROJECTION: for a pre-registered Connections
+        # provider it carries the operator's OAuth client (secret included),
+        # bound there at write time from the vault. A copy taken from it for a
+        # source scope would be a second, unmanaged home for that secret --
+        # one the client's removal or rotation never reaches. Strip the three
+        # owned keys so the scope copy holds only what the sources hold; the
+        # next rebuild re-projects the live client into the spec regardless.
+        from kiro_crew.connections.oauth_clients import (  # noqa: PLC0415
+            provider_for_server,
+            strip_preregistered_oauth_client,
+        )
+
+        if provider_for_server(name, found) is not None:
+            found = strip_preregistered_oauth_client(found)
         return found
     for path in (
         _kirocrew_mcp_json(),
@@ -2076,6 +2103,64 @@ def _purge_server_config(name: str, *, scopes: Collection[str] | None = None) ->
     for scope in _extra_mcp_scopes():
         if scope.agent_mcp_file is not None:
             _remove_from_agent_file(scope.agent_mcp_file, name)
+    return actions
+
+
+def _scrub_preregistered_oauth_copies(slug: str) -> dict[str, str]:
+    """Strip a pre-registered provider's projected OAuth client from every source scope.
+
+    The rendered agent spec carries the operator's client for ``slug`` (secret
+    included). ``_find_server_spec_anywhere`` strips it when a scope toggle
+    copies the render into a source scope, but a copy taken by hand from the
+    rendered file, or one predating that rule, is a second home for the secret
+    that a later removal or rotation would never reach -- so the OAuth-client
+    mutation routes call this after the record changes. Only an entry that IS
+    this provider (registry slug at the registry URL) is touched, and only its
+    three owned keys; a same-named server pointing elsewhere, and every other
+    key of the entry, are preserved. MUST be called under the MCP file lock.
+    Returns the per-scope action labels. A scope that exists but cannot be read
+    or parsed RAISES rather than counting as clean: the caller reports the
+    mutation as committed-but-not-projected, since that file may still hold the
+    retired secret.
+    """
+    from kiro_crew.connections.oauth_clients import (  # noqa: PLC0415
+        provider_for_server,
+        strip_preregistered_oauth_client,
+    )
+
+    actions: dict[str, str] = {}
+    targets: list[tuple[str, Path]] = [
+        (SCOPE_KIROCREW, _kirocrew_mcp_json()),
+        (SCOPE_KIRO_GLOBAL, _GLOBAL_MCP_JSON),
+        *[(f"{s.id}Global", s.global_json) for s in _extra_mcp_scopes()],
+    ]
+    for label, path in targets:
+        # Not `_load_json_or_empty`: that reads a scope that cannot be opened or
+        # parsed as EMPTY, which here would report "noop" for a file that may
+        # still hold the retired secret. A scope that is absent is clean; one
+        # that exists but cannot be read is a failure the caller surfaces.
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            actions[label] = "noop"
+            continue
+        if not isinstance(data, dict):
+            raise ValueError(f"MCP scope {label} is not a JSON object; cannot scrub it")
+        servers = data.get("mcpServers")
+        if not isinstance(servers, dict):
+            actions[label] = "noop"
+            continue
+        entry = servers.get(slug)
+        if not isinstance(entry, dict) or provider_for_server(slug, entry) is None:
+            actions[label] = "noop"
+            continue
+        stripped = strip_preregistered_oauth_client(entry)
+        if stripped == entry:
+            actions[label] = "noop"
+            continue
+        servers[slug] = stripped
+        _atomic_write(path, data)
+        actions[label] = "scrubbed"
     return actions
 
 
@@ -2365,7 +2450,9 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                     # Config removal is the LAST mutation (package-then-config
                     # ordering); _purge_server_config strips every scope + agent
                     # file idempotently.
-                    outcome["actions"].update(await _offload_config_write(_purge_server_config, name))
+                    outcome["actions"].update(
+                        await _offload_config_write(_purge_server_config, name)
+                    )
                     purged_names.add(name)
                     # Companion package removal already ran in Phase 1 (before the
                     # lock); merge its recorded result here.
@@ -2461,7 +2548,9 @@ async def _do_mcp_apply(request: web.Request) -> web.Response:
                             resources=f"{name}:{','.join(rejected)[:128]}",
                         )
                     if sanitized:
-                        changed_tools = await _offload_config_write(_set_tool_overrides, name, sanitized)
+                        changed_tools = await _offload_config_write(
+                            _set_tool_overrides, name, sanitized
+                        )
                         if changed_tools:
                             outcome["actions"]["tools"] = changed_tools
 
@@ -2919,7 +3008,7 @@ def _collect_server_rows() -> dict[str, dict[str, Any]]:
     agents_dir = kiro_agents_dir_path()
     if not agents_dir.is_dir():
         return rows
-    for path in sorted(agents_dir.glob("*.json")):
+    for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(
             path,
             operation="mcp_server_rows",
@@ -2986,7 +3075,7 @@ def _launch_specs_for(names: set[str]) -> dict[str, list[SimpleNamespace]]:
     agents_dir = kiro_agents_dir_path()
     if not agents_dir.is_dir():
         return specs
-    for path in sorted(agents_dir.glob("*.json")):
+    for path in iter_agent_spec_files(agents_dir):
         spec = _read_agent_spec(
             path,
             operation="mcp_stub_eligibility",
@@ -3228,9 +3317,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
                     # result here would tell the operator it is safe to share a
                     # backend nobody ran. Same invariant the cache-side check
                     # applies, enforced at the other place the information exists.
-                    preflight=(
-                        preflights.get(name) if len(row["launch_ids"]) <= 1 else None
-                    ),
+                    preflight=(preflights.get(name) if len(row["launch_ids"]) <= 1 else None),
                     identity_keys=identity_keys,
                 ).to_dict(),
             }
@@ -3238,9 +3325,7 @@ async def api_mcp_gateway_servers(request: web.Request) -> web.Response:
     return web.json_response({"servers": result})
 
 
-def _load_shareability_state() -> tuple[
-    dict[str, tuple[str, ...]], dict[str, tuple[bool, bool]]
-]:
+def _load_shareability_state() -> tuple[dict[str, tuple[str, ...]], dict[str, tuple[bool, bool]]]:
     """Read both shareability records for one response. BLOCKING — call off-loop.
 
     Returns ``(hazards_by_name, preflight_by_name)`` where the preflight value is
@@ -3358,9 +3443,7 @@ async def api_mcp_gateway_set_stub(request: web.Request) -> web.Response:
     stub = body.get("stub")
     batch = raw_names is not None
     if batch:
-        if not isinstance(raw_names, list) or not all(
-            isinstance(n, str) for n in raw_names
-        ):
+        if not isinstance(raw_names, list) or not all(isinstance(n, str) for n in raw_names):
             return web.json_response(
                 {
                     "error": "names must be a list of strings",

@@ -456,11 +456,11 @@ class TestPushedContentIsScanned:
     def test_a_scanner_that_cannot_run_refuses_rather_than_returning_the_text(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Fail CLOSED. This used to return the prose unscanned, on the reasoning that the
-        diff beside it had passed a fail-closed scan and the PR is only a draft — but the
+        """Fail CLOSED. Returning the prose unscanned is not defensible on the grounds
+        that the diff beside it passed a fail-closed scan and the PR is only a draft: the
         prose is a separate artifact, it is the part the agent wrote most freely, and a
         published PR description cannot be un-published. Every other egress path in this
-        app already fails closed. Raised by the GPT review of this branch."""
+        app fails closed."""
         import kiro_crew.security as security_mod
         from kiro_crew.apps.builtins.auto_improvement.profiles.github_repo.pr_recipe import (
             ProseRedactionUnavailable,
@@ -1097,9 +1097,9 @@ class TestTrustedPublisherStillWorksAfterNeutralizing:
 
 @pytest.mark.usefixtures("_public_dns")
 class TestOriginUrlMigratesOldConfigs:
-    """Neutralizing BOTH clone urls means the trusted publishers can no longer read the
-    remote out of git — they take it from config's ``origin_url``. A config written before
-    that change has no such key, and its clone still has a live fetch url.
+    """Neutralizing BOTH clone urls means the trusted publishers cannot read the
+    remote out of git — they take it from config's ``origin_url``. An older config has no
+    such key, and its clone still has a live fetch url.
 
     Found by inspecting the live dogfood configs on this host: both had ``clone`` set and
     no ``origin_url``. Without a migration they would silently degrade to queue-only after
@@ -1129,8 +1129,8 @@ class TestOriginUrlMigratesOldConfigs:
         # `origin_url` is preferred over the legacy `target_url` — but only when the two name
         # the SAME repository. Host-allowlisting alone let an injected config keep
         # `github.com` and swap the path, redirecting the push to another owner's repo, so the
-        # identity is pinned now. (This case previously used mismatched repos, which is
-        # precisely the attack it must refuse — see the mismatch assertion below.)
+        # identity is pinned too. Mismatched repos are precisely the attack it must
+        # refuse — see the mismatch assertion below.
         cfg = {"origin_url": "https://github.com/o/r.git", "target_url": "https://github.com/o/r"}
         assert resolve_origin_url(cfg) == "https://github.com/o/r.git"
 

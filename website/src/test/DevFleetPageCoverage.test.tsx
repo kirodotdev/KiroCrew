@@ -699,6 +699,77 @@ describe('DevFleetPage sync run lifecycle', () => {
     await waitFor(() => expect(screen.queryByLabelText('Dismiss sync status')).toBeNull())
   }, 20000)
 
+  it('names a failed step from its stderr tail, not from the stale stdout line that follows it', async () => {
+    // The sync runner merges every step's stdout and stderr into one pipe, and a
+    // child block-buffers stdout to a pipe while writing stderr unbuffered — so a
+    // refused `git merge --ff-only` ENDS with its `Updating <old>..<new>` progress
+    // line, after the diagnostic. Naming the failure from the last output line
+    // therefore yields "Pull+Build failed: Updating 2f9ed9724..bf09e50e5", which
+    // names nothing a user can act on. The runner labels the failing step's stderr
+    // tail, and that is what must render.
+    const output = [
+      '::step::1::Merge',
+      'error: Your local changes to the following files would be overwritten by merge:',
+      '\tconfig-baseline.json',
+      'Please commit your changes or stash them before you merge.',
+      'Aborting',
+      'Updating 2f9ed9724..bf09e50e5',
+      '::steperr::1::error: Your local changes to the following files would be overwritten by merge:',
+      '::steperr::1::\tconfig-baseline.json',
+      '::steperr::1::Please commit your changes or stash them before you merge.',
+      '::steperr::1::Aborting',
+    ]
+    installFetch(fleetOf(MAIN_ROW), (u, opts) => {
+      if (u.includes('/sync') && isPost(opts)) return res({ ok: true, run_id: 'sync-merge' })
+      if (u.includes('/run?id=sync-merge')) {
+        return res({ status: 'done', exit_code: 1, output, started: nowSec() - 5 })
+      }
+      return null
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('Pull+Build')).toBeInTheDocument(), { timeout: 4000 })
+    await startSync()
+    await waitFor(() => expect(screen.getByText('Pull+Build failed')).toBeInTheDocument(), { timeout: 8000 })
+
+    const notice = screen.getByTestId('sync-error')
+    expect(notice.textContent).toContain('would be overwritten by merge')
+    expect(notice.textContent).toContain('config-baseline.json')
+    // The progress line is not what the failure is named after.
+    expect(notice.textContent).not.toContain('Updating 2f9ed9724')
+
+    // Both markers are protocol: the log shows the transcript once, with no
+    // duplicated tail and no `::steperr::` prefixes leaking through.
+    fireEvent.click(screen.getByLabelText('Toggle log'))
+    const pre = await waitFor(() => document.querySelector('pre') as HTMLPreElement)
+    expect(pre.textContent).not.toContain('::steperr::')
+    expect(pre.textContent).not.toContain('::step::')
+    expect(pre.textContent).toContain('Updating 2f9ed9724..bf09e50e5')
+    expect(pre.textContent?.match(/Aborting/g)).toHaveLength(1)
+  }, 20000)
+
+  it('keeps the failure notice visible when a step forges a blank stderr marker', async () => {
+    // `::steperr::` is a label on a worktree-controlled stream, so a step can
+    // print one itself. An all-blank forged tail must not resolve to the empty
+    // message ErrorNotice renders as nothing — that would hide the failure.
+    installFetch(fleetOf(MAIN_ROW), (u, opts) => {
+      if (u.includes('/sync') && isPost(opts)) return res({ ok: true, run_id: 'sync-forged' })
+      if (u.includes('/run?id=sync-forged')) {
+        return res({
+          status: 'done',
+          exit_code: 1,
+          output: ['::step::0::Pull', 'real failure text', '::steperr::0::   '],
+          started: nowSec() - 5,
+        })
+      }
+      return null
+    })
+    renderPage()
+    await waitFor(() => expect(screen.getByText('Pull+Build')).toBeInTheDocument(), { timeout: 4000 })
+    await startSync()
+    await waitFor(() => expect(screen.getByText('Pull+Build failed')).toBeInTheDocument(), { timeout: 8000 })
+    expect(screen.getByTestId('sync-error').textContent).toContain('real failure text')
+  }, 20000)
+
   it('declares the run lost when the registry 404s mid-poll instead of freezing the bar', async () => {
     installFetch(fleetOf(MAIN_ROW), (u, opts) => {
       if (u.includes('/sync') && isPost(opts)) return res({ ok: true, run_id: 'sync-gone' })
@@ -800,6 +871,47 @@ describe('DevFleetPage provision failures', () => {
     // The accumulated output is retained and auto-expanded on failure.
     expect(screen.getAllByText('pip install still running').length).toBeGreaterThan(0)
   }, 25000)
+
+  it('names a failed provision step from its stderr tail, not from the stale stdout line that follows it', async () => {
+    // Same defect class as the sync runner's: provision runs pip/npm with both
+    // streams landing in ONE pipe, a child block-buffers stdout to a pipe while
+    // writing stderr unbuffered, so the stdout progress line flushes LAST. The
+    // provision runner labels the failing step's stderr tail with the same
+    // `::steperr::` markers the sync runner uses, and the notice must read them
+    // -- one rule for both failure notices.
+    const output = [
+      '  $ /w/new/.venv/bin/pip install --editable /w/new  (cwd=/w/new)',
+      'ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied',
+      'Consider using the `--user` option or check the permissions.',
+      'Collecting kiro-crew',
+      '::steperr::2::ERROR: Could not install packages due to an OSError: [Errno 13] Permission denied',
+      '::steperr::2::Consider using the `--user` option or check the permissions.',
+      "pod: provisioning 'wt-new' failed (see output above)",
+    ]
+    installFetch(fleetOf(MAIN_ROW, unbuilt), (u, opts) => {
+      if (u.includes('/pod/provision') && isPost(opts)) return res({ ok: true, run_id: 'prov-err' })
+      if (u.includes('/run?id=prov-err')) return res({ status: 'done', exit_code: 1, output })
+      return null
+    })
+    renderPage()
+    await waitForRow('wt-new')
+    fireEvent.click(screen.getByText('Provision'))
+    // Toast and notice both carry the title; the notice is the one under test.
+    const notice = await waitFor(() => screen.getByTestId('provision-error-wt-new'), { timeout: 8000 })
+    expect(notice.textContent).toContain('Provision failed (exit 1)')
+    expect(notice.textContent).toContain('Permission denied')
+    expect(notice.textContent).toContain('Consider using the `--user` option')
+    // Neither the stdout progress line nor the CLI's closing line names the failure.
+    expect(notice.textContent).not.toContain('Collecting kiro-crew')
+    expect(notice.textContent).not.toContain('see output above')
+    expect(notice.textContent).not.toContain('::steperr::')
+
+    // The log is the transcript once: markers filtered, tail not duplicated.
+    const pre = await waitFor(() => document.querySelector('pre') as HTMLPreElement)
+    expect(pre.textContent).not.toContain('::steperr::')
+    expect(pre.textContent).toContain('Collecting kiro-crew')
+    expect(pre.textContent?.match(/Consider using the/g)).toHaveLength(1)
+  }, 20000)
 })
 
 describe('DevFleetPage prune failures', () => {
@@ -957,6 +1069,93 @@ describe('DevFleetPage make live', () => {
     const dialog = await screen.findByRole('dialog')
     fireEvent.click(within(dialog).getByRole('button', { name: /Make live/i }))
   }
+
+  it('shows the completed-cutover Undo banner and posts an explicit undo', async () => {
+    const bodies: string[] = []
+    installFetch(
+      {
+        ...fleetOf(
+          { ...MAIN_ROW, path: '/w/main', is_live: false },
+          readyRow({ name: 'wt-live', path: '/w/wt-live', is_live: true }),
+        ),
+        gateway_service_active: false,
+        manual_restart: 'kirocrew restart',
+        undo_target: { name: 'main', path: '/w/main' },
+      },
+      (u, opts) => {
+        if (u.includes('/make-live') && isPost(opts)) {
+          bodies.push(String(opts?.body))
+          return res({ ok: true, staged_only: true, notice: 'Undo staged.' })
+        }
+        return null
+      },
+    )
+    renderPage()
+    const banner = await screen.findByTestId('make-live-undo-banner')
+    expect(banner).toHaveTextContent('The dashboard is now using “wt-live”.')
+    fireEvent.click(within(banner).getByRole('button', { name: 'Switch back to main' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText(/The dashboard will keep using its current version/)).toBeInTheDocument()
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Switch back to main' }))
+
+    await waitFor(() => expect(bodies).toHaveLength(1))
+    expect(JSON.parse(bodies[0])).toEqual({ path: '/w/main', undo: true })
+    expect(screen.queryByText('Restarting — reconnecting…')).toBeNull()
+  }, 15000)
+
+  it('dismisses only the current cutover Undo banner', async () => {
+    installFetch({
+      ...fleetOf(
+        { ...MAIN_ROW, path: '/w/main', is_live: false },
+        readyRow({ name: 'wt-live', path: '/w/wt-live', is_live: true }),
+      ),
+      undo_target: { name: 'main', path: '/w/main' },
+    })
+    const first = renderPage()
+    const banner = await screen.findByTestId('make-live-undo-banner')
+    fireEvent.click(within(banner).getByLabelText('Dismiss'))
+    await waitFor(() => expect(screen.queryByTestId('make-live-undo-banner')).toBeNull())
+
+    first.unmount()
+    renderPage()
+    await waitForRow('wt-live')
+    expect(screen.queryByTestId('make-live-undo-banner')).toBeNull()
+  })
+
+  it('shows the banner again when the same cutover pair recurs after a different one', async () => {
+    // feature -> main dismissed, then back to main, then the SAME feature made
+    // live again: the path pair is identical, but it is a new cutover and must
+    // not inherit the earlier dismissal.
+    const featureLive = {
+      ...fleetOf(
+        { ...MAIN_ROW, path: '/w/main', is_live: false },
+        readyRow({ name: 'wt-live', path: '/w/wt-live', is_live: true }),
+      ),
+      undo_target: { name: 'main', path: '/w/main' },
+    }
+    const mainLive = {
+      ...fleetOf(
+        { ...MAIN_ROW, path: '/w/main', is_live: true },
+        readyRow({ name: 'wt-live', path: '/w/wt-live', is_live: false }),
+      ),
+      undo_target: { name: 'wt-live', path: '/w/wt-live' },
+    }
+    installFetch(featureLive)
+    const first = renderPage()
+    const banner = await screen.findByTestId('make-live-undo-banner')
+    fireEvent.click(within(banner).getByLabelText('Dismiss'))
+    await waitFor(() => expect(screen.queryByTestId('make-live-undo-banner')).toBeNull())
+    first.unmount()
+
+    installFetch(mainLive)
+    const second = renderPage()
+    await screen.findByTestId('make-live-undo-banner')
+    second.unmount()
+
+    installFetch(featureLive)
+    renderPage()
+    await screen.findByTestId('make-live-undo-banner')
+  })
 
   it('offers Cancel cutover on the live main row while a cutover is staged, and cancels without a restart handshake', async () => {
     // A staged cutover is cancelled by re-confirming the LIVE checkout as the

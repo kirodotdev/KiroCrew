@@ -196,11 +196,11 @@ class TestSecretsAreWriteOnly(unittest.IsolatedAsyncioTestCase):
 
 
 class TestIncidentsPayloadIsBounded(unittest.IsolatedAsyncioTestCase):
-    """`/incidents` used to serialize the ENTIRE index on every dashboard poll.
+    """`/incidents` must not serialize the ENTIRE index on every dashboard poll.
 
-    Fine at three incidents. Once a flapping alarm has minted hundreds — which became
-    possible when resolved alarms were made re-claimable — it is an ever-growing payload
-    on a polled endpoint.
+    Fine at three incidents. Once a flapping alarm has minted hundreds — which a
+    re-claimable resolved alarm allows — it is an ever-growing payload on a polled
+    endpoint.
     """
 
     def setUp(self):
@@ -883,12 +883,12 @@ class TestStateReportsTheNotificationChannel(unittest.IsolatedAsyncioTestCase):
 
 
 class TestAnActionSchedulesItsOwnVerification(unittest.IsolatedAsyncioTestCase):
-    """A 2xx from a provider is no longer the end of the story.
+    """A 2xx from a provider is not the end of the story.
 
-    `_handle_action` used to await `sink.execute`, audit, and return — so the response's
-    `ok` meant only "transmitted". Checkmk documents exactly that gap for its Livestatus
-    command dispatch; Nagios's command pipe returns nothing at all. The route now records
-    what was done and when to look again, and says which of the two it is doing.
+    Awaiting `sink.execute`, auditing and returning would make the response's `ok` mean
+    only "transmitted". Checkmk documents exactly that gap for its Livestatus command
+    dispatch; Nagios's command pipe returns nothing at all. The route records what was
+    done and when to look again, and says which of the two it is doing.
     """
 
     def setUp(self):
@@ -1471,12 +1471,11 @@ class TestHygieneIsPrimaryOnly(unittest.IsolatedAsyncioTestCase):
 
 
 class TestProposeLoop(unittest.IsolatedAsyncioTestCase):
-    """`propose` mode used to be behaviourally identical to `observe`.
+    """`propose` mode must not be behaviourally identical to `observe`.
 
-    `authorize_action` refuses anything below `act`, `proposed_action` was declared and
-    never assigned, and there was no store, no approve endpoint and no timeout. So the
-    mode most operators will live in — "tell me what you would do" — was prose in a chat
-    transcript with nothing to approve.
+    `authorize_action` refuses anything below `act`, so without a stored draft, an
+    approve endpoint and a timeout, the mode most operators live in — "tell me what you
+    would do" — is prose in a chat transcript with nothing to approve.
 
     The load-bearing property is that **the drafted text is the contract**: an approval
     binds to the exact terms shown, and executes those, not whatever the request supplies.
@@ -1936,7 +1935,7 @@ class TestBlockedStateReadsThePublicSlotContract(unittest.IsolatedAsyncioTestCas
     ``_ChatSlot.to_dict()`` is the owner's public serializer and already derives the same
     fact. These tests pin BOTH that we ask it, and that our answer agrees with the core's
     across the states that matter -- against the real class, not a stand-in, because a mock
-    would happily agree with a contract that no longer exists.
+    would happily agree with a contract that does not exist.
     """
 
     def test_no_private_slot_attribute_is_read(self):
@@ -2316,7 +2315,7 @@ class TestOutboundNotesAreRedacted(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(token, seen[0].get("note", ""), "a token must never leave in a note")
 
     def test_redaction_happens_before_the_length_clip(self):
-        """Clipping first could sever a token so the pattern no longer matches."""
+        """Clipping first could sever a token so the pattern does not match."""
         import inspect
 
         source = inspect.getsource(routes._handle_action)
@@ -3051,12 +3050,12 @@ class TestTheSlotKeyIsDerivedNotTrusted(unittest.TestCase):
 
 
 class TestManualClaimRequiresAFiringSignal(unittest.IsolatedAsyncioTestCase):
-    """`POST /incident/claim` must refuse a signal that is no longer firing.
+    """`POST /incident/claim` must refuse a signal that is not firing.
 
-    `poll_all` returns EVERY state — firing, ok and suppressed — and this handler matched on
-    id alone. The local was even named `firing`, which is what hid it: a signal that recovered
-    between the board's poll and this one came back as `ok`, matched, and minted an incident
-    for a fault that had already cleared. The two other `poll_all` consumers
+    `poll_all` returns EVERY state — firing, ok and suppressed — so matching on id alone is
+    wrong, and a local named `firing` is what hides it: a signal that recovered between the
+    board's poll and this one comes back as `ok`, matches, and mints an incident for a
+    fault that has already cleared. The two other `poll_all` consumers
     (`dispatch.run_cycle`, `GET /signals`) both filter explicitly. Found in review.
     """
 
@@ -3385,10 +3384,10 @@ class TestAStoreThatRefusesToWriteIsReportedNotCrashed(unittest.IsolatedAsyncioT
     async def test_a_corrupt_secret_store_is_a_coded_500_on_save(self):
         """Corruption is not retryable, so it must not be advertised as a 503.
 
-        The store's update reader now refuses a corrupt document rather than
-        replacing it (#7805), and this handler caught only ``OSError`` -- so the
+        The store's update reader refuses a corrupt document rather than
+        replacing it, so a handler catching only ``OSError`` would surface the
         refusal protecting the operator's only copy of every provider token
-        would have surfaced as aiohttp's bare uncoded 500.
+        as aiohttp's bare uncoded 500.
         """
         token = "u+ThisIsTheActualTokenValue"
         corrupt = json.JSONDecodeError("Expecting value", "{ not json", 2)

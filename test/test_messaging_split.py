@@ -26,7 +26,7 @@ from kiro_crew.messaging.split import (
     split_markdown_safe,
 )
 
-# A line that opens or closes a fence. Used to strip fence scaffolding out of a
+# A line that opens or closes a fence. Strips fence scaffolding out of a
 # reassembled split: the reopen duplicates the opener and the seal adds a
 # closer, so those lines are the only text the splitter is allowed to invent.
 _FENCE_START = re.compile(r"^ {0,3}(?:`{3,}|~{3,})")
@@ -39,7 +39,7 @@ _FENCE_DELIMITER = re.compile(r"^ {0,3}(?:`{3,}[^`]*|~{3,}.*)$")
 # A bare delimiter run, i.e. a candidate closer: nothing but the run itself.
 _BARE_RUN = re.compile(r"^ {0,3}((?:`{3,})|(?:~{3,}))[ \t]*$")
 
-# A bare delimiter run of four or more. Used to catch a fence CLOSER a cut
+# A bare delimiter run of four or more. Catches a fence CLOSER a cut
 # invented: a synthetic closer always matches its opener's run length, so a
 # longer bare run in the output can only have come from cut content.
 _LONG_BARE_RUN = re.compile(r"^ {0,3}(?:`{4,}|~{4,})[ \t]*$")
@@ -155,7 +155,7 @@ REMAINDER_CORPUS = (
 
 # The same seam inside an open fence, where an invented remainder acts as a
 # CLOSER: the block ends early and the chunk's own synthetic closer then reads
-# as a fresh opener, so the chunk no longer renders closed.
+# as a fresh opener, so the chunk does not render closed.
 FENCE_REMAINDER_CORPUS = "```py\nzzzz```\nq = 1\n```\n"
 
 # A run no cut can clear at a small budget: every candidate width lands inside
@@ -420,10 +420,10 @@ def test_a_line_that_fits_the_limit_is_placed_whole_when_scaffolding_spends_the_
     """R5: eligibility survives a budget the fence scaffolding consumes whole (item 1).
 
     At limit 8 a ``` fence's reopen line (4 characters) and its reserved closer
-    (4 more) leave a fresh chunk NO room at all, and the ladder used to be
-    skipped entirely there: cut selection never ran, the whole-line test never
-    ran with it, and an 8-character line — exactly the limit — was dirty-cut one
-    character per chunk. Eligibility now reads the line and ``limit`` alone, so
+    (4 more) leave a fresh chunk NO room at all. If the ladder were skipped
+    there, cut selection would not run, the whole-line test would not run with
+    it, and an 8-character line — exactly the limit — would be dirty-cut one
+    character per chunk. Eligibility reads the line and ``limit`` alone, so
     the line is placed whole at 8 exactly as it is at 9, where the room
     arithmetic happens to leave a character to cut.
     """
@@ -794,12 +794,12 @@ def test_prefix_stability_holds_where_lines_are_placed_whole(reserve):
 
 @pytest.mark.parametrize("reserve", [0, 1, 3, 7, 12])
 def test_no_boundary_fabricates_a_delimiter_once_lines_fit_the_limit(reserve):
-    """The boundary invariant, in the regime the residue no longer covers (item 1).
+    """The boundary invariant, in the regime the residue does not cover (item 1).
 
-    Once each no-clean-cut line is no longer than the limit, every such line is
+    Once each no-clean-cut line is at most the limit, every such line is
     placed rather than cut, so no chunk boundary can invent a fence delimiter on
     either side — including when a ``reserve`` puts the line over the working
-    budget, which is where a cut used to be forced. The floor is the LINE's own
+    budget, which is where a cut would otherwise be forced. The floor is the LINE's own
     length: between it and the scaffolded floor the placement still holds, paid
     for by a chunk that carries its reopen and closer past ``limit``.
     """
@@ -1017,7 +1017,7 @@ def test_multibyte_content_inside_a_fence_is_not_corrupted():
 # grammar is reachable (openers, closers, runs that cross the closer threshold,
 # mid-line runs, empty lines, an unterminated last line) crossed with every
 # budget where a fence's scaffolding is comparable to the budget itself —
-# including the room-of-zero regime, where the ladder used to be skipped whole.
+# including the room-of-zero regime, where the ladder would otherwise be skipped whole.
 #
 # Everything below reads the fence grammar from the CONTRACT, never from
 # ``split.py``: no helper of the module is imported here, so a grammar bug in the

@@ -108,8 +108,8 @@ class TestBroadcastAdapterPreservesIdentityAndScope:
     `broadcast_ws` puts its one data argument under `{type, data}` on the wire, so
     everything the publisher set beyond `type` — `app` (who emitted it) and
     `_scope` (broadcast vs app-scoped) — survives only if it rides inside that
-    data arg. The adapter previously forwarded just `payload["data"]`, so a client
-    got an event with no sender and no scope: indistinguishable from any other
+    data arg. Forwarding just `payload["data"]` would give a client an event
+    with no sender and no scope: indistinguishable from any other
     app's and unfilterable once per-app WS routing exists.
     """
 

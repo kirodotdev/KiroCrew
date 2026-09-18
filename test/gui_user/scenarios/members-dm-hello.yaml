@@ -1,9 +1,21 @@
 # Nightly: the PoC scenario from the research report -- find a crew member and
 # send them a DM. The Crew Members page sits behind a feature-preview switch
 # (per-device localStorage), so the tester turns it on through the GUI first,
-# exactly as a user would. Nightly-only because it is the longest scenario.
+# exactly as a user would.
+#
+# The Feature Previews card for this page is titled "Crew Members"; older
+# builds titled it "Crew Members and Crew Mode". The steps describe the card by
+# what both titles share (a title that STARTS with "Crew Members") and the page
+# by its rail label, "Crew Members", so the scenario reads the same on either
+# build. Nightly-only because it is the longest scenario.
 name: members-dm-hello
 tier: nightly
+feature: members
+user_story: >-
+  As a user with several agents, I want to open one of my crew members and
+  message it directly, so that each agent has its own standing conversation
+  instead of a pile of one-off sessions.
+docs_url: docs/system-specs/modules/crew-mode.md
 summary: Enable the Crew Members preview, open a member and send "hello" in the DM
 preconditions:
   seed: rich
@@ -11,8 +23,8 @@ preconditions:
   start_url: /settings
 steps:
   - You are on the Settings page. Open the Developer section and find the Feature Previews list.
-  - Turn on the preview named "Crew Members and Crew Mode".
-  - Open the Crew Members page (a new item appears in the left rail after the preview is on).
+  - Turn on the preview whose title starts with "Crew Members" (it may read "Crew Members" or "Crew Members and Crew Mode"; either is the right one). Ignore the Webhooks preview.
+  - Open the Crew Members page. After the preview is on, a "Crew Members" item appears in the left rail, directly under Sessions; click it.
   - Click the first member card (a member named Nova Sky is expected) to open a direct-message conversation with it.
   - Type exactly "hello" in the message box and send it with Enter.
   - Wait about two seconds.

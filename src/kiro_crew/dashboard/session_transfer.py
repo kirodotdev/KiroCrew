@@ -68,10 +68,12 @@ agent *hint* only:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import logging
 import platform
 import uuid
+import zlib
 from datetime import datetime, timezone
 from typing import Any
 
@@ -82,11 +84,15 @@ from kiro_crew.agent_discovery import list_agents
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import kiro_sessions_dir
 
-# Layering: this module may import chat_handlers, never the reverse — its
-# consumers are handlers_instances (the tunnel) and session_export (the file
-# hop), neither of which chat_handlers' transitive graph reaches. If
-# chat_handlers ever needs session_transfer, move the shared collaborators down
-# to chat_persistence first rather than creating the cycle.
+# Layering: chat_handlers' transitive import graph now reaches back into this
+# module (chat_handlers -> remote_adopt -> handlers_instances -> session_transfer),
+# so a MODULE-LEVEL import of chat_handlers here closes an import cycle: whichever
+# of the two loads first hits the other while it is still partially initialised.
+# The two symbols this module needs (``_materialise_slot_from_history`` and
+# ``_redact_history_rows``) are used only inside ``api_chat_slot_import``, so they
+# are imported FUNCTION-LOCALLY at the top of that handler instead. Keep it that
+# way: a module-level import reinstates the cycle. The proper long-term fix is to
+# move the shared collaborators down to chat_persistence, per the note there.
 from kiro_crew.dashboard.chat_persistence import save_slot_off_loop, session_was_deleted
 from kiro_crew.dashboard.chat_utils import (
     _sync_dashboard_slots,
@@ -94,7 +100,11 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import MAX_LIVE_SLOTS, DashboardState, _ChatSlot
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    redact_credentials,
+    redact_exfiltration_urls,
+    redact_local_paths,
+)
 from kiro_crew.sel import sel
 
 logger = logging.getLogger(__name__)
@@ -129,11 +139,72 @@ _MAX_TOTAL_CHARS = 20_000_000
 #: anything is written, so a peer cannot make an import exhaust disk or memory.
 _MAX_LAYER_B_CHARS = 40_000_000
 
-#: Yield to the event loop once this many characters of message content have been
-#: processed without a yield. Bounds how long the import can hold the loop, so a
-#: large bundle degrades into "the tab appears a moment later" rather than
-#: starving the liveness heartbeat into a watchdog-triggered gateway exit.
-_YIELD_AFTER_CHARS = 262_144
+#: Structural allowance over the two content ceilings: the keys, quotes, commas
+#: and ``\uXXXX`` escapes a bundle sitting at both ceilings still needs. Named
+#: rather than folded into the total so the derivation below stays readable.
+_JSON_ENVELOPE_SLACK = 8 * 1024 * 1024
+
+#: Ceiling on the DECOMPRESSED request body. A compressed upload is an amplifier
+#: — a megabyte of gzip expands to roughly a gigabyte of repeated bytes — so the
+#: expansion has to be bounded before it is materialised, not after.
+#:
+#: **What makes this safe is the comparison to the gateway's own body limit, not
+#: the arithmetic below.** The Application's ``client_max_size`` is 60 MiB and
+#: applies to every body, compressed or not, so the PLAIN path can never deliver
+#: more than 60 MiB of JSON. This ceiling is above that, which means the gzip path
+#: accepts strictly MORE than the plain path can: a bundle refused here is a
+#: bundle the plain path refuses too.
+#:
+#: The magnitude is taken from the validator's own ceilings —
+#: ``_MAX_TOTAL_CHARS`` of transcript plus ``_MAX_LAYER_B_CHARS`` of Layer B
+#: events, plus envelope slack — so the number moves with them rather than being
+#: chosen freshly. It is deliberately NOT the worst-case ENCODED width: those
+#: ceilings count CHARACTERS, and ``json.dumps(ensure_ascii=True)`` renders one
+#: non-ASCII character as a six-byte ``\uXXXX`` escape, so a bundle that is valid
+#: by character count can be several times larger in bytes. Sizing for that worst
+#: case would mean admitting a ~360 MB allocation on an authenticated write route
+#: to accommodate a session of ~11M CJK characters — which ``client_max_size``
+#: refuses on the plain path anyway. The bound stays where it protects memory, and
+#: the bundle that theoretically loses out is one no route has ever accepted.
+_MAX_DECOMPRESSED_BYTES = _MAX_TOTAL_CHARS + _MAX_LAYER_B_CHARS + _JSON_ENVELOPE_SLACK
+
+#: The gateway Application's own body limit (``dashboard/server.py``), restated so
+#: the invariant above can be tested rather than asserted in prose.
+_GATEWAY_CLIENT_MAX_SIZE = 60 * 1024 * 1024
+
+#: How many bodies may be expanding at once, and how many may be waiting to.
+#:
+#: :data:`_MAX_DECOMPRESSED_BYTES` bounds ONE request; without a concurrency bound
+#: N authenticated requests each hold up to that much — first as bytes, then as
+#: the parsed document — for as long as their arrival takes, and the sum is what
+#: exhausts the host rather than any single body. So a permit covers the whole
+#: arrival, not just the expansion: see :func:`_read_bundle_body`. Two in flight
+#: bounds resident expansion to roughly twice the ceiling; a small queue absorbs
+#: ordinary bursts (a person installing several files) while anything past it is
+#: refused immediately rather than parked, because a queue that grows without
+#: limit is the same failure with a delay in front of it.
+_MAX_CONCURRENT_EXPANSIONS = 2
+_MAX_QUEUED_EXPANSIONS = 4
+
+#: Guards the two counters below. A plain lock rather than a semaphore because the
+#: WAITING count has to be testable before waiting, which a semaphore does not
+#: expose. Loop-bound: created lazily so importing this module binds no loop.
+_expansion_lock: asyncio.Lock | None = None
+_expansion_slots: asyncio.Semaphore | None = None
+_expansion_waiting = 0
+
+#: Output granularity of the bounded gunzip. Small enough that refusing a bomb
+#: costs one chunk of memory, large enough that a real 60 MiB bundle is a few
+#: hundred iterations rather than a few hundred thousand.
+_CHUNK_BYTES = 256 * 1024
+
+#: gzip's own framing magic (RFC 1952 §2.3.1). The body format is sniffed from
+#: these two bytes and NOT from ``Content-Type``: the export endpoint answers
+#: ``application/gzip``, a browser upload of that same file may send
+#: ``application/octet-stream`` or nothing at all, and the tunnel's
+#: server-to-server caller sends ``application/json``. Sniffing the bytes keeps
+#: all three working without asking any caller to relabel what it already sends.
+_GZIP_MAGIC = b"\x1f\x8b"
 
 #: How many times to re-take the transcript snapshot when the periodic flush
 #: lands inside the off-loop read. Small on purpose: the flush is 5s-periodic, so
@@ -394,14 +465,21 @@ def build_source_record(
     # workspace name and a checkout path, both of which a user chose. The bundle
     # is an egress boundary and the same scan already runs over the title and over
     # assistant content, so it runs here too rather than leaving two unscanned
-    # strings in a document that leaves the host.
+    # strings in a document that leaves the host. The credential/URL passes alone
+    # miss a bare host path (``/local/home/<login>/...``): that shape carries no
+    # credential yet still discloses the operator's login and on-disk layout to
+    # whoever the file is shared with, so ``redact_local_paths`` runs as well.
+    # The imported session drops ``project`` anyway (module docstring), so a
+    # ``[redacted-path]`` placeholder costs the human reader nothing.
     if workspace:
         scrubbed, _ = redact_exfiltration_urls(workspace)
         scrubbed, _ = redact_credentials(scrubbed)
+        scrubbed, _ = redact_local_paths(scrubbed)
         source["workspace"] = scrubbed
     if project:
         scrubbed, _ = redact_exfiltration_urls(project)
         scrubbed, _ = redact_credentials(scrubbed)
+        scrubbed, _ = redact_local_paths(scrubbed)
         source["project"] = scrubbed
     source["exported_at"] = _iso_now()
     # Which code wrote the file, for diagnosis when a key is unexpectedly absent.
@@ -673,24 +751,32 @@ async def build_transfer_bundle_async(
     on, because a file outlives the tab it came from and a reader of one has
     nothing else to tell them what the session ran under.
 
-    *include_layer_b* is the DESTINATION gate on the model's context window, and
-    the one caller that turns it off is the file export. Layer B ships byte-exact
-    and unredacted (see :func:`_read_layer_b`), which is forced rather than
-    chosen — the thinking-block signatures inside it are validated on replay, so
-    redacting and transplanting cannot both hold. What makes byte-exact
-    acceptable is therefore the DESTINATION, not the payload: a tunnel send goes
-    to the operator's own authenticated peer, which stores it 0600. A file has no
-    such destination — it goes to a download, a bucket, a USB stick — so that
-    justification does not carry over, and the export ships Layer A only. The
-    resulting bundle sets ``layer_b_skipped``, so the lost resume fidelity is
-    stated rather than inferred from an absent key.
+    *include_layer_b* is the gate on the model's context window; it defaults to
+    carrying Layer B. The tunnel send uses that default, so a copy pushed between
+    two live gateways RESUMES rather than replaying a lossy prefix. The file
+    export does NOT use the default: it passes ``True`` only when the operator has
+    opted in both at the config layer (``dashboard.export_include_layer_b``, off by
+    default) and on the specific request, because a downloaded file can be shared
+    with another person and unredacted context must not ride along unasked (the
+    RFC's conjunctive minimum bar, rfc-s3-backup.md:317-319; the risk is the
+    operator's per O1). Layer B ships byte-exact and unredacted (see
+    :func:`_read_layer_b`), which is forced rather than chosen -- the thinking-block
+    signatures inside it are validated on replay, so redacting and transplanting
+    cannot both hold, and there is no redacted variant. A caller passing ``False``
+    withholds it and the bundle sets ``layer_b_skipped``, so the lost resume
+    fidelity is stated rather than inferred from an absent key. Even when a caller
+    asks to carry Layer B, this builder still withholds it for a mid-turn snapshot
+    (see below), using the same ``layer_b_skipped`` flag; that consistency decision
+    is independent of the caller's gate. A session that never opened a kiro-cli
+    context sets neither ``layer_b`` nor ``layer_b_skipped``, because there is no
+    context to lose.
 
     The un-flushed tail is a ``_disk_window_len`` boundary slice, which is valid
     only because the flush below runs first: the save folds a durable injector's
     ``append_if_absent`` copy into the window and advances the boundary, so the
     counter is honest by the time the tail is snapshotted. A caller that bundled
     WITHOUT flushing could not use this slice — a durable injector
-    (``cron_inject``, ``workflow_inject``, ``crew_chat``) puts the same row into
+    (``cron_inject``, ``workflow_inject``) puts the same row into
     the window and onto disk without a save, so the boundary would start one row
     too early and ship the injection twice. There is deliberately no such
     caller: this is the only builder, and it always flushes.
@@ -863,8 +949,14 @@ async def build_transfer_bundle_async(
             getattr(slot, "_in_stage_execution", False)
         )
         if not include_layer_b:
-            # Refused by DESTINATION, not by state: this bundle is going somewhere
-            # byte-exact unredacted context must not go.
+            # Withheld because this caller's policy gate resolved false -- the
+            # decision belongs to the call site, not this builder. The file
+            # export withholds Layer B by default and carries it only for a
+            # dashboard operator's twofold opt-in: standing config permission plus
+            # an explicit per-invocation flag. The tunnel send requests Layer B
+            # by default, but this builder still withholds it for a mid-turn snapshot.
+            # Do not restate more destination policy here: the caller decided, and
+            # the decision (and its rationale) lives at the call site.
             #
             # The sid is still resolved first, and ONLY to answer whether there was
             # anything to withhold. ``layer_b_skipped`` means "this session HAD
@@ -873,7 +965,7 @@ async def build_transfer_bundle_async(
             # session that never opened a kiro-cli context gave up nothing, so
             # flagging it would label an undegraded copy as degraded -- the
             # cry-wolf case ``_assemble_bundle`` warns about, on every such
-            # export.
+            # withheld export.
             layer_b_withheld = bool(_resolve_layer_b_sid(getattr(state, "sessions", None), sm_key))
             layer_b_sid = ""
         elif mid_turn:
@@ -1037,8 +1129,12 @@ def _assemble_bundle(
     # resume path assigns a client-supplied ``body["title"]`` with no scan of its
     # own, so a resumed title can carry a credential that would otherwise leave
     # the host verbatim. The importer redacts again; this is the boundary.
+    # A title generated after a file operation also names a checkout path, so it
+    # gets the path scrub too: a title is a short label, not substance, so
+    # replacing a path with a placeholder there costs the reader nothing.
     title, _ = redact_exfiltration_urls(title)
     title, _ = redact_credentials(title)
+    title, _ = redact_local_paths(title)
     bundle: dict[str, Any] = {
         "bundle_version": BUNDLE_VERSION,
         "origin": origin,
@@ -1109,6 +1205,206 @@ def _reject(reason: str, code: str) -> web.Response:
     its own status out at the call site.
     """
     return web.json_response({"error": reason, "code": code}, status=400)
+
+
+class _BundleTooLarge(Exception):
+    """The decompressed body ran past :data:`_MAX_DECOMPRESSED_BYTES`.
+
+    Its own type, not a size returned alongside the bytes, because the whole
+    point is that the bytes are never produced: the caller has to be able to
+    tell "refused while expanding" apart from "expanded, then measured".
+    """
+
+
+class _ExpansionBusy(Exception):
+    """Too many bodies are already expanding or waiting to expand."""
+
+
+@contextlib.asynccontextmanager
+async def _expansion_admission() -> Any:
+    """Admit one decompression, or refuse. **Loop-bound.**
+
+    Bounds resident expansion to :data:`_MAX_CONCURRENT_EXPANSIONS` times the
+    per-body ceiling. A caller past the queue limit is refused straight away
+    rather than parked, so the waiting set cannot itself become the allocation.
+
+    Raises:
+        _ExpansionBusy: when the queue is full.
+    """
+    global _expansion_lock, _expansion_slots, _expansion_waiting
+    if _expansion_lock is None:
+        _expansion_lock = asyncio.Lock()
+    if _expansion_slots is None:
+        _expansion_slots = asyncio.Semaphore(_MAX_CONCURRENT_EXPANSIONS)
+
+    async with _expansion_lock:
+        if _expansion_waiting >= _MAX_QUEUED_EXPANSIONS:
+            raise _ExpansionBusy(_expansion_waiting)
+        _expansion_waiting += 1
+    try:
+        await _expansion_slots.acquire()
+    finally:
+        async with _expansion_lock:
+            _expansion_waiting -= 1
+    try:
+        yield
+    finally:
+        _expansion_slots.release()
+
+
+def _gunzip_bounded(raw: bytes) -> bytes:
+    """Gunzip *raw*, refusing past the cap. **Blocking CPU, thread-safe.**
+
+    Decompresses INCREMENTALLY with an output limit rather than calling
+    ``gzip.decompress`` and measuring afterwards. That ordering is the entire
+    protection: a bomb's expansion is refused while it is still a few chunks of
+    output, so the process never holds the gigabyte that measuring-after would
+    require it to allocate first.
+
+    ``wbits=16 + MAX_WBITS`` selects gzip framing (a bare zlib stream is not
+    accepted — the file this reads is what the export endpoint wrote).
+
+    Raises:
+        _BundleTooLarge: if the output would exceed :data:`_MAX_DECOMPRESSED_BYTES`.
+        zlib.error: if *raw* is not a well-formed gzip stream.
+    """
+    dobj = zlib.decompressobj(16 + zlib.MAX_WBITS)
+    out: list[bytes] = []
+    produced = 0
+    data = raw
+    while True:
+        chunk = dobj.decompress(data, _CHUNK_BYTES)
+        produced += len(chunk)
+        if produced > _MAX_DECOMPRESSED_BYTES:
+            # Refused HERE, holding one chunk past the cap and not a byte more.
+            raise _BundleTooLarge(produced)
+        out.append(chunk)
+        if dobj.eof:
+            break
+        # Input zlib could not process because the output limit was hit. Empty
+        # means the input ran out instead, which for a stream that has not
+        # reached eof means it was truncated.
+        data = dobj.unconsumed_tail
+        if not data:
+            break
+    if not dobj.eof:
+        raise zlib.error("incomplete gzip stream")
+    if dobj.unused_data:
+        # A second gzip member. The export endpoint writes exactly one, so a
+        # concatenated file is not something this produced; refusing beats
+        # decoding the first member and silently dropping the rest.
+        raise zlib.error("trailing data after the gzip stream")
+    return b"".join(out)
+
+
+async def _read_bundle_body(
+    request: web.Request, keep: contextlib.AsyncExitStack
+) -> tuple[Any, web.Response | None]:
+    """Read the request body as a bundle document. Returns ``(body, error)``.
+
+    Accepts BOTH shapes the two callers actually send, distinguished by the
+    body's own first two bytes:
+
+    * **gzip** — the file ``GET /api/chat/slots/{key}/export`` hands the user,
+      byte for byte. Reading these bytes as ``request.json()`` answers
+      ``transfer_invalid_json``, so accepting the sniffed gzip is what lets the
+      product take back the one file it produces without the user gunzipping it
+      by hand first.
+    * **plain JSON** — what the tunnel's server-to-server ``send_session_bundle``
+      posts. The sending side is an independently-updated install, so accepting
+      plain JSON keeps a peer that posts uncompressed working; demanding
+      compression would break any peer that posts this shape.
+
+    Sniffing the magic rather than branching on ``Content-Type`` is what makes
+    that work: a browser uploading a ``.gz`` off disk sends whatever its platform
+    guesses, and the format is not the header's to decide when the bytes say it
+    plainly.
+
+    Decompression runs off the loop — up to 60 MiB of gzip is real CPU, and this
+    module already offloads its other bulk-CPU pass (``_redact_history_rows``)
+    for the same reason. It is also ADMITTED rather than simply started: the
+    per-body ceiling bounds one request, and the sum across concurrent requests
+    is what reaches a host, so :func:`_expansion_admission` caps how many expand
+    at once and this returns ``429 transfer_expansion_busy`` past the queue.
+
+    The permit is entered on *keep*, the CALLER's stack, so it is still held when
+    this returns. What the bound has to cover is how much decompressed bundle is
+    RESIDENT at once, and a bundle is resident — as bytes, then as the parsed
+    document — until the arrival that consumes it finishes. Releasing on return
+    would leave the count of resident bundles unbounded, which is the sum this
+    exists to bound. It costs throughput: a permit is now held across redaction
+    and persistence, so concurrent importers reach the queue sooner. That is the
+    intended trade, because the alternative bounds the CPU of expansion and not
+    the memory.
+
+    Args:
+        request: the arriving request; its body is read once.
+        keep: the arrival's own stack, which the expansion permit is entered on.
+    """
+    try:
+        raw = await request.read()
+    except web.HTTPRequestEntityTooLarge:
+        # The one body-read failure the server can NAME. aiohttp raises this from
+        # ``read()`` when the body passes the Application's ``client_max_size``,
+        # so the cause is known and ``transfer_bundle_too_large`` already carries
+        # the copy for it in every locale. Answering the generic code here would
+        # hand a person whose file is simply too big a message that hedges
+        # between that and a dropped connection, and send them looking for a
+        # network fault they do not have.
+        #
+        # No byte figure in the reason: the ceiling that fired is the
+        # Application's, which this module does not own, and the sibling
+        # refusal below can quote a size only because that one IS its ceiling.
+        return None, _reject(
+            "request body exceeds the server's body-size limit",
+            "transfer_bundle_too_large",
+        )
+    except Exception:
+        # What is left is genuinely unattributable: a client that hung up
+        # mid-upload, a malformed transfer encoding. Nothing was written; a
+        # resend is safe.
+        return None, _reject("could not read the request body", "transfer_body_unreadable")
+
+    if raw[:2] == _GZIP_MAGIC:
+        try:
+            # Registered on the CALLER's stack, not held by an ``async with``
+            # here: a decompressed bundle stays resident in parsed form through
+            # redaction and persistence, so releasing the permit when this
+            # function returns would bound only the CPU of expansion and leave
+            # the residency it exists to bound unbounded in count.
+            await keep.enter_async_context(_expansion_admission())
+            raw = await asyncio.to_thread(_gunzip_bounded, raw)
+        except _ExpansionBusy:
+            # Retryable and the sender is at no fault, so it gets a status that
+            # says so. 429 rather than 400 for the same reason the slot cap does:
+            # the body was fine, the host is busy.
+            return None, web.json_response(
+                {
+                    "error": "too many imports are being decompressed; please retry",
+                    "code": "transfer_expansion_busy",
+                },
+                status=429,
+            )
+        except _BundleTooLarge:
+            # A SIZE, not a byte count. This string is rendered verbatim on the
+            # menu row that offered the import, so it is the only copy the person
+            # who picked the file ever sees; "expands past 65 MiB" is something
+            # they can check against the file, and "past 68388608 bytes" is not.
+            ceiling_mib = _MAX_DECOMPRESSED_BYTES // (1024 * 1024)
+            return None, _reject(
+                f"compressed bundle expands past {ceiling_mib} MiB",
+                "transfer_bundle_too_large",
+            )
+        except Exception:
+            # Corrupt or truncated gzip. A DISTINCT code from bad JSON: the
+            # sender needs to know its file did not survive the trip, not go
+            # looking for a syntax error in a document it never wrote by hand.
+            return None, _reject("could not decompress the bundle", "transfer_invalid_gzip")
+
+    try:
+        return json.loads(raw), None
+    except Exception:
+        return None, _reject("invalid JSON body", "transfer_invalid_json")
 
 
 def _validate_bundle(body: Any) -> tuple[dict[str, Any], web.Response | None]:
@@ -1275,7 +1571,45 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
     Always creates a NEW slot (copy semantics, see the module docstring). The
     imported slot deliberately has no project directory: the user picks one on
     arrival.
+
+    The SINGLE server route behind both arrival routes — a session pushed over
+    the tunnel by a peer's ``send_session_bundle``, and a session installed from
+    an exported file — so everything that must hold for "a session arrived here"
+    belongs in this function and nowhere else. One such rule lives here: the body
+    is accepted gzipped or plain (``_read_bundle_body``).
+
+    Owns the stack that holds a decompressed bundle's expansion permit. The
+    permit has to outlive the READ — a gzip body is still resident, in parsed
+    form, through redaction and persistence — so it cannot be released inside
+    ``_read_bundle_body``, and the arrival is a separate function purely so the
+    permit's span is the whole arrival without re-indenting it under a block.
     """
+    async with contextlib.AsyncExitStack() as keep:
+        # Bound to a name rather than returned from inside the block so the
+        # function has one definite exit: an AsyncExitStack's ``__aexit__`` is
+        # typed as possibly SUPPRESSING, which makes a return inside the block a
+        # path that can fall through it. The permit still spans the arrival —
+        # the stack closes here, after the arrival has produced its response.
+        response = await _install_arrived_bundle(request, keep)
+    return response
+
+
+async def _install_arrived_bundle(
+    request: web.Request, keep: contextlib.AsyncExitStack
+) -> web.Response:
+    """Materialise one arrived bundle. See :func:`api_chat_slot_import`.
+
+    *keep* holds resources that must live until the arrival is finished rather
+    than until the body has been read — today that is the expansion permit.
+    """
+    # Imported function-locally, not at module level: chat_handlers' import graph
+    # reaches back here (see the layering note at the top of this module), so a
+    # module-level import would close an import cycle.
+    from kiro_crew.dashboard.chat_handlers import (
+        _materialise_slot_from_history,
+        _redact_history_rows,
+    )
+
     state: DashboardState = request.app["state"]
     request_app = request.get("app", "")
     caller = request_app or "dashboard"
@@ -1297,10 +1631,9 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
             status=429,
         )
 
-    try:
-        body = await request.json()
-    except Exception:
-        return _reject("invalid JSON body", "transfer_invalid_json")
+    body, body_err = await _read_bundle_body(request, keep)
+    if body_err is not None:
+        return body_err
 
     bundle, err = _validate_bundle(body)
     if err is not None:
@@ -1321,15 +1654,59 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
     # no IO at all.
     agent_hint = bundle["agent"]
     resolved_agent = await asyncio.to_thread(_resolve_agent, agent_hint) if agent_hint else ""
+
+    # Title/origin are redacted here because they feed the marked title and the
+    # audit line; the shared materialiser re-redacts the composed title via
+    # ``_rehydrate_slot_title`` (idempotent). Per-MESSAGE redaction is NOT done
+    # here: the receive-side rows are content-redacted just below, in one
+    # off-loop ``_redact_history_rows`` pass before construction, so a second
+    # pass would double the regex cost over up to _MAX_TOTAL_CHARS of peer
+    # content for no persisted difference. User turns stay verbatim there,
+    # matching fork.
+    source_title = bundle["title"] or "Untitled"
+    source_title, _ = redact_exfiltration_urls(source_title)
+    source_title, _ = redact_credentials(source_title)
+    origin = bundle["origin"]
+    origin, _ = redact_exfiltration_urls(origin)
+    origin, _ = redact_credentials(origin)
+    suffix = f" (from {origin})" if origin else ""
+
+    # Normalise the bundle turns to the row shape the materialiser hydrates from.
+    # Build the receive-side rows (dict construction, no GIL-held regex), then
+    # content-redact them OFF THE LOOP before construction. Redaction at the
+    # transfer bounds (~20M chars) is ~1s of GIL-held regex, so it runs in a
+    # thread where it yields freely and — critically — BEFORE any slot exists, so
+    # a stall here is only a stall, not a window on a half-built slot. The
+    # materialiser is then synchronous and does no content redaction. This is the
+    # importer's own egress-mirroring scrub (defense-in-depth; it must not assume
+    # the sender scrubbed).
+    rows: list[dict] = [
+        {"role": m["role"], "content": m["content"], "ts": m["ts"]} for m in messages
+    ]
+    rows = await asyncio.to_thread(_redact_history_rows, rows)
+
+    # The marked title travels as the persisted title so the shared path restores
+    # it; ``origin`` is NOT set on the metadata snapshot -- that key is the
+    # sending instance's label, not a slot origin tag, and import deliberately
+    # lands untagged (default origin), exactly as before. No folder_id / pinned /
+    # tags travel, so the imported session lands unfiled just as the tunnel
+    # importer always has.
+    meta = {
+        "title": f"{_IMPORT_TITLE_MARKER}{source_title}{suffix}",
+        "agent": resolved_agent,
+    }
+
     # Re-check the cap HERE, with no await between this test and the creation
-    # below. The check at the top of the handler is necessary but not sufficient:
-    # body parsing and agent resolution both await, so N concurrent imports near
-    # the cap all clear that first test before any of them allocates, and all N
-    # are admitted. This second test closes that window because the loop cannot
-    # switch tasks between it and ``get_or_create_slot``.
+    # inside the shared materialiser below. The check at the top of the handler
+    # is necessary but not sufficient: body parsing and agent resolution await,
+    # so N concurrent imports near the cap all clear that first test before any
+    # of them allocates, and all N are admitted.
+    # This second test closes that window because the loop cannot switch tasks
+    # between it and the ``get_or_create_slot`` inside ``_materialise_slot_from_history``.
     #
-    # Distinct from the construction accounting below: that keeps a RETRACTED slot
-    # counted, which is a different window (after creation). Both are needed.
+    # Distinct from the construction accounting the materialiser opens: that keeps
+    # a RETRACTED slot counted, which is a different window (after creation). Both
+    # are needed.
     if state.live_slot_count() >= MAX_LIVE_SLOTS:
         sel().log_api_access(
             caller=caller,
@@ -1346,162 +1723,111 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
             },
             status=429,
         )
-    new_slot = state.get_or_create_slot(
+
+    # The shared materialiser mints the key (name=None), registers the slot and
+    # holds it under ``begin_slot_construction`` for the duration of hydration,
+    # then hands it back registered and counted. ``serialize_slots`` omits an
+    # under-construction slot, so Layer B, the durable save and the publish all
+    # run below while the slot is hidden from clients (though registered, so a
+    # concurrent same-key lookup still resolves it) -- it is shown only when this
+    # handler ends construction and pushes at its tail.
+    slot = _materialise_slot_from_history(
+        state,
         name=None,
-        agent=resolved_agent,
+        history_key="",
+        meta=meta,
+        all_messages=rows,
         app=request_app,
+        # Every row exists only in memory and is persisted by the save below, so
+        # none is "older on disk": surface all of them and leave _disk_older_count
+        # at 0 rather than claiming a frozen prefix that was never written.
+        window_limit=None,
+        # Import synthesised its metadata; it read no transcript off disk, so the
+        # delete-won disk-identity guard must stay dormant.
+        disk_meta_observed=False,
+        # Silent replay of a bundle onto a slot that stays registered and under
+        # construction throughout its synchronous hydration (it is retracted from
+        # ``_slots`` only afterwards, for the async tail below): broadcasting each
+        # row would push an under-construction slot's peer content to every client
+        # and retire live question cards.
+        broadcast_rows=False,
+        # Bundle rows carry no message id; mint one, or the imported rows land
+        # permanently id-less and drop out of mid-keyed features.
+        mint_missing_mids=True,
     )
-    # UNPUBLISH the slot for the duration of construction.
-    #
-    # ``get_or_create_slot`` registers the slot in ``state._slots`` AND calls
-    # ``push_slots_update()`` before it returns (state.py), so the tab is visible
-    # to every client and reachable by any handler that enumerates ``_slots``
-    # (handlers/core.py, handlers/sessions.py) the moment it exists -- while its
-    # transcript is still empty, its Layer B unjoined and nothing persisted. A
-    # prompt in that window runs against a partial transcript, or cold-starts a
-    # FRESH context that the join written afterwards can never attach to: the
-    # silent context loss this feature exists to prevent, on its own import path.
-    #
-    # Retracting it here makes the slot unreachable until everything is in place;
-    # it is re-registered and published once, at the end. Collision-safe: the key
-    # is minted from ``_slot_counter`` (already advanced), not by scanning
-    # ``_slots``, so a concurrent import cannot be handed the same key while this
-    # one is parked.
-    state._slots.pop(new_slot.key, None)
-    # ...but it still occupies memory, so it stays COUNTED. Retracting without
-    # this made the slot invisible to the cap check above, and the check happens
-    # before creation: with the cap all but reached, concurrent imports each
-    # sampled a count that excluded every other import in flight and were all
-    # waved through. Released in the ``finally`` below -- a leaked key would
-    # inflate the cap for the lifetime of the process, refusing imports forever.
-    state.begin_slot_construction(new_slot.key)
-    state.push_slots_update()
-    # project is left empty on purpose — see the module docstring.
-    source_title = bundle["title"] or "Untitled"
-    source_title, _ = redact_exfiltration_urls(source_title)
-    source_title, _ = redact_credentials(source_title)
-    origin = bundle["origin"]
-    origin, _ = redact_exfiltration_urls(origin)
-    origin, _ = redact_credentials(origin)
-    suffix = f" (from {origin})" if origin else ""
-    new_slot.title = f"{_IMPORT_TITLE_MARKER}{source_title}{suffix}"
-    new_slot._titled = True
+    sm_key = effective_session_key(slot)
+    sessions = getattr(state, "sessions", None)
+    # Retract the slot from ``_slots`` for the async finalization tail below.
+    # The materialiser's hydrate loop is synchronous, but Layer B write/join and
+    # the durable save that follow AWAIT while the slot would otherwise be
+    # registered -- and the raw ``state._slots.get(name)`` acquirers (delete/close,
+    # regenerate, rewind) bypass the ``get_slot``/``get_or_create_slot`` guards, so
+    # a crafted request against the minted key could close, resurrect or truncate
+    # the slot mid-finalization. Popping it closes EVERY such acquirer at once:
+    # the slot is not in ``_slots`` to be found. This is safe here where it was
+    # NOT for resume: import MINTS its key from the monotonic counter and does not
+    # return it until this handler responds, so no concurrent request can target
+    # it -- there is no second caller to mint a duplicate the way a client-supplied
+    # resume key allowed. The slot stays under ``begin_slot_construction`` (the
+    # count is released in the finally) and is re-registered on the success path
+    # below, after finalization lands. Every error path already pops it (a no-op
+    # now) and rolls back the join.
+    state._slots.pop(slot.key, None)
+
+    # Resume mode, reported back to the sender so a degraded copy is never shown
+    # as a full one. "prefix" is correct for a v1/no-Layer-B bundle: the session
+    # opens on the transcript, which is exactly what was sent.
+    resume_mode = "prefix"
+    layer_b_sid = ""
+    layer_b = bundle.get("layer_b")
 
     try:
-        # Layer B FIRST, before the transcript append loop and the durable save.
-        #
-        # The slot is registered in ``state._slots`` synchronously by
-        # get_or_create_slot above, and handlers enumerate that dict directly
-        # (handlers/core.py, handlers/sessions.py), so the imported session is
-        # reachable by a plain GET from the moment it is created -- before the
-        # awaits below have run. If a prompt lands in that window while the join
-        # is still missing, the turn cold-starts via ``session/new`` with a FRESH
-        # context, and the Layer B written afterwards is bound to nothing: the
-        # exact silent context loss this feature exists to prevent. Landing the
-        # join first shrinks the exposed window to a single thread hop and makes
-        # any prompt inside it resume correctly.
-        #
-        # NOTE: joining first is why the failure paths below call
-        # ``_forget_layer_b`` -- a rollback has to undo a join that already exists.
-        sessions = getattr(state, "sessions", None)
-        layer_b = bundle.get("layer_b")
-        sm_key = effective_session_key(new_slot)
-        # Resume mode, reported back to the sender so a degraded copy is never
-        # shown as a full one. "prefix" is correct for a v1/no-Layer-B bundle:
-        # the session opens on the transcript, which is exactly what was sent.
-        resume_mode = "prefix"
-        layer_b_sid = ""
         if layer_b:
             # Files in a thread (blocking IO), join on the loop (the live map's
             # whole-file write is unsynchronised against concurrent session
             # starts). See _write_layer_b_files / _join_layer_b.
-            written_sid = await asyncio.to_thread(_write_layer_b_files, layer_b, new_slot.agent)
+            written_sid = await asyncio.to_thread(_write_layer_b_files, layer_b, slot.agent)
             layer_b_sid = written_sid or ""
             resumable = bool(layer_b_sid) and _join_layer_b(sessions, sm_key, layer_b_sid)
             if not resumable:
                 logger.info(
                     "session_transfer: imported %s without Layer B; "
                     "it will resume via the transcript prefix",
-                    new_slot.key,
+                    slot.key,
                 )
                 if layer_b_sid:
-                    # Files landed but the join did not: remove them rather than
-                    # leaving an unreferenced pair for a prune to sweep.
                     await asyncio.to_thread(_unlink_layer_b_files, layer_b_sid)
                     layer_b_sid = ""
             resume_mode = "session_load" if resumable else "prefix"
 
-        # Mark the IMPORTED TAB when it arrived without resumable context.
-        #
-        # The sender's row already reports this, but that row lives in a menu's
-        # component state and is gone the moment the menu closes -- while the
-        # consequence is discovered later, on this machine, by whoever resumes the
-        # work. The tab title is the one surface that persists (it is saved below)
-        # and is present exactly where the loss will be felt, so the truth lives
-        # there too. English here, like the existing "(from X)" suffix: this is
-        # stored transcript metadata written by the backend, not a rendered
-        # string.
-        #
-        # Marked when the sender either SENT context that failed to land here, or
-        # told us it deliberately withheld context it had (``layer_b_skipped``,
-        # set for a mid-turn source). Keying off ``layer_b`` alone suppressed the
-        # marker in that second case -- the sender's row said "transcript only"
-        # while the tab that outlives the row said nothing. Neither fires for a
-        # bundle that simply never had a kiro-cli context (v1 peer, or a session
-        # with none), where a suffix would cry wolf instead of informing.
+        # Mark the IMPORTED TAB when it arrived without resumable context. The
+        # sender's row is gone the moment its menu closes; the tab title is the
+        # one surface that persists and is present where the loss will be felt.
+        # Fires when the sender either SENT context that failed to land or told
+        # us it deliberately withheld context (``layer_b_skipped``, a mid-turn
+        # source); never for a bundle that simply never had a kiro-cli context.
         if resume_mode == "prefix" and (bundle.get("layer_b") or bundle.get("layer_b_skipped")):
-            new_slot.title = f"{new_slot.title} — transcript only"
+            slot.title = f"{slot.title} — transcript only"
 
-        since_yield = 0
-        for m in messages:
-            role = m["role"]
-            content = m["content"]
-            # Assistant content arrives from another instance and lands in a
-            # transcript the dashboard renders and an agent later re-reads as
-            # context, so it goes through the same redaction the fork path
-            # applies. User turns are left verbatim, matching fork: redacting
-            # what the human typed would corrupt their own words.
-            if role != "user":
-                content, _ = redact_exfiltration_urls(content)
-                content, _ = redact_credentials(content)
-            cls = "msg msg-u" if role == "user" else "msg msg-a"
-            new_slot.append(role, content, cls, ts=m["ts"], broadcast=False)
-            # Yield periodically. Redaction is regex-heavy (those regexes hold
-            # the GIL) and a bundle carries up to _MAX_TOTAL_CHARS of PEER-
-            # supplied content, so redacting it in one un-yielded pass starves
-            # the loop heartbeat — and because ``_loop_heartbeat`` pets
-            # LoopStallWatchdog *from a coroutine*, a blocked loop cannot pet
-            # it: the watchdog's exit_after timer fires and _exit()s the
-            # gateway. chat_persistence.restore_open_slots_async yields on the
-            # same read-and-redact work for the same reason.
-            # Budgeted by CHARS rather than message count because the cost
-            # scales with content size, not with how it is split into turns.
-            since_yield += len(content)
-            if since_yield >= _YIELD_AFTER_CHARS:
-                since_yield = 0
-                # sleep(0) yields to the ready queue with no wall-clock delay.
-                await asyncio.sleep(0)
-        new_slot.drain()
-        # best_effort=False: a swallowed write failure would let us answer 200
-        # while the imported session exists only in memory, so the peer believes
-        # the transfer landed and a restart before the next flush loses it. An
-        # import that cannot be persisted must fail loudly instead.
+        # best_effort=False: a swallowed write failure would answer 200 while the
+        # imported session exists only in memory, so the peer believes the
+        # transfer landed and a restart before the next flush loses it. An import
+        # that cannot be persisted must fail loudly instead.
         try:
-            await save_slot_off_loop(state, new_slot, best_effort=False)
+            await save_slot_off_loop(state, slot, best_effort=False)
         except Exception:
-            # Retryable and the peer's own fault-free case, so give it a coded
-            # answer rather than a bare 500: the source is untouched, so the user
-            # can simply send again.
-            # The slot is already unpublished (retracted right after creation),
-            # so there is no phantom tab to retract here -- just make sure it
-            # cannot be re-registered, and undo the join written above.
-            state._slots.pop(new_slot.key, None)
+            # Retryable, peer at no fault: coded answer, source untouched, resend
+            # is safe. Drop the registered-but-hidden slot and release its
+            # construction count in the finally; it was never shown (the
+            # construction filter hid it), so no broadcast is owed. Undo the join
+            # written above.
+            state._slots.pop(slot.key, None)
             sid = _forget_layer_b_join(sessions, sm_key) or layer_b_sid
             if sid:
                 await asyncio.to_thread(_unlink_layer_b_files, sid)
             logger.warning(
                 "session_transfer: could not persist imported slot=%s; refusing the import",
-                new_slot.key,
+                slot.key,
                 exc_info=True,
             )
             sel().log_api_access(
@@ -1509,7 +1835,7 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
                 operation="chat.slot_import",
                 outcome="error",
                 source="dashboard",
-                resources=f"to={new_slot.key}",
+                resources=f"to={slot.key}",
                 error="durable save failed",
             )
             return web.json_response(
@@ -1519,34 +1845,28 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
                 },
                 status=503,
             )
-        new_slot._resumed_count = len(new_slot.messages)
     except asyncio.CancelledError:
-        # ``CancelledError`` is a BaseException, so the ``except Exception`` below
-        # never saw it: a gateway shutdown or a client disconnect after the join
-        # left an orphaned session-map entry plus its files, pointing at a slot
-        # that is never published. Roll back the same state, then re-raise so
-        # cancellation still propagates.
-        #
-        # The unlink runs SYNCHRONOUSLY here rather than through
-        # ``asyncio.to_thread``: awaiting anything inside a cancelled task is not
-        # dependable, and this is two ``unlink`` calls on a teardown path.
-        state._slots.pop(new_slot.key, None)
+        # CancelledError is a BaseException, so ``except Exception`` never sees
+        # it: a shutdown or client disconnect after the join left an orphaned
+        # map entry plus its files. Roll back synchronously (awaiting inside a
+        # cancelled task is not dependable), then re-raise so cancellation
+        # propagates.
+        state._slots.pop(slot.key, None)
         try:
-            _sessions = getattr(state, "sessions", None)
-            sid = _forget_layer_b_join(_sessions, effective_session_key(new_slot))
+            sid = _forget_layer_b_join(sessions, sm_key)
             if sid:
                 _unlink_layer_b_files(sid)
         except Exception:
             logger.debug("session_transfer: cancellation rollback failed", exc_info=True)
         raise
     except Exception:
-        # The slot was never republished (see the retract above), so nothing is
-        # visible to retract -- but the join and its files may exist because
-        # Layer B is materialised before the transcript work.
-        state._slots.pop(new_slot.key, None)
+        # The slot was hidden by the construction filter throughout, so nothing
+        # is visible to retract -- but the join and its files may exist. Undo
+        # them; the finally releases the construction count and the pop drops the
+        # hidden slot.
+        state._slots.pop(slot.key, None)
         try:
-            _sessions = getattr(state, "sessions", None)
-            sid = _forget_layer_b_join(_sessions, effective_session_key(new_slot))
+            sid = _forget_layer_b_join(sessions, sm_key)
             if sid:
                 await asyncio.to_thread(_unlink_layer_b_files, sid)
         except Exception:
@@ -1556,16 +1876,16 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
             operation="chat.slot_import",
             outcome="error",
             source="dashboard",
-            resources=f"to={new_slot.key}",
+            resources=f"to={slot.key}",
             error="import finalisation failed",
         )
         raise
     finally:
-        # Every exit releases the construction count: the 503 ``return`` above,
-        # the ``raise`` here, and the success path. Ordering is safe -- this runs
-        # before the re-registration below, but nothing between them awaits, so no
-        # other coroutine can observe the slot as neither published nor counted.
-        state.end_slot_construction(new_slot.key)
+        # Every exit releases the construction count the shared materialiser
+        # opened: the 503 return above, the raises here, and the success path.
+        # Runs before the re-registration below, but nothing between them awaits,
+        # so no coroutine can observe the slot as neither published nor counted.
+        state.end_slot_construction(slot.key)
 
     sel().log_api_access(
         caller=caller,
@@ -1573,29 +1893,29 @@ async def api_chat_slot_import(request: web.Request) -> web.Response:
         outcome="allowed",
         source="dashboard",
         resources=(
-            f"to={new_slot.key},messages={len(messages)},"
-            f"origin={origin or 'unknown'},agent={new_slot.agent or 'default'},"
+            f"to={slot.key},messages={len(messages)},"
+            f"origin={origin or 'unknown'},agent={slot.agent or 'default'},"
             f"resume={resume_mode}"
         ),
     )
-    # Everything is in place now -- transcript persisted, Layer B joined -- so
-    # re-register the slot and publish it ONCE. This is the first moment a client
-    # can reach the imported session, which is the point: a prompt from here on
-    # resumes against real context instead of racing construction.
-    state._slots[new_slot.key] = new_slot
+    # Everything is in place -- transcript persisted, Layer B joined. The slot
+    # was RETRACTED from ``_slots`` for the async finalization tail above (so no
+    # raw acquirer could reach it mid-finalization); this re-registers it now that
+    # it is a complete, resumable session. The finally above ended construction,
+    # so this push is the first frame a client sees and it shows a fully
+    # materialised session.
+    state._slots[slot.key] = slot
+
     _sync_dashboard_slots(state)
     state.push_slots_update()
     return web.json_response(
         {
             "ok": True,
-            "key": new_slot.key,
-            "title": new_slot.title,
+            "key": slot.key,
+            "title": slot.title,
             "messages": len(messages),
             # Resume fidelity, so the SENDER can say "Sent" vs "Sent (transcript
-            # only)" instead of showing the same green row either way. Without
-            # this the feature's own failure mode -- a silently lossy copy -- is
-            # invisible to the person who will walk to the other machine and
-            # expect to keep working.
+            # only)" instead of showing the same green row either way.
             "resume_mode": resume_mode,
         }
     )

@@ -14,16 +14,17 @@
  * there is no live turn to inject into). Choosing Queue must still queue, and
  * an ordinary idle send must not acquire the flag.
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import type { ReactNode } from 'react'
 import { render, screen, act, waitFor, fireEvent } from '@testing-library/react'
 import type { RootState } from '../store'
+import { store as appStore } from '../store'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer from '../store/chatSlice'
+import chatReducer, { sseChatMessage, setQuestionCard } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 
@@ -113,6 +114,9 @@ async function renderChat(opts: { subagentsRunning: boolean; turnRunning: boolea
   detail.running = opts.turnRunning
   slotsFixture.rows = [slotRow({ running: opts.turnRunning, subagents_running: opts.subagentsRunning })]
   const store = makeStore(opts)
+  // The send handler reads the singleton directly; selectors read Provider.
+  // Both must observe the same busy snapshot to exercise the skipped bubble.
+  vi.spyOn(appStore, 'getState').mockImplementation(store.getState)
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   await act(async () => {
     render(
@@ -126,7 +130,7 @@ async function renderChat(opts: { subagentsRunning: boolean; turnRunning: boolea
     )
   })
   await waitFor(() => expect(screen.getByLabelText('Message input')).toBeTruthy())
-  return { input: screen.getByLabelText('Message input') as HTMLTextAreaElement }
+  return { input: screen.getByLabelText('Message input') as HTMLTextAreaElement, store }
 }
 
 async function typeAndSubmit(input: HTMLTextAreaElement, text: string) {
@@ -146,6 +150,8 @@ beforeEach(() => {
   sendChat.mockReset()
   sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true }) })
 })
+
+afterEach(() => vi.restoreAllMocks())
 
 describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
   it('offers the split Steer button when only sub-agents are running', async () => {
@@ -179,6 +185,49 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
     expect(steerArgOf(sendChat.mock.calls[0])).toBeFalsy()
   })
 
+  it.each([false, true])('shows a busy send from its echo with an early receipt: %s', async (earlyReceipt) => {
+    localStorage.setItem('mc-busy-send-mode', 'queue')
+    let deliverReceipt!: (value: unknown) => void
+    sendChat.mockImplementation(() => new Promise(resolve => { deliverReceipt = resolve }))
+    const { input, store } = await renderChat({ subagentsRunning: true, turnRunning: false })
+    await typeAndSubmit(input, 'show this before the reply finishes')
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalledTimes(1))
+    expect(steerArgOf(sendChat.mock.calls[0])).toBeFalsy()
+    const receipt = { ok: true, json: async () => ({ ok: true, mid: 'm-dispatched' }) }
+    if (earlyReceipt) await act(async () => deliverReceipt(receipt))
+    const echo = {
+      slot: 'slot-a', role: 'user', content: sendChat.mock.calls[0][0],
+      meta: { ...sendChat.mock.calls[0][4], mid: 'm-dispatched' },
+    }
+    act(() => {
+      store.dispatch(sseChatMessage(echo))
+      store.dispatch(sseChatMessage({ slot: 'slot-a', role: 'chunk', content: 'answer in progress' }))
+    })
+    if (!earlyReceipt) await act(async () => deliverReceipt(receipt))
+    act(() => store.dispatch(sseChatMessage(echo)))
+    // No chat_done or history refresh: echo/receipt order and event redelivery
+    // must leave one user row ahead of the still-growing reply.
+    await waitFor(() => {
+      const rows = store.getState().chat.messages.filter(m => m.role === 'user')
+      expect(rows).toHaveLength(1)
+      expect(rows[0].content).toBe('show this before the reply finishes')
+      expect(rows[0].meta?.mid).toBe('m-dispatched')
+      expect(rows[0].meta?.optimistic).toBeUndefined()
+    })
+    expect(store.getState().chat.messages.slice(-2).map(m => m.role)).toEqual(['user', 'streaming'])
+  })
+
+  it('does not add a user bubble when the busy send really queues', async () => {
+    localStorage.setItem('mc-busy-send-mode', 'queue')
+    sendChat.mockResolvedValue({ ok: true, json: () => Promise.resolve({ ok: true, queued: true, queue_id: 'q-pending' }) })
+    const { input, store } = await renderChat({ subagentsRunning: true, turnRunning: false })
+    await typeAndSubmit(input, 'wait for the current turn')
+
+    expect(sendChat).toHaveBeenCalledTimes(1)
+    expect(store.getState().chat.messages.filter(m => m.role === 'user')).toHaveLength(0)
+  })
+
   it('still injects mid-turn when a real turn is running', async () => {
     const { input } = await renderChat({ subagentsRunning: true, turnRunning: true })
     await typeAndSubmit(input, 'change course')
@@ -197,5 +246,77 @@ describe('steer default while sub-agents run', { timeout: 20_000 }, () => {
 
     await waitFor(() => expect(sendChat).toHaveBeenCalled())
     expect(steerArgOf(sendChat.mock.calls[0])).toBeFalsy()
+  })
+})
+
+/* #10634: a native AskUserQuestion card (no ask_id, no card_id) is raised while
+ * its own turn is still running and waiting on the answer. Submitting it must
+ * STEER into the live turn through the receipt-aware path (steerMutation), not
+ * the plain send() that would queue behind that turn. When the turn has ended,
+ * the same answer starts an ordinary next turn. */
+describe('native question card (#10634) — main chat', { timeout: 20_000 }, () => {
+  const seedNativeCard = (store: ReturnType<typeof makeStore>) => {
+    act(() => {
+      store.dispatch(setQuestionCard({
+        slot: 'slot-a',
+        questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }],
+      }))
+    })
+  }
+
+  it('steers the answer into the running turn via the receipt-aware path', async () => {
+    const { store } = await renderChat({ subagentsRunning: false, turnRunning: true })
+    seedNativeCard(store)
+    fireEvent.click(await screen.findByText('us-east-1'))
+    await act(async () => { fireEvent.click(screen.getByText('Submit')); await Promise.resolve() })
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const call = sendChat.mock.calls[0]
+    expect(call[0]).toBe('us-east-1')
+    // 6th arg is the steer flag.
+    expect(steerArgOf(call)).toBe(true)
+    // The receipt-aware steerMutation path (not send()): it carries the
+    // reconciliation sendId and NO colorTheme, unlike send()'s composer post.
+    // A `response-late` on this path hands the answer back + warns, so a busy
+    // steer whose bubble is suppressed can never silently lose the answer.
+    expect(call[2]).toBeUndefined()
+    expect((call[4] as { sendId?: string }).sendId).toBeTruthy()
+    // The optimistic bubble is shown at once so the answer does not vanish
+    // until the echo lands (the sendId reconciles it in place).
+    const bubble = store.getState().chat.messages.find(m => m.role === 'user' && m.content === 'us-east-1')
+    expect(bubble?.meta?.optimistic).toBe(true)
+  })
+
+  it('starts an ordinary next turn (no steer) when the turn has ended', async () => {
+    const { store } = await renderChat({ subagentsRunning: false, turnRunning: false })
+    seedNativeCard(store)
+    fireEvent.click(await screen.findByText('us-east-1'))
+    await act(async () => { fireEvent.click(screen.getByText('Submit')); await Promise.resolve() })
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const call = sendChat.mock.calls[0]
+    expect(call[0]).toBe('us-east-1')
+    // No live turn to inject into: plain send(), no steer flag.
+    expect(steerArgOf(call)).toBeFalsy()
+  })
+
+  it('does NOT steer a busy non-blocking ask_question card (card_id)', async () => {
+    // A card_id card is the non-blocking ask_question card; even with the slot
+    // busy (sub-agents running) it must start a next turn, never steer.
+    const { store } = await renderChat({ subagentsRunning: true, turnRunning: false })
+    act(() => {
+      store.dispatch(setQuestionCard({
+        slot: 'slot-a',
+        card_id: 'delivery-nb',
+        questions: [{ question: 'Which region?', options: [{ label: 'us-east-1' }] }],
+      }))
+    })
+    fireEvent.click(await screen.findByText('us-east-1'))
+    await act(async () => { fireEvent.click(screen.getByText('Submit')); await Promise.resolve() })
+
+    await waitFor(() => expect(sendChat).toHaveBeenCalled())
+    const call = sendChat.mock.calls[0]
+    expect(call[0]).toBe('us-east-1')
+    expect(steerArgOf(call)).toBeFalsy()
   })
 })

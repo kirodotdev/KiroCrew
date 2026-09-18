@@ -4,16 +4,16 @@ Inside an unprivileged user namespace the kernel treats a mount's nosuid / nodev
 noexec bits as locked (``MNT_LOCK_*``) and rejects with EPERM any remount whose
 flag set would clear them. The bind created by the ``READONLY_DIRS`` loop inherits
 those bits — locks included — from its source mount, so a remount carrying only
-``MS_RDONLY`` was refused on hosts whose ``/tmp`` (or ``/home``) is mounted
+``MS_RDONLY`` is refused on hosts whose ``/tmp`` (or ``/home``) is mounted
 ``nosuid,nodev``: the systemd ``tmp.mount`` default on Amazon Linux 2023, Fedora
-and RHEL. ``_mount_or_die`` fails closed, so every sandboxed spawn aborted there
-(issue #8386). The fix: ``_locked_mount_flags`` reads the new bind's effective
+and RHEL. ``_mount_or_die`` fails closed, so a plain ``MS_RDONLY`` remount would
+abort every sandboxed spawn there. ``_locked_mount_flags`` reads the new bind's effective
 flags via ``statvfs`` and the sealing remount ORs them back in — re-asserting a
 bit already in force can only keep restrictions, never widen access.
 
 Three layers here, mirroring the other sandbox launcher tests (the sources under
 test are extracted from the GENERATED script, so none of these can pass against
-code the launcher no longer contains):
+code the launcher does not contain):
 
 - unit: the helper's ``f_flag`` → ``MS_*`` mapping, ``statvfs`` patched;
 - integration: the seal loop's remount call receives the helper's bits OR'd in,
@@ -279,7 +279,7 @@ def _inner_script() -> str:
     The control comes first and is what gives the test its power: bind the
     control dir over itself, then attempt the PRE-FIX remount (``MS_RDONLY``
     alone). On a locked mount the kernel must refuse it with EPERM — the exact
-    #8386 failure. If it succeeds the environment does not lock flags and the
+    locked-flag failure. If it succeeds the environment does not lock flags and the
     test skips (44) rather than passing vacuously. Only then does the fixed
     path run against the sealed dir; the seal must land and a write must be
     refused with EROFS.
@@ -327,7 +327,7 @@ class TestSealHoldsOnALockedNosuidNodevMountRealKernel:
         """The regression on a real kernel, with its own power proven in-band.
 
         The inner stage first shows the pre-fix remount is refused with EPERM
-        (so the locked-flag condition #8386 reported genuinely holds in this
+        (so the locked-flag condition genuinely holds in this
         environment), then runs the shipped seal path and asserts it succeeds
         and the sealed dir refuses a write with EROFS. Pre-fix code fails here
         at the seal step with the launcher's own ``sandbox: BLOCKED`` refusal.

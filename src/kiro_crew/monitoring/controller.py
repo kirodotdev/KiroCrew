@@ -5,37 +5,58 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from copy import deepcopy
 from typing import Any, Protocol
 
+from kiro_crew import autonudge_provider_trust
 from kiro_crew.dashboard.state import MONITOR_WAKE_PREFIX
+from kiro_crew.monitoring.azure_devops_pull_request import AzureDevOpsPullRequestProvider
+from kiro_crew.monitoring.bitbucket_pull_request import BitbucketPullRequestProvider
 from kiro_crew.monitoring.decision import monitor_budget_reason
 from kiro_crew.monitoring.github_pull_request import GitHubPullRequestProvider
+from kiro_crew.monitoring.gitlab_merge_request import GitLabMergeRequestProvider
 from kiro_crew.monitoring.models import (
+    MAX_MONITOR_PROVIDER_CONCURRENCY,
+    MonitorCreationSurface,
     MonitorDecision,
     MonitorDispatchResult,
     MonitorObservation,
-    MonitorProbe,
     MonitorProbeResult,
     MonitorState,
     MonitorVerdict,
+    ProviderErrorKind,
     resolve_probe_result,
     transient_probe_failure,
 )
+from kiro_crew.monitoring.pull_request import provider_error_result
+from kiro_crew.monitoring.registry import monitor_kind
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 MONITOR_WAKE_MAX_CHARS = 4096
+# GitHub and GitLab monitors intentionally retain their existing ambient CLI
+# identity outside an explicitly authenticated dashboard creation. Every other
+# provider fails closed on channel or legacy-unknown provenance unless it is
+# explicitly added here with matching security docs.
+_CHANNEL_OWNER_CREDENTIAL_KINDS = frozenset({"github_pull_request", "gitlab_merge_request"})
 
 logger = logging.getLogger(__name__)
 
 
 class _Loop(Protocol):
     id: str
+    slot_key: str
     monitor: MonitorState | None
 
 
 class _Service(Protocol):
+    async def stop_monitor_if_budget_exhausted(
+        self,
+        monitor_id: str,
+        *,
+        now: float,
+    ) -> bool: ...
+
     async def apply_monitor_probe(
         self,
         monitor_id: str,
@@ -84,7 +105,18 @@ class _Service(Protocol):
     ) -> bool: ...
 
 
+class _Provider(Protocol):
+    def probe(
+        self,
+        subjects: Sequence[str],
+        *,
+        previous_observations: Mapping[str, Mapping[str, object]] | None = None,
+        use_owner_credentials: bool = True,
+    ) -> Mapping[str, MonitorProbeResult]: ...
+
+
 MonitorDispatcher = Callable[[Any, str], Awaitable[MonitorDispatchResult]]
+OwnerCredentialsAuthorizer = Callable[[_Loop, MonitorState], bool]
 
 
 class MonitorController:
@@ -95,13 +127,34 @@ class MonitorController:
         service: _Service,
         dispatch: MonitorDispatcher,
         *,
-        provider: MonitorProbe | None = None,
+        providers: Mapping[str, _Provider] | None = None,
         clock: Callable[[], float] = time.time,
+        owner_credentials_authorized: OwnerCredentialsAuthorizer | None = None,
     ) -> None:
         self._service = service
         self._dispatch = dispatch
         self._clock = clock
-        self._provider = provider or GitHubPullRequestProvider()
+        self._provider_gate = asyncio.Semaphore(MAX_MONITOR_PROVIDER_CONCURRENCY)
+        self._owner_credentials_authorized = (
+            owner_credentials_authorized or self._protected_owner_credentials_authorized
+        )
+        self._providers = dict(providers or {})
+        if not self._providers:
+            self._providers = {
+                "github_pull_request": GitHubPullRequestProvider(),
+                "gitlab_merge_request": GitLabMergeRequestProvider(),
+                "azure_devops_pull_request": AzureDevOpsPullRequestProvider(),
+                "bitbucket_pull_request": BitbucketPullRequestProvider(),
+            }
+
+    @staticmethod
+    def _protected_owner_credentials_authorized(loop: _Loop, state: MonitorState) -> bool:
+        return autonudge_provider_trust.is_monitor_owner_credentials_recorded(
+            loop.id,
+            loop.slot_key,
+            state.kind,
+            state.target,
+        )
 
     async def tick(self, loop: _Loop, *, now: float) -> MonitorVerdict:
         """Run one probe and return its verdict.
@@ -149,15 +202,38 @@ class MonitorController:
                     now=now,
                 )
             return MonitorVerdict(decision=MonitorDecision.NO_CHANGE)
+        if await self._service.stop_monitor_if_budget_exhausted(loop.id, now=now):
+            return MonitorVerdict(decision=MonitorDecision.STOP_BUDGET)
         config_generation = state.config_generation
         target = state.target
         previous_observation = deepcopy(state.last_observation)
-        try:
-            results = await asyncio.to_thread(
-                self._provider.probe,
-                (target,),
-                previous_observations={target: previous_observation},
+        provider = self._providers.get(state.kind)
+        result: MonitorProbeResult
+        if provider is None:
+            result = provider_error_result(ProviderErrorKind.SETUP, "provider_unsupported")
+            return await self._service.apply_monitor_probe(
+                loop.id,
+                result,
+                now=now,
+                config_generation=config_generation,
             )
+        try:
+            dashboard_owner_credentials = False
+            if state.creation_surface is MonitorCreationSurface.DASHBOARD:
+                dashboard_owner_credentials = await asyncio.to_thread(
+                    self._owner_credentials_authorized,
+                    loop,
+                    state,
+                )
+            async with self._provider_gate:
+                results = await asyncio.to_thread(
+                    provider.probe,
+                    (target,),
+                    previous_observations={target: previous_observation},
+                    use_owner_credentials=(
+                        dashboard_owner_credentials or state.kind in _CHANNEL_OWNER_CREDENTIAL_KINDS
+                    ),
+                )
         except Exception:
             logger.exception("structured monitor provider raised unexpectedly")
             result = transient_probe_failure()
@@ -193,6 +269,7 @@ class MonitorController:
         """
         envelope = format_monitor_wake(
             monitor_id=loop.id,
+            kind=state.kind,
             target=state.target,
             objective=state.objective,
             fingerprint=state.last_wake_fingerprint,
@@ -244,6 +321,7 @@ class MonitorController:
 def format_monitor_wake(
     *,
     monitor_id: str,
+    kind: str,
     target: str,
     objective: str,
     fingerprint: str,
@@ -251,26 +329,51 @@ def format_monitor_wake(
     canonical: Mapping[str, object],
     wake_instructions: str = "",
 ) -> str:
-    """Render only allowlisted canonical facts, redacted before the hard cap."""
-    checks = canonical.get("checks")
+    """Render only allowlisted canonical facts, redacted before the hard cap.
+
+    The subject noun and the fields to render come from the registry entry for
+    *kind*, so each subject describes itself to the agent it wakes. *kind* is the
+    monitor's armed kind (``MonitorState.kind``), the authoritative record of what
+    is being watched -- not a value read out of the provider-supplied canonical,
+    which is versioned and may be thin.
+
+    Two absences read differently. A kind the registry has no entry for is an
+    unidentifiable subject: it yields a neutral envelope that names the kind and
+    says its fields are undeclared, never one subject's shape stamped over
+    another's facts. A registered kind whose canonical is thin -- an empty or older
+    ``last_observation`` -- still knows its noun and field list from the entry, and
+    simply reports its state changed. Everything rendered here passes through the
+    redaction and the hard cap below, so a canonical field a provider fills reaches
+    the woken agent scrubbed, not raw.
+    """
+    entry = monitor_kind(kind)
     changed: list[str] = []
-    if isinstance(checks, Mapping):
-        for state in ("failed", "pending", "unknown"):
-            values = checks.get(state)
-            if isinstance(values, list) and values:
-                changed.append(f"{state} checks: {len(values)}")
-    for name in ("blocking_review", "mergeability", "review_decision", "state"):
-        value = canonical.get(name)
-        if isinstance(value, (str, int, bool)):
-            changed.append(f"{name}={value}")
+    if entry is None:
+        subject_noun = f"{kind} subject" if kind else "monitored subject"
+        changed_line = "canonical fields undeclared for this kind"
+    else:
+        subject_noun = entry.subject_noun
+        for name in entry.wake_fields:
+            if name == "checks":
+                checks = canonical.get("checks")
+                if isinstance(checks, Mapping):
+                    for check_state in ("failed", "pending", "unknown"):
+                        values = checks.get(check_state)
+                        if isinstance(values, list) and values:
+                            changed.append(f"{check_state} checks: {len(values)}")
+                continue
+            value = canonical.get(name)
+            if isinstance(value, (str, int, bool)):
+                changed.append(f"{name}={value}")
+        changed_line = "; ".join(changed) or "canonical state changed"
     head = canonical.get("head_revision")
     action = wake_instructions.strip() or "Inspect the changed facts and take the next safe action."
     envelope = (
         f"{MONITOR_WAKE_PREFIX}\n"
-        f"Monitor {monitor_id}: GitHub pull request {target}; objective: {objective}.\n"
+        f"Monitor {monitor_id}: {subject_noun} {target}; objective: {objective}.\n"
         f"Fingerprint: {fingerprint}. Classification: {reason_code or 'actionable'}.\n"
         f"Head: {head if isinstance(head, str) else 'unknown'}. "
-        f"Changed: {'; '.join(changed) or 'canonical state changed'}.\n"
+        f"Changed: {changed_line}.\n"
         f"Next action: {action}"
     )
     envelope, _ = redact_exfiltration_urls(envelope)

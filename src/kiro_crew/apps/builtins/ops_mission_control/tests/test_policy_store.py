@@ -656,13 +656,12 @@ class TestConcurrentWritesCannotRestoreAStaleCeiling(unittest.TestCase):
 class TestPolicyLockdownOrdering(_HomeIsolated):
     """The ceiling's write must never publish a file it has not protected.
 
-    Ports the previous-store-survival recipe from
+    Ports the prior-store-survival recipe from
     ``test/test_aws_consent.py::TestGrantIsOnTheKeystoneFloor``: every failure
     inside ``atomic_write`` happens BEFORE the rename, so a transient lockdown
-    or write failure can no longer reach — let alone delete — the previous,
-    healthy ceiling (the old post-publish ``restrict_to_owner`` + unlink-on-
-    OSError shape silently reset the operator's autonomy policy on one lockdown
-    failure).
+    or write failure cannot reach — let alone delete — the healthy ceiling
+    already on disk (a post-publish ``restrict_to_owner`` plus unlink-on-OSError
+    silently resets the operator's autonomy policy on one lockdown failure).
     """
 
     def test_write_lockdown_precedes_content(self):
@@ -850,10 +849,10 @@ class TestTheCeilingIsNeverPublishedOverAFailedRead(_HomeIsolated):
         self.assertEqual(policy_store.read_mode("observe"), "act")
 
     def test_a_corrupt_ceiling_refuses_the_write_and_is_left_intact(self):
-        """#7805: a corrupt policy file is refused, never rewritten.
+        """A corrupt policy file is refused, never rewritten.
 
-        The old tolerance read an unparseable document as empty and let the
-        write publish over it -- and for THIS file a rewrite-from-empty reverts
+        Reading an unparseable document as empty and letting the write publish
+        over it is worse here than anywhere -- a rewrite-from-empty reverts
         every fenced key to a value the constrained party can influence, which
         is the exact bypass the keystone floor exists to prevent. A truncated
         document still holds the operator's keys verbatim; refusing keeps them
@@ -916,13 +915,11 @@ class TestTheCeilingIsNeverPublishedOverAFailedRead(_HomeIsolated):
         """A corrupt policy file must never GRANT prune authority.
 
         ``PRIMARY_KEY`` is the one operator-only key whose default is
-        permissive (True), so the lenient gate read turned a truncated policy
+        permissive (True), so a lenient gate read turns a truncated policy
         file into granted ledger-prune authority -- the corrupt file becoming
-        the key that unlocks destroying shared knowledge, the exact
-        corruption-enables-destruction failure #7805 removes. Found in review
-        (GPT 5.6), two rounds. Authority decisions now go through the STRICT
-        :func:`policy_store.read_authority`, and ``rotation.is_primary``
-        answers False when it cannot read its input.
+        the key that unlocks destroying shared knowledge. Authority decisions
+        go through the STRICT :func:`policy_store.read_authority`, and
+        ``rotation.is_primary`` answers False when it cannot read its input.
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import (
             policy_store,

@@ -79,8 +79,8 @@ _DENIED_BUNDLE_PREFIXES: tuple[DeniedApp, ...] = (
         # entirely. Refusing our own bundle is what keeps "the operator, out of band,
         # is the only one who can widen this" true.
         #
-        # Everything else that used to be here (terminals, password managers, System
-        # Settings, system auth dialogs) is deliberately GONE: on a personal machine
+        # The denylist deliberately covers nothing else -- not terminals, password
+        # managers, System Settings, or system auth dialogs: on a personal machine
         # the agent is trusted with the desktop, and a shipped list of "apps you may
         # not automate" was both incomplete by construction and in the operator's way.
         reason=(

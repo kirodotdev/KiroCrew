@@ -4,17 +4,16 @@
 `persist-credentials: false` is set, leaving a live push-capable credential in
 the worktree for every later step to read (zizmor `artipacked`).
 
-PR #6492 swept this class: 51 checkouts were pure omissions and got the opt-out,
-and 11 were kept deliberately because the job authenticates a real git
+Every checkout falls into one of two classes: a pure omission that must get the
+opt-out, or one kept deliberately because the job authenticates a real git
 operation -- `git fetch origin` through the shared diff-base resolver, or
-`git push --force-with-lease` to open a bot PR. Each of those 11 got an inline
-`# persist-credentials retained:` comment naming the job and the operation.
+`git push --force-with-lease` to open a bot PR. Each kept checkout carries an
+inline `# persist-credentials retained:` comment naming the job and the operation.
 
-That convention then held only by habit, and a 12th instance leaked in with the
-`testpaths-coverage` gate (#6577's follow-on): a whole-tree scan that runs no
-git operation at all, so it never needed the credential and carried no comment
-explaining why it had one. Nothing failed -- the omission was invisible until
-the next manual zizmor triage.
+Held only by habit, that convention lets a new checkout leak in -- for example a
+whole-tree scan that runs no git operation, so it never needs the credential and
+carries no comment explaining why it has one. Nothing fails: the omission is
+invisible until the next manual zizmor triage.
 
 These tests make the convention machine-checked, so the decision has to be
 made rather than defaulted:
@@ -54,7 +53,7 @@ def _checkout_steps(path: Path) -> list[tuple[int, bool, bool]]:
     Returns (line number, opts out, carries a retention rationale). The step's
     own block is the run of lines indented deeper than its `- ` marker; the
     rationale is searched in the unbroken run of comment lines directly above
-    it, which is where #6492 put all eleven.
+    it, which is where a retained checkout carries it.
     """
     lines = path.read_text(encoding="utf-8").splitlines()
     found: list[tuple[int, bool, bool]] = []
@@ -138,13 +137,12 @@ def test_no_checkout_both_opts_out_and_claims_retention() -> None:
     [
         "add-contributor.yml",
         "ci.yml",
-        "cleanup-temp-screenshots.yml",
         "memory-benchmark.yml",
         "test-durations.yml",
     ],
 )
 def test_the_known_residual_carriers_still_state_their_reason(name: str) -> None:
-    """The five files that legitimately retain the credential somewhere. Pinned
+    """The four files that legitimately retain the credential somewhere. Pinned
     by name so that stripping every rationale comment from one of them fails
     here loudly, instead of quietly passing the invariant above by making the
     step look like a plain opt-out."""

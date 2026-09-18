@@ -116,7 +116,7 @@ class TestRegistryInstallDenialCarriesCode:
         monkeypatch.setattr(admission, "config_dir", lambda: tmp_path)
 
         # The resolution path consults the official catalog FIRST, with a fresh
-        # uncached HTTPS fetch (#4236); pin "catalog reachable, app absent" so
+        # uncached HTTPS fetch; pin "catalog reachable, app absent" so
         # the seeded row below is what resolves, deterministically.
         monkeypatch.setattr(
             "kiro_crew.apps.official_catalog.inventory_for_install",

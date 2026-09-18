@@ -277,7 +277,7 @@ def main(argv: list[str] | None = None) -> int:
 
     db_path = Path(args.db) if args.db else _ledger.default_db_path()
     roe_json = Path(args.roe_json) if args.roe_json else _scope_check.default_roe_json()
-    rules, failure = _scope_check.load_rules(db_path, roe_json, _ledger)
+    rules, failure = _scope_check.load_rules(db_path, roe_json)
     if failure is not None:
         # No readable rules means no readable scale, and an unvalidatable
         # severity is the one thing the scale exists to prevent.

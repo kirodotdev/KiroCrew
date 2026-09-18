@@ -1,8 +1,8 @@
 """Tests for ``dashboard.session_card_source_links`` -- the sidebar chip switch.
 
-The PR/issue chip strip on every session card used to ship unconditionally: two
+The PR/issue chip strip on every session card is fed by two paths: two
 fields in ``_ChatSlot.to_dict`` and a periodic credentialed status refresh fed by
-``DashboardState.source_link_urls``, with nothing in between consulting config.
+``DashboardState.source_link_urls``. A config switch gates both.
 These tests pin both halves of the switch -- the payload AND the refresh feed --
 plus the default, because a default that ever reads false would silently strip
 chips from every existing install.

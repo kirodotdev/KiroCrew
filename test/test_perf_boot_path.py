@@ -75,20 +75,27 @@ class TestGatewayUpdateCheckIsBackgrounded:
 
     def test_update_check_is_not_awaited_inline(self) -> None:
         src = inspect.getsource(GatewayOrchestrator.run)
-        assert "await self._check_for_updates()" not in src, (
-            "the boot update check must not be inline-awaited — it blocks the "
-            "boot for up to ~70s on a stalled network"
+        assert "await self._run_update_checks()" not in src, (
+            "the update coordinator must not be inline-awaited — its first "
+            "network cycle can block boot for up to ~70s"
         )
-        assert "asyncio.create_task(self._check_for_updates())" in src
+        assert "asyncio.create_task(self._run_update_checks())" in src
 
     def test_signal_handlers_installed_before_update_check(self) -> None:
         src = inspect.getsource(GatewayOrchestrator.run)
-        handlers_at = src.index("loop.add_signal_handler(sig, _on_signal)")
-        check_at = src.index("asyncio.create_task(self._check_for_updates())")
+        handlers_at = src.index("self._install_shutdown_signal_handlers()")
+        preparation_at = src.index("await self._wait_for_memory_preparation()")
+        check_at = src.index("asyncio.create_task(self._run_update_checks())")
+        assert (
+            handlers_at < preparation_at
+        ), "SIGINT/SIGTERM handlers must be installed before waiting for memory preparation"
         assert handlers_at < check_at, (
             "SIGINT/SIGTERM handlers must be installed before the update check "
             "starts, or an early Ctrl-C is ignored"
         )
+        handlers_src = inspect.getsource(GatewayOrchestrator._install_shutdown_signal_handlers)
+        assert "for sig in (signal.SIGINT, signal.SIGTERM):" in handlers_src
+        assert "loop.add_signal_handler(sig, _on_signal)" in handlers_src
 
     def test_update_check_task_is_tracked_and_cancelled(self) -> None:
         run_src = inspect.getsource(GatewayOrchestrator.run)
@@ -98,6 +105,7 @@ class TestGatewayUpdateCheckIsBackgrounded:
         )
         shutdown_src = inspect.getsource(GatewayOrchestrator._shutdown)
         assert "self._update_check_task.cancel()" in shutdown_src
+        assert "_cancel_update_check()" in shutdown_src
 
 
 # ── Telemetry: no OTel SDK import while telemetry is off ───────────────────

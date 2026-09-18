@@ -402,6 +402,22 @@ describe('chat sidebar — interrupted ordinary session', () => {
     expect(queryByTitle(UNREAD_DOT_TITLE)).toBeNull()
   })
 
+  it('drops the Resume instruction on a crew-bound row', () => {
+    // A remote-bound session has no local Continue (`remote_action_unsupported`),
+    // so the composer offers no Resume control — the row must not tell the user to
+    // press one. The interruption marker itself still belongs there.
+    const slots = [{
+      key: 'k', title: 'peer follow-up', running: false, messages: 5,
+      interrupted: true, executor: 'remote' as const, instance_id: 'chick',
+    }]
+    const { container } = renderSidebar(slots, {})
+
+    const row = container.querySelector('[data-session-row="k"]')
+    expect(row?.textContent).toContain('Turn interrupted')
+    expect(row?.textContent).not.toContain('Resume')
+    expect(container.querySelector('.lucide-triangle-alert.text-danger')).toBeTruthy()
+  })
+
   it('keeps live subagent activity above stale parent-turn interruption', () => {
     const slots = [{ key: 'k', title: 'delegated work', running: false, messages: 5, interrupted: true }]
     const { getByText, queryByText } = renderSidebar(slots, {

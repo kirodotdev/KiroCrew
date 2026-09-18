@@ -7,7 +7,7 @@ Background
 its approve/deny verdict -- lazily imports ``kiro_crew.slack.gateway`` for
 ``_is_read_only_tool``. That module imports ``kiro_crew.channels``, which
 imports every channel gateway, and the WeCom and Weixin gateways reach their
-``media`` modules, which used to import ``cryptography.hazmat`` at module top
+``media`` modules, which must not import ``cryptography.hazmat`` at module top
 for their AES decryptors. So a host whose ``cryptography`` wheel does not load
 (a platform-mismatched build: the AL2 x86_64 wheel on an Apple-silicon Mac)
 made EVERY tool approval raise ImportError -- not just WeCom media downloads.

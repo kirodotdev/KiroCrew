@@ -124,7 +124,7 @@ describe('ArtifactDetailPage companion chat', () => {
     // would append onto an archived session's history file.
     expect(call[0]).toBeUndefined()
     expect(call[5]).toBe('Artifact: CR Queue')
-    expect(call[7]).toBe('cr-queue')
+    expect(call[6]).toBe('cr-queue')
   })
 
   it('becomes interactive off the create response alone (optimistic bind)', async () => {

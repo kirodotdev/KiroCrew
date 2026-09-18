@@ -16,6 +16,8 @@ from kiro_crew.auth.service import (
     KasLoginService,
     LoopbackUnavailableError,
     MissingStartUrlError,
+    SignedOutDuringLoginError,
+    UnknownIdentityError,
     UnknownLoginError,
 )
 from kiro_crew.auth.store import TokenStore, TokenStoreError
@@ -136,12 +138,32 @@ async def api_kas_login_begin_device(request: web.Request) -> web.Response:
     provider = str((body or {}).get("provider") or "")
     start_url = str((body or {}).get("start_url") or "")
     region = str((body or {}).get("region") or "")
+    # The identity slot a signed-in user is switching away from; removed by the
+    # service once THIS login's credential has landed, never before.
+    replaces = str((body or {}).get("replaces") or "")
     if not provider:
         return web.json_response(
             {"error": "Missing 'provider'.", "code": "invalid_provider"}, status=400
         )
     try:
-        result = await service.begin_device(provider, start_url=start_url, region=region)
+        result = await service.begin_device(
+            provider, start_url=start_url, region=region, replaces=replaces
+        )
+    except UnknownIdentityError:
+        return web.json_response(
+            {"error": f"Unknown identity: {replaces}", "code": "invalid_identity"},
+            status=400,
+        )
+    except SignedOutDuringLoginError:
+        # The user signed out while this begin was in flight; the login was never
+        # registered, so the card should start over from the signed-out chooser.
+        return web.json_response(
+            {
+                "error": "Signed out while the sign-in was starting.",
+                "code": "signed_out_during_login",
+            },
+            status=409,
+        )
     except ValueError:
         return web.json_response(
             {"error": f"Unknown provider: {provider}", "code": "invalid_provider"},
@@ -209,7 +231,7 @@ async def api_kas_login_poll(request: web.Request) -> web.Response:
 
 
 async def api_kas_login_logout(request: web.Request) -> web.Response:
-    """POST /api/kas-login/logout {identity} — delete one identity's stored token."""
+    """POST /api/kas-login/logout {identity} — sign out: delete that slot and every other stored one."""
     denied = await _require_owner(request, "kas_login_logout")
     if denied is not None:
         return denied
@@ -293,12 +315,28 @@ async def api_kas_login_begin_loopback(request: web.Request) -> web.Response:
         return _unavailable()
     body = await _read_json(request)
     provider = str((body or {}).get("provider") or "")
+    replaces = str((body or {}).get("replaces") or "")
     if not provider:
         return web.json_response(
             {"error": "Missing 'provider'.", "code": "invalid_provider"}, status=400
         )
     try:
-        result = await service.begin_loopback(provider)
+        result = await service.begin_loopback(provider, replaces=replaces)
+    except UnknownIdentityError:
+        return web.json_response(
+            {"error": f"Unknown identity: {replaces}", "code": "invalid_identity"},
+            status=400,
+        )
+    except SignedOutDuringLoginError:
+        # The user signed out while this begin was in flight; the login was never
+        # registered, so the card should start over from the signed-out chooser.
+        return web.json_response(
+            {
+                "error": "Signed out while the sign-in was starting.",
+                "code": "signed_out_during_login",
+            },
+            status=409,
+        )
     except ValueError:
         return web.json_response(
             {"error": f"Unknown provider: {provider}", "code": "invalid_provider"},

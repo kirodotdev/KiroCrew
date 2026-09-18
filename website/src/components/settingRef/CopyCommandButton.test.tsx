@@ -5,7 +5,10 @@ import { describe, it, expect, vi, afterEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { CopyCommandButton } from './CopyCommandButton'
 
-// Mock the clipboard utility
+// Mock the clipboard utility. `copyCode` resolves a BOOLEAN — true only once
+// the text actually reached the clipboard — and never rejects, so a failed copy
+// is a resolved `false` here, not a rejection. A bare `vi.fn()` resolving
+// `undefined` would read as a failure.
 vi.mock('../../utils/clipboard', () => ({
   copyCode: vi.fn(),
 }))
@@ -26,7 +29,7 @@ describe('CopyCommandButton', () => {
   })
 
   it('shows check icon after successful copy', async () => {
-    mockedCopyCode.mockResolvedValue(undefined)
+    mockedCopyCode.mockResolvedValue(true)
     render(<CopyCommandButton text="kirocrew config set x true" />)
 
     await act(async () => {
@@ -39,7 +42,7 @@ describe('CopyCommandButton', () => {
   })
 
   it('shows X icon after failed copy', async () => {
-    mockedCopyCode.mockRejectedValue(new Error('Clipboard write denied'))
+    mockedCopyCode.mockResolvedValue(false)
     render(<CopyCommandButton text="test command" />)
 
     await act(async () => {
@@ -55,12 +58,12 @@ describe('CopyCommandButton', () => {
 
   it('resets to idle state after timeout on failure', async () => {
     vi.useFakeTimers()
-    mockedCopyCode.mockRejectedValue(new Error('fail'))
+    mockedCopyCode.mockResolvedValue(false)
     render(<CopyCommandButton text="test" />)
 
     await act(async () => {
       fireEvent.click(screen.getByRole('button'))
-      // Let the rejected promise settle
+      // Let the resolved promise settle
       await Promise.resolve()
     })
 
@@ -75,7 +78,7 @@ describe('CopyCommandButton', () => {
 
   it('resets to idle state after timeout on success', async () => {
     vi.useFakeTimers()
-    mockedCopyCode.mockResolvedValue(undefined)
+    mockedCopyCode.mockResolvedValue(true)
     render(<CopyCommandButton text="test" />)
 
     await act(async () => {

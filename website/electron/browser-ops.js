@@ -44,6 +44,11 @@
 // only). Shared with browser-view.js / browser-control.js so the CDP navigation
 // path cannot drift from the loadURL path. browser-view.js imports nothing from
 // here, so no cycle.
+/** id of the element-annotation overlay's host node. The snapshot walker skips
+ *  it (it is ours, not the page's) and browser-annotate.js mounts it. A fixed
+ *  identifier-shaped constant, so it is spliced into page-realm source as a
+ *  plain quoted literal (no runtime serialisation of anything variable). */
+const ANNOTATE_HOST_ID = "__kcAnnotateHost";
 const { normalizeUrl } = require("./browser-view");
 
 /** The wire ops this module serves. Every other `browser_*` tool is the Python
@@ -222,24 +227,35 @@ function normalizeConsoleEvent(method, params) {
 // ── Page-side expressions (injected via Runtime.evaluate, returnByValue) ─────
 
 /**
- * The snapshot walker. Injected into the page; maintains `window.__kcRefs`
- * (ref → element), `window.__kcRefSeq` (monotonic), `window.__kcRefDoc`, and
- * returns `{ url, title, nodes }`. The map is rebuilt when the document URI
- * changes so navigation invalidates old refs. Walks the document plus OPEN
- * shadow roots, skips invisible elements, and refs only interactive elements
- * (headings/meaningful text emit ref-less structural lines).
+ * Page-side helpers shared by the snapshot walker and the annotate overlay
+ * (browser-annotate.js): the ref map (`window.__kcRefs`, reset on navigation),
+ * `assignRef` (mint once per element, reuse while it is in the document -- so a
+ * ref minted by one consumer is the same ref every other consumer sees), the
+ * accessible-name and role heuristics, and visibility. A FUNCTION BODY
+ * fragment: splice it into an IIFE, never evaluate it alone.
  */
-const WALKER_SOURCE = `(() => {
+const PAGE_HELPERS_SOURCE = `
   var CAP = ${NAME_CAP};
   var INTERACTIVE_TAGS = { a: true, button: true, input: true, select: true, textarea: true };
   var INTERACTIVE_ROLES = { button:1, link:1, checkbox:1, radio:1, tab:1, menuitem:1, option:1, "switch":1, combobox:1, textbox:1 };
 
-  if (window.__kcRefDoc !== document.documentURI || !(window.__kcRefs instanceof Map)) {
+  // The ref map lives as long as the DOCUMENT object: a real navigation swaps
+  // the document (and, normally, this whole JS realm), while an SPA route
+  // change only rewrites the URL -- its elements, and any ref already handed
+  // out for them (an annotation, an agent's last snapshot), stay valid.
+  // Keying on the URL here used to reset the map on pushState.
+  if (window.__kcRefDocObj !== document || !(window.__kcRefs instanceof Map)) {
     window.__kcRefs = new Map();
     window.__kcRefSeq = 0;
-    window.__kcRefDoc = document.documentURI;
+    window.__kcRefDocObj = document;
   }
   var refs = window.__kcRefs;
+  // Refs are strong references. An SPA that re-renders subtrees across many
+  // route changes would otherwise pin every element ever walked for the
+  // document's lifetime; every consumer already rejects a disconnected ref
+  // (resolveRef -> ref_stale, the overlay -> detached), so dropping those
+  // entries here changes no answer and bounds the map to the live DOM.
+  refs.forEach(function (el, r) { if (!el || !el.isConnected) refs.delete(r); });
 
   function visible(el) {
     var style = window.getComputedStyle(el);
@@ -361,6 +377,18 @@ const WALKER_SOURCE = `(() => {
     return r;
   }
 
+
+`;
+
+/**
+ * The snapshot walker. Injected into the page; maintains `window.__kcRefs`
+ * (ref → element), `window.__kcRefSeq` (monotonic), `window.__kcRefDocObj`,
+ * and returns `{ url, title, nodes }`. The map is rebuilt when the Document
+ * object changes (a real navigation), not on SPA URL changes. Walks the document plus OPEN
+ * shadow roots, skips invisible elements, and refs only interactive elements
+ * (headings/meaningful text emit ref-less structural lines).
+ */
+const WALKER_SOURCE = `(() => {${PAGE_HELPERS_SOURCE}
   var out = [];
   function emit(el, depth) {
     var role = roleFor(el);
@@ -383,6 +411,9 @@ const WALKER_SOURCE = `(() => {
       if (!el || el.nodeType !== 1) continue;
       var tag = el.tagName.toLowerCase();
       if (tag === "script" || tag === "style" || tag === "noscript" || tag === "template" || tag === "head") continue;
+      // The Browser panel's annotate overlay (browser-annotate.js) is ours, not
+      // the page's: its marker badges must not show up in the agent's outline.
+      if (el.id === "${ANNOTATE_HOST_ID}") continue;
       if (!visible(el)) continue;
       var next = emit(el, depth);
       walk(el, next);
@@ -909,7 +940,9 @@ function createBrowserOps(deps) {
 }
 
 module.exports = {
+  ANNOTATE_HOST_ID,
   WIRE_OPS,
+  PAGE_HELPERS_SOURCE,
   NAME_CAP,
   CONSOLE_CAP,
   isValidRef,

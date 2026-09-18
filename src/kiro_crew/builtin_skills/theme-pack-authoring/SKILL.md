@@ -95,6 +95,47 @@ REJECTED (install fails), so do not invent variables; the allowlist is
   `--bg` / `--text` / `--danger` / `--ok` / `--warn` / `--info`, so a pack that
   wants its own terminal palette sets only those two.
 
+### Omitted tokens are derived from your palette
+
+You only have to declare the three required vars, so most packs omit most of the
+56. Those omissions are **derived from your own `--bg` / `--text` / `--accent`**
+by `buildCustomThemeCss` (`website/src/hooks/themeCss.ts`) — they are not
+inherited from a built-in theme:
+
+- **Surfaces and borders** (`--card`, `--bg-elevated`, `--chrome`, `--panel`,
+  `--bg-accent`, `--bg-hover`, `--card-hl`, `--panel-strong`, `--border*`) are
+  4–30% steps from `--bg` toward `--text`, so they track your palette's polarity.
+- **`--muted` / `--muted-strong`** are 75% / 85% along the same axis — the floor
+  that still clears WCAG AA against the derived `--card`.
+- **`--text-strong`** and **`--card-fg`** fall back to `--text`; **`--muted-fg`**
+  falls back to `--bg`.
+- **A foreground on a saturated fill** (`--accent-fg`, `--ok-fg`, `--warn-fg`,
+  `--danger-fg`, `--info-fg`, `--aim-fg`) is black or white, whichever that fill
+  can carry. It is only derived when you declared the fill itself.
+- **The designed sets** — the four `--json-*` syntax colors and the seven
+  `--diff-*` tokens — cannot be mixed from a palette, so they fall back to the
+  built-in theme's own set for whichever polarity your `--bg` has. Without this
+  they would inherit the DARK values and land light-on-light on the derived light
+  surfaces.
+
+Two consequences worth knowing before you tune a palette:
+
+- Declaring a token always wins — derivation only fills what you left out. So
+  override any step whose derived value you dislike rather than working around it.
+- The derivation reads `--bg` and `--text` as hex, `rgb()`/`rgba()` or
+  `color(srgb …)`. In any other form (a named color, `hsl()`) the ramp is skipped
+  and those tokens fall back to the stylesheet default, which is dark — so a light
+  pack should not write its `--bg` as `hsl()`. A **translucent** `--bg`/`--text` is
+  refused for the same reason: what it renders as depends on what is behind it.
+
+Polarity is read from your `--bg`, not from which block you are writing, so a pack
+that deliberately ships a dark `light` block gets the dark sets in both.
+
+The remaining allowlisted tokens are not derived and do fall back to the
+stylesheet default: `--accent-hover` / `--accent-subtle` / `--accent-glow` /
+`--ring`, whose direction is polarity-dependent, and the two `--term-*` hues.
+Declare those yourself if they matter to you.
+
 ## overrides.css — what installs is NOT what renders
 
 Two different filters run, and they disagree by design:

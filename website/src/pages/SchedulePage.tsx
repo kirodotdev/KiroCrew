@@ -447,7 +447,7 @@ export default function SchedulePage() {
       return rank(a) - rank(b);
     },
     lastRun: (a: CronJob, b: CronJob) => (a.last_run_ts || 0) - (b.last_run_ts || 0),
-    nextRun: (a: CronJob, b: CronJob) => (a.next_run_ts || 0) - (b.next_run_ts || 0),
+    nextRun: (a: CronJob, b: CronJob) => (a.next_run_ts ?? Infinity) - (b.next_run_ts ?? Infinity),
   }), [])
   const { sorted: sortedScheduleJobs, sort: schedSort, toggle: toggleSchedSort } = useSortableTable(filteredJobs, 'cron-schedule', scheduleComparators, { key: 'nextRun', dir: 'asc' })
 
@@ -931,7 +931,26 @@ export default function SchedulePage() {
                 <TableCell className="truncate" title={j.schedule}>{scheduleLabel(j)}{j.timezone && <span className="block truncate text-[11px] text-muted">{j.timezone.replace(/_/g, ' ')}</span>}</TableCell>
                 <TableCell className="align-top"><CollapsibleMessage message={j.script ? j.script : j.command ? j.command : j.safeMessage} /></TableCell>
                 <TableCell title={j.last_error || j.last_result || ''}>{j.is_running ? <Badge variant="ok"><span className="inline-block w-1.5 h-1.5 rounded-full bg-ok animate-pulse mr-1 align-middle" />{i18nT('pages.schedulePage.running')}</Badge> : j.enabled ? (j.last_status === 'ok' ? <Badge variant="ok">{i18nT('pages.schedulePage.ok')}</Badge> : j.last_status === 'error' ? <Badge variant="err">{i18nT('pages.schedulePage.error')}</Badge> : <Badge variant="ok">{i18nT('pages.schedulePage.ready')}</Badge>) : <Badge variant="warn">{i18nT('pages.schedulePage.paused')}</Badge>}</TableCell>
-                <TableCell className="text-muted">{fmtAgo(j.last_run_ts)}</TableCell>
+                <TableCell className="text-muted">
+                  {fmtAgo(j.last_run_ts)}
+                  {/* Retry telemetry for the LAST run only: a job that needed
+                      retries but eventually succeeded (or failed) shows how
+                      many. 0 or absent renders nothing. The note wraps rather
+                      than truncates: the column is narrow and "Retried 3 ti..."
+                      carries no information.
+
+                      Shown only when `last_retry_run_ts` matches the run this row
+                      reports. A cancelled run advances `last_run_ts` (the `every`
+                      scheduler needs it to) without overwriting the count, so
+                      without the comparison this note reads a completed run's
+                      retries as the cancelled run's — a number attached to the
+                      wrong run is worse than no number. */}
+                  {!!j.last_retry_count && j.last_retry_run_ts === j.last_run_ts && (
+                    <span className="block whitespace-normal text-[11px] leading-tight">
+                      {i18nT('pages.schedulePage.retried_n_times', { count: j.last_retry_count })}
+                    </span>
+                  )}
+                </TableCell>
                 <TableCell className="text-muted" title={j.next_run_ts ? fmtDateTimeNumeric(j.next_run_ts) : ''}>{fmtIn(j.next_run_ts)}</TableCell>
                 {/* Two controls plus the overflow menu. Anything wider than this
                     is what pushed the column off screen; see CronRowActions.
@@ -1446,7 +1465,7 @@ function TemplateUpdatedNotice({ job }: { job: CronJob }) {
   })
   if (!update || dismissed) return null
   const dismiss = () => {
-    try { localStorage.setItem(key, '1') } catch { /* private mode: just hide for this view */ }
+    safeSetItem(key, '1')
     setDismissed(true)
   }
   return (

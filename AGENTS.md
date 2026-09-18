@@ -36,6 +36,7 @@ in the **same commit** when you change what it documents.
 |---|---|
 | `platform/`, editions, CPP seam, governance | [platform-context](docs/system-specs/modules/platform-context.md) + [governance](docs/system-specs/modules/governance.md) |
 | `security.py`, `hooks.py`, denied commands, sensitive paths | [security](docs/system-specs/modules/security.md) + [sel](docs/system-specs/modules/sel.md) |
+| `config/` — the live watcher, `restart=True` marks, appliers, `config.json` writes | [config](docs/system-specs/modules/config.md) |
 | the security model as a whole, threat boundaries | [security-deep-dive](docs/architecture/security-deep-dive.md) |
 | `computer_use/` | [computer-use](docs/system-specs/modules/computer-use.md) |
 | monitoring loops, `monitoring/`, `irq.py`, watches | [monitor-architecture](docs/system-specs/modules/monitor-architecture.md) (the paradigm) + [agent-interrupt-controller](docs/system-specs/modules/agent-interrupt-controller.md) + [babysit-pr-watch](docs/system-specs/modules/babysit-pr-watch.md) |
@@ -60,12 +61,16 @@ in the **same commit** when you change what it documents.
 | themes | [themes](docs/system-specs/modules/themes.md) + [theming-contract](website/docs/theming-contract.md) |
 | anything under `website/` | [`website/AGENTS.md`](website/AGENTS.md) |
 | user-facing strings, dates, numbers, sort order | [i18n-catalog](website/docs/i18n-catalog.md) (authoring) + [i18n-gates](docs/ci/i18n-gates.md) (CI) |
-| tests: flakes, hangs, speed, memory, fixtures, sharding, side effects, host state (`~/.kiro`, `Path.home()`, the systemd user manager), conftest isolation, `monkeypatch.undo()`, env-var leaks, host-dependent tests (Windows, Python 3.13, per-user tools), what `TMPDIR` must not be | [testing-conventions](docs/system-specs/common/testing-conventions.md) + the [writing-tests](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md) skill; frontend and Electron tests: [website/docs/testing.md](website/docs/testing.md) |
+| tests: flakes, hangs, speed, memory, fixtures, sharding, side effects, host state (`~/.kiro`, `Path.home()`, the systemd user manager), conftest isolation, `monkeypatch.undo()`, env-var leaks, host-dependent tests (Windows, Python 3.13, per-user tools, version-manager shims), spawning a real child or reaping one, `.worktrees/` in a repo-wide scan, what `TMPDIR` must not be, what a worker costs, collection-time probes that build a singleton, a `MagicMock` the code converts with `int()`, sizing a ReDoS / complexity guard | [testing-conventions](docs/system-specs/common/testing-conventions.md) + the [writing-tests](src/kiro_crew/builtin_skills/kirocrew-dev/writing-tests/SKILL.md) skill; frontend and Electron tests: [website/docs/testing.md](website/docs/testing.md) |
 | browser E2E | [e2e-gate](docs/ci/e2e-gate.md) |
 | proving a worktree change against an isolated running gateway | [worktree-verification-recipes](docs/guides/worktree-verification-recipes.md) |
 | CI, PR flow, review gates, commit messages | [ci-and-reviews](docs/ci/ci-and-reviews.md) + [CONTRIBUTING.md](CONTRIBUTING.md) |
 | constants, comments, lint, code style, the brand name | [code-style](docs/system-specs/common/code-style.md) |
 | connections, connectors, an external account link | [connections](docs/system-specs/modules/connections.md) |
+| the connector campaign's manifest schema or work-stream DAG | [connector-capability-manifest](docs/system-specs/modules/connector-capability-manifest.md) |
+| the GitHub connector's operation data or wire parsing (pagination, rate limits, error mapping) | [connector-github](docs/system-specs/modules/connector-github.md) |
+| `connections/vendors/microsoft/graph/`, the Microsoft Graph runtime base (locator, payload shaping, `@odata.nextLink` paging) | [microsoft-graph-runtime](docs/system-specs/modules/microsoft-graph-runtime.md) |
+| `connections/vendors/zoom/` — Zoom identity/paging/processing/errors contract logic | [connector-zoom](docs/system-specs/modules/connector-zoom.md) |
 | a POSIX call: locks, signals, PIDs, chmod, RSS | [platform-compat](docs/system-specs/common/platform-compat.md) + [windows-install](docs/guides/windows-install.md) |
 | injected `[Cron notification]` / `[Subagent completion event]` | [injected-messages](docs/system-specs/common/injected-messages.md) |
 | build, install, dev mode | [CONTRIBUTING.md](CONTRIBUTING.md) + [install](docs/guides/install.md) |
@@ -213,8 +218,13 @@ from the suffix rule: [release](docs/build/release.md).
 ```bash
 python3 scripts/check_black_formatting.py && python3 scripts/check_subprocess_encoding.py && isort src/kiro_crew test
 flake8 src/kiro_crew test && mypy src/kiro_crew
-python -m pytest
+python3 scripts/local-gate.py
 ```
+
+`local-gate.py` runs the tests related to your diff on both surfaces with a
+bounded worker count; the full suite is CI's job and never runs locally unless a
+human passes `--full`. See
+[prepare-pr](src/kiro_crew/builtin_skills/kirocrew-dev/prepare-pr/references/gate-floor.md).
 
 - **On macOS, run `mypy --platform linux src/kiro_crew`.** Without it a local run
   reports errors you did not cause and MISSES the Linux-only errors CI fails on, so

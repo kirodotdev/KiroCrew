@@ -11,6 +11,7 @@ import os
 import re
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 
 import aiohttp
@@ -20,6 +21,7 @@ from aiohttp.client_exceptions import ClientConnectionResetError
 from kiro_crew import __version__ as _local_version
 from kiro_crew import dep_sync, shutdown_event
 from kiro_crew.changelog import Release, base_version, build_release_list, release_of_build
+from kiro_crew.config.live import ConfigChange
 from kiro_crew.config.loader import (
     ConfigReadError,
     KiroCrewConfig,
@@ -30,7 +32,9 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard.chat_utils import run_config_write
 from kiro_crew.dashboard.handlers._shared import read_capped_response
 from kiro_crew.dashboard.state import DashboardState, chat_message_frame
+from kiro_crew.dashboard.status_counts import cached_status_snapshot
 from kiro_crew.executors import subprocess_executor
+from kiro_crew.gateway_restart import resolve_restart_launcher
 from kiro_crew.git_divergence import (
     UNREADABLE_TIMEOUT,
     DivergenceUnreadable,
@@ -67,7 +71,7 @@ from kiro_crew.platform.update_layout import detect_install_layout
 from kiro_crew.platform.update_layout import release_channel as _release_channel
 from kiro_crew.platform.update_layout import set_release_channel, wheel_update_command
 from kiro_crew.platform.update_provider import CommandProvider, resolve_provider
-from kiro_crew.platform_compat import reexec_python_module
+from kiro_crew.platform_compat import reexec_launcher, reexec_python_module
 from kiro_crew.safety_override import flush_breadcrumb_writes
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -141,14 +145,10 @@ _check_generation = 0
 _UPDATE_CHECK_INTERVAL = 43200  # 12 hours
 _last_update_check: float = 0.0
 
-#: True while a check is running. ``/api/status`` fires ``_do_update_check`` as a
-#: background task on EVERY poll until the interval clock is stamped, and the clock
-#: is only stamped when a check FINISHES. While the check was git-only and
-#: instantaneous for most installs, overlapping calls were invisible; the feed
-#: branch holds a network session for up to ``_FEED_TIMEOUT_SECS``, so a burst of
-#: dashboard polls would open a burst of concurrent CDN fetches. First caller wins,
-#: the rest no-op.
-_check_in_flight = False
+#: The finite operation shared by concurrent manual checks and the automatic
+#: coordinator, so every caller consumes one completed verdict.
+_check_task: asyncio.Task[None] | None = None
+_check_task_generation: int | None = None
 
 #: Release channels the installer publishes. Anything else in the channel file (a
 #: hand-edit, junk, a lane this build predates) falls back to ``stable``.
@@ -645,7 +645,61 @@ def _capability_fields(capability: UpdateCapability) -> dict[str, object]:
     return capability.to_dict()
 
 
+def _release_update_check_task(task: asyncio.Task[None]) -> None:
+    """Drop ownership even when every caller stopped waiting for the worker."""
+    global _check_task, _check_task_generation
+
+    if _check_task is task:
+        _check_task = None
+        _check_task_generation = None
+
+
 async def _do_update_check() -> None:
+    """Run one shared update check and wait for a current-channel verdict."""
+    global _check_task, _check_task_generation
+
+    while True:
+        generation = _check_generation
+        running = _check_task
+        running_generation = _check_task_generation
+        if running is None:
+            running = asyncio.create_task(_run_update_check())
+            running_generation = generation
+            _check_task = running
+            _check_task_generation = generation
+            running.add_done_callback(_release_update_check_task)
+
+        try:
+            # No request owns the worker. A disconnected HTTP caller cannot cancel
+            # the check under the recurring coordinator or another waiter.
+            await asyncio.shield(running)
+        finally:
+            if _check_task is running and running.done():
+                _check_task = None
+                _check_task_generation = None
+        if running_generation != _check_generation:
+            # A channel switch needs a fresh task before any caller returns an
+            # unchecked current-channel cache.
+            continue
+        return
+
+
+async def _cancel_update_check() -> None:
+    """Cancel and reap the shared worker during gateway shutdown only."""
+    global _check_task, _check_task_generation
+
+    task = _check_task
+    if task is None:
+        return
+    if not task.done():
+        task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    if _check_task is task:
+        _check_task = None
+        _check_task_generation = None
+
+
+async def _run_update_check() -> None:
     """Refresh ``_update_info``: is a newer build available for THIS install?
 
     The install's capability — who owns its bytes, and whether this process can
@@ -668,11 +722,8 @@ async def _do_update_check() -> None:
     run records an ``error_code`` and leaves ``check_status`` at ``failed``, so no
     caller can mistake a non-answer for a verdict.
     """
-    global _last_update_check, _check_in_flight
+    global _last_update_check
 
-    if _check_in_flight:
-        return
-    _check_in_flight = True
     # Snapshot the generation: everything written below describes the channel as it
     # is RIGHT NOW, and a switch mid-flight makes that verdict describe a lane the
     # install no longer follows.
@@ -701,10 +752,9 @@ async def _do_update_check() -> None:
         if provider is not None:
             await _check_via_provider(provider)
         else:
-            # Offloaded INSIDE the guard's try: the derivation shells out to git, so
-            # it must not run on the event loop, and it must not run where a raise
-            # would skip the finally — a leaked single-flight flag stops every future
-            # check for the process's lifetime, which is a silently dead updater.
+            # Offloaded inside the worker's try: derivation shells out to git, so
+            # it must not run on the event loop, and every failure must still reach
+            # the cache/error cleanup below.
             capability = await asyncio.get_running_loop().run_in_executor(None, derive_capability)
             if capability.defers:
                 reason = capability.unavailable_reason or ""
@@ -727,38 +777,25 @@ async def _do_update_check() -> None:
             error_code=ERR_UNKNOWN,
         )
     finally:
-        # The guard stays HELD across the cleanup below, and the inner `finally`
-        # is what releases it. Both halves are load-bearing:
-        #
-        # * Releasing it first (as this did) lets a status poll start and FINISH a
-        #   fresh check while the awaited channel read is still in flight; this
-        #   coroutine then resumes and overwrites that newer verdict with the reset.
-        # * Not releasing it on the error path is worse: an exception here would
-        #   leave `_check_in_flight` stuck True and the updater would silently stop
-        #   checking for the life of the process — the one failure this whole
-        #   contract exists to prevent.
-        try:
-            if generation != _check_generation:
-                # A channel switch landed while this check was talking to the
-                # PREVIOUS channel's feed. Discard the verdict and leave the clock
-                # UNSTAMPED so the next poll re-checks the new lane immediately,
-                # instead of pinning a stale answer for the full 12-hour interval.
-                logger.debug("Discarding update check superseded by a channel switch")
-                # Offloaded: this reads $KIROCREW_HOME/channel, and the data home can
-                # be network-backed (NFS/SMB) where the read can stall long enough to
-                # freeze the loop and the liveness heartbeat. Read rather than carried
-                # in from the switch on purpose — the file is the authority on which
-                # lane the install now follows, so a switch whose write failed cannot
-                # leave the panel naming a channel that was never persisted.
-                _set_update_info(channel=await asyncio.to_thread(_release_channel))
-            else:
-                # Stamped even on failure, so an offline host or a broken feed cannot
-                # turn the 12-hourly background poll into a hot retry loop. The
-                # dashboard's manual button calls this function directly and is never
-                # rate-limited.
-                _last_update_check = time.time()
-        finally:
-            _check_in_flight = False
+        if generation != _check_generation:
+            # A channel switch landed while this check was talking to the
+            # PREVIOUS channel's feed. Discard the verdict and leave the clock
+            # UNSTAMPED so the next poll re-checks the new lane immediately,
+            # instead of pinning a stale answer for the full 12-hour interval.
+            logger.debug("Discarding update check superseded by a channel switch")
+            # Offloaded: this reads $KIROCREW_HOME/channel, and the data home can
+            # be network-backed (NFS/SMB) where the read can stall long enough to
+            # freeze the loop and the liveness heartbeat. Read rather than carried
+            # in from the switch on purpose — the file is the authority on which
+            # lane the install now follows, so a switch whose write failed cannot
+            # leave the panel naming a channel that was never persisted.
+            _set_update_info(channel=await asyncio.to_thread(_release_channel))
+        else:
+            # Stamped even on failure, so an offline host or a broken feed cannot
+            # turn the 12-hourly background poll into a hot retry loop. The
+            # dashboard's manual button calls this function directly and is never
+            # rate-limited.
+            _last_update_check = time.time()
 
 
 async def _check_git_checkout(proj: str, capability: UpdateCapability) -> None:
@@ -1414,8 +1451,10 @@ async def _venv_pip_install(proj: str, state: DashboardState) -> bool:
     return rc == 0
 
 
-async def _restart_gateway(state: DashboardState) -> bool:
-    """Save state, close sessions, and exec the same Python process once.
+async def _restart_gateway(
+    state: DashboardState, *, resolver: Callable[[], str] | None = None
+) -> bool:
+    """Save state, close sessions, and exec the selected gateway entry point once.
 
     Restart is a process-wide transition.  Two callers must never both drain
     sessions and race separate successors for the same listener/lock, so the
@@ -1428,22 +1467,28 @@ async def _restart_gateway(state: DashboardState) -> bool:
     state._gateway_restart_in_progress = True
     try:
         state.push_update_progress("restarting", "Restarting server…")
-        # Resolved through the managed-venv stable link rather than taken from
-        # ``sys.executable``: after a shadow-venv promotion the cached path
-        # names the superseded versioned tree, and exec'ing it would restart
-        # the OLD version right after the update reported success. For every
-        # other install shape the resolver answers ``sys.executable``.
-        # Offloaded: the resolver walks the venv's sibling directory, which is
-        # synchronous filesystem I/O this loop must not wait on.
-        # Imported here, not at module scope: this module loads on the gateway
-        # boot path, and the updater subsystems are needed only when an
-        # update/restart actually runs (no-new-work-on-gateway-boot-path).
-        from kiro_crew.platform.wheel_engine import respawn_executable
-
-        exe = await asyncio.to_thread(respawn_executable)
-        if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
-            state.push_update_progress("error", "Cannot restart: invalid Python executable path")
+        # Resolve off-loop and before saving/draining. An explicit broken launcher
+        # must not fall back to the running bundle's interpreter and import path.
+        try:
+            launcher = await asyncio.to_thread(resolve_restart_launcher)
+        except (ValueError, OSError) as exc:
+            logger.warning("Gateway launcher unavailable: %s", exc)
+            state.push_update_progress("error", "Cannot restart: invalid gateway launcher path")
             return False
+        exe = None
+        if launcher is None:
+            # Applying callers load this resolver before the install can replace
+            # their import tree. A plain restart has no apply, so load it here.
+            if resolver is None:
+                from kiro_crew.platform.wheel_engine import respawn_executable
+
+                resolver = respawn_executable
+            exe = await asyncio.to_thread(resolver)
+            if not os.path.isfile(exe) or not os.access(exe, os.X_OK):
+                state.push_update_progress(
+                    "error", "Cannot restart: invalid Python executable path"
+                )
+                return False
         # circular import: kiro_crew.dashboard.chat imports from
         # kiro_crew.dashboard.handlers (which re-exports this module), so this
         # must stay inline to avoid an import cycle at module load.
@@ -1481,7 +1526,10 @@ async def _restart_gateway(state: DashboardState) -> bool:
         except Exception:
             logger.debug("Breadcrumb flush before restart failed", exc_info=True)
         await asyncio.sleep(0.5)
-        reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        if launcher is not None:
+            reexec_launcher(launcher, sys.argv[1:])
+        else:
+            reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
         return True
     finally:
         state._gateway_restart_in_progress = False
@@ -1496,6 +1544,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
     # run the built-in mechanism their own policy excluded. A dashboard token
     # proves who the caller is, not that this host may update by git.
     from kiro_crew.platform.update_provider import apply_policy_update
+    from kiro_crew.platform.wheel_engine import respawn_executable
 
     applied = await apply_policy_update()
     if applied is not None:
@@ -1511,7 +1560,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 },
                 status=500,
             )
-        await _restart_gateway(state)
+        await _restart_gateway(state, resolver=respawn_executable)
         return web.json_response({"ok": True, "status": "updating"})
 
     proj = os.environ.get("KIROCREW_PROJECT_DIR", "")
@@ -1645,18 +1694,90 @@ async def api_update_apply(request: web.Request) -> web.Response:
             status=409,
         )
 
+    # Pin the revision this update will apply. The guard above fetched and
+    # measured against `@{u}`, but a ref name is re-resolved by every later git
+    # command, so a remote that moves between here and the apply would let the
+    # floor check below judge one commit and the fast-forward land on another.
+    # An OID cannot move: it is what gets floor-checked AND what gets applied.
+    target_proc = await asyncio.create_subprocess_exec(
+        "git",
+        "rev-parse",
+        "--verify",
+        "@{u}^{commit}",
+        cwd=proj,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.DEVNULL,
+    )
+    try:
+        target_out, _ = await asyncio.wait_for(target_proc.communicate(), timeout=10)
+    except asyncio.TimeoutError:
+        try:
+            target_proc.kill()
+        except ProcessLookupError:
+            pass
+        await target_proc.communicate()
+        return web.json_response(
+            {"error": "Timed out resolving the upstream revision", "code": "git_read_failed"},
+            status=500,
+        )
+    target = (target_out or b"").strip().decode()
+    if target_proc.returncode != 0 or not target:
+        logger.warning("Update refused: could not resolve the tracked upstream in %s", proj)
+        return web.json_response(
+            {
+                "error": "Could not resolve the tracked upstream revision — check the tracked remote",
+                "code": "git_read_failed",
+            },
+            status=409,
+        )
+
+    # Interpreter floor, checked against the pinned revision before the tree
+    # moves to it. pip enforces the same floor during the reinstall, but by then
+    # the checkout has already advanced to code this venv can never import: the
+    # gateway keeps serving the old revision from memory while every lazy import
+    # reads the new files, and each later click repeats the pull and the
+    # refusal. Refusing here leaves the checkout where it was and names the
+    # remedy. Offloaded: it shells out to git and probes the interpreter.
+    try:
+        floor_breach = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            lambda: dep_sync.incoming_python_floor_breach(Path(proj), target, Path(sys.executable)),
+        )
+    except dep_sync.IncomingFloorUnreadable as exc:
+        # The pinned revision is real, but its floor could not be read. That is
+        # not "no floor": waving it through would land exactly the revision
+        # the gate exists to keep out, on the one path git happened to fail on.
+        logger.warning("Update refused: could not read the incoming interpreter floor (%s)", exc)
+        return web.json_response(
+            {
+                "error": "Could not read the incoming revision's interpreter requirement — "
+                "check the tracked remote",
+                "code": "git_read_failed",
+            },
+            status=409,
+        )
+    if floor_breach:
+        logger.warning("Update refused: %s", floor_breach)
+        return web.json_response(
+            {"error": f"Update refused: {floor_breach}", "code": "python_floor"},
+            status=409,
+        )
+
     async def _apply() -> None:
         try:
             state.push_update_progress("pulling", "Pulling latest changes…")
-            # --ff-only makes the non-fast-forward classes unreachable at the
-            # action primitive itself, not just at the precondition above: a
-            # remote that moves in the window between the guard's fetch and
-            # this pull fails the pull instead of minting an unrequested merge
-            # commit into the user's branch.
+            # Fast-forward to the PINNED commit, not `git pull`: a pull refetches
+            # and re-resolves the upstream, so a remote that moved after the
+            # floor check would land a revision nobody checked. --ff-only keeps
+            # the non-fast-forward classes unreachable at the action primitive
+            # itself, not just at the precondition above, so an upstream that
+            # was rewritten in the window fails the merge instead of minting an
+            # unrequested merge commit into the user's branch.
             pull = await asyncio.create_subprocess_exec(
                 "git",
-                "pull",
+                "merge",
                 "--ff-only",
+                target,
                 cwd=proj,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -1669,10 +1790,19 @@ async def api_update_apply(request: web.Request) -> web.Response:
                 except ProcessLookupError:
                     pass
                 await pull.communicate()
-                state.push_update_progress("error", "git pull timed out")
+                state.push_update_progress(
+                    "error", f"Fast-forward to {target[:12]} timed out (git merge --ff-only)"
+                )
                 return
             if pull.returncode != 0:
-                state.push_update_progress("error", "git pull failed")
+                # The detail is what the failure card shows and what its
+                # "Ask the agent" hand-off sends along, so it names the
+                # command that ran and the revision it targeted.
+                state.push_update_progress(
+                    "error",
+                    f"Fast-forward to {target[:12]} failed (git merge --ff-only) — "
+                    "the checkout may have moved; check `git status` in a terminal",
+                )
                 return
 
             # Rebuild the in-tree frontend and stage website/dist into the
@@ -1687,7 +1817,7 @@ async def api_update_apply(request: web.Request) -> web.Response:
 
             # Restart: save history + clean up sessions then exec the same process.
             logger.info("Update complete — saving history and cleaning up before restart")
-            await _restart_gateway(state)
+            await _restart_gateway(state, resolver=respawn_executable)
         except Exception:
             logger.exception("Update failed")
             state.push_update_progress("failed", "Update failed — check logs")
@@ -1766,6 +1896,37 @@ _LOG_LEVELS = {
 }
 
 
+def apply_log_level(level_name: str, *, source: str) -> bool:
+    """Set the ``kiro_crew`` logger to *level_name*; False when the name is unknown.
+
+    The one place the runtime level changes, shared by the dashboard endpoint
+    and the ``agent.log_level`` config applier so a ``kirocrew config set`` or
+    an ``$EDITOR`` edit takes effect exactly like the Logs page toggle.
+    """
+    name = str(level_name or "").upper()
+    if name not in _LOG_LEVELS:
+        return False
+    root = logging.getLogger("kiro_crew")
+    if root.level == _LOG_LEVELS[name]:
+        return True
+    root.setLevel(_LOG_LEVELS[name])
+    logger.info("Log level changed to %s via %s", name, source)
+    return True
+
+
+def apply_log_level_from_config(change: ConfigChange) -> None:
+    """Config applier for ``agent.log_level``: push the written level to the logger.
+
+    Registered by ``server.py`` at boot next to the other appliers that outlive
+    a request, so a write from any writer reaches the logger.
+    """
+    if not change.touched("agent.log_level"):
+        return
+    level = change.new.agent.log_level
+    if not apply_log_level(level, source="config"):
+        logger.warning("agent.log_level %r is not a level name; runtime level unchanged", level)
+
+
 async def api_log_level(request: web.Request) -> web.Response:
     """POST /api/logs/level — change the kiro_crew logger level at runtime.
 
@@ -1776,11 +1937,8 @@ async def api_log_level(request: web.Request) -> web.Response:
     except Exception:
         return web.json_response({"error": "invalid JSON"}, status=400)
     level_name = body.get("level", "").upper()
-    if level_name not in _LOG_LEVELS:
+    if not apply_log_level(level_name, source="dashboard"):
         return web.json_response({"error": f"invalid level: {level_name}"}, status=400)
-    root = logging.getLogger("kiro_crew")
-    root.setLevel(_LOG_LEVELS[level_name])
-    logger.info("Log level changed to %s via dashboard", level_name)
 
     # Persist to config so the level survives restarts: a DELTA read-modify-
     # write of the one key this endpoint owns, inside a single sidecar-flock
@@ -2048,13 +2206,14 @@ async def api_stream(request: web.Request) -> web.StreamResponse:
 
             data = json.dumps(
                 {
-                    # The SSE stream is the THIRD status emitter, and it was reading
-                    # the cache directly on a key this contract renamed — so it
-                    # published `False` unconditionally, and flattened the tri-state
-                    # while doing it (a check that never ran is not "no update").
-                    # `status_update_fields()` is the one reader; /api/status and the
-                    # WebSocket push already go through it.
-                    **state.status_snapshot(**status_update_fields()),  # type: ignore[arg-type]
+                    # The SSE stream is the THIRD status emitter. It routes the
+                    # lesson/cron counts through the ONE gateway-wide cache all
+                    # three emitters share (status_counts.cached_status_snapshot)
+                    # so they never compute inline on the event loop, and that
+                    # funnel joins in the update fields from
+                    # `status_update_fields()` itself — the one reader — so the
+                    # tri-state update fields are not flattened.
+                    **await cached_status_snapshot(state),
                     "version": _display_local_version(),
                 }
             )
@@ -2431,7 +2590,11 @@ async def api_update_approve(request: web.Request) -> web.Response:
     from kiro_crew.platform import update_stepup
     from kiro_crew.platform.update_layout import cdn_bases as _cdn
     from kiro_crew.platform.update_layout import cdn_bases_are_safe as _cdn_safe
-    from kiro_crew.platform.wheel_engine import WheelUpdateError, apply_wheel_update
+    from kiro_crew.platform.wheel_engine import (
+        WheelUpdateError,
+        apply_wheel_update,
+        respawn_executable,
+    )
 
     # A policy-defined command provider OWNS updates on this host, and its
     # commands never read the built-in mechanism this endpoint drives. Checked
@@ -2559,7 +2722,7 @@ async def api_update_approve(request: web.Request) -> web.Response:
             return
         logger.info("In-app wheel update to v%s promoted; restarting", pending.version)
         await _audit("success", resources=f"v{pending.version} promoted")
-        await _restart_gateway(state)
+        await _restart_gateway(state, resolver=respawn_executable)
 
     task = asyncio.create_task(_apply())
     state._background_tasks.add(task)

@@ -20,7 +20,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { i18nT } from '../../i18n/t'
 import { fmtDateTimeNumeric, fmtList, fmtRelative } from '../../i18n/format'
 import type { UpdateState } from '../../hooks/useUpdateSubscription'
-import { foldStableStamp } from '../../utils/displayVersion'
+import { foldStableStamp, sameBuildVersion } from '../../utils/displayVersion'
 import { bytesAreTheStableRelease as followedLanePublishesRunningBytes } from '../../utils/laneMembership'
 
 /** Human-readable transfer rate for the progress label. */
@@ -306,7 +306,13 @@ export function resolveUnarmedPhase(deadlineMs: number, now: number): 'expired' 
   return now >= deadlineMs ? 'expired' : 'applying'
 }
 
-function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
+export function InAppUpdateFlow({
+  version,
+  manualCommand,
+  isChannelMove,
+  onHandoff,
+  askAgent = true,
+}: {
   /**
    * DISPLAY ONLY — the label on the Arm button. `armUpdate()` sends no version
    * (the gateway arms against its own cached raw `latest_version`), so this is
@@ -324,6 +330,10 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
    * same direction-blind copy this change exists to remove.
    */
   isChannelMove?: boolean
+  /** Close an overlay host after Ask Agent successfully navigates to chat. */
+  onHandoff?: () => void
+  /** Disable hand-off where an enforcement overlay must remain visible. */
+  askAgent?: boolean
 }) {
   const [phase, setPhase] = useState<'idle' | 'armed' | 'applying' | 'failed' | 'expired'>('idle')
   const [armed, setArmed] = useState<{
@@ -369,7 +379,9 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
         setArmError(res.error || i18nT('pages.settings.aboutPanel.update_failed'))
       }
     },
-    onError: (e: unknown) => setArmError(e instanceof ApiError ? e.message : String(e)),
+    onError: (e: unknown) => setArmError(
+      e instanceof ApiError ? e.message : i18nT('pages.settings.aboutPanel.update_failed'),
+    ),
   })
   // Countdown + liveness poll while ARMED. The count is cosmetic (the server
   // enforces the TTL); the poll is what notices the request being consumed —
@@ -431,119 +443,144 @@ function InAppUpdateFlow({ version, manualCommand, isChannelMove }: {
     if (phase !== 'applying' && phase !== 'armed') return
     if (progressStep === 'failed' || progressStep === 'error') setPhase('failed')
   }, [progressStep, phase])
-  if (phase === 'applying') {
-    return (
-      <div className="flex flex-col gap-2" data-testid="in-app-update-applying">
-        <p className="text-[13px] text-text flex items-center gap-1.5">
-          <RefreshCw size={13} className="lucide-inline animate-spin text-accent" />
-          {i18nT('pages.settings.aboutPanel.applying_update')}
-        </p>
-        {progress?.detail && (
-          <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
-            {progress.detail}
-          </p>
-        )}
-        <p className="text-[12px] text-muted">
-          {i18nT('pages.settings.aboutPanel.applying_restart_note')}
-        </p>
-      </div>
-    )
+  const resetFailure = () => {
+    setPhase('idle')
+    setArmed(null)
+    setCmdCopied(false)
+    setCmdCopyFailed(false)
   }
-  if (phase === 'failed') {
-    return (
-      <div className="flex flex-col gap-2" data-testid="in-app-update-failed">
-        {/* askAgent on: a status panel with nothing editable. Try again stays a
-            sibling — retry and hand-off are different next steps. */}
-        <ErrorNotice message={progress?.detail || i18nT('pages.settings.aboutPanel.update_failed')} askAgent />
-        <div>
-          <Btn onClick={() => { setPhase('idle'); setArmed(null); setCmdCopied(false); setCmdCopyFailed(false) }}>
-            {i18nT('pages.settings.aboutPanel.try_again')}
-          </Btn>
-        </div>
-      </div>
-    )
+  const runAction = () => {
+    if (phase === 'armed' && armed) {
+      void copyCommand(armed.approveCommand, setCmdCopied, setCmdCopyFailed)
+      return
+    }
+    if (phase === 'failed') {
+      resetFailure()
+      return
+    }
+    if (phase !== 'applying') arm.mutate()
   }
-  if (phase !== 'armed' || !armed) {
-    return (
-      <div className="flex flex-col gap-2" data-testid="in-app-update">
-        {phase === 'expired' && (
-          <p className="text-[12px] text-muted" data-testid="arm-expired-note">
-            {i18nT('pages.settings.aboutPanel.approval_window_expired')}
+  const rootTestId = phase === 'armed'
+    ? 'in-app-update-armed'
+    : phase === 'applying'
+      ? 'in-app-update-applying'
+      : phase === 'failed'
+        ? 'in-app-update-failed'
+        : 'in-app-update'
+  const canStart = phase === 'idle' || phase === 'expired'
+
+  return (
+    <div className="flex flex-col gap-2" data-testid={rootTestId}>
+      {phase === 'applying' && (
+        <>
+          {progress?.detail && (
+            <p className="text-[12px] text-muted font-mono break-all" data-testid="apply-progress">
+              {progress.detail}
+            </p>
+          )}
+          <p className="text-[12px] text-muted">
+            {i18nT('pages.settings.aboutPanel.applying_restart_note')}
           </p>
-        )}
-        <p className="text-[13px] text-muted">
-          {i18nT(isChannelMove
-            ? 'pages.settings.aboutPanel.in_app_channel_move_intro'
-            : 'pages.settings.aboutPanel.in_app_update_intro')}
-        </p>
-        <div>
-          <Btn primary onClick={() => arm.mutate()} disabled={arm.isPending}>
-            {/* A lane move rolls the version BACK, so the primary action that
-                performs it must not wear an upgrade arrow. */}
-            {isChannelMove
+        </>
+      )}
+
+      {phase === 'failed' && (
+        <ErrorNotice
+          message={progress?.detail || i18nT('pages.settings.aboutPanel.update_failed')}
+          askAgent={askAgent}
+          onHandoff={onHandoff}
+        />
+      )}
+
+      {canStart && (
+        <>
+          {phase === 'expired' && (
+            <p className="text-[12px] text-muted" data-testid="arm-expired-note">
+              {i18nT('pages.settings.aboutPanel.approval_window_expired')}
+            </p>
+          )}
+          <p className="text-[13px] text-muted">
+            {i18nT(isChannelMove
+              ? 'pages.settings.aboutPanel.in_app_channel_move_intro'
+              : 'pages.settings.aboutPanel.in_app_update_intro')}
+          </p>
+          <ErrorNotice message={armError} askAgent={askAgent} onHandoff={onHandoff} testId="arm-error" />
+          {manualCommand && (
+            <details className="text-[12px] text-muted">
+              <summary className="cursor-pointer">{i18nT('pages.settings.aboutPanel.or_update_manually')}</summary>
+              <div className="mt-2 p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all">
+                {manualCommand}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+
+      {phase === 'armed' && armed && (
+        <>
+          <p className="text-[13px] text-muted">
+            {i18nT('pages.settings.aboutPanel.armed_run_on_host')}
+          </p>
+          <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
+            data-testid="approve-command">
+            {armed.approveCommand}
+          </div>
+          <span className="text-[12px] text-muted" data-testid="arm-countdown">
+            {i18nT('pages.settings.aboutPanel.armed_expires_in', {
+              time: `${Math.floor(armed.expiresIn / 60)}:${String(armed.expiresIn % 60).padStart(2, '0')}`,
+            })}
+          </span>
+          {cmdCopyFailed && (
+            <ErrorNotice
+              variant="inline"
+              message={i18nT('pages.settings.aboutPanel.copy_failed_select_the_command_and_copy_it_manually')}
+              askAgent={askAgent}
+              onHandoff={onHandoff}
+              testId="arm-copy-error"
+            />
+          )}
+          {armStatusQuery.failureCount >= ARM_POLL_FAILURE_THRESHOLD && (
+            <ErrorNotice
+              variant="inline"
+              message={i18nT('pages.settings.aboutPanel.arm_status_poll_failing')}
+              askAgent={askAgent}
+              onHandoff={onHandoff}
+              testId="arm-poll-error"
+            />
+          )}
+          <p className="text-[12px] text-muted">
+            {i18nT('pages.settings.aboutPanel.armed_waiting_note')}
+          </p>
+        </>
+      )}
+
+      <div>
+        <Btn
+          key="update-action"
+          data-testid="in-app-update-action"
+          primary={canStart}
+          onClick={runAction}
+          disabled={arm.isPending || phase === 'applying'}
+        >
+          {phase === 'applying' ? (
+            <><RefreshCw size={13} className="lucide-inline animate-spin" /> {i18nT('pages.settings.aboutPanel.applying_update')}</>
+          ) : phase === 'armed' ? (
+            <><Copy size={13} className="lucide-inline" /> {cmdCopied
+              ? i18nT('pages.settings.aboutPanel.copied')
+              : i18nT('pages.settings.aboutPanel.copy_command')}</>
+          ) : phase === 'failed' ? (
+            i18nT('pages.settings.aboutPanel.try_again')
+          ) : (
+            <>{isChannelMove
               ? <GitBranch size={13} className="lucide-inline" />
               : <ArrowUp size={13} className="lucide-inline" />} {version
               ? i18nT(isChannelMove
                 ? 'pages.settings.aboutPanel.switch_to_version'
                 : 'pages.settings.aboutPanel.update_to_version', { version })
-              : i18nT('pages.settings.aboutPanel.update_now')}
-          </Btn>
-        </div>
-        {/* askAgent on: arming persists nothing client-side; the button above
-            is still there for a retry. */}
-        <ErrorNotice message={armError} askAgent testId="arm-error" />
-        <details className="text-[12px] text-muted">
-          <summary className="cursor-pointer">{i18nT('pages.settings.aboutPanel.or_update_manually')}</summary>
-          <div className="mt-2 p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all">
-            {manualCommand}
-          </div>
-        </details>
-      </div>
-    )
-  }
-  return (
-    <div className="flex flex-col gap-2" data-testid="in-app-update-armed">
-      <p className="text-[13px] text-muted">
-        {i18nT('pages.settings.aboutPanel.armed_run_on_host')}
-      </p>
-      <div className="p-2.5 bg-bg rounded-lg border border-border font-mono text-[12px] text-text break-all"
-        data-testid="approve-command">
-        {armed.approveCommand}
-      </div>
-      <div className="flex items-center gap-2 flex-wrap">
-        <Btn onClick={() => copyCommand(armed.approveCommand, setCmdCopied, setCmdCopyFailed)}>
-          <Copy size={13} className="lucide-inline" /> {cmdCopied
-            ? i18nT('pages.settings.aboutPanel.copied')
-            : i18nT('pages.settings.aboutPanel.copy_command')}
+              : i18nT('pages.settings.aboutPanel.update_now')}</>
+          )}
         </Btn>
-        <span className="text-[12px] text-muted" data-testid="arm-countdown">
-          {i18nT('pages.settings.aboutPanel.armed_expires_in', {
-            time: `${Math.floor(armed.expiresIn / 60)}:${String(armed.expiresIn % 60).padStart(2, '0')}`,
-          })}
-        </span>
-        {/* askAgent on: the command is still on screen above to select by hand. */}
-        {cmdCopyFailed && (
-          <ErrorNotice
-            variant="inline"
-            message={i18nT('pages.settings.aboutPanel.copy_failed_select_the_command_and_copy_it_manually')}
-            askAgent
-          />
-        )}
       </div>
-      {/* A persistently failing poll means the approval landing can no longer be
-          observed from this tab. askAgent on: the armed request lives on the
-          gateway; nothing here is a draft. */}
-      {armStatusQuery.failureCount >= ARM_POLL_FAILURE_THRESHOLD && (
-        <ErrorNotice
-          variant="inline"
-          message={i18nT('pages.settings.aboutPanel.arm_status_poll_failing')}
-          askAgent
-          testId="arm-poll-error"
-        />
-      )}
-      <p className="text-[12px] text-muted">
-        {i18nT('pages.settings.aboutPanel.armed_waiting_note')}
-      </p>
     </div>
   )
 }
@@ -659,6 +696,26 @@ export function AboutPanel() {
   const versionDisplay = info?.version
     ? foldStableStamp(info.version, info.channel, runningAheadOfLane)
     : (gatewayVersionDisplay || gatewayVersion || '—')
+  // Two version lanes. `versionDisplay` is the DESKTOP SHELL's stamp whenever
+  // `getInfo()` answered and the gateway's only as a fallback, while the branch
+  // and commit chips are always the gateway's (`status.branch` / `status.commit`,
+  // stamped from the checkout the backend runs from). A shell that spawned its
+  // own gateway keeps both lanes equal, so folding them into one row is
+  // harmless there. A shell attached to a gateway it did not spawn (dev-fleet,
+  // launchd, an SSH tunnel to a source checkout) is where the fold lies: the row
+  // reads `v0.6.0-insider.6 · main · 2ed1f603d`, a build that never existed.
+  // When the two disagree, label both and hang the chips off the gateway line,
+  // since that is what they stamp. "Agree" is EITHER of two tests, because one
+  // build is stamped in two spellings (`release_channel.py`: the shell carries
+  // SemVer `0.6.0-insider.4`, the wheel it launched carries PEP 440 `0.6.0rc4`):
+  // the raw strings name the same build (`sameBuildVersion`, so a self-spawned
+  // insider install is one lane), or the DISPLAY strings match (a promoted
+  // stable build folds its prerelease stamp on both sides — foldStableStamp
+  // here, `_display_version` on the backend — while its raw stamps differ).
+  const gatewayLaneVersion = gatewayVersionDisplay || gatewayVersion
+  const versionLanesDiffer = !!info?.version && !!gatewayLaneVersion
+    && versionDisplay !== gatewayLaneVersion
+    && !sameBuildVersion(info.version, gatewayVersion || gatewayLaneVersion)
   const channel = info?.channel
   const updatesDisabled = info?.disabled
   // An externally-managed install (a distro/enterprise package) has no channel
@@ -1179,6 +1236,9 @@ export function AboutPanel() {
   // whole branch — installer command included — rendered forever.
   const channelMovePending = !isDesktop && gwChannelMovePending
   const showManualUpdate = (showUpdate || channelMovePending) && !gwSelfUpdate
+  const effectiveGwCanArm = typeof gwCheck.data?.can_arm === 'boolean'
+    ? gwCheck.data.can_arm
+    : gwCanArm
 
   // Escape closes the confirm dialog (unless an apply/restart is in flight).
   useEffect(() => {
@@ -1189,6 +1249,24 @@ export function AboutPanel() {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [showConfirm, gwApply.isPending, restarting])
+
+  // Gateway-stamped build chips. Hoisted because they render in one of two
+  // places: beside the license chip when the lanes agree, or on the gateway's
+  // own version line when they do not (see `versionLanesDiffer`).
+  const branchChip = buildBranch && (
+    <a href={codeBrowserBranchUrl(buildBranch)} target="_blank" rel="noopener noreferrer"
+       title={i18nT('pages.settings.aboutPanel.browse_this_branch_on_github')}
+       className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
+      <GitBranch size={12} className="shrink-0" /> <span className="truncate max-w-[220px]">{buildBranch}</span> <ExternalLink size={10} className="opacity-60 shrink-0" />
+    </a>
+  )
+  const commitChip = buildCommit && (
+    <a href={codeBrowserCommitUrl(buildCommit)} target="_blank" rel="noopener noreferrer"
+       title={i18nT('pages.settings.aboutPanel.view_this_commit_on_github')}
+       className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
+      <GitCommitHorizontal size={12} className="shrink-0" /> {buildCommit} <ExternalLink size={10} className="opacity-60 shrink-0" />
+    </a>
+  )
 
   return (
     <>
@@ -1206,7 +1284,13 @@ export function AboutPanel() {
           <div className="min-w-0 flex-1">
             <div className="flex items-center gap-2.5 flex-wrap">
               <span className="text-[19px] font-extrabold tracking-tight text-text-strong">{botName || 'Kiro Crew'}</span>
-              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT} data-testid="about-version">{i18nT('pages.settings.aboutPanel.v')}{versionDisplay}</span>
+              <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
+                    title={versionLanesDiffer ? i18nT('pages.settings.aboutPanel.app_lane_title') : undefined}
+                    data-testid="about-version">
+                {versionLanesDiffer && (
+                  <span className="font-sans font-medium text-muted mr-1" data-testid="about-version-lane">{i18nT('pages.settings.aboutPanel.app_lane_label')}</span>
+                )}
+                {i18nT('pages.settings.aboutPanel.v')}{versionDisplay}</span>
               {!isDesktop && (heroDiverged
                 // Diverged outranks BOTH other verdicts: `update_available` is
                 // false here BY DESIGN (the no-auto-apply property), and a
@@ -1254,6 +1338,21 @@ export function AboutPanel() {
               )}
             </div>
             <div className="text-[12.5px] text-muted mt-1">{i18nT('pages.settings.aboutPanel.autonomous_agent_management_runs_locally_open_so')}</div>
+            {/* The gateway's own line, only when it is not the build the shell
+                badge above names. The branch and commit chips live here in that
+                case — they are gateway stamps, so beside the shell badge they
+                described a build that never existed. */}
+            {versionLanesDiffer && (
+              <div className="mt-2 flex items-center gap-2 flex-wrap" data-testid="about-gateway-lane">
+                <span className="text-[12px] font-mono font-semibold text-accent rounded-full px-2.5 py-0.5 border" style={ACCENT_TINT}
+                      title={i18nT('pages.settings.aboutPanel.gateway_lane_title')}
+                      data-testid="about-gateway-version">
+                  <span className="font-sans font-medium text-muted mr-1">{i18nT('pages.settings.aboutPanel.gateway_lane_label')}</span>
+                  {i18nT('pages.settings.aboutPanel.v')}{gatewayLaneVersion}</span>
+                {branchChip}
+                {commitChip}
+              </div>
+            )}
             {/* getInfo() rejected: the version chip above fell back to the
                 gateway's figure and the channel row is missing, with nothing
                 to say why. askAgent on: a read failure on a status card. */}
@@ -1271,20 +1370,8 @@ export function AboutPanel() {
 
         {/* Build + license chips */}
         <div className="mt-4 flex flex-wrap gap-2">
-          {buildBranch && (
-            <a href={codeBrowserBranchUrl(buildBranch)} target="_blank" rel="noopener noreferrer"
-               title={i18nT('pages.settings.aboutPanel.browse_this_branch_on_github')}
-               className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
-              <GitBranch size={12} className="shrink-0" /> <span className="truncate max-w-[220px]">{buildBranch}</span> <ExternalLink size={10} className="opacity-60 shrink-0" />
-            </a>
-          )}
-          {buildCommit && (
-            <a href={codeBrowserCommitUrl(buildCommit)} target="_blank" rel="noopener noreferrer"
-               title={i18nT('pages.settings.aboutPanel.view_this_commit_on_github')}
-               className="inline-flex items-center gap-1.5 text-[12px] font-mono text-accent border rounded-lg px-2.5 py-1 no-underline hover:underline" style={ACCENT_TINT}>
-              <GitCommitHorizontal size={12} className="shrink-0" /> {buildCommit} <ExternalLink size={10} className="opacity-60 shrink-0" />
-            </a>
-          )}
+          {!versionLanesDiffer && branchChip}
+          {!versionLanesDiffer && commitChip}
           <span className="inline-flex items-center gap-1.5 text-[12px] text-muted border border-border rounded-lg px-2.5 py-1 bg-bg"
                 title={i18nT('pages.settings.aboutPanel.open_source_under_the_apache_2_0_license')}>
             <Scale size={12} className="shrink-0" /> {i18nT('pages.settings.aboutPanel.apache_2_0')}
@@ -1683,7 +1770,7 @@ export function AboutPanel() {
                   </p>
                 )}
                 {showManualUpdate ? (
-                  gwCanArm ? (
+                  effectiveGwCanArm ? (
                     <InAppUpdateFlow
                       version={gwTargetDisplay || gwStatusLatestDisplay || gwTarget || gwStatusLatest}
                       manualCommand={effectiveCommand || ''}

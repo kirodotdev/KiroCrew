@@ -5,8 +5,6 @@
 //   - a user scroll-up is never overridden by a late widget load (race-proof)
 //   - our own programmatic pins are not mistaken for user scrolls
 import { describe, it, expect } from 'vitest'
-import { readFileSync } from 'node:fs'
-import { join } from 'node:path'
 import * as fc from 'fast-check'
 import {
   computeAtBottom,
@@ -607,21 +605,68 @@ describe('resolveUserScrollStick — a clamp only ever lowers scrollTop', () => 
   })
 })
 
-describe('both consumers report the viewport signal', () => {
-  it('the app-sdk hook passes viewportGrowth from its own scroll-event baseline', () => {
-    // Review finding: this hook observes pane resizes and the soft keyboard — the
-    // exact causes of a viewport-growth clamp — yet omitted the signal, so it kept
-    // the original defect while the chat virtualizer was fixed. The baseline must
-    // be its own, advanced by the scroll handler: a ref the ResizeObserver could
-    // advance first would fold the growth away before the clamp is classified.
-    const src = readFileSync(join(__dirname, '..', 'app-sdk', 'useChatScrollFollow.ts'), 'utf8')
-    const call = src.slice(src.indexOf('resolveUserScrollStick({'))
-    const args = call.slice(0, call.indexOf('})'))
-    expect(args).toMatch(/viewportGrowth:/)
-    expect(args).toContain('lastScrollClientHRef.current')
-    // Advanced in the scroll handler, not in the observer.
-    expect(src).toMatch(/prevScrollTopRef\.current = geom\.scrollTop\s*\n\s*lastScrollClientHRef\.current = geom\.clientHeight/)
-    // Not reusing the write-tracking ref, whose meaning is different.
-    expect(args).not.toContain('lastWriteClientHRef')
+describe('resolveUserScrollStick — a clamp under an upward user input is the reader', () => {
+  // A user scroll-UP concurrent with a mid-turn content shrink terminates within
+  // epsilon of the NEW bottom, wearing the same signature as the engine's clamp.
+  // The intent listeners stamp the input's own direction before the scroll event
+  // dispatches, so a fresh UPWARD stamp is the discriminator: with it the landing
+  // is the reader's own move and releases follow; without it the landing is the
+  // engine's clamp and keeps follow, which is what rule 1 is for.
+  const geom = { scrollTop: 600, scrollHeight: 1000, clientHeight: 400 }
+
+  it('a content-shrink clamp with NO recent input keeps stick armed', () => {
+    const armed = resolveUserScrollStick({
+      stick: true,
+      followOutput: true,
+      scrollTop: 600,
+      prevScrollTop: 620,
+      geom,
+      upwardInputWithinSettle: false,
+    })
+    expect(armed).toBe(true)
+  })
+
+  it('a clamp inside the settle window of a DOWNWARD input keeps stick armed', () => {
+    // A wheel-down at the bottom is an ordinary input while a stream is live: it
+    // stamps hard input but NOT upward intent, and a content-shrink clamp landing
+    // inside its settle window must not release follow — the reader asked to stay
+    // at the end. Only confirmed upward input disables the clamp guard, so the
+    // caller passes false here exactly as it does for a directionless grab.
+    const armed = resolveUserScrollStick({
+      stick: true,
+      followOutput: true,
+      scrollTop: 600,
+      prevScrollTop: 620,
+      geom,
+      upwardInputWithinSettle: false,
+    })
+    expect(armed).toBe(true)
+  })
+
+  it('the same clamp WITHIN the settle window of an upward input releases stick', () => {
+    const armed = resolveUserScrollStick({
+      stick: true,
+      followOutput: true,
+      scrollTop: 600,
+      prevScrollTop: 620,
+      geom,
+      upwardInputWithinSettle: true,
+    })
+    expect(armed).toBe(false)
+  })
+
+  it('a genuine downward re-engage under an upward stamp still follows', () => {
+    // A clamp only ever lowers scrollTop, so a downward move is the reader's own
+    // and must re-engage even with a fresh input stamp — the release is for
+    // non-downward landings only.
+    const armed = resolveUserScrollStick({
+      stick: false,
+      followOutput: true,
+      scrollTop: 600,
+      prevScrollTop: 400,
+      geom,
+      upwardInputWithinSettle: true,
+    })
+    expect(armed).toBe(true)
   })
 })

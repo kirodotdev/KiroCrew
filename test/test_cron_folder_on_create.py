@@ -1,6 +1,6 @@
 """Filing a cron into a Schedule-page folder at CREATE time.
 
-Covers the three creation surfaces that previously could not carry a folder:
+Covers the three creation surfaces that carry a folder at create time:
 the MCP ``cron_add``/``cron_update`` tools (``folder`` argument), the CLI
 (``kirocrew cron add --folder``), and the app manifest (``CronEntry.folder``),
 plus the shared read-only resolver they build on.

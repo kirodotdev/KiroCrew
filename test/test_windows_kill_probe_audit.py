@@ -50,15 +50,6 @@ pytestmark = pytest.mark.xdist_group(name="tree_scan_test_windows_kill_probe_aud
 # ``file::function`` sites allowed to keep a raw signal-0 probe, with the reason
 # it can never run on Windows. Keep this list SHORT and each entry justified.
 GATED_PROBES: dict[str, str] = {
-    # POSIX-only sweep of children that reparented out of the killed process
-    # group. Guarded by an `if platform_compat.IS_WINDOWS: return` on the first
-    # line of the body, and moot there anyway: kill_process_tree already uses
-    # `taskkill /T` to walk the whole child tree, so nothing is left to sweep.
-    # The function docstring states this.
-    "acp/client.py::_kill_escaped_children": (
-        "explicit `if platform_compat.IS_WINDOWS: return` early-out; "
-        "process groups do not exist on Windows"
-    ),
     # platform_compat IS the shim — its POSIX branch is the real implementation
     # that every other caller is supposed to route through, and it is reached
     # only under `if IS_POSIX`.
@@ -175,7 +166,7 @@ def test_gated_sites_carry_a_written_justification() -> None:
 
 
 def test_app_backend_pid_alive_uses_the_shim() -> None:
-    """Regression pin for a site that was previously a raw probe.
+    """Regression pin for a site that would otherwise be a raw probe.
 
     ``apps/backend.py::_pid_alive`` is called from the stale-reap escalation
     loop, which is otherwise fully shim-routed

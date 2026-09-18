@@ -10,6 +10,11 @@ from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew.dashboard.handlers.messaging import api_delete_message
 from kiro_crew.mcp_core import _call_tool
+from kiro_crew.mcp_tools.messaging import delete_message
+from kiro_crew.validation import (
+    CHANNEL_ID_RE,
+    CHANNEL_MAX_LEN,
+)
 
 # ── Endpoint tests ──
 
@@ -127,3 +132,46 @@ class TestDeleteMessageTool:
         assert "delete_message" in MCP_CORE_SCHEMAS
         required = {f.name for f in MCP_CORE_SCHEMAS["delete_message"].fields if f.required}
         assert {"channel", "ts"} <= required
+
+
+class TestDeleteMessageChannelIsLengthBounded:
+    """`delete_message` rejects a channel id longer than `CHANNEL_MAX_LEN` even
+    when its shape matches `CHANNEL_ID_RE`.
+
+    `delete_message` reads `args["channel"]` straight off the MCP payload with
+    no schema in front of it, so the length bound lives at this call site as
+    `CHANNEL_MAX_LEN` alongside the shape check. This is the LLM-reachable
+    entry point of the pair.
+    """
+
+    def test_overlength_channel_is_refused_before_the_post(self):
+        over_cap = "C" + "A" * CHANNEL_MAX_LEN  # 21 chars: matches the regex
+
+        assert CHANNEL_ID_RE.match(over_cap), "fixture must be shape-valid or it proves nothing"
+
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            result = delete_message(
+                "delete_message",
+                {"channel": over_cap, "ts": "1780088134.952549"},
+            )
+
+        assert "invalid channel" in result.lower()
+        mock_post.assert_not_called()
+
+    def test_a_channel_at_exactly_the_cap_still_posts(self):
+        """Negative control: the cap is inclusive, so a maximum-length id is
+        still a delete the tool must perform."""
+        at_cap = "C" + "A" * (CHANNEL_MAX_LEN - 1)
+        assert len(at_cap) == CHANNEL_MAX_LEN
+
+        with patch("kiro_crew.mcp_core._post") as mock_post:
+            mock_post.return_value = {"ok": True}
+            result = delete_message(
+                "delete_message",
+                {"channel": at_cap, "ts": "1780088134.952549"},
+            )
+
+        assert "deleted" in result.lower()
+        mock_post.assert_called_once_with(
+            "/api/delete-message", {"channel": at_cap, "ts": "1780088134.952549"}
+        )

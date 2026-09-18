@@ -40,4 +40,21 @@ describe('Modal — Escape handling', () => {
     fireEvent.click(screen.getByLabelText('Close'))
     expect(onClose).toHaveBeenCalledTimes(1)
   })
+
+  it('dismissDisabled refuses Escape and the X button, and renders the X disabled', () => {
+    // A write the modal owns is in flight: dismissing would unmount the
+    // surface a late failure has to render in, so every path is refused and
+    // the X shows it.
+    const onClose = vi.fn()
+    const { rerender } = render(<Modal open={true} onClose={onClose} title="T" dismissDisabled><div /></Modal>)
+    expect(screen.getByLabelText('Close')).toBeDisabled()
+    fireEvent.keyDown(window, { key: 'Escape' })
+    fireEvent.click(screen.getByLabelText('Close'))
+    expect(onClose).not.toHaveBeenCalled()
+    // Once the write settles the modal is dismissable again.
+    rerender(<Modal open={true} onClose={onClose} title="T"><div /></Modal>)
+    expect(screen.getByLabelText('Close')).toBeEnabled()
+    fireEvent.click(screen.getByLabelText('Close'))
+    expect(onClose).toHaveBeenCalledTimes(1)
+  })
 })

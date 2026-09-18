@@ -151,8 +151,12 @@ _ALLOWED_MEDIA_SCHEMES = ("https",)
 _MEDIA_PORT = 443
 
 
-def _vet_media_url(url: str) -> str:
-    """Vet an inbound media URL for fetching and return its normalized form.
+def _vet_media_url(url: str) -> link_unfurl.VettedUrl:
+    """Vet an inbound media URL for fetching and return the vetted address.
+
+    The whole :class:`link_unfurl.VettedUrl` is returned, not just the normalized
+    string: the caller pins its connection to ``ip``/``wire_host``/``port``, and
+    handing back only the URL is what left that pin impossible.
 
     The ``url`` arrives in the callback body, so it is platform-*supplied* but not
     platform-*guaranteed*: nothing in the frame proves the host is one WeCom
@@ -169,20 +173,23 @@ def _vet_media_url(url: str) -> str:
     picked, and its refusal set is pinned against the IANA special-purpose-range
     table by that module's own suite — which a local check would not inherit.
 
-    Two controls the sibling channels carry are deliberately NOT here, both
-    because adding them as written would cost more than it buys:
+    One control the sibling channels carry is deliberately NOT here, because
+    adding it as written would cost more than it buys: a CDN host allow-list, as
+    ``discord/client.py`` keeps for its two documented CDN hosts and
+    ``slack/client.py`` for ``slack.com``. WeCom documents no stable media-host
+    set, so an allow-list here would be a guess, and a wrong guess silently drops
+    legitimate media. The destination vet above closes the same class without
+    having to name hosts.
 
-    * A CDN host allow-list, as ``discord/client.py`` keeps for its two documented
-      CDN hosts and ``slack/client.py`` for ``slack.com``. WeCom documents no
-      stable media-host set, so an allow-list here would be a guess, and a wrong
-      guess silently drops legitimate media. The destination vet above closes the
-      same class without having to name hosts.
-    * A pinned resolver, the anti-rebinding mechanism in ``teams/client.py`` and
-      the meetings calendar provider. This path takes an operator ``proxy``, and
-      under a proxy aiohttp never resolves the target host, so the pin would go
-      unconsulted on exactly the deployments that configure one. The residual is
-      the rebinding window between this resolution and the socket; closing it
-      needs the proxy case answered first, which is its own change.
+    The address this returns IS pinned on the fetch, so the rebinding window
+    between this resolution and the socket is closed the way ``teams/client.py``
+    and the link-preview handler close it: :func:`download_media` opens its own
+    session on the connector :func:`link_unfurl.pinned_connector` builds for this
+    vetted address. **Under a configured operator ``proxy`` the pin stays
+    unconsulted by construction** — aiohttp hands the proxy the hostname and never
+    resolves it locally, so there is no lookup for a resolver to answer, and the
+    rebinding residual remains on exactly those deployments. Closing it there is
+    the proxy's own job, not something a local resolver can reach.
 
     The proxy also splits this vet from the egress it is judging, in both
     directions, and neither direction is fixed here. Resolution happens locally
@@ -214,7 +221,7 @@ def _vet_media_url(url: str) -> str:
         # `https://host:80` passes the shared vet and would then fail the TLS
         # handshake with a message that does not name the cause.
         raise WeComMediaError("refusing media url (blocked_url)")
-    return vetted.url
+    return vetted
 
 
 async def download_media(
@@ -230,44 +237,66 @@ async def download_media(
     The size cap is enforced while READING, so an oversize object is abandoned
     mid-stream rather than fully buffered and then rejected — the point of a cap
     is to bound the memory, and checking after the read does not.
+
+    With no ``proxy`` the request goes out on a session of this function's own,
+    pinned to the address the vet approved, so a second DNS answer cannot move the
+    socket to an internal address. ``session`` is still the transport for the
+    proxied case, so the signature and every caller stay unchanged.
     """
     if not url:
         raise WeComMediaError("media item carries no url")
     # Off the loop: the vet performs one `getaddrinfo`, which blocks.
-    url = await asyncio.to_thread(_vet_media_url, url)
+    vetted = await asyncio.to_thread(_vet_media_url, url)
     key = decode_aes_key(aeskey)
-    chunks: list[bytes] = []
-    total = 0
+
+    async def _read(resp: Any) -> bytes:
+        """The status rules and the capped read, shared by both transports."""
+        if 300 <= resp.status < 400:
+            raise WeComMediaError("refusing redirected media url")
+        if resp.status != 200:
+            raise WeComMediaError(f"media download returned HTTP {resp.status}")
+        chunks: list[bytes] = []
+        total = 0
+        async for chunk in resp.content.iter_chunked(64 * 1024):
+            total += len(chunk)
+            if total > max_bytes:
+                raise WeComMediaError(f"media object exceeds {max_bytes} bytes")
+            chunks.append(chunk)
+        return b"".join(chunks)
+
+    # Redirects are refused rather than followed, matching `discord/client.py` and
+    # `slack/client.py`. aiohttp follows them by default, and a followed hop is one
+    # the vet never saw — the host check would have been true only of the hop that
+    # did not carry the bytes. If WeCom is ever observed to redirect a media URL,
+    # the answer is per-hop re-vetting (`teams/client.py::_stream_attachment` is
+    # the shape), not re-enabling blind following.
+    get_kwargs: dict[str, Any] = {
+        "timeout": aiohttp.ClientTimeout(total=_DOWNLOAD_TIMEOUT_SECS),
+        "allow_redirects": False,
+    }
     try:
-        async with session.get(
-            url,
-            proxy=proxy,
-            timeout=aiohttp.ClientTimeout(total=_DOWNLOAD_TIMEOUT_SECS),
-            # Refused rather than followed, matching `discord/client.py` and
-            # `slack/client.py`. aiohttp follows redirects by default, and a
-            # followed hop is one the vet above never saw — the host check would
-            # have been true only of the hop that did not carry the bytes. If
-            # WeCom is ever observed to redirect a media URL, the answer is
-            # per-hop re-vetting (`teams/client.py::_stream_attachment` is the
-            # shape), not re-enabling blind following.
-            allow_redirects=False,
-        ) as resp:
-            if 300 <= resp.status < 400:
-                raise WeComMediaError("refusing redirected media url")
-            if resp.status != 200:
-                raise WeComMediaError(f"media download returned HTTP {resp.status}")
-            async for chunk in resp.content.iter_chunked(64 * 1024):
-                total += len(chunk)
-                if total > max_bytes:
-                    raise WeComMediaError(f"media object exceeds {max_bytes} bytes")
-                chunks.append(chunk)
+        if proxy:
+            # The proxy dials the host, so a local pin would be unconsulted:
+            # aiohttp hands it the hostname and resolves nothing itself.
+            # Split-horizon DNS also means our resolution may not even match the
+            # proxy's. The caller's shared session stays the transport here.
+            async with session.get(vetted.url, proxy=proxy, **get_kwargs) as resp:
+                body = await _read(resp)
+        else:
+            # One session for this ONE object, so the pin can be exact and is
+            # torn down with the request. `ClientSession` owns the connector it
+            # is given and closes it on exit.
+            connector = link_unfurl.pinned_connector(vetted)
+            async with aiohttp.ClientSession(connector=connector) as pinned:
+                async with pinned.get(vetted.url, **get_kwargs) as resp:
+                    body = await _read(resp)
     except aiohttp.ClientError as exc:
         # The URL lives ~5 minutes; a transport failure is reported, never retried
         # into a window that has already closed.
         raise WeComMediaError(f"media download failed: {type(exc).__name__}") from exc
     # Off the loop: AES-CBC over a multi-megabyte body is CPU-bound, and the
     # first call also pays the lazy ``cryptography`` native-module import.
-    return await asyncio.to_thread(decrypt_media, b"".join(chunks), key)
+    return await asyncio.to_thread(decrypt_media, body, key)
 
 
 def media_items(body: dict[str, Any]) -> list[dict[str, Any]]:

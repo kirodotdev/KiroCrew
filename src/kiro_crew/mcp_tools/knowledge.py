@@ -242,8 +242,9 @@ def local_knowledge_search(name: str, args: dict[str, Any]) -> str:
             message, _ = redact_credentials(message)
             return message
 
-    embed_fn = embedder.embed if embedder and embedder.is_available() else None
-    retriever = mcp_core.HybridRetriever(store, embedder=embed_fn)
+    available = bool(embedder) and embedder.is_available()
+    embed_fn, embed_sig = mcp_core.vector_leg(embedder if available else None)
+    retriever = mcp_core.HybridRetriever(store, embedder=embed_fn, embed_sig=embed_sig)
 
     results = retriever.search(query, limit=limit, source_id=source_id, namespace=namespace)
 

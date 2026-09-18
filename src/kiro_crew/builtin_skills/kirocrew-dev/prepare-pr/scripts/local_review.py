@@ -50,7 +50,7 @@ Usage:
 Exit:
     0  briefs assembled (paths printed)
     2  environment / state error (not a git repo, no diff, no reviewers, ...)
-    40 PARITY FAILURE - a workflow no longer has the shape we extract from.
+    40 PARITY FAILURE - a workflow does not have the shape we extract from.
        Deliberately loud: emitting a stale hand-written paraphrase instead is
        the exact failure mode this script exists to prevent.
 """
@@ -74,10 +74,10 @@ EXIT_PARITY = 40
 
 
 class ParityError(Exception):
-    """A workflow no longer has the shape the extractor needs.
+    """A workflow does not have the shape the extractor needs.
 
     Raised - never swallowed - so the caller fails loudly instead of falling
-    back to a hand-written brief that may no longer match the server contract.
+    back to a hand-written brief that may not match the server contract.
     """
 
 
@@ -188,7 +188,7 @@ _CAT_BARE_RE = re.compile(r"^\s*cat\s+(?P<src>\S+\.md)\s*$")
 def assemble_prompt_document(run_text: str, target: str, stage_dir: str) -> str:
     """Assemble the reviewer prompt exactly as the workflow builds it.
 
-    The GPT lane's prompt is a pure splice sequence (#3697): one opening
+    The GPT lane's prompt is a pure splice sequence: one opening
     ``cat <shared prompt file> > <target>`` followed, in encounter order, by
     ``cat <shared prompt file> >> <target>`` appends. The spliced files were
     staged from the base commit by the same specs the workflow's loader
@@ -249,7 +249,7 @@ def prompt_segments(run_text: str, stage_dir: str, min_len: int = 30) -> list[st
     """Model-facing instruction segments of a run block, in encounter order.
 
     Like ``quoted_literals``, but a bare ``cat <shared prompt file>`` line
-    (the pass-2 assembly's file splice, #5852) contributes the staged file's
+    (the pass-2 assembly's file splice) contributes the staged file's
     content as one segment, keeping the instruction stream ordered the way the
     model receives it.
     """
@@ -835,7 +835,7 @@ def build_spliced_lane(
     # CI declares the blocking budget in one of two shapes: a numeric cap, or an
     # explicit report-ALL. Both are a DECLARED budget and must be mirrored as
     # written; only the absence of any BUDGET line is a drift signal, because
-    # assuming a cap the workflow no longer states is what makes a local review
+    # assuming a cap the workflow does not state is what makes a local review
     # quietly stricter than the server.
     budget_match = re.search(r"BUDGET:\s*at most\s*(\d+)\s*BLOCKING", prompt)
     reports_all = re.search(r"BUDGET:\s*report ALL", prompt, re.IGNORECASE) is not None

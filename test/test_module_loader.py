@@ -369,7 +369,7 @@ class TestModuleUnload:
 
 
 # ---------------------------------------------------------------------------
-# Issue #6078: a multi-module app backend must be able to import its own siblings
+# A multi-module app backend must be able to import its own siblings
 # ---------------------------------------------------------------------------
 
 
@@ -705,13 +705,13 @@ def test_deploy_skill_install_replaces_managed_dir(tmp_path, monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# resolve_loaded_callable — gone-app shutdown (issue #7880 reconciler teardown)
+# resolve_loaded_callable — gone-app shutdown (reconciler teardown)
 # ---------------------------------------------------------------------------
 
 
 def test_resolve_loaded_callable_survives_deleted_files(tmp_path, monkeypatch):
     """GPT [BLOCKING]: CLI uninstall deletes an app's files, so the disk loader
-    can no longer resolve its on_shutdown -- yet the module the gateway imported
+    cannot resolve its on_shutdown -- yet the module the gateway imported
     is still resident in sys.modules and a task its on_startup spawned is still
     live. resolve_loaded_callable resolves the callable from that cached module
     so trust revocation can still run on_shutdown, where load_app_module (disk)
@@ -777,10 +777,10 @@ def test_cached_shutdown_callable_survives_uninstall_of_uncached_module():
 
 
 def test_clear_all_shutdown_callables_drops_the_whole_cache():
-    """GPT round-9: the gateway teardown sweep does not go through per-app
+    """The gateway teardown sweep does not go through per-app
     unload_app_modules, so it must drop the whole shutdown cache -- otherwise a
-    callable captured this generation survives into an in-process restart and is
-    used to stop a NEWLY loaded worker."""
+    callable captured this generation survives into an in-process restart and
+    could stop a NEWLY loaded worker."""
     import kiro_crew.apps.module_loader as ml
 
     ml._shutdown_callables.clear()

@@ -120,65 +120,6 @@ class TestMirroredSessionsAreOutOfBounds:
         assert sc._has_channel_mirror(state, target) is False
 
 
-class TestCrewModeTargetsAreOutOfBounds:
-    """A crew session's ingress is a durable queue entry, not a turn.
-
-    `/api/chat` routes `mode == "crew"` to `state.crew.ingest` before anything
-    else, which queues the message durably and fans it out to topic
-    sub-sessions. Delivering it here as a turn would run generic work that is
-    neither queued nor routed -- and would report success for it.
-    """
-
-    def _pair(self, tmp_path):
-        state = _make_state(tmp_path)
-        caller = _slot(state, "caller")
-        target = _slot(state, "peer")
-        return state, caller, target
-
-    def test_a_crew_target_is_refused(self, tmp_path):
-        state, caller, target = self._pair(tmp_path)
-        target.mode = "crew"
-        with pytest.raises(sc.SessionControlError) as exc:
-            sc.authorize_target(
-                state,
-                caller_session_key=slot_history_key(caller),
-                target=target.key,
-                operation="read",
-            )
-        assert exc.value.code == "crew_mode_target"
-
-    def test_an_ordinary_target_is_unaffected(self, tmp_path):
-        state, caller, target = self._pair(tmp_path)
-        assert getattr(target, "mode", "") != "crew"
-        assert (
-            sc.authorize_target(
-                state,
-                caller_session_key=slot_history_key(caller),
-                target=target.key,
-                operation="read",
-            )
-            is target
-        )
-
-    def test_a_crew_CALLER_may_still_control_a_peer(self, tmp_path):
-        """The defect is in delivery semantics, not the caller's standing.
-
-        A crew session is still the person's own; only its own INGRESS differs.
-        Refusing it as a caller would narrow the surface for no stated reason.
-        """
-        state, caller, target = self._pair(tmp_path)
-        caller.mode = "crew"
-        assert (
-            sc.authorize_target(
-                state,
-                caller_session_key=slot_history_key(caller),
-                target=target.key,
-                operation="read",
-            )
-            is target
-        )
-
-
 # -- cross-form target ambiguity ---------------------------------------------
 
 

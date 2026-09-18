@@ -31,6 +31,7 @@ from kiro_crew.apps.manager import (
     register_external_app,
     registry_source_repository,
     uninstall_app,
+    update_app,
 )
 
 # ---------------------------------------------------------------------------
@@ -270,6 +271,72 @@ class TestInstall:
 
 
 class TestUninstall:
+    @pytest.mark.parametrize("existing", [False, True])
+    def test_uninstall_uses_exclusive_dependency_lock_creation(
+        self, tmp_path, app_home, monkeypatch, existing
+    ):
+        install_app(_make_app_source(tmp_path))
+        data = app_home / "apps" / "test-app" / "data"
+        marker = data / "user.txt"
+        marker.write_text("keep me", encoding="utf-8")
+        lock = data / ".kirocrew-deps.lock"
+        if existing:
+            lock.write_text("existing lock", encoding="utf-8")
+        calls = []
+        real_open = os.open
+
+        def record_open(path, flags, mode=0o777, *, dir_fd=None):
+            if str(path).endswith(".kirocrew-deps.lock"):
+                calls.append((flags, dir_fd))
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        if real_open in os.supports_dir_fd:
+            monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {record_open})
+        monkeypatch.setattr(os, "open", record_open)
+        result = uninstall_app("test-app", keep_data=True)
+        assert result.ok, result.error
+        assert len(calls) == (2 if existing else 1)
+        assert calls[0][0] & os.O_EXCL
+        assert calls[0][0] & os.O_CREAT
+        for flags, _fd in calls:
+            assert flags & os.O_RDWR
+            assert not flags & os.O_TRUNC
+            if hasattr(os, "O_NOFOLLOW"):
+                assert flags & os.O_NOFOLLOW
+        if existing:
+            assert not calls[1][0] & (os.O_CREAT | os.O_EXCL)
+            assert calls[1][1] == calls[0][1]
+        assert marker.read_text(encoding="utf-8") == "keep me"
+        assert lock.is_file()
+
+    def test_uninstall_refuses_a_dependency_lock_that_vanishes_before_reopen(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        install_app(_make_app_source(tmp_path))
+        root = app_home / "apps" / "test-app"
+        marker = root / "data" / "user.txt"
+        marker.write_text("keep me", encoding="utf-8")
+        calls = []
+        real_open = os.open
+
+        def race_open(path, flags, mode=0o777, *, dir_fd=None):
+            if str(path).endswith(".kirocrew-deps.lock"):
+                calls.append(flags)
+                if len(calls) == 1:
+                    raise FileExistsError("a contender created the lock")
+            return real_open(path, flags, mode, dir_fd=dir_fd)
+
+        if real_open in os.supports_dir_fd:
+            monkeypatch.setattr(os, "supports_dir_fd", os.supports_dir_fd | {race_open})
+        monkeypatch.setattr(os, "open", race_open)
+        result = uninstall_app("test-app", keep_data=True)
+        assert not result.ok
+        assert len(calls) == 2
+        assert not calls[1] & (os.O_CREAT | os.O_EXCL)
+        assert (root / APP_MANIFEST_FILENAME).is_file()
+        assert marker.read_text(encoding="utf-8") == "keep me"
+        assert not (root / "data" / ".kirocrew-deps.lock").exists()
+
     def test_uninstall_preserves_data_by_default(self, tmp_path, app_home):
         src = _make_app_source(tmp_path)
         install_app(src)
@@ -721,7 +788,7 @@ class TestAppAdmission:
     def test_register_external_admits_signed_manifest(self, tmp_path, app_home):
         # register_external_app now passes its self-reported manifest to
         # admission, so a correctly-signed app self-registers under
-        # require_signature (previously denied because no manifest was passed).
+        # require_signature (denied when no manifest is passed).
         import hashlib
         import hmac
 
@@ -1384,7 +1451,7 @@ class TestCleanupMigratedBuiltin:
 
 # ---------------------------------------------------------------------------
 # _copy_app_tree — symlink / denylist / off-loop regression tests
-# (app install used to run a raw follow-symlinks copytree on the event loop;
+# (app install must not run a raw follow-symlinks copytree on the event loop;
 # a large `build` symlink target froze the loop until the watchdog killed
 # the gateway)
 # ---------------------------------------------------------------------------
@@ -1851,6 +1918,351 @@ class TestCopyAppTree:
         assert (dest / "data" / "state.json").read_text(encoding="utf-8") == '{"k": 1}'
         assert secret.read_text(encoding="utf-8") == "s3cret"
 
+    @pytest.mark.parametrize("rollback_metadata_fails", [False, True])
+    def test_metadata_failure_restores_data_secret_and_retired_tree(
+        self, tmp_path, app_home, monkeypatch, rollback_metadata_fails
+    ):
+        from kiro_crew.apps import manager as manager_mod
+        from kiro_crew.apps.manager import app_dir, update_app
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        dest = app_dir("test-app")
+        data = dest / "data"
+        data.mkdir(exist_ok=True)
+        (data / "state.json").write_text('{"kept": true}', encoding="utf-8")
+        secret = dest / ".app_secret"
+        secret.write_text("kept-secret", encoding="utf-8")
+        (dest / "old-only.txt").write_text("old tree", encoding="utf-8")
+
+        v2 = _make_app_source(tmp_path / "v2", version="2.0.0")
+        (v2 / "data").write_text("replacement file", encoding="utf-8")
+        (v2 / ".app_secret").mkdir()
+        (v2 / ".app_secret" / "replacement.txt").write_text(
+            "replacement directory", encoding="utf-8"
+        )
+        (v2 / "new-only.txt").write_text("new tree", encoding="utf-8")
+
+        real_write = manager_mod._write_installed
+        writes = 0
+
+        def _fail_metadata_write(name, meta):
+            nonlocal writes
+            writes += 1
+            if writes == 1 or rollback_metadata_fails:
+                raise OSError("metadata write failed")
+            real_write(name, meta)
+
+        monkeypatch.setattr(manager_mod, "_write_installed", _fail_metadata_write)
+        result = update_app(v2)
+
+        assert not result.ok
+        assert data.is_dir()
+        assert (data / "state.json").read_text(encoding="utf-8") == '{"kept": true}'
+        assert secret.is_file()
+        assert secret.read_text(encoding="utf-8") == "kept-secret"
+        assert (dest / "old-only.txt").read_text(encoding="utf-8") == "old tree"
+        assert not (dest / "new-only.txt").exists()
+        assert get_app_manifest("test-app").version == "1.0.0"
+        restored_meta = _read_installed("test-app")
+        assert restored_meta is not None
+        assert restored_meta.version == "1.0.0"
+
+    def test_update_that_adds_session_approval_disables_until_reconsent(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        # Consent is captured at install/enable while the route guard reads the
+        # live manifest, so a version that ADDS the grant must not inherit the
+        # user's earlier "enabled" -- otherwise an update silently widens what
+        # the app may do to their sessions.
+        from kiro_crew.apps import manager as manager_mod
+        from kiro_crew.apps.manager import update_app
+        from kiro_crew.apps.permissions import app_can_manage_session_approvals
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        assert enable_app("test-app").ok
+        assert get_app("test-app")["enabled"] is True
+
+        v2 = _make_app_source(
+            tmp_path / "v2",
+            version="2.0.0",
+            permissions={"sessionApproval": True},
+        )
+        real_copy = manager_mod._copy_app_tree
+        observed_grants = []
+
+        def _copy_with_permission_probe(source, dest):
+            real_copy(source, dest)
+            observed_grants.append(app_can_manage_session_approvals("test-app"))
+
+        monkeypatch.setattr(manager_mod, "_copy_app_tree", _copy_with_permission_probe)
+        result = update_app(v2)
+        assert result.ok, result.error
+        assert observed_grants == [False]
+        assert "session approval" in result.message
+        # The UI branches on the structured notice, not on the prose.
+        assert result.notice == "session_approval_reconsent"
+        assert result.to_dict()["notice"] == "session_approval_reconsent"
+        assert "code" not in result.to_dict()
+        assert get_app("test-app")["enabled"] is False
+        assert get_app("test-app")["version"] == "2.0.0"
+        assert get_app("test-app")["sessionApprovalConsentPending"] is True
+
+    def test_failed_widening_update_restores_original_tree_and_metadata(
+        self, tmp_path, app_home, monkeypatch
+    ):
+        assert install_app(_make_app_source(tmp_path)).ok
+        assert enable_app("test-app").ok
+        original = _read_installed("test-app")
+        assert original is not None
+
+        v2 = _make_app_source(
+            tmp_path / "v2",
+            version="2.0.0",
+            permissions={"sessionApproval": True},
+        )
+        real_copytree = shutil.copytree
+
+        def _copy_then_fail(*args, **kwargs):
+            real_copytree(*args, **kwargs)
+            raise OSError("simulated copy failure")
+
+        monkeypatch.setattr(shutil, "copytree", _copy_then_fail)
+        result = update_app(v2)
+
+        assert not result.ok
+        assert "failed to update app files" in (result.error or "")
+        assert _read_installed("test-app") == original
+        assert get_app_manifest("test-app").version == "1.0.0"
+        assert get_app("test-app")["enabled"] is True
+        assert get_app("test-app")["sessionApprovalConsentPending"] is False
+
+    def test_fresh_install_with_session_approval_requires_consent(self, tmp_path, app_home):
+        result = install_app(
+            _make_app_source(tmp_path, permissions={"sessionApproval": True})
+        )
+
+        assert result.ok, result.error
+        assert result.notice == "session_approval_reconsent"
+        assert get_app("test-app")["enabled"] is False
+        assert get_app("test-app")["sessionApprovalConsentPending"] is True
+        blocked = enable_app("test-app")
+        assert not blocked.ok
+        assert blocked.error_code == "session_approval_consent_required"
+        assert enable_app("test-app", session_approval_consent=True).ok
+        assert get_app("test-app")["sessionApprovalConsentPending"] is False
+
+    def test_update_keeping_session_approval_stays_enabled(self, tmp_path, app_home):
+        # The grant was already declared when the user enabled the app, so a
+        # refresh that keeps it is not a new request.
+        from kiro_crew.apps.manager import update_app
+
+        assert install_app(
+            _make_app_source(tmp_path, permissions={"sessionApproval": True})
+        ).ok
+        assert enable_app("test-app", session_approval_consent=True).ok
+        v2 = _make_app_source(
+            tmp_path / "v2",
+            version="2.0.0",
+            permissions={"sessionApproval": True},
+        )
+        result = update_app(v2)
+        assert result.ok, result.error
+        assert result.notice == ""
+        assert get_app("test-app")["enabled"] is True
+
+    def test_self_registration_that_adds_session_approval_is_disabled(self, app_home):
+        # Self-managed apps re-register on every launch and author their own
+        # manifest, so a manifest that newly asks for session control must not
+        # inherit the always-enabled default -- that would be a self-grant.
+        assert register_external_app("ext-keypad", "1.0.0", "Keypad").ok
+        assert get_app("ext-keypad")["enabled"] is True
+
+        result = register_external_app(
+            "ext-keypad",
+            "1.1.0",
+            "Keypad",
+            manifest_data={
+                "name": "ext-keypad",
+                "version": "1.1.0",
+                "permissions": {"sessionApproval": True},
+            },
+        )
+        assert result.ok, result.error
+        assert result.notice == "session_approval_reconsent"
+        assert get_app("ext-keypad")["enabled"] is False
+
+    def test_first_self_registration_with_session_approval_starts_disabled(self, app_home):
+        result = register_external_app(
+            "ext-keypad",
+            "1.0.0",
+            "Keypad",
+            manifest_data={
+                "name": "ext-keypad",
+                "version": "1.0.0",
+                "permissions": {"sessionApproval": True},
+            },
+        )
+        assert result.ok, result.error
+        assert result.notice == "session_approval_reconsent"
+        assert get_app("ext-keypad")["enabled"] is False
+        assert get_app("ext-keypad")["sessionApprovalConsentPending"] is True
+        # Only a disclosure surface may clear pending consent.
+        blocked = enable_app("ext-keypad")
+        assert not blocked.ok
+        assert blocked.error_code == "session_approval_consent_required"
+        assert get_app("ext-keypad")["sessionApprovalConsentPending"] is True
+        assert enable_app("ext-keypad", session_approval_consent=True).ok
+        assert get_app("ext-keypad")["enabled"] is True
+        assert get_app("ext-keypad")["sessionApprovalConsentPending"] is False
+
+    def test_self_registration_keeping_session_approval_stays_enabled(self, app_home):
+        manifest = {
+            "name": "ext-keypad",
+            "version": "1.0.0",
+            "permissions": {"sessionApproval": True},
+        }
+        assert register_external_app("ext-keypad", "1.0.0", "Keypad", manifest_data=manifest).ok
+        assert enable_app("ext-keypad", session_approval_consent=True).ok
+        result = register_external_app(
+            "ext-keypad", "1.0.1", "Keypad", manifest_data={**manifest, "version": "1.0.1"}
+        )
+        assert result.ok, result.error
+        assert result.notice == ""
+        assert get_app("ext-keypad")["enabled"] is True
+
+    def test_self_registration_removing_session_approval_clears_pending(self, app_home):
+        manifest = {
+            "name": "ext-keypad",
+            "version": "1.0.0",
+            "permissions": {"sessionApproval": True},
+        }
+        assert register_external_app("ext-keypad", "1.0.0", "Keypad", manifest_data=manifest).ok
+        assert get_app("ext-keypad")["sessionApprovalConsentPending"] is True
+
+        assert register_external_app("ext-keypad", "1.0.0", "Keypad").ok
+        assert get_app("ext-keypad")["sessionApprovalConsentPending"] is True
+
+        result = register_external_app(
+            "ext-keypad",
+            "1.0.1",
+            "Keypad",
+            manifest_data={"name": "ext-keypad", "version": "1.0.1"},
+        )
+
+        assert result.ok, result.error
+        assert get_app("ext-keypad")["enabled"] is False
+        assert get_app("ext-keypad")["sessionApprovalConsentPending"] is False
+
+    def test_failed_self_registration_widening_restores_metadata(
+        self, app_home, monkeypatch
+    ):
+        from kiro_crew.apps import manager as manager_mod
+
+        assert register_external_app("ext-keypad", "1.0.0", "Keypad").ok
+        original = _read_installed("ext-keypad")
+        assert original is not None
+        real_atomic_write = manager_mod.atomic_write
+        manifest_writes = 0
+
+        def _fail_manifest_once(path, data):
+            nonlocal manifest_writes
+            if Path(path).name == APP_MANIFEST_FILENAME:
+                manifest_writes += 1
+                if manifest_writes == 1:
+                    raise OSError("manifest write failed")
+            real_atomic_write(path, data)
+
+        monkeypatch.setattr(manager_mod, "atomic_write", _fail_manifest_once)
+        result = register_external_app(
+            "ext-keypad",
+            "1.1.0",
+            "Keypad",
+            manifest_data={
+                "name": "ext-keypad",
+                "version": "1.1.0",
+                "permissions": {"sessionApproval": True},
+            },
+        )
+
+        assert not result.ok
+        assert _read_installed("ext-keypad") == original
+        assert get_app_manifest("ext-keypad") is None
+
+    def test_failed_self_registration_removal_preserves_pending_consent(
+        self, app_home, monkeypatch
+    ):
+        from kiro_crew.apps import manager as manager_mod
+
+        manifest = {
+            "name": "ext-keypad",
+            "version": "1.0.0",
+            "permissions": {"sessionApproval": True},
+        }
+        assert register_external_app(
+            "ext-keypad", "1.0.0", "Keypad", manifest_data=manifest
+        ).ok
+        original = _read_installed("ext-keypad")
+        assert original is not None
+        real_write = manager_mod._write_installed
+        metadata_writes = 0
+
+        def _fail_metadata_once(name, meta):
+            nonlocal metadata_writes
+            metadata_writes += 1
+            if metadata_writes == 1:
+                raise OSError("metadata write failed")
+            real_write(name, meta)
+
+        monkeypatch.setattr(manager_mod, "_write_installed", _fail_metadata_once)
+        result = register_external_app(
+            "ext-keypad",
+            "1.1.0",
+            "Keypad",
+            manifest_data={"name": "ext-keypad", "version": "1.1.0"},
+        )
+
+        assert not result.ok
+        assert _read_installed("ext-keypad") == original
+        restored = get_app_manifest("ext-keypad")
+        assert restored is not None
+        assert restored.permissions.sessionApproval is True
+
+    def test_update_of_disabled_app_adding_session_approval_requires_consent(
+        self, tmp_path, app_home
+    ):
+        # A disabled app can be enabled later, so a new grant still needs consent.
+        from kiro_crew.apps.manager import update_app
+
+        assert install_app(_make_app_source(tmp_path)).ok
+        assert get_app("test-app")["enabled"] is False
+        v2 = _make_app_source(
+            tmp_path / "v2",
+            version="2.0.0",
+            permissions={"sessionApproval": True},
+        )
+        result = update_app(v2)
+        assert result.ok, result.error
+        assert get_app("test-app")["enabled"] is False
+        assert result.notice == "session_approval_reconsent"
+        assert get_app("test-app")["sessionApprovalConsentPending"] is True
+
+    def test_update_removing_session_approval_clears_pending(self, tmp_path, app_home):
+        assert install_app(_make_app_source(tmp_path)).ok
+        widened = _make_app_source(
+            tmp_path / "v2",
+            version="2.0.0",
+            permissions={"sessionApproval": True},
+        )
+        assert update_app(widened).ok
+        assert get_app("test-app")["sessionApprovalConsentPending"] is True
+
+        narrowed = _make_app_source(tmp_path / "v3", version="3.0.0")
+        result = update_app(narrowed)
+
+        assert result.ok, result.error
+        assert get_app("test-app")["enabled"] is False
+        assert get_app("test-app")["sessionApprovalConsentPending"] is False
+
     def test_local_update_clears_prior_registry_provenance(self, tmp_path, app_home):
         from kiro_crew.apps.manager import (
             _read_installed,
@@ -2268,7 +2680,7 @@ class TestBootSkillReconcile:
 # backend three ways — the third being a fallback that derives a loopback base
 # URL from a manifest's mcpServers entry (self-managed apps whose backend is a
 # separate loopback process, e.g. the Crew Companion desktop app on :7778).
-# register_builtin_apps() used to write a .app_secret ONLY when
+# register_builtin_apps() must not write a .app_secret ONLY when
 # backend.entryPoint was present, so a builtin declaring only mcpServers
 # resolved a backend fine but was refused a secret — and every proxied request
 # then 502'd with "has no secret". The fix generates the secret whenever a

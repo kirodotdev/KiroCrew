@@ -183,7 +183,7 @@ async def test_no_conversation_log_returns_none() -> None:
     assert await cp.rehydrate_slot_from_history_async(state, "chat-1-x") is None
 
 
-# ── The shared prefetch seam (#895) ──
+# ── The shared prefetch seam ──
 #
 # The wrapper's read half is now a named module-level function so the two bulk
 # startup restore drivers can hoist the SAME reads into a worker thread instead
@@ -212,7 +212,7 @@ def test_prefetch_reports_an_unreadable_metadata_read() -> None:
     it drops a live tab. So the flag must survive the trip through the prefetch.
     """
     log = _StatusLog({}, [], readable=False)
-    meta, readable, messages, model_map, _mid = cp._prefetch_rehydrate_inputs(
+    meta, readable, messages, model_map, _mid, _agent = cp._prefetch_rehydrate_inputs(
         log, "dashboard:chat-1-x", with_status=True
     )
     assert meta == {}
@@ -224,7 +224,7 @@ def test_prefetch_reports_an_unreadable_metadata_read() -> None:
 def test_prefetch_skips_the_transcript_walk_for_an_absent_session() -> None:
     """No metadata → no transcript read. The walk is the expensive half."""
     log = _StatusLog({}, [{"role": "user", "content": "hi"}], readable=True)
-    meta, readable, messages, _, _mid = cp._prefetch_rehydrate_inputs(
+    meta, readable, messages, _, _mid, _agent = cp._prefetch_rehydrate_inputs(
         log, "dashboard:chat-1-x", with_status=True
     )
     assert (meta, readable, messages) == ({}, True, None)
@@ -236,7 +236,7 @@ def test_prefetch_skips_the_transcript_walk_for_an_absent_session() -> None:
 def test_prefetch_skips_the_transcript_walk_for_a_closed_session() -> None:
     """A session closed with ✕ is not rebuilt, so its transcript is dead weight."""
     log = _Log({"closed": True}, [{"role": "user", "content": "hi"}])
-    _meta, _readable, messages, model_map, _mid = cp._prefetch_rehydrate_inputs(
+    _meta, _readable, messages, model_map, _mid, _agent = cp._prefetch_rehydrate_inputs(
         log, "dashboard:chat-1-closed"
     )
     assert messages is None
@@ -248,7 +248,7 @@ def test_prefetch_skips_the_transcript_walk_for_a_closed_session() -> None:
 def test_prefetch_adopts_a_closed_session_on_request() -> None:
     """``adopt_closed`` callers (app-owned worker slots) still get the walk."""
     log = _Log({"closed": True}, [{"role": "user", "content": "hi"}])
-    _meta, _readable, messages, _, _mid = cp._prefetch_rehydrate_inputs(
+    _meta, _readable, messages, _, _mid, _agent = cp._prefetch_rehydrate_inputs(
         log, "dashboard:chat-1-closed", adopt_closed=True, kiro_model_map={}
     )
     assert messages == [{"role": "user", "content": "hi"}]
@@ -272,7 +272,7 @@ def test_prefetch_reuses_a_callers_model_map() -> None:
     original = cp._build_kiro_model_map
     cp._build_kiro_model_map = _boom  # type: ignore[assignment]
     try:
-        _m, _r, _msgs, model_map, _mid = cp._prefetch_rehydrate_inputs(
+        _m, _r, _msgs, model_map, _mid, _agent = cp._prefetch_rehydrate_inputs(
             log, "dashboard:chat-1-x", kiro_model_map=shared
         )
     finally:
@@ -282,7 +282,7 @@ def test_prefetch_reuses_a_callers_model_map() -> None:
     assert called is False, "the prefetch rebuilt a map the caller already had"
 
 
-# ── Deletion during the wrapper's own read (#895 round 4) ──
+# ── Deletion during the wrapper's own read ──
 #
 # This wrapper's read has ALWAYS been offloaded, so its delete-during-read window
 # predates #895 — but a class of defect fixed at two of three prefetch-then-apply

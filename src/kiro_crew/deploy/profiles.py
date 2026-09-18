@@ -79,10 +79,10 @@ _NOTE_MAX = 256
 
 # Same shapes handlers.py enforces for the legacy single-profile config — these
 # values flow into subprocess argv (--profile/--region) on every aws call.
-# The profile shape ('+' admitted for IAM Identity Center derived names, #6051;
+# The profile shape ('+' admitted for IAM Identity Center derived names;
 # first char excludes '-' so a name is never option-shaped; \Z rejects trailing
-# newlines) is constants.AWS_PROFILE_NAME_RE — the single source of truth
-# (#6063) — aliased rather than re-spelled here. Also used by
+# newlines) is constants.AWS_PROFILE_NAME_RE — the single source of truth,
+# aliased rather than re-spelled here. Also used by
 # discover_aws_profiles() to filter `aws configure list-profiles` lines
 # (stripped before matching, so the anchor is behavior-neutral there).
 _PROFILE_RE = AWS_PROFILE_NAME_RE
@@ -168,7 +168,7 @@ def load_registry() -> dict[str, Any]:
 
     Valid JSON of the WRONG SHAPE degrades exactly like unparseable JSON. This
     file is agent-writable, so ``[]``, ``"x"`` or ``{"profiles": 5}`` are all
-    reachable contents, and each of them used to escape as an ``AttributeError``
+    reachable contents, and each of them would otherwise escape as an ``AttributeError``
     or ``TypeError`` from ``raw.get`` / the comprehension -- past the caller and
     out as an HTTP 500 on every route that reads the registry. Catching them
     here routes a mis-shaped file into the fallback chain the function already
@@ -372,8 +372,8 @@ def create_aws_profile(name: str, region: str, *, account: str = "",
                 "or environment variables."
             )
         python_bin = sys.executable or "python3"
-        # Deliberately a bare "aws" (NOT the deploy engine's absolute resolver,
-        # #4770): this command is persisted into ~/.aws/config and later run by
+        # Deliberately a bare "aws" (NOT the deploy engine's absolute resolver):
+        # this command is persisted into ~/.aws/config and later run by
         # whichever AWS CLI/SDK reads that profile — possibly a different user
         # shell, possibly long after the CLI was reinstalled elsewhere. An
         # absolute path resolved in the gateway's environment today can be

@@ -37,8 +37,8 @@ class TestCronAddSessionKey:
     def test_an_unidentified_caller_cannot_create_an_ownerless_job(self, monkeypatch):
         """Without a resolvable identity, ``cron_add`` refuses instead of storing "".
 
-        This used to store an ownerless row, and on a pooled backend -- where no
-        identity was resolvable at all -- that was EVERY row, which is what made
+        Storing an ownerless row instead would, on a pooled backend -- where no
+        identity is resolvable at all -- be EVERY row, which is what makes
         the ownership gate unenforceable. Refusing stops this server from adding
         to the ownerless set; the CLI and the importer still write to it, and such
         rows are visible-but-not-mutable through MCP. See
@@ -82,13 +82,13 @@ class TestCronRemoveAllScoped:
         assert remaining[0].name == n2
 
     def test_the_cli_flag_does_not_widen_the_sweep(self, monkeypatch):
-        """``KIROCREW_CLI=1`` used to make this remove EVERY session's jobs.
+        """``KIROCREW_CLI=1`` must not make this remove EVERY session's jobs.
 
         The companion to the unidentified-caller assertions in
         ``test/test_mcp_cron_caller_identity.py``: here the caller IS named, so
         the sweep runs -- and it must still stop at the caller's own rows. A flag
         that anything shaping this process's environment can spell was never a
-        scope, and nothing in ``src/`` ever set it (#6624).
+        scope, and nothing in ``src/`` ever set it.
         """
         monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
         n1, n2 = _unique_name(), _unique_name()

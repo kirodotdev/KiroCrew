@@ -75,7 +75,7 @@ import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { serveDist } from './lib/serve-dist.mjs'
 import { stubDashboardApi, logPageProblems, json } from './lib/stub-dashboard-api.mjs'
-import { SURFACES, LOCALES, VIEWPORTS, FIXTURE_DETAIL_APP } from './lib/i18n-surfaces.mjs'
+import { SURFACES, LOCALES, VIEWPORTS, FIXTURE_DETAIL_APP, FIXTURE_DETAIL_DESCRIPTION, partitionBaseSurfaces } from './lib/i18n-surfaces.mjs'
 import { browserBundle } from './lib/render-scan.mjs'
 import {
   SETTLE_POLL_MS,
@@ -295,7 +295,7 @@ const FIXTURE_APPS = [
       name: FIXTURE_DETAIL_APP,
       version: '1.0.0',
       displayName: 'Fixture Research Lab',
-      description: 'Runs research campaigns unattended.',
+      description: FIXTURE_DETAIL_DESCRIPTION,
       author: '0008',
       tags: ['research', 'automation'],
       highlights: [
@@ -345,6 +345,25 @@ const FIXTURE_OVERRIDES = async (language, path, route) => {
   if (path === '/api/auth/me') return done({ user: '0000', app: '' })
   if (path === '/api/agents' || path === '/api/chat/agents') {
     return done([{ name: '0001', source: 'builtin' }])
+  }
+  if (path === '/api/memory/stores') {
+    return done({
+      active: 'default',
+      stores: [
+        { name: 'default', is_default: true, exists: true, lineage: 'v1', memory_version: 1, semantic_count: 0, episodic_count: 0, lessons_count: 0 },
+        { name: 'member-fixture-0011', owner_member: '0011', is_default: false, exists: true, lineage: 'crew', memory_version: 2, semantic_count: 1, episodic_count: 1, lessons_count: 0, facets_supported: true, backup_count: 0, newest_backup: null },
+      ],
+    })
+  }
+  if (path === '/api/memory/records') {
+    return done({
+      entries: [
+        { kind: 'fact', id: '0011', key: '0011', text: '0011', value_json: '0011', source: 'user_explicit', revision: '1111111111111111111111111111111111111111111111111111111111111111', updated_at: '2026-01-01T00:00:00Z' },
+        { kind: 'episode', id: 'fixture-episode', text: '0012', source: 'member_session', revision: '2222222222222222222222222222222222222222222222222222222222222222', updated_at: '2026-01-02T00:00:00Z' },
+      ],
+      total: 2,
+      has_more: false,
+    })
   }
   if (path === '/api/recent-projects') return done({ dirs: ['/0002'] })
   if (path === '/api/dashboard/branding') return done({ bot_name: 'Kiro', avatar: '' })
@@ -777,6 +796,11 @@ async function main() {
   const locales = ONLY_LOCALE ? LOCALES.filter(l => l.code === ONLY_LOCALE) : LOCALES
   if (!surfaces.length) die(`unknown --surface ${ONLY_SURFACE}`)
   if (!locales.length) die(`unknown --locale ${ONLY_LOCALE}`)
+  for (const surface of surfaces) {
+    if (surface.sourceFile && !existsSync(join(REPO, 'website', surface.sourceFile))) {
+      die(`surface ${surface.id} requires missing HEAD source ${surface.sourceFile}`)
+    }
+  }
 
   const browser = await chromium.launch()
   let head
@@ -794,12 +818,14 @@ async function main() {
       const { dist: baseDist, baseWeb } = buildBaseBundle(scope.sha)
       const baseIds = baseSurfaceIds(baseWeb)
       const unregistered = surfaces.map(x => x.id).filter(id => !baseIds.has(id))
-      // Deliberately the SAME scanScript, surfaces and locales as the HEAD run —
+      const basePlan = partitionBaseSurfaces(surfaces, baseIds,
+        sourceFile => existsSync(join(baseWeb, sourceFile)))
+      // Deliberately the SAME scanScript, surface definitions and locales as HEAD.
       // they come from this checkout, not from the base tree. Only the BUNDLE is
       // base's. If the base tree's own scanner were used instead, any change to the
       // detector would read as a product regression (or mask one).
       const baseSweep = await sweep(browser, baseDist, {
-        scanScript, dnt, surfaces, locales, label: `base ${scope.sha.slice(0, 8)}`,
+        scanScript, dnt, surfaces: basePlan.measurable, locales, label: `base ${scope.sha.slice(0, 8)}`,
       })
       baseAll = baseSweep.all
       // A surface is NEW — base 0 — only when the base bundle had no route for its
@@ -815,15 +841,15 @@ async function main() {
       // (`BuiltinAppRoute` -> `<Navigate to="/chat">`, or `ChatRedirect`), so a
       // final URL that is not the requested one is proof the route was absent.
       //
-      // Residual gap, stated: a query-param surface (`/settings?tab=x`) whose tab
-      // the base does not know renders the DEFAULT panel at the same URL, so it
-      // reads as resolved and its base count describes the wrong panel. Adding such
-      // a surface in the same commit as the tab it addresses is what avoids that;
-      // the redirect check cannot see it.
-      newSurfaces = new Set(unregistered.filter(id => baseSweep.unresolved.has(id)))
-      const measured = unregistered.filter(id => !baseSweep.unresolved.has(id))
+      // A new query-param panel may keep its URL while displaying the old default
+      // panel. Its required source file plus missing registration establishes
+      // absence before any HEAD-only readyText assertion can time out on the base.
+      // Panels without that source declaration still use the redirect signal.
+      newSurfaces = new Set([...basePlan.absent,
+        ...unregistered.filter(id => baseSweep.unresolved.has(id))])
+      const measured = unregistered.filter(id => !newSurfaces.has(id))
       if (newSurfaces.size) {
-        out(`[i18n-render] [vs-base] ${newSurfaces.size} surface(s) have no route on the base`
+        out(`[i18n-render] [vs-base] ${newSurfaces.size} surface(s) have no route or panel implementation on the base`
           + ` — their base count is 0, not measured: ${[...newSurfaces].join(', ')}`)
       }
       if (measured.length) {
@@ -945,6 +971,12 @@ async function sweep(browser, dist, { scanScript, dnt, surfaces, locales, label 
             die(`[${label}] ${surface.url} rendered nothing in 15s — the fixtures are probably `
               + 'the wrong shape for this surface (see lib/boot-api.mjs for the two shapes that '
               + 'error-boundary the whole shell). Re-run with --verbose to see the page errors.')
+          }
+          // Shell text does not prove a fetched panel is ready. App Details
+          // resolves several requests before mounting its manifest; comparing a
+          // loading frame with a populated frame invents a branch regression.
+          if (surface.readyText) {
+            await page.getByText(surface.readyText, { exact: true }).waitFor({ state: 'visible', timeout: 15000 })
           }
           // Panels that fetch after mount need a beat more. `settle` stays as the
           // FLOOR for that beat, but it is no longer the whole of it: a fixed sleep

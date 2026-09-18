@@ -108,11 +108,11 @@ class TestCycleSilence(_HomeIsolated):
     async def test_a_resolved_alarm_refiring_is_claimed_through_run_cycle(self):
         """The recurrence fix, asserted through the FULL cycle rather than `store.claim`.
 
-        `store.claim` learned that a terminal incident no longer owns its signal, and 408
-        unit tests passed — but `run_cycle` has its own cheap pre-filter that computed
-        `owned` from every non-stale incident, so it discarded the recurrence *before*
-        `claim` ever saw it. The app still permanently stopped responding to any failure it
-        had already handled once, and the compounding-memory fast path stayed unreachable.
+        `store.claim` knows a terminal incident does not own its signal, but `run_cycle`
+        has its own cheap pre-filter: computing `owned` from every non-stale incident
+        discards the recurrence *before* `claim` ever sees it, so the app permanently stops
+        responding to any failure it has already handled once and the compounding-memory
+        fast path is unreachable.
 
         Caught only by driving a real gateway: inject → resolve → re-inject reported
         `polled=1, claimed=0`. Two places encoded the same ownership rule and fixing one
@@ -579,15 +579,15 @@ class TestBrief(_HomeIsolated):
     async def test_brief_always_states_it_has_no_credentials(self):
         """The no-evidence brief is the case that MOST needs the warning.
 
-        Regression test for an observed live failure. The statement used to live only
-        inside the ``if claimed.evidence`` branch, so an incident with nothing gathered
-        — an unconfigured evidence source, a provider outage, a source that returned
-        empty — handed the agent an AWS alarm and no explanation. Two real sessions
-        (INV-1, INV-2) then spent their entire turn re-running ``aws … --profile …``,
-        collecting NoCredentials each time, and produced no diagnosis.
+        The statement belongs outside the ``if claimed.evidence`` branch: an incident with
+        nothing gathered — an unconfigured evidence source, a provider outage, a source
+        that returned empty — otherwise gets an AWS alarm and no explanation, and real
+        sessions (INV-1, INV-2) then spend their entire turn re-running
+        ``aws … --profile …``, collecting NoCredentials each time, and produce no
+        diagnosis.
 
-        Asserted with evidence EMPTY on purpose: with evidence present the old code
-        passed too, which is exactly why the gap survived.
+        Asserted with evidence EMPTY on purpose: a branch-scoped statement passes with
+        evidence present, which is exactly how the gap hides.
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
 
@@ -659,7 +659,7 @@ class TestBrief(_HomeIsolated):
                 trust=TRUST_VERIFIED,
             )
         )
-        # Verified and high is no longer sufficient on its own: the entry needs a track
+        # Verified and high is not sufficient on its own: the entry needs a track
         # record too. The claim under test supplies the last use itself.
         for _ in range(ledger.MIN_USES_FOR_FAST_PATH - 1):
             ledger.record_use(entry.entry_id)
@@ -958,8 +958,8 @@ class TestPostActionVerification(_HomeIsolated):
         """`changed` gates the cron's silence, so what counts as news is load-bearing.
 
         A confirmed action is the expected outcome and announcing it would make the
-        heartbeat congratulate itself. A still-firing one means the app previously
-        reported something as applied that was not — the most newsworthy thing a cycle
+        heartbeat congratulate itself. A still-firing one means the app reported
+        something as applied that was not — the most newsworthy thing a cycle
         can find.
         """
         from kiro_crew.apps.builtins.ops_mission_control.backend.dispatch import CycleResult
@@ -1082,13 +1082,13 @@ if __name__ == "__main__":
 
 
 class TestEveryInstancePullsTheSchedule(_HomeIsolated):
-    """`rotation.yaml` travels in the ledger repo, and only the primary used to fetch it.
+    """`rotation.yaml` travels in the ledger repo, so EVERY instance has to fetch it.
 
     `sync_safely`'s only other caller is the daily hygiene pass, which is gated to the
-    primary instance. So a NON-primary instance had no code path that ever fetched the
-    schedule: it kept arming (or not) off whatever it last saw. That is the double-claim
-    the single-owner model exists to prevent, reintroduced by the transport rather than
-    by the model.
+    primary instance. Without a fetch of its own, a NON-primary instance has no code path
+    that ever reads the schedule: it keeps arming (or not) off whatever it last saw. That
+    is the double-claim the single-owner model exists to prevent, arriving through the
+    transport rather than the model.
     """
 
     async def test_the_cycle_pulls_before_it_reads_the_shift(self):
@@ -1392,9 +1392,9 @@ class TestAMaintenancePassCannotCostTheCycle(_HomeIsolated):
     claim", and the notification bus runs after both "so a bus fault can cost
     neither".
 
-    The strict for-update index read made ``expire_stale_proposals`` and
-    ``sweep_stale`` RAISE on an unreadable index, where they previously degraded to
-    a silent no-op. Both are maintenance passes that rerun on every heartbeat, and
+    The strict for-update index read makes ``expire_stale_proposals`` and
+    ``sweep_stale`` RAISE on an unreadable index rather than degrade to a silent
+    no-op. Both are maintenance passes that rerun on every heartbeat, and
     both abandon their write before touching the file — so the durable state is
     already safe and the cycle must log and carry on. Letting them escape would
     make one transient EACCES cost this cycle's claims, the Slack mirror, the

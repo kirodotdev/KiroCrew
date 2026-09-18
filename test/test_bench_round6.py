@@ -1,16 +1,16 @@
-"""Round-6 review findings: two blocking defects, both real.
+"""Two incomplete-sweep defects in the bench report and ingest paths.
 
-Both are the SAME incomplete-sweep pattern that produced round 5's fifth finding:
-a refusal was added at one site and the sibling site was left alone.
+Both are the same shape: a refusal placed at one site while the sibling site
+keeps the unguarded call.
 
-* the report writer guarded its composed paths but still used `Path.write_text`,
-  and the guard returns the RESOLVED path -- so a link planted at `<stem>.md` had
-  already been followed by the time the write happened. `--stem` was also free to
-  be absolute or traversing, which composes to a file outside the `--out-dir`
-  that was the thing actually checked;
-* ingest refuses a NULL DOCUMENT embedding (round 5) but the QUERY embedding was
-  passed inline to `search_episodic`, and a NULL there is worse than a NULL row:
-  it switches that entire question to FTS5 keyword ranking, which the report then
+* the report writer must not reach `Path.write_text` on a composed path. The
+  guard returns the RESOLVED path, so a link planted at `<stem>.md` is already
+  followed by the time the write happens; `--stem` must also be refused when
+  absolute or traversing, since it composes to a file outside the checked
+  `--out-dir`;
+* the QUERY embedding must be refused when NULL, not only the DOCUMENT one. A
+  NULL query passed inline to `search_episodic` is worse than a NULL row: it
+  switches that entire question to FTS5 keyword ranking, which the report then
   presents as vector recall.
 """
 

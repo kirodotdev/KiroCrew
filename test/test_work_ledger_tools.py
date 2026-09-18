@@ -392,6 +392,9 @@ async def test_every_store_code_maps_to_the_status_the_rfc_tabulates():
         "invalid_action": 400,
         "invalid_status": 400,
         "invalid_value": 400,
+        # Maintenance-only: raised by ``purge_conductor``, reachable from no
+        # route. Mapped so the exhaustiveness property above keeps its meaning.
+        "ledger_not_finished": 409,
     }
 
 
@@ -564,8 +567,11 @@ async def test_the_conductor_promotes_a_claim_with_the_accept_action():
     )
     assert status == 200
     _, body = await _read(CONDUCTOR_A)
-    entry = next(e for e in body["accept_batch"]["items"] if e["id"] == item_id)
-    assert entry["accept"]["pr"] == "TBD"
+    # Absent from the batch while the bar still says "TBD", and the item row says why.
+    assert not [e for e in body["accept_batch"]["items"] if e["id"] == item_id]
+    row = next(r for r in body["items"] if r["item_id"] == item_id)
+    assert row["acceptance_concrete"] is False
+    assert row["acceptance"]["pr"] == "TBD", "the stored bar is untouched, just not batched"
 
     status, body = await _record(
         CONDUCTOR_A,
@@ -581,7 +587,67 @@ async def test_the_conductor_promotes_a_claim_with_the_accept_action():
     assert entry["accept"]["pr"] == 4321
     # One event per write, and the promotion is one of them.
     row = next(r for r in body["items"] if r["item_id"] == item_id)
+    assert row["acceptance_concrete"] is True
     assert any(e["kind"] == "decision" for e in row["events"])
+
+
+@pytest.mark.asyncio
+async def test_a_read_says_per_item_why_an_item_is_not_in_the_batch():
+    """``acceptance_concrete`` is derived on the row, not stored, so a conductor can
+    tell "the bar is not filled in yet" from "the read dropped my item"."""
+    ids = await two_by_two()
+    pending = await _dispatch(
+        CONDUCTOR_A, "chat-a-worker-3", "no number yet", {"kind": "pr_checks", "pr": "TBD"}
+    )
+    _, body = await _read(CONDUCTOR_A)
+    rows = {r["item_id"]: r for r in body["items"]}
+    assert rows[pending]["acceptance_concrete"] is False
+    assert rows[ids["item_a"]]["acceptance_concrete"] is True
+    batched = {e["id"] for e in body["accept_batch"]["items"]}
+    assert pending not in batched
+    assert ids["item_a"] in batched
+    stored = json.loads(wl.item_path(CONDUCTOR_A, pending).read_text())
+    assert "acceptance_concrete" not in stored
+
+
+@pytest.mark.asyncio
+async def test_each_batch_entry_carries_the_items_status_unfiltered():
+    """The conductor filters to ``done``; the read hands it the field to filter on and
+    filters nothing itself."""
+    ids = await two_by_two()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "moving"})
+    assert status == 200
+    _, body = await _read(CONDUCTOR_A)
+    entry = next(e for e in body["accept_batch"]["items"] if e["id"] == ids["item_a"])
+    assert entry["status"] == "progress"
+    assert entry["accept"] == {"kind": "human_approval"}
+
+    status, _ = await _report(WORKER_A, {"status": "done", "summary": "met"})
+    assert status == 200
+    _, body = await _read(CONDUCTOR_A)
+    entry = next(e for e in body["accept_batch"]["items"] if e["id"] == ids["item_a"])
+    assert entry["status"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_a_done_item_waiting_on_the_conductor_is_not_stale():
+    """``stale`` means the WORKER went quiet. Once it has claimed its bar is met the
+    next move is the conductor's or a human's, so the flag must not point back at the
+    reader — a quiet ``done`` item is silent because it is finished."""
+    ids = await two_by_two()
+    status, _ = await _report(WORKER_A, {"status": "done", "summary": "opened the pr"})
+    assert status == 200
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    long_after = datetime.now().astimezone() + timedelta(seconds=wl.DEFAULT_STALE_WINDOW_SECS * 6)
+    assert (
+        routes._slot_running(_req("GET", "/api/work-ledger", sk=CONDUCTOR_A).app["state"], WORKER_A)
+        is False
+    )
+    assert wl.is_stale(item, worker_running=False, now=long_after) is False
+    _, body = await _read(CONDUCTOR_A)
+    row = next(r for r in body["items"] if r["item_id"] == ids["item_a"])
+    assert row["stale"] is False
 
 
 @pytest.mark.asyncio
@@ -1010,6 +1076,77 @@ def test_the_store_directory_is_fenced_from_file_tools():
         assert is_sensitive_path(f"~/{prefix}/work-ledger/bindings/x.json") is True
         assert is_sensitive_path(f"~/{prefix}/work-ledger/c-abc12345/items/it_0.json") is True
     assert "work-ledger" in sandbox._CREW_HIDDEN_LEAVES
+
+
+@pytest.mark.asyncio
+async def test_a_worker_edit_of_its_own_item_file_is_refused_and_the_store_still_writes():
+    """The fence, driven end to end through the tool gate on the REAL paths.
+
+    The worker agent is a full-capability agent with ``fs_write``, so the tool
+    layer's writer-ownership rule (a worker owns ``status``/``summary``/
+    ``artifacts``/``pr``, a conductor owns ``acceptance``/``verdict``/``state``/
+    ``decision``) is only as strong as the file fence under it: a prompt-injected
+    worker that could open ``items/it_*.json`` directly would forge
+    ``state: accepted``, gut ``acceptance`` before the conductor's evaluator runs,
+    or read a sibling item past ``read_work_brief``'s scoping, and the conductor
+    would read the forgery as its own writing.
+
+    Three things are pinned here that the spelling test above cannot: the
+    ``KIROCREW_HOME`` override this suite runs under is re-anchored (the store
+    lives OUTSIDE ``~/.kiro/crew``, and it is still fenced); the refusal is what
+    ``hooks.on_tool_call`` answers for an edit AND for a read of the item, the
+    binding file and the conductor record; and the store's own ``atomic_write``
+    path — the gateway process, not the agent tool — is untouched by the fence, so
+    the sanctioned writers keep working on the very file the tool was refused.
+
+    Shell writes (``echo >``, ``python -c``) are deliberately NOT text-matched by
+    the gate (see ``is_sensitive_bash_command``); the OS sandbox mask asserted
+    above is the shell-side control, so this test covers the file-tool plane.
+    """
+    from kiro_crew.config.paths import data_home
+    from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+
+    ids = await two_by_two()
+    item_file = wl.item_path(CONDUCTOR_A, ids["item_a"])
+    sibling_file = wl.item_path(CONDUCTOR_B, ids["item_b"])
+    binding_file = wl.binding_path(WORKER_A)
+    conductor_file = wl.conductor_dir(CONDUCTOR_A) / wl._CONDUCTOR_FILE
+    for path in (item_file, sibling_file, binding_file, conductor_file):
+        assert path.is_file(), path
+    # The suite's override puts the store outside the default home, which is the
+    # anchoring case a hand-written ``~/.kiro/crew/...`` spelling never exercises.
+    assert Path.home() / ".kiro" / "crew" not in data_home().parents
+    assert data_home() not in (Path.home() / ".kiro" / "crew").parents
+
+    gate = HookManager(HooksConfig.from_dict({}))
+    for kind, path in (
+        ("edit", item_file),
+        ("edit", binding_file),
+        ("edit", conductor_file),
+        ("read", item_file),
+        ("read", sibling_file),
+    ):
+        decision = gate.on_tool_call(
+            f"Editing {path.name}" if kind == "edit" else f"Reading {path.name}",
+            session_key="cli_chat",
+            tool_kind=kind,
+            raw_params={"path": str(path)},
+        )
+        assert decision.action == TOOL_DENY, (kind, path, decision)
+        assert "sensitive path" in (decision.reason or ""), (kind, path, decision)
+
+    # The sanctioned writers reach the same file the tool was refused: the worker's
+    # report through its route, and the conductor's decision through the store.
+    before = item_file.read_bytes()
+    status, _ = await _report(WORKER_A, {"status": "progress", "summary": "still moving"})
+    assert status == 200
+    wl.apply_conductor_action(CONDUCTOR_A, "decide", item_id=ids["item_a"], decision="carry on")
+    after = item_file.read_bytes()
+    assert after != before
+    item = wl.read_work_item(CONDUCTOR_A, ids["item_a"])
+    assert item is not None
+    assert item.summary == "still moving"
+    assert item.decision == "carry on"
 
 
 def test_the_routes_are_on_the_strict_internal_allowlist():

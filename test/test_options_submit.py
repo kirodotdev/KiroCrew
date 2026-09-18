@@ -274,7 +274,7 @@ class TestHandleOptionsSubmit:
     async def test_preserves_surrounding_blocks(self, orch, monkeypatch):
         """Multi-block parent (section+actions+context): only actions replaced.
 
-        Reproduces the saved-triage-digest bug — submitting OPTIONS used to
+        Reproduces the saved-triage-digest bug — submitting OPTIONS must not
         delete the entire digest including its 3 sections + footer context.
         """
         from kiro_crew.slack import interactions

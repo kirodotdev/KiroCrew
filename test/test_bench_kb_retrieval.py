@@ -679,7 +679,7 @@ class TestCli:
 
 
 class TestRound7Fixes:
-    """Regression tests for the head-03b9a4858 GPT review round."""
+    """Regression tests for KB retrieval edge cases."""
 
     def test_huge_k_does_not_crash(self) -> None:
         """An attacker-sized -k must not overflow the SQL LIMIT arithmetic.

@@ -150,7 +150,7 @@ class TestCredentialsSection:
     def test_an_unconfigured_host_is_not_told_the_block_is_the_likelier_cause(
         self, fake_home, capsys
     ):
-        """The closing line used to fire unconditionally, including here.
+        """The closing line must not fire unconditionally, including here.
 
         Two lines after doctor says "no ~/.aws config", it told the operator the
         agent had "most likely hit the credential-file block rather than a missing
@@ -449,7 +449,7 @@ class TestVendorLineIsFailSoft:
     def test_it_is_phrased_for_the_operator_not_the_agent(self, monkeypatch):
         """The doctor reader is a human who cannot call an MCP tool.
 
-        This line used to be `credential_tool_hint()` verbatim — prose addressed to
+        This line must not be `credential_tool_hint()` verbatim — prose addressed to
         the agent, telling its reader to "prefer one of those and then run the
         command normally" and that it SUPERSEDES "the guidance above", which is a
         refusal notice the operator does not have on screen. Only the server ids

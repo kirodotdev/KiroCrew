@@ -53,14 +53,14 @@ jobs:
   # flags false and runs the full matrix (fails safe).
   changes:
     name: Detect changed surface
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 5
-    # dorny/paths-filter reads the PR's changed-file list from the GitHub REST
-    # API on pull_request events -> needs pull-requests:read. Job-level
-    # permissions REPLACE the top-level grant, so contents:read is restated.
+    # dorny/paths-filter runs with `token: ''` (below), so it detects changes
+    # with local git instead of the REST API and needs no pull-requests:read.
+    # Job-level permissions REPLACE the top-level grant, so contents:read is
+    # restated.
     permissions:
       contents: read
-      pull-requests: read
     outputs:
       only_backend: ${{ steps.decide.outputs.only_backend }}
       only_frontend: ${{ steps.decide.outputs.only_frontend }}
@@ -68,6 +68,15 @@ jobs:
       leaf_tests: ${{ steps.leaf.outputs.leaf_tests }}
       leaf_targets: ${{ steps.leaf.outputs.leaf_targets }}
       leaf_gates: ${{ steps.leaf.outputs.leaf_gates }}
+      # Where the routed Linux jobs run: the CodeBuild-hosted runner for this
+      # repository's own runs, `ubuntu-latest` for forks. Computed ONCE here
+      # (five jobs consume them) so a drifted copy cannot reroute one job. Every
+      # consumer reads it as `${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}`:
+      # if this job fails or is cancelled the output is empty, and a job that
+      # runs anyway (`coverage-gate` fails closed with `if: always()`) must still
+      # get a runner rather than error out before its own checks execute.
+      linux_runner: ${{ steps.runner.outputs.linux_runner }}
+      linux_runner_large: ${{ steps.runner.outputs.linux_runner_large }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -79,6 +88,27 @@ jobs:
       - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         id: filter
         with:
+          # An empty token switches the action to LOCAL git change detection on
+          # pull_request events (documented on the `token` input; the default is
+          # the shared installation token). The pinned v4.0.3 build then runs
+          # getChanges(pull_request.base.sha, HEAD): a plain two-dot
+          # `git diff` -- the checkout above already has the base commit
+          # (fetch-depth: 0), so no fetch and no API call happen. This matters
+          # because the REST list-files call spends the per-hour installation
+          # quota shared by EVERY workflow in this repo, and at dozens of
+          # ci.yml runs per hour it exhausted the quota and failed this job
+          # repo-wide (#10434). With an empty token the `base` input stays
+          # empty on purpose: the action falls back to the PR base SHA from
+          # the event payload. Both diff endpoints are frozen when the run is
+          # created (base.sha from the payload, HEAD at the event's merge
+          # commit), so a base-branch move after that changes nothing. The
+          # result is the NET change the merge introduces relative to base.sha:
+          # a PR-listed file whose identical change already landed in base
+          # drops out, which is correct for surface detection -- that surface
+          # is unchanged relative to base -- and any wider change set still
+          # pushes toward the full matrix. push events never consult `token`,
+          # so main builds are unchanged.
+          token: ''
           # 'some-with-excludes': a file matches a filter when it matches at
           # least one pattern AND none of the negated ones. That lets `backend`
           # be a true CATCH-ALL ("every changed file that is not frontend, not
@@ -104,8 +134,8 @@ jobs:
               - '!.github/**'
               - '!scripts/**'
               # temp-screenshots/** is never-packaged, never-imported evidence
-              # media (cleanup-temp-screenshots.yml already treats it as
-              # ephemeral), so it must not drag a frontend-only PR into the
+              # media (gitignored; PR evidence travels as a GitHub attachment),
+              # so it must not drag a frontend-only PR into the
               # full backend matrix (#8027). Excluding it keeps the catch-all
               # safety property: any unrecognised REAL file still lands in
               # backend, a screenshots+frontend diff stays only_frontend=true,
@@ -202,6 +232,28 @@ jobs:
             echo "GATE_EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # CodeBuild-hosted runner pilot (docs/ci/ci-and-reviews.md). A run in any
+      # repository other than kirodotdev/KiroCrew (a fork's own CI), or a
+      # pull_request whose head repository is not this one, stays on
+      # ubuntu-latest; everything else gets the per-run CodeBuild label. The
+      # webhook on the AWS side independently allowlists the triggering actor,
+      # so this expression is the routing decision, not the trust boundary.
+      # `instance-size:large` is the documented CodeBuild label override
+      # (8 vCPU / 15 GB) for the memory-bound test shards.
+      - name: Pick the Linux runner label
+        id: runner
+        env:
+          IS_FORK: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) }}
+          LABEL: codebuild-kirocrew-gha-linux-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          if [ "$IS_FORK" = "true" ]; then
+            echo "linux_runner=ubuntu-latest" >> "$GITHUB_OUTPUT"
+            echo "linux_runner_large=ubuntu-latest" >> "$GITHUB_OUTPUT"
+          else
+            echo "linux_runner=$LABEL" >> "$GITHUB_OUTPUT"
+            echo "linux_runner_large=$LABEL instance-size:large" >> "$GITHUB_OUTPUT"
+          fi
+
   # Build the Linux desktop packages and install them for real, but ONLY when the
   # diff could change what a package installs. The check is expensive (a PBS
   # interpreter, a full pip closure, then electron-builder three times), and it
@@ -259,7 +311,7 @@ jobs:
   # run anyway and the log would claim it was cleared to.
   await-fast-gate:
     name: Await Fast Gate
-    runs-on: ubuntu-latest
+    runs-on: ${{ (github.repository != 'kirodotdev/KiroCrew' || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && 'ubuntu-latest' || format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) }}
     timeout-minutes: 15
     permissions:
       # actions:read is what lets this read another workflow's runs. Job-level
@@ -370,6 +422,17 @@ jobs:
     # positive "python changed" allowlist) so that anything the selector could
     # not classify as frontend -- docs, a new root file, meta -- still runs it.
     if: needs.changes.outputs.only_frontend != 'true'
+    # NOT routed to the CodeBuild fleet: `black --check` over the whole tree
+    # needs more memory than the fleet's default BUILD_GENERAL1_MEDIUM
+    # (4 vCPU / 7 GB) provides, OOM-killing the job (exit 137). The fleet's
+    # `_large` tier (8 vCPU / 16 GB, per `aws codebuild batch-get-builds`)
+    # also fails this job, reproducibly, with "the self-hosted runner lost
+    # communication with the server" -- the signature GitHub documents for a
+    # runner starved of CPU/memory or one whose process gets killed, though
+    # no CodeBuild-side log has yet pinned the exact cause on that tier.
+    # Stays on `ubuntu-latest` (16 GB) until someone can reproduce the
+    # `_large`-tier failure live against the fleet with logs captured before
+    # they rotate out of CloudWatch.
     runs-on: ubuntu-latest
     # The job's floor on today's hosted runners is ~14-15 min (black --check
     # over the whole tree alone takes 7-8 min, flake8 ~2 min, mypy cold ~3 min),
@@ -412,6 +475,24 @@ jobs:
         # --group pulls [dependency-groups].dev from pyproject.
         run: uv pip install --system -e ".[voice]" --group dev
 
+      # Python vulnerability visibility. The repository had none: the step this
+      # replaces ran an unpinned `pip install pip-audit`, and pip-audit is now
+      # pinned in the dev group installed immediately above, so the audit needs no
+      # install of its own and two runs a week apart audit with the same tool.
+      #
+      # continue-on-error: this REPORTS on day one. Widening dependency auditing
+      # and making it block in the same change is how a gate ends up switched off
+      # by whoever it first stopped, and pip-audit reaches the network, so a
+      # registry blip would otherwise fail unrelated PRs. What makes this
+      # different from the advisory step it replaces is the baseline: the script
+      # compares the count against python-audit-baseline.json and says so when it
+      # rises, which turns a standing wall of known advisories into a number that
+      # only moves when someone moves it. Dropping continue-on-error is the
+      # follow-up once a count is recorded and has held steady.
+      - name: Python dependency audit (pinned, report-only)
+        continue-on-error: true
+        run: python3 scripts/check_python_audit.py
+
       # black IS enforced, behind a shrinking baseline. A bare `black --check`
       # cannot be turned on here: 1,420 files under src/ and test/ are not
       # black-clean, so the bulk pass it waits on is ~95,800 lines and has been
@@ -433,17 +514,14 @@ jobs:
           python3 scripts/check_subprocess_encoding.py --test
           python3 scripts/check_subprocess_encoding.py
 
-      # A comment must not narrate change history -- PR/issue numbers, review
-      # rounds, commit SHAs, "previously", "no longer", "we now". That history is
-      # in git, and a comment describing a past change is stale the moment the
-      # next one lands. code-style.md said so already and nothing checked it, so
-      # the tree carries ~7,600 such markers; they are recorded in
-      # comment-history-baseline.json and it is shrink-only.
-      # Self-test first, same reason as the gate above.
-      - name: Check comments for change history (gate, baselined)
-        run: |
-          python3 scripts/check_comment_history.py --test
-          python3 scripts/check_comment_history.py
+      # A committed ACP frame fixture carries what the WIRE carried. The class that
+      # gets through a credential scrub is an ENUMERATION -- a provider catalog, a
+      # command inventory -- because it reads as product data while describing what
+      # the recording host HAS. Today's leaks are carried in the baseline as
+      # pre-existing and it is shrink-only, per file AND per marker class, so a new
+      # fixture cannot inherit an exemption.
+      - name: Check ACP frame fixtures for host data (gate, baselined)
+        run: python3 scripts/check_acp_frame_host_data.py
 
       # Application code must reach the agent backend through kiro_crew.agent_sdk,
       # not by importing kiro_crew.acp (or kiro_crew.providers, which re-exports
@@ -501,24 +579,38 @@ jobs:
   backend-test:
     name: Backend Tests
     needs: [changes, await-fast-gate]
-    runs-on: ubuntu-latest
-    # The slowest 3.12 shard runs ~29 minutes, so a 30-minute cap kills the
-    # job at the coverage step with every test green and Coverage Gate then
-    # reds on the missing shard artifact. Same budget as backend-test-windows.
-    timeout-minutes: 40
+    # CodeBuild-hosted runner, CANARY: shard 1 only; shards 2-8 stay hosted and
+    # exercise the passthrough. The pilot's first attempt routed every shard and
+    # each failed 37-42 tests, because the CodeBuild runner executes the job as
+    # root and this suite asserts permission semantics root does not have
+    # (read-only refusals, root-owned checks, PermissionError; the code refuses
+    # to run providers as root at all), and because standard:7.0 lacks parts of
+    # the hosted toolchain (jq 1.7, lsof, a libpython that resolves without
+    # LD_LIBRARY_PATH). The `run-as-runner` action below closes all of that
+    # INSIDE the job -- no custom image needed -- and the boundary is asserted by
+    # the step below rather than inferred. Green on four consecutive runs across
+    # both matrix shapes this file has had, with coverage written and uploaded by
+    # the unprivileged process each time; per-run counts and identity evidence
+    # are in docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)" --
+    # not repeated here, because a per-shard count is a property of the shard
+    # count and goes stale every time the matrix is resized. The remaining
+    # shards move only after the canary holds.
+    runs-on: ${{ matrix.group == 1 && needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
+    # Keep the existing wall-clock budget; individual tests still time out at
+    # 120 seconds. File sharding reduces repeated collection, not test coverage.
+    timeout-minutes: 60
     strategy:
       # Don't cancel sibling shards when one fails -- we want the full failure
       # picture across the suite, not just the first shard to break.
       fail-fast: false
       matrix:
         python-version: ["3.12"]
-        # Duration-balanced shards (pytest-split). 4 groups x 1 Python = 4
-        # parallel jobs, each on its own runner (4 cores via -n auto). To add
-        # shards, extend this list AND bump SHARD_COUNT to match -- mind the
-        # ~20 concurrent-job ceiling for public repos.
-        group: [1, 2, 3, 4]
+        # Eight runners reduce per-shard work at the cost of more runner slots.
+        # Whole files are assigned before import; -n auto parallelizes within
+        # each shard. To change the count, update this list and SHARD_COUNT.
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      SHARD_COUNT: 4
+      SHARD_COUNT: 8
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -541,6 +633,46 @@ jobs:
 
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # Same user model on every runner: on a root runner (CodeBuild) create the
+      # unprivileged `runner` user, hand it the workspace and the job temp, and
+      # close the image gaps; everywhere install /usr/local/bin/ci-shell, which
+      # the steps below declare as their shell. On ubuntu-latest it is a bash
+      # passthrough and this action changes nothing else. Must come AFTER the
+      # setup-* actions (they install as root, harmlessly) and BEFORE anything
+      # whose result depends on not being root.
+      - uses: ./.github/actions/run-as-runner
+
+      - name: Assert the non-root boundary (CodeBuild only)
+        if: runner.environment == 'self-hosted'
+        shell: /usr/local/bin/ci-shell {0}
+        # ASSERTS, not prints: a boundary that silently stopped working would
+        # otherwise show up as 37-42 permission failures further down, which is
+        # the failure this whole action exists to prevent. Evidence is recorded
+        # for the specific facts a regression would move -- never the whole
+        # environment, which would put every GITHUB_*/RUNNER_* value in a log.
+        run: |
+          test "$(id -u)" -ne 0
+          test "$HOME" = /home/runner
+          test -w "$GITHUB_WORKSPACE"
+          test -w "$RUNNER_TEMP"
+          # ...but the job temp is root-owned and STICKY, and the runner's
+          # file-command directory inside it is not writable. Both matter: an
+          # unprivileged step that can write $GITHUB_ENV -- or rename the
+          # directory holding it, which the PARENT's permissions govern -- injects
+          # environment variables into the next root-owned step.
+          test "$(stat -c %U "$RUNNER_TEMP")" = root
+          test -k "$RUNNER_TEMP"
+          test ! -w "$(dirname "$GITHUB_ENV")"
+          command -v lsof >/dev/null
+          python -c 'import os, sys; assert os.geteuid() != 0, "still root"; print("euid", os.geteuid(), "python", sys.version.split()[0])'
+          echo "identity: $(id)"
+          echo "HOME=$HOME USER=$USER LOGNAME=$LOGNAME"
+          echo "owners: workspace=$(stat -c %U:%G "$GITHUB_WORKSPACE") temp=$(stat -c %U:%G "$RUNNER_TEMP")"
+          echo "tools: jq $(jq --version) lsof $(lsof -v 2>&1 | head -2 | tail -1) git $(git --version)"
+          echo "ancestry: $(ps -o user=,comm= -p $PPID) <- $(ps -o user=,comm= -p "$(ps -o ppid= -p $PPID | tr -d ' ')")"
+          echo "libpython resolves without LD_LIBRARY_PATH: $(env -u LD_LIBRARY_PATH python -c 'pass' >/dev/null 2>&1 && echo yes || echo no)"
+          echo "unshare NEWNS (namespace sandbox): $(unshare --mount --map-root-user true 2>&1 && echo available || echo unavailable)"
 
       - name: Select test scope
         id: scope
@@ -585,23 +717,31 @@ jobs:
           echo "Reduced scope: $(wc -l < "$TARGETS_FILE") cross-surface backend file(s)."
 
       - name: Run tests (shard ${{ matrix.group }}/${{ env.SHARD_COUNT }})
-        # pytest-split slices the suite into SHARD_COUNT balanced groups. With a
-        # committed .test_durations file the split is balanced by *recorded time*,
-        # and brand-new tests are auto-assigned the average duration (distributed
-        # with no manual work); without that file it falls back to an even split
-        # by test count. -n auto still parallelizes within each shard across the
-        # runner's cores -- sharding scales across runners, -n auto across cores.
+        # scripts.ci_file_shards assigns each file to one shard before pytest
+        # imports it. Discovery and platform ignores remain pytest's own; files
+        # are never promoted to explicit arguments just to partition the suite.
+        # Hash assignment is stable, not duration-balanced. Every file's tests
+        # and parameters stay together; xdist still uses loadgroup within a job.
         #
         # Coverage runs on every shard: since the floor moved to >= 3.12 the
         # matrix has a single Python, so there is no --no-cov lane left. Each
         # shard emits a partial data file merged later by the coverage-combine
-        # job.
+        # job. Keep the package-name boundary: a whole source-directory selector
+        # also measures vendored and standalone scripts outside that boundary.
+        # The two explicit directories contain already-measured source whose
+        # synthetic/app-local module names otherwise make tracing import-order dependent.
         env:
           REDUCED: ${{ steps.scope.outputs.reduced }}
           LEAF: ${{ steps.scope.outputs.leaf }}
           LEAF_REPEAT: "3"
           LEAF_GATES: ${{ needs.changes.outputs.leaf_gates }}
           TARGETS_FILE: ${{ runner.temp }}/backend-targets.txt
+        # ci-shell: the unprivileged `runner` user on a root runner, plain bash
+        # on ubuntu-latest (see the run-as-runner step). This is the step whose
+        # correctness depends on not being root -- the suite asserts read-only
+        # refusals and PermissionError semantics, and the code refuses to run
+        # providers as root.
+        shell: /usr/local/bin/ci-shell {0}
         run: |
           # Take the `python` problem matcher registered by actions/setup-python
           # out of scope before pytest writes a line. Its pattern is a traceback
@@ -663,15 +803,17 @@ jobs:
             exit 0
           fi
           if [ "$REDUCED" = "true" ]; then
-            pytest -q -n auto --timeout=120 \
-              --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
+            python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+              --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
               --no-cov \
               "${TARGETS[@]}"
             exit 0
           fi
-          pytest -q -n auto --timeout=120 \
-            --splits "$SHARD_COUNT" --group ${{ matrix.group }} \
-            --cov=kiro_crew --cov=sage_lib
+          python -m pytest -p scripts.ci_file_shards -q -n auto --timeout=120 \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }} \
+            --cov=kiro_crew --cov=sage_lib \
+            --cov=src/kiro_crew/apps/builtins/aws_control/crew/packaging \
+            --cov=src/kiro_crew/apps/builtins/code_review_sage/tests
         # Nothing is deselected. The eleven files that used to be -- the two sandbox
         # suites, the two ops git/gh suites, and the seven auto_improvement suites --
         # each carry `skipif(not userns_available())` on the tests that need a namespace
@@ -683,6 +825,10 @@ jobs:
         # Fold any xdist parallel data files into a single .coverage (no-op if
         # pytest-cov already combined this shard), then name it per-shard so the
         # combine job can merge all shards with `coverage combine`.
+        # ci-shell: the data files were written by the unprivileged user, so the
+        # combine and rename run as that same user rather than leaving a
+        # root-owned .coverage.<n> the upload step would then have to read.
+        shell: /usr/local/bin/ci-shell {0}
         run: |
           coverage combine 2>/dev/null || true
           test -f .coverage || { echo "::error::shard ${{ matrix.group }} produced no coverage data"; exit 1; }
@@ -703,23 +849,26 @@ jobs:
   # per-feature status), but until this job existed nothing in CI held
   # that line -- a POSIX-only regression would land silently. Single
   # Python (3.12: the preferred Windows runtime; numpy 1.x ships no 3.13
-  # Windows wheel), duration-balanced shards like the POSIX matrix,
-  # trace-free (--no-cov: the coverage-combine job merges ubuntu shards
-  # only).
+  # Windows wheel), trace-free (--no-cov: the coverage-combine job merges
+  # ubuntu shards only).
+  #
+  # Whole-file shards, assigned before import using the same plugin as POSIX.
+  # Eight runners share the work; the per-job timeout remains unchanged.
+  # File hashing avoids full-suite item collection in every worker, but does not
+  # claim equal durations across files or platforms.
   backend-test-windows:
     name: Backend Tests (Windows)
     needs: [await-fast-gate]
     runs-on: windows-latest
-    # Same 40-minute budget as backend-test; windows-latest runs the same
-    # shards measurably slower, so this job has the least headroom of the two.
-    timeout-minutes: 40
+    # Retain the existing Windows budget and coverage-free run.
+    timeout-minutes: 60
     strategy:
       # Full failure picture across shards, same as backend-test.
       fail-fast: false
       matrix:
-        group: [1, 2, 3, 4]
+        group: [1, 2, 3, 4, 5, 6, 7, 8]
     env:
-      SHARD_COUNT: 4
+      SHARD_COUNT: 8
       # windows-latest subprocess spawn + filesystem latency is slow and
       # highly variable; the md_notebook git-ops default (30s) intermittently
       # times out on plain `git add` here (#1673). Give git invocations a
@@ -784,13 +933,17 @@ jobs:
         # is red either way, and a named red in 12 minutes beats an
         # uninterpretable one at the 40-minute cap.
         shell: bash
+        env:
+          PYTHONPATH: ${{ github.workspace }}
         run: |
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
-            --splits "$SHARD_COUNT" --group ${{ matrix.group }}
+          python -m pytest -p scripts.ci_pytest_progress -p scripts.ci_file_shards \
+            --ci-progress-dir "$RUNNER_TEMP/pytest-progress" \
+            -q -n auto --timeout=180 --no-cov --max-worker-restart=0 \
+            --file-shards "$SHARD_COUNT" --file-shard ${{ matrix.group }}
         # Nothing is deselected here either, and the same guards carry it: Windows has no
         # namespace sandbox at all, so `userns_available()` is False and every
         # sandbox-dependent test skips. Residual POSIX assumptions in
@@ -798,26 +951,261 @@ jobs:
         # test/windows-expected-failures.txt, which is the mechanism a whole-file deselect
         # was standing in for.
 
-  # macOS gateway line. Until this job existed macOS had ZERO pytest coverage in
-  # CI -- the macos-14 runners appear only in build.yml, build-desktop.yml and
-  # sign-and-notarize.yml, all of which merely build and notarize the desktop
-  # app. That left the macOS-only identity primitives (LOCAL_PEERPID for the
-  # peer pid, libproc for the process start id) verified by nothing, on the
-  # platform several maintainers develop on.
+      - name: Upload Windows pytest progress
+        # Job timeout can skip even always() steps; periodic CI_PROGRESS lines
+        # retain partial evidence in the Actions log without relying on this upload.
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: windows-pytest-progress-${{ matrix.group }}
+          path: ${{ runner.temp }}/pytest-progress/*.jsonl
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # `kirocrew pod` on Windows, booted for real under Task Scheduler.
   #
-  # Deliberately SCOPED, not the full suite: a full macOS run would need its own
-  # exclusion burn-down first (the Windows line needed 23 file exclusions plus
-  # ~237 node skips before it held), and shipping a job that is red on arrival
-  # trains people to ignore it. The glob keeps the scope from going stale -- a
-  # new test_mcp_gateway_* suite is picked up without editing this file, which a
-  # hand-maintained list would not do.
+  # A SEPARATE JOB for the same reason the fail-closed canary below is one: a
+  # step inside backend-test-windows would run in every shard and pay for
+  # one real gateway boot per shard to make one assertion. It is also the only Windows
+  # job that needs a built `.venv` INSIDE the checkout, because a pod boots the
+  # worktree's own binary rather than the control plane's -- the shards install
+  # with `uv pip install --system` and create no venv at all, which is why
+  # test_pod_windows_boot.py is listed in test/windows-collect-ignore.txt and
+  # named explicitly here instead.
   #
-  # Cheap enough to need no sharding: these suites are ~230 tests and run in
-  # about 4 seconds, so the job's wall time is essentially dependency install.
-  backend-test-macos:
-    name: Gateway Tests (macOS)
+  # What only this job can establish: that the runner user can create a
+  # scheduled task at all, that `/SC ONCE /ST 00:00` does not auto-fire, that the
+  # generated .cmd wrapper's quoting is something cmd.exe accepts, that the
+  # gateway answers over TCP (Windows has no AF_UNIX, so the pod's private
+  # dashboard socket does not exist there), and that `pod down` really reaps both
+  # the task and the process tree. Every one of those is faked in the sharded
+  # test_pod_windows.py, which is what makes this job worth its minutes.
+  #
+  # LABEL OPT-IN: a pull request carrying the `ci:pod-scenarios` label ALSO runs
+  # the full 55-test pod scenario suite (test/e2e/scenarios/) here, against a
+  # real Vite-built SPA, with the same invocation and count pin as nightly.yml's
+  # pod-scenarios leg. That is how a current revision gets hosted Windows
+  # evidence for the suite without dispatching the release-publishing nightly and
+  # without charging every PR for a Node toolchain, an SPA build, a wheel build
+  # and a second pod bring-up. Every step the label adds carries the same
+  # `if: env.POD_SCENARIOS == 'true'`; unlabelled PRs and pushes to main run the
+  # original boot-only shape, byte for byte. The workflow does not listen for
+  # `labeled`, so the label must be on the PR BEFORE the push that should run it,
+  # and a re-run of an earlier run keeps that run's original event payload.
+  # test/test_pod_scenario_matrix.py pins both shapes.
+  pod-boot-windows:
+    name: Pod Boot Canary (Windows)
     needs: [await-fast-gate]
-    runs-on: macos-14
+    runs-on: windows-latest
+    # A cold boot pays for the venv build, interpreter start, config seeding and
+    # the health wait. The test's own bound is 180s; this is the job's. The
+    # label opt-in measured 76s (boot canary) + 205s (55 scenarios) plus the SPA
+    # build on a hosted runner, well inside the same ceiling.
+    timeout-minutes: 30
+    env:
+      # `true` only for a pull_request event whose labels include the opt-in;
+      # anything else (push to main, an unlabelled PR) is the string `false`.
+      POD_SCENARIOS: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'ci:pod-scenarios') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the files
+          # that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      # Label opt-in only: the scenario suite's pod serves the built SPA, so the
+      # frontend toolchain is a prerequisite there. Same pin and cache shape as
+      # the `e2e` job. Skipped on the default boot-only run.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: env.POD_SCENARIOS == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: website/package-lock.json
+
+      # The CONTROL plane: the interpreter that runs pytest and drives the pod
+      # verbs. Deliberately separate from the payload below, which is the real
+      # split the pod design rests on.
+      - name: Install dependencies (control plane)
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      # Label opt-in only: the wheel scenario runs `python -m build --wheel` with
+      # THIS interpreter (sys.executable) and, under KIROCREW_E2E_REQUIRE=1, fails
+      # rather than skips without it. `build` is not in the dev group on purpose.
+      - name: Install the wheel scenario's build tool (label opt-in)
+        if: env.POD_SCENARIOS == 'true'
+        run: uv pip install --system build==1.3.0
+
+      # The PAYLOAD: the worktree's own `.venv\Scripts\kirocrew.exe`, which is
+      # what the scheduled task actually boots. Without this the test FAILS
+      # naming the missing venv rather than skipping, so a broken step here
+      # cannot leave the canary silently green.
+      - name: Build the checkout's own venv (the binary the pod boots)
+        run: |
+          uv venv .venv
+          uv pip install --python .venv/Scripts/python.exe -e "."
+
+      # `pod up` refuses a checkout with no served SPA bundle, which is correct
+      # product behaviour and not what this canary is testing (Task Scheduler
+      # supervision is). The runner is disposable, so the one-file stand-in is
+      # placed by the WORKFLOW rather than by the test: a test that wrote into
+      # the checkout could be killed by its own timeout before cleaning up.
+      - name: Place a one-file SPA stand-in for `pod up`
+        if: env.POD_SCENARIOS != 'true'
+        shell: bash
+        run: |
+          mkdir -p src/kiro_crew/static/dist
+          [ -f src/kiro_crew/static/dist/index.html ] || \
+            printf '<!doctype html><title>pod boot canary</title>' > src/kiro_crew/static/dist/index.html
+
+      # Label opt-in only: the scenario suite drives the served dashboard and
+      # packages it into the wheel it installs, so the bundle is the real Vite
+      # build, staged exactly as the `e2e` job and nightly.yml stage it. It
+      # replaces the stand-in above, so the boot canary serves the same bundle.
+      - name: Build and stage the SPA bundle (label opt-in)
+        if: env.POD_SCENARIOS == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd website
+          npm ci --no-audit --no-fund
+          npm run build
+          cd ..
+          rm -rf src/kiro_crew/static/dist
+          mkdir -p src/kiro_crew/static
+          cp -R website/dist src/kiro_crew/static/dist
+          test -f src/kiro_crew/static/dist/index.html
+
+      - name: Assert a real pod boots and is reclaimed (not skipped)
+        shell: bash
+        env:
+          # The module's own opt-in: without it the canary skips itself, and the
+          # grep below turns that skip into a failure.
+          KIROCREW_E2E_POD_WINDOWS: "1"
+        run: |
+          set -o pipefail
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          # The whole opt-in module: the creation probe, the create/run/delete
+          # round trip, and the full pod boot. These are the only tests in the
+          # tree that drive the real Task Scheduler, which is why they live in
+          # one module that is skipped without KIROCREW_E2E_POD_WINDOWS.
+          pytest -v -n0 --no-cov --timeout=600 \
+            test/test_pod_windows_boot.py \
+            | tee pod-boot.log
+          # The canary. `pytest` exits 0 on a fully skipped module, so the exit
+          # code alone cannot tell "a pod booted and was reclaimed" from "the
+          # test never ran". Grepping the exact count is what makes this honest;
+          # raise the number when you add a test to this module.
+          # ANCHORED on purpose: `grep -q "3 passed"` is a substring match, so it
+          # also HITs "13 passed" and "23 passed" — measured. A pin that accepts a
+          # larger number pins nothing when a test is added, which is the direction
+          # a count pin exists to catch. `^3 passed` cannot be used: pytest's
+          # summary line starts with `=` padding.
+          grep -qE '(^|[^0-9])3 passed' pod-boot.log || {
+            echo "::error::the Windows pod boot canary did not report 3 passed (skipped, not collected, or a test was added or renamed without updating this step)"
+            exit 1
+          }
+
+      # Label opt-in only: the full scenario suite, on the prerequisites the
+      # canary just used, with the SAME invocation and anchored count as
+      # nightly.yml's pod-scenarios leg so a green here is evidence for that
+      # matrix entry at THIS revision. `-o addopts=` drops `-n auto` (one pod for
+      # the whole session, and a killed xdist worker on Windows aborts the run),
+      # `--timeout=600` is the per-test cap (the wheel scenario carries its own
+      # wider mark), and `--basetemp` pins the plane under runner.temp so a failed
+      # run's pod logs land where the upload step below can find them.
+      # KIROCREW_E2E_REQUIRE=1 turns every precondition skip into a failure; the
+      # anchored `55 passed` grep is the second lock, for the same reason as the
+      # canary's: pytest exits 0 on a collected-but-skipped suite.
+      - name: Run the full pod scenario suite (label opt-in, 55 tests, not skipped)
+        if: env.POD_SCENARIOS == 'true'
+        shell: bash
+        env:
+          KIROCREW_E2E_SCENARIOS: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+        run: |
+          set -uo pipefail
+          echo "::remove-matcher owner=python::"
+          pytest -v -p no:cacheprovider -o addopts= -n0 --timeout=600 \
+            --basetemp "${RUNNER_TEMP}/pod-scenarios-tmp" \
+            test/e2e/scenarios/ 2>&1 | tee pod-scenarios.log
+          status="${PIPESTATUS[0]}"
+          echo "pytest exit: ${status}"
+          # Six user-flow scenarios and 49 fixture-isolation checks must execute.
+          # Anchored so 155 passed cannot satisfy the 55-test contract; raise the
+          # number here AND in nightly.yml when you add a scenario.
+          if ! grep -qE '(^|[^0-9])55 passed' pod-scenarios.log; then
+            echo "::error::the pod scenario suite did not report 55 passed on windows-latest; a skipped or collapsed suite is not a pass"
+            exit 1
+          fi
+          exit "${status}"
+
+      # On the default run only pod-boot.log exists; the scenario globs match
+      # nothing and `if-no-files-found: ignore` keeps that from being a second
+      # failure. On a labelled run the pod's own log files are the only place a
+      # boot refusal is legible, and the plane root is the --basetemp above.
+      - name: Upload the pod boot log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pod-boot-windows
+          path: |
+            pod-boot.log
+            pod-scenarios.log
+            ${{ runner.temp }}/pod-scenarios-tmp/kce2e-*/a/**
+            ${{ runner.temp }}/pod-scenarios-tmp/kce2e-*/h/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+  # The Windows fail-closed sandbox opt-in contract, asserted to have RUN.
+  #
+  # PR #8117 made `wrap_argv`'s Windows Kiro delegation depend on
+  # `kiro_internal_sandbox_enabled()`, which reads a settings file a fresh Windows
+  # install does not have. Delegation stopped, the no-backend policy fail-closed,
+  # and the ACP backend never started. The suite that pinned that exact branch,
+  # test_sandbox_argv.py, is line 2 of test/windows-collect-ignore.txt -- so on
+  # windows-latest it was never collected, and in the Linux shards it reached the
+  # branch only by monkeypatching sys.platform to "win32" AND patching the
+  # settings probe to return True, hardcoding the one answer a fresh Windows host
+  # cannot give.
+  #
+  # A SEPARATE JOB rather than a step in backend-test-windows: that job is a
+  # 4-shard matrix, so a canary step there would run four times and pay the
+  # gateway boot four times over for one assertion. It also overrides
+  # --max-worker-restart for xdist reasons that do not apply to an -n0 run.
+  #
+  # Run by NODE ID with `-v -n0` and grep the pass count, the same shape as the
+  # macOS peer-identity canary below and for the same reason: `pytest -q` does not
+  # name passing tests and a skip exits 0, so a canary that quietly stopped
+  # running (a changed skipif, a collect-ignore entry, a renamed node) would leave
+  # this job green while the contract it proves went unverified. That is precisely
+  # the blindness that let test_sandbox_argv.py sit unrun inside conftest's
+  # Windows collect_ignore.
+  #
+  # The file is deliberately NOT in test/windows-collect-ignore.txt, so the
+  # backend-test-windows shards collect it too. This job is the assertion that it
+  # RAN, not the only place it runs.
+  backend-test-windows-fail-closed:
+    name: Windows Fail-Closed Sandbox Contract
+    needs: [await-fast-gate]
+    runs-on: windows-latest
+    # The gateway leg boots a real gateway and drives one ACP prompt turn against
+    # the packaged fake backend; both are slow on windows-latest. 25 minutes is
+    # the test's own 900s ceiling plus dependency install, not a guess at a sleep.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -839,42 +1227,71 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system -e ".[voice,desktop]" --group dev
 
-      # The macOS peer-identity check is admission-gating: gatewayd refuses any
-      # connection that is not MATCH, so this canary -- a real transport.serve /
-      # connect round trip asserting MATCH on real Darwin hardware -- is the ONLY
-      # evidence that the gate admits its own peer. `pytest -q` does not name
-      # passing tests and a skip exits 0, so a canary that quietly stopped running
-      # (a changed skipif, a collection change) would leave this job green while
-      # the gate it proves went unverified. That is the same blindness that let
-      # four mutation-verified tests sit unrun inside conftest's Windows
-      # collect_ignore. Run it by node id and fail unless it actually PASSED.
-      - name: Assert the macOS peer-identity canary runs (not skipped)
+      # A fresh windows-latest image has no ~/.kiro/settings/amazon-internal.json,
+      # which IS the precondition under test. Assert it from the workflow as well
+      # as from the fixture: if a future runner image or an earlier step ever
+      # created it, the suite would SKIP with a clear reason and the grep below
+      # would fail -- but this step names the cause on the run page instead of
+      # leaving it to be read out of a pytest skip line.
+      - name: Assert the host carries no kiro internal-sandbox settings file
+        shell: pwsh
+        run: |
+          $settings = Join-Path $env:USERPROFILE ".kiro\settings\amazon-internal.json"
+          if (Test-Path -LiteralPath $settings) {
+            Write-Host "::error::$settings exists on this runner; the fresh-install precondition this job pins cannot be observed"
+            exit 1
+          }
+          Write-Host "no $settings on this host, as a fresh Windows install would be"
+
+      - name: Assert the Windows fail-closed contract runs (not skipped)
+        shell: bash
         run: |
           set -o pipefail
           # Same as backend-test (#7296): the `python` matcher annotates any
           # traceback in the log, including one printed inside a warning, and
           # never matches a pytest failure.
           echo "::remove-matcher owner=python::"
-          pytest -v -n0 --no-cov --timeout=120 \
-            "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves" \
+          pytest -v -n0 --no-cov --timeout=900 \
+            test/test_windows_fail_closed_optin.py \
             | tee canary.log
-          grep -q "1 passed" canary.log || {
-            echo "::error::macOS peer-identity canary did not PASS (skipped or not collected)"
+          # Anchored: an unanchored "7 passed" also matches "17 passed" / "27
+          # passed". See the pod-boot canary above for the measurement.
+          grep -qE '(^|[^0-9])7 passed' canary.log || {
+            echo "::error::the Windows fail-closed sandbox contract did not fully PASS (skipped, not collected, or a test was added/removed without updating this count)"
             exit 1
           }
 
-      - name: Run gateway + platform suites
-        run: |
-          pytest -q -rs --timeout=180 --no-cov \
-            test/test_mcp_gateway_*.py \
-            test/test_socketsec.py \
-            test/test_platform_compat.py \
-            test/test_mcp_apps_e2e.py \
-            test/test_pod*.py \
-            test/test_service.py \
-            test/test_dev_fleet_app.py
 
-  # The one job where the sandbox-dependent tests EXECUTE rather than skip. They need
+  # The macOS pytest lane is NOT here any more. It lives in
+  # .github/workflows/platform-tests.yml, which nightly.yml calls, and it gates the
+  # nightly PUBLISH jobs there.
+  #
+  # It was moved for one MEASURED reason, and the reason is queueing, not runtime.
+  # On three consecutive green PR runs (34866269260, 34864945056, 34863753125) the
+  # macOS jobs WAITED 176, 190 and 213 minutes for a macos-15 runner and then ran
+  # for 26-33. Everything else in this workflow finished at 78-98 minutes; the runs
+  # themselves took 248-268. So ~64 percent of a pull request's CI wall clock was
+  # macOS queue time, and "PR Readiness" -- this repository's only required check --
+  # is triggered by `workflow_run` on THIS workflow's completion, so that queue sat
+  # directly on the merge button. Over the same window `Backend Tests (macOS)`
+  # failed 0 times and was CANCELLED 129 times, mostly still queued when a newer
+  # push superseded the run: the lane was charging every pull request ~2.8 hours and
+  # usually returning no verdict at all.
+  #
+  # Linux does not have this problem because it does not use GitHub's hosted pool:
+  # `changes` routes it to this repository's CodeBuild runners. There is no
+  # self-hosted macOS equivalent, so the queue is not something this workflow can
+  # tune -- only something it can stop paying per pull request.
+  #
+  # NOTHING on the pull_request path may instantiate a macOS runner, and that is
+  # asserted, not hoped: a `continue-on-error` macOS job would still hold this
+  # workflow's completion and therefore still hold readiness, so an advisory lane
+  # cannot live in this file. The opt-in real-Darwin run is its own workflow
+  # (macos-on-demand.yml, which calls platform-tests.yml), outside readiness'
+  # lane list.
+  # test_macos_platform_tests_gate.py pins all of it.
+
+  # The job where Linux mount-namespace tests EXECUTE rather than skip. They need
   # unprivileged user namespaces (unshare NEWNS), which ubuntu-24.04 restricts via
   # AppArmor -- the same restriction codex-review.yml clears for its bwrap sandbox.
   # Without this job the ~/.kiro/crew sensitive-path keystone has no CI coverage at all,
@@ -901,12 +1318,13 @@ jobs:
   backend-test-sandbox:
     name: Backend Tests (namespace sandbox)
     needs: [await-fast-gate]
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 2
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
@@ -930,6 +1348,16 @@ jobs:
         # letting the suite silently skip and the gate go green having asserted
         # nothing -- the same failure mode the deselects created.
         run: unshare --mount --map-root-user true
+
+      - name: Verify Kiro Crew's own probe agrees with the kernel
+        # The probe is stricter than the bare `unshare` above: it also performs the
+        # launcher's propagation mount inside the new namespace, because a host
+        # that grants the namespaces and refuses that mount cannot build the
+        # sandbox. A probe that wrongly said "no sandbox" here would make every
+        # guarded test below skip and this job go green having asserted nothing,
+        # so the probe's verdict is asserted on its own, with its reason.
+        run: |
+          python3 -c "from kiro_crew.sandbox import userns_available, unavailable_reason; assert userns_available(), unavailable_reason()"
 
       - name: Run sandbox-dependent tests
         # `--no-cov` deliberately. This is the only lane that reaches these lines, so
@@ -955,6 +1383,211 @@ jobs:
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
 
+      - name: Require real Linux private-memory enforcement
+        run: |
+          set -o pipefail
+          pytest -v -n0 --no-cov --timeout=120 \
+            "test/test_member_memory_filesystem.py::test_kernel_hides_replaced_and_future_global_memory_preserving_live_runtime_and_code" \
+            | tee member-memory-linux-canary.log
+          grep -q "2 passed" member-memory-linux-canary.log || {
+            echo "::error::Linux V1 and private-memory canaries must both PASS (no skips)"
+            exit 1
+          }
+
+      - name: Require real V1 vector acceleration regressions
+        timeout-minutes: 5
+        # Keep optional accelerator dependencies out of the base shards and
+        # type-check environment. Reuse installed test dependencies read-only.
+        run: |
+          uv venv --system-site-packages "$RUNNER_TEMP/member-faiss-venv"
+          uv pip install --python "$RUNNER_TEMP/member-faiss-venv/bin/python" "faiss-cpu==1.12.0"
+          "$RUNNER_TEMP/member-faiss-venv/bin/python" -m pytest -v -n0 --no-cov --timeout=60 \
+            test/test_memory_record_metadata.py::test_bulk_episode_edit_invalidates_live_and_saved_faiss_vectors \
+            test/test_memory_record_metadata.py::test_another_process_vector_edit_cannot_reuse_old_faiss_scores_after_restart \
+            test/test_memory_v1_acceleration.py::test_v1_forgotten_row_keeps_resident_numpy_scoring \
+            test/test_memory_v1_acceleration.py::test_v1_faiss_overfetches_past_forgotten_top_hits \
+            --junitxml="$RUNNER_TEMP/member-faiss-results.xml"
+          python - <<'PY'
+          import os
+          import xml.etree.ElementTree as ET
+          from pathlib import Path
+
+          report = Path(os.environ["RUNNER_TEMP"]) / "member-faiss-results.xml"
+          cases = list(ET.parse(report).iter("testcase"))
+          expected = {
+              name + "[" + version + "]"
+              for name in (
+                  "test_bulk_episode_edit_invalidates_live_and_saved_faiss_vectors",
+                  "test_another_process_vector_edit_cannot_reuse_old_faiss_scores_after_restart",
+              )
+              for version in ("v1", "v2")
+          }
+          expected.update(
+              {
+                  "test_v1_forgotten_row_keeps_resident_numpy_scoring",
+                  "test_v1_faiss_overfetches_past_forgotten_top_hits",
+              }
+          )
+          assert len(cases) == 6 and {case.attrib["name"] for case in cases} == expected
+          assert all(case.find(tag) is None for case in cases for tag in ("skipped", "failure", "error"))
+          PY
+
+      - name: Upload FAISS regression evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: member-faiss-regressions
+          path: ${{ runner.temp }}/member-faiss-results.xml
+          if-no-files-found: warn
+
+      - name: Select optional member recall evidence
+        id: member-benchmark
+        if: github.event_name == 'pull_request'
+        run: |
+          CHANGED="$(git diff --name-only HEAD^1 HEAD)"
+          if printf '%s\n' "$CHANGED" | grep -Eq '^(src/kiro_crew/(.*memory.*|embeddings\.py|context\.py|eval/bench/.*)|scripts/ci-member-memory-benchmark\.py|\.github/workflows/ci\.yml)$'; then
+            echo "selected=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Locate the pinned member benchmark model
+        id: member-benchmark-model
+        if: steps.member-benchmark.outputs.selected == 'true'
+        continue-on-error: true
+        env:
+          KIROCREW_HOME: ${{ runner.temp }}/member-memory-benchmark-home
+        run: |
+          python - <<'PY' >> "$GITHUB_OUTPUT"
+          from kiro_crew import embeddings
+          print(f"digest={embeddings._GGUF_SHA256}")
+          print(f"path={embeddings.default_model_path().parent}")
+          PY
+
+      - name: Cache the pinned member benchmark model
+        if: steps.member-benchmark-model.outputs.digest != ''
+        continue-on-error: true
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ steps.member-benchmark-model.outputs.path }}
+          key: gguf-${{ steps.member-benchmark-model.outputs.digest }}
+
+      - name: Measure member recall with the real pinned Qwen model
+        if: steps.member-benchmark.outputs.selected == 'true'
+        continue-on-error: true
+        timeout-minutes: 11
+        # Model availability is optional; retrieval scores are observations.
+        # Completed structural measurements are enforced by the next step.
+        env:
+          KIROCREW_HOME: ${{ runner.temp }}/member-memory-benchmark-home
+          KIROCREW_SKIP_MODEL_DOWNLOAD: ""
+          MEMBER_BENCHMARK_OUTPUT: ${{ runner.temp }}/member-memory-benchmark-evidence
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          mkdir -p "$MEMBER_BENCHMARK_OUTPUT"
+          set -o pipefail
+          if timeout --kill-after=15s 600s python scripts/ci-member-memory-benchmark.py \
+              2>&1 | tee "$MEMBER_BENCHMARK_OUTPUT/run.log"; then
+            echo "Member recall measurement completed; inspect the artifact's scores, bounds and provenance." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::Member recall measurement did not finish cleanly; inspect the benchmark artifact and structural validation."
+            echo "Read provenance for availability versus completed structural failures; no cached report is substituted." >> "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - name: Enforce completed member recall structural checks
+        if: always() && steps.member-benchmark.outputs.selected == 'true'
+        env:
+          MEMBER_BENCHMARK_OUTPUT: ${{ runner.temp }}/member-memory-benchmark-evidence
+        run: python scripts/ci-member-memory-benchmark.py --validate-structures
+
+      - name: Upload current member recall evidence
+        if: always() && steps.member-benchmark.outputs.selected == 'true'
+        continue-on-error: true
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: member-recall-qwen-${{ github.sha }}
+          path: ${{ runner.temp }}/member-memory-benchmark-evidence/
+          retention-days: 30
+          if-no-files-found: warn
+
+  backend-test-crew-container:
+    name: Backend Tests (crew container)
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/requirements.txt
+
+      # Two installs, deliberately not merged into one resolution.
+      #
+      # `-e .` and the dev group are what every other backend lane installs, and this
+      # suite needs them for a reason that is not obvious: no container test imports
+      # `kiro_crew`, but the repo-root conftest's autouse isolation fixtures do
+      # (`importlib.import_module("kiro_crew.apps")`), so a venv without the package
+      # errors at test SETUP rather than at collection. Measured: 233 errors, every
+      # one a ModuleNotFoundError on a transitive app dependency.
+      #
+      # The image's own runtime pins come from `container/requirements.txt` and are
+      # installed ONLY here. That file's header forbids them becoming dependencies of
+      # the application ("the app's backend hooks are imported into every owner's
+      # gateway process, and a web framework there buys nothing"), which is exactly
+      # why this cannot be folded into the `backend-test` shards: their environment IS
+      # the application's.
+      #
+      # Not `container/requirements-dev.txt`, which is the file the review named. It
+      # carries `-r requirements.txt`, pytest and pytest-asyncio and nothing else,
+      # while this rootdir's addopts pass `-n auto --dist loadgroup
+      # --max-worker-restart=2 --timeout=120`; with no xdist and no pytest-timeout
+      # installed that is an argument error, not a test run. Its `pytest==8.3.4` also
+      # contradicts the dev group's `9.0.3` that the rootdir conftest is written
+      # against, so the two sets cannot share one resolution. The image build still
+      # uses that file; CI installs the runtime half plus this repo's own toolchain.
+      - name: Install dependencies
+        run: |
+          uv pip install --system -e "." --group dev
+          uv pip install --system -r \
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container/requirements.txt
+
+      # CREW_CONTAINER_TESTS_REQUIRED is the point of this job, not a detail of it.
+      # The suite's conftest answers a missing image dependency with
+      # `collect_ignore_glob`, which takes the WHOLE suite out of collection while the
+      # run still reports success. Under this variable every reason it would decline to
+      # collect becomes a hard error, and the collection is additionally checked against
+      # the tree: every module that defines tests must yield at least one, and the total
+      # must clear a floor. So a dependency rename reds THIS lane instead of quietly
+      # restoring a lane that reports success while collecting nothing.
+      #
+      # `-n0`: the suite forks real process trees and binds real ports, so xdist
+      # workers would race each other for both. It runs in about ten seconds serially,
+      # which is less than the workers cost to start.
+      #
+      # `--no-cov` for the same reason as the sibling sandbox lane: this data is not
+      # part of the coverage gate's combine, and half-reported coverage is worse than
+      # none.
+      - name: Run the crew container suite
+        env:
+          CREW_CONTAINER_TESTS_REQUIRED: "1"
+        run: |
+          # As in backend-test (#7296): the `python` matcher annotates any traceback
+          # in the log, including one printed inside a warning, and never matches a
+          # pytest failure.
+          echo "::remove-matcher owner=python::"
+          pytest -q -n0 --timeout=180 --no-cov \
+            src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests/
+
   coverage-combine:
     name: Coverage Combine
     needs: [backend-test, changes]
@@ -969,7 +1602,8 @@ jobs:
     if: >-
       needs.changes.outputs.only_frontend != 'true'
       && needs.changes.outputs.leaf_tests != 'true'
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1031,7 +1665,8 @@ jobs:
   # requires it is still satisfied.
   coverage-gate:
     name: Coverage Gate
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner (pilot); artifact-only job, default size. Rollback: `ubuntu-latest`.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     needs: [coverage-combine, frontend-test, frontend-coverage-merge, backend-test, changes]
     # Single source of truth for the floors -- referenced by the check steps,
@@ -1295,7 +1930,7 @@ jobs:
     # input byte-identical. only_backend is the catch-all side of the same
     # decision, so an unclassifiable path still runs this.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 20
     steps:
       # persist-credentials retained: frontend-lint/Check for new hardcoded UI strings runs `git fetch origin`
@@ -1315,10 +1950,13 @@ jobs:
       - name: Type check
         working-directory: website
         # Spelled out rather than `npm run typecheck` so this gate cannot be
-        # changed from package.json. Build mode is required either way: the root
-        # tsconfig is `files: []` + project references, and references are followed
-        # only by `-b`, so a plain `tsc --noEmit` there compiles an empty program.
-        run: npx tsc -b
+        # changed from package.json. The project is named explicitly: the root
+        # tsconfig is `files: []` + project references, so a bare `tsc --noEmit`
+        # there compiles an empty program. Not `tsc -b`: build mode judges
+        # "up to date" from the project's own inputs only, so with the incremental
+        # cache in tsconfig.app.json it would green-light a changed dependency
+        # `.d.ts` without re-checking a single file. `-p` re-hashes the whole program.
+        run: npx tsc -p tsconfig.app.json
 
       - name: Lint
         working-directory: website
@@ -1469,7 +2107,7 @@ jobs:
     needs: [changes, await-fast-gate]
     # Reads website/package.json + website/package-lock.json and nothing else.
     if: needs.changes.outputs.only_backend != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1518,7 +2156,12 @@ jobs:
     # The templates it lints live under src/kiro_crew/deploy/, which the
     # paths-filter counts as backend, so a frontend-only diff cannot touch one.
     if: needs.changes.outputs.only_frontend != 'true'
-    runs-on: ubuntu-latest
+    # PILOT (first wave): runs on a CodeBuild-hosted runner (project
+    # `kirocrew-gha-linux`, Ubuntu 22.04) instead of ubuntu-latest. The label is
+    # chosen once in `changes` (forks and fork PRs get ubuntu-latest, because the
+    # runner never serves them). Rollback: `ubuntu-latest`. Policy, image caveat
+    # and exit condition: docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1555,8 +2198,8 @@ jobs:
   # packaging/installer-assets/* references it pins.
   electron-test:
     name: Electron Shell Tests
-    needs: [await-fast-gate]
-    runs-on: ubuntu-latest
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1588,7 +2231,11 @@ jobs:
   frontend-test:
     name: Frontend Tests
     needs: [changes, await-fast-gate]
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner (pilot, second wave). `instance-size:large` for the
+    # vitest --coverage shards' memory; routing and rollback as for cfn-lint. See
+    # docs/ci/ci-and-reviews.md, "CodeBuild-hosted runner (pilot)".
+    # Rollback: `ubuntu-latest`.
+    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     # Per-shard budget. The whole suite was ~23 min on one runner; split four
     # ways each shard is well under this, and a hung shard fails fast.
     timeout-minutes: 25
@@ -1737,7 +2384,9 @@ jobs:
       ${{ !cancelled()
       && needs.frontend-test.result != 'skipped'
       && needs.changes.outputs.only_backend != 'true' }}
-    runs-on: ubuntu-latest
+    # CodeBuild-hosted runner (pilot), default size: a merge is one process
+    # re-reading four blobs, not a test run. Rollback: `ubuntu-latest`.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1760,6 +2409,19 @@ jobs:
           path: website/.vitest-reports
           pattern: frontend-blob-*
           merge-multiple: true
+
+      - name: Normalize blob paths to this runner's workspace
+        # A blob stores every path absolute, and vitest's coverage map is keyed
+        # by those paths. Hosted runners all check out under the same root, so
+        # the shards and this job agree by accident; the CodeBuild-hosted runner
+        # gives every build its own root (/codebuild/output/src<random>/...), so
+        # four shards arrive with four roots and the merge unions nothing: each
+        # file is reported four times with one shard's numbers and the step
+        # exits non-zero with no failing test (pilot runs 1 and 2, 2026-09-12).
+        # This rewrites each blob's root to this checkout's; a no-op when they
+        # already match, so hosted runs are unaffected.
+        working-directory: website
+        run: node "$GITHUB_WORKSPACE/.github/scripts/frontend-blob-normalize-paths.mjs" .vitest-reports
 
       - name: Merge reports and coverage
         id: merge
@@ -1885,6 +2547,12 @@ jobs:
           python -m pip install --upgrade pip setuptools
           pip install -e ".[voice,desktop]" --group dev
 
+      - name: Enable private member namespace isolation
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify private member namespace isolation
+        run: unshare --mount --map-root-user true
+
       - name: Install frontend deps
         working-directory: website
         run: npm ci --no-audit --no-fund
@@ -1950,7 +2618,7 @@ jobs:
         working-directory: website
         run: npx playwright install chromium
 
-      - name: i18n render-time gate (en-XA + shipped locales)
+      - name: Resolve base for the parallel i18n render-time gate
         # Phase 5 of the i18n plan. Every other i18n gate reads SOURCE or CATALOG
         # JSON, so three defect classes are invisible to all of them: a string that
         # was never extracted (ordinary TypeScript to a scanner), a sentence
@@ -1985,33 +2653,96 @@ jobs:
         run: |
           I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
             "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
-          export I18N_BASE_REF
-          npm run i18n:render
+          printf 'I18N_BASE_REF=%s\n' "$I18N_BASE_REF" >> "$GITHUB_ENV"
 
-      - name: Run E2E (smoke + Playwright)
-        # KIROCREW_E2E=1 is set by `setup.py test_e2e` itself. KIROCREW_E2E_REQUIRE=1
-        # turns environment-resolution misses (missing website dir, Playwright CLI,
-        # or node<18) into HARD failures -- without it a skipped suite counts as a
-        # pass and the gate goes green having run zero browser specs. The suite
-        # wires the packaged fake ACP backend (KIROCREW_KIRO_BIN) internally, so
-        # every turn is deterministic and offline: no Kiro/model calls, no cost.
+      # The SkillForm block-scalar parity guard (issue #7763). It runs the REAL
+      # TypeScript mirror (backendReadsValue -> backendFoldsLiteral, transpiled
+      # with the website esbuild) against the Python read path over a generated
+      # corpus, so the editor's simulation of the reader cannot drift from the
+      # reader. It lives HERE because it is the only pull-request lane with BOTH
+      # runtimes present AND usable: the backend is pip-installed above (Python +
+      # kiro_crew) and `npm ci` has populated website/node_modules (node + the
+      # `yaml` package the mirror imports + esbuild). The sharded backend-test job
+      # has Python but no website node deps, and frontend-test has node but no
+      # Python, so in each of those the file skips with a named reason -- which is
+      # why REQUIRE=1 is set only here, turning any skip into a failure so the
+      # guard cannot report green having run nothing. Anchored pass count, the same
+      # canary idiom as the boot matrices above: pytest exits 0 on a fully skipped
+      # module, so the count is what proves the corpus actually ran.
+      - name: SkillForm frontmatter parity (TS mirror vs Python read path)
+        env:
+          KIROCREW_SKILLFORM_PARITY_REQUIRE: "1"
+        run: |
+          set -o pipefail
+          # Order-safe: the harness file lands in a separate PR. Until it exists
+          # this step is a no-op, so merging this workflow change first cannot red
+          # the lane on a tree without the harness. Once the file is present the
+          # REQUIRE variable above turns any skip into a failure.
+          if [ ! -f test/test_skillform_frontmatter_parity.py ]; then
+            echo "::notice::SkillForm parity harness not present yet; step is a no-op until it lands."
+            exit 0
+          fi
+          echo "::remove-matcher owner=python::"
+          python -m pytest -v -n0 --no-cov -p no:cacheprovider --timeout=300 \
+            test/test_skillform_frontmatter_parity.py \
+            | tee skillform-parity.log
+          # 880 = 110 body shapes x (3 bare-| headers + 5 refused headers). Raise
+          # this when the corpus grows; a collapse to a handful of cases (a broken
+          # transpile that skips, a renamed symbol) fails here instead of passing
+          # green. Anchored so "1880 passed" cannot satisfy "880 passed".
+          grep -qE '(^|[^0-9])880 passed' skillform-parity.log || {
+            echo "::error::the SkillForm frontmatter parity corpus did not report 880 passed (skipped, collapsed, or the corpus size changed without updating this canary)"
+            exit 1
+          }
+
+      - name: Require real private workflow MCP execution
+        env:
+          KIROCREW_E2E: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+          KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
+        run: python -m pytest -q -n0 --no-cov --timeout=300 test/e2e/test_private_workflow_memory.py
+
+      - name: Run E2E and dedicated memory UI evidence in parallel
+        # Default success() keeps real private workflow MCP execution mandatory.
+        # Smoke and UI read the staged production bundle; i18n builds a separate
+        # dist-dev and a temporary base tree. All three share only read-only
+        # dependency/browser installs, with separate homes, ports and outputs.
+        # The helper awaits ALL outcomes even if one fails, preserves the UI's
+        # 12-minute cap, and drains adopted gateway/browser children on cancel.
+        # Overlap head+base i18n rendering rather than consume ~8 minutes of the
+        # fixed 25-minute job budget before the ordinary E2E lane can start.
+        # KIROCREW_E2E=1 is set by setup.py for smoke and only in the UI child
+        # for evidence; REQUIRE turns missing prerequisites into hard failures.
         env:
           KIROCREW_E2E_REQUIRE: "1"
           VOICE_EVIDENCE_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
-          # CI-enforced on-loop persistence invariant: the e2e gateway boots with
-          # strict mode so any un-offloaded session-JSONL mutator that enters
-          # ``_locked`` on the event loop raises ``OnLoopPersistError`` and fails
-          # this gate at PR time (setup.py test_e2e also sets this; declared here
-          # for discoverability). See docs/system-specs/modules/history.md.
           KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
-        run: python setup.py test_e2e
+          KIROCREW_MEMORY_UI_EVIDENCE_DIR: ${{ runner.temp }}/memory-embedding-evidence
+        run: exec python scripts/ci_e2e_parallel.py
 
       - name: Upload read-aloud recovery evidence
-        if: ${{ !cancelled() }}
+        if: ${{ always() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: voice-recovery-evidence
           path: website/test-results/**/voice-recovery/
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Upload member memory UI evidence
+        if: ${{ always() }}
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: member-memory-ui-evidence
+          path: |
+            website/test-results/**/member-memory-*.png
+            website/test-results/**/legacy-member-memory-*.png
+            website/test-results/**/member-memory-walkthrough.webm
+            website/test-results/**/member-memory-evidence.json
+            website/test-results/**/memory-v1-*.png
+            website/test-results/**/memory-v2-*.png
+            ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-*.png
+            ${{ runner.temp }}/memory-embedding-evidence/**/memory-v2-embedding-evidence.json
           if-no-files-found: ignore
           retention-days: 7
 
@@ -2033,5 +2764,114 @@ jobs:
           path: |
             website/test-results/
             website/playwright-report/
+          if-no-files-found: ignore
+          retention-days: 7
+
+  # The only job that BOOTS A GATEWAY on macOS and Windows.
+  #
+  # Everything else on those two runners is unit tests. `e2e` above spawns a real
+  # gateway, but it is ubuntu-latest only, because `KIROCREW_E2E` is set solely by
+  # `setup.py test_e2e`. That was one of the two holes #8117 fell through: it
+  # added a settings-file probe to `wrap_argv`'s Windows delegation branch, so on
+  # a fresh Windows host -- where that file does not exist -- the Kiro ACP spawn
+  # stopped delegating, took the no-backend fail-closed path, and the gateway
+  # never became usable. The unit test that pinned that branch lives in
+  # `test_sandbox_argv.py`, which `windows-collect-ignore.txt` excludes, and the
+  # PR itself changed that test's mock to hardcode the one answer a fresh Windows
+  # host cannot give. Neither hole is closable by another unit test; only a real
+  # boot on the real platform is.
+  #
+  # Offline and credential-less by construction: the agent binary is the packaged
+  # fake ACP backend, wired through `KIROCREW_KIRO_BIN`, so there is no model, no
+  # token, no network and no cost. See docs/ci/e2e-gate.md.
+  e2e-boot-matrix:
+    name: E2E Gateway Boot (${{ matrix.os }})
+    needs: [await-fast-gate]
+    strategy:
+      # Each OS is its own verdict. A Windows-only regression must not hide
+      # behind a cancelled macOS leg, which is exactly the shape of the escape
+      # this job exists for.
+      fail-fast: false
+      matrix:
+        # macos-15 is on the push-to-main path only. It is the same queue story as
+        # the moved pytest lane: the mac leg waited ~200 minutes for a runner on
+        # every pull request, and it is the only leg that did. On main the wait
+        # costs nobody a merge, and nightly's `pod-scenarios` boots a real
+        # service-managed gateway on macos-15 as well, so the real-Darwin boot
+        # remains covered twice -- just never in front of a pull request.
+        os: ${{ fromJSON(github.event_name == 'pull_request'
+          && '["ubuntu-latest","windows-latest"]'
+          || '["ubuntu-latest","macos-15","windows-latest"]') }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          # Same no-uv.lock caveat as backend-test: key the cache on the files
+          # that define the dependency set.
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+
+      - name: Boot a gateway end to end and assert the pass count
+        # `shell: bash` on every leg so one command text serves all three; the
+        # Windows default is pwsh, where `| tee` and `grep` are not these tools.
+        shell: bash
+        env:
+          # Lifts the module skip.
+          KIROCREW_E2E: "1"
+          # Turns an unmet PRECONDITION (the packaged fake backend missing, the
+          # testing package not importable) from a graceful skip into a hard
+          # failure. Without it the job could report green having booted zero
+          # gateways, because pytest counts a skip as a pass. Same mechanism as
+          # KIROCREW_E2E_REQUIRE on the `e2e` job.
+          KIROCREW_E2E_REQUIRE: "1"
+          # Readiness window per OS, set here rather than in the test so a slow
+          # runner is retunable without a code change. Windows gets the widest:
+          # subprocess spawn and filesystem latency there are measurably slower,
+          # the conditions #9172 addressed when a slow disk killed the gateway.
+          KIROCREW_HARNESS_READY_TIMEOUT: ${{ matrix.os == 'windows-latest' && '180' || matrix.os == 'macos-15' && '90' || '60' }}
+        run: |
+          set -o pipefail
+          # Same as backend-test (#7296): the `python` matcher annotates any
+          # traceback in the log, including one printed inside a warning, and
+          # never matches a pytest failure.
+          echo "::remove-matcher owner=python::"
+          # -n0: this module spawns a real gateway per test, and under xdist a
+          # block would take the worker down with it, which on Windows aborts the
+          # whole run. --timeout is above the widest readiness window (180s) plus
+          # the per-turn reply ceiling, so a stuck turn fails by name instead of
+          # killing the run.
+          pytest -v -n0 --no-cov -p no:cacheprovider --timeout=420 \
+            test/e2e/test_gateway_boot_matrix.py \
+            | tee boot-matrix.log
+          # The canary. `pytest` exits 0 on a fully skipped module, so the exit
+          # code alone cannot tell "seven gateways booted" from "the module was
+          # never collected". Grepping the exact count is what makes this job
+          # honest; raise the number when you add a test here.
+          # Anchored: see the pod-boot canary above.
+          grep -qE '(^|[^0-9])7 passed' boot-matrix.log || {
+            echo "::error::gateway boot matrix did not report 7 passed (skipped, or a test was added without updating this canary)"
+            exit 1
+          }
+
+      - name: Upload the boot-matrix log
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: e2e-boot-matrix-${{ matrix.os }}
+          path: boot-matrix.log
           if-no-files-found: ignore
           retention-days: 7

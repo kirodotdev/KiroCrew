@@ -259,11 +259,14 @@ jobs:
     # (fork / repo without signing-service secrets) -- there is nothing to notarize.
     if: needs.sign.outputs.signed_zip_key != ''
     runs-on: macos-15
-    # Worst-case wait budget: two notarytool submissions (app, then DMG)
-    # at up to 30m each, plus the CDSigner DMG sign task poll at up to 15m
-    # = 75m of pure waiting. The budget must also cover checkout, installs,
-    # downloads, DMG build, staple, attestation, and uploads, or GitHub
-    # cancels the job mid-publication on a legitimately slow day.
+    # Worst-case wait budget: two notarizations (app, then DMG) at up to
+    # 30m each -- packaging/signing/notarize.sh enforces that 30m as a hard
+    # ceiling over submit + poll INCLUDING any transient-error retries and
+    # backoff, so it cannot grow past the old `--wait --timeout 30m` -- plus
+    # the CDSigner DMG sign task poll at up to 15m = 75m of pure waiting.
+    # The budget must also cover checkout, installs, downloads, DMG build,
+    # staple, attestation, and uploads, or GitHub cancels the job
+    # mid-publication on a legitimately slow day.
     timeout-minutes: 90
     # OIDC subject alignment: tag-triggered callers (release.yml) present
     # ref:refs/tags/<tag>, which the signing role does not trust. The prod
@@ -337,26 +340,12 @@ jobs:
           TEAM_ID=$(printf '%s' "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['team_id'])")
           echo "::add-mask::$APPLE_PW"
           unset SECRET_JSON
+          export APPLE_ID APPLE_PW TEAM_ID
 
-          echo "Submitting to Apple notary service (team $TEAM_ID)..."
-          set +e
-          SUBMIT_OUT=$(xcrun notarytool submit work/signed.zip \
-            --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" \
-            --wait --timeout 30m 2>&1)
-          RC=$?
-          set -e
-          echo "$SUBMIT_OUT"
-          SUBMISSION_ID=$(echo "$SUBMIT_OUT" | awk '/^  id: /{print $2; exit}')
-
-          if [ $RC -ne 0 ] || ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
-            echo "Notarization was not Accepted. Fetching the itemized Apple log..."
-            if [ -n "$SUBMISSION_ID" ]; then
-              xcrun notarytool log "$SUBMISSION_ID" \
-                --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" || true
-            fi
-            exit 1
-          fi
-          echo "Notarization Accepted: $SUBMISSION_ID"
+          # Submit + poll with transient-error retry (a single timed-out
+          # status request must not fail the job); fail-closed on
+          # Invalid/Rejected with the itemized Apple log. 30m budget.
+          bash packaging/signing/notarize.sh work/signed.zip
 
       - name: Staple and verify
         id: staple
@@ -438,26 +427,10 @@ jobs:
           TEAM_ID=$(printf '%s' "$SECRET_JSON" | python3 -c "import json,sys; print(json.load(sys.stdin)['team_id'])")
           echo "::add-mask::$APPLE_PW"
           unset SECRET_JSON
+          export APPLE_ID APPLE_PW TEAM_ID
 
-          echo "Submitting DMG to Apple notary service..."
-          set +e
-          SUBMIT_OUT=$(xcrun notarytool submit "work/${ARTIFACT_BASENAME}.dmg" \
-            --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" \
-            --wait --timeout 30m 2>&1)
-          RC=$?
-          set -e
-          echo "$SUBMIT_OUT"
-          SUBMISSION_ID=$(echo "$SUBMIT_OUT" | awk '/^  id: /{print $2; exit}')
-
-          if [ $RC -ne 0 ] || ! echo "$SUBMIT_OUT" | grep -q "status: Accepted"; then
-            echo "DMG notarization was not Accepted. Fetching the itemized Apple log..."
-            if [ -n "$SUBMISSION_ID" ]; then
-              xcrun notarytool log "$SUBMISSION_ID" \
-                --apple-id "$APPLE_ID" --password "$APPLE_PW" --team-id "$TEAM_ID" || true
-            fi
-            exit 1
-          fi
-          echo "DMG notarization Accepted: $SUBMISSION_ID"
+          # Same retrying submit + poll as the app zip above.
+          bash packaging/signing/notarize.sh "work/${ARTIFACT_BASENAME}.dmg"
 
       # Staple the ticket INTO the DMG (possible now that it is signed) and
       # hold it to the same fail-closed Gatekeeper standard as the app. This

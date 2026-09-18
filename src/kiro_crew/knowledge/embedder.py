@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_MODEL = "qwen3-embedding:0.6b"
 # Retained for config compatibility (knowledge.embed_timeout_secs). The
 # in-process backend has no per-request network timeout — the value is stored
-# on the embedder but no longer bounds an HTTP call.
+# on the embedder but bounds no HTTP call.
 TIMEOUT = 10  # seconds
 NEGATIVE_CACHE_TTL = 300  # seconds before re-checking failed availability
 # Safety bound (chars) on chunk content folded into an item embedding.
@@ -67,6 +67,23 @@ class InProcessEmbedder:
             return self._get_embedder().model_id
         except Exception:
             return DEFAULT_MODEL
+
+    @property
+    def dim(self) -> int:
+        """Output width of the vectors this embedder produces.
+
+        Read from the active backend, which sets ``dim`` at construction — so
+        this costs no model load and is cheap on any startup path. It feeds
+        :func:`embed_signature`, which is why it must come from the backend
+        rather than from a local literal: a width change at a CONSTANT model id
+        (a custom GGUF re-quantized to a different projection, a backend that
+        adopts the model's own width) has to move the signature, or same-width
+        vectors from the old space keep being served as if nothing changed.
+        """
+        try:
+            return self._get_embedder().dim
+        except Exception:
+            return _embeddings.bundled_embedding_dim()
 
     def _get_embedder(self) -> "EmbeddingBackend":
         # Module-attribute lookup (not a from-import of the function) so test
@@ -222,7 +239,7 @@ def bytes_to_floats(data: bytes) -> list[float]:
                 pass
         return []
     # Not JSON: compact binary form (struct-packed floats). A byte length that is
-    # not a multiple of 4 is the corrupt case that used to raise struct.error.
+    # not a multiple of 4 is corrupt and would raise struct.error, so it is rejected.
     if isinstance(data, (bytes, bytearray)) and len(data) % 4 == 0:
         try:
             n = len(data) // 4
@@ -232,31 +249,61 @@ def bytes_to_floats(data: bytes) -> list[float]:
     return []
 
 
-def embed_signature(model: str, content_budget: int = _EMBED_CONTENT_BUDGET) -> str:
+def embed_signature(
+    model: str, dim: int, content_budget: int = _EMBED_CONTENT_BUDGET
+) -> str:
     """Signature over the embedding inputs a re-embed can actually change.
 
-    Captures the model id and the content budget — change either and a stored
-    vector may come from a different vector space, and re-embedding the same
-    item content fixes it. Items whose stored ``embedding_sig`` differs from
-    the current one are re-embedded by the sig-gated rebuild (manual trigger
-    and watcher self-heal both use it). The literal ``inprocess`` token stands
-    where the Ollama-era ``base_url`` used to — the in-process runtime has no
-    endpoint, and keeping a distinct token forces a one-time re-embed when
-    migrating vectors produced by an external server.
+    Built ON TOP of :func:`~kiro_crew.embeddings.embedding_space_signature`
+    rather than beside it: the vector-space half of this identity is that
+    function's output verbatim, so the knowledge library and vector memory cannot
+    disagree about whether two vectors are comparable. An independently assembled
+    hash over the same fields is NOT equivalent, however carefully written — it is
+    a second definition of "same vector space", and the next input added to one
+    definition reaches only that consumer. What that costs is concrete: an input
+    the KB's half omits leaves the KB serving vectors from a space it thinks it is
+    still in, and neither the per-search dimension guard nor the sig-gated rebuild
+    can see the difference.
+
+    The call goes through the MODULE (``_embeddings.``) rather than a from-import
+    so the dependency is observable: displacing
+    ``kiro_crew.embeddings.embedding_space_signature`` moves this value too, which
+    is what pins derivation rather than mere agreement.
+
+    ``content_budget`` is folded on afterwards because it is the KB's own input
+    and no concern of memory's: change it and the same item folds a different
+    amount of chunk text, so re-embedding that item is what fixes it. Items
+    whose stored ``embedding_sig`` differs from the current one are re-embedded
+    by the sig-gated rebuild (manual trigger and watcher self-heal both use it).
+    The literal ``inprocess`` token names the runtime that produced the vector.
 
     Does NOT cover edits to ``embed_for_item``'s assembly logic (field
     set / join separator) — a value hash can't see code. Ceiling: such a change
     needs a manual ``force`` rebuild. Upgrade path: add an ast-normalized source
     hash here if that logic starts churning.
     """
-    raw = f"{model}|inprocess|{content_budget}"
+    raw = f"{_embeddings.embedding_space_signature(model, dim)}|inprocess|{content_budget}"
     return hashlib.sha256(raw.encode()).hexdigest()[:16]
 
 
 def embedder_signature(embedder: InProcessEmbedder) -> str:
     """Current sig for an embedder. Single source of truth for callsites so the
-    set of inputs (model + budget) can't drift between them."""
-    return embed_signature(embedder.model, embedder.content_budget)
+    set of inputs (model + dim + budget) can't drift between them.
+
+    Reads ``dim`` defensively, resolving a missing attribute to the bundled width
+    — the same answer :attr:`InProcessEmbedder.dim` itself falls back to. The
+    parameter is typed as that class but the callers are duck-typed: this runs on
+    the ingest path inside ``_embed_item``, where an ``AttributeError`` is caught
+    per chunk and turns the whole job's status to ``failed``, so an embedder-shaped
+    object that embeds perfectly well would report a failed ingest and leave the
+    items unembedded. Degrading to the bundled width instead keeps the signature
+    comparable for every embedder that does declare one, and only an embedder that
+    declares no width at all is described by the default.
+    """
+    dim = getattr(embedder, "dim", None)
+    if not isinstance(dim, int) or dim <= 0:
+        dim = _embeddings.bundled_embedding_dim()
+    return embed_signature(embedder.model, dim, embedder.content_budget)
 
 
 def _positive_or(value: object, default: float) -> float:

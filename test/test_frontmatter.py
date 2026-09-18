@@ -1,5 +1,5 @@
 """Snapshot tests pinning the consolidated frontmatter parser to the
-grammars its call sites historically accepted.
+grammars its call sites accept.
 
 The expected values below were captured by running the pre-consolidation
 parsers (``SkillsLoader._parse_frontmatter``, ``onboarding_import._frontmatter``,
@@ -20,6 +20,7 @@ from pathlib import Path
 
 import pytest
 import yaml
+from source_corpus import repo_files_named, repo_root
 from yaml_helpers import load_with
 
 from kiro_crew import history
@@ -136,13 +137,17 @@ SKILL_LOADER_EXPECTED: dict[str, dict[str, str]] = {
     "four_dash_fences": {},
     "indented_shadow_before": {"k": "real"},
     "leading_ws_before_opener": {},
-    "mismatched_quotes": {"k": "a"},
+    # Deliberate accepted-input surface, not drift: unwrapping removes one
+    # MATCHED level, so a mismatched pair is content and stays byte-identical.
+    "mismatched_quotes": {"k": "\"a'"},
     "no_closer": {},
     "no_colon_line": {"name": "x"},
     "opener_junk_with_colon": {},
     "opener_trailing_junk": {},
     "plain_prose": {},
-    "quoted_values": {"desc": "single", "multi": "double", "name": "quoted"},
+    # Deliberate accepted-input surface: a doubled wrapper loses exactly one
+    # level per read.
+    "quoted_values": {"desc": "single", "multi": '"double"', "name": "quoted"},
     "simple": {"description": "hello", "name": "x"},
     "space_indented_key": {"name": "x"},
     "tab_indented_key": {"name": "x"},
@@ -166,8 +171,7 @@ ONBOARDING_EXPECTED: dict[str, tuple[dict[str, str], str]] = {
     # exact "---" line, so a "---junk" closer means no frontmatter here —
     # while the skills loader parses {"name": "x"} from the same bytes. The
     # activation gate is immune (see TestOnboardingImportDialect::
-    # test_closer_divergence_cannot_bypass_the_activation_gate); issue #3231
-    # documents the history.
+    # test_closer_divergence_cannot_bypass_the_activation_gate).
     "closer_trailing_junk": ({}, "---\nname: x\n---junk\nbody\n"),
     "colon_in_value": ({"url": "http://example.com:8080"}, ""),
     "crlf": ({"name": "x"}, "body"),
@@ -180,13 +184,17 @@ ONBOARDING_EXPECTED: dict[str, tuple[dict[str, str], str]] = {
     "four_dash_fences": ({}, "----\nkey: v\n----\nbody\n"),
     "indented_shadow_before": ({"k": "real"}, ""),
     "leading_ws_before_opener": ({}, "\n  ---\nname: x\n---\n"),
-    "mismatched_quotes": ({"k": "a"}, ""),
+    # Deliberate accepted-input surface, matching SKILL_LOADER: one matched
+    # level of quotes comes off, a mismatched pair is content.
+    "mismatched_quotes": ({"k": "\"a'"}, ""),
     "no_closer": ({}, "---\nname: x\n"),
     "no_colon_line": ({"name": "x"}, ""),
     "opener_junk_with_colon": ({"name": "x"}, ""),
     "opener_trailing_junk": ({"name": "x"}, ""),
     "plain_prose": ({}, "no frontmatter here\nkey: value\n"),
-    "quoted_values": ({"desc": "single", "multi": "double", "name": "quoted"}, ""),
+    # Deliberate accepted-input surface, matching SKILL_LOADER: a doubled
+    # wrapper loses exactly one level.
+    "quoted_values": ({"desc": "single", "multi": '"double"', "name": "quoted"}, ""),
     "simple": ({"description": "hello", "name": "x"}, "body"),
     "space_indented_key": ({"name": "x", "steps": "do x"}, ""),
     "tab_indented_key": ({"name": "x", "steps": "tabbed"}, ""),
@@ -293,8 +301,8 @@ class TestOnboardingImportDialect:
 
     def test_closer_divergence_cannot_bypass_the_activation_gate(self) -> None:
         # The map's exact-"---" closer misses a "---junk"-closed block that
-        # the loader parses (see the KNOWN DIVERGENCE pin above; issue #3231
-        # documents the history) — but the activation decision mirrors the
+        # the loader parses (see the KNOWN DIVERGENCE pin above) — but the
+        # activation decision mirrors the
         # loader's region rules, so the divergence cannot re-admit an
         # auto-activating skill.
         text = "---\nalways: true\n---junk\nbody"
@@ -332,6 +340,78 @@ class TestSkillUpdateDialect:
         assert history._frontmatter_value("", "description") == ""
 
 
+class TestQuoteUnwrapping:
+    """One MATCHED level of wrapping quotes comes off; content quotes stay.
+
+    The distinction is what a run-strip of quote characters cannot make: it
+    eats a quote the author wrote as content, so the file on disk looks right
+    while the agent is handed a different description than the author wrote.
+    These cases lock the matched-pair semantics in.
+    """
+
+    @pytest.mark.parametrize(
+        ("raw", "expected"),
+        [
+            # A quote that is content stays content, byte-identical.
+            ('say "hi"', 'say "hi"'),
+            ('ends with "', 'ends with "'),
+            ('"starts and runs', '"starts and runs'),
+            ("it's a mess'", "it's a mess'"),
+            # A matched wrapping pair comes off — exactly one level.
+            ("'quoted'", "quoted"),
+            ('"quoted"', "quoted"),
+            ('""quoted""', '"quoted"'),
+            # The single-quoted grammar's one escape collapses.
+            ("'it''s'", "it's"),
+            ("''''", "'"),
+            # Mismatched edges are not a wrapper.
+            ("\"a'", "\"a'"),
+            ("'a\"", "'a\""),
+            # Degenerate shapes: a lone quote, an empty pair.
+            ('"', '"'),
+            ("'", "'"),
+            ('""', ""),
+            ("''", ""),
+        ],
+    )
+    def test_one_matched_level_comes_off(self, raw: str, expected: str) -> None:
+        text = f"---\nk: {raw}\n---\n"
+        for dialect in (SKILL_LOADER, STEERING_LOADER, ONBOARDING_IMPORT):
+            got = parse_frontmatter(text, dialect)["k"]
+            assert got == expected, f"{dialect.extraction}: {raw!r} -> {got!r}"
+
+    def test_matches_the_yaml_oracle_on_well_formed_quoting(self) -> None:
+        # On values a real YAML parser accepts, unwrapping agrees with it —
+        # the run-strip did not (it collapsed every level and ate escapes).
+        for raw in ('"quoted"', "'quoted'", "'it''s'", "''''", 'say "hi"'):
+            text = f"k: {raw}\n"
+            want = load_with(_StringScalarLoader, text)["k"]
+            got = parse_frontmatter(f"---\n{text}---\n", SKILL_LOADER)["k"]
+            assert got == want, f"{raw!r}: yaml={want!r} reader={got!r}"
+
+    def test_an_escaped_apostrophe_does_not_expose_a_quoted_hash(self) -> None:
+        # GPT review, head 11b06f861. The comment splitter located a
+        # single-quoted scalar's closing delimiter at the FIRST quote after the
+        # opener — the first half of an ``''`` escape — so everything after it
+        # was scanned for a comment and an in-scalar ``#`` truncated the value:
+        # ``'Bob''s # drafts/*.md'`` read back as ``'Bob''s`` where a YAML
+        # reader (kiro-cli, this document's other consumer) reads the whole
+        # pattern and no comment. The closing delimiter is the first UNPAIRED
+        # quote, exactly as YAML scans it.
+        text = "---\nfileMatchPattern: 'Bob''s # drafts/*.md'\n---\n"
+        want = load_with(_StringScalarLoader, text.split("---")[1])["fileMatchPattern"]
+        assert want == "Bob's # drafts/*.md"  # the oracle reads it whole
+        got = parse_frontmatter(text, STEERING_LOADER)["fileMatchPattern"]
+        assert got == want, f"reader={got!r}"
+
+    def test_a_real_comment_after_an_escaped_apostrophe_still_splits(self) -> None:
+        # The pair-skip must not swallow a genuine trailing comment.
+        assert split_inline_comment(" 'it''s' # note") == (" 'it''s'", " # note")
+        assert parse_frontmatter(
+            "---\nk: 'it''s' # note\n---\n", STEERING_LOADER
+        )["k"] == "it's"
+
+
 class TestTheLiteralFoldTheSkillEditorSimulates:
     """Pin the literal-scalar fold that ``backendFoldsLiteral`` reproduces.
 
@@ -348,12 +428,12 @@ class TestTheLiteralFoldTheSkillEditorSimulates:
     would otherwise leave both this file and the TypeScript tests green (those expectations
     are hardcoded) while the two readers drifted apart, reopening exactly the silent
     corruption the editor's refusal was written to prevent. If any assertion below fails,
-    ``backendFoldsLiteral`` has to change with it. See #1825 and #7097.
+    ``backendFoldsLiteral`` has to change with it.
 
-    What CHANGED in #7097: the fold used to end in ``.strip()``, which ate a leading
-    newline and every trailing one. No YAML chomping mode does either, so agreement with a
-    parser depended on a block's CONTENT rather than on its header. It no longer does --
-    the cases below are the ones that used to diverge, and they now agree, which is why
+    The fold does not end in ``.strip()``: stripping would eat a leading
+    newline and every trailing one, which no YAML chomping mode does, so
+    agreement with a parser depends on the header, not a block's CONTENT --
+    the cases below all agree, which is why
     :class:`TestBlockScalarsAgreeWithARealYamlParser` can assert agreement wholesale.
     """
 
@@ -411,8 +491,8 @@ class TestTheLiteralFoldTheSkillEditorSimulates:
 class TestTheBlockScalarHeaderGrammar:
     """The full YAML header grammar is resolved, on the read path as well as the write one.
 
-    Before #7097 the read path matched only the six BARE indicators while the write path
-    already matched the explicit-indentation forms. A ``description: |2-`` was therefore
+    Without the full grammar the read path matches only the six BARE indicators while
+    the write path matches the explicit-indentation forms. A ``description: |2-`` is
     stored as the literal text ``"|2-"`` -- the header mistaken for the value -- while a
     rewrite of an unrelated line above it correctly treated the indented tail as that
     field's content. One matcher now serves both.
@@ -437,7 +517,7 @@ class TestTheBlockScalarHeaderGrammar:
 
     def test_a_comment_may_share_the_header_line(self) -> None:
         # YAML allows a comment on the header line; it belongs to the header, not to the
-        # value. This reader used to store `"|- # note"` as the whole value.
+        # value. Storing `"|- # note"` as the whole value is the bug this pins.
         text = "---\nname: s\ndescription: |- # note\n  body text\n---\n"
         assert parse_frontmatter(text, SKILL_LOADER)["description"] == "body text"
 
@@ -768,9 +848,9 @@ class TestBlockScalarsAgreeWithARealYamlParser:
 
 
 class TestTheRepoSkillFileCorpus:
-    """Read every repo-tracked SKILL.md both ways. The corpus pin #7097 asked for.
+    """Read every repo-tracked SKILL.md both ways -- the full-corpus pin.
 
-    The module docstring's cross-language warning used to end "nothing in the build
+    The module docstring's cross-language warning ends "nothing in the build
     enforces it". This is the enforcement: a change to the reader that moves what a
     SHIPPED skill file means fails here, naming the file.
     """
@@ -782,7 +862,7 @@ class TestTheRepoSkillFileCorpus:
     #
     # This set is asserted EXACTLY, in both directions. A new entry means someone shipped
     # a skill that a real YAML parse cannot read -- fine today, but it is the evidence
-    # that decides whether the parser swap in #7097 is ever affordable, so it must be
+    # that decides whether the parser swap is ever affordable, so it must be
     # visible rather than absorbed. A removed entry means the file was quoted and the set
     # needs updating with it.
     NOT_VALID_YAML = frozenset(
@@ -792,19 +872,22 @@ class TestTheRepoSkillFileCorpus:
         }
     )
 
-    @staticmethod
-    def _repo_root() -> Path:
-        return Path(__file__).resolve().parent.parent
-
     @classmethod
     def _skill_files(cls) -> list[tuple[str, str]]:
-        root = cls._repo_root()
+        """Every ``SKILL.md`` the checkout holds, generated trees excluded.
+
+        Enumerated through ``source_corpus.repo_files_named`` rather than
+        ``rglob``, which also reaches into a nested worktree and reported ITS copy
+        of a shipped skill as the offender below. The generated-tree filter stays
+        here because that scope is this gate's contract, not the enumerator's.
+        """
+        root = repo_root()
         out: list[tuple[str, str]] = []
-        for path in sorted(root.rglob("SKILL.md")):
-            rel = path.relative_to(root).as_posix()
-            if any(part in ("node_modules", ".git", "dist", "build") for part in path.parts):
+        for path in repo_files_named("SKILL.md"):
+            rel = path.relative_to(root)
+            if any(part in ("node_modules", "dist", "build") for part in rel.parts):
                 continue
-            out.append((rel, path.read_text(encoding="utf-8")))
+            out.append((rel.as_posix(), path.read_text(encoding="utf-8")))
         return out
 
     @staticmethod
@@ -857,7 +940,7 @@ class TestChompingCannotFlipAnActivationFlag:
     """Real chomping must not silently change whether a skill is always-on.
 
     ``always`` and ``pinned`` are decided by an EXACT string comparison against
-    ``"true"`` (``skills.py``, ``skill_budget.py``). Before #7097 the fold ended in
+    ``"true"`` (``skills.py``, ``skill_budget.py``). A fold ending in
     ``.strip()``, so ``always: |+`` followed by trailing blank lines read ``"true"`` and
     the skill was always-on. Honouring keep-chomping makes that same field read
     ``"true\\n\\n"``, which is not equal to ``"true"`` -- so without normalising at the
@@ -1023,7 +1106,7 @@ class TestTheActivationGateCoversEverythingTheLoaderResolves:
     activating and assumes the worst. That is fail-closed only while its detected set is
     a SUPERSET of what the loader can resolve.
 
-    It used to hold its own list of six bare indicators. Widening the loader to the full
+    If it held its own list of six bare indicators, widening the loader to the full
     header grammar without it inverted the gate: ``always: |2-`` over a ``true``
     continuation was NOT detected, was installed verbatim, and was then read by
     ``SkillsLoader`` as ``always == "true"`` -- external content self-activating into
@@ -1482,6 +1565,10 @@ class TestWrittenValuesStayLoadableYaml:
         "src # old/*.ts",
         # Ordinary, and deliberately boring: these must not regress.
         "src/**/*.ts", "?.ts", "-x.ts", "a: b", "  padded  ", "", "it's ok", "日本語/*.ts",
+        # Single-quote-edged values: the writer's double-quoted form carries
+        # them, and the reader removes exactly the one wrapping level the
+        # writer added, so each survives both readers byte-identically.
+        "'quoted'", "trailing'", "'leading", "'",
     ]
 
     @pytest.mark.parametrize("value", ROUND_TRIP)
@@ -1542,10 +1629,13 @@ class TestWrittenValuesStayLoadableYaml:
         assert yaml.safe_load(doc.split("---")[1])["fileMatchPattern"] == value
         assert parse_frontmatter(doc, STEERING_LOADER)["fileMatchPattern"] == value
 
-    @pytest.mark.parametrize("value", ['a"b', "a\\b", "'quoted'", "trailing'"])
+    @pytest.mark.parametrize("value", ['a"b', "a\\b"])
     def test_unspellable_values_are_refused_not_mangled(self, value: str) -> None:
-        # This writer emits no escape sequences and its reader understands none,
-        # so there is no spelling both agree on. Refusing beats writing a document
-        # that loads as something else.
+        # This writer emits no escape sequences and its reader processes none,
+        # so a value carrying a double quote or a backslash has no spelling both
+        # agree on. Refusing beats writing a document that loads as something
+        # else. (Single-quote-edged values are spellable — see ROUND_TRIP: the
+        # reader removes exactly one wrapping level, so the writer's
+        # double-quoted form survives.)
         with pytest.raises(ValueError):
             set_frontmatter_fields("---\na: b\n---\n", {"fileMatchPattern": value}, STEERING_LOADER)

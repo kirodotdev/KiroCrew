@@ -58,10 +58,16 @@ def register(app: web.Application) -> None:
         app.router.add_post("/api/update/simulate", handlers.api_update_simulate)
     app.router.add_get("/api/sessions", handlers.api_sessions)
     app.router.add_delete("/api/sessions", handlers.api_sessions_clear)
-    app.router.add_get("/api/sessions/context", handlers.api_sessions_context)
     app.router.add_get("/api/sessions/memory", handlers.api_sessions_memory)
     app.router.add_get("/api/sessions/health", handlers.api_sessions_health)
     app.router.add_get("/api/sessions/usage", handlers.api_sessions_usage)
+    # Durable task queue + capacity view. The literal /summary is registered
+    # before the /{task_id} pattern for the same reason /sessions/search is.
+    app.router.add_get("/api/tasks", handlers.api_tasks_list)
+    app.router.add_get("/api/tasks/summary", handlers.api_tasks_summary)
+    app.router.add_get("/api/tasks/{task_id}", handlers.api_task_detail)
+    app.router.add_post("/api/tasks/{task_id}", handlers.api_task_action)
+    app.router.add_post("/api/tasks/{task_id}/cancel", handlers.api_task_cancel)
     app.router.add_get("/api/usage/kiro", handlers.api_kiro_usage)
     app.router.add_get("/api/usage", handlers.api_usage)
     app.router.add_get("/api/telemetry/startup", handlers.api_telemetry_startup)
@@ -141,6 +147,12 @@ def register(app: web.Application) -> None:
     # its only legitimate caller IS the owner's browser.
     app.router.add_get("/api/file-delivery/consent", handlers.api_file_delivery_consent_get)
     app.router.add_post("/api/file-delivery/consent", handlers.api_file_delivery_consent_post)
+    app.router.add_get(
+        "/api/file-delivery/consent/arm", handlers.api_file_delivery_consent_arm_status
+    )
+    app.router.add_post(
+        "/api/file-delivery/consent/approve", handlers.api_file_delivery_consent_approve
+    )
     app.router.add_delete("/api/file-delivery/consent", handlers.api_file_delivery_consent_delete)
     app.router.add_get("/api/approvals", handlers.api_approvals)
     app.router.add_post("/api/approvals/{id}/{action}", handlers.api_approval_resolve)

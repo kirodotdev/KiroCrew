@@ -5,6 +5,13 @@ const {
   createDisplayMediaHandler,
 } = require("../display-media");
 
+// WHO may capture is capture-trust.js's decision, covered by its own suite. Here
+// the predicate is INJECTED, so these tests pin what this handler does with each
+// verdict without restating the trust rules.
+const TRUSTED = { frame: "the app's own main frame" };
+const UNTRUSTED = { frame: "a pane" };
+const trustOnly = (allowed) => (request) => request === allowed;
+
 describe("chooseDisplaySource", () => {
   it("returns null when there are no sources", () => {
     assert.equal(chooseDisplaySource([]), null);
@@ -27,14 +34,97 @@ describe("chooseDisplaySource", () => {
 describe("createDisplayMediaHandler", () => {
   const screenSrc = { id: "screen:1:0", name: "Entire Screen" };
 
+  /** A handler whose getSources() counts its own calls. */
+  function countingHandler(extra = {}) {
+    const calls = { getSources: 0 };
+    const reasons = [];
+    const handler = createDisplayMediaHandler({
+      getSources: async () => {
+        calls.getSources += 1;
+        return [screenSrc];
+      },
+      getScreenAccessStatus: () => "granted",
+      onPermissionNeeded: (r) => reasons.push(r),
+      platform: "linux",
+      isTrustedRequest: trustOnly(TRUSTED),
+      ...extra,
+    });
+    return { handler, calls, reasons };
+  }
+
+  it("requires the trust dep: with none, nothing is granted", async () => {
+    // A capability gate must fail CLOSED when nobody wired its decision. Without
+    // this, a call site that forgets `isTrustedRequest` would hand a whole screen
+    // to any requester on the session, which is the state this module started in.
+    const calls = { getSources: 0 };
+    const reasons = [];
+    const handler = createDisplayMediaHandler({
+      getSources: async () => {
+        calls.getSources += 1;
+        return [screenSrc];
+      },
+      onPermissionNeeded: (r) => reasons.push(r),
+      platform: "linux",
+    });
+    let streams = "untouched";
+    await handler(TRUSTED, (s) => {
+      streams = s;
+    });
+    assert.deepEqual(streams, {});
+    assert.deepEqual(reasons, ["untrusted-frame"]);
+    assert.equal(calls.getSources, 0);
+  });
+
+  // A denial must be a REFUSAL, not a granted stream the caller happens to
+  // ignore, so each asserts the source probe never ran (a count, not an exit
+  // code) alongside the empty payload.
+  it("denies a request the trust predicate refuses, without probing for sources", async () => {
+    const { handler, calls, reasons } = countingHandler();
+    let streams = "untouched";
+    await handler(UNTRUSTED, (s) => {
+      streams = s;
+    });
+    assert.deepEqual(streams, {});
+    assert.deepEqual(reasons, ["untrusted-frame"]);
+    assert.equal(calls.getSources, 0);
+  });
+
+  it("denies when the trust check itself throws", async () => {
+    const { handler, calls, reasons } = countingHandler({
+      isTrustedRequest: () => {
+        throw new Error("frame destroyed");
+      },
+    });
+    let streams = "untouched";
+    await handler(TRUSTED, (s) => {
+      streams = s;
+    });
+    assert.deepEqual(streams, {});
+    assert.deepEqual(reasons, ["error"]);
+    assert.equal(calls.getSources, 0);
+  });
+
+  it("passes the request through to the predicate rather than pre-judging it", async () => {
+    const seen = [];
+    const { handler } = countingHandler({
+      isTrustedRequest: (request) => {
+        seen.push(request);
+        return true;
+      },
+    });
+    await handler(UNTRUSTED, () => {});
+    assert.deepEqual(seen, [UNTRUSTED]);
+  });
+
   it("grants the chosen source via callback when sources are available", async () => {
     let granted;
     const handler = createDisplayMediaHandler({
       getSources: async () => [screenSrc],
       getScreenAccessStatus: () => "granted",
+      isTrustedRequest: trustOnly(TRUSTED),
       platform: "darwin",
     });
-    await handler({}, (streams) => {
+    await handler(TRUSTED, (streams) => {
       granted = streams;
     });
     assert.deepEqual(granted, { video: screenSrc });
@@ -53,9 +143,10 @@ describe("createDisplayMediaHandler", () => {
       onPermissionNeeded: (r) => {
         reason = r;
       },
+      isTrustedRequest: trustOnly(TRUSTED),
       platform: "darwin",
     });
-    await handler({}, (s) => {
+    await handler(TRUSTED, (s) => {
       streams = s;
     });
     assert.equal(calledGetSources, false);
@@ -72,9 +163,10 @@ describe("createDisplayMediaHandler", () => {
       onPermissionNeeded: (r) => {
         reason = r;
       },
+      isTrustedRequest: trustOnly(TRUSTED),
       platform: "darwin",
     });
-    await handler({}, (s) => {
+    await handler(TRUSTED, (s) => {
       streams = s;
     });
     assert.equal(reason, "no-sources");
@@ -88,9 +180,10 @@ describe("createDisplayMediaHandler", () => {
         throw new Error("desktopCapturer failed");
       },
       getScreenAccessStatus: () => "granted",
+      isTrustedRequest: trustOnly(TRUSTED),
       platform: "darwin",
     });
-    await handler({}, (s) => {
+    await handler(TRUSTED, (s) => {
       streams = s;
     });
     assert.deepEqual(streams, {});
@@ -102,9 +195,10 @@ describe("createDisplayMediaHandler", () => {
       getSources: async () => [screenSrc],
       // even if this said 'denied', linux must not short-circuit
       getScreenAccessStatus: () => "denied",
+      isTrustedRequest: trustOnly(TRUSTED),
       platform: "linux",
     });
-    await handler({}, (streams) => {
+    await handler(TRUSTED, (streams) => {
       granted = streams;
     });
     assert.deepEqual(granted, { video: screenSrc });

@@ -187,8 +187,8 @@ class TestAppTokenIsolation:
         slot._app = "spec_builder"
         resp = await _get("s1", {"s1": slot}, app="design_critique")
         assert resp.status == 404
-        # The SAME 404 body as a missing slot, so the response cannot be used to
-        # probe which foreign slots exist.
+        # The SAME 404 body as a missing slot, so the response reveals nothing
+        # about which foreign slots exist.
         assert json.loads(resp.text) == {"error": "not found", "code": "slot_not_found"}
 
     @pytest.mark.asyncio

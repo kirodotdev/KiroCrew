@@ -11,6 +11,7 @@ output we can assert directly), and the process-helper return contracts.
 
 from __future__ import annotations
 
+import ctypes
 import errno
 import json
 import logging
@@ -18,6 +19,7 @@ import mmap
 import os
 import re
 import shutil
+import socket
 import stat
 import subprocess
 import sys
@@ -30,6 +32,81 @@ from pathlib import Path
 import pytest
 
 from kiro_crew import platform_compat as pc
+from kiro_crew import windows_acl
+
+
+@pytest.mark.skipif(
+    sys.platform not in {"win32", "linux", "darwin"}, reason="supported kernel identity contract"
+)
+@pytest.mark.parametrize("family, host", [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")])
+def test_native_tcp_peer_identifies_client_process_not_server(family, host):
+    with socket.socket(family) as listener:
+        listener.settimeout(10)
+        listener.bind((host, 0))
+        listener.listen()
+        child = subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                "import os,socket,sys; s=socket.socket(int(sys.argv[1])); "
+                "s.connect((sys.argv[2],int(sys.argv[3]))); print(os.getpid(),flush=True); "
+                "sys.stdin.read(1)",
+                str(int(family)),
+                host,
+                str(listener.getsockname()[1]),
+            ],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        try:
+            accepted, _ = listener.accept()
+            # A Windows venv launcher may exec a different interpreter PID.
+            assert child.stdout is not None
+            client_pid = int(child.stdout.readline())
+            with accepted:
+                server = accepted.getsockname()[:2]
+                client = accepted.getpeername()[:2]
+                assert pc.get_tcp_peer_pid(server, client) == client_pid
+                start = pc.get_process_start_id(client_pid)
+                assert start and start == pc.get_process_start_id(client_pid)
+                assert start != pc.get_process_start_id(os.getpid())
+                assert pc.get_tcp_peer_pid((server[0], server[1] % 65535 + 1), client) is None
+                assert pc.get_tcp_peer_pid(("203.0.113.1", server[1]), client) is None
+        finally:
+            child.communicate(b"x", timeout=10)
+
+
+def test_tcp_peer_identity_unavailable_on_unknown_platform(monkeypatch):
+    monkeypatch.setattr(pc, "IS_WINDOWS", False)
+    monkeypatch.setattr(pc.sys, "platform", "unsupported")
+    assert pc.get_tcp_peer_pid(("127.0.0.1", 1000), ("127.0.0.1", 2000)) is None
+
+
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
+@pytest.mark.parametrize("scenario", ["match", "other_port", "ambiguous", "unreadable"])
+def test_macos_tcp_peer_requires_an_exact_unique_connection(monkeypatch, host, scenario):
+    monkeypatch.setattr(pc, "IS_WINDOWS", False)
+    monkeypatch.setattr(pc.sys, "platform", "darwin")
+    monkeypatch.setattr(pc, "trusted_system_bin", lambda name: "/usr/sbin/lsof")
+    rendered = f"[{host}]" if ":" in host else host
+    port = 2001 if scenario == "other_port" else 2000
+    data = f"p2468\nn{rendered}:{port}->{rendered}:1000\n"
+    if scenario == "ambiguous":
+        data += f"p9753\nn{rendered}:{port}->{rendered}:1000\n"
+
+    def query(argv, **kwargs):
+        assert argv == ["/usr/sbin/lsof", "-nP", "-a", "-iTCP:2000", "-sTCP:ESTABLISHED", "-Fpn"]
+        assert kwargs["timeout"] == 2
+        if scenario == "unreadable":
+            raise subprocess.TimeoutExpired(argv, 2)
+        return data.encode("ascii")
+
+    monkeypatch.setattr(subprocess, "check_output", query)
+    assert pc.get_tcp_peer_pid((host, 1000), (host, 2000)) == (
+        2468 if scenario == "match" else None
+    )
+
 
 #: The REAL same-group probe, bound at module import so this file can test it.
 #: The rootdir conftest pins ``pc._shares_own_process_group`` for every test
@@ -306,6 +383,72 @@ class TestRenameNoReplace:
         with pytest.raises(NotImplementedError):
             pc.rename_noreplace("source", "target", src_dir_fd=-1, dst_dir_fd=-1)
 
+    def test_syscall_fallback_builds_working_callable_on_known_arch(self, tmp_path, monkeypatch):
+        # Verify marshalling on every host. Linux additionally exercises the
+        # native syscall, independent of which libc path import-time chose.
+        host_machine = pc.platform.machine()
+        calls = []
+
+        def syscall(*args):
+            calls.append(args)
+            ctypes.set_errno(errno.EEXIST)
+            return -1
+
+        for machine, number in pc._SYS_RENAMEAT2_BY_MACHINE.items():
+            with monkeypatch.context() as patcher:
+                patcher.setattr(pc.platform, "machine", lambda: machine)
+                fn = pc._build_renameat2_via_syscall(types.SimpleNamespace(syscall=syscall))
+                assert fn is not None
+                assert fn(11, b"first", 12, b"published", 1) == -1
+                assert calls[-1] == (number, 11, b"first", 12, b"published", 1)
+                assert syscall.restype is ctypes.c_long
+                assert syscall.argtypes == [
+                    ctypes.c_long,
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_int,
+                    ctypes.c_char_p,
+                    ctypes.c_uint,
+                ]
+                assert ctypes.get_errno() == errno.EEXIST
+        assert len(calls) == len(pc._SYS_RENAMEAT2_BY_MACHINE)
+        if not pc.IS_LINUX or host_machine not in pc._SYS_RENAMEAT2_BY_MACHINE:
+            # Portable marshalling above still runs; never issue a Linux
+            # syscall against another OS or guess an unmapped syscall number.
+            return
+        libc = ctypes.CDLL(None, use_errno=True)
+        fn = pc._build_renameat2_via_syscall(libc)
+        assert fn is not None
+
+        first = tmp_path / "first"
+        first.mkdir()
+        (first / "payload").write_text("published")
+        parent_fd = os.open(tmp_path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+        try:
+            rc = fn(parent_fd, b"first", parent_fd, b"published", 1)  # RENAME_NOREPLACE
+            assert rc == 0
+            assert (tmp_path / "published" / "payload").read_text() == "published"
+
+            # Occupied destination must refuse (EEXIST), not clobber.
+            (tmp_path / "loser").mkdir()
+            ctypes.set_errno(0)
+            rc = fn(parent_fd, b"loser", parent_fd, b"published", 1)
+            assert rc != 0
+            assert ctypes.get_errno() == errno.EEXIST
+        finally:
+            os.close(parent_fd)
+
+    def test_syscall_fallback_returns_none_on_unknown_arch(self, monkeypatch):
+        # An unmapped architecture must fail closed rather than issue a
+        # wrong-numbered syscall.
+        monkeypatch.setattr(pc.platform, "machine", lambda: "totally-made-up-arch")
+
+        class UnavailableLibc:
+            def __getattr__(self, name):
+                raise AssertionError(f"unknown architecture must not access libc.{name}")
+
+        assert pc._build_renameat2_via_syscall(UnavailableLibc()) is None
+
 
 class TestProcessHelpers:
     def test_pid_exists_true_for_self(self):
@@ -405,7 +548,7 @@ class TestProcessCwd:
 
     def test_darwin_refuses_a_short_write(self, monkeypatch):
         # A byte count other than the exact struct size means the layout the
-        # offsets assume no longer matches the kernel's, so the path cannot be
+        # offsets assume does not match the kernel's, so the path cannot be
         # sliced out safely — the caller falls back instead of getting garbage.
         monkeypatch.setattr(
             pc,
@@ -650,11 +793,10 @@ class TestUtf8Console:
         assert "KiroCrew" in out
 
     def test_rewraps_cp1252_stream_so_emoji_log_record_survives(self, monkeypatch):
-        # Regression for the gateway-worker UnicodeEncodeError: when the worker's
-        # stderr is a cp1252 TextIOWrapper that reconfigure() can't flip (observed
-        # through the 3-layer Windows spawn), a logging StreamHandler bound to it
-        # crashed on the first non-ASCII log record. ensure_utf8_console() must
-        # re-wrap the underlying buffer so the record emits cleanly.
+        # When the worker's stderr is a cp1252 TextIOWrapper that reconfigure()
+        # can't flip (the 3-layer Windows spawn), a logging StreamHandler bound to
+        # it crashes on the first non-ASCII log record, so ensure_utf8_console()
+        # must re-wrap the underlying buffer so the record emits cleanly.
         #
         # This stream repair is WINDOWS-only behavior: on POSIX the function
         # publishes the environment for children but leaves current streams
@@ -1121,8 +1263,8 @@ class TestFileLockContention:
 
     @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows LK_LOCK ceiling regression")
     def test_windows_blocking_acquire_waits_past_lk_lock_ceiling(self, tmp_path):
-        # Regression for issue #470: msvcrt's LK_LOCK "blocking" code gives up
-        # after ~10s with EDEADLOCK and the old shim treated that as "acquired".
+        # msvcrt's LK_LOCK "blocking" code gives up after ~10s with EDEADLOCK,
+        # which must not be treated as "acquired".
         # A holder that keeps the lock LONGER than that ceiling must make a
         # blocking contender WAIT (until release or its own timeout) — never
         # fall through and enter the critical section unserialized at ~10s.
@@ -1156,7 +1298,7 @@ class TestFileLockContention:
             entered_at["t"] = time.monotonic()
             assert got is True, "contender never acquired the lock after release"
             # It entered only AFTER the holder released — proving it waited past
-            # the 10s ceiling that used to let it slip through early.
+            # the 10s ceiling instead of slipping through early.
             assert entered_at["t"] >= released_at["t"], (
                 "contender entered the critical section before the holder "
                 "released — the blocking acquire fell through the LK_LOCK ceiling"
@@ -1726,6 +1868,72 @@ class TestPidLivenessPosix:
         assert pc.pid_exists(os.getpid()) is True
 
 
+class TestAttributedDescendants:
+    """Every parent-child EDGE is attributed, not just "created after the root".
+
+    The root-only comparison is the trap: a stale orphan sitting under a recycled
+    INTERMEDIATE pid was also created after the root, so it passes that test while
+    being unrelated to the tree — and on Windows it is frequently a same-user process
+    the caller CAN terminate, which makes the mistake irreversible.
+    """
+
+    @staticmethod
+    def _pin(monkeypatch, parent_map, tokens):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: parent_map)
+        monkeypatch.setattr(pc, "process_start_time", lambda pid: tokens.get(pid, ""))
+
+    def test_a_real_chain_is_walked_to_the_bottom(self, monkeypatch):
+        """Each generation is compared against ITS OWN parent, so depth is no barrier."""
+        self._pin(
+            monkeypatch,
+            {20: 10, 30: 20, 40: 30},
+            {10: "1000", 20: "1100", 30: "1200", 40: "1300"},
+        )
+
+        assert pc.attributed_descendants(10, "1000") == [20, 30, 40]
+
+    def test_an_orphan_under_a_recycled_intermediate_is_excluded(self, monkeypatch):
+        """The case root-only attribution gets wrong.
+
+        30 was created BEFORE 20 — it is the leftover child of whatever held pid 20
+        before 20 did — but AFTER the root, so a root comparison admits it. Comparing
+        it against 20, the parent it is reached through, rejects it.
+        """
+        self._pin(
+            monkeypatch,
+            {20: 10, 30: 20},
+            {10: "1000", 20: "1200", 30: "1100"},
+        )
+
+        assert pc.attributed_descendants(10, "1000") == [20]
+        # Coherence check: the weaker rule really would have admitted it, so this
+        # test is exercising the difference rather than restating the primitive.
+        assert pc.created_after("1100", "1000") is True
+
+    def test_the_whole_subtree_behind_a_bad_edge_is_dropped(self, monkeypatch):
+        """Everything under an unattributable child is reachable only through it."""
+        self._pin(
+            monkeypatch,
+            {20: 10, 30: 20, 40: 30},
+            {10: "1000", 20: "1200", 30: "1100", 40: "9999"},
+        )
+
+        assert pc.attributed_descendants(10, "1000") == [20]
+
+    def test_a_process_with_no_readable_identity_is_left_alone(self, monkeypatch):
+        """An unreadable creation time is not a licence to guess."""
+        self._pin(monkeypatch, {20: 10, 30: 10}, {10: "1000", 20: "1100"})
+
+        assert pc.attributed_descendants(10, "1000") == [20]
+
+    def test_a_missing_root_token_yields_nothing(self, monkeypatch):
+        """With no root identity there is no edge to attribute the first hop against."""
+        self._pin(monkeypatch, {20: 10}, {10: "", 20: "1100"})
+
+        assert pc.attributed_descendants(10, "") == []
+
+
 class TestProcessDescendants:
     def test_descendants_from_parent_map_walks_full_tree(self):
         parent_map = {
@@ -1844,7 +2052,7 @@ class TestProcessDescendants:
         }
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(parent_maps))
-        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 9001)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: 9001)
         monkeypatch.setattr(
             pc,
             "_windows_process_handle_identity",
@@ -1867,7 +2075,7 @@ class TestProcessDescendants:
         }
         monkeypatch.setattr(pc, "IS_WINDOWS", True)
         monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(parent_maps))
-        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid: 9001)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: 9001)
         monkeypatch.setattr(
             pc,
             "_windows_process_handle_identity",
@@ -1877,6 +2085,353 @@ class TestProcessDescendants:
 
         assert pc.descendant_termination_handles(100, {}, 8001) == {}
         assert closed == [9001]
+
+    @pytest.mark.parametrize(
+        "scenario",
+        [
+            "unopenable_live",
+            "unopenable_vanished",
+            "unopenable_snapshot_error",
+            "partial_open_error",
+            "first_identity_unreadable",
+            "retained_identity_unreadable",
+            "vanished_parent_live_child",
+        ],
+    )
+    def test_windows_descendant_snapshot_must_account_for_every_candidate(
+        self, monkeypatch, scenario
+    ):
+        first_map = {101: 100, 102: 100}
+        second_map = dict(first_map)
+        identities = {8001: (100, 10, None), 9001: (101, 20, None)}
+        retained = {101: 9001} if scenario == "retained_identity_unreadable" else {}
+        if scenario in {"unopenable_vanished", "vanished_parent_live_child"}:
+            second_map.pop(102)
+        if scenario == "vanished_parent_live_child":
+            first_map[101] = second_map[101] = 102
+        if scenario in {"first_identity_unreadable", "retained_identity_unreadable"}:
+            identities.pop(9001)
+            identities[9002] = (102, 30, None)
+        scans = 0
+        closed: list[int] = []
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            if scans > 1 and scenario == "unopenable_snapshot_error":
+                raise OSError("fresh snapshot unavailable")
+            return first_map if scans == 1 else second_map
+
+        def open_handle(child_pid, **_kwargs):
+            if child_pid == 101:
+                return 9001
+            if scenario == "partial_open_error":
+                raise OSError("opening failed")
+            return 9002 if 9002 in identities else None
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_handle)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", identities.get)
+        # Query denial can produce False; it must not certify disappearance.
+        monkeypatch.setattr(pc, "pid_exists", lambda _pid: False)
+        monkeypatch.setattr(pc, "_windows_process_query_diagnostic", lambda _pid: "identity=None")
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+
+        if scenario == "unopenable_vanished":
+            assert pc.descendant_termination_handles(100, retained, 8001) == {101: 9001}
+            assert scans >= 2
+            assert closed == []
+        else:
+            with pytest.raises(OSError):
+                pc.descendant_termination_handles(100, retained, 8001)
+            expected_closed = [9001] if not retained else []
+            if 9002 in identities:
+                expected_closed.append(9002)
+            assert sorted(closed) == expected_closed
+        assert 8001 not in closed
+        if retained:
+            assert 9001 not in closed
+
+    @pytest.mark.parametrize("partial_open", [False, True])
+    @pytest.mark.parametrize("descendants", [{}, {103: 102}, {103: 102, 104: 103}])
+    def test_windows_vanished_unopened_parent_cannot_hide_new_descendants(
+        self, monkeypatch, partial_open, descendants
+    ):
+        first_map = {102: 100, 105: 100}
+        fresh_map = {105: 100, **descendants}
+        retained = {105: 9005}
+        identities = {8001: (100, 10, None), 9005: (105, 20, None)}
+        if partial_open:
+            first_map[101] = fresh_map[101] = 100
+            identities[9001] = (101, 20, None)
+        scans = 0
+        opened: list[int] = []
+        closed: list[int] = []
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            assert scans <= (2 if descendants or not partial_open else 3)
+            return first_map if scans == 1 else fresh_map
+
+        def open_handle(child_pid, **_kwargs):
+            opened.append(child_pid)
+            assert child_pid in {101, 102}, "fresh PIDs must not acquire kill authority"
+            return 9001 if child_pid == 101 else None
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_handle)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", identities.get)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        if descendants:
+            with pytest.raises(OSError, match="vanished unopened parents") as exc:
+                pc.descendant_termination_handles(100, retained, 8001)
+            assert "103" in str(exc.value) and "102" in str(exc.value)
+            assert closed == ([9001] if partial_open else [])
+        else:
+            assert pc.descendant_termination_handles(100, retained, 8001) == (
+                {101: 9001} if partial_open else {}
+            )
+            assert closed == []
+        assert opened == ([101, 102] if partial_open else [102])
+        assert scans == (2 if descendants or not partial_open else 3)
+        assert 8001 not in closed and 9005 not in closed
+
+    def test_windows_vanished_unopened_parent_diagnostic_ids_are_bounded(self, monkeypatch):
+        first_map = {child: 100 for child in range(101, 111)}
+        fresh_map = {child + 100: child for child in first_map}
+        maps = iter((first_map, fresh_map))
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: next(maps))
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: None)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        with pytest.raises(OSError, match="vanished unopened parents") as exc:
+            pc.descendant_termination_handles(100, {}, 8001)
+        message = str(exc.value)
+        assert "total=10" in message
+        assert "[(201, 101), (202, 102), (203, 103)]" in message
+        assert "204" not in message and "104" not in message
+
+    @pytest.mark.parametrize("outcome", ["live", "vanished", "snapshot_error"])
+    def test_windows_only_unopenable_child_requires_fresh_absence(self, monkeypatch, outcome):
+        scans = 0
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            if scans > 1:
+                if outcome == "snapshot_error":
+                    raise OSError("fresh snapshot unavailable")
+                if outcome == "vanished":
+                    return {}
+            return {101: 100}
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _pid, **_k: None)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        monkeypatch.setattr(pc, "pid_exists", lambda _pid: False)
+        monkeypatch.setattr(pc, "_windows_process_query_diagnostic", lambda _pid: "identity=None")
+        if outcome == "vanished":
+            assert pc.descendant_termination_handles(100, {}, 8001) == {}
+        else:
+            with pytest.raises(OSError):
+                pc.descendant_termination_handles(100, {}, 8001)
+        assert scans == 2
+
+    @pytest.mark.parametrize(
+        "scenario, expected",
+        [
+            ("exited", {101, 102}),
+            ("retained", {102}),
+            ("early_exit", {101}),
+            ("equal_exit", {101}),
+            ("still_live", set()),
+            ("unreadable", set()),
+            ("recycled_intermediate", set()),
+            ("recycled_root", set()),
+            ("recycled_child", {101}),
+            ("changed_exit", set()),
+            ("retained_early_exit", set()),
+            ("changed_parent", {101}),
+            ("missing_live_child", set()),
+            ("stale_first_edge", {101}),
+            ("snapshot_error", set()),
+        ],
+    )
+    def test_windows_observed_chain_survives_intermediate_exit(
+        self, monkeypatch, scenario, expected
+    ):
+        # Both handles are pinned while the first map still contains 100->101->102.
+        # The second map loses 101, not the proof that 102 was its genuine child.
+        first_map = {101: 100, 102: 101}
+        second_map = {102: 101}
+        first_ids = {8001: (100, 10, None), 9001: (101, 20, None), 9002: (102, 30, None)}
+        second_ids = {**first_ids, 9001: (101, 20, 40)}
+        if scenario in {"early_exit", "retained_early_exit"}:
+            second_ids[9001] = (101, 20, 25)
+        elif scenario == "equal_exit":
+            second_ids[9001] = (101, 20, 30)
+        elif scenario == "still_live":
+            second_ids[9001] = first_ids[9001]
+        elif scenario == "unreadable":
+            second_ids.pop(9001)
+        elif scenario == "recycled_intermediate":
+            second_ids[9001] = (101, 21, 40)
+            second_map[101] = 100
+        elif scenario == "recycled_root":
+            second_ids[8001] = (100, 11, None)
+            second_map[101] = 100
+        elif scenario == "recycled_child":
+            second_ids[9002] = (102, 31, None)
+            second_map[101] = 100
+        elif scenario == "changed_exit":
+            first_ids[9001] = (101, 20, 35)
+        elif scenario == "changed_parent":
+            second_map[102] = 999
+        elif scenario == "missing_live_child":
+            second_map.clear()
+        elif scenario == "stale_first_edge":
+            first_ids[9002] = second_ids[9002] = (102, 15, None)
+        scans = 0
+        closed: list[int] = []
+        opened: list[int] = []
+        retained = {101: 9001} if scenario in {"retained", "retained_early_exit"} else {}
+
+        def parent_map():
+            nonlocal scans
+            scans += 1
+            if scans == 2 and scenario == "snapshot_error":
+                raise OSError("second snapshot failed")
+            return first_map if scans == 1 else second_map
+
+        def open_handle(child_pid, **_kwargs):
+            opened.append(child_pid)
+            return {101: 9001, 102: 9002}[child_pid]
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", parent_map)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_handle)
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            lambda handle: (first_ids if scans < 2 else second_ids).get(handle),
+        )
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        if scenario in {"snapshot_error", "unreadable", "still_live", "missing_live_child"}:
+            with pytest.raises(OSError):
+                pc.descendant_termination_handles(100, retained, 8001)
+        else:
+            result = pc.descendant_termination_handles(100, retained, 8001)
+            assert result == {
+                child_pid: {101: 9001, 102: 9002}[child_pid] for child_pid in expected
+            }
+        assert opened == ([102] if retained else [101, 102])
+        assert sorted(closed) == sorted(
+            {101: 9001, 102: 9002}[child_pid] for child_pid in set(opened) - expected
+        )
+        # Neither a retained handle nor the root transfers ownership on rejection.
+        assert 8001 not in closed
+        if retained:
+            assert 9001 not in closed
+
+    @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows process handles only")
+    def test_native_observed_grandchild_survives_snapshot_gap(self, monkeypatch, tmp_path):
+        # Use the base interpreter, not the Windows venv redirector's extra PID.
+        python = getattr(sys, "_base_executable", sys.executable)
+        leaf_code = (
+            "import pathlib,sys,time; p=pathlib.Path(sys.argv[1]); "
+            "(p/'ready').write_text('ready'); deadline=time.monotonic()+30\n"
+            "while not (p/'abort').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+        )
+        middle_code = (
+            "import pathlib,subprocess,sys,time; p=pathlib.Path(sys.argv[1]); "
+            "child=subprocess.Popen([sys.executable,'-c',sys.argv[2],str(p)]); "
+            "(p/'leaf').write_text(str(child.pid)); deadline=time.monotonic()+20\n"
+            "while not (p/'exit').exists() and time.monotonic()<deadline: time.sleep(.01)\n"
+            "if (p/'abort').exists(): child.kill(); child.wait(timeout=5)\n"
+        )
+        root_code = (
+            "import pathlib,subprocess,sys,time; p=pathlib.Path(sys.argv[1]); "
+            "child=subprocess.Popen([sys.executable,'-c',sys.argv[2],str(p),sys.argv[3]]); "
+            "(p/'middle').write_text(str(child.pid)); child.wait(timeout=25); time.sleep(30)"
+        )
+        root = subprocess.Popen(
+            [python, "-c", root_code, str(tmp_path), middle_code, leaf_code],
+            creationflags=pc.CREATE_NEW_PROCESS_GROUP,
+        )
+        cleanup: dict[int, int] = {}
+        handles: dict[int, int] = {}
+        try:
+            # Pin our own objects separately so a regression dropping returned
+            # handles cannot strand the native fixture's processes in teardown.
+            deadline = time.monotonic() + 10
+            while not all(
+                (tmp_path / name).exists() and (tmp_path / name).stat().st_size
+                for name in ("middle", "leaf", "ready")
+            ):
+                assert time.monotonic() < deadline, "owned process chain did not start"
+                time.sleep(0.01)
+            middle = int((tmp_path / "middle").read_text())
+            leaf = int((tmp_path / "leaf").read_text())
+            for child_pid in (root.pid, middle, leaf):
+                handle = pc._open_process_termination_handle(child_pid)
+                assert handle is not None
+                cleanup[child_pid] = handle
+            snapshot = pc._windows_process_parent_map
+            scans = 0
+
+            def parent_map():
+                nonlocal scans
+                scans += 1
+                if scans == 2:
+                    (tmp_path / "exit").write_text("exit", encoding="utf-8")
+                    deadline = time.monotonic() + 5
+                    while pc.process_handle_active(cleanup[middle]):
+                        assert time.monotonic() < deadline, "owned intermediary did not exit"
+                        time.sleep(0.01)
+                result = snapshot()
+                if scans == 1:
+                    assert result[middle] == root.pid and result[leaf] == middle
+                else:
+                    # Exit status can precede removal from Toolhelp. Wait for
+                    # the snapshot gap this fixture intends to exercise.
+                    deadline = time.monotonic() + 5
+                    while middle in result and time.monotonic() < deadline:
+                        time.sleep(0.01)
+                        result = snapshot()
+                    assert middle not in result and result[leaf] == middle
+                return result
+
+            monkeypatch.setattr(pc, "_windows_process_parent_map", parent_map)
+            handles = pc.descendant_termination_handles(root.pid, {}, cleanup[root.pid])
+            assert leaf in handles
+            assert pc.process_handle_active(handles[leaf])
+            assert pc.terminate_process_handle(handles[leaf])
+            deadline = time.monotonic() + 5
+            while pc.process_handle_active(cleanup[leaf]):
+                assert time.monotonic() < deadline, "retained grandchild did not terminate"
+                time.sleep(0.01)
+        finally:
+            # Kill only objects this test spawned, never services or a PID tree.
+            (tmp_path / "abort").touch()
+            (tmp_path / "exit").touch()
+            try:
+                for handle in cleanup.values():
+                    if pc.process_handle_active(handle):
+                        pc.terminate_process_handle(handle)
+                if root.poll() is None:
+                    root.kill()
+                root.wait(timeout=5)
+                deadline = time.monotonic() + 5
+                while any(pc.process_handle_active(handle) for handle in cleanup.values()):
+                    assert time.monotonic() < deadline, "owned fixture process survived cleanup"
+                    time.sleep(0.01)
+            finally:
+                for handle in (*handles.values(), *cleanup.values()):
+                    pc.close_process_handle(handle)
 
     @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows process handles only")
     def test_retained_handle_targets_original_windows_child(self):
@@ -2019,7 +2574,7 @@ class TestKillSubprocessPosix:
         try:
             assert pc.pid_exists(child.pid) is True
             assert pc.kill_pid(child.pid, pc.SIGKILL) is True
-            # Reap the killed child so it is no longer a zombie occupying the
+            # Reap the killed child so it is not left a zombie occupying the
             # PID; otherwise os.kill(pid, 0) would still report it as existing.
             child.wait(timeout=5)
             deadline = time.monotonic() + 2.0
@@ -2143,8 +2698,8 @@ class TestRestrictToOwnerArgvOnLinux:
     on AL2). A regression that drops the S-1-3-4 grant or the invoking-user grant
     silently reopens the parent-inherited-DACL gap.
 
-    The observable used to be the ``icacls`` argv. The lockdown now goes through
-    ``windows_acl.apply_owner_only`` in-process, so the observable is that call's
+    The lockdown goes through ``windows_acl.apply_owner_only`` in-process, so the
+    observable is that call's
     arguments instead -- the same seam, one layer down, and still the only thing
     visible off Windows (NTFS reports 0o666 for any file regardless of its DACL,
     so no mode assertion can substitute).
@@ -2227,10 +2782,9 @@ class TestRestrictToOwnerArgvOnLinux:
         assert calls == [], f"no DACL write may happen when the SID is unknown: {calls}"
 
     def test_directory_grants_are_inheritable(self, tmp_path, monkeypatch):
-        # The bug this pins: make_owner_only_dir used to delegate to the
-        # FILE-shaped restrict_to_owner, whose grants are not inheritable. Those
+        # FILE-shaped restrict_to_owner grants are not inheritable: those
         # ACEs apply to the directory alone, so a file created inside an
-        # "owner-only" directory got no explicit ACE and fell back to the
+        # "owner-only" directory gets no explicit ACE and falls back to the
         # creating token's default DACL.
         calls = self._capture(monkeypatch)
         d = tmp_path / "secrets-dir"
@@ -2302,6 +2856,40 @@ class TestRestrictToOwnerArgvOnLinux:
         monkeypatch.setattr(pc.os, "chmod", lambda p, m: modes.append(m))
         pc.restrict_dir_to_owner(tmp_path)
         assert modes == [0o700], modes
+
+
+class TestPathVolumeIsRemote:
+    """The Windows half of "which kind of filesystem holds this", on Linux.
+
+    Nothing was established is None, never False: a caller that reads a failed
+    query as "local" is the case this tri-state exists to prevent.
+    """
+
+    def test_off_windows_the_answer_is_unknown(self, monkeypatch, tmp_path):
+        # POSIX callers have their own mount-table source, so the answer here is
+        # "nothing established". The branch is named rather than inherited from the
+        # host: on Windows this same call reaches a real volume and correctly reports
+        # a local one, which is a different fact from the one under test.
+        monkeypatch.setattr(pc, "IS_WINDOWS", False)
+        assert pc.path_volume_is_remote(tmp_path) is None
+
+    @pytest.mark.parametrize("verdict", [True, False, None])
+    def test_the_windows_volume_verdict_is_passed_through(self, monkeypatch, verdict):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.windows_acl, "volume_is_remote", lambda p: verdict)
+        assert pc.path_volume_is_remote("Z:\\kiro") is verdict
+
+    @pytest.mark.parametrize(
+        "exc", [windows_acl.AclUnavailable("no api"), OSError("call failed"), ValueError("root")]
+    )
+    def test_a_failed_query_is_unknown(self, monkeypatch, exc):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+
+        def _boom(_path):
+            raise exc
+
+        monkeypatch.setattr(pc.windows_acl, "volume_is_remote", _boom)
+        assert pc.path_volume_is_remote("Z:\\kiro") is None
 
 
 class TestChmodShimsApply:
@@ -2495,7 +3083,7 @@ class TestRestrictToOwner:
         # The fail-loud contract on Windows: a DACL that cannot be applied MUST
         # raise OSError so the caller's warn-and-continue handler fires
         # (dead-code otherwise, per review-bot). Simulate at the writer seam --
-        # there is no longer a subprocess to make un-launchable, and the failure
+        # there is no subprocess to make un-launchable, and the failure
         # this models (SetNamedSecurityInfoW returning ERROR_ACCESS_DENIED on a
         # file whose owner we cannot change) is not reproducible on demand.
         if not pc.IS_WINDOWS:
@@ -2513,8 +3101,8 @@ class TestRestrictToOwner:
 
 class TestResourceShimFailures:
     def test_proc_rss_bytes_returns_zero_when_every_source_fails(self, monkeypatch):
-        # getrusage is no longer the primary source for proc_rss_bytes -- it is
-        # the labelled last-resort peak -- so reaching 0 now needs BOTH the
+        # getrusage is not the primary source for proc_rss_bytes -- it is
+        # the labelled last-resort peak -- so reaching 0 needs BOTH the
         # current-RSS reader and the fallback to fail. Asserting only the
         # getrusage failure would pass on a platform whose primary reader was
         # silently removed.
@@ -3336,10 +3924,9 @@ class TestCurrentUserSidNeverSpawns:
     admission check, the client-side server check, and the pipe DACL builder --
     which runs once per pipe instance and so sits on the accept path.
 
-    It used to delegate to a helper whose fallback was a ``whoami`` subprocess
-    with a 5 s timeout, so a token-lookup failure stalled accepts for seconds at
-    a time, repeatedly. That helper is gone: the owner-only lockdown was its last
-    caller and now reads the token directly too, so no path here can spawn.
+    None of these can spawn: a ``whoami`` subprocess fallback with a 5 s timeout
+    would stall accepts for seconds at a time on a token-lookup failure, so the
+    builder reads the token directly and no path here spawns a subprocess.
     """
 
     @staticmethod
@@ -4217,7 +4804,7 @@ class TestTrustedGitBin:
 
 
 class TestKillAndReap:
-    """The shared kill-the-tree + bounded-pipe-draining-reap helper (#5989)."""
+    """The shared kill-the-tree + bounded-pipe-draining-reap helper."""
 
     @staticmethod
     def _proc(pid: int = 4242):
@@ -4379,7 +4966,7 @@ class TestKillAndReap:
         await started.wait()
         task.cancel()
         await asyncio.sleep(0)
-        task.cancel()  # the repeat cancellation that used to abort the reap
+        task.cancel()  # a repeat cancellation must not abort the reap
         await asyncio.sleep(0)
         release.set()
         with pytest.raises(asyncio.CancelledError):
@@ -4388,7 +4975,7 @@ class TestKillAndReap:
 
 
 class TestPublishDirNoreplace:
-    """#4767 round 9: workspace installs must never replace a raced empty
+    """Workspace installs must never replace a raced empty
     destination -- POSIX os.rename silently replaces an empty directory, so
     the publish goes through the no-replace rename primitive."""
 
@@ -4427,7 +5014,7 @@ class TestPublishDirNoreplace:
     def test_fallback_without_renameat2_publishes_and_still_refuses_occupied(
         self, tmp_path, monkeypatch
     ):
-        """#4767 round 10: a host without renameat2 (glibc < 2.28, NFS/FUSE)
+        """A host without renameat2 (glibc < 2.28, NFS/FUSE)
         must not crash with NotImplementedError -- the mkdir-claim fallback
         publishes into an absent destination and still refuses an existing
         one, preserving the no-replace guarantee for creation races."""
@@ -4460,7 +5047,7 @@ class TestPublishDirNoreplace:
         assert src2.exists(), "the staged tree was consumed by a refused publish"
 
     def test_fallback_rename_failure_drops_the_claim(self, tmp_path, monkeypatch):
-        """#4767 round 11: when the fallback's rename fails, the empty mkdir
+        """When the fallback's rename fails, the empty mkdir
         claim is removed so a retry is not permanently blocked, and the
         staged tree is not consumed."""
         if pc.IS_WINDOWS:
@@ -4565,3 +5152,562 @@ class TestOpenLockFile:
             "lock files opened truncating before the acquire (GH-9248); "
             "use platform_compat.open_lock_file: " + ", ".join(offenders)
         )
+
+
+class TestLiveThreadGroupLeaders:
+    """``live_thread_group_leaders`` narrows liveness; it must fail OPEN."""
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="/proc lists leaders on Linux only")
+    def test_own_process_is_a_leader(self):
+        leaders = pc.live_thread_group_leaders()
+        assert leaders is not None
+        assert os.getpid() in leaders
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="tids share the pid space on Linux only")
+    def test_a_live_thread_is_not_a_leader(self):
+        """The whole point: a tid is signalable and has /proc, but is not a process.
+
+        Uses a real thread's native id rather than a synthetic ``/proc`` so the
+        assertion rests on kernel behaviour, not on a fixture's idea of it.
+        """
+        box: dict[str, int] = {}
+        captured = threading.Event()
+        release = threading.Event()
+
+        def _hold() -> None:
+            box["tid"] = threading.get_native_id()
+            captured.set()
+            release.wait(timeout=30)
+
+        holder = threading.Thread(target=_hold, daemon=True)
+        holder.start()
+        try:
+            assert captured.wait(timeout=30)
+            tid = box["tid"]
+            assert tid != os.getpid()
+            # Signalable and openable under /proc — the two things a naive check reads.
+            assert pc.pid_exists(tid) is True
+            leaders = pc.live_thread_group_leaders()
+            assert leaders is not None
+            assert tid not in leaders, "a non-leader tid must not appear in the /proc listing"
+            assert os.getpid() in leaders, "its group leader must still appear"
+        finally:
+            release.set()
+            holder.join(timeout=30)
+
+    def test_non_linux_fails_open(self, monkeypatch):
+        """Off Linux the question is unanswerable, so never claim 'thread'."""
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        assert pc.live_thread_group_leaders() is None
+
+    def test_unreadable_proc_fails_open(self, monkeypatch):
+        """An OSError reading /proc yields None (retain), never an empty set."""
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+
+        def _boom(*_args, **_kwargs):
+            raise OSError("permission denied")
+
+        monkeypatch.setattr(pc.os, "listdir", _boom)
+        assert pc.live_thread_group_leaders() is None
+
+    def test_numberless_proc_fails_open(self, monkeypatch):
+        """A listing with no pids is nonsense, not 'every recorded pid is a thread'."""
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(pc.os, "listdir", lambda *_a, **_k: ["cpuinfo", "meminfo", "self"])
+        assert pc.live_thread_group_leaders() is None
+
+
+class TestIsThreadGroupLeader:
+    """The per-pid re-read, for a pid a host-wide snapshot answers wrongly."""
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="/proc carries Tgid on Linux only")
+    def test_own_process_is_a_leader(self):
+        assert pc.is_thread_group_leader(os.getpid()) is True
+
+    @pytest.mark.skipif(sys.platform != "linux", reason="tids share the pid space on Linux only")
+    def test_a_live_thread_is_not_a_leader(self):
+        """The whole point: a signalable tid must answer False, not None."""
+        box: dict[str, int] = {}
+        captured = threading.Event()
+        release = threading.Event()
+
+        def _hold() -> None:
+            box["tid"] = threading.get_native_id()
+            captured.set()
+            release.wait(timeout=30)
+
+        holder = threading.Thread(target=_hold, daemon=True)
+        holder.start()
+        try:
+            assert captured.wait(timeout=30), "helper thread never reported its tid"
+            tid = box["tid"]
+            assert tid != os.getpid()
+            assert pc.pid_exists(tid) is True, "a tid is signalable -- that is the trap"
+            assert pc.is_thread_group_leader(tid) is False
+        finally:
+            release.set()
+            holder.join(timeout=30)
+
+    def test_non_linux_is_unknowable(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_LINUX", False)
+        assert pc.is_thread_group_leader(os.getpid()) is None
+
+    def test_missing_status_is_unknowable(self, monkeypatch):
+        """A pid that has gone must not read as 'not a process'."""
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+
+        def _boom(*_a, **_k):
+            raise FileNotFoundError("no such pid")
+
+        monkeypatch.setattr("builtins.open", _boom)
+        assert pc.is_thread_group_leader(4242) is None
+
+    def test_malformed_status_is_unknowable(self, monkeypatch):
+        """A status file with no parsable Tgid answers None, never False."""
+        import io
+
+        monkeypatch.setattr(pc, "IS_LINUX", True)
+        monkeypatch.setattr(
+            "builtins.open", lambda *_a, **_k: io.StringIO("Name:\tx\nTgid:\tnotanumber\n")
+        )
+        assert pc.is_thread_group_leader(4242) is None
+
+
+class TestOwnerOnlyDaclIsIdempotent:
+    """The lockdown must probe before writing, and must fail TOWARD writing.
+
+    Applying an owner-only DACL to a DIRECTORY carries inheritable ACEs, which
+    Windows propagates to every descendant, so the write is O(descendants) --
+    measured 0.238 ms per object, i.e. 2.94 s on a 12358-object data home, paid on
+    every gateway boot because ``vector_memory.init()`` locks down the whole home.
+    Reading this object's own descriptor is O(1), so an unchanged DACL should cost
+    a constant check.
+
+    These run on the POSIX matrix (the seam is the ``windows_acl`` call, which is
+    what the suite can observe off Windows), and they pin BOTH directions: the skip
+    must happen when it is safe, and must NOT happen when anything differs.
+    """
+
+    @staticmethod
+    def _capture(monkeypatch, *, matches, sid="S-1-5-21-1-2-3-1000"):
+        """Force the Windows branch; record probe questions and DACL writes."""
+        monkeypatch.setattr(pc, "IS_POSIX", False)
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_TOKEN_SID_CACHE", [])
+        monkeypatch.setattr(pc, "current_user_sid", lambda: sid)
+        probed: list[dict] = []
+        written: list[dict] = []
+
+        def fake_probe(path, *, inherit, sids, **_kw):
+            probed.append({"path": os.fspath(path), "inherit": inherit, "sids": tuple(sids)})
+            if isinstance(matches, Exception):
+                raise matches
+            return matches
+
+        def fake_apply(path, *, inherit, sids, **_kw):
+            written.append({"path": os.fspath(path), "inherit": inherit, "sids": tuple(sids)})
+
+        monkeypatch.setattr(pc.windows_acl, "owner_only_dacl_matches", fake_probe)
+        monkeypatch.setattr(pc.windows_acl, "apply_owner_only", fake_apply)
+        return probed, written
+
+    def test_an_already_correct_dacl_is_not_rewritten(self, tmp_path, monkeypatch):
+        # The whole point: the O(descendants) propagation must not run when the
+        # descriptor already says what we would write.
+        probed, written = self._capture(monkeypatch, matches=True)
+        d = tmp_path / "home"
+        d.mkdir()
+        pc.restrict_dir_to_owner(d)
+        assert len(probed) == 1, probed
+        assert written == [], "an unchanged DACL must not be re-applied"
+
+    def test_a_mismatched_dacl_is_still_written(self, tmp_path, monkeypatch):
+        # Guards the failure mode that would make this change a security bug:
+        # the skip must never swallow a write that is actually needed.
+        probed, written = self._capture(monkeypatch, matches=False)
+        d = tmp_path / "home"
+        d.mkdir()
+        pc.restrict_dir_to_owner(d)
+        assert len(probed) == 1, probed
+        assert len(written) == 1, written
+        assert written[0]["inherit"] is True
+
+    def test_a_probe_that_raises_is_treated_as_a_mismatch(self, tmp_path, monkeypatch):
+        # Fail-safe direction: an unanswerable probe costs a redundant write,
+        # never a skipped lockdown.
+        probed, written = self._capture(monkeypatch, matches=OSError("descriptor unreadable"))
+        d = tmp_path / "home"
+        d.mkdir()
+        pc.restrict_dir_to_owner(d)
+        assert len(probed) == 1, probed
+        assert len(written) == 1, "a probe failure must fall back to writing"
+
+    def test_the_probe_is_asked_about_exactly_what_would_be_written(self, tmp_path, monkeypatch):
+        # If the probe were asked a different question than the write answers, a
+        # match could authorise skipping a DACL that does not exist yet.
+        probed, written = self._capture(monkeypatch, matches=False)
+        f = tmp_path / "secret.key"
+        f.write_bytes(b"s" * 32)
+        pc.restrict_to_owner(f)
+        assert len(probed) == 1 and len(written) == 1
+        assert probed[0] == written[0], (probed[0], written[0])
+        # File shape, so the grants must NOT be inheritable.
+        assert probed[0]["inherit"] is False
+        assert probed[0]["sids"] == ("S-1-3-4", "S-1-5-21-1-2-3-1000")
+
+
+class TestOwnerOnlyDaclMatchesIsConservative:
+    """``windows_acl.owner_only_dacl_matches`` must never answer True on doubt."""
+
+    # (ace_type, ace_flags, mask, sid) as the ctypes half parses them.
+    _PROTECTED = 0x1000
+    _ALLOWED = 0
+    _OI_CI = 0x01 | 0x02
+    _ALL = 0x001F01FF
+    _SIDS = ("S-1-3-4", "S-1-5-21-1-2-3-1000")
+
+    def _dir_aces(self):
+        return [(self._ALLOWED, self._OI_CI, self._ALL, s) for s in self._SIDS]
+
+    def _matches(self, **over):
+        kw = {
+            "control": self._PROTECTED,
+            "aces": self._dir_aces(),
+            "inherit": True,
+            "sids": self._SIDS,
+        }
+        kw.update(over)
+        return pc.windows_acl.owner_only_dacl_matches_parsed(**kw)
+
+    def test_the_exact_shipped_shape_matches(self):
+        # The positive case. Without this, every rule below could pass by always
+        # answering False and the probe would be a no-op that never skips.
+        assert self._matches() is True
+
+    def test_order_does_not_matter(self):
+        # The kernel may normalise ACE order; the grant SET is the policy.
+        assert self._matches(aces=list(reversed(self._dir_aces()))) is True
+
+    def test_an_unprotected_dacl_never_matches(self):
+        # Inheritance not stripped: applying PROTECTED would still change it.
+        assert self._matches(control=0) is False
+
+    def test_a_missing_grant_never_matches(self):
+        assert self._matches(aces=self._dir_aces()[:1]) is False
+
+    def test_an_extra_grant_never_matches(self):
+        extra = self._dir_aces() + [(self._ALLOWED, self._OI_CI, self._ALL, "S-1-1-0")]
+        assert self._matches(aces=extra) is False
+
+    def test_a_different_principal_never_matches(self):
+        aces = self._dir_aces()
+        aces[1] = (self._ALLOWED, self._OI_CI, self._ALL, "S-1-1-0")
+        assert self._matches(aces=aces) is False
+
+    def test_a_deny_ace_never_matches(self):
+        aces = self._dir_aces()
+        aces[0] = (1, self._OI_CI, self._ALL, self._SIDS[0])  # ACCESS_DENIED
+        assert self._matches(aces=aces) is False
+
+    def test_a_narrower_mask_never_matches(self):
+        aces = self._dir_aces()
+        aces[0] = (self._ALLOWED, self._OI_CI, 0x120089, self._SIDS[0])  # read-ish
+        assert self._matches(aces=aces) is False
+
+    def test_directory_shape_rejects_non_inheritable_grants(self):
+        # inherit=True wants (OI)(CI); a file-shaped ACE would leave children
+        # uncovered, so it must not read as already correct.
+        assert self._matches(aces=[(self._ALLOWED, 0, self._ALL, s) for s in self._SIDS]) is False
+
+    def test_file_shape_rejects_inheritable_grants(self):
+        # The mirror: inherit=False wants no inheritance flags.
+        assert self._matches(inherit=False) is False
+
+    def test_file_shape_matches_its_own_flags(self):
+        assert (
+            self._matches(
+                inherit=False, aces=[(self._ALLOWED, 0, self._ALL, s) for s in self._SIDS]
+            )
+            is True
+        )
+
+    def test_an_unresolvable_sid_never_matches(self):
+        aces = self._dir_aces()
+        aces[0] = (self._ALLOWED, self._OI_CI, self._ALL, "")
+        assert self._matches(aces=aces) is False
+
+    def test_no_grants_never_matches(self, tmp_path):
+        # apply_owner_only refuses an empty grant set, so "matches" is meaningless
+        # here; answering True would skip a lockdown that never happened.
+        assert self._matches(aces=[], sids=()) is False
+        assert pc.windows_acl.owner_only_dacl_matches(tmp_path, inherit=True, sids=()) is False
+
+    def test_an_unavailable_platform_api_never_matches(self, tmp_path):
+        # Off Windows there is no descriptor to compare. This is the case the whole
+        # POSIX matrix exercises, and it must read as "write", not "already correct".
+        assert (
+            pc.windows_acl.owner_only_dacl_matches(tmp_path, inherit=True, sids=("S-1-3-4",))
+            is False
+        )
+
+
+class TestWindowsDescendantFailureDiagnostics:
+    @staticmethod
+    def kernel(monkeypatch, open_result=0, exception=None):
+        class Call:
+            def __init__(self, fn):
+                self.fn = fn
+
+            def __call__(self, *args):
+                return self.fn(*args)
+
+        calls = []
+
+        def open_process(access, inherit, pid):
+            calls.append((access, inherit, pid))
+            if exception is not None:
+                raise exception
+            return open_result
+
+        kernel = types.SimpleNamespace(OpenProcess=Call(open_process))
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc.ctypes, "WinDLL", lambda *_a, **_k: kernel, raising=False)
+        return calls
+
+    @pytest.mark.parametrize("error", [5, 87])
+    def test_opener_captures_immediate_native_error(self, monkeypatch, error):
+        calls = self.kernel(monkeypatch)
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: error)
+        failure = []
+        assert pc._open_process_termination_handle(101, failure=failure) is None
+        assert failure == [f"winerror={error}"]
+        assert calls == [(0x101001, False, 101)]
+
+    def test_opener_records_exception_type_not_sensitive_text(self, monkeypatch):
+        self.kernel(monkeypatch, exception=RuntimeError("sensitive-secret"))
+        failure = []
+        assert pc._open_process_termination_handle(101, failure=failure) is None
+        assert failure == ["exception=RuntimeError"]
+
+    def test_success_does_not_collect_diagnostics(self, monkeypatch):
+        self.kernel(monkeypatch, open_result=9001)
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: pytest.fail("not a failure"))
+        failure = []
+        assert pc._open_process_termination_handle(101, failure=failure) == 9001
+        assert failure == []
+
+    @pytest.mark.parametrize("identity", [(101, 20, None), (101, 20, 30), None])
+    def test_query_handle_is_query_only_and_always_closed(self, monkeypatch, identity):
+        calls = self.kernel(monkeypatch, open_result=9002)
+        closed = []
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: identity)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        assert pc._windows_process_query_diagnostic(101) == f"identity={identity}"
+        assert calls == [(0x1000, False, 101)]
+        assert closed == [9002]
+
+    def test_query_exception_is_sanitized_and_handle_closed(self, monkeypatch):
+        self.kernel(monkeypatch, open_result=9002)
+        closed = []
+
+        def unreadable(_handle):
+            raise RuntimeError("sensitive-secret")
+
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", unreadable)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        assert pc._windows_process_query_diagnostic(101) == "exception=RuntimeError"
+        assert closed == [9002]
+
+    def test_query_denial_is_unknown_not_death(self, monkeypatch):
+        self.kernel(monkeypatch)
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: 5)
+        assert pc._windows_process_query_diagnostic(101) == "winerror=5"
+
+    @pytest.mark.parametrize(
+        "query",
+        ["identity=(101, 20, 30)", "identity=(101, 20, None)", "winerror=5", "identity=None"],
+    )
+    def test_still_present_candidate_always_refuses_with_bounded_evidence(self, monkeypatch, query):
+        scans = 0
+        queried = []
+        closed = []
+
+        def snapshot():
+            nonlocal scans
+            scans += 1
+            return {101: 102, 102: 100, 999: 1}
+
+        def open_handle(_pid, *, failure=None):
+            failure.append("winerror=5")
+            return None
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_open_process_termination_handle", open_handle)
+        monkeypatch.setattr(
+            pc, "_windows_process_handle_identity", {8001: (100, 10, None), 9001: (102, 15, 40)}.get
+        )
+        monkeypatch.setattr(
+            pc, "_windows_process_query_diagnostic", lambda pid: queried.append(pid) or query
+        )
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        with pytest.raises(OSError, match="Windows descendant handles unavailable") as exc:
+            pc.descendant_termination_handles(100, {102: 9001}, 8001)
+        text = str(exc.value)
+        assert "open=winerror=5" in text
+        assert "first_chain=[101, 102, 100]" in text
+        assert "fresh_chain=[101, 102, 100]" in text
+        assert "100: (100, 10, None)" in text
+        assert "102: (102, 15, 40)" in text
+        assert query in text
+        assert "999" not in text
+        assert queried == [101]
+        assert closed == []
+        assert scans == 2
+
+    def test_diagnostic_failure_cannot_replace_refusal(self, monkeypatch):
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", lambda: {101: 100})
+        monkeypatch.setattr(pc, "_open_process_termination_handle", lambda _p, **_k: None)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+
+        def broken(*_a, **_k):
+            raise RuntimeError("sensitive-secret")
+
+        monkeypatch.setattr(pc, "_windows_descendant_failure_details", broken)
+        with pytest.raises(
+            OSError, match="Windows descendant handles unavailable: \\[101\\]"
+        ) as exc:
+            pc.descendant_termination_handles(100, {}, 8001)
+        assert "sensitive-secret" not in str(exc.value)
+
+    def test_error_survives_later_snapshot_and_query_calls(self, monkeypatch):
+        calls = self.kernel(monkeypatch)
+        error = [5]
+        scans = [0]
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: error[0])
+
+        def snapshot():
+            scans[0] += 1
+            error[0] = 5 if scans[0] == 1 else 87
+            return {101: 100}
+
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        with pytest.raises(OSError) as exc:
+            pc.descendant_termination_handles(100, {}, 8001)
+        assert "open=winerror=5" in str(exc.value)
+        assert "query_unvalidated=winerror=87" in str(exc.value)
+        assert calls == [(0x101001, False, 101), (0x1000, False, 101)]
+
+    def test_diagnostics_bound_candidates_and_ancestry(self, monkeypatch):
+        queried = []
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_query_diagnostic",
+            lambda pid: queried.append(pid) or "identity=None",
+        )
+        monkeypatch.setattr(pc, "_windows_process_handle_identity", lambda _h: (100, 10, None))
+        parents = {pid: pid + 1 for pid in range(101, 140)}
+        details = pc._windows_descendant_failure_details(
+            {101, 110, 120, 130}, parents, parents, {100: 8001}, (100, 10, None), {}
+        )
+        assert queried == [101, 110, 120]
+        assert "total=4" in details
+        assert "first_chain=[101, 102, 103, 104, 105, 106, 107, 108]" in details
+        assert "109" not in details
+        assert "130" not in details
+        assert len(details) < 1500
+
+    @pytest.mark.parametrize("vanished", [True, False])
+    def test_success_never_queries_or_logs_diagnostics(self, monkeypatch, caplog, vanished):
+        scans = [0]
+        closed = []
+
+        def snapshot():
+            scans[0] += 1
+            return {} if vanished and scans[0] > 1 else {101: 100}
+
+        def forbidden(*_a, **_k):
+            pytest.fail("successful discovery must not run diagnostics")
+
+        monkeypatch.setattr(pc, "IS_WINDOWS", True)
+        monkeypatch.setattr(pc, "_windows_process_parent_map", snapshot)
+        monkeypatch.setattr(
+            pc, "_open_process_termination_handle", lambda _p, **_k: None if vanished else 9001
+        )
+        monkeypatch.setattr(
+            pc,
+            "_windows_process_handle_identity",
+            {8001: (100, 10, None), 9001: (101, 20, None)}.get,
+        )
+        monkeypatch.setattr(pc, "_windows_descendant_failure_details", forbidden)
+        monkeypatch.setattr(pc, "_windows_process_query_diagnostic", forbidden)
+        monkeypatch.setattr(pc, "close_process_handle", closed.append)
+        assert pc.descendant_termination_handles(100, {}, 8001) == ({} if vanished else {101: 9001})
+        assert closed == []
+        assert caplog.records == []
+
+    def test_failure_evidence_sink_cannot_change_opener_result(self, monkeypatch):
+        self.kernel(monkeypatch)
+        monkeypatch.setattr(pc, "_windows_last_error", lambda: 5)
+
+        class BrokenList(list):
+            def append(self, _item):
+                raise RuntimeError("sensitive-secret")
+
+        assert pc._open_process_termination_handle(101, failure=BrokenList()) is None
+
+
+class TestStripExtendedLengthPrefix:
+    r"""One lexical fold for the extended-length prefix, shared by both guards.
+
+    ``Path.resolve()`` on a file another thread is replacing at that moment comes
+    back as a prefixed path, while the directory beside it comes back plain. A
+    containment comparison that reads the two spellings as-is sees the prefix
+    alone as a path escape, so both guards compare through this fold.
+    """
+
+    def test_a_drive_prefixed_path_loses_the_prefix(self):
+        assert pc.strip_extended_length_prefix(Path("\\\\?\\C:\\x\\y")) == Path("C:\\x\\y")
+
+    def test_a_unc_prefixed_path_becomes_a_plain_unc_path(self):
+        assert pc.strip_extended_length_prefix(Path("\\\\?\\UNC\\host\\share\\y")) == Path(
+            "\\\\host\\share\\y"
+        )
+
+    def test_an_ordinary_windows_path_is_returned_unchanged(self):
+        assert pc.strip_extended_length_prefix(Path("C:\\x\\y")) == Path("C:\\x\\y")
+
+    def test_a_posix_path_is_returned_unchanged(self):
+        assert pc.strip_extended_length_prefix(Path("/home/a/b")) == Path("/home/a/b")
+
+    def test_the_fold_is_idempotent(self):
+        """A path that is already plain keeps its separators intact."""
+        once = pc.strip_extended_length_prefix(Path("\\\\?\\C:\\x\\y"))
+        assert pc.strip_extended_length_prefix(once) == once
+
+    def test_the_ledger_guard_shares_the_one_fold(self):
+        """``session_ledger`` must call the shared helper, not keep a copy.
+
+        Identity is the property, not equal behaviour: a second copy answers the
+        same values on these inputs and still drifts when one side is edited.
+        """
+        from kiro_crew import session_ledger
+
+        assert session_ledger.strip_extended_length_prefix is pc.strip_extended_length_prefix
+
+    def test_the_workflow_guard_shares_the_one_fold(self, monkeypatch):
+        """``workflow_memory`` must reach the same helper on its guarded path."""
+        from kiro_crew import workflow_memory
+
+        calls = []
+        real = pc.strip_extended_length_prefix
+
+        def record(path):
+            calls.append(path)
+            return real(path)
+
+        monkeypatch.setattr(pc, "strip_extended_length_prefix", record)
+        workflow_memory.binding_path("wf_shared_fold")
+        assert calls, "workflow_memory did not reach the shared fold"

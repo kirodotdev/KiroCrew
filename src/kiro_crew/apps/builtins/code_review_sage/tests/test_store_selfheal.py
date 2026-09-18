@@ -20,10 +20,10 @@ from kiro_crew.apps.builtins.code_review_sage.tests.fixtures import SYMLINKS_OK
 class TestPinnedAtomicWrite(unittest.TestCase):
     """``atomic_write_locked`` resolves the parent directory ONCE.
 
-    The staging temp and the rename that publishes it used to resolve the parent
-    by NAME three times over (``mkstemp(dir=...)`` plus both halves of
-    ``os.replace``). The review worker runs prompt-injected model output and has
-    a shell inside its own run tree, so it could swap a directory for a symlink
+    Resolving the parent by NAME for the staging temp and again for the rename
+    that publishes it (``mkstemp(dir=...)`` plus both halves of ``os.replace``) is
+    three resolutions. The review worker runs prompt-injected model output and has
+    a shell inside its own run tree, so it can swap a directory for a symlink
     between those resolutions and steer the write out of the sandbox.
     """
 

@@ -30,10 +30,12 @@ import re
 import shutil
 from contextlib import closing
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 from kiro_crew.config.loader import config_dir
+from kiro_crew.memory import INDEX_DB_FILE
+from kiro_crew.memory_stores import MEMORY_DB_FILE, named_store_product_file
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 try:  # pragma: no cover - exercised by whichever binding is installed
@@ -70,6 +72,27 @@ _DERIVED_INDEXES = frozenset({"memory_index.db"})
 _MAX_SETTLE_PASSES = 10
 
 _PRODUCT_DATABASES = frozenset({"memory.db", "workspace/knowledge/knowledge.db"})
+
+
+def _named_store_role(rel: str) -> str:
+    """Which product file a ``memory_stores/<name>/...`` path is, or ``""``.
+
+    The two sets above hold FIXED paths. A named store's vector file and index sit under a
+    directory the operator named, so they are recognised by shape through the layout owner
+    (`memory_stores.named_store_product_file`) and then given the same treatment as their
+    root-level twins: the vector file is payload this backup exists to carry, the index is
+    derived and dropped for a rebuild. Asked by bundle-relative path, never by basename,
+    for the reason the sets' own comment gives.
+    """
+    return named_store_product_file(PurePosixPath(rel).parts)
+
+
+def _is_derived_index(rel: str) -> bool:
+    return rel in _DERIVED_INDEXES or _named_store_role(rel) == INDEX_DB_FILE
+
+
+def _is_product_database(rel: str) -> bool:
+    return rel in _PRODUCT_DATABASES or _named_store_role(rel) == MEMORY_DB_FILE
 
 
 class _SchemaCarriesCredential(Exception):
@@ -227,8 +250,8 @@ def redaction_switch_path() -> "Path":
     directory is already fenced on account of the DESTINATION record, and the switch that
     decides what the uploader does with an operator's files belongs behind the same fence.
 
-    The fence is kept even though redaction is no longer the security boundary, because it
-    now decides whether the uploader REWRITES the operator's files, and an agent that could
+    The fence stays even though redaction is not the security boundary, because it
+    decides whether the uploader REWRITES the operator's files, and an agent that could
     flip it on could corrupt an off-host copy just as surely as one flipping it off could
     publish a credential.
 
@@ -335,13 +358,14 @@ def _carries_wide_encoded_credential(raw: bytes) -> bool:
 
     The scanners match ASCII, so text stored two or four bytes per character hides a credential
     from them completely: UTF-16LE `AKIA...` is `A\\x00K\\x00I\\x00A\\x00...`, and nothing matches
-    across the NULs. Both callers previously decoded in a way that preserved that spacing --
-    the file path read UTF-8 (NUL is a legal codepoint, so the read SUCCEEDS) and the column path
-    decodes latin-1 -- so each returned zero hits and reported the data clean.
+    across the NULs. Both callers decode in a way that preserves that spacing --
+    the file path reads UTF-8 (NUL is a legal codepoint, so the read SUCCEEDS) and the
+    column path decodes latin-1 -- so without this check each returns zero hits and
+    reports the data clean.
 
     UTF-32 is here because covering only UTF-16 does not close it: a UTF-32LE credential read as
-    UTF-16LE is still NUL-separated, so it survives a UTF-16-only scan exactly as it survived the
-    original one.
+    UTF-16LE is still NUL-separated, so it survives a UTF-16-only scan exactly as it
+    survives an ASCII one.
 
     A hit here can only ever REFUSE, never rewrite: the real encoding is a guess, and a
     replacement of a different length shifts every byte after it. Used as a detector for that
@@ -503,13 +527,12 @@ def _fts_layout(conn: "sqlite3.Connection") -> tuple[list[str], set[str]]:
         "SELECT name, sql FROM sqlite_schema WHERE type='table'"
     ).fetchall():
         # Case-INSENSITIVE, because SQLite stores DDL verbatim and its own documentation
-        # writes `USING FTS5(...)`. This used to fold only the all-lowercase spelling
-        # (`"USING fts" in sql.replace("using fts", "USING fts")`), so a table created the
-        # documented way was not recognised as full-text at all: its `WITHOUT ROWID` shadow
-        # tables were then scanned as ordinary ones and the pager's `SELECT MAX(<handle>)`
-        # raised `no such column: rowid`, refusing the ENTIRE backup of a sound database.
-        # Reproduced both spellings -- lowercase passed, uppercase refused -- so this was a
-        # legitimate backup lost to a spelling. The contentless probe below is lowered with
+        # writes `USING FTS5(...)`. Folding only the all-lowercase spelling
+        # (`"USING fts" in sql.replace("using fts", "USING fts")`) leaves a table
+        # created the documented way unrecognised as full-text at all: its
+        # `WITHOUT ROWID` shadow tables are then scanned as ordinary ones and the
+        # pager's `SELECT MAX(<handle>)` raises `no such column: rowid`, refusing the
+        # ENTIRE backup of a sound database. The contentless probe below is lowered with
         # it, for the same reason.
         lowered = sql.lower() if sql else ""
         if "using fts" in lowered:
@@ -664,10 +687,10 @@ def _paged_rows(
     ceiling = top[0] if top else None
     if ceiling is None:
         return  # empty table: nothing this pass is responsible for
-    # NO sentinel lower bound. This used to start at `last = -1` and always select
-    # `handle > ?`, which silently skipped every row with a rowid <= -1 -- and SQLite lets
+    # NO sentinel lower bound. Starting at `last = -1` and always selecting
+    # `handle > ?` silently skips every row with a rowid <= -1 -- and SQLite lets
     # you set an explicit negative INTEGER PRIMARY KEY, so a credential sitting at rowid
-    # -5 was never scanned and shipped in the redacted copy while the report still claimed
+    # -5 is never scanned and ships in the redacted copy while the report still claims
     # a successful replacement. Picking a smaller sentinel does not fix it either: the
     # range includes -2**63, so any floor at all can be the row that is missed. The first
     # page therefore has no floor, and only subsequent pages carry one.
@@ -769,8 +792,8 @@ def _refuse_update_triggers_that_destroy_rows(
     finding, and the same mistake this refusal exists to correct: a rule justified for one of
     a thing's statements, applied to all of them.
 
-    The residual, stated rather than implied, and NARROWER than it was: `INSERT OR REPLACE`
-    and `REPLACE INTO` used to be named here as uncaught, and they are now refused -- they
+    The residual, stated rather than implied: `INSERT OR REPLACE` and `REPLACE INTO`
+    are refused rather than left uncaught -- they
     are spellings a body either contains or does not, so text bounds them honestly. An
     `UPDATE` aimed at a table OTHER than the trigger's own is refused for the same reason:
     it overwrites rows this pass is not rewriting, so their prior values are gone from the
@@ -1146,14 +1169,14 @@ def redact_bundle_for_egress(stage: Path) -> RedactionReport:
             path.unlink()
             report.dropped.append(rel)
             continue
-        if rel in _DERIVED_INDEXES:
+        if _is_derived_index(rel):
             path.unlink()
             report.dropped.append(rel)
             report.rebuilt_indexes.append(rel)
             continue
         if path.suffix == ".db":
             try:
-                _redact_database(path, report, rel, product=rel in _PRODUCT_DATABASES)
+                _redact_database(path, report, rel, product=_is_product_database(rel))
             except _PayloadUnprovable:
                 # Never deleted: an off-host copy missing the memory it was taken for is
                 # the failure this whole path exists to prevent.

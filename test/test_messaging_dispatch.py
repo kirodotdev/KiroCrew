@@ -12,7 +12,11 @@ import ast
 import asyncio
 from pathlib import Path
 from typing import Any
+from unittest.mock import AsyncMock
 
+import pytest
+
+from kiro_crew.acp.types import STOP_REASON_CANCELLED
 from kiro_crew.messaging import dispatch as D
 from kiro_crew.messaging.dispatch import ChannelTurn, drive_turn
 from kiro_crew.messaging.renderer import SilentRenderer
@@ -86,6 +90,7 @@ class _CtxBuilder:
 
 class _Driver:
     last_stop_reason = ""
+    completion_observed = True
 
     def __init__(self, *a, **kw):
         # Mirrors the real TurnDriver: the shutdown gate is supplied at
@@ -205,6 +210,48 @@ def test_the_happy_path_releases_exactly_once(monkeypatch) -> None:
     assert sessions.begin_turns == 1
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/home/alice/memory.db",
+        "/Users/alice/memory.db",
+        r"C:\Users\alice\memory.db",
+    ],
+)
+def test_private_memory_refusal_hides_paths_and_credentials_before_channel_output(
+    monkeypatch, path
+):
+    from kiro_crew.memory_stores import UnknownMemoryStore
+
+    _patch_pipeline(monkeypatch)
+    secret = "ghp_" + "x" * 36
+    refuse = AsyncMock(
+        side_effect=UnknownMemoryStore(
+            f"Member memory unavailable: cannot read {path}; token={secret}. "
+            "Repair this member's memory. Global Memory V1 was not used."
+        )
+    )
+    monkeypatch.setattr(D, "session_store_for_turn", refuse)
+    sessions = _Sessions()
+    sessions.get_or_create = AsyncMock()
+    renderer = _Renderer()
+    renderer.on_text_chunk = AsyncMock()
+    renderer.on_done = AsyncMock()
+
+    asyncio.run(drive_turn(_turn(renderer), sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    renderer.on_text_chunk.assert_awaited_once()
+    visible = renderer.on_text_chunk.call_args.args[0]
+    assert "Repair this member's memory" in visible
+    assert "Global Memory V1 was not used" in visible
+    assert path not in visible and "alice" not in visible and secret not in visible
+    assert len(visible) <= 1000
+    renderer.on_done.assert_awaited_once()
+    assert renderer.closed == 1
+    sessions.get_or_create.assert_not_awaited()
+    assert sessions.released == 0
+
+
 def test_every_turn_open_site_is_gated_on_the_shutdown_state() -> None:
     """Ratchet: the shutdown gate is wired at every site AND placed atomically.
 
@@ -267,7 +314,7 @@ def test_a_shutdown_between_the_claim_and_the_dispatch_never_opens_the_turn(
     ``get_or_create`` guards the CLAIM, but the turn only opens at
     ``driver.run``, and everything between them awaits: ``set_channel``, the
     origin/mirror bind's thread hop, ``publish_turn_identity``, and the whole
-    context build. A restart landing in that span used to leave this pipeline
+    context build. A restart landing in that span can leave this pipeline
     opening a turn that ``close_all`` had already taken its drain snapshot
     without -- killed mid-flight holding its native lock, which reaches the user
     as an empty response. The dashboard runner and the Slack handler each carry
@@ -309,6 +356,23 @@ def test_a_shutdown_between_the_claim_and_the_dispatch_never_opens_the_turn(
     # misbehaved, and it is not a success either.
     assert sessions.failures == 0
     assert sessions.successes == 0
+
+
+def test_a_restricted_shutdown_refusal_never_spools(monkeypatch) -> None:
+    """A resolved temporary/incognito turn leaves no durable refusal record."""
+    _patch_pipeline(monkeypatch)
+    spool = AsyncMock(return_value=True)
+    monkeypatch.setattr(D, "spool_refused_turn", spool)
+    sessions = _Sessions(closing=True)
+    renderer = _Renderer()
+    turn = _turn(renderer)
+    turn.inbound_route = D.InboundRoute(conversation_id="conv", text="secret", user_id="u")
+    turn.inbound_restricted = True
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=_CtxBuilder()))
+
+    spool.assert_not_awaited()
+    assert sessions.released == 1
 
 
 def test_a_compaction_failed_terminal_resets_the_session(monkeypatch) -> None:
@@ -614,15 +678,27 @@ class _RecordingCtxBuilder:
     """Captures the kwargs the pipeline hands ``build_message``.
 
     The signature is spelled out rather than swallowed into ``**kw`` for
-    ``minimal_context``, so a pipeline that stops forwarding it fails here
-    instead of quietly falling back to the builder's own default.
+    ``minimal_context`` and ``needs_reinjection``, so a pipeline that stops
+    forwarding either fails here instead of quietly falling back to the
+    builder's own default.
     """
 
     def __init__(self) -> None:
         self.calls: list[dict[str, Any]] = []
 
-    def build_message(self, text, is_new, session_key, *, minimal_context=False, **kw):
-        self.calls.append({"minimal_context": minimal_context, **kw})
+    def build_message(
+        self,
+        text,
+        is_new,
+        session_key,
+        *,
+        minimal_context=False,
+        needs_reinjection,
+        **kw,
+    ):
+        self.calls.append(
+            {"minimal_context": minimal_context, "needs_reinjection": needs_reinjection, **kw}
+        )
         return text, None
 
 
@@ -684,6 +760,195 @@ def test_the_default_turn_still_gets_full_context(monkeypatch) -> None:
     )
 
     assert ctx.calls[0]["minimal_context"] is False
+
+
+def test_compaction_reinjection_reaches_build_message(monkeypatch) -> None:
+    """A channel turn consumes and forwards its one-shot reinjection marker."""
+
+    class _ReinjectingSessions(_Sessions):
+        def __init__(self) -> None:
+            super().__init__()
+            self.consumed_keys: list[str] = []
+
+        def consume_needs_reinjection(self, key: str) -> bool:
+            self.consumed_keys.append(key)
+            return True
+
+    _patch_pipeline(monkeypatch)
+    sessions = _ReinjectingSessions()
+    ctx = _RecordingCtxBuilder()
+    turn = _turn(_Renderer())
+
+    asyncio.run(drive_turn(turn, sessions=sessions, ctx_builder=ctx))
+
+    assert sessions.consumed_keys == [turn.session_key]
+    assert ctx.calls[0]["needs_reinjection"] is True
+
+
+def test_missing_reinjection_consumer_keeps_turn_running(monkeypatch) -> None:
+    """A session stand-in without the new method gets the safe false default."""
+    _patch_pipeline(monkeypatch)
+    sessions = _Sessions()
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(
+        drive_turn(
+            _turn(_Renderer()),
+            sessions=sessions,
+            ctx_builder=ctx,
+        )
+    )
+
+    assert ctx.calls[0]["needs_reinjection"] is False
+    assert sessions.successes == 1
+
+
+class _RearmSessions(_Sessions):
+    """Records the one-shot flag's consume/mark traffic, like the real manager."""
+
+    def __init__(self, *, armed: bool = True) -> None:
+        super().__init__()
+        self.armed = armed
+        self.marks = 0
+
+    def consume_needs_reinjection(self, key: str) -> bool:
+        was = self.armed
+        self.armed = False
+        return was
+
+    def mark_needs_reinjection(self, key: str) -> None:
+        self.marks += 1
+        self.armed = True
+
+
+class _FailingDriver(_Driver):
+    async def run(self, message):
+        raise RuntimeError("provider fell over")
+
+
+def test_failed_consuming_turn_rearms_reinjection(monkeypatch) -> None:
+    """The turn cleared the flag, then died before landing: the flag comes back.
+
+    Without the re-arm the compacted session runs without its skills index (and
+    a member DM without its rules) until the NEXT compaction. Same rule as the
+    dashboard runner's finally.
+    """
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _FailingDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True, "the flag was consumed by this turn"
+    assert sessions.failures == 1
+    assert (
+        sessions.marks == 1 and sessions.armed is True
+    ), "a consuming turn that never landed must put the one-shot flag back"
+
+
+def test_landed_consuming_turn_does_not_rearm(monkeypatch) -> None:
+    """Non-vacuity: a turn that landed keeps the flag consumed (exactly once)."""
+    _patch_pipeline(monkeypatch)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.successes == 1
+    assert sessions.marks == 0 and sessions.armed is False
+
+
+class _CancelledDriver(_Driver):
+    """``run`` returns normally, as it does on ``/stop``, with the cancel stop reason."""
+
+    last_stop_reason = STOP_REASON_CANCELLED
+
+
+def test_cancelled_consuming_turn_rearms_reinjection(monkeypatch) -> None:
+    """A user cancel completes the turn normally, yet the backend drops that turn
+    from its transcript -- the re-injected context goes with it, so the flag
+    must come back exactly as for a raised turn."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _CancelledDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.successes == 1, "the pipeline still records the cancelled turn as it did"
+    assert sessions.marks == 1 and sessions.armed is True
+
+
+class _StaleRecoverDriver(_Driver):
+    """``run`` returns normally on the synthetic completion for a wedged turn."""
+
+    last_stop_reason = "stale_recover"
+
+
+def test_synthetic_completion_for_a_wedged_turn_rearms_reinjection(monkeypatch) -> None:
+    """Landed is an allowlist (``succeeded``), not "anything but cancelled".
+
+    ``stale_recover`` and ``error: tool stall`` are the backend's synthetic
+    terminals for a turn it never completed; scoring them landed would drop the
+    re-injected context silently until the next compaction.
+    """
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _StaleRecoverDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.marks == 1 and sessions.armed is True
+
+
+def test_stop_reason_landed_is_a_success_allowlist() -> None:
+    assert D.stop_reason_landed("end_turn") is True
+    assert (
+        D.stop_reason_landed("") is True
+    ), "a completion from a provider that never sets the field"
+    assert D.stop_reason_landed(None) is False, "no completion observed at all"
+    for reason in ("cancelled", "stale_recover", "error: tool stall", "refusal", "error: boom"):
+        assert D.stop_reason_landed(reason) is False, reason
+
+
+class _NoCompletionDriver(_Driver):
+    """``run`` returned because the stream ended, with no EVENT_COMPLETE seen."""
+
+    completion_observed = False
+
+
+def test_a_stream_that_ends_without_a_completion_rearms_reinjection(monkeypatch) -> None:
+    """An empty stop reason means two opposite things -- "no completion yet" and
+    "a completion with no reason" -- so the driver records the presence apart,
+    and only an observed completion can land."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _NoCompletionDriver)
+    sessions = _RearmSessions(armed=True)
+    ctx = _RecordingCtxBuilder()
+
+    asyncio.run(drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=ctx))
+
+    assert ctx.calls[0]["needs_reinjection"] is True
+    assert sessions.marks == 1 and sessions.armed is True
+
+
+def test_failed_turn_without_a_consumed_flag_does_not_arm_one(monkeypatch) -> None:
+    """A plain failure on a never-compacted session must not invent a re-injection."""
+    _patch_pipeline(monkeypatch)
+    monkeypatch.setattr(D, "TurnDriver", _FailingDriver)
+    sessions = _RearmSessions(armed=False)
+
+    asyncio.run(
+        drive_turn(_turn(_Renderer()), sessions=sessions, ctx_builder=_RecordingCtxBuilder())
+    )
+
+    assert sessions.failures == 1
+    assert sessions.marks == 0 and sessions.armed is False
 
 
 class _GovernanceStub:

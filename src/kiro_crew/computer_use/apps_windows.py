@@ -347,7 +347,7 @@ def hwnd_owns_point(app: AppRef, x: float, y: float) -> bool:
     other.
 
     Fails CLOSED (``False``) on a zero handle, a mismatched root, a window that is
-    no longer live, or any error. Refusing a legitimate click costs the model one
+    not live, or any error. Refusing a legitimate click costs the model one
     clear refusal; permitting a mis-aimed one is an irreversible action in an app
     the operator never authorized.
     """

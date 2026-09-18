@@ -54,6 +54,8 @@ export interface QuickSearchChord {
   key: string
   /** Cmd on macOS / Ctrl on Windows/Linux. */
   mod?: boolean
+  /** Control held independently on macOS; the same key as `mod` on Windows/Linux. */
+  ctrl?: boolean
   /** Option on macOS / Alt elsewhere. */
   alt?: boolean
   shift?: boolean
@@ -69,20 +71,21 @@ export interface QuickSearchConfig {
 export const DEFAULT_QUICK_SEARCH_CONFIG: QuickSearchConfig = { mode: 'mod-k' }
 
 /**
- * A custom chord must carry at least one command/option modifier (`mod` or
- * `alt`). A bare key — or Shift alone, which merely types a capital — would fire
+ * A custom chord must carry at least one non-shift modifier (`mod`, `ctrl`,
+ * or `alt`). A bare key — or Shift alone, which merely types a capital — would fire
  * mid-typing, so the recorder and the loader both reject it. This keeps a
  * malformed or hostile localStorage value from installing a footgun binding.
  */
 export function isValidChord(c: Partial<QuickSearchChord> | null | undefined): c is QuickSearchChord {
   if (!c || typeof c.key !== 'string' || c.key.trim() === '') return false
-  return c.mod === true || c.alt === true
+  return c.mod === true || c.ctrl === true || c.alt === true
 }
 
 /** Lowercase the key token so matching is case-insensitive and Shift-stable. */
 export function normalizeChord(c: QuickSearchChord): QuickSearchChord {
   const out: QuickSearchChord = { key: c.key.toLowerCase() }
   if (c.mod) out.mod = true
+  if (c.ctrl) out.ctrl = true
   if (c.alt) out.alt = true
   if (c.shift) out.shift = true
   return out
@@ -159,10 +162,11 @@ export function isModKEvent(e: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey'
 }
 
 /**
- * True when `e` exactly matches `chord` on the given platform. `mod` maps to
- * `metaKey` on macOS and `ctrlKey` elsewhere; the opposite primary modifier
- * must NOT be held (so a Mac ⌃J never satisfies a `mod` chord meant as ⌘J), and
- * `alt`/`shift` must match exactly. `mac` is injectable (defaulting to the
+ * True when `e` exactly matches `chord` on the given platform. On macOS `mod`
+ * is Meta and `ctrl` is Control, held independently (so a Mac ⌃J never
+ * satisfies a `mod` chord meant as ⌘J, and vice versa); off macOS both mean
+ * Control and Meta (the Windows key) must not be held — mirroring
+ * `chordMatchesEvent` in shortcutRegistry. `alt`/`shift` must match exactly. `mac` is injectable (defaulting to the
  * detected platform) so both behaviours are testable without reloading the
  * module — mirroring `isSettingsChord` in useKeyboardShortcuts.
  */
@@ -173,10 +177,12 @@ export function chordMatchesEvent(
 ): boolean {
   const token = eventKeyToken(e)
   if (token === null || token.toLowerCase() !== chord.key.toLowerCase()) return false
-  const modDown = mac ? e.metaKey : e.ctrlKey
-  const crossModDown = mac ? e.ctrlKey : e.metaKey
-  if (crossModDown) return false
-  if (!!chord.mod !== modDown) return false
+  if (mac) {
+    if (!!chord.mod !== e.metaKey || !!chord.ctrl !== e.ctrlKey) return false
+  } else {
+    if (e.metaKey) return false
+    if ((!!chord.mod || !!chord.ctrl) !== e.ctrlKey) return false
+  }
   if (!!chord.alt !== e.altKey) return false
   if (!!chord.shift !== e.shiftKey) return false
   return true
@@ -207,6 +213,8 @@ export function formatQuickSearchKeys(config: QuickSearchConfig, mac: boolean = 
 /** Human keycaps for a single chord, platform-aware (modifiers first, then key). */
 export function formatChordKeys(chord: QuickSearchChord, mac: boolean = isMac): string[] {
   const caps: string[] = []
+  // Off macOS `ctrl` and `mod` are the same key, so never render 'Ctrl' twice.
+  if (chord.ctrl && !(chord.mod && !mac)) caps.push(mac ? '⌃' : 'Ctrl')
   if (chord.mod) caps.push(mac ? '⌘' : 'Ctrl')
   if (chord.alt) caps.push(mac ? '⌥' : 'Alt')
   if (chord.shift) caps.push(mac ? '⇧' : 'Shift')

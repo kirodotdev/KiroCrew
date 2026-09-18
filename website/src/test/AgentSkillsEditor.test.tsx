@@ -27,6 +27,9 @@ function renderEditor(props: Partial<React.ComponentProps<typeof AgentSkillsEdit
         skills={props.skills ?? []}
         unmanaged={props.unmanaged}
         onChange={onChange}
+        beforeSave={props.beforeSave}
+        pendingChain={props.pendingChain}
+        onSavePending={props.onSavePending}
       />
     </QueryClientProvider>,
   )
@@ -147,5 +150,66 @@ describe('AgentSkillsEditor', () => {
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /add skill/i })).toBeDisabled(),
     )
+  })
+
+  it('routes the save through beforeSave and reports the resolved target', async () => {
+    // Blueprint semantics: editing from a crew forks a private copy first, so
+    // the PATCH must hit the forked name and onChange must report THAT name —
+    // not agentName — or the caller keeps tracking the shared template.
+    const beforeSave = vi.fn().mockResolvedValue('atlas-crewA')
+    mockApi.agentPatch.mockResolvedValue({ ok: true, skills: ['widgets'] })
+    const { onChange } = renderEditor({ agentName: 'atlas', skills: [], beforeSave })
+    await openAddMenu()
+    fireEvent.click(await screen.findByRole('option', { name: /widgets/i }))
+
+    await waitFor(() => expect(beforeSave).toHaveBeenCalled())
+    await waitFor(() =>
+      expect(mockApi.agentPatch).toHaveBeenCalledWith('atlas-crewA', { skills: ['widgets'] }),
+    )
+    expect(mockApi.agentPatch).not.toHaveBeenCalledWith('atlas', { skills: ['widgets'] })
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('atlas-crewA', ['widgets']))
+  })
+
+  it('writes to agentName directly when no beforeSave is given', async () => {
+    // The Agent Templates tab passes no beforeSave: the save targets the agent
+    // itself, with no fork indirection.
+    const { onChange } = renderEditor({ agentName: 'atlas', skills: [] })
+    await openAddMenu()
+    fireEvent.click(await screen.findByRole('option', { name: /widgets/i }))
+
+    await waitFor(() =>
+      expect(mockApi.agentPatch).toHaveBeenCalledWith('atlas', { skills: ['widgets'] }),
+    )
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith('atlas', ['widgets']))
+  })
+})
+
+describe('shared instant-save chain (GPT round-26)', () => {
+  it('serializes saves onto the provided chain and reports pending state', async () => {
+    // The owner (the template pane) drains this one chain before publish and
+    // fences the publish button on the pending report — both must be fed.
+    const pendingChain = { current: Promise.resolve() as Promise<unknown> }
+    const onSavePending = vi.fn()
+    let releasePatch: (v: unknown) => void = () => {}
+    mockApi.agentPatch.mockImplementationOnce(
+      () => new Promise(resolve => { releasePatch = resolve }),
+    )
+    renderEditor({ agentName: 'atlas', skills: ['grill'], pendingChain, onSavePending })
+
+    // Remove the mapped chip -> a save starts and is held open.
+    fireEvent.click(await screen.findByRole('button', { name: /Remove/ }))
+    await waitFor(() => expect(mockApi.agentPatch).toHaveBeenCalledWith('atlas', { skills: [] }))
+    await waitFor(() => expect(onSavePending).toHaveBeenCalledWith(true))
+
+    // The chain does NOT settle while the save is in the air…
+    let settled = false
+    void pendingChain.current.then(() => { settled = true })
+    await new Promise(resolve => setTimeout(resolve, 30))
+    expect(settled).toBe(false)
+
+    // …and settles once it lands, with pending reported back to false.
+    releasePatch({ ok: true })
+    await waitFor(() => expect(settled).toBe(true))
+    await waitFor(() => expect(onSavePending).toHaveBeenCalledWith(false))
   })
 })

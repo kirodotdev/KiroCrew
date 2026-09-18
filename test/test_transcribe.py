@@ -1244,8 +1244,8 @@ class TestSttConfig:
         "retired_field", ["whisper_path", "mlx_model", "parakeet_model", "device"]
     )
     def test_fields_of_retired_providers_are_gone(self, retired_field):
-        """Each named an out-of-band install or a device selector belonging to a
-        provider that no longer exists. Re-adding one would put a setting back in
+        """Each names an out-of-band install or a device selector belonging to a
+        provider that does not exist. Re-adding one would put a setting back in
         the panel that nothing reads."""
         assert not hasattr(SttConfig(), retired_field)
 
@@ -1576,8 +1576,8 @@ class TestBundledFfmpeg:
     def test_signer_rewritten_payload_is_accepted_on_a_developer_id_signature(
         self, monkeypatch, tmp_path
     ):
-        """A released macOS decoder no longer matches the upstream digest, because
-        signing replaced its Mach-O signature. macOS vouching for the exact bytes
+        """A released macOS decoder does not match the upstream digest, because
+        signing rewrites its Mach-O signature. macOS vouching for the exact bytes
         staged for execution is the second anchor."""
         binary = self._fake_package(monkeypatch, tmp_path, signer_rewritten=True)
         binary.write_bytes(b"bundled decoder + developer id signature")
@@ -2057,7 +2057,7 @@ class TestBundledFfmpeg:
         monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_spawn)
         assert await transcribe._create_ffmpeg_subprocess(opened, "-version") is sentinel
         # The staged image must remain resolvable AFTER the spawn returns: the
-        # macOS syspolicy assessment resolves the path asynchronously (#8918),
+        # macOS syspolicy assessment resolves the path asynchronously,
         # so the caller owns the close once the child has exited.
         os.fstat(descriptor)
         await transcribe._close_ffmpeg_for_execution(opened)
@@ -2170,7 +2170,7 @@ class TestBundledFfmpeg:
         """A spawn that raises never produced a child, so nothing depends on
         the staged path surviving: the handle is closed immediately (and off
         the event loop) before the error propagates. A SUCCESSFUL spawn must
-        NOT close here — see ``TestStagedFfmpegOutlivesSpawn`` (#8918)."""
+        NOT close here — see ``TestStagedFfmpegOutlivesSpawn``."""
         self._fake_package(monkeypatch, tmp_path)
         opened = transcribe._open_packaged_ffmpeg_resource()
         assert opened is not None
@@ -2457,7 +2457,7 @@ class TestTranscribeAwsTempOwnership:
     misses it) must kill AND reap the ffmpeg child before the unlink — Windows
     keeps the output file locked until the child fully exits — and then let the
     cancellation propagate. Reference pattern:
-    ``test_apple_speech.py::TestTranscodeTempOwnership`` (#5777).
+    ``test_apple_speech.py::TestTranscodeTempOwnership``.
     """
 
     @staticmethod
@@ -2497,8 +2497,8 @@ class TestTranscribeAwsTempOwnership:
         self, tmp_path, monkeypatch
     ):
         """A cancellation mid-``communicate`` must kill the child, reap it, THEN
-        remove ``tmp_ogg``, and re-raise — the old ``except Exception`` guard
-        did none of that (#5780)."""
+        remove ``tmp_ogg``, and re-raise — an ``except Exception`` guard would
+        miss the ``CancelledError`` and do none of that."""
         from kiro_crew import transcribe as tr
 
         cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
@@ -2578,7 +2578,7 @@ class TestTranscribeAwsTempOwnership:
     async def test_repeat_cancellation_in_stream_cleanup_still_unlinks(self, tmp_path, monkeypatch):
         """A REPEAT cancellation landing on the cleanup ``end_stream`` await
         escapes its ``except Exception`` guard; the nested ``finally`` must
-        still remove ``tmp_ogg`` and let the cancellation propagate (#5780)."""
+        still remove ``tmp_ogg`` and let the cancellation propagate."""
         from kiro_crew import transcribe as tr
 
         cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
@@ -2785,7 +2785,7 @@ class TestTranscribeAwsTempOwnership:
         """When the ffmpeg remux times out, the killed child must be reaped via
         ``communicate()`` -- not ``wait()`` -- so the PIPE buffers are drained
         and a child blocked writing to a full stderr PIPE cannot hang the
-        event loop (#5834)."""
+        event loop."""
         from kiro_crew import transcribe as tr
 
         cfg = SttConfig(enabled=True, provider="transcribe", timeout_secs=10)
@@ -2823,7 +2823,7 @@ class TestTranscribeAwsTempOwnership:
 
 
 class TestStagedFfmpegOutlivesSpawn:
-    """Regression guards for #8918: the authenticated handle outlives the spawn.
+    """The authenticated handle outlives the spawn.
 
     On macOS the system policy assessment resolves the staged *path*
     asynchronously after ``create_subprocess_exec`` returns; closing the handle
@@ -3273,11 +3273,11 @@ class TestAudioExceedsSecsProbe:
     async def test_the_probe_closes_the_authenticated_handle_off_loop(
         self, tmp_path, monkeypatch, returncode
     ):
-        """GPT+Opus review r33: after #8918 moved close ownership to callers,
-        the probe resolved an authenticated handle and never closed it, so the
-        blocking ``os.close`` ran on the gateway event loop via ``__del__``.
-        Every exit — success and failure alike — must release the handle
-        through ``_close_ffmpeg_for_execution``, off the loop thread, like the
+        """With close ownership on the callers, a probe that resolves an
+        authenticated handle and never closes it runs the blocking ``os.close``
+        on the gateway event loop via ``__del__``. Every exit — success and
+        failure alike — must release the handle through
+        ``_close_ffmpeg_for_execution``, off the loop thread, like the
         module's sibling spawn sites."""
         import threading
 

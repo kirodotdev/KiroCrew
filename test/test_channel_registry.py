@@ -158,6 +158,59 @@ class TestRegistryBootLoop:
 
         asyncio.run(go())
 
+    def test_before_start_runs_per_permitted_channel_immediately_ahead_of_its_factory(
+        self,
+    ) -> None:
+        """The gateway re-hoists a channel from the watcher's current snapshot in
+        this hook. It must run once per channel that actually starts, right before
+        that channel's factory -- not once for all of them -- because the channels
+        ahead of it may have spent seconds connecting."""
+        events: list[str] = []
+
+        def make_start(name: str):
+            async def start(orch: Any) -> Any:
+                events.append(f"start:{name}")
+                return f"{name}-client"
+
+            return start
+
+        async def go() -> None:
+            descs = (
+                ChannelDescriptor("alpha", start=make_start("alpha")),
+                ChannelDescriptor("beta", start=make_start("beta")),
+                ChannelDescriptor("denied", start=make_start("denied")),
+            )
+            handles = await registry.start_channels(
+                self._orch(),
+                descs,
+                {"alpha": True, "beta": True, "denied": False},
+                before_start=lambda desc: events.append(f"hook:{desc.channel_type}"),
+            )
+            assert events == ["hook:alpha", "start:alpha", "hook:beta", "start:beta"]
+            assert handles == {"alpha": "alpha-client", "beta": "beta-client"}
+
+        asyncio.run(go())
+
+    def test_a_raising_before_start_hook_is_isolated_like_a_raising_factory(self) -> None:
+        async def ok(orch: Any) -> Any:
+            return "ok-client"
+
+        def hook(desc: ChannelDescriptor) -> None:
+            if desc.channel_type == "first":
+                raise RuntimeError("hoist exploded")
+
+        async def go() -> None:
+            descs = (
+                ChannelDescriptor("first", start=ok),
+                ChannelDescriptor("second", start=ok),
+            )
+            handles = await registry.start_channels(
+                self._orch(), descs, {"first": True, "second": True}, before_start=hook
+            )
+            assert handles == {"second": "ok-client"}
+
+        asyncio.run(go())
+
     def test_shutdown_tasks_close_every_handle_and_skip_closeless(self) -> None:
         closed: list[str] = []
 

@@ -52,11 +52,43 @@ function overviewStep(over: Partial<OverviewStep> = {}): OverviewStep {
     inFlight: 5,
     distinctEntered: 8,
     distinctDone: 4,
+    routed: [],
     ...over,
   }
 }
 
-function overviewResponse(steps: OverviewStep[]): OverviewResponse {
+/** One step whose every counter is zero -- what the backend fold actually emits
+ * for a step no event ever matched. */
+function zeroStep(over: Partial<OverviewStep> = {}): OverviewStep {
+  return overviewStep({
+    entered: 0,
+    done: 0,
+    skipped: 0,
+    churn: 0,
+    recentEntered: 0,
+    recentDone: 0,
+    inFlight: 0,
+    distinctEntered: 0,
+    distinctDone: 0,
+    routed: [],
+    ...over,
+  })
+}
+
+/** The six-row all-zero overview a fresh install really returns: the fold emits
+ * one row per member of its STEPS tuple whether or not any event matched. */
+function allZeroSteps(): OverviewStep[] {
+  return [
+    zeroStep({ key: 'scan', label: 'Scan' }),
+    zeroStep({ key: 'triage', label: 'Triage' }),
+    zeroStep({ key: 'dispatch', label: 'Dispatch' }),
+    zeroStep({ key: 'implement', label: 'Implement' }),
+    zeroStep({ key: 'verify', label: 'Verify' }),
+    zeroStep({ key: 'cleanup', label: 'Cleanup' }),
+  ]
+}
+
+function overviewResponse(steps: OverviewStep[], over: Partial<OverviewResponse> = {}): OverviewResponse {
   return {
     steps,
     totalEvents: 3826,
@@ -65,6 +97,7 @@ function overviewResponse(steps: OverviewStep[]): OverviewResponse {
     firstEventAt: 1_700_000_000,
     lastEventAt: 1_700_090_000,
     recentHours: 24,
+    ...over,
   }
 }
 
@@ -192,11 +225,80 @@ describe('GlobalPipelineView — L0', () => {
     expect(await screen.findByText('Implement')).toBeTruthy()
   })
 
-  it('shows the designed empty state when the pipeline really has no steps', async () => {
+  it('shows the designed empty state for the six-zero-step overview a fresh install returns', async () => {
+    // The shape the backend REALLY produces when nothing has run: one all-zero
+    // row per STEPS member and totalEvents: 0. The old `steps.length > 0` gate
+    // made the empty state unreachable for exactly this payload (#10773).
+    overview.mockResolvedValue(overviewResponse(allZeroSteps(), { totalEvents: 0 }))
+    renderView()
+    expect(await screen.findByTestId('atp-no-pipeline')).toBeTruthy()
+    expect(screen.queryByText('Implement')).toBeNull()
+    expect(screen.queryByTestId('atp-overview-error')).toBeNull()
+  })
+
+  it('shows the board when the trail has events even though every step counter is zero', async () => {
+    // totalEvents is WHOLE-TRAIL: a repository-scoped view can exclude every
+    // event from the step counters while the trail is non-empty. That is
+    // activity, so the "no pipeline activity yet" claim would be false.
+    overview.mockResolvedValue(overviewResponse(allZeroSteps(), { totalEvents: 3 }))
+    renderView()
+    expect(await screen.findByText('Implement')).toBeTruthy()
+    expect(screen.queryByTestId('atp-no-pipeline')).toBeNull()
+    // The zero board discloses WHY it is all zeros -- without this line the
+    // non-zero events figure and the zero columns read as a contradiction.
+    expect(screen.getByTestId('atp-no-step-activity')).toBeTruthy()
+  })
+
+  it('shows the board when a trail folded to zero events still has unparseable lines', async () => {
+    // A trail whose every line is malformed counts into `unparseable` without
+    // incrementing total_events. That trail has content, and the board's
+    // unparseable disclosure is the diagnostic the operator needs -- the empty
+    // state's "no pipeline activity yet" would hide it.
+    overview.mockResolvedValue(
+      overviewResponse(allZeroSteps(), { totalEvents: 0, unparseable: 4 }),
+    )
+    renderView()
+    expect(await screen.findByText('Implement')).toBeTruthy()
+    expect(screen.queryByTestId('atp-no-pipeline')).toBeNull()
+  })
+
+  it.each([
+    ['entered', { entered: 1 }],
+    ['done', { done: 1 }],
+    ['skipped', { skipped: 1 }],
+    ['churn', { churn: 1 }],
+    ['recentEntered', { recentEntered: 1 }],
+    ['recentDone', { recentDone: 1 }],
+    ['inFlight', { inFlight: 1 }],
+    ['distinctEntered', { distinctEntered: 1 }],
+    ['distinctDone', { distinctDone: 1 }],
+    ['routed', { routed: [{ outcome: 'auto-fixable', count: 1 }] }],
+  ] as const)(
+    'shows the board when only the %s counter is non-zero and the trail is empty',
+    async (_name, over) => {
+      const steps = allZeroSteps()
+      steps[3] = zeroStep({ key: 'implement', label: 'Implement', ...over })
+      overview.mockResolvedValue(overviewResponse(steps, { totalEvents: 0 }))
+      renderView()
+      expect(await screen.findByText('Implement')).toBeTruthy()
+      expect(screen.queryByTestId('atp-no-pipeline')).toBeNull()
+    },
+  )
+
+  it('still shows the empty state when the payload carries no steps at all', async () => {
+    // The current backend never emits a zero-length steps array, but the
+    // forward-tolerant contract allows it, and the old gate sent it here too.
     overview.mockResolvedValue(overviewResponse([]))
     renderView()
     expect(await screen.findByTestId('atp-no-pipeline')).toBeTruthy()
     expect(screen.queryByTestId('atp-overview-error')).toBeNull()
+  })
+
+  it('does NOT show the zero-board disclosure when a step has activity', async () => {
+    overview.mockResolvedValue(overviewResponse([overviewStep()]))
+    renderView()
+    await screen.findByText('Implement')
+    expect(screen.queryByTestId('atp-no-step-activity')).toBeNull()
   })
 
   it('does NOT fetch L1 or L2 until a level is opened', async () => {

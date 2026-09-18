@@ -73,6 +73,11 @@ const dnd = vi.hoisted(() => ({
   onDragEnd: undefined as ((e: unknown) => void) | undefined,
   onDragCancel: undefined as (() => void) | undefined,
   collision: undefined as unknown,
+  /** Stand-in for dnd-kit's own store. The sidebar reconciles its drag mirror
+   *  against `useDndContext().active`, so a scripted start must set it and a
+   *  scripted end/cancel must clear it; a start with `active` left null is the
+   *  end-never-delivered shape the reconciler resets. */
+  active: null as { id: string } | null,
   /** Every `useDraggable` registration, so a row's pickup state is assertable
    *  (a pointer drag itself cannot be simulated — see the file header). */
   draggables: [] as Array<{ id: string; disabled: boolean }>,
@@ -106,6 +111,7 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
       dnd.draggables.push({ id: String(args.id), disabled: !!args.disabled })
       return actual.useDraggable(args)
     },
+    useDndContext: () => ({ ...actual.useDndContext(), active: dnd.active }),
     // The real overlay reads the active item off DndContext's internal store,
     // which the stub above does not provide, so it would render nothing. It is
     // a presentational portal — passing children through is what lets the ghost
@@ -117,6 +123,7 @@ vi.mock('@dnd-kit/core', async (importOriginal) => {
 const mocks = vi.hoisted(() => ({
   chatFolders: vi.fn(),
   updateChatFolder: vi.fn(),
+  reorderChatFolders: vi.fn(),
   setSlotFolder: vi.fn(),
   sessions: vi.fn(),
   sessionsSearch: vi.fn(),
@@ -328,9 +335,11 @@ beforeEach(() => {
   localStorage.clear()
   localStorage.setItem('mc-session-stale-collapse-ms', '0')
   localStorage.setItem(HIDDEN_FOLDERS_LS_KEY, JSON.stringify([HIDDEN_FOLDER_ID]))
+  dnd.active = null
   cfg.value = { tagColumnsEnabled: false, confirmCloseSession: false, defaultAutopilot: false }
   mocks.chatFolders.mockResolvedValue(FOLDERS)
   mocks.updateChatFolder.mockResolvedValue({ ok: true })
+  mocks.reorderChatFolders.mockResolvedValue({ ok: true })
   mocks.setSlotFolder.mockResolvedValue({ ok: true })
   mocks.sessions.mockResolvedValue({ sessions: [], has_more: false })
   mocks.sessionsSearch.mockResolvedValue({ sessions: [] })
@@ -539,11 +548,15 @@ describe('ChatSidebar — drop routing (onDragEnd)', () => {
     renderSidebar()
     await waitFor(() => expect(dnd.onDragEnd).toBeTruthy())
     dragEnd({ id: 'f1', data: { type: 'folder' } }, { id: HIDDEN_FOLDER_ID, data: { type: 'folder' } })
-    await waitFor(() => expect(mocks.updateChatFolder).toHaveBeenCalled())
-    // Every persisted change is an `order` write — never a re-parent.
-    for (const call of mocks.updateChatFolder.mock.calls) {
-      expect(Object.keys(call[1] as object)).toEqual(['order'])
+    // The whole renumber is ONE atomic request, not one PATCH per row (#10406).
+    await waitFor(() => expect(mocks.reorderChatFolders).toHaveBeenCalledTimes(1))
+    const changes = mocks.reorderChatFolders.mock.calls[0][0] as { id: string; order: number }[]
+    // Every entry is an {id, order} pair -- a reorder, never a re-parent.
+    for (const c of changes) {
+      expect(Object.keys(c).sort()).toEqual(['id', 'order'])
     }
+    // The per-row PATCH path is retired: reordering never touches updateChatFolder.
+    expect(mocks.updateChatFolder).not.toHaveBeenCalled()
   })
 
   it('does nothing when a folder is dropped onto itself', async () => {
@@ -709,7 +722,25 @@ describe('ChatSidebar — hover-to-expand (onDragOver)', () => {
 
 describe('ChatSidebar — surfaces that exist only during a drag', () => {
   const dragStart = (data: Record<string, unknown>, id: string) => act(() => {
+    dnd.active = { id }
     dnd.onDragStart?.({ active: { id, data: { current: data } } })
+  })
+
+  it('takes the chat-pane drop zone down when dnd-kit goes idle without reporting the end', async () => {
+    // dnd-kit fires onDragStart synchronously but fires onDragEnd/onDragCancel
+    // only once a layout effect has populated its sensor context. A release
+    // before that commit leaves its store idle with no callback, and without
+    // reconciliation the zone would sit over the composer indefinitely.
+    renderSidebar({ chatPane: true, onDropSessionRef: vi.fn() })
+    await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
+    dragStart({ type: 'session', key: SLOT_LOOSE }, SLOT_LOOSE)
+    await screen.findByTestId('chat-pane-drop-zone', undefined, { timeout: 5_000 })
+
+    dnd.active = null
+    // Any later commit lets the reconciler read the idle store; a keystroke in
+    // the search box is one the user actually produces.
+    fireEvent.change(screen.getByPlaceholderText('Search sessions…'), { target: { value: 'L' } })
+    await waitFor(() => expect(screen.queryByTestId('chat-pane-drop-zone')).toBeNull())
   })
 
   it('portals the chat-pane drop zone into the pane and outlines the composer', async () => {
@@ -817,7 +848,7 @@ describe('ChatSidebar — surfaces that exist only during a drag', () => {
     await waitFor(() => expect(dnd.onDragStart).toBeTruthy())
     dragStart({ type: 'session', key: SLOT_LOOSE }, SLOT_LOOSE)
     await waitFor(() => expect(screen.getAllByText('Loose work').length).toBeGreaterThan(1))
-    act(() => { dnd.onDragCancel?.() })
+    act(() => { dnd.active = null; dnd.onDragCancel?.() })
     await waitFor(() => expect(screen.getAllByText('Loose work')).toHaveLength(1))
   })
 
@@ -845,12 +876,14 @@ describe('ChatSidebar — surfaces that exist only during a drag', () => {
 
 describe('ChatSidebar — flat view', () => {
   const dragStart = (data: Record<string, unknown>, id: string) => act(() => {
+    dnd.active = { id }
     dnd.onDragStart?.({ active: { id, data: { current: data } } })
   })
   const dragEnd = (
     active: { id: string; data: Record<string, unknown> },
     over: { id: string; data: Record<string, unknown> } | null,
   ) => act(() => {
+    dnd.active = null
     dnd.onDragEnd?.({
       active: { id: active.id, data: { current: active.data } },
       over: over ? { id: over.id, data: { current: over.data } } : null,

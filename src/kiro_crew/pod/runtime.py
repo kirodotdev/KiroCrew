@@ -24,31 +24,36 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from dataclasses import dataclass
 from pathlib import Path
 
-try:  # POSIX only; pods are refused on hosts without it (require_backend)
-    import fcntl
-except ImportError:  # pragma: no cover - Windows
-    fcntl = None  # type: ignore[assignment]
-
-from kiro_crew import pinned_fs
+from kiro_crew import pinned_fs, platform_compat
 from kiro_crew import seed as seed_mod
 from kiro_crew.atomic_write import atomic_write, atomic_write_at
 from kiro_crew.dashboard.urls import dashboard_socket_name
 from kiro_crew.identity_stores import StoreMapping, store_mappings
 from kiro_crew.instances import run_marker
 from kiro_crew.loopback_http import loopback_urlopen, unix_socket_urlopen
+from kiro_crew.mcp_gateway.socketsec import get_peer_pid
 from kiro_crew.platform_compat import (
     IS_LINUX,
     IS_MACOS,
-    IS_POSIX,
+    IS_WINDOWS,
+    attributed_descendants,
+    file_lock,
     find_port_listeners,
+    is_link_or_junction,
     listening_pid_tool_available,
     loopback_owner_pids,
+    open_file_no_reparse,
+    open_lock_file,
+    pin_directory,
+    process_start_time,
 )
 from kiro_crew.pod import launchd
 from kiro_crew.pod import provision as prov
 from kiro_crew.pod import unit as unit_mod
+from kiro_crew.pod import windows as win_backend
 from kiro_crew.pod.config import (
     EXIT_PROVISIONING,
     EXIT_REFUSED_UNRECOVERABLE,
@@ -69,10 +74,10 @@ class PodError(RuntimeError):
 class PodBackendAbsent(PodError):
     """The pod service manager is provably not running on this host.
 
-    Raised only from branches where the backend is demonstrably absent (e.g.
-    Linux with no session bus socket and no DBUS_SESSION_BUS_ADDRESS). Callers
-    that need to distinguish 'backend absent, no pods possible' from 'backend
-    present but erroring' can catch this subclass specifically.
+    Raised only when no user-bus address exists or a completed systemctl probe
+    reports no user session. An executable, timeout, or other operational
+    failure remains :class:`PodError`, so callers never infer that no live pod
+    can exist from a probe they could not run.
     """
 
 
@@ -318,11 +323,11 @@ _MAX_PORT_DIGITS = 10
 def _port_from_env(value: str | None) -> int | None:
     """Parse an env-file value as a port number, or ``None`` when it is not one.
 
-    THE one place an env-file string becomes a port. Three call sites used to guard
-    this themselves and each got it wrong differently -- one on length, one on a
-    sibling it forgot to audit, one on character class -- so the guard is now a
-    single function they all share and the class is closed at the parse rather than
-    per symptom.
+    THE one place an env-file string becomes a port. Every call site shares this
+    single function rather than guarding itself, so the class is closed at the parse
+    rather than per symptom -- a hand-rolled guard gets it wrong differently each
+    time (one on length, one on a sibling it forgot to audit, one on character
+    class).
 
     ``isdecimal``, NOT ``isdigit``, because ``isdigit`` is not the predicate that
     matches ``int()``: U+00B2 SUPERSCRIPT TWO satisfies ``isdigit`` while ``int()``
@@ -433,12 +438,14 @@ def _port_is_free(port: int) -> bool:
     the SSH forward. ``SO_REUSEADDR`` exempts ``TIME_WAIT`` only, never a live
     ``LISTEN``, so a real collision is still caught.
 
-    That last sentence is POSIX, and deliberately not hedged: on Windows the option
-    means something closer to ``SO_REUSEPORT`` and would let this bind succeed
-    against a LIVE listener, inverting the answer. It is unguarded because it is
-    unreachable -- ``require_backend`` refuses pods on any host without
-    ``systemd --user`` or ``launchd``, so nothing calls this there. Anyone reusing
-    this probe outside the pod plane has to revisit that.
+    That last sentence is POSIX. On Windows ``SO_REUSEADDR`` means something
+    closer to ``SO_REUSEPORT`` and would let this bind succeed against a LIVE
+    listener, inverting the answer, so the Windows probe sets
+    ``SO_EXCLUSIVEADDRUSE`` instead: a bind that fails there is a port somebody
+    holds, and a bind that succeeds is one the gateway can take. The ``TIME_WAIT``
+    concern that motivates ``SO_REUSEADDR`` on POSIX does not apply, because
+    Winsock lets a fresh listener bind over ``TIME_WAIT`` remnants without any
+    option.
 
     Raises :class:`PodError` when the probe cannot be RUN at all -- socket creation
     or option-setting failing, e.g. on file-descriptor exhaustion. That is not the
@@ -459,7 +466,12 @@ def _port_is_free(port: int) -> bool:
         ) from exc
     with sock:
         try:
-            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            if IS_WINDOWS:
+                exclusive = getattr(socket, "SO_EXCLUSIVEADDRUSE", None)
+                if exclusive is not None:
+                    sock.setsockopt(socket.SOL_SOCKET, exclusive, 1)
+            else:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except OSError as exc:
             raise PodError(
                 f"cannot check whether port {port} is free: configuring the probe "
@@ -484,7 +496,7 @@ def _port_is_free(port: int) -> bool:
 #: Env key recording the port :func:`allocate_port` chose ITSELF, so a later call
 #: can tell its own fallback from an operator's deliberate ``PORT=``. The VALUE is
 #: stored (not a bare flag) so the marker self-invalidates: an operator who
-#: hand-edits ``PORT=`` to something else no longer matches it and gets operator
+#: hand-edits ``PORT=`` to something else does not match it and gets operator
 #: treatment, with no way for a stale marker to reclassify their choice as ours.
 AUTO_PORT_KEY = "PORT_AUTO"
 
@@ -824,21 +836,84 @@ def _session_runtime_dir() -> str:
     return f"/run/user/{uid}"
 
 
+def _address_socket_paths(address: str) -> list[str] | None:
+    """Filesystem socket paths named by a D-Bus address, or ``None``.
+
+    A D-Bus address is a semicolon-separated list of ``transport:key=value``
+    entries whose values are percent-escaped. ``unix:path=`` is the only form
+    that names something on the filesystem to check: ``unix:abstract=`` lives in
+    the abstract namespace, and ``tcp:``/``unixexec:``/``autolaunch:`` are not
+    filesystem objects at all. ``None`` means at least one entry cannot be
+    checked, so the address as a whole carries no filesystem verdict.
+    """
+    entries = [entry for entry in address.split(";") if entry.strip()]
+    if not entries:
+        return None
+    paths: list[str] = []
+    for entry in entries:
+        transport, _, arguments = entry.partition(":")
+        if transport.strip() != "unix":
+            return None
+        path = None
+        for pair in arguments.split(","):
+            key, separator, value = pair.partition("=")
+            if separator and key.strip() == "path":
+                path = urllib.parse.unquote(value.strip())
+                break
+        if not path:
+            return None
+        paths.append(path)
+    return paths
+
+
 def session_bus_socket() -> str:
-    """Path of the D-Bus socket that fronts this user's systemd instance."""
+    """Path of the D-Bus socket that fronts this user's systemd instance.
+
+    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` that names a filesystem
+    socket wins, so a refusal names the path it actually judged rather than a
+    conventional one the caller never pointed at.
+    """
+    address = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
+    if address:
+        paths = _address_socket_paths(address)
+        if paths:
+            return paths[0]
     return os.path.join(_session_runtime_dir(), "bus")
 
 
 def has_session_bus() -> bool:
-    """Whether ``systemctl --user`` can reach a per-user systemd instance.
+    """Whether a systemd user-bus address is available to probe.
 
-    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` is taken at face value (the
-    caller has deliberately pointed somewhere, possibly not a filesystem path);
-    otherwise the conventional socket must actually exist.
+    An explicitly-set ``DBUS_SESSION_BUS_ADDRESS`` is taken at face value because
+    it may name a non-filesystem transport. Otherwise the conventional socket
+    must exist. This is only the cheap availability hint; :func:`probe_user_bus`
+    makes the authoritative connection attempt.
+
+    Face value is deliberate and load-bearing beyond diagnosis: a stale explicit
+    address must never be reported as a provably absent backend, because that is
+    what authorizes destructive Dev Fleet worktree removal. Naming the stale case
+    is :func:`user_bus_failure_message`'s job, and it keeps the operational
+    classification untouched.
     """
     if os.environ.get("DBUS_SESSION_BUS_ADDRESS"):
         return True
     return os.path.exists(session_bus_socket())
+
+
+USER_BUS_REACHABLE = "reachable"
+USER_BUS_NO_SESSION = "no_session"
+USER_BUS_SANDBOXED_AWAY = "sandboxed_away"
+USER_BUS_ERROR = "error"
+_USER_BUS_PROBE_TIMEOUT_SECONDS = 5
+
+
+@dataclass(frozen=True)
+class UserBusProbe:
+    """One ``systemctl --user is-system-running`` reachability verdict."""
+
+    status: str
+    socket: str
+    detail: str
 
 
 def _systemctl_env() -> dict[str, str]:
@@ -864,31 +939,144 @@ def _systemctl_env() -> dict[str, str]:
         if os.path.exists(sock):
             env["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={sock}"
     env.setdefault("XDG_RUNTIME_DIR", runtime_dir)
+    # Kiro Crew's CLI and error classifier use English diagnostics. Pin the
+    # service-manager tools to their stable C messages so a host locale cannot
+    # turn Permission denied or No medium found into the generic failure class.
+    env["LC_ALL"] = "C"
     return env
 
 
 def _run(cmd: list[str], timeout: int = 15) -> subprocess.CompletedProcess:
     return subprocess.run(
-        cmd, capture_output=True, text=True, timeout=timeout, env=_systemctl_env()
+        cmd,
+        capture_output=True,
+        timeout=timeout,
+        env=_systemctl_env(),
+        **UTF8_TEXT,
     )
 
 
+def probe_user_bus() -> UserBusProbe:
+    """Classify whether this process can connect to the systemd user bus.
+
+    A socket's existence proves only that a user manager created it. An outer
+    sandbox can still deny ``connect(2)``, which is the failure this probe must
+    keep distinct from a machine with no user manager at all. A nonzero
+    ``is-system-running`` result with a state on stdout is reachable: systemd
+    returns nonzero for valid states such as ``degraded``.
+
+    A provably absent address needs no subprocess and is the only source of
+    ``USER_BUS_NO_SESSION``. Once a probe is spawned, permission denial is the
+    only separately classified failure; every other failure is operationally
+    unknown, never proof that no backend exists.
+    """
+    sock = session_bus_socket()
+    if not has_session_bus():
+        return UserBusProbe(USER_BUS_NO_SESSION, sock, "")
+
+    systemctl_bin = platform_compat.trusted_system_bin("systemctl")
+    if systemctl_bin is None:
+        return UserBusProbe(
+            USER_BUS_ERROR,
+            sock,
+            "systemctl was not found in trusted system directories",
+        )
+
+    try:
+        cp = _run(
+            [systemctl_bin, "--user", "is-system-running"],
+            timeout=_USER_BUS_PROBE_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return UserBusProbe(
+            USER_BUS_ERROR,
+            sock,
+            f"systemctl --user is-system-running timed out after {exc.timeout}s",
+        )
+    except OSError as exc:
+        return UserBusProbe(USER_BUS_ERROR, sock, str(exc))
+
+    stdout = (cp.stdout or "").strip()
+    detail = (cp.stderr or cp.stdout or "").strip()
+    lowered = detail.casefold()
+    if "permission denied" in lowered or "eacces" in lowered:
+        return UserBusProbe(USER_BUS_SANDBOXED_AWAY, sock, detail)
+    if cp.returncode == 0 or stdout:
+        return UserBusProbe(USER_BUS_REACHABLE, sock, detail)
+    if not detail:
+        detail = f"systemctl --user is-system-running exited {cp.returncode} without output"
+    return UserBusProbe(USER_BUS_ERROR, sock, detail)
+
+
+def _no_user_manager_remedy() -> str:
+    """The remedy for a host with no per-user systemd instance running.
+
+    ``loginctl`` talks to the SYSTEM bus, so it is not self-service on a host
+    that cannot reach a bus at all, and ``sudo loginctl enable-linger <name>``
+    still fails where root's name lookup does not resolve the account. Naming the
+    privileged uid form and a preview path that needs no systemd leaves an actor
+    who can act in every case.
+    """
+    uid = getattr(os, "getuid", lambda: -1)()
+    user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
+    return (
+        f"Fix: loginctl enable-linger {user}\n"
+        "If that command itself cannot connect to a bus, this shell cannot reach the "
+        "system bus either, so it can never be the remedy from here: run it from a "
+        "host shell, or have an administrator run "
+        f"`sudo loginctl enable-linger {uid}` — the numeric uid resolves where a "
+        "name lookup does not.\n"
+        "To preview a worktree with no systemd at all, use `./dev-backend.sh`."
+    )
+
+
+def user_bus_failure_message(result: UserBusProbe) -> str:
+    """Render one actionable pod error and retain any systemctl diagnostic."""
+    raw = result.detail.strip()
+    reason = raw.rsplit(":", 1)[-1].strip() if raw else "probe failed without a diagnostic"
+    if result.status == USER_BUS_SANDBOXED_AWAY:
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "An outer layer, such as a container or launcher shim, blocks this "
+            "process from reaching the user bus. Run pod commands from a host shell."
+        )
+    elif result.status == USER_BUS_NO_SESSION:
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} (no user session bus). "
+            "Pods are systemd --user units, so one is required.\n" + _no_user_manager_remedy()
+        )
+    elif not os.path.exists(result.socket):
+        # A probe ran and failed against a path that holds no socket. The class
+        # stays operationally unknown — an explicit address is never proof that
+        # no backend exists — but the remedy is the one a stopped per-user
+        # manager needs, not an instruction to rerun the command that just
+        # failed. A login session exports the address and a `Linger=no` manager
+        # then stops at logout and deletes the socket, which is the usual state
+        # on a Cloud Dev Desktop.
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "Nothing is listening at that path, so the address is stale: a per-user "
+            "systemd instance is not running, and pods are systemd --user units.\n"
+            + _no_user_manager_remedy()
+        )
+    else:
+        message = (
+            f"Cannot reach the systemd user bus at {result.socket} ({reason}). "
+            "Run `systemctl --user is-system-running` from a host shell and fix that "
+            "error before using pod commands."
+        )
+    if raw:
+        return f"{message}\nRaw systemctl error: {raw}"
+    return message
+
+
 def require_systemd() -> None:
-    """Raise :class:`PodError` unless this host can run ``systemctl --user``.
+    """Raise :class:`PodError` unless cheap systemd prerequisites exist.
 
     Pods are Linux ``systemd --user`` only (see ``pod/README.md`` → Platform).
-    Without this gate the first ``subprocess.run(["systemctl", ...])`` raises a
-    bare ``FileNotFoundError`` and every verb dumps a traceback on macOS /
-    Windows instead of the documented "report the failure" one-liner. Checked
-    here — the single chokepoint every systemd call funnels through — so no verb
-    can forget it.
-
-    The third gate is the session bus. :func:`_systemctl_env` backfills the bus
-    pointers when the socket exists, but when ``systemd --user`` is genuinely
-    not running (no login session and ``Linger=no``) there is nothing to point
-    at and systemctl emits a raw "Failed to connect to bus: No medium found"
-    that names neither the cause nor the fix. Translate it here, keyed on the
-    socket's absence rather than on matching systemctl's stderr.
+    This gate stays in-process because every systemd and journalctl helper calls
+    it. The authoritative connection attempt belongs at :func:`require_backend`
+    verb entry and in doctor, not before every unit query.
     """
     if not IS_LINUX:
         raise PodError(
@@ -898,24 +1086,17 @@ def require_systemd() -> None:
     if shutil.which("systemctl") is None:
         raise PodError("pods require `systemctl --user`, but no `systemctl` was found on PATH.")
     if not has_session_bus():
-        uid = getattr(os, "getuid", lambda: -1)()
-        user = os.environ.get("USER") or os.environ.get("LOGNAME") or str(uid)
         raise PodBackendAbsent(
-            f"no `systemd --user` session bus for uid {uid} "
-            f"(looked for {session_bus_socket()}).\n"
-            "Pods are systemd --user units, so one is required.\n"
-            f"Fix: loginctl enable-linger {user}   "
-            "# keeps the per-user instance alive independently of login sessions"
+            user_bus_failure_message(UserBusProbe(USER_BUS_NO_SESSION, session_bus_socket(), ""))
         )
 
 
 def require_backend() -> None:
     """Gate on whatever service manager THIS host uses for pods.
 
-    Dispatches instead of replacing :func:`require_systemd`: that function is
-    still the systemd gate with its own contract and messages, so Linux and
-    Windows behaviour is provably unchanged by the macOS work — on any non-darwin
-    host this is exactly ``require_systemd()``.
+    Linux verb entries pay for one authoritative connection probe. Low-level
+    systemctl helpers retain only :func:`require_systemd`'s cheap checks, so one
+    verb cannot spawn a fresh five-second probe before every unit query.
     """
     if IS_MACOS:
         try:
@@ -923,12 +1104,30 @@ def require_backend() -> None:
         except launchd.LaunchdError as exc:  # translate to the pod error type
             raise PodError(str(exc)) from exc
         return
+    if IS_WINDOWS:
+        try:
+            win_backend.require_backend()
+        except win_backend.WindowsTaskError as exc:  # translate to the pod error type
+            raise PodError(str(exc)) from exc
+        return
+
     require_systemd()
+    result = probe_user_bus()
+    if result.status == USER_BUS_REACHABLE:
+        return
+    error_type = PodBackendAbsent if result.status == USER_BUS_NO_SESSION else PodError
+    raise error_type(user_bus_failure_message(result))
 
 
 def systemctl(*args: str, timeout: int = 15) -> subprocess.CompletedProcess:
     require_systemd()
-    return _run(["systemctl", "--user", *args], timeout=timeout)
+    systemctl_bin = platform_compat.trusted_system_bin("systemctl")
+    if systemctl_bin is None:
+        raise PodError(
+            "pods require `systemctl --user`, but no systemctl executable was found "
+            "in trusted system directories; refusing to resolve it from PATH."
+        )
+    return _run([systemctl_bin, "--user", *args], timeout=timeout)
 
 
 def is_active(cfg: PodConfig, name: str) -> bool:
@@ -939,6 +1138,8 @@ def is_active(cfg: PodConfig, name: str) -> bool:
             # Fail closed as the documented pod error, not a traceback: the
             # probe REFUSES to call a pod absent when launchctl cannot answer.
             raise PodError(str(exc)) from exc
+    if IS_WINDOWS:
+        return win_backend.is_active(cfg, name)
     cp = systemctl("is-active", "--quiet", pod_unit(cfg, name))
     return cp.returncode == 0
 
@@ -960,9 +1161,17 @@ def main_pid(cfg: PodConfig, name: str) -> int | None:
     ask" must leave the question open. ``systemctl show`` prints ``MainPID=0``
     for a dead or unknown unit and still exits 0, so an output with no
     ``MainPID`` line at all is the honest signal that the query itself failed.
+
+    Windows has no ``exec``, so the gateway there is the wrapper's CHILD rather
+    than its replacement; :func:`kiro_crew.pod.windows.supervise_gateway` records
+    a pid plus its creation identity that may be the launcher ancestor of the
+    process binding the port. :func:`port_owner` accounts for that shape by
+    proving ownership through attributed descendants.
     """
     if IS_MACOS:
         return launchd.main_pid(cfg, name)
+    if IS_WINDOWS:
+        return win_backend.main_pid(cfg, name)
     cp = systemctl("show", pod_unit(cfg, name), "-p", "MainPID")
     for ln in cp.stdout.splitlines():
         if ln.startswith("MainPID="):
@@ -985,10 +1194,15 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
     On macOS launchd exposes no restart counter; see
     :func:`kiro_crew.pod.launchd.unit_state` for how the crash signal is
-    preserved without one.
+    preserved without one. Windows Task Scheduler exposes neither a restart
+    counter nor a restart policy, and its status output is localized; see
+    :func:`kiro_crew.pod.windows.unit_state` for the two recorded facts the
+    same signal is derived from there.
     """
     if IS_MACOS:
         return launchd.unit_state(cfg, name)
+    if IS_WINDOWS:
+        return win_backend.unit_state(cfg, name)
     cp = systemctl("show", pod_unit(cfg, name), "-p", "ActiveState", "-p", "NRestarts")
     state, restarts = "unknown", 0
     for ln in cp.stdout.splitlines():
@@ -1002,13 +1216,17 @@ def unit_state(cfg: PodConfig, name: str) -> tuple[str, int]:
 
 
 def recent_journal(cfg: PodConfig, name: str, lines: int = 30) -> str:
-    """Tail the pod's log — used to surface a boot failure's real cause.
+    """Tail the pod's log — surface a boot failure's real cause.
 
     launchd has no journal, so on macOS this tails the files the pod's plist
-    routes stdout/stderr to. Same contract, different mechanism.
+    routes stdout/stderr to. Task Scheduler has none either, so on Windows this
+    tails the files the generated ``.cmd`` wrapper redirects into. Same
+    contract, different mechanism.
     """
     if IS_MACOS:
         return launchd.recent_journal(cfg, name, lines=lines)
+    if IS_WINDOWS:
+        return win_backend.recent_journal(cfg, name, lines=lines)
     # journalctl is a sibling of systemctl, not routed through it — gate it too,
     # or this one call still raises a bare FileNotFoundError off-Linux.
     require_systemd()
@@ -1029,6 +1247,8 @@ def active_names(cfg: PodConfig) -> set[str]:
             return launchd.active_names(cfg)
         except launchd.LaunchdError as exc:
             raise PodError(str(exc)) from exc
+    if IS_WINDOWS:
+        return win_backend.active_names(cfg)
     pat = f"{cfg.unit_prefix}@*.service"
     cp = systemctl("list-units", pat, "--state=active", "--no-legend", "--plain", "--no-pager")
     rx = re.compile(rf"{re.escape(cfg.unit_prefix)}@(.+)\.service")
@@ -1072,18 +1292,20 @@ def pod_name_mutex(cfg: PodConfig, name: str):
 
     **Reentrant within a thread** so the CLI can hold it across a transaction
     while :func:`start_pod` / :func:`stop_pod` re-acquire it internally (their own
-    protection for direct callers): flock is per open-file-description, so a naive
-    second acquisition in the same thread would deadlock against itself.
+    protection for direct callers): an advisory lock is per open-file-description,
+    so a naive second acquisition in the same thread would deadlock against itself.
 
     Advisory and cooperative by design: every mutating path routes through here.
-    Without ``fcntl`` it degrades to a no-op, which only unit tests reach — pods
-    are refused on those hosts. The lock file is deliberately never deleted:
-    unlinking a lock file another process may be opening reintroduces the race the
-    lock exists to close.
+    The lock itself goes through :func:`kiro_crew.platform_compat.file_lock`, which
+    is `flock` on POSIX and `msvcrt.locking` on Windows, so a pod plane on either
+    platform is serialized by the same call. The fd comes from
+    :func:`kiro_crew.platform_compat.open_lock_file`, which creates-or-opens
+    without truncating: `open(path, "w")` truncates BEFORE any lock is held, and on
+    Windows a contender then locks an already-emptied file. `file_lock` fails
+    CLOSED, so a stuck holder raises instead of letting a second transaction run
+    unserialized. The lock file is deliberately never deleted: unlinking one
+    another process may be opening reintroduces the race the lock exists to close.
     """
-    if fcntl is None:
-        yield
-        return
     held = getattr(_MUTEX_STATE, "held", None)
     if held is None:
         held = _MUTEX_STATE.held = {}
@@ -1097,14 +1319,13 @@ def pod_name_mutex(cfg: PodConfig, name: str):
         return
     cfg.pods_dir.mkdir(parents=True, exist_ok=True)
     lock_file = cfg.pods_dir / f"{key}.lock"
-    with open(lock_file, "w") as fh:
-        fcntl.flock(fh, fcntl.LOCK_EX)
-        held[key] = 1
-        try:
-            yield
-        finally:
-            held[key] = 0
-            fcntl.flock(fh, fcntl.LOCK_UN)
+    with open_lock_file(lock_file) as fd:
+        with file_lock(fd, exclusive=True):
+            held[key] = 1
+            try:
+                yield
+            finally:
+                held[key] = 0
 
 
 #: Reserved "name" the plane-wide lock borrows from :func:`pod_name_mutex`. Safe
@@ -1270,6 +1491,13 @@ def start_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
             launchd.write_plist(cfg, name)
             return launchd.start(cfg, name)
 
+        if IS_WINDOWS:
+            # Same reasoning as macOS: the wrapper script and the task are both
+            # re-created on every start, so neither can go stale against a moved
+            # worktree, and the mutex serializes against a concurrent stop of the
+            # same name whose script unlink and HOME sweep would race this write.
+            return win_backend.start(cfg, name)
+
         # Self-heal a stale installed unit before booting it: the template bakes
         # an absolute kirocrew path at install time (a pruned worktree leaves it
         # failing EXEC 203), and a unit installed by an older build can still
@@ -1355,7 +1583,7 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     hook-based delete raced the pod's own surviving subprocesses — they reopened
     their audit log in append mode and recreated the directory behind it — and it
     also ran on the stop half of a ``Restart=``, bringing the pod back up on a
-    home that no longer had its sessions or config. Reclaiming after the service
+    home stripped of its sessions or config. Reclaiming after the service
     is confirmed down fixes both, at the cost of a pod that goes away without a
     ``down`` leaving its HOME behind; :func:`orphan_homes` reports those.
 
@@ -1366,6 +1594,8 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     with pod_name_mutex(cfg, name):
         if IS_MACOS:
             return _stop_pod_launchd(cfg, name)
+        if IS_WINDOWS:
+            return _stop_pod_windows(cfg, name)
         # A unit installed by an OLDER build still carries the destructive
         # ExecStopPost, and `systemctl stop` runs it before our drain — deleting
         # the HOME under the pod's own live processes, which is the exact defect
@@ -1420,6 +1650,8 @@ def stop_pod(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
             )
         rc = cleanup_home(cfg, name)
         dropin_path = unit_mod.dropin_path(cfg, name)
+        # Linux-only (a systemd drop-in): junctions do not exist on this
+        # platform, so ``is_symlink()`` is the complete link test here.
         had_dropin = dropin_path.exists() or dropin_path.is_symlink()
         dropin_gone = unit_mod.remove_dropin(cfg, name)
         reload_cp: subprocess.CompletedProcess | None = None
@@ -1519,6 +1751,77 @@ def _stop_pod_launchd(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
     return subprocess.CompletedProcess(args=[], returncode=0, stdout=cp.stdout or "", stderr="")
 
 
+def _stop_pod_windows(cfg: PodConfig, name: str) -> subprocess.CompletedProcess:
+    """The Windows half of :func:`stop_pod` — called with the name mutex held.
+
+    A boot-contained Job proves the gateway descendants empty after the exact
+    publisher retires. The seven filesystem sweeps accommodate delayed Windows
+    handle release; they are not a substitute for process retirement. A durable
+    receipt remains until every sweep and the final absence check succeed.
+    """
+    # windows.stop() is authoritative: rc 0 means the gateway is confirmed gone
+    # AND the task is deleted. A non-zero rc means one of those could not be
+    # confirmed — in that case do NOT touch the HOME: it may belong to a live
+    # gateway.
+    cp = win_backend.stop(cfg, name)
+    if cp.returncode != 0:
+        return cp
+    leftover = resolved_pod_home(cfg, name)
+    # Observe the FULL window — no early exit on a clean sample. But DO exit the
+    # moment the name is claimed by a NEW pod: a new `up` writes the wrapper
+    # script BEFORE creating the task, so script presence is the claim marker for
+    # any writer that bypasses the mutex. Deliberately a pure filesystem check,
+    # for the same reason the macOS path is: probing the service manager here
+    # would shell out on every sweep and break on hosts without schtasks (the
+    # unit suites run this path on Linux and macOS CI).
+    for _ in range(6):
+        if win_backend.task_script_path(cfg, name).exists():
+            return subprocess.CompletedProcess(
+                args=[], returncode=0, stdout=RECLAIMED_MARKER, stderr=""
+            )
+        cleanup_home(cfg, name)
+        time.sleep(0.5)
+    if win_backend.task_script_path(cfg, name).exists():
+        return subprocess.CompletedProcess(
+            args=[], returncode=0, stdout=RECLAIMED_MARKER, stderr=""
+        )
+    cleanup_home(cfg, name)
+    # The recorded boot result is per-pod state like the wrapper script, so it
+    # must not outlive the pod: a stale non-zero code would make the NEXT `up` of
+    # this name read as already-failed before its own boot recorded anything.
+    try:
+        win_backend.result_path(cfg, name).unlink(missing_ok=True)
+    except OSError as exc:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=cp.stdout or "",
+            stderr=f"pod result sidecar {win_backend.result_path(cfg, name)} could not "
+            f"be deleted; its retirement receipt was preserved for retry: {exc}",
+        )
+    if leftover.exists():
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=cp.stdout or "",
+            stderr=(
+                f"pod stopped but its isolated HOME keeps reappearing at "
+                f"{leftover} — a process is still writing there, so teardown "
+                "is incomplete. Remove it by hand and report this."
+            ),
+        )
+    try:
+        win_backend.runs.finish(cfg, name)
+    except (OSError, ValueError) as exc:
+        return subprocess.CompletedProcess(
+            args=[],
+            returncode=1,
+            stdout=cp.stdout or "",
+            stderr=f"pod HOME is gone but its retirement receipt was preserved: {exc}",
+        )
+    return subprocess.CompletedProcess(args=[], returncode=0, stdout=cp.stdout or "", stderr="")
+
+
 def orphan_homes(cfg: PodConfig) -> list[str]:
     """Pod HOMEs left on disk with no live pod and no installed definition.
 
@@ -1530,11 +1833,20 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
     :func:`cleanup_home`'s re-validation via ``kirocrew pod down <name>``.
     """
     try:
-        # never follow a symlink: a link under pod_root can point at a LIVE
+        # never follow a link: a link under pod_root can point at a LIVE
         # pod's HOME (or anywhere), and everything downstream of this
         # enumeration treats the NAME as the directory it will judge and
         # delete. A real pod HOME is always created as a plain directory.
-        entries = [p for p in cfg.pod_root.iterdir() if p.is_dir() and not p.is_symlink()]
+        # Junction-aware, not ``is_symlink()``: on unelevated Windows the only
+        # link a same-user writer CAN plant is a directory junction, which
+        # answers True to ``is_dir()`` and False to ``is_symlink()`` -- so an
+        # ``is_symlink()`` filter listed exactly the planted alias as an
+        # orphan, and the operator's `pod down <alias>` then judged the live
+        # sibling it points at. Link test FIRST: it is an lstat, so a link is
+        # rejected before ``is_dir()`` would stat THROUGH it -- on Windows a
+        # link whose target is a UNC share turns that stat into an outbound
+        # SMB connection that authenticates as this process.
+        entries = [p for p in cfg.pod_root.iterdir() if not is_link_or_junction(p) and p.is_dir()]
     except OSError:
         return []
     live = active_names(cfg)
@@ -1545,9 +1857,12 @@ def orphan_homes(cfg: PodConfig) -> list[str]:
         if p.name in live:
             continue
         # macOS writes a per-pod plist at `up` and drops it at `down`, so its
-        # presence means the pod is installed rather than orphaned. systemd's
-        # template unit is machine-wide, so liveness is the only signal there.
+        # presence means the pod is installed rather than orphaned. Windows does
+        # the same with its per-pod `.cmd` wrapper. systemd's template unit is
+        # machine-wide, so liveness is the only signal there.
         if IS_MACOS and launchd.plist_path(cfg, p.name).exists():
+            continue
+        if IS_WINDOWS and win_backend.task_script_path(cfg, p.name).exists():
             continue
         out.append(p.name)
     return sorted(out)
@@ -1557,8 +1872,10 @@ def install_backend(cfg: PodConfig) -> tuple[str, subprocess.CompletedProcess | 
     """Install whatever machine-wide definition the backend needs.
 
     systemd needs one template unit + a daemon-reload. launchd has no template
-    concept — each pod's plist is written at ``up`` — so there is nothing to
-    install, and saying so is better than writing a file that does nothing.
+    concept — each pod's plist is written at ``up`` — and neither does Task
+    Scheduler, whose per-pod ``.cmd`` wrapper and task are both created at ``up``.
+    So on both of those there is nothing to install, and saying so is better than
+    writing a file that does nothing.
 
     Returns ``(message, reload_result)``. Raises :class:`PodError` only for an
     unusable host, and does so BEFORE writing anything, so an unsupported
@@ -1579,6 +1896,13 @@ def install_backend(cfg: PodConfig) -> tuple[str, subprocess.CompletedProcess | 
         return (
             "nothing to install on macOS: launchd has no template units, so each "
             "pod's agent plist is written at `kirocrew pod up <worktree>`.",
+            None,
+        )
+    if IS_WINDOWS:
+        return (
+            "nothing to install on Windows: Task Scheduler has no template tasks, "
+            "so each pod's task and its .cmd wrapper are created at "
+            "`kirocrew pod up <worktree>`.",
             None,
         )
     dst = unit_mod.unit_path(cfg)
@@ -1663,8 +1987,10 @@ def _pod_recorded_pid(cfg: PodConfig, name: str, port: int) -> int | None:
 
     Fails CLOSED on every way of not knowing -- no record, no start identity (a
     pod whose checkout predates the binding), or a host that will not report a
-    start time at all, which includes a Windows box with no implementation. An
-    unproven record must read as "no record", never as one that agrees.
+    start time at all. An unproven record must read as "no record", never as one
+    that agrees. Windows is NOT in that last group: ``pid_start_token`` reads the
+    process creation ``FILETIME`` there, which is what lets a pod on that platform
+    prove ownership at all.
     """
     record = run_marker.read_pid_record_path(_pod_pid_record_path(cfg, name, port))
     if record is None:
@@ -1737,15 +2063,82 @@ def port_owner(cfg: PodConfig, name: str, port: int) -> str:
 
     Listener attribution is still never sufficient ON ITS OWN: a pid that holds
     the port but has no fresh record behind it stays :data:`OWNER_UNPROVEN`.
+
+    **Windows reaches this the same way**, which it did not before pods had a
+    backend there. The proof needs exactly two things, and both now answer on
+    win32: ``run_marker.pid_start_token`` has a Windows leg (the process creation
+    ``FILETIME``, read through a query-only handle), and :func:`main_pid` reads the
+    pid ``windows.supervise_gateway`` records. Keeping the old blanket refusal here
+    would not have been strictness, it would have been unsatisfiable — ``pod up``
+    mints a token and :func:`mint_token` requires positive proof, so every healthy
+    Windows pod would have been refused its own credential forever. Listener
+    corroboration works there too (``netstat`` via ``trusted_system_bin``).
+
+    **On Windows the recorded pid and the binding pid are different processes, and
+    both are the pod.** A pip console script is an ``.exe`` launcher stub that
+    starts the interpreter as a child and waits, so ``supervise_gateway`` records
+    the stub while that child binds the port, and the gateway's own pid sidecar
+    names that child. The Windows leg therefore reads the stub's descendants once
+    (:func:`kiro_crew.platform_compat.process_descendants`) and accepts them in
+    both places the proof compares pids: the sidecar's pid attests when it is the
+    stub or one of its descendants, and a listener inside that tree corroborates.
+    That widens the accepted set DOWNWARD only: a sidecar or a listener outside
+    this pod's tree still fails exactly as before.
+
+    **Every edge of that tree is attributed by creation order, or the widening
+    would point the wrong way.** Windows never invalidates a snapshot's
+    ``th32ParentProcessID`` when the parent dies, so once that number is recycled
+    to the stub, processes the stub never spawned are listed beneath it — and a
+    FOREIGN listener inside such a phantom subtree would be read as this pod
+    holding its own port, which is the single question this function answers.
+    :func:`kiro_crew.pod.windows.created_after` is the rule, shared with
+    ``windows.stop`` so the two call sites cannot drift apart, and a candidate
+    whose creation time cannot be read is dropped as unattributable — failing
+    toward ``OWNER_FOREIGN`` / ``OWNER_UNPROVEN`` rather than toward a false claim
+    of ownership.
     """
-    if not IS_POSIX:
-        return OWNER_UNPROVEN
     try:
         recorded = _pod_recorded_pid(cfg, name, port)
         ours = main_pid(cfg, name)
     except Exception:
         return OWNER_UNPROVEN
-    attested = recorded is not None and ours is not None and recorded == ours
+    # On Windows the gateway's own sidecar names the interpreter that bound the
+    # port, while ``ours`` is the launcher stub the supervisor recorded, so the
+    # two agree only through the process tree. One snapshot serves both this
+    # attestation and the listener corroboration below.
+    #
+    # The snapshot's parent pids are STALE BY DESIGN: Windows keeps a dead
+    # parent's number on its children, so once that number is recycled to the
+    # stub, processes it never spawned appear beneath it. Unfiltered, that is a
+    # widening in the wrong direction — a FOREIGN listener sitting in such a
+    # phantom subtree would be read as this pod holding its own port, which is
+    # the one thing this function exists to decide. Every edge is therefore
+    # attributed by creation order through the same rule ``windows.stop`` uses,
+    # so a candidate that predates the stub is not this pod's child. A child
+    # whose creation time cannot be read is not attributable and is dropped,
+    # which fails toward OWNER_FOREIGN/UNPROVEN rather than toward a false claim
+    # of ownership.
+    tree: set[int] = set()
+    if IS_WINDOWS and ours is not None:
+        try:
+            ours_token = process_start_time(ours)
+            if ours_token:
+                # EVERY edge attributed, not just "created after the pod's gateway".
+                # This set decides whether a listener is THIS pod, and the answer
+                # gates minting a credential: a stale orphan under a recycled
+                # intermediate pid also postdates the gateway, so a root-only
+                # comparison could call a foreign listener ours and send it the
+                # pod's secret. The walk drops an unattributable child with its
+                # subtree, which fails toward UNPROVEN rather than toward a false
+                # claim of ownership.
+                tree = set(attributed_descendants(ours, ours_token))
+        except Exception:
+            tree = set()
+    attested = (
+        recorded is not None
+        and ours is not None
+        and (recorded == ours or (IS_WINDOWS and recorded in tree))
+    )
     verdict = OWNER_POD if attested else OWNER_UNPROVEN
 
     if not listening_pid_tool_available():
@@ -1756,9 +2149,19 @@ def port_owner(cfg: PodConfig, name: str, port: int) -> str:
         return verdict
     if not pids:
         return verdict
-    if ours is None or ours not in pids:
-        return OWNER_FOREIGN
-    return verdict
+    if ours is not None and ours in pids:
+        return verdict
+    if IS_WINDOWS and pids & tree:
+        # A console-script `.exe` on Windows is a launcher stub: it starts the
+        # interpreter as a CHILD and waits, so the pid `supervise_gateway` records
+        # is the stub while the pid that BINDS the port is that child. Both are
+        # this pod's tree, and the Job object attached at spawn is what keeps the
+        # tree bounded, so a descendant holding the port is the pod holding it.
+        # Read from ONE process-table snapshot through the shared helper rather
+        # than a new matcher, and only ever widened DOWNWARD: a pid outside the
+        # recorded pid's descendants is still a foreign responder below.
+        return verdict
+    return OWNER_FOREIGN
 
 
 def _probe_health(port: int, timeout: int = 3) -> int:
@@ -1809,9 +2212,60 @@ def health(cfg: PodConfig, name: str, port: int, timeout: int = 3) -> int:
 
 # --------------------------------------------------------------------------- #
 # Token mint — reads the pod's OWN .local_secret (in its isolated HOME), then
-# calls /api/token/local with X-Local-Secret. Keeps the secret read inside this
-# process (never an agent-issued `cat`).
+# calls /api/token/local with X-Local-Secret over the pod's private unix
+# socket. Keeps the secret read inside this process (never an agent-issued
+# `cat`), and keeps the secret's delivery inside the pod's owner-only home
+# (never a rebindable loopback port). The connected socket's peer is
+# kernel-verified against the attested gateway pid before any bytes are sent,
+# so even a same-UID rebind of the socket path receives nothing.
 # --------------------------------------------------------------------------- #
+def _attested_gateway_verifier(cfg: PodConfig, name: str, port: int, socket_path: Path):
+    """Build a connect-time peer check pinned to pod *name*'s attested gateway.
+
+    ``port_owner`` proves the pid RECORD is fresh, but a record cannot prove
+    who answers the socket FILE: the path sits in a directory its owner can
+    always rewrite, so a same-UID process can unlink it and bind its own
+    listener there — and the mint request would hand that listener the pod's
+    ``.local_secret``. The kernel can prove it: peer credentials on the
+    connected socket (``SO_PEERCRED`` on Linux, ``LOCAL_PEERPID`` on macOS)
+    name the listener's pid as of ``listen()``, so requiring that pid to equal
+    the attested gateway pid refuses a rebound socket BEFORE any HTTP bytes.
+    The concrete adversary is a CONFINED same-UID process — a sandboxed
+    agent subprocess whose filesystem policy still reaches this owner-writable
+    directory — which can rebind the path but cannot fake its kernel-reported
+    pid. Deny-by-default, same shape as the server-side admission this feature
+    added: a mismatched peer and an unreadable peer both refuse.
+    """
+    attested = _pod_recorded_pid(cfg, name, port)
+    if attested is None:
+        raise PodOwnershipUnproven(
+            f"withholding pod {name!r}'s credential: its gateway pid record "
+            f"could not be re-proven at send time, so the process answering "
+            f"{socket_path} cannot be verified. {_unproven_remedy(cfg, name, port)}"
+        )
+
+    def _verify(sock: socket.socket) -> None:
+        peer = get_peer_pid(sock)
+        # Re-prove the record on the connected socket so a pid recycled between
+        # the record read and connect cannot attest.
+        current_attested = _pod_recorded_pid(cfg, name, port)
+        if current_attested is None or peer != current_attested:
+            who = "an unidentifiable process" if peer is None else f"pid {peer}"
+            expected = (
+                "no gateway pid is currently attested"
+                if current_attested is None
+                else f"the currently attested gateway is pid {current_attested}"
+            )
+            raise PodError(
+                f"refusing to send pod {name!r}'s credential: {socket_path} is "
+                f"answered by {who}, which is not the currently attested gateway; "
+                f"{expected}. The socket path may have been rebound since the pod "
+                f"started; `kirocrew pod status {name}` shows the gateway's state."
+            )
+
+    return _verify
+
+
 def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
     secret_file = cfg.home_dir(name) / ".local_secret"
     try:
@@ -1823,14 +2277,11 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
     port = derive_port(cfg, name)
     owner = port_owner(cfg, name, port)
     if owner != OWNER_POD:
-        # Positive proof REQUIRED here, unlike `health`. This call sends the pod's
-        # own ``.local_secret`` and returns a dashboard credential for whatever
-        # answered, so the two ways of being wrong are not symmetrical: refusing a
-        # live pod costs an error message, while proceeding on an unproven port
-        # hands a different local user -- who can bind 127.0.0.1 but cannot read
-        # this 0600 secret -- a credential for this pod. That is the same reason
-        # ``port_resolution._gateway_owns_port`` fails closed on the path that
-        # sends the secret, including when the listener lookup is simply missing.
+        # Positive proof kept even though the send below rides the pod's own
+        # unix socket: the pre-check costs one process lookup and buys the
+        # refusal messages below, which name WHY the pod cannot answer instead
+        # of surfacing a bare connection error from the socket. The transport
+        # is what makes the secret safe; this is what makes the failure legible.
         if owner == OWNER_FOREIGN:
             raise PodError(
                 f"refusing to mint a credential for pod {name!r}: :{port} is held "
@@ -1845,15 +2296,73 @@ def mint_token(cfg: PodConfig, name: str, ttl: str = "2h") -> str:
             f"process would receive the pod's secret. "
             f"{_unproven_remedy(cfg, name, port)}"
         )
+    if IS_WINDOWS:
+        # Windows has no AF_UNIX, so the pod binds no dashboard socket there.
+        # The mint rides the OWNER_POD-attested loopback port, the strongest
+        # transport the platform offers.
+        url = f"http://127.0.0.1:{port}/api/token/local?ttl={urllib.parse.quote(str(ttl))}"
+        req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
+        try:
+            with loopback_urlopen(req, timeout=5) as resp:  # nosemgrep
+                token = json.loads(resp.read()).get("token", "")
+        except (urllib.error.URLError, OSError, ValueError) as exc:
+            raise PodError(f"token mint failed on :{port} ({name}): {exc}") from exc
+        if not token:
+            raise PodError(f"gateway returned empty token on :{port} ({name})")
+        return token
+    socket_path = pod_socket_path(cfg, name, port)
+    verify_peer = _attested_gateway_verifier(cfg, name, port, socket_path)
     url = f"http://127.0.0.1:{port}/api/token/local?ttl={urllib.parse.quote(str(ttl))}"
     req = urllib.request.Request(url, headers={"X-Local-Secret": secret})
     try:
-        # Loopback-only call to the pod's own gateway on 127.0.0.1; the URL is
-        # internally derived, so the dynamic-URL SSRF audit rule is a false positive.
-        with loopback_urlopen(req, timeout=5) as resp:  # nosemgrep
+        # Over the pod's own unix socket, never TCP: this request CARRIES
+        # the pod's `.local_secret`, and the pod's TCP port is ordinary loopback
+        # that any local user can bind the moment the pod releases it — with no
+        # peer-credential API on the wire to tell the squatter from the gateway.
+        # `unix_socket_urlopen` has no TCP handler, so "no fallback" is structural:
+        # a missing, stale, or refusing socket raises instead of handing the
+        # header to whatever answered. The URL keeps the loopback host so the
+        # gateway's Host validation sees exactly what it saw on TCP; the socket
+        # path is derived, never caller-supplied. verify_peer closes the residual
+        # window on the socket itself: a same-UID process that rebinds the path
+        # fails the kernel peer-pid check and never sees the header.
+        with unix_socket_urlopen(  # nosemgrep
+            req, timeout=5, socket_path=socket_path, verify_peer=verify_peer
+        ) as resp:
             token = json.loads(resp.read()).get("token", "")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 403:
+            # A 403 on this transport has two distinct causes, and only one is
+            # about the caller. Name both, because the operator's next move
+            # differs: a gateway too old to admit AF_UNIX on /api/token/local
+            # refuses EVERY request on this socket regardless of the secret,
+            # and no retry with the right secret can succeed until the pod's
+            # code is updated.
+            raise PodError(
+                f"pod {name!r} refused the token mint over its API socket "
+                f"(HTTP 403).\n"
+                f"  If this pod's worktree predates unix-socket admission on "
+                f"/api/token/local, its gateway 403s this transport no matter "
+                f"the secret — update the pod's worktree, then restart it: "
+                f"kirocrew pod down {name} && kirocrew pod up {name}\n"
+                f"  Otherwise the gateway rejected the pod's .local_secret "
+                f"(a stale secret from an earlier run); restarting the pod "
+                f"regenerates both ends.\n"
+                f"  Not retried on 127.0.0.1:{port} — the pod's secret must not "
+                f"be sent to a process that is not this pod's gateway."
+            ) from exc
+        raise PodError(
+            f"token mint for pod {name!r} did not complete over its API socket "
+            f"({socket_path}): HTTP {exc.code}. Not retried on 127.0.0.1:{port} — "
+            f"the pod's secret must not be sent to a process that is not this "
+            f"pod's gateway."
+        ) from exc
     except (urllib.error.URLError, OSError, ValueError) as exc:
-        raise PodError(f"token mint failed on :{port} ({name}): {exc}") from exc
+        raise PodError(
+            f"token mint for pod {name!r} did not complete over its API socket "
+            f"({socket_path}): {exc}. Not retried on 127.0.0.1:{port} — the pod's "
+            f"secret must not be sent to a process that is not this pod's gateway."
+        ) from exc
     if not token:
         raise PodError(f"gateway returned empty token on :{port} ({name})")
     return token
@@ -2022,6 +2531,27 @@ def pod_api(
         )
     port = derive_port(cfg, name)
     socket_path = pod_socket_path(cfg, name, port)
+    if IS_WINDOWS:
+        # Answered BEFORE the existence check, because on this platform the file
+        # is not missing -- it is never created. CPython on Windows exposes no
+        # `AF_UNIX` (measured: `hasattr(socket, "AF_UNIX")` is False on 3.12
+        # win32), so the pod's gateway binds no dashboard socket and no restart
+        # can produce one. The generic refusal below would send the operator
+        # round a diagnose-and-restart loop that cannot succeed and would reset
+        # the pod's state each time, while never naming the cause or the way
+        # through. There IS a way through, and it is the one the README
+        # documents: mint a token and drive the loopback port yourself.
+        raise PodError(
+            f"`pod api` cannot reach pod {name!r} on Windows: it needs the pod's "
+            "private AF_UNIX dashboard socket, and CPython on this platform has no "
+            "AF_UNIX at all, so the pod binds none.\n"
+            "  This is not a broken pod and a restart will not fix it.\n"
+            f"  Do this instead: kirocrew pod token {name}\n"
+            f"  then send your own authenticated request to 127.0.0.1:{port}.\n"
+            "  `pod api` will not fall back to that port itself: the port is "
+            "ordinary loopback, so a process that is not this pod can hold it, and "
+            "the credential would go to whatever answered."
+        )
     if not socket_path.exists():
         # Refuse BEFORE minting: `mint_token` sends the pod's `.local_secret` to
         # obtain a credential, so a request that cannot be delivered must not pay
@@ -2039,6 +2569,7 @@ def pod_api(
             f"  Restart it:    kirocrew pod down {name} && kirocrew pod up {name}"
         )
     token = mint_token(cfg, name)
+    verify_peer = _attested_gateway_verifier(cfg, name, port, socket_path)
     url = _authenticated_url(port, normalized, token)
     body = data.encode("utf-8") if data else None
     headers = {"Content-Type": "application/json"} if data else {}
@@ -2047,8 +2578,14 @@ def pod_api(
         # Over the pod's own unix socket, never TCP: `unix_socket_urlopen` has no
         # TCP handler, so a dead or replaced listener cannot receive this token.
         # Caller input contributes only the path, never the host or the socket.
+        # This is a NEW connection after the mint's, so it re-verifies the peer:
+        # a socket rebound between the two sends would otherwise capture a live
+        # (if short-TTL) credential.
         with unix_socket_urlopen(  # nosemgrep
-            request, timeout=API_TIMEOUT_SECS, socket_path=socket_path
+            request,
+            timeout=API_TIMEOUT_SECS,
+            socket_path=socket_path,
+            verify_peer=verify_peer,
         ) as response:
             raw = _read_capped(response, method, normalized, name)
             return response.status, _scrub_token(raw, token)
@@ -2261,6 +2798,241 @@ def _seeded_scenario_from_fd(home_fd: int) -> str | None:
             os.close(fd)
 
 
+def _refuse_reparse_chain(home_dir: Path) -> None:
+    """Refuse when any component of *home_dir* or its parents is a reparse point.
+
+    The win32 stand-in for the ``O_NOFOLLOW`` on every component of a pinned walk.
+    Windows exposes no ``dir_fd``, so the ancestors cannot be held open one at a
+    time; screening each of them for a symlink or a junction is what keeps a
+    planted link from redirecting the whole pod home somewhere else. Checked from
+    the drive root downward so the outermost swap is the first refusal.
+    """
+    for component in (*reversed(home_dir.parents), home_dir):
+        if pinned_fs.is_reparse_point(component):
+            raise PodError(
+                f"refusing to seed pod home {home_dir}: {component} is a symbolic link "
+                "or a junction, so the path does not name the directory it appears to"
+            )
+
+
+def _seed_home_windows(cfg: PodConfig, name: str, scenario: str, home_dir: Path) -> bool:
+    """Populate pod *name* on win32, stating exactly what it does and does not prove.
+
+    **The guarantee, and the ORDER is the guarantee.** The deepest ancestor of the
+    home that already exists is screened for a reparse point and PINNED before
+    anything is created, and every level below it is created under the pin of the
+    level above; the home itself is then created by this process and a handle plus
+    an :func:`pinned_fs.fd_real_path` witness is taken on it -- the kernel's own
+    name for the inode now held open, which carries no link component left to
+    swap. Both paths run under that pin, the fresh seed and the
+    already-seeded restart. Each fixture file is copied from a pinned source
+    descriptor (``copy_file_pinned``'s ``src_fd`` form, the only pinned source form
+    on this platform) into an ``O_CREAT | O_EXCL`` destination under that witnessed
+    home, so nothing existing is ever overwritten. The witness is re-read before the
+    completion manifest is published, so a home that changed identity mid-seed is
+    refused instead of booted, and the manifest stays the last write -- a partial
+    tree carries no completion marker and is refused on the next ``up``.
+
+    **The residual, named rather than implied.** The held handle is opened without
+    ``FILE_SHARE_DELETE`` (``platform_compat.pin_directory``), so from the moment
+    the anchor pin is taken the home and every directory above it can be neither
+    renamed nor deleted; an ancestor swap after that point is refused by the
+    kernel, not merely detected. Before it, the anchor is still LOCATED by name,
+    and no witness closes that -- a witness taken before the pin can only be
+    compared against itself. What also stays open is the home's CONTENTS: each
+    fixture entry is reached by name under the pinned home, so a process running as
+    this same user could plant a reparse point at a not-yet-written child name
+    inside that window. ``O_EXCL`` refuses an entry that already exists, which
+    covers a planted file or link at a leaf, and the ``_prepare_seeded_home_dir``
+    screen covers the two subdirectories the seed creates. Windows offers no
+    ``dir_fd`` to close the rest of that window, and a pod home lives under a plane
+    root only this user can write, so the residual is exactly the trust domain the
+    OS already grants that user -- the same boundary ``pod/README.md`` records for
+    pod isolation generally.
+
+    Returns True when this call seeded the home, False when a complete seed for the
+    requested scenario is already present -- the same contract as the POSIX branch.
+    """
+    _refuse_reparse_chain(home_dir)
+    fds: list[int] = []
+    home_fd = -1
+    try:
+        try:
+            # Pin BEFORE creating, for the reason
+            # ``_pin_outermost_existing_windows`` documents: the old order walked
+            # the ancestors with ``mkdir(parents=True)`` and took its first pin
+            # only at the home itself, so an ancestor swapped in that window had
+            # the whole fixture -- and the completion marker that certifies it --
+            # published inside the swapped tree, and this function returned True.
+            anchor_fd, anchor = _pin_outermost_existing_windows(home_dir, what="the pod home")
+            fds.append(anchor_fd)
+            target = anchor
+            for part in home_dir.relative_to(anchor).parts[:-1]:
+                target = target / part
+                fds.append(_pin_created_dir_windows(fds[-1], target, what=f"pod root {part}"))
+        except OSError as exc:
+            raise PodError(f"could not prepare pod root {home_dir.parent}: {exc}") from exc
+
+        # The LAST level is created here rather than through
+        # ``_pin_created_dir_windows`` because this branch has to know whether IT
+        # created the home: that helper's ``mkdir(exist_ok=True)`` would erase the
+        # fresh / already-seeded distinction the restart path below depends on. The
+        # screen it would have done is done here instead, and the parent is pinned
+        # either way, so the ordering guarantee is unchanged.
+        if pinned_fs.is_reparse_point(home_dir):
+            raise PodError(
+                f"refusing to seed pod home {home_dir}: it is a symbolic link or a "
+                "junction, so the path does not name the directory it appears to"
+            )
+        fresh = True
+        try:
+            home_dir.mkdir(mode=0o700)
+        except FileExistsError:
+            fresh = False
+        except OSError as exc:
+            raise PodError(f"could not create pod home {home_dir}: {exc}") from exc
+
+        # Pinned and witnessed for BOTH paths, including the restart path below.
+        # Reading the completion marker and re-preparing the home purely by name
+        # would let a pod that has been seeded once be restarted out of a directory
+        # swapped in since, which is the one path where nothing at all is held.
+        #
+        # TRANSLATED in the same operation that takes the pin, exactly as the POSIX
+        # branch translates its ``os.open(..., dir_flags())``: ``pin_directory``
+        # refuses anything that is not a plain directory -- a stale FILE left at the
+        # home name, or a reparse point planted between the screen above and this
+        # open -- and it does so with ``NotADirectoryError``. ``boot`` and the
+        # scenario call site catch only ``PodError``, so an untranslated one escapes
+        # as an UNINSTRUMENTED crash: no FATAL line, no recorded refusal, no terminal
+        # exit code. Do NOT pre-screen with ``home_dir.is_dir()`` instead -- that is a
+        # by-name stat which FOLLOWS a reparse point, so it passes the adversarial
+        # case this open exists to refuse, and it re-opens the check/use window the
+        # pin closes.
+        try:
+            home_fd = pin_directory(home_dir)
+        except OSError as exc:
+            raise PodError(
+                f"pod home {home_dir} is not a plain directory; refusing to seed it: {exc}"
+            ) from exc
+        witness = pinned_fs.fd_real_path(home_fd)
+        if not witness:
+            # Fail CLOSED: with no witness there is nothing to validate the writes
+            # against, which is the one thing that makes a by-name destination
+            # acceptable here at all.
+            raise PodError(
+                f"could not read the real path of pod home {home_dir} from its own "
+                "handle, so a seed written by name cannot be validated; refusing"
+            )
+
+        # ONE translation frame over BOTH paths, like the POSIX branch's single
+        # ``try`` around its restart and fresh-seed blocks: an OSError from the
+        # restart path (``iterdir``, ``_prepare_seeded_home_dir``) is a refusal in
+        # exactly the same sense as one from the copy, and only ``PodError`` survives
+        # this frame.
+        try:
+            if not fresh:
+                # Same fresh / already-populated split the POSIX branch makes: a home
+                # that already carries THIS scenario's completion marker is restarted
+                # unchanged, and anything else is refused rather than overwritten.
+                if not home_dir.is_dir():
+                    raise PodError(
+                        f"pod home {home_dir} is not a plain directory; refusing to seed it"
+                    )
+                if any(home_dir.iterdir()):
+                    recorded = _seeded_scenario_in_dir(home_dir)
+                    if recorded != scenario:
+                        found = f"scenario {recorded!r}" if recorded else "no completion marker"
+                        raise PodError(
+                            f"pod home {home_dir} is populated but holds {found}, not "
+                            f"requested scenario {scenario!r}; refusing to boot or overwrite "
+                            f"it. Run `kirocrew pod down {name}` before retrying the seed."
+                        )
+                    _prepare_seeded_home_dir(home_dir)
+                    if pinned_fs.fd_real_path(home_fd) != witness:
+                        raise PodError(
+                            f"pod home {home_dir} changed while it was being prepared for "
+                            "restart; refusing to boot any path now present at that name"
+                        )
+                    return False
+
+            seed_mod.copy_fixture_into_witnessed_dir(scenario, home_dir)
+            _prepare_seeded_home_dir(home_dir)
+            if pinned_fs.fd_real_path(home_fd) != witness:
+                raise PodError(
+                    f"pod home {home_dir} changed while it was being seeded; "
+                    "refusing to boot any path now present at that name"
+                )
+            seed_mod.publish_fixture_manifest_into_witnessed_dir(scenario, home_dir)
+        except (SeedError, OSError) as exc:
+            # The frame now covers the RESTART path too, where the home is a complete
+            # one this seed did not write, so "a partial home may remain" would be
+            # false there -- and `pod down` DELETES the home, which is the wrong
+            # advice for a transient failure over state worth keeping.
+            raise PodError(
+                f"seeding pod {name!r} from scenario {scenario!r} failed: {exc}. "
+                f"If the home at {home_dir} is incomplete, reclaim it with "
+                f"`kirocrew pod down {name}` before retrying -- a restart failure "
+                "leaves the existing home intact, so retry that before nuking it."
+            ) from exc
+    finally:
+        if home_fd >= 0:
+            os.close(home_fd)
+        pinned_fs.close_all(fds)
+    return True
+
+
+def _seeded_scenario_in_dir(home_dir: Path) -> str | None:
+    """Return the completion marker from a caller-created pod home, by name.
+
+    The win32 twin of :func:`_seeded_scenario_from_fd`. It reads a marker this
+    process wrote under a directory it created, and a link at the marker's own name
+    is refused rather than followed.
+    """
+    marker = home_dir / seed_mod.FIXTURE_MANIFEST
+    if pinned_fs.is_reparse_point(marker):
+        return None
+    try:
+        return _fixture_name_from_manifest_text(marker.read_text(errors="replace")[: 64 * 1024])
+    except OSError:
+        return None
+
+
+def _prepare_seeded_home_dir(home_dir: Path) -> None:
+    """Finish pod-owned setup on win32, under a home this process created.
+
+    The win32 twin of :func:`_prepare_seeded_home_fd`. Every path it touches is a
+    direct child of the caller-witnessed home, and each is screened for a reparse
+    point before it is read or written, because a by-name read that follows a link
+    would import config from outside the pod.
+    """
+    config = home_dir / "config.json"
+    if pinned_fs.is_reparse_point(config):
+        raise PodError(f"seeded config.json is a link; refusing to read it: {config}")
+    data: dict = {}
+    if config.is_file():
+        try:
+            text = config.read_text(encoding="utf-8", errors="strict")
+        except (OSError, UnicodeError) as exc:
+            raise PodError(f"could not read seeded config.json: {exc}") from exc
+        if len(text) > 1024 * 1024:
+            raise PodError("seeded config.json exceeds the 1 MiB pod setup limit")
+        try:
+            loaded = json.loads(text)
+        except ValueError as exc:
+            raise PodError(f"seeded config.json is not valid JSON: {exc}") from exc
+        if not isinstance(loaded, dict):
+            raise PodError("seeded config.json must contain a JSON object")
+        data = loaded
+
+    _apply_seed_config_floor(data)
+    atomic_write(config, json.dumps(data, indent=2), fsync=True, mode=0o600)
+
+    workspace = home_dir / "workspace"
+    if pinned_fs.is_reparse_point(workspace):
+        raise PodError(f"seeded workspace is a link; refusing to use it: {workspace}")
+    workspace.mkdir(mode=0o700, exist_ok=True)
+
+
 def seed_home_from_scenario(cfg: PodConfig, name: str, scenario: str) -> bool:
     """Populate pod *name* from *scenario* through a pinned home descriptor.
 
@@ -2270,11 +3042,19 @@ def seed_home_from_scenario(cfg: PodConfig, name: str, scenario: str) -> bool:
     cannot redirect writes into another pod. The fixture manifest is copied last
     and remains the completion marker: a failed partial copy is refused on the
     next ``up`` rather than treated as a completed seed.
+
+    Windows reaches :func:`_seed_home_windows` instead, which states its own
+    weaker-but-named guarantee: that platform has no ``dir_fd``, so a destination
+    cannot be addressed relative to a held descriptor and the pinned walk this
+    branch performs does not exist there. Every OTHER host without a pinned tree
+    walk keeps the refusal below.
     """
     home_dir = cfg.home_dir(name)
     resolve_seed_scenario(scenario)
 
     if not pinned_fs.supports_pinned_tree_walk():
+        if IS_WINDOWS:
+            return _seed_home_windows(cfg, name, scenario, home_dir)
         raise PodError(
             "this host cannot pin a fixture copy to directory descriptors; "
             "refusing an unpinned pod seed"
@@ -2328,10 +3108,16 @@ def seed_home_from_scenario(cfg: PodConfig, name: str, scenario: str) -> bool:
                     "refusing to boot any path now present at that name"
                 )
         except (SeedError, OSError) as exc:
+            # Same wording as the win32 twin, and for the same reason: this frame
+            # also covers the RESTART path above, where the home is a complete one
+            # this seed did not write, so "a partial home may remain" would be false
+            # -- and `pod down` DELETES the home, which is the wrong advice for a
+            # transient failure over state worth keeping.
             raise PodError(
                 f"seeding pod {name!r} from scenario {scenario!r} failed: {exc}. "
-                f"A partial home may remain at {home_dir}; reclaim it with "
-                f"`kirocrew pod down {name}` before retrying."
+                f"If the home at {home_dir} is incomplete, reclaim it with "
+                f"`kirocrew pod down {name}` before retrying -- a restart failure "
+                "leaves the existing home intact, so retry that before nuking it."
             ) from exc
     finally:
         if home_fd >= 0:
@@ -2341,8 +3127,25 @@ def seed_home_from_scenario(cfg: PodConfig, name: str, scenario: str) -> bool:
 
 
 def seeded_scenario_in_home(cfg: PodConfig, name: str) -> str | None:
-    """Return the fixture name recorded in a seeded pod home, if present."""
+    """Return the fixture name recorded in a seeded pod home, if present.
+
+    On win32 the home is held through :func:`platform_compat.pin_directory` for
+    the read (no rename or delete of it or its ancestors while the handle lives,
+    and a reparse point at its name is refused by the open itself) and the marker
+    is read by name under it through :func:`_seeded_scenario_in_dir`, the same
+    pair the win32 seed branch writes with. Every other platform reads the marker
+    through the pinned home descriptor.
+    """
     home = cfg.home_dir(name)
+    if IS_WINDOWS:
+        try:
+            home_fd = pin_directory(home)
+        except OSError:
+            return None
+        try:
+            return _seeded_scenario_in_dir(home)
+        finally:
+            os.close(home_fd)
     try:
         home_fd = pinned_fs.open_dir_pinned(
             home,
@@ -2376,11 +3179,15 @@ def build_pod_env(
     ``MICROSOFT_APP_TENANT_ID`` / ``FEISHU_APP_ID`` / ``FEISHU_APP_SECRET`` ends
     in ``_TOKEN``, so the generic suffix rule that catches every other channel's
     bot credential passes the Azure Bot secret and the Feishu app secret straight
-    through. ``AWS_*`` is kept on purpose (pods run agent turns), and the
-    ``_TOKEN`` scrub deliberately EXCLUDES ``AWS_`` so ``AWS_SESSION_TOKEN`` (temp
-    creds) survives intact — scrubbing it would leave half a credential and break
-    every AWS call. Config-level channel enables are additionally forced off by
-    ``sanitized_seed_config`` (defense-in-depth).
+    through. The loader's complete credential roster is then scrubbed except for
+    ``KIRO_API_KEY`` (the pod agent's model credential) and ``KIROCREW_OWNER_ID``
+    (dashboard ownership, not a channel or source-provider identity). Provider CLI
+    config roots are redirected beneath the pod home so ``gh``, ``glab`` and ``az``
+    cannot reuse the operator's persisted login sessions through the deliberately
+    inherited real ``HOME``. ``AWS_*`` is kept on purpose (pods run agent turns),
+    and the generic ``_TOKEN`` scrub deliberately excludes ``AWS_`` so
+    ``AWS_SESSION_TOKEN`` survives intact. Config-level channel enables are
+    additionally forced off by ``sanitized_seed_config`` (defense-in-depth).
 
     ``KIROCREW_OS_HOME`` points the pod's own :mod:`kiro_crew.mcp_grant` reads
     (mint, status, disconnect, mcp_discovery's remote probe -- all resolved
@@ -2417,6 +3224,10 @@ def build_pod_env(
     env = {
         **os.environ,
         "HOME": os.environ.get("HOME", str(Path.home())),
+        "GH_CONFIG_DIR": str(home_dir / ".config" / "gh"),
+        "GLAB_CONFIG_DIR": str(home_dir / ".config" / "glab-cli"),
+        "AZURE_CONFIG_DIR": str(home_dir / ".azure"),
+        "AZURE_EXTENSION_DIR": str(home_dir / ".azure" / "cliextensions"),
         "KIROCREW_HOME": str(home_dir),
         "KIROCREW_OS_HOME": str(os_home),
         "KIROCREW_PORT": str(port),
@@ -2483,8 +3294,13 @@ def build_pod_env(
         or k.startswith("WECOM_")
         or k.startswith("MICROSOFT_APP_")
         or k.startswith("FEISHU_")
+        or k.startswith("JIRA_TOKEN_")
         or (k.endswith("_TOKEN") and not k.startswith("AWS_"))
     ]:
+        env.pop(key, None)
+    from kiro_crew.config.loader import CRED_KIRO_API_KEY, CRED_OWNER_ID, CREDENTIAL_KEYS
+
+    for key in set(CREDENTIAL_KEYS) - {CRED_KIRO_API_KEY, CRED_OWNER_ID}:
         env.pop(key, None)
     # Cross-plane guard: a gateway-descended caller inherits the LIVE
     # gateway's KIROCREW_BOUND_PORT (dashboard.server._export_bound_port).
@@ -2535,9 +3351,13 @@ def write_pod_config(home_dir: Path, seed: str) -> None:
     # link, so a link planted at ``config.json`` pointing at any existing host file
     # read as "already configured" and the pod booted on the attacker's file. A link
     # here is refused outright rather than treated as either absent or present.
-    existing = os.stat(dst_cfg, follow_symlinks=False) if dst_cfg.is_symlink() else None
-    if existing is not None:
-        raise PodError(f"refusing to seed pod config: {dst_cfg} is a symbolic link")
+    # Junction-aware: a Windows junction cannot alias a FILE, but a live one at
+    # this name answered True to ``exists()`` and False to ``is_symlink()``, so
+    # the guard read it as "already configured" and the pod booted with a
+    # directory where its config should be; a dangling one answered False to
+    # both and the create-only write then landed on the surviving entry.
+    if is_link_or_junction(dst_cfg):
+        raise PodError(f"refusing to seed pod config: {dst_cfg} is a symbolic link or junction")
     if dst_cfg.exists():
         return
     sanitized = sanitized_seed_config(Path(seed)) if seed else None
@@ -2880,7 +3700,11 @@ def terminal_exit_code(cfg: PodConfig, name: str, code: int) -> int:
         return code
     if not IS_MACOS:
         # systemd exempts these codes via RestartPreventExitStatus, so the honest
-        # code is also the non-looping one there. Nothing to translate.
+        # code is also the non-looping one there. Windows Task Scheduler has no
+        # restart policy at all -- a task whose action exits non-zero is recorded
+        # with that result and stays down -- so the honest code is already
+        # terminal, and `windows.unit_state` reads that recorded result as the
+        # crash signal. Nothing to translate on either.
         return code
     if refusal_reason(cfg, name) is None:
         print(
@@ -3025,6 +3849,275 @@ def refusal_reason(cfg: PodConfig, name: str) -> str | None:
     return text or "boot refused (reason not recorded)"
 
 
+def _pin_outermost_existing_windows(target: Path, *, what: str) -> tuple[int, Path]:
+    """Pin the deepest ANCESTOR of *target* that already exists, before creating.
+
+    The win32 stand-in for the anchor a ``dir_fd`` walk gets for free, and the one
+    level :func:`_pin_created_dir_windows` cannot supply: it demands an
+    already-pinned parent, so something has to pin the first one.
+
+    ``platform_compat.pin_directory`` opens without ``FILE_SHARE_DELETE``, and
+    that freezes the directory it opens AND every directory above it for the
+    handle's lifetime — so pinning the deepest existing ancestor is what makes the
+    whole chain above unrenamable while the levels below are created. Doing it in
+    the other order is the hole this function closes: a by-name
+    ``mkdir(parents=True)`` walks and creates through ancestors nothing is holding,
+    so a same-UID process that swaps one between the screen and the first pin has
+    the rest of the build land in its own tree.
+
+    The open refuses to follow a reparse point, so a junction planted at the
+    anchor's name fails the open rather than being pinned in its target's place.
+
+    Returns the pin and the anchor it names. The caller creates every level from
+    there down through :func:`_pin_created_dir_windows`, so no level is ever
+    created under an unpinned parent.
+
+    RESIDUAL: the anchor is still located BY NAME, and no witness can close that —
+    a witness taken before the pin can only be compared against itself. What the
+    pin rules out is a reparse point at the anchor and any rename of it or of
+    anything above it from that moment on; what remains is a same-UID rename-swap
+    landing in the instant before the pin, which is the operational-isolation
+    boundary the pod threat model already records rather than a new one.
+    """
+    anchor = target.parent
+    while not anchor.is_dir() and anchor != anchor.parent:
+        anchor = anchor.parent
+    if pinned_fs.is_reparse_point(anchor):
+        raise PodError(
+            f"refusing to build {what} under {anchor}: it is a symbolic link or a "
+            "junction, so the path does not name the directory it appears to"
+        )
+    return pin_directory(anchor), anchor
+
+
+def _pin_created_dir_windows(parent_fd: int, target: Path, *, what: str) -> int:
+    """Create *target* under an already-pinned parent and return its own pin.
+
+    The win32 stand-in for ``pinned_fs.create_and_open_dir_pinned``, which needs
+    ``dir_fd`` and so cannot run here. Three steps, in this order, and the order
+    is the guarantee: the parent is ALREADY pinned by the caller (so it can be
+    neither renamed nor deleted, and neither can anything above it, for as long
+    as that handle lives), the child name is screened with
+    ``pinned_fs.is_reparse_point`` before it is created, and
+    ``platform_compat.pin_directory`` then opens the child WITHOUT following a
+    reparse point, so a junction planted at the name between the screen and the
+    open fails the open instead of being pinned in its target's place.
+
+    ``parent_fd`` is taken rather than read, so a caller that has not pinned the
+    parent cannot reach this. A mode argument is deliberately absent: NTFS
+    carries no POSIX mode, ``os.fchmod`` does not exist on this platform, and the
+    ancestor pin plus the plane root's own ACL is what bounds who can reach the
+    tree -- see the caller for what that costs.
+    """
+    if parent_fd < 0:  # pragma: no cover - caller bug, never a runtime state
+        raise PodError(f"refusing to create {what} without a pinned parent")
+    if pinned_fs.is_reparse_point(target):
+        raise PodError(
+            f"refusing to build {what} at {target}: it is a symbolic link or a junction, "
+            "so the path does not name the directory it appears to"
+        )
+    target.mkdir(exist_ok=True)
+    return pin_directory(target)
+
+
+def _seed_pod_os_home_windows(os_home: Path) -> None:
+    """Build the pod OS home on win32, stating what it proves and what it does not.
+
+    **The guarantee, and the ORDER is the guarantee.** The deepest ancestor of
+    *os_home* that already exists is screened for a reparse point and PINNED
+    first, which freezes it and every directory above it for as long as the handle
+    lives. Only then is each remaining level — down through *os_home* and on
+    through ``.aws/sso/cache`` — created under the pin of the level above it and
+    immediately pinned itself with ``platform_compat.pin_directory``, which opens
+    without ``FILE_SHARE_DELETE`` and refuses to follow a reparse point, so a
+    junction planted at a name fails the open rather than being pinned in its
+    target's place. No level is created under a parent nothing is holding. Every
+    handle is held until the whole tree exists and the staging is finished, and
+    they are closed in one place.
+
+    The earlier order screened the ancestors by name and then walked them with
+    ``mkdir(parents=True)``, taking its first pin at *os_home* itself: every level
+    below obeyed "create under a pinned parent" and the outermost level, the only
+    one with no parent pin to inherit, did not. A same-UID process that swapped an
+    ancestor in that window had this function build the pod's whole OAuth grant
+    corridor inside its directory and return normally — with no witness able to
+    notice, since the witness compares a value only against itself.
+
+    **The mode tightening is a no-op here, and that is stated rather than
+    emulated.** The POSIX branch forces every level to ``0o700`` through
+    ``os.fchmod``, which this platform does not implement, and NTFS carries no
+    POSIX mode for it to set. What bounds who can reach this tree is the pod plane
+    root's own ACL plus the ancestor pins above, not a mode bit. Do not "fix" this
+    by calling ``os.chmod``: on Windows that touches only the read-only attribute,
+    so it would read as a permission tightening while granting nothing.
+
+    **The residual, named rather than implied.** Two things the pins do not do.
+    They do not stop a same-UID process from writing INTO these directories, and
+    they do not extend past this function: the child receives ``os_home`` as a
+    path and re-resolves it at its own open. And the anchor is still LOCATED by
+    name, so a same-UID rename-swap landing in the instant before the first pin is
+    not excluded — no witness closes that, because a witness taken before the pin
+    can only be compared against itself. What the pin does exclude, from that
+    moment on, is a reparse point at any level and any rename or delete of these
+    directories or of anything above them. A pod home lives under a plane root
+    only this user can write, so the residual is the same trust domain the OS
+    already grants that user, and the same operational isolation the pod threat
+    model records -- a pod is not protection from arbitrary same-UID processes.
+    Closing it would need the child to accept a descriptor instead of a path,
+    which the kiro-cli interface does not offer.
+
+    Raises :class:`PodError` when the tree cannot be built, and that refusal
+    aborts the boot: this directory becomes the pod child's ``HOME``, so an
+    unverified one is the machine-level grant writer the whole mechanism exists to
+    prevent. Staging the sign-in material stays best-effort, so a signed-out host
+    boots a pod that can prompt for sign-in inside it.
+    """
+    _refuse_reparse_chain(os_home)
+    fds: list[int] = []
+    try:
+        try:
+            # Pin BEFORE creating. The old order screened the ancestors by name
+            # and then walked them with mkdir(parents=True), taking its first pin
+            # only at ``os_home`` itself — so every level below obeyed "create
+            # under a pinned parent" and the outermost one, the only level that
+            # had no parent pin to inherit, did not. A same-UID process that
+            # swapped an ancestor in that window had this function build the pod's
+            # whole OAuth grant corridor inside its directory and return normally.
+            anchor_fd, anchor = _pin_outermost_existing_windows(os_home, what="the pod OS home")
+            fds.append(anchor_fd)
+            # Create every remaining level from the anchor DOWN, each under the
+            # pin of the level above it, so no directory is ever created under a
+            # parent nothing is holding.
+            target = anchor
+            for part in os_home.relative_to(anchor).parts:
+                target = target / part
+                fds.append(_pin_created_dir_windows(fds[-1], target, what=f"pod OS home {part}"))
+            for label in (".aws", "sso", "cache"):
+                target = target / label
+                fds.append(_pin_created_dir_windows(fds[-1], target, what=f"pod OS home {label}"))
+        except OSError as exc:
+            # The directory the child would receive as HOME does not exist or is
+            # not ours, so this is the same fail-closed case as a refused
+            # component rather than a skippable seed.
+            raise PodError(f"could not build the pod OS home under {os_home}: {exc}") from exc
+        # ---- BEST-EFFORT from here: the tree is sound, only the staging can fail.
+        for mapping in _runtime_auth_store_mappings():
+            staged = _stage_runtime_auth_store_windows(os_home, mapping)
+            if staged:
+                print(
+                    f"kirocrew-pod: staged {staged} file(s) from "
+                    f"{mapping.staged_relative.as_posix()}"
+                )
+        # Nothing host-derived is staged into ``<os-home>/.aws/sso/cache`` on any
+        # platform: it is created so the pod's own kiro-cli writes its MCP OAuth
+        # grants there, and that is all it ever holds.
+    finally:
+        pinned_fs.close_all(fds)
+
+
+def _stage_runtime_auth_store_windows(os_home: Path, mapping: StoreMapping) -> int:
+    """Mirror one runtime auth store into *os_home* on win32. Best-effort.
+
+    The win32 twin of :func:`_stage_runtime_auth_store`, and it keeps the two
+    properties that matter while dropping the one this platform cannot express:
+
+    * The SOURCE stays pinned. Each file is opened once and handed to
+      ``pinned_fs.copy_file_pinned`` as ``src_fd``, documented as the only pinned
+      source form here, so the bytes copied are the bytes of the inode that open
+      reached rather than of whatever the name means afterwards.
+    * Every DESTINATION is an ``O_CREAT | O_EXCL`` create under a directory this
+      function pinned, so it can only add files it created. That is also what
+      keeps the copy create-only: an occupied name is skipped, so a pod that has
+      already refreshed its own credential is never clobbered.
+    * What it cannot keep is destination ancestor pinning by ``dir_fd``. Each
+      level is created under its pinned parent and pinned itself, which blocks a
+      rename or a delete of it, and the final open is still by name.
+
+    A SQLite database is skipped along with its sidecars rather than snapshotted:
+    ``_snapshot_sqlite_pinned`` copies through ``dir_fd`` descriptors, and a
+    per-file copy of a live database's file set cannot be consistent. A store
+    whose token lives in a database therefore stages nothing and the pod boots
+    signed-out, which the boot-time viability probe reports.
+
+    Returns the number of files staged, and never raises: an unreadable host
+    store just means the pod prompts for sign-in inside itself.
+    """
+    parts = mapping.staged_relative.parts
+    staged = 0
+    fds: list[int] = []
+    try:
+        source_root = mapping.source
+        if not source_root.is_dir() or pinned_fs.is_reparse_point(source_root):
+            return 0
+        for dirpath, dirnames, filenames in os.walk(source_root):
+            # ``os.walk`` DESCENDS into a junction on this platform: a directory
+            # reparse point is just a directory to it. The file loop below screens
+            # each leaf, but a junction planted anywhere under the host's auth store
+            # would be stepped into before any leaf is reached, and its target's
+            # contents staged into the pod as though they were sign-in material.
+            # Prune here, at the entry to the body, because by the time a leaf is
+            # screened the traversal itself has already happened.
+            dirnames[:] = [d for d in dirnames if not pinned_fs.is_reparse_point(Path(dirpath) / d)]
+            rel = Path(dirpath).relative_to(source_root)
+            level_fds: list[int] = []
+            target = os_home
+            try:
+                parent_fd = pin_directory(os_home)
+            except OSError:
+                return staged
+            fds.append(parent_fd)
+            try:
+                for label in (*parts, *rel.parts):
+                    target = target / label
+                    parent_fd = _pin_created_dir_windows(
+                        parent_fd, target, what=f"pod auth store {label}"
+                    )
+                    level_fds.append(parent_fd)
+                    fds.append(parent_fd)
+            except (OSError, PodError):
+                dirnames[:] = []  # this subtree is unsafe or unwritable; skip it
+                continue
+            if not level_fds:  # pragma: no cover - parts is never empty
+                continue
+            for name in sorted(filenames):
+                if name.endswith(_SQLITE_SUFFIXES) or _is_sqlite_sidecar(name):
+                    # A live database cannot be copied file by file consistently,
+                    # and the snapshot helper needs dir_fd descriptors.
+                    continue
+                if staged >= _RUNTIME_AUTH_STORE_FILE_CAP:
+                    print(
+                        f"kirocrew-pod: auth store {'/'.join(parts)} exceeded "
+                        f"{_RUNTIME_AUTH_STORE_FILE_CAP} files; staging stopped"
+                    )
+                    return staged
+                src = Path(dirpath) / name
+                try:
+                    # NOT ``os.open(..., getattr(os, "O_NOFOLLOW", 0))``: that flag
+                    # does not exist here, so the fallback is 0 and the open FOLLOWS
+                    # a reparse point at the leaf — a control that reads as portable
+                    # and enforces nothing. Screening first and opening after is no
+                    # better: an adversary that can plant the link chooses when.
+                    # ``open_file_no_reparse`` refuses it in the SAME operation.
+                    src_fd = open_file_no_reparse(src)
+                except OSError:
+                    continue
+                try:
+                    copied = pinned_fs.copy_file_pinned(
+                        str(src),
+                        str(target / name),
+                        src_fd=src_fd,
+                        skip_existing=True,
+                        force_mode=0o600,
+                    )
+                except (OSError, ValueError):
+                    continue
+                if copied:
+                    staged += 1
+    finally:
+        pinned_fs.close_all(fds)
+    return staged
+
+
 def _seed_pod_os_home(os_home: Path) -> None:
     """Create-only: stage the agent runtime's identity store into *os_home*.
 
@@ -3086,16 +4179,26 @@ def _seed_pod_os_home(os_home: Path) -> None:
     same-UID processes, so that window is documented rather than claimed closed;
     closing it would require handing the child a descriptor instead of a path,
     which the kiro-cli interface does not accept.
+
+    Windows reaches :func:`_seed_pod_os_home_windows` instead, which states its own
+    narrower guarantee: that platform has no ``O_DIRECTORY``/``O_NOFOLLOW`` and no
+    ``dir_fd``, so it pins each level with ``platform_compat.pin_directory`` (which
+    blocks a rename or a delete of the directory and of everything above it, and
+    refuses to follow a reparse point) and says plainly that the mode tightening
+    has no equivalent there. Every OTHER host without a pinned walk keeps the
+    refusal below.
     """
     if not pinned_fs.supports_pinned_walk():
-        # No O_DIRECTORY/O_NOFOLLOW on this platform (Windows), so the tree
-        # cannot be built through pinned no-follow descriptors. REFUSE rather
-        # than fall back to a by-name copy: this moves a HOST credential, and an
-        # unpinned write is exactly the symlink-redirect the pinning exists to
-        # prevent. Refusing to SEED is not enough on its own, because the same
-        # unverified directory would still become the child's HOME -- so this is
-        # raised, not returned, and the boot stops. Pods are systemd --user
-        # (Linux) only, so no supported platform reaches this.
+        if IS_WINDOWS:
+            _seed_pod_os_home_windows(os_home)
+            return
+        # No O_DIRECTORY/O_NOFOLLOW on this platform, so the tree cannot be built
+        # through pinned no-follow descriptors. REFUSE rather than fall back to a
+        # by-name copy: this moves a HOST credential, and an unpinned write is
+        # exactly the symlink-redirect the pinning exists to prevent. Refusing to
+        # SEED is not enough on its own, because the same unverified directory
+        # would still become the child's HOME -- so this is raised, not returned,
+        # and the boot stops.
         raise PodError(
             f"pod OS home {os_home} needs O_DIRECTORY/O_NOFOLLOW descriptors to be "
             "built safely and this platform provides none"
@@ -3155,6 +4258,44 @@ def _seed_pod_os_home(os_home: Path) -> None:
         pinned_fs.close_all(fds)
 
 
+#: How many times :func:`cleanup_home` re-attempts the removal, and how long it
+#: pauses between attempts. Windows releases a dead process's handles
+#: ASYNCHRONOUSLY, so the instant after a gateway exits its HOME is still
+#: undeletable even though nothing is running: MEASURED on a native host, killing
+#: a holder and deleting immediately leaves the tree in place, and a retry clears
+#: it on the SECOND attempt (~100 ms later). A control with no holder deletes on
+#: the first attempt, and a holder that is still ALIVE survives every attempt — so
+#: this absorbs the OS's release latency without weakening the survivor check
+#: below, which still reports a tree that genuinely cannot be reclaimed.
+_HOME_RECLAIM_ATTEMPTS = 10
+_HOME_RECLAIM_PAUSE_SECS = 0.1
+
+
+def _rmtree_bounded(unresolved: Path) -> bool:
+    """Remove *unresolved* by NAME, retrying while the OS releases handles.
+
+    Returns True when the entry is gone. Always deletes by the unresolved name for
+    the reason the caller documents (a swap to a symlink mid-delete must make
+    ``rmtree`` refuse rather than follow), and re-checks with ``lexists`` so an
+    entry swapped to a dangling link is not mistaken for a clean reclaim.
+    """
+    for attempt in range(_HOME_RECLAIM_ATTEMPTS):
+        shutil.rmtree(unresolved, ignore_errors=True)
+        if not os.path.lexists(unresolved):
+            return True
+        if is_link_or_junction(unresolved):
+            # A swap happened; retrying cannot help and must not be attempted —
+            # the caller reports the link itself as the residue. Junction-aware
+            # for the same reason as the pre-check in cleanup_home: stdlib rmtree
+            # refuses a junction root exactly as it refuses a symlink, so the
+            # retry loop would otherwise spin its whole window on an entry that
+            # can never be reclaimed.
+            return False
+        if attempt + 1 < _HOME_RECLAIM_ATTEMPTS:
+            time.sleep(_HOME_RECLAIM_PAUSE_SECS)
+    return not os.path.lexists(unresolved)
+
+
 def cleanup_home(cfg: PodConfig, name: str) -> int:
     """Delete pod *name*'s isolated HOME and report whether it is really gone.
 
@@ -3167,10 +4308,14 @@ def cleanup_home(cfg: PodConfig, name: str) -> int:
 
     Returns 0 only when the directory is gone afterwards. ``rmtree`` runs with
     ``ignore_errors`` — it has to, since a partially-removed tree is still progress
-    — so the removal itself is silent; a tree that SURVIVES (a live process holds
-    it, or recreated it in append mode right behind the delete) returns 1 and names
-    what is left. Without that check a caller cannot tell a reclaimed HOME from a
-    swallowed failure.
+    — so the removal itself is silent, and it is RETRIED within a bounded window
+    because on Windows the handles of a process that has already exited are
+    released asynchronously: the delete that runs immediately after a gateway goes
+    away can fail on a tree nothing is using. A tree that survives the whole window
+    (a live process holds it, or recreated it in append mode right behind the
+    delete) returns 1 and names what is left. Without that check a caller cannot
+    tell a reclaimed HOME from a swallowed failure; without the retry it cannot
+    tell a locked HOME from a slow one.
     """
     try:
         validate_name(name)
@@ -3179,12 +4324,17 @@ def cleanup_home(cfg: PodConfig, name: str) -> int:
         return 2
     root = cfg.pod_root.resolve()
     unresolved = cfg.pod_root / name
-    # Refuse to delete THROUGH a symlink: resolving first lets a link planted
+    # Refuse to delete THROUGH a link: resolving first lets a link planted
     # under pod_root pass the containment check below while the tree it names
     # lives elsewhere — including another, live pod's HOME. A real pod HOME is
     # always created as a plain directory, so a link here is never ours to follow.
-    if unresolved.is_symlink():
-        print(f"refusing pod cleanup: {unresolved} is a symlink, not a pod HOME")
+    # Junction-aware, because on unelevated Windows a junction is the only link a
+    # same-user writer can plant, and ``is_symlink()`` answers False for it: the
+    # alias then resolved to the live sibling, passed containment, and the
+    # failure below was reported as "something is still writing there" instead
+    # of as the planted link it was.
+    if is_link_or_junction(unresolved):
+        print(f"refusing pod cleanup: {unresolved} is a symlink or junction, not a pod HOME")
         return 2
     target = unresolved.resolve()
     if target == root or target.parent != root:
@@ -3196,21 +4346,27 @@ def cleanup_home(cfg: PodConfig, name: str) -> int:
     # delete the live sibling the link points at. rmtree itself refuses a
     # top-level symlink, so deleting by name makes the swap harmless — nothing
     # is removed and the survivor check below reports the failure.
-    shutil.rmtree(unresolved, ignore_errors=True)
+    #
+    # Bounded RETRY, because "still there" and "cannot be reclaimed" are not the
+    # same state on Windows: handles of a process that has already exited are
+    # released asynchronously, so the delete that runs immediately after a gateway
+    # goes away fails on a tree nothing is using. See _rmtree_bounded for the
+    # measurement. A tree a LIVE process holds survives every attempt and still
+    # reports below, so no failure is hidden — only the OS's own latency is.
+    if _rmtree_bounded(unresolved):
+        return 0
     # Verify by the ENTRY itself, never the resolved target: an entry swapped
     # to a DANGLING symlink during the delete makes rmtree refuse silently
     # (suppressed by ignore_errors), and the resolved target of a dangling
     # link does not exist — so a target-existence check would report a clean
     # reclaim while the link remains as residue that orphan_homes (which
     # skips symlinks) can never surface again.
-    if not os.path.lexists(unresolved):
-        return 0
-    if unresolved.is_symlink():
-        # Swapped to a symlink mid-delete: rmtree refused it (correctly), and
+    if is_link_or_junction(unresolved):
+        # Swapped to a link mid-delete: rmtree refused it (correctly), and
         # the link itself is the residue — name it rather than the target.
         print(
             f"pod cleanup did not remove {unresolved}: the entry is now a "
-            "symlink, which teardown refuses to follow — remove it by hand"
+            "symlink or junction, which teardown refuses to follow — remove it by hand"
         )
         return 1
     survivors = _surviving_entries(target)
@@ -3570,31 +4726,35 @@ def _probe_pod_child_bootstrap(pod_env: dict[str, str]) -> None:
 
 def boot(cfg: PodConfig, name: str) -> int:
     """Boot the isolated gateway for pod *name*, converting EVERY refusal into a
-    recorded terminal exit. Returns an exit code on failure; on success it
-    ``exec``s and does not return.
+    recorded terminal exit. Returns an exit code on failure; on POSIX it ``exec``s
+    on success and does not return, while on Windows — which has no ``exec`` — it
+    supervises the gateway and returns its exit code once it ends.
 
     **This wrapper is the class closure for "a refusal that escapes the boot path
-    with a non-terminal exit".** Three rounds fixed instances of it one at a time:
-    round 7 unified the explicit ``return`` sites through :func:`_refuse`, round 8
-    added an AST guard over those returns -- and round 9's finding walked straight
-    past both, because a ``raise PodError`` is neither a bare return nor visible to
-    a scan over returns. It escaped to the CLI's generic handler, which exits 1, a
-    code NOT in :data:`TERMINAL_BOOT_EXIT_CODES`, so systemd retried it and
-    launchd's KeepAlive restarted it every ``ThrottleInterval``: the exact
-    restart-loop the terminal-exit work exists to prevent, reached by the one shape
-    the guard did not cover.
+    with a non-terminal exit".** Two narrower guards do not cover the class: routing
+    the explicit ``return`` sites through :func:`_refuse` misses a ``raise``, and an
+    AST guard over those returns misses it for the same reason -- a ``raise
+    PodError`` is neither a bare return nor visible to a scan over returns. Such a
+    raise escapes to the CLI's generic handler, which exits 1, a code NOT in
+    :data:`TERMINAL_BOOT_EXIT_CODES`, so systemd retries it and launchd's KeepAlive
+    restarts it every ``ThrottleInterval``: the exact restart loop the terminal-exit
+    contract exists to prevent, reached by the one shape a return-shaped guard
+    cannot see.
 
-    Enumerating raises would not have closed it either. ``PodError`` is raised from
-    roughly forty sites under ``pod/``, many of them transitively reachable from
-    here (``validate_name``, ``read_env_file``, ``write_pod_config``,
+    Enumerating raises does not close it either. ``PodError`` is raised from roughly
+    forty sites under ``pod/``, many of them transitively reachable from here
+    (``validate_name``, ``read_env_file``, ``write_pod_config``,
     ``seed_home_from_scenario``, ``_ensure_pod_dir``, the whole ``pinned_fs``
-    refusal surface), and any future one would join them silently. So the
-    conversion is structural instead: the body cannot raise ``PodError`` past this
-    frame, and a refusal added tomorrow is recorded and given a terminal code
-    without anyone remembering to route it.
+    refusal surface), and any future one joins them silently. So the conversion is
+    structural instead: the body cannot raise ``PodError`` past this frame, and a
+    refusal added tomorrow is recorded and given a terminal code without anyone
+    remembering to route it.
 
-    ``execve`` replaces the process on the success path, so nothing after the body
-    can run and the wrapper costs the happy path nothing.
+    ``execve`` replaces the process on the POSIX success path, so nothing after the
+    body can run and the wrapper costs the happy path nothing. On Windows the body
+    returns the supervised gateway's own exit code instead; that code is not in
+    :data:`TERMINAL_BOOT_EXIT_CODES`, so it flows out untranslated and the wrapper
+    still only ever converts refusals.
 
     **Name validation happens BEFORE the guard, deliberately.** The wrapper records
     every refusal it catches, and ``_record_refusal`` derives its path from *name* --
@@ -3615,6 +4775,10 @@ def boot(cfg: PodConfig, name: str) -> int:
         return EXIT_PROVISIONING
     try:
         return _boot_unguarded(cfg, name)
+    except OSError as exc:
+        if not IS_WINDOWS:
+            raise
+        return _refuse(cfg, name, EXIT_REFUSED_UNRECOVERABLE, str(exc))
     except PodError as exc:
         # Already-recorded refusals return through _refuse and never arrive here;
         # this is the escape hatch closing, so record and give it a terminal code.
@@ -3814,5 +4978,21 @@ def _boot_unguarded(cfg: PodConfig, name: str) -> int:
         )
     if approval:
         argv += ["--approval", approval]
+    if IS_WINDOWS:
+        # Windows has no exec. CPython's os.execve there SPAWNS and terminates the
+        # caller, which would break this path twice: the pid would change (so
+        # `main_pid` would stop naming the process that bound the port) and the
+        # scheduled task's own process would exit while the gateway kept running
+        # orphaned, with Task Scheduler reporting the task finished. Supervise the
+        # gateway as a child instead and return its exit code, which keeps every
+        # caller's contract identical and the wrapper alive as its parent.
+        return win_backend.supervise_gateway(
+            cfg,
+            name,
+            bin_path,
+            argv,
+            pod_env,
+            gateway_pid_record=_pod_pid_record_path(cfg, name, port),
+        )
     os.execve(str(bin_path), [str(bin_path), *argv], pod_env)
     return 0  # unreachable on success

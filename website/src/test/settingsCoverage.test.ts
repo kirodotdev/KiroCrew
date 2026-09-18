@@ -160,6 +160,10 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
     counts: { Input: 1 },
     reason: 'attach-token credential field with Save/Clear semantics (manual: browser.attach-token)',
   },
+  'ChatPanel.tsx': {
+    counts: { Input: 2 },
+    reason: "LinkPatternsEditor's per-row pattern/url fields — part of a composite the extractor indexes whole (chat.text-link-patterns)",
+  },
   'DisplayPanel.tsx': {
     counts: { SimpleSelect: 1, Input: 1 },
     reason: 'theme-install form (source picker + location) — transient install flow, not settings',
@@ -184,10 +188,12 @@ const WAIVED_BARE_CONTROLS: Record<string, { counts: BareCounts; reason: string 
       'primitive (manual: notifications.volume)',
   },
   'RemoteCrewPanel.tsx': {
-    counts: { input: 2 },
+    counts: { input: 6 },
     reason:
       'setup-wizard AWS profile/region convenience fields (localStorage) behind a ' +
-      'non-URL sub-tab a deep link cannot mount',
+      'non-URL sub-tab a deep link cannot mount; plus the launch form\'s identity ' +
+      'choice (2 radios) and Identity Center start-URL/region fields — per-launch ' +
+      'arguments sent with the launch request, not persistent settings',
   },
   'SecretsPanel.tsx': {
     counts: { Input: 2 },

@@ -79,7 +79,7 @@ def test_save_persists_token_and_config(tmp_path: Path, monkeypatch) -> None:
 
     _accept_token(monkeypatch, mod)
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
-    (status_body, env) = _client_put(
+    status_body, env = _client_put(
         mod,
         monkeypatch,
         tmp_path,
@@ -107,7 +107,7 @@ def test_save_rejects_malformed_token(tmp_path: Path, monkeypatch) -> None:
     import kiro_crew.dashboard.handlers.messaging as mod
 
     _accept_token(monkeypatch, mod)
-    (status_body, env) = _client_put(mod, monkeypatch, tmp_path, {"bot_token": "not-a-token"})
+    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token": "not-a-token"})
     status, body = status_body
     assert status == 400
     assert "BotFather" in body["error"]
@@ -122,7 +122,7 @@ def test_save_rejects_token_telegram_refuses(tmp_path: Path, monkeypatch) -> Non
         return "Unauthorized"
 
     monkeypatch.setattr(mod, "_validate_telegram_token", _reject)
-    (status_body, env) = _client_put(mod, monkeypatch, tmp_path, {"bot_token": VALID_TOKEN})
+    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token": VALID_TOKEN})
     status, body = status_body
     assert status == 400
     assert "Unauthorized" in body["error"]
@@ -137,7 +137,7 @@ def test_save_proceeds_with_warning_when_telegram_unreachable(tmp_path: Path, mo
         raise ConnectionError("no route to api.telegram.org")
 
     monkeypatch.setattr(mod, "_validate_telegram_token", _unreachable)
-    (status_body, env) = _client_put(mod, monkeypatch, tmp_path, {"bot_token": VALID_TOKEN})
+    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token": VALID_TOKEN})
     status, body = status_body
     assert status == 200
     assert body["verify_warning"]
@@ -148,7 +148,7 @@ def test_save_rejects_non_numeric_user_ids(tmp_path: Path, monkeypatch) -> None:
     import kiro_crew.dashboard.handlers.messaging as mod
 
     _accept_token(monkeypatch, mod)
-    (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"allowed_user_ids": ["@username"]})
+    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"allowed_user_ids": ["@username"]})
     status, body = status_body
     assert status == 400
     assert "numeric" in body["error"]
@@ -171,7 +171,7 @@ def test_clear_also_removes_legacy_config_token(tmp_path: Path, monkeypatch) -> 
         encoding="utf-8",
     )
 
-    (status_body, env) = _client_put(mod, monkeypatch, tmp_path, {"bot_token_clear": True})
+    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token_clear": True})
     status, body = status_body
     assert status == 200
     assert body["restart_required"] is True
@@ -190,7 +190,7 @@ def test_replace_also_removes_legacy_config_token(tmp_path: Path, monkeypatch) -
     cfg = tmp_path / "config.json"
     cfg.write_text('{"telegram": {"bot_token": "999999:legacy-config-token-x"}}', encoding="utf-8")
 
-    (status_body, env) = _client_put(mod, monkeypatch, tmp_path, {"bot_token": VALID_TOKEN})
+    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token": VALID_TOKEN})
     status, _ = status_body
     assert status == 200
     assert f"TELEGRAM_BOT_TOKEN={VALID_TOKEN}" in env.read_text(encoding="utf-8")
@@ -228,7 +228,7 @@ def test_legacy_purge_is_persisted_before_env_write(tmp_path: Path, monkeypatch)
     cfg = tmp_path / "config.json"
     cfg.write_text('{"telegram": {"bot_token": "999999:legacy-config-token-x"}}', encoding="utf-8")
 
-    (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"bot_token_clear": True})
+    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"bot_token_clear": True})
     assert status_body[0] == 200
     assert order == ["config", "env"]  # legacy purge persisted first
 
@@ -241,17 +241,17 @@ def test_clear_flag_must_be_strict_boolean(tmp_path: Path, monkeypatch) -> None:
     env = tmp_path / ".env"
     env.write_text(f"TELEGRAM_BOT_TOKEN={VALID_TOKEN}\n", encoding="utf-8")
 
-    (status_body, env) = _client_put(mod, monkeypatch, tmp_path, {"bot_token_clear": "false"})
+    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token_clear": "false"})
     assert status_body[0] == 400
     assert VALID_TOKEN in env.read_text(encoding="utf-8")
 
-    (status_body, env) = _client_put(mod, monkeypatch, tmp_path, {"bot_token_clear": True})
+    status_body, env = _client_put(mod, monkeypatch, tmp_path, {"bot_token_clear": True})
     assert status_body[0] == 200
     assert "TELEGRAM_BOT_TOKEN" not in env.read_text(encoding="utf-8")
 
 
 def test_restart_required_only_on_actual_change(tmp_path: Path, monkeypatch) -> None:
-    """Unchanged fields must NOT flag restart_required."""
+    """Only a change the running gateway cannot adopt flags restart_required."""
     import kiro_crew.dashboard.handlers.messaging as mod
 
     _accept_token(monkeypatch, mod)
@@ -260,7 +260,7 @@ def test_restart_required_only_on_actual_change(tmp_path: Path, monkeypatch) -> 
         '{"telegram": {"enabled": true, "allowed_user_ids": [111], "soft_threshold_pct": 80}}',
         encoding="utf-8",
     )
-    (status_body, _) = _client_put(
+    status_body, _ = _client_put(
         mod,
         monkeypatch,
         tmp_path,
@@ -270,7 +270,16 @@ def test_restart_required_only_on_actual_change(tmp_path: Path, monkeypatch) -> 
     assert status == 200
     assert body["restart_required"] is False
 
-    (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"enabled": False})
+    # A real change to a hot-applied field is NOT a restart: the config watcher
+    # reloads `telegram.enabled` and pushes it at the live transport, so telling
+    # the operator to restart would be a false instruction.
+    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"enabled": False})
+    assert status_body[1]["restart_required"] is False
+
+    # A credential write still is: the token is hoisted from the environment at
+    # connect time and the watcher does not watch `.env`.
+    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"bot_token": VALID_TOKEN})
+    assert status_body[0] == 200
     assert status_body[1]["restart_required"] is True
 
 
@@ -279,7 +288,7 @@ def test_soft_threshold_bounds(tmp_path: Path, monkeypatch) -> None:
 
     _accept_token(monkeypatch, mod)
     for bad in (0, 101, "80", True):
-        (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"soft_threshold_pct": bad})
+        status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"soft_threshold_pct": bad})
         assert status_body[0] == 400, f"soft_threshold_pct={bad!r} should be rejected"
         # A machine-readable code, not prose only: the dashboard renders `error`
         # verbatim into a localized UI, so prose alone is untranslatable.
@@ -349,7 +358,7 @@ def test_save_persists_forum_fields_with_negative_ids(tmp_path: Path, monkeypatc
     import kiro_crew.dashboard.handlers.messaging as mod
 
     _accept_token(monkeypatch, mod)
-    (status_body, _) = _client_put(
+    status_body, _ = _client_put(
         mod,
         monkeypatch,
         tmp_path,
@@ -361,7 +370,10 @@ def test_save_persists_forum_fields_with_negative_ids(tmp_path: Path, monkeypatc
     )
     status, body = status_body
     assert status == 200
-    assert body["restart_required"] is True
+    # The forum roster is pushed at the live transport by the config watcher
+    # (`live.watch_section` -> `transport.reconfigure`), so
+    # neither field is a restart. What the save must still prove is the write.
+    assert body["restart_required"] is False
     cfg = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
     assert cfg["telegram"]["allow_forum"] is True
     # Canonical, deduplicated ints (order preserved, minus retained).
@@ -373,7 +385,7 @@ def test_save_rejects_non_boolean_allow_forum(tmp_path: Path, monkeypatch) -> No
     import kiro_crew.dashboard.handlers.messaging as mod
 
     _accept_token(monkeypatch, mod)
-    (status_body, _) = _client_put(mod, monkeypatch, tmp_path, {"allow_forum": "true"})
+    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"allow_forum": "true"})
     status, body = status_body
     assert status == 400
     assert "allow_forum" in body["error"]
@@ -386,16 +398,12 @@ def test_save_rejects_garbage_forum_chat_ids(tmp_path: Path, monkeypatch) -> Non
 
     _accept_token(monkeypatch, mod)
     for bad in ("@supergroup", "-", "12.5", "-100abc"):
-        (status_body, _) = _client_put(
-            mod, monkeypatch, tmp_path, {"allowed_forum_chat_ids": [bad]}
-        )
+        status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"allowed_forum_chat_ids": [bad]})
         status, body = status_body
         assert status == 400, f"chat_id={bad!r} should be rejected"
         assert "chat ID" in body["error"]
 
     # A non-list value is rejected too.
-    (status_body, _) = _client_put(
-        mod, monkeypatch, tmp_path, {"allowed_forum_chat_ids": "-100"}
-    )
+    status_body, _ = _client_put(mod, monkeypatch, tmp_path, {"allowed_forum_chat_ids": "-100"})
     assert status_body[0] == 400
     assert "must be a list" in status_body[1]["error"]

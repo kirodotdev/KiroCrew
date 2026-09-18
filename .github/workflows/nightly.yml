@@ -25,6 +25,19 @@ concurrency:
 jobs:
   version:
     name: Compute Nightly Version
+    # NOT routed to the CodeBuild fleet. This job fires only on `schedule` and
+    # `workflow_dispatch` -- github.actor on a schedule tick is whoever last
+    # edited the workflow file, not a live human triggering the run, and on
+    # workflow_dispatch it's whoever clicked Run, which need not be a
+    # collaborator with fleet access. Either way the AWS webhook's actor
+    # allowlist can reject the request, and this job has no fork check to
+    # fall back to `ubuntu-latest` on: `github.event.pull_request` does not
+    # exist for either trigger, so the routing expression's fork term is
+    # always false and it always requests the fleet -- the same
+    # availability-bug mechanism as issue-summary.yml/issue-triage.yml's
+    # `issues`/`issue_comment` triggers, which have the identical gap. A
+    # scheduled run whose actor the allowlist rejects queues forever
+    # instead of running, so this job stays on `ubuntu-latest`.
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:
@@ -137,6 +150,222 @@ jobs:
     name: Production Dependency Vulnerability Gate
     uses: ./.github/workflows/dependency-vulnerability.yml
 
+  # ── macOS platform tests ──────────────────────────────────────────────
+  # The backend suite on real Darwin. It ran on every pull request until it moved
+  # here: on the PR path a macos-15 runner took 176-213 MINUTES to arrive and then
+  # 26-33 to run, which was ~64 percent of a pull request's CI wall clock sitting on
+  # the required `PR Readiness` check, while the lane itself failed 0 times and was
+  # cancelled 129 times in the same window (usually still queued). At nightly hours
+  # the same runners arrive in 0-33 minutes. platform-tests.yml carries the full
+  # measurement and the pull-request-side replacements.
+  #
+  # Gated the same way as the dependency audit, and for the same reason in reverse:
+  # this one is a `needs:` of every PUBLISH job and of no BUILD job. A red macOS
+  # suite must stop bytes reaching a nightly-channel user, but the built artifacts
+  # are the evidence a fixer works from, so they still get produced and uploaded --
+  # exactly the trade the audit's own comment describes. A build job growing this
+  # `needs:` reintroduces the outage that shape exists to avoid;
+  # test_dependency_vulnerability_gate.py and test_macos_platform_tests_gate.py both
+  # pin the partition.
+  #
+  # ALL publish jobs gate on it, not only the darwin-shipping `sign-and-notarize`,
+  # so the nightly channel stays version-coherent: every platform ships the same
+  # nightly build or none does, never a macOS desktop a version behind the CLI,
+  # Linux and Windows builds it has to interoperate with. The cost this widens is a
+  # darwin flake holding every platform's bytes for a night -- real, but bounded:
+  # the suite failed 0 times and was cancelled 129 times over the measured window,
+  # the builds are ungated so the evidence survives, and the remedy is a human
+  # "re-run failed jobs". A skewed-version nightly would ship with no signal at all.
+  #
+  platform-tests:
+    name: Platform Tests
+    permissions:
+      contents: read
+    uses: ./.github/workflows/platform-tests.yml
+
+  # ── Pod scenario E2E ──────────────────────────────────────────────────
+  # Scenario-level E2E over the shipped `kirocrew pod` tooling: one real
+  # service-managed pod, five user-visible flows (test/e2e/scenarios/).
+  #
+  # Nightly rather than per-PR because it boots a real service-managed gateway
+  # and builds the SPA and a wheel, which is minutes per leg. It is deliberately
+  # NOT a `needs:` of anything: a scenario failure must not hold up a nightly
+  # publish, and a publish failure must not hide a scenario result.
+  #
+  # Linux, macOS, and Windows run the same scenario bodies. There is no
+  # platform skip in the job: the fixture asks runtime.require_backend(), then
+  # drives systemd, launchd, or the dedicated Task Scheduler task selected by
+  # production. test/test_pod_scenario_matrix.py pins backend existence to this
+  # matrix so a future backend cannot remain silently uncovered.
+  pod-scenarios:
+    name: Pod Scenario E2E (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 24
+
+      # A pod's gateway is the CHECKOUT's own `.venv/bin/kirocrew`, not the
+      # runner's installed build, and the pod fixture refuses rather than falling
+      # back to a global one. So the venv is a hard prerequisite, in the layout
+      # `pod provision` expects.
+      - name: Build the checkout venv the pod boots
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m venv .venv
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            PY=.venv/Scripts/python.exe
+          else
+            PY=.venv/bin/python
+          fi
+          "$PY" -m pip install -U pip build
+          "$PY" -m pip install -e . --group dev
+          "$PY" -m kiro_crew --version
+
+      # `pod up` fails loud without a built SPA bundle, on purpose: a pod serves
+      # the real dashboard. Staged the same way ci.yml's e2e job stages it.
+      - name: Build and stage the SPA bundle
+        shell: bash
+        run: |
+          cd website
+          npm ci
+          npm run build
+          cd ..
+          rm -rf src/kiro_crew/static/dist
+          cp -r website/dist src/kiro_crew/static/dist
+          test -f src/kiro_crew/static/dist/index.html
+
+      # A hosted ubuntu runner has NO `systemd --user` session by default: the
+      # job runs over SSH-less exec with no login session, so there is no
+      # per-user manager and no session bus, and every pod verb refuses (see
+      # pod/runtime.py require_systemd). `loginctl enable-linger` starts the
+      # per-user instance independently of a login session, which is the exact
+      # remedy that refusal prints. The two variables are then exported for every
+      # later step, because systemctl --user locates the manager through them and
+      # a non-login shell inherits neither.
+      #
+      # PROVEN in the log, not assumed: the step prints `systemctl --user
+      # is-system-running` and `--version`, and fails the job if the manager
+      # cannot be reached. Without that check a broken session would silently
+      # become 6 skipped scenarios, and KIROCREW_E2E_REQUIRE below
+      # would be the only thing standing between that and a green nightly.
+      - name: Start a systemd --user session (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          sudo loginctl enable-linger "$USER"
+          UID_NUM="$(id -u)"
+          echo "XDG_RUNTIME_DIR=/run/user/${UID_NUM}" >> "$GITHUB_ENV"
+          echo "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/${UID_NUM}/bus" >> "$GITHUB_ENV"
+          export XDG_RUNTIME_DIR="/run/user/${UID_NUM}"
+          export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/${UID_NUM}/bus"
+          # Linger creates the runtime dir asynchronously; wait for the bus
+          # rather than sleeping a fixed amount.
+          for _ in $(seq 1 30); do
+            [ -S "${XDG_RUNTIME_DIR}/bus" ] && break
+            sleep 1
+          done
+          echo "--- proof: systemd --user is reachable ---"
+          systemctl --user --version | head -1
+          systemctl --user is-system-running || true
+          systemctl --user show-environment >/dev/null
+          echo "systemd --user session bus: ${XDG_RUNTIME_DIR}/bus"
+
+      # The SECOND thing a hosted ubuntu runner lacks: a usable namespace sandbox.
+      # ubuntu-24.04 restricts unprivileged user namespaces through AppArmor
+      # (kernel.apparmor_restrict_unprivileged_userns=1), so the pod gateway's
+      # `unshare(CLONE_NEWNS)` answers EPERM and its only Linux sandbox backend
+      # is unavailable. A pod pins `agent.sandbox=auto` with the unsandboxed
+      # opt-in OFF (pod/runtime.py), so the pod's own boot probe then REFUSES the
+      # boot -- correctly: serving a gateway whose every agent turn would fail
+      # while /health answers 200 is the failure the probe exists to catch. On
+      # this job's first nightly run that refusal was six `pod up` errors.
+      #
+      # Same remedy as ci.yml's `e2e` and `backend-test-sandbox` jobs, and the
+      # same PROOF right after it: if the runner image ever stops allowing this,
+      # fail here by name instead of six scenarios deep. The sysctl is host-wide,
+      # so the service-managed pod gateway sees it too. Never the alternative of
+      # seeding `sandbox_allow_unsandboxed_exec` into the pod: that would make the
+      # suite pass by running the product in a mode a real pod refuses.
+      - name: Enable unprivileged user namespaces (Linux)
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify the namespace sandbox backend is available (Linux)
+        if: runner.os == 'Linux'
+        run: unshare --mount --map-root-user true
+
+      # macOS needs neither: the pod's launchd backend uses the per-user launchd
+      # domain, which a runner session already has, and its seatbelt sandbox
+      # backend needs no host opt-in. Printed so the two legs read the same way
+      # in the log.
+      - name: Confirm the launchd user domain (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          launchctl print "user/$(id -u)" >/dev/null
+          echo "launchd user domain reachable: user/$(id -u)"
+
+      # The canary pattern from ci.yml: run by path with `-v -n0`, tee the log,
+      # then grep the expected pass count and fail otherwise. An exit code alone
+      # cannot tell "every scenario passed" from "every scenario skipped", and a
+      # silent skip is exactly what a precondition-gated suite degrades into.
+      # KIROCREW_E2E_REQUIRE=1 is the belt: it turns each precondition
+      # skip into a failure. The grep is the braces.
+      - name: Run the pod scenario suite
+        shell: bash
+        env:
+          KIROCREW_E2E_SCENARIOS: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+        run: |
+          set -uo pipefail
+          if [[ "${RUNNER_OS}" == "Windows" ]]; then
+            PY=.venv/Scripts/python.exe
+          else
+            PY=.venv/bin/python
+          fi
+          "$PY" -m pytest -v -p no:cacheprovider -o addopts= \
+            -n0 --timeout=600 test/e2e/scenarios/ 2>&1 | tee pod-scenarios.log
+          status="${PIPESTATUS[0]}"
+          echo "pytest exit: ${status}"
+          # Six user-flow scenarios and 49 fixture-isolation checks must execute.
+          # Anchor the count so 155 passed cannot satisfy the 55-test contract.
+          if ! grep -qE '(^|[^0-9])55 passed' pod-scenarios.log; then
+            echo "::error::the pod scenario suite did not report 55 passed; a skipped or collapsed suite is not a pass"
+            exit 1
+          fi
+          exit "${status}"
+
+      # The pod's own journal / log files are the only place a boot refusal is
+      # legible, and the job log carries just the tail `pod up` chose to print.
+      - name: Upload the pod logs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: pod-scenarios-logs-${{ matrix.os }}
+          path: |
+            pod-scenarios.log
+            /tmp/kce2e-*/a/**
+            /tmp/kce2e-*/h/**/*.log
+            ${{ runner.temp }}/**/kce2e-*/a/**
+            ${{ runner.temp }}/**/kce2e-*/h/**/*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
   build-wheel:
     name: Build Wheel
     needs: [version]
@@ -150,6 +379,13 @@ jobs:
     uses: ./.github/workflows/build-desktop.yml
     with:
       version: ${{ needs.version.outputs.nightly_version }}
+      # A failed arm64 build must not skip the x64 publishers (#2645). Safe on
+      # THIS lane specifically: a nightly run publishes per-arch keys, per-arch
+      # feeds and per-arch aliases and records no cross-arch completeness claim
+      # -- it never calls scripts/release_promotion.py, so nothing downstream
+      # reads "this version has both arches". release.yml does record that
+      # claim and therefore keeps the default (false).
+      soft_fail_arm64: true
 
   # Windows builds in its own workflow because it Authenticode-signs during the
   # build (the Squirrel installer embeds already-signed executables), so unlike
@@ -181,7 +417,7 @@ jobs:
   # never blocks the CLI release. See docs/build/release.md.
   publish-cli:
     name: Publish CLI (nightly channel)
-    needs: [version, build-wheel, dependency-vulnerability-gate]
+    needs: [version, build-wheel, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -209,19 +445,29 @@ jobs:
   # status visible in the run graph.
   #
   # Scope of that separation, stated precisely because the obvious reading is
-  # wrong: it decouples the PUBLISH steps, not the BUILDS. Both publishers
-  # still `needs: build-desktop`, which is the reusable-workflow caller job
-  # aggregating BOTH matrix legs, so a failed arm64 build skips the x64
-  # publish too. That is deliberate for now -- the versioned S3 keys are
-  # immutable, so publishing half a release and then discovering the other
-  # arch never built is the worse failure -- but it does mean a broken arm64
-  # build can hold up an x64 release, which was not true before this lane
-  # existed. True per-arch publish independence needs the publishers to run
-  # past a partial build failure and let their own artifact download decide;
-  # tracked in #2645 rather than reshaped here.
+  # wrong: it decouples the PUBLISH steps, and on THIS lane the arm64 BUILD too.
+  # Every publisher still `needs: build-desktop`, the reusable-workflow caller
+  # job -- `needs` is what makes it wait for the build and for the package
+  # smoke. What changed is which failures that caller reports: this lane passes
+  # `soft_fail_arm64: true`, so a failed arm64 build leg no longer fails the
+  # caller and no longer skips the x64 publishers with it (#2645). The arm64
+  # publishers still run and still go red, on their own missing artifact.
+  #
+  # What still holds every Linux publish here, deliberately:
+  #   - a failed `smoke-linux-packages`. It carries no continue-on-error, so a
+  #     deb or rpm that would not install holds the publish for both arches.
+  #   - a failed x64 build leg, because that x64-only smoke cannot run without
+  #     its package.
+  #   - `dependency-vulnerability-gate` and `platform-tests`, which is why they
+  #     stay in `needs` with no `if:` relaxing them.
+  #
+  # release.yml keeps the old coupling on purpose and says why at its own copy
+  # of this block: its run records the stable promotion candidate, where all
+  # three arm64 Linux roles are REQUIRED (scripts/release_promotion.py), so
+  # per-arch independence there is #1030's question rather than this one's.
   publish-linux-appimage-x64:
     name: Publish Linux appimage (nightly channel · x64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -239,7 +485,7 @@ jobs:
 
   publish-linux-appimage-arm64:
     name: Publish Linux appimage (nightly channel · arm64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -257,7 +503,7 @@ jobs:
 
   publish-linux-deb-x64:
     name: Publish Linux deb (nightly channel · x64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -275,7 +521,7 @@ jobs:
 
   publish-linux-deb-arm64:
     name: Publish Linux deb (nightly channel · arm64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -293,7 +539,7 @@ jobs:
 
   publish-linux-rpm-x64:
     name: Publish Linux rpm (nightly channel · x64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -311,7 +557,7 @@ jobs:
 
   publish-linux-rpm-arm64:
     name: Publish Linux rpm (nightly channel · arm64)
-    needs: [version, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       id-token: write
@@ -338,9 +584,20 @@ jobs:
   # cleanly when it is absent. That keeps a Windows-only failure from blocking
   # the mac and Linux lanes, which is the same per-platform independence
   # soft_fail exists to protect.
+  #
+  # There is deliberately NO `if:` here, so a red `smoke-install-windows` holds
+  # this publish. soft_fail sets continue-on-error on the BUILD job only; the
+  # smoke in the same reusable workflow does not carry it, so a failed install or
+  # a gateway that will not start fails the `build-windows` CALL and this job is
+  # skipped with it. That is the point of running the smoke: the artifact is
+  # uploaded before it runs, so anything that lets this job start anyway would
+  # find that artifact and publish an installer the smoke had already rejected.
+  # Holding it costs nothing cross-platform -- the lane being held is the same
+  # platform whose smoke failed, and the mac and Linux publishes are their own
+  # jobs.
   publish-windows-x64:
     name: Publish Windows Desktop (nightly channel · x64)
-    needs: [version, build-windows, dependency-vulnerability-gate]
+    needs: [version, build-windows, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       # A called workflow cannot exceed the caller job's grants, so the probe's
@@ -366,7 +623,7 @@ jobs:
   # alone (see test_workflow_permissions.py).
   publish-docker:
     name: Publish Docker Image (nightly channel)
-    needs: [version, build-wheel, dependency-vulnerability-gate]
+    needs: [version, build-wheel, dependency-vulnerability-gate, platform-tests]
     permissions:
       contents: read
       packages: write
@@ -392,7 +649,7 @@ jobs:
   # attestation (signed + stapled bytes).
   sign-and-notarize:
     name: Sign + Notarize macOS
-    needs: [version, build-wheel, build-desktop, dependency-vulnerability-gate]
+    needs: [version, build-wheel, build-desktop, dependency-vulnerability-gate, platform-tests]
     permissions:
       id-token: write
       contents: read

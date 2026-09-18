@@ -1,15 +1,15 @@
 """The computer-use gate after the governance removal (``computer_use/gate.py``).
 
-This file used to be ~1650 lines pinning eight governance scopes, an
-unattended-surface refusal, an interactive-approval floor and an observation
-ceiling. All of that is gone by product decision: computer use is ONE operator
-opt-in, and after that the agent drives the desktop the way the operator would.
+The gate imposes no governance scopes, no unattended-surface refusal, no
+interactive-approval floor and no observation ceiling: computer use is ONE
+operator opt-in, and after that the agent drives the desktop the way the operator
+would.
 
 What is left to pin is small but worth pinning, because each item is a place where
 a future edit could quietly reintroduce a refusal (or lose the audit):
 
-* the gate PERMITS — including on surfaces that used to be refused outright
-  (cron, subagent, taskrunner), which is the behaviour change users will actually
+* the gate PERMITS on every surface, including cron, subagent and taskrunner,
+  which is the behaviour change users will actually
   notice;
 * every call is AUDITED, since with the ceiling gone the SEL trail is the
   operator's only record of what the agent did to their desktop;
@@ -36,7 +36,7 @@ from kiro_crew.computer_use.types import (
     TOOL_LIST_APPS,
 )
 
-# Surfaces that USED to be refused before any governance was even consulted. They
+# Surfaces the gate PERMITS with no special refusal. They
 # are the headline behaviour change, so they are parametrized rather than asserted
 # once — a partial revert would show up as one of these failing.
 _FORMERLY_REFUSED = ("cron:nightly", "subagent:abc123", "taskrunner", "_bg", "_hb", "")
@@ -62,11 +62,10 @@ class TestTheGatePermits:
         assert gate.require_computer_use(tool, session_key="dashboard:main") is None
 
     def test_an_unresolvable_app_identity_is_allowed(self):
-        """``requires_app_identity`` no longer refuses.
+        """``requires_app_identity`` does not refuse.
 
-        It used to be the "an app we cannot name cannot be authorized" rule. With
-        no per-app axes there is nothing to authorize against, and refusing would
-        only break windows whose bundle id the OS did not report.
+        With no per-app axes there is nothing to authorize against, so it permits;
+        refusing would only break windows whose bundle id the OS does not report.
         """
         assert (
             gate.require_computer_use(
@@ -78,9 +77,8 @@ class TestTheGatePermits:
     def test_a_mutator_is_allowed_without_a_recorded_approval(self):
         """The ``interactive`` approval floor is gone.
 
-        Previously this returned a refusal unless ``approval_recorded=True``, which
-        made the policy row observation-only in practice. Both the row and the
-        parameter's effect are removed; the parameter itself is kept for signature
+        A mutator is allowed without a recorded approval: the ``approval_recorded``
+        parameter has no effect. The parameter itself is kept for signature
         stability.
         """
         assert (
@@ -161,7 +159,7 @@ class TestObservationsArePassedThrough:
         )
 
     def test_the_ceiling_does_not_alter_a_payload(self):
-        """A renderer must not lose fields to a ceiling that no longer narrows.
+        """A renderer must not lose fields to a ceiling that does not narrow.
 
         Uses the real payload keys, so a future edit that re-adds narrowing without
         updating the renderers fails here rather than silently blanking output.
@@ -178,7 +176,7 @@ class TestObservationsArePassedThrough:
     def test_there_is_no_targets_axis_shim_to_read(self):
         """The ``targets`` ceiling is gone, and so is the predicate for it.
 
-        It used to return ``False`` with a docstring saying indexless keyboard input
+        The predicate claimed indexless keyboard input
         was "a legitimate flow again" — the INVERSE of what ships. Keyboard input
         requires an ``element_index`` (``tools._ELEMENT_REQUIRED_TOOLS``) precisely so
         the always-on secure-field refusal has a role/subrole to inspect. Nothing in
@@ -201,7 +199,7 @@ class TestAppDisclosure:
         assert gate.app_is_disclosable(bundle_id="", display_name="") is False
 
     def test_a_formerly_denylisted_app_is_now_disclosable(self):
-        """Terminals and password managers are no longer hidden from the list."""
+        """Terminals and password managers are not hidden from the list."""
         for bundle in ("com.apple.Terminal", "com.1password.app", "com.apple.systempreferences"):
             assert gate.app_is_disclosable(bundle_id=bundle, display_name="") is True
 
@@ -212,7 +210,7 @@ class TestTheOneRetainedRefusalIsNotHere:
 
         It lives in ``policy.check_app`` because that is the layer with the resolved
         ``AppRef``. Asserted from here so a future edit does not move it back into a
-        gate that no longer makes decisions — and so the invariant itself has a test
+        gate that makes no decisions — and so the invariant itself has a test
         that names it.
         """
         from kiro_crew.computer_use import policy

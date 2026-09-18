@@ -30,6 +30,7 @@ class TestCronAddChannel:
                 {
                     "id": "abc",
                     "name": "test",
+                    "timezone": "",
                     "schedule": type(
                         "S",
                         (),
@@ -60,6 +61,7 @@ class TestCronAddChannel:
                 {
                     "id": "def",
                     "name": "test",
+                    "timezone": "",
                     "schedule": type(
                         "S",
                         (),

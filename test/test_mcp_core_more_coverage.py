@@ -1,4 +1,4 @@
-"""Coverage tests for previously-untested ``kiro_crew.mcp_core`` surfaces.
+"""Coverage tests for ``kiro_crew.mcp_core`` surfaces.
 
 Focus areas, all confirmed uncovered before this file existed:
 
@@ -782,10 +782,9 @@ class TestLearnAddTool:
         # model it could restrict a correction when the save changed nothing.
         #
         # A stale client still holding that schema is REFUSED, not silently
-        # converted. This test previously pinned the opposite ("ignored rather than
-        # honoured"), which was wrong in the dangerous direction: forcing the
-        # payload to global takes a correction meant for one workspace and applies
-        # it in every session, which is worse than the inert tier it replaced.
+        # converted: forcing the payload to global takes a correction meant for
+        # one workspace and applies it in every session, which is worse than the
+        # inert tier it replaced.
         with patch.object(mcp_core, "_resolve_session_key", return_value="dashboard:c"):
             with self._allowed():
                 with patch.object(mcp_core, "_post", return_value={"ok": True}) as p:
@@ -878,6 +877,53 @@ class TestLearnListAndRemoveTools:
             out = _call_tool_inner("learn_remove", {"query": "always X"})
         assert out == "Removed lessons matching: always X"
         assert d.call_args.args == ("/api/lessons", {"rule": "always X"})
+
+    def test_learn_remove_forwards_repo_scope_when_supplied(self) -> None:
+        # The scope discriminator must ride the delete payload, else a scoped
+        # and a global lesson sharing rule text delete together. Routed
+        # through _validate_args because that is the real call path: the
+        # schema has to ADMIT repo_scope for the handler to ever see it, and a
+        # direct handler call cannot detect a schema that rejects the field.
+        with patch.object(mcp_core, "_delete", return_value={"removed": 1}) as d:
+            _call_tool_inner(
+                "learn_remove",
+                mcp_core._validate_args(
+                    "learn_remove", {"query": "always X", "repo_scope": "src/pkg"}
+                ),
+            )
+        assert d.call_args.args == ("/api/lessons", {"rule": "always X", "repo_scope": "src/pkg"})
+
+    def test_learn_remove_forwards_an_empty_scope_to_target_global_rows(self) -> None:
+        # An empty string is a PRESENT selector -- it targets the unscoped rows --
+        # so it must be forwarded, not dropped the way ``or None`` would.
+        with patch.object(mcp_core, "_delete", return_value={"removed": 1}) as d:
+            _call_tool_inner("learn_remove", {"query": "always X", "repo_scope": ""})
+        assert d.call_args.args == ("/api/lessons", {"rule": "always X", "repo_scope": ""})
+
+    def test_learn_remove_treats_a_null_scope_as_absent(self) -> None:
+        # A JSON null validates to None (the field's default). Forwarding it
+        # as "" would silently turn "no selector" into "delete the global
+        # rows", so the handler leaves the selector out of the payload and the
+        # delete matches every scope.
+        with patch.object(mcp_core, "_delete", return_value={"removed": 1}) as d:
+            _call_tool_inner(
+                "learn_remove",
+                mcp_core._validate_args("learn_remove", {"query": "always X", "repo_scope": None}),
+            )
+        assert d.call_args.args == ("/api/lessons", {"rule": "always X"})
+
+    def test_learn_remove_schema_rejects_an_unusable_scope(self) -> None:
+        # "/" reads as scope-selective but names nothing; "/src/pkg" is the
+        # absolute spelling the write surface refuses, which canonical folding
+        # would land on the stored "src/pkg" rows. The schema's pattern
+        # refuses both before the handler runs, so the delete cannot land on
+        # rows the caller never named.
+        from kiro_crew.validation import ValidationError
+
+        with pytest.raises(ValidationError):
+            mcp_core._validate_args("learn_remove", {"query": "always X", "repo_scope": "/"})
+        with pytest.raises(ValidationError):
+            mcp_core._validate_args("learn_remove", {"query": "always X", "repo_scope": "/src/pkg"})
 
     def test_learn_remove_surfaces_a_backend_error(self) -> None:
         with patch.object(mcp_core, "_delete", return_value={"error": "HTTP 500"}):

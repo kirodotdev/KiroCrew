@@ -259,7 +259,7 @@ class TestPolicyRevocationSuppressesTheUnFollowableRemedy:
     auto-approve and ``until_shutdown`` (a ``yolo_duration`` scope member) — are
     refused by the same fail-closed ``approval_modes`` gate that revoked the
     grant. Suggesting them directs the one operator who is not present into a
-    wall (issue #8850), so the policy-source body names the cause instead. The
+    wall, so the policy-source body names the cause instead. The
     stall description is unchanged: the loops really are waiting either way.
     """
 

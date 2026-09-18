@@ -187,7 +187,10 @@ class TestGatewayInstallVerification:
             stack.enter_context(
                 patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc))
             )
-            asyncio.run(orch._init_services())
+            try:
+                asyncio.run(orch._init_services())
+            finally:
+                orch._stop_memory_startup()
 
     def test_install_exception_logs_error_not_warning(self, tmp_path, caplog, capsys):
         orch = _make_orchestrator()

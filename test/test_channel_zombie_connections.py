@@ -134,8 +134,8 @@ class _FakeSession:
 @pytest.mark.asyncio
 async def test_exception_escape_clears_ready_and_flips_the_badge():
     """A socket reset mid-dispatch exits _run_connection via exception; READY
-    and the dashboard badge must still be cleared (they previously survived
-    only the clean-close path)."""
+    and the dashboard badge must still be cleared, not only on the clean-close
+    path."""
     client = DiscordClient(token="test")
     client._session = _FakeSession(_ExplodingWs())
     client.ready.set()

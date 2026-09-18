@@ -16,7 +16,7 @@ from collections.abc import Iterable, Mapping, MutableMapping
 from pathlib import Path
 
 from kiro_crew import platform_compat
-from kiro_crew.config.paths import data_home
+from kiro_crew.config.paths import data_home, peek_data_home
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 logger = logging.getLogger(__name__)
@@ -48,10 +48,10 @@ _EXTRA_PATH_DIRS = (
 # declared by bare name never launches and the session simply comes up short of
 # tools, which reads as a missing capability rather than a launch failure.
 #
-# So the list is extensible from two sides, merged in :func:`mcp_search_path`
-# (issue #5083). Fixing it at that one function is deliberate: it is the path all
-# three of those consumers resolve against, so one contributed directory reaches
-# all of them without any of them knowing it exists.
+# So the list is extensible from two sides, merged in :func:`mcp_search_path`.
+# Fixing it at that one function is deliberate: it is the path all three of those
+# consumers resolve against, so one contributed directory reaches all of them
+# without any of them knowing it exists.
 #
 # * ``mcp.extra_path_dirs`` in the config — an operator on one host.
 # * :func:`register_mcp_path_dirs` — a packaged/downstream build or an embedding
@@ -232,6 +232,10 @@ _NODE_MANAGER_DIRS = (
     "{mise_data}/shims",
     "{home}/.volta/bin",
     "{home}/n/bin",
+    # n honours N_PREFIX; the dotted prefix (N_PREFIX="$HOME/.n") is a common
+    # dotfile convention. A static glob is deliberate: the gateway is a non-login
+    # process and does not inherit N_PREFIX from the user's shell rc.
+    "{home}/.n/bin",
 )
 # Standalone Node TREES -- an unpacked distribution rather than a manager's
 # per-version store, so there is no version to glob and no shim to consult.
@@ -626,6 +630,27 @@ def git_build_info() -> tuple[str, str]:
     )
 
 
+def _managed_browser_cli_dirs() -> list[str]:
+    """Managed browser CLI directories exposed to agent shell commands.
+
+    The resolver in ``browser_cli.install`` never consumes this search path. It
+    resolves the same crew-home leaf by absolute path. These entries exist only
+    so an approved agent shell command can spell ``playwright-cli`` normally;
+    the OS sandbox seals the whole prefix read-only before that shell starts.
+    """
+    try:
+        root = peek_data_home() / "playwright-cli"
+    except Exception:
+        logger.debug("could not resolve managed browser CLI path", exc_info=True)
+        return []
+    entries: tuple[Path, ...]
+    if platform_compat.IS_WINDOWS:
+        entries = (root / "managed-bin", root / "bin", root)
+    else:
+        entries = (root / "managed-bin", root / "bin")
+    return [value for entry in entries if (value := _validated_bin_dir(str(entry)))]
+
+
 def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     """Return *base_path* prepended with well-known MCP binary directories.
 
@@ -665,7 +690,8 @@ def augmented_path(base_path: str = "", *, home: str | None = None) -> str:
     # would otherwise put a relative "{mise_data}/shims" entry on every spawned
     # subprocess's PATH, re-resolved against the CHILD's cwd — letting a
     # work-dir-relative executable shadow the configured command.
-    extra = [
+    extra = _managed_browser_cli_dirs() if home is None else []
+    extra += [
         e
         for d in _EXTRA_PATH_DIRS
         if (e := _validated_bin_dir(d.format(home=resolved_home, mise_data=mise_data)))
@@ -685,7 +711,7 @@ _SEARCH_PATH_REPORT_LIMIT = 40
 #: Appended to "MCP command not found" warnings. Naming the directories searched
 #: tells a reader the binary is installed somewhere uncovered; this tells them
 #: what to do about it, so the diagnosis and the remedy arrive together instead
-#: of the remedy living only in the source (issue #5083).
+#: of the remedy living only in the source.
 MCP_PATH_HINT = "if it is installed elsewhere, add that directory to mcp.extra_path_dirs"
 
 
@@ -825,7 +851,7 @@ def spec_env_path(env_path: str) -> str:
 
 
 def mcp_search_path(env_path: str) -> str:
-    """:func:`spec_env_path` plus the contributed MCP directories (issue #5083).
+    """:func:`spec_env_path` plus the contributed MCP directories.
 
     The path an MCP command is RESOLVED against -- the probe, the agent-config
     command resolver, and gatewayd's rewriter all use this one. Separate from
@@ -1055,9 +1081,7 @@ def sanitize_spec_env(pairs: Iterable[tuple[str, str]]) -> dict[str, str]:
             continue
         folded = key.upper()
         if any(folded.startswith(p) for p in _SPEC_ENV_DENIED_PREFIXES):
-            logger.warning(
-                "dropping spec env key %r: loader/interpreter injection channel", key
-            )
+            logger.warning("dropping spec env key %r: loader/interpreter injection channel", key)
             continue
         if any(folded.startswith(p) for p in _SPEC_ENV_RESERVED_PREFIXES):
             # Distinct message on purpose: reporting a forged KIROCREW_CLI as a
@@ -1098,8 +1122,7 @@ def denied_spec_env_keys(env: "Mapping[str, object]") -> list[str]:
     return [
         k
         for k in env
-        if isinstance(k, str)
-        and any(k.upper().startswith(p) for p in _SPEC_ENV_DENIED_PREFIXES)
+        if isinstance(k, str) and any(k.upper().startswith(p) for p in _SPEC_ENV_DENIED_PREFIXES)
     ]
 
 
@@ -1188,15 +1211,19 @@ def _mise_bin() -> str | None:
 
     A systemd / launchd gateway does not source the user's shell rc, so
     ``~/.local/bin`` (mise's default install dir) is often absent from the
-    inherited ``$PATH``.  Try ``$PATH`` first, then fall back to the canonical
-    install location before giving up.
+    inherited ``$PATH``. Try ``$PATH`` first, then the default install dir,
+    then macOS Homebrew locations. Discovery must work before mise activation
+    adds the user's toolchain directories to the gateway environment.
     """
     found = shutil.which("mise")
     if found:
         return found
-    candidate = Path.home() / ".local" / "bin" / "mise"
-    if candidate.is_file() and os.access(candidate, os.X_OK):
-        return str(candidate)
+    candidates = [Path.home() / ".local" / "bin" / "mise"]
+    if sys.platform == "darwin":
+        candidates.extend([Path("/opt/homebrew/bin/mise"), Path("/usr/local/bin/mise")])
+    for candidate in candidates:
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            return str(candidate)
     return None
 
 

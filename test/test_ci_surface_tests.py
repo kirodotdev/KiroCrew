@@ -13,8 +13,12 @@ ships green.
 from __future__ import annotations
 
 import importlib.util
+import os
 import re
+import sys
+import types
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -68,7 +72,7 @@ def test_script_exists_and_is_executable() -> None:
 
 # Known cross-surface parity guards. Each of these lives in one suite but
 # asserts against the OTHER surface's source, so each MUST stay in the must-run
-# set. Audited 2026-08-06; extend this list when a new guard is added.
+# set. Extend this list when a new guard is added.
 _BACKEND_GUARDS = (
     "test/test_redaction_mirror_parity.py",
     "test/test_theme_css_security.py",
@@ -319,8 +323,7 @@ _OBSERVED_WINDOWS_FAILURES = (
 
 def _ignore_names() -> set[str]:
     names = (
-        ln.split("#", 1)[0].strip()
-        for ln in _IGNORE_LIST.read_text(encoding="utf-8").splitlines()
+        ln.split("#", 1)[0].strip() for ln in _IGNORE_LIST.read_text(encoding="utf-8").splitlines()
     )
     return {n for n in names if n}
 
@@ -336,9 +339,18 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
     conftest's `collect_ignore` branch only executes on Windows, so a parsing
     typo here would silently re-enable a suite that fails at import on win32 and
     would not be caught on a POSIX dev machine. Pin the exact set.
+
+    ``test_harness.py`` left this set when the gateway harness became
+    cross-platform (reader thread instead of ``selectors`` on a pipe, tree kill
+    instead of ``terminate_pgid``); it now runs on the Windows shards.
+
+    ``test_pod_windows_boot.py`` is the one entry here for a reason other than a
+    POSIX assumption: it boots a real pod under Task Scheduler, needs a built
+    ``.venv`` inside the checkout that the shards never create, and costs minutes.
+    Its own dedicated ci.yml job names it on the command line, which bypasses this
+    list by design.
     """
     assert _ignore_names() == {
-        "test_harness.py",
         "test_sandbox_argv.py",
         "test_sandbox_cc_mode.py",
         "test_sandbox_hardlink_scan.py",
@@ -364,6 +376,7 @@ def test_ignore_list_matches_the_names_conftest_previously_inlined() -> None:
         "test_file_office_preview.py",
         "test_dashboard_file_io.py",
         "test_dev_fleet_app.py",
+        "test_pod_windows_boot.py",
     }
 
 
@@ -438,20 +451,47 @@ def test_explicit_cli_target_bypasses_collect_ignore(tmp_path) -> None:
     bug, so pin it: if a future pytest starts honouring `collect_ignore` for
     explicit arguments, this fails and the selector-side filter can be dropped.
     """
+    import os
     import subprocess
     import sys
 
     suite = tmp_path / "t"
     suite.mkdir()
     (suite / "conftest.py").write_text('collect_ignore = ["test_boom.py"]\n', encoding="utf-8")
-    (suite / "test_boom.py").write_text('raise RuntimeError("import-time failure")\n', encoding="utf-8")
+    (suite / "test_boom.py").write_text(
+        'raise RuntimeError("import-time failure")\n', encoding="utf-8"
+    )
     (suite / "test_ok.py").write_text("def test_ok():\n    assert True\n", encoding="utf-8")
 
     def run(*target: str) -> int:
+        # Strip PYTEST_ADDOPTS so the nested pytest does not inherit the outer
+        # run's options. An inherited `--basetemp` there points at an ancestor of
+        # this child's cwd (its tmp_path), which pytest rejects as a usage error
+        # (exit 4) before it ever evaluates collect_ignore -- turning this
+        # collection-semantics assertion into a spurious failure. The child gets
+        # its own basetemp under this test's tmp_path instead, so it never shares
+        # (or prunes) the per-user `pytest-of-<user>` tree with the outer run's
+        # xdist workers or with another run on the host.
+        child_env = {k: v for k, v in os.environ.items() if k != "PYTEST_ADDOPTS"}
         return subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-             "-p", "no:randomly", "--no-cov", *target],
-            cwd=tmp_path, capture_output=True, text=True,
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-q",
+                "-p",
+                "no:cacheprovider",
+                "-p",
+                "no:randomly",
+                "--no-cov",
+                f"--basetemp={tmp_path / 'basetemp'}",
+                *target,
+            ],
+            cwd=tmp_path,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
         ).returncode
 
     assert run(str(suite)) == 0, "recursive collection should honour collect_ignore"
@@ -511,4 +551,207 @@ def test_windows_filter_is_scoped_to_the_test_root(tmp_path, monkeypatch) -> Non
     assert app_suite in selected, (
         "a same-named suite outside test/ is not covered by conftest's "
         f"collect_ignore and must keep running on Windows; got {selected}"
+    )
+
+
+# --- container image test suite: image-only-dependency collection guard ---------
+#
+# The crew container image's test suite lives under
+# ``src/kiro_crew/apps/builtins/aws_control/crew/runtime/container_tests`` and is
+# reached by ``setup.cfg``'s ``testpaths = ... src/kiro_crew/apps/builtins``. Four
+# of its modules ``import httpx`` (and one ``fastapi``/``uvicorn``) at module top
+# level -- deps that ``container/requirements.txt`` marks "Container runtime only.
+# These must NOT become dependencies of the Kiro Crew app itself", so the app's own
+# CI env does not carry them. Its conftest therefore sets ``collect_ignore_glob`` to
+# skip the suite when those collection-time deps are absent, rather than raising a
+# ``ModuleNotFoundError`` at collection that cascades every backend shard. These
+# pin that guard: it must skip on a missing dep, and it must NOT skip when all are
+# present (or the 309 tests silently stop running everywhere).
+
+_CONTAINER_CONFTEST = (
+    _REPO_ROOT
+    / "src"
+    / "kiro_crew"
+    / "apps"
+    / "builtins"
+    / "aws_control"
+    / "crew"
+    / "runtime"
+    / "container_tests"
+    / "conftest.py"
+)
+
+
+def _os_reporting(name: str):
+    """A stand-in ``os`` module whose ``name`` is *name*, for ``sys.modules``.
+
+    ``mock.patch.object(os, "name", ...)`` cannot be used here. ``pathlib.Path.__new__``
+    consults ``os.name`` on EVERY instantiation to pick ``PosixPath`` or ``WindowsPath``,
+    and the conftest calls ``Path(__file__).resolve()``, so patching the real attribute
+    makes that line raise ``cannot instantiate 'WindowsPath' on your system`` -- in both
+    directions, since a Windows runner patched to ``posix`` fails the mirror way.
+
+    Swapping the module that the conftest's own ``import os`` resolves to keeps the
+    change inside the module under test: ``pathlib`` bound the real ``os`` object when it
+    was first imported and never looks it up again.
+    """
+    proxy = types.ModuleType("os")
+    proxy.__dict__.update(vars(os))
+    # Through ``__dict__`` rather than ``proxy.name``: mypy types a ``ModuleType``
+    # attribute set by the stub for the real ``os``, so the direct assignment is an
+    # ``attr-defined`` error on a line that is doing exactly what it means to.
+    proxy.__dict__["name"] = name
+    return proxy
+
+
+def _run_container_conftest(*, present: set[str], os_name: str = "posix"):
+    """Load the container conftest as a module with ``find_spec`` reporting only ``present``.
+
+    Uses the same ``spec_from_file_location`` + ``exec_module`` mechanism as
+    ``_load_selector`` above, so the conftest's module-level guard runs and its
+    ``collect_ignore_glob`` / ``_missing_image_deps`` can be read back. Returns the
+    loaded module.
+    """
+    real_find_spec = importlib.util.find_spec
+
+    def fake_find_spec(name, *a, **k):
+        if name in {"fastapi", "httpx", "uvicorn", "boto3"}:
+            return object() if name in present else None
+        return real_find_spec(name, *a, **k)
+
+    spec = importlib.util.spec_from_file_location(
+        "container_conftest_under_test", _CONTAINER_CONFTEST
+    )
+    assert spec and spec.loader, "could not build an import spec for the container conftest"
+    module = importlib.util.module_from_spec(spec)
+    saved = importlib.util.find_spec
+    try:
+        importlib.util.find_spec = fake_find_spec  # type: ignore[assignment]
+        # Pin the platform the conftest sees, so what a caller measures is the branch it
+        # asked for. The conftest tests ``os.name`` BEFORE it tests the deps, so on a
+        # Windows runner ``collect_ignore_glob`` is set whatever ``present`` says, and
+        # every dep-branch assertion would be reading the platform branch's answer.
+        #
+        # Skipping those tests on Windows was the alternative and is worse: the
+        # dependency logic is not platform-specific, so a skip stops checking a live
+        # property on one platform while still scoring as a pass.
+        with mock.patch.dict(sys.modules, {"os": _os_reporting(os_name)}):
+            spec.loader.exec_module(module)
+    finally:
+        importlib.util.find_spec = saved  # type: ignore[assignment]
+    return module
+
+
+def test_container_suite_skipped_when_a_collect_time_dep_is_missing() -> None:
+    ns = _run_container_conftest(present={"fastapi", "uvicorn"})  # httpx missing
+    assert ns._missing_image_deps == ["httpx"]
+    assert getattr(ns, "collect_ignore_glob", None) == ["test_*.py"], (
+        "conftest must set collect_ignore_glob to skip the image suite when a "
+        "collection-time dep (httpx/fastapi/uvicorn) is absent"
+    )
+
+
+def test_container_suite_runs_when_all_collect_time_deps_present() -> None:
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})
+    assert ns._missing_image_deps == []
+    assert getattr(ns, "collect_ignore_glob", None) is None, (
+        "conftest must NOT skip the image suite when every collection-time dep is "
+        "importable, or the 309 tests stop running where their subject can run"
+    )
+
+
+def test_the_platform_branch_wins_over_the_dep_branch() -> None:
+    """On a non-POSIX host the suite is skipped even with every dep importable.
+
+    The two branches answer different questions -- "can this subject run here at all"
+    and "are its imports satisfied" -- and the platform one has to win, because the
+    image is Linux-only however complete the dev env is. Ordering them the other way
+    would collect 309 POSIX-dependent tests on Windows whenever someone had installed
+    ``requirements-dev.txt`` there.
+    """
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"}, os_name="nt")
+    assert ns._missing_image_deps == [], "the dep branch had nothing to complain about"
+    assert getattr(ns, "collect_ignore_glob", None) == [
+        "test_*.py"
+    ], "the image suite must not be collected on a non-POSIX host, whatever its deps"
+
+
+def test_boto3_is_not_a_collect_time_gate() -> None:
+    """boto3 is imported lazily, so a venv without it must still run the suite.
+
+    Both ``backup/store.py`` and ``front/transcript.py`` import boto3 inside a
+    function. If boto3 were in the guard list, every AWS-free dev env would skip
+    the whole suite for a dependency that never blocks import.
+    """
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})  # no boto3
+    assert getattr(ns, "collect_ignore_glob", None) is None
+
+
+# --- container image test suite: the direct-argument twin of the glob guard -----
+#
+# ``collect_ignore_glob`` only filters files pytest discovers by WALKING the
+# directory. A file named explicitly on the command line skips that walk, and
+# pytest treats direct arguments as overriding every ignore mechanism (including
+# a ``pytest_ignore_collect`` hook) -- so the conftest also substitutes a
+# declining Module collector in ``pytest_pycollect_makemodule``, the one
+# construction step every path to a test module shares. CI's reduced
+# cross-surface path passes several of this suite's files as explicit arguments
+# on every single-surface diff, which is how a frontend-only PR came to fail
+# ``Backend Tests`` with ``ModuleNotFoundError: No module named 'httpx'``.
+# These pin the hook's decision; the collector construction
+# itself is pytest plumbing, replaced with a sentinel so no live Session is
+# needed.
+
+
+class _SentinelDeclined:
+    """Stands in for ``_DeclinedModule`` so the hook's choice is observable."""
+
+    @classmethod
+    def from_parent(cls, parent, path):
+        return ("declined", parent, path)
+
+
+def test_direct_argument_collection_is_declined_when_a_dep_is_missing() -> None:
+    ns = _run_container_conftest(present={"fastapi", "uvicorn"})  # httpx missing
+    ns._DeclinedModule = _SentinelDeclined
+    made = ns.pytest_pycollect_makemodule(
+        module_path=_CONTAINER_CONFTEST.parent / "test_review_findings.py",
+        parent="parent-token",
+    )
+    assert made == (
+        "declined",
+        "parent-token",
+        _CONTAINER_CONFTEST.parent / "test_review_findings.py",
+    ), (
+        "a file named directly on the command line bypasses collect_ignore_glob, "
+        "so the makemodule hook must substitute the declining collector or every "
+        "frontend-only PR fails the backend shard on the image-only deps"
+    )
+
+
+def test_direct_argument_collection_runs_when_all_deps_present() -> None:
+    ns = _run_container_conftest(present={"fastapi", "httpx", "uvicorn"})
+    ns._DeclinedModule = _SentinelDeclined
+    made = ns.pytest_pycollect_makemodule(
+        module_path=_CONTAINER_CONFTEST.parent / "test_review_findings.py",
+        parent="parent-token",
+    )
+    assert made is None, (
+        "with every collection-time dep importable the hook must hand module "
+        "construction back to pytest, or the suite stops running where its "
+        "subject can run"
+    )
+
+
+def test_the_makemodule_hook_leaves_other_directories_alone() -> None:
+    ns = _run_container_conftest(present={"fastapi", "uvicorn"})  # declined
+    ns._DeclinedModule = _SentinelDeclined
+    made = ns.pytest_pycollect_makemodule(
+        module_path=_REPO_ROOT / "test" / "test_widget_slug.py",
+        parent="parent-token",
+    )
+    assert made is None, (
+        "the decline is scoped to the container suite's own directory; a "
+        "conftest hook runs for every module under it in the tree, so an "
+        "unscoped decline would skip unrelated suites"
     )
