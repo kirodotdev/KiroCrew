@@ -194,6 +194,7 @@ describe('label sanitization cannot be bypassed via the key', () => {
 
 describe('addSessionRef / removeSessionRef', () => {
   it('stages a new ref', () => {
+    // Carries every field through, plus the stage-time stamp the retire path needs.
     expect(addSessionRef([], ref('a'))).toEqual([ref('a')])
   })
 
