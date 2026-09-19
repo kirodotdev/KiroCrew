@@ -38,6 +38,19 @@ _APPEND_TIMEOUT_SECONDS = 0.5
 #: Three, so a single interleaving costs one retry and a caller that keeps losing
 #: still reports rather than spinning.
 _CREATE_ATTEMPTS = 3
+
+#: Windows ``ERROR_SHARING_VIOLATION``. Raised by ``CreateFileW`` when another
+#: handle on the object is open with sharing narrower than the access asked for --
+#: on this path that is somebody else's transient handle (a scanner, an indexer, a
+#: backup agent), not a second writer of ours, because ours share read and write.
+#: POSIX has no equivalent: an open there does not consult other openers. Distinct
+#: from ``_CREATE_ATTEMPTS`` in what it waits for: that one redoes a lost race at
+#: once, this one waits out somebody else's handle.
+_WIN_ERROR_SHARING_VIOLATION = 32
+
+#: How long to wait between open attempts. Short, because the holder is transient
+#: by nature; the DEADLINE decides how long the retrying lasts, not this.
+_SHARING_RETRY_SECONDS = 0.01
 _DIR_MODE = 0o700
 _FILE_MODE = 0o600
 
@@ -313,6 +326,32 @@ class LogFull(OSError):
     """The file would pass *max_bytes* with this record. Nothing was written."""
 
 
+def _enter_log_fd(stack: ExitStack, path: Path, deadline: float) -> int:
+    """``_open_log`` into *stack*, retrying a Windows sharing violation until *deadline*.
+
+    Separated from :func:`append_line`'s body deliberately: the retry must cover
+    the OPEN and nothing else. A body failure -- a short write, a rollback, a lock
+    timeout -- happens after this returns, so no partial write can ever be
+    replayed by it. ``ExitStack.enter_context`` registers nothing when the context
+    manager fails to enter, so a failed attempt leaves no pin behind either.
+
+    Any other error, and the same error once the deadline is spent, propagates
+    unchanged: this makes a TRANSIENT holder survivable without making a
+    permanent one invisible.
+    """
+    while True:
+        try:
+            return stack.enter_context(_open_log(path))
+        except OSError as exc:
+            if getattr(exc, "winerror", None) != _WIN_ERROR_SHARING_VIOLATION:
+                raise
+            try:
+                _remaining(deadline)
+            except TimeoutError:
+                raise exc from None
+            time.sleep(_SHARING_RETRY_SECONDS)
+
+
 def append_line(path: Path, line: bytes, *, max_bytes: int | None = None) -> None:
     """Append one complete JSONL record, or raise without joining later rows.
 
@@ -326,12 +365,18 @@ def append_line(path: Path, line: bytes, *, max_bytes: int | None = None) -> Non
     place and the next append terminates it before writing, so one torn row
     costs one unparseable line and not the record after it. Locks are advisory
     on POSIX: unrelated writers must honor this protocol to serialize. The
-    deadline bounds contention and retries, not a stalled filesystem syscall.
+    deadline bounds contention and retries, not a stalled filesystem syscall --
+    including the OPEN, which is retried while Windows reports
+    ``ERROR_SHARING_VIOLATION`` because on that platform a transient handle held
+    by a scanner or an indexer is what contention looks like before the lock is
+    even reached. The retry covers the open alone, so a partial write is never
+    replayed, and a holder that outlasts the deadline still raises.
     """
     if not line.endswith(b"\n") or b"\n" in line[:-1]:
         raise ValueError("append requires exactly one newline-terminated record")
     deadline = time.monotonic() + _APPEND_TIMEOUT_SECONDS
-    with _open_log(path) as fd:
+    with ExitStack() as stack:
+        fd = _enter_log_fd(stack, path, deadline)
         with platform_compat.file_lock(fd, exclusive=True, timeout=_remaining(deadline)):
             _regular_single_link(fd)
             start = os.lseek(fd, 0, os.SEEK_END)

@@ -46,6 +46,7 @@ from typing import Any
 
 from kiro_crew import credential_patterns as _cred
 from kiro_crew.config.sections import (
+    DECISION_HISTORY_BUDGET_DEFAULT,
     DECISION_PROVIDER_ENDPOINT_DEFAULT,
     DECISION_PROVIDER_MODEL_DEFAULT,
 )
@@ -240,6 +241,48 @@ def timeout_secs(config: Any | None = None) -> float:
     return max(_MIN_TIMEOUT_SECS, ms / 1000.0)
 
 
+def history_budget_chars(config: Any | None = None) -> int:
+    """Characters of prior conversation this decision may carry. Never raises.
+
+    The SMALLER of what ``config.json`` asks for and what the keystone recorded the
+    owner reviewing. Two files because they answer different questions: the config
+    is a preference and is agent-writable, the keystone is the authorization and is
+    sealed read-only in every sandbox. So lowering the budget stays an ordinary
+    config edit, while raising it past the reviewed ceiling takes a new consent --
+    and an agent that rewrites ``config.json`` moves nothing, because the ceiling
+    is not there.
+
+    0 whenever either side is unreadable, which includes every consent recorded
+    before the ceiling existed: those owners reviewed a request carrying the
+    message excerpt and the candidate descriptions, and this is what keeps that
+    true for them.
+
+    Read here rather than in the point for the same reason :func:`timeout_secs`
+    is: the snapshot read and its fallbacks live with the gate, so a point never
+    imports the config loader onto its own hot path. The keystone read is
+    filesystem IO on the CALLER's thread, which is the executor worker the point
+    already reads consent on.
+    """
+    asked = _budget("history_budget_chars", DECISION_HISTORY_BUDGET_DEFAULT, config)
+    if asked <= 0:
+        return 0
+    try:
+        ceiling = _consent.consented_history_budget()
+    except Exception:
+        logger.debug("decisions: history ceiling unreadable; sending no prior turns")
+        return 0
+    return min(asked, ceiling)
+
+
+def _budget(name: str, default: int, config: Any | None = None) -> int:
+    """One bounded integer knob off the decisions section, or *default*."""
+    try:
+        value = int(getattr(_decisions_config(config), name, default))
+    except Exception:
+        return default
+    return max(0, value)
+
+
 def _scan_text(state: dict | str, questions: list[Question], model: str = "") -> str:
     """Everything the scrub must clear, as one string.
 
@@ -353,6 +396,7 @@ async def decide(
     *,
     session_key: str | None = None,
     config: Any | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> Answers | None:
     """Ask *questions* about *state* at *point*, or return ``None``.
 
@@ -368,6 +412,13 @@ async def decide(
 
     *config* injects a config instead of reading the live snapshot; production
     callers leave it unset.
+
+    *extra* is written onto whichever row this call produces -- the round of a
+    split menu, a turn id shared by several calls -- and is never sent: it takes
+    no part in ``_scan_text`` because it never reaches the provider, and a key
+    naming a core row field is dropped by the log. A refusal that writes no row
+    (no consent, unknown point, unsampled) writes no extra either, which is the
+    same claim as before: those three touch no disk.
     """
     # Guarded because *config* may be an arbitrary object whose attribute reads
     # raise, and this seam must never alter the turn it sits in.
@@ -406,6 +457,7 @@ async def decide(
                 answers=answers,
                 scrubbed=error in SCRUB_ERRORS,
                 error=error,
+                extra=extra,
             )
             await asyncio.wait_for(asyncio.to_thread(_log.append, row), _LOG_BUDGET_SECS)
         except Exception as exc:

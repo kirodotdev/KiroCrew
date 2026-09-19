@@ -24,6 +24,16 @@ The row is six fields, and the omissions are the design
 bounded ``answers``. That is enough to answer "is it firing, how slow is it, how
 often does it fail, and what did it say".
 
+A point may add its own bounded fields through ``build_row(extra=...)`` -- the
+round of a split menu, the two arms of one turn -- and they are merged FLAT
+alongside the six so a reader needs no second shape. Merged flat, but never over
+a core field: a point cannot rewrite ``ts``, ``session`` or ``scrubbed`` by
+naming one. Each value is bounded exactly as an answer value is, because the
+whole point of the bounds is that one malformed row cannot cost the file every
+row after it. An ``extra`` still carries no conversation text: what a point puts
+there is names, counts and its own booleans, the same claim ``state`` is absent
+for.
+
 ``state`` is absent: it leaves the machine when the seam is enabled, but it does
 not also get written to disk, so this file never becomes a second copy of the
 conversation. ``session`` is a truncated SHA-256 of the session key for the same
@@ -31,6 +41,16 @@ reason -- it groups rows without naming a chat. ``error`` is a CATEGORY chosen b
 the gate, never a provider message: a message is unbounded and can quote the
 request back, which is how a credential would reach the file the scrub exists to
 keep it out of.
+
+Two kinds of row, told apart by an absent field
+-----------------------------------------------
+A DECISION row carries no ``kind``; a ``kind="feedback"`` row carries a person's
+verdict on one turn (:func:`build_feedback_row`). A reader therefore tells them
+apart by ``kind`` being absent, which is the only test that also holds for the
+files this code has already written. A verdict is appended as its own row rather
+than merged into the decision it judges: the append is constant-cost by design,
+so an edit would have to rewrite the file, and it would lose both when the
+verdict was given and the fact that someone changed their mind.
 
 Why one synchronous append helper
 ---------------------------------
@@ -101,6 +121,17 @@ _MAX_ANSWERS = 8
 #: into a file every later row shares.
 _MAX_VALUE_CHARS = 200
 
+#: Most ``extra`` fields one row may carry, and the longest list inside one. A
+#: point's extra is a fixed handful of names and counts, so both bounds are far
+#: past any real row; they exist so a caller looping a dict into ``extra`` writes
+#: a bounded line rather than an unbounded one.
+_MAX_EXTRA_KEYS = 24
+_MAX_EXTRA_ITEMS = 64
+
+#: Field names ``extra`` may not take. The six are what every reader keys on, so
+#: a point naming one is dropped rather than honoured.
+_CORE_FIELDS = frozenset({"ts", "point", "session", "latency_ms", "scrubbed", "answers", "error"})
+
 
 def log_dir() -> Path:
     """``~/.kiro/crew/decisions`` -- not created by this call."""
@@ -157,6 +188,30 @@ def _answers_json(answers: Answers | None) -> dict[str, dict[str, Any]] | None:
     return out
 
 
+def _extra_json(extra: dict[str, Any] | None) -> dict[str, Any]:
+    """*extra* as bounded, JSON-safe, non-core fields. Never raises.
+
+    A list is kept as a list rather than rendered as text: a reader counting keys
+    or comparing two arms needs the members, and ``json.dumps`` of a list of
+    short strings is no less bounded than one string of the same length once the
+    element count is capped.
+    """
+    if not isinstance(extra, dict):
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in list(extra.items())[:_MAX_EXTRA_KEYS]:
+        name = str(key)[:_MAX_VALUE_CHARS]
+        if name in _CORE_FIELDS:
+            continue
+        if value is None or isinstance(value, bool) or isinstance(value, (int, float)):
+            out[name] = value
+        elif isinstance(value, (list, tuple)):
+            out[name] = [_bounded_value(item) for item in list(value)[:_MAX_EXTRA_ITEMS]]
+        else:
+            out[name] = _bounded_value(value)
+    return out
+
+
 def build_row(
     *,
     point: str,
@@ -166,11 +221,16 @@ def build_row(
     scrubbed: bool = False,
     error: str | None = None,
     ts: datetime | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The row :func:`append` writes, built without touching the filesystem.
 
     Split out from the write so a test can assert the SHAPE without a temp home,
     and so the gate can build a row it then decides not to write.
+
+    *extra* carries a point's own bounded fields (a round number, a turn id, the
+    two arms of a comparison) flat alongside the six. A key naming a core field is
+    dropped, so the six always mean what every reader expects.
 
     ``scrubbed`` is written as ``scrubbed is True`` and not ``bool(scrubbed)``:
     "did anything leave the machine" is the one field a reader must be able to
@@ -178,7 +238,7 @@ def build_row(
     count -- would silently read as "refused" while carrying something else.
     """
     moment = ts or datetime.now(timezone.utc)
-    return {
+    row: dict[str, Any] = {
         "ts": moment.isoformat(),
         "point": point,
         "session": session_digest(session_key),
@@ -187,16 +247,77 @@ def build_row(
         "answers": _answers_json(answers),
         "error": error,
     }
+    # Merged AFTER the six, and with the core names already dropped, so the
+    # ordering says which half a reader can rely on and an extra can only ever
+    # add a field.
+    row.update(_extra_json(extra))
+    return row
 
 
-def append(row: dict[str, Any]) -> None:
-    """Append *row* as one JSON line. Never raises.
+#: Longest ``turn_id`` kept on a feedback row. The value is a turn identifier the
+#: frontend echoes back from the strip it was given, so it is bounded already --
+#: this is the bound that holds when the caller is something else.
+_MAX_TURN_ID_CHARS = 200
+
+#: The verdicts a feedback row may carry. ``None`` is a real value: it is how the
+#: reader says "the person cleared their earlier verdict", which has to be
+#: distinguishable from never having given one.
+FEEDBACK_VERDICTS = ("right", "wrong")
+
+#: Which of the two answers the verdict is ABOUT. A verdict with no side names no
+#: answer, so there is no default -- the caller states it.
+FEEDBACK_SIDES = ("jev", "baseline")
+
+
+def build_feedback_row(
+    *,
+    turn_id: str,
+    verdict: str | None,
+    side: str,
+    ts: datetime | None = None,
+) -> dict[str, Any]:
+    """A ``kind="feedback"`` row: a person's verdict on one decision.
+
+    Carries ``kind`` where a decision row carries none, and that asymmetry is the
+    compatible one: a reader distinguishes the two by ``kind`` being ABSENT, which
+    is the one test that also holds for a day-file already on disk. A field that
+    had to be present on both kinds would have to be backfilled into files this
+    code cannot reach.
+
+    Appended, never merged into the decision row it refers to. The log is
+    append-only by construction (:func:`append` uses the platform append helper
+    precisely so a write is constant-cost and cannot rewrite a neighbour), and a
+    verdict is a SECOND event about the same turn -- recording it as an edit would
+    lose when it was given and make a changed mind unrecoverable.
+
+    ``turn_id`` is bounded and rendered as text for the reason every other value
+    in this file is: one malformed caller must not write an unbounded line into a
+    file every later row shares.
+    """
+    moment = ts or datetime.now(timezone.utc)
+    return {
+        "ts": moment.isoformat(),
+        "kind": "feedback",
+        "turn_id": str(turn_id)[:_MAX_TURN_ID_CHARS],
+        "verdict": verdict if verdict in FEEDBACK_VERDICTS else None,
+        "side": side if side in FEEDBACK_SIDES else "",
+    }
+
+
+def append(row: dict[str, Any]) -> bool:
+    """Append *row* as one JSON line. Never raises. Returns whether it was written.
 
     Best-effort by contract: the seam is an observation, so a read-only home, a
     full disk or a directory someone chmod-ed must not turn into a failed turn
     at the call site. The failure is logged at WARNING (not DEBUG) precisely
     because a silently missing log looks identical to a seam that is switched
     off, and an operator reading an empty directory deserves to find out which.
+
+    The return value exists for the one caller that is not an observation: a
+    verdict the OWNER typed. Dropping an observation quietly is the contract;
+    answering ``200`` to a person whose verdict was never written is not, so
+    ``dashboard.handlers.decisions`` reads this and says so. Every other caller
+    ignores it, deliberately -- a decision must not fail because its row did.
     """
     path = log_path()
     try:
@@ -215,11 +336,12 @@ def append(row: dict[str, Any]) -> None:
                 path.name,
                 MAX_FILE_BYTES,
             )
-        return
+        return False
     except Exception as exc:
         logger.warning("decisions: could not append log row: %s", exc)
-        return
+        return False
     sweep_expired()
+    return True
 
 
 def sweep_expired(today: date | None = None) -> int:

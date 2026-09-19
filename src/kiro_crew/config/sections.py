@@ -5669,6 +5669,17 @@ DECISION_BUCKET_MAX = 100
 DECISION_PROVIDER_ENDPOINT_DEFAULT = "https://api.typesafe.ai/v1/systemone"
 DECISION_PROVIDER_MODEL_DEFAULT = "jev-latest"
 
+# How much PRIOR CONVERSATION one decision may carry, as a char budget rather than
+# a message count, because what it bounds is the size of the request that leaves
+# the machine -- a count bounds neither.
+#
+# The default is 0, and that is the whole point: consent is recorded against what
+# the owner reviewed, and the text they reviewed says the message excerpt and the
+# candidate descriptions leave the machine. Shipping prior turns under that
+# standing grant would widen egress with no new choice, so an owner who wants the
+# conversation sent raises this themselves.
+DECISION_HISTORY_BUDGET_DEFAULT = 0
+
 
 @dataclass
 class DecisionProviderConfig:
@@ -5729,8 +5740,9 @@ class DecisionsConfig:
     on the KEYSTONE leaf ``decisions_consent.json`` (``decisions.consent``), the
     same placement as ``computer_use.json`` and ``aws_service_consent.json``. This
     section carries only the knobs that grant nothing on their own: the sampling
-    share and the provider. There is no per-point arm and no shadow mode: one
-    point ships (``skills.select``).
+    share, the prior-conversation budget (0 by default, so raising it is a choice),
+    and the provider. There is no per-point arm and no shadow mode: one point ships
+    (``skills.select``).
 
     Every field is hot-applied (no ``restart=True`` anywhere): the gate reads the
     live snapshot per call, so a bucket change takes effect on the next decision
@@ -5747,6 +5759,20 @@ class DecisionsConfig:
             "value that is not a whole number reads as 0 (nobody sampled), never "
             "as everybody. To switch the seam off, withdraw consent in Settings > "
             "Developer > Feature Previews, not a zero bucket.",
+        ),
+    )
+    history_budget_chars: int = field(
+        default=DECISION_HISTORY_BUDGET_DEFAULT,
+        metadata=_meta(
+            "History budget (chars)",
+            "How many characters of PRIOR conversation one decision may carry, on "
+            "top of the current message. Earlier user and assistant turns are added "
+            "newest-first until this many characters are spent and the last one is "
+            "clipped to fit; tool output is never sent. The default is 0 -- no prior "
+            "turns -- because consent is recorded against the text the owner "
+            "reviewed, which names the message excerpt and the candidate "
+            "descriptions; raising this widens what leaves the machine, so it is a "
+            "choice rather than an upgrade. A negative value reads as 0.",
         ),
     )
     provider: DecisionProviderConfig = field(
@@ -5818,6 +5844,15 @@ class DecisionsConfig:
                 DECISION_BUCKET_MIN,
                 DECISION_BUCKET_MIN,
                 DECISION_BUCKET_MAX,
+            ),
+            # Unreadable reads as the DEFAULT, which for this key is 0 -- the same
+            # direction a malformed bucket takes, because both decide how much
+            # conversation leaves the machine and neither may fail open. Floored at
+            # 0 so a negative number cannot read as unbounded.
+            history_budget_chars=_safe_int(
+                section.get("history_budget_chars", DECISION_HISTORY_BUDGET_DEFAULT),
+                DECISION_HISTORY_BUDGET_DEFAULT,
+                0,
             ),
             provider=provider,
         )

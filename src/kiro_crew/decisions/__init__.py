@@ -34,7 +34,13 @@ broken point file cannot make ``decide`` unimportable.
 
 from __future__ import annotations
 
-from kiro_crew.decisions.gate import DECISION_POINT_NAMES, decide, is_enabled, timeout_secs
+from kiro_crew.decisions.gate import (
+    DECISION_POINT_NAMES,
+    decide,
+    history_budget_chars,
+    is_enabled,
+    timeout_secs,
+)
 from kiro_crew.decisions.types import Answer, Answers, Choice, Question
 
 __all__ = [
@@ -44,6 +50,7 @@ __all__ = [
     "Choice",
     "Question",
     "decide",
+    "history_budget_chars",
     "is_enabled",
     "timeout_secs",
 ]

@@ -19,6 +19,9 @@ What it exists to catch
   expired budget, and a builder with no loop to submit to.
 * That nothing is left running. The budget expiry cancels its future and the loop
   is left with no task of ours.
+* That the PRIOR TURNS in the state come from the session's own real transcript,
+  read through ``ContextBuilder.conversation_log`` on the executor thread -- the
+  only place that wiring exists.
 """
 
 from __future__ import annotations
@@ -69,7 +72,7 @@ def tree(tmp_path):
     return root
 
 
-def _builder(tmp_path, skills_root, *, cap=3):
+def _builder(tmp_path, skills_root, *, cap=3, conversation_log=None):
     """A real ContextBuilder. MUST be called on the loop, as production does."""
     from kiro_crew.context import ContextBuilder
     from kiro_crew.learn import LessonStore
@@ -82,6 +85,7 @@ def _builder(tmp_path, skills_root, *, cap=3):
         memory=MemoryStore(workspace=tmp_path / "ws"),
         skills=loader,
         lessons=LessonStore(base_dir=tmp_path),
+        conversation_log=conversation_log,
     )
 
 
@@ -333,3 +337,109 @@ def test_a_builder_with_no_loop_keeps_the_baseline(tmp_path, tree, enabled, monk
 
     assert _bodies(message) == [BASELINE]
     assert decide.calls == []
+
+
+# ---------------------------------------------------------------------------
+# The prior turns: read from the session's own transcript, on this thread
+# ---------------------------------------------------------------------------
+
+
+def _transcript(tmp_path, *rows):
+    """A real ``ConversationLog`` holding *rows* for the session ``_message`` uses."""
+    from kiro_crew.history import ConversationLog
+
+    log = ConversationLog(base_dir=tmp_path / "sessions")
+    log.init()
+    for role, content in rows:
+        log.append("s-exec", role, content)
+    return log
+
+
+@pytest.mark.asyncio
+async def test_the_prior_turns_of_this_session_reach_the_state(
+    tmp_path, tree, enabled, monkeypatch
+):
+    """The one place the transcript wiring exists: `build_message`'s own log."""
+    monkeypatch.setattr(core, "history_budget_chars", lambda *a, **k: 2000)
+    decide = _Recorder(WIDENED)
+    monkeypatch.setattr(core, "decide", decide)
+    log = _transcript(
+        tmp_path,
+        ("user", "we were talking about invoices"),
+        ("assistant", "yes, quarterly ones"),
+    )
+    builder = _builder(tmp_path, tree, conversation_log=log)
+
+    await _message(builder)
+
+    state = decide.calls[0][1]
+    assert state["history"] == [
+        {"role": "assistant", "text": "yes, quarterly ones"},
+        {"role": "user", "text": "we were talking about invoices"},
+    ], "newest first, because that is the order the budget spends in"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_row_in_the_transcript_is_never_sent(tmp_path, tree, enabled, monkeypatch):
+    monkeypatch.setattr(core, "history_budget_chars", lambda *a, **k: 2000)
+    decide = _Recorder(WIDENED)
+    monkeypatch.setattr(core, "decide", decide)
+    log = _transcript(
+        tmp_path,
+        ("tool", "cat /etc/shadow -> root:x:0:0"),
+        ("user", "carry on"),
+    )
+    builder = _builder(tmp_path, tree, conversation_log=log)
+
+    await _message(builder)
+
+    state = decide.calls[0][1]
+    assert [row["role"] for row in state["history"]] == ["user"]
+    assert "shadow" not in str(state)
+
+
+@pytest.mark.asyncio
+async def test_the_current_message_is_not_sent_twice(tmp_path, tree, enabled, monkeypatch):
+    """The turn's own user message may already be flushed to the transcript."""
+    monkeypatch.setattr(core, "history_budget_chars", lambda *a, **k: 2000)
+    decide = _Recorder(WIDENED)
+    monkeypatch.setattr(core, "decide", decide)
+    log = _transcript(tmp_path, ("user", "older turn"), ("user", "zebra please"))
+    builder = _builder(tmp_path, tree, conversation_log=log)
+
+    await _message(builder)
+
+    state = decide.calls[0][1]
+    assert state["message"] == "zebra please"
+    assert [row["text"] for row in state["history"]] == ["older turn"]
+
+
+@pytest.mark.asyncio
+async def test_a_builder_with_no_transcript_sends_no_history(tmp_path, tree, enabled, monkeypatch):
+    """No key on the wire, and the row says zero chars -- which is where
+    "reachable but empty" is distinguishable from "not sent"."""
+    monkeypatch.setattr(core, "history_budget_chars", lambda *a, **k: 2000)
+    decide = _Recorder(WIDENED)
+    monkeypatch.setattr(core, "decide", decide)
+    builder = _builder(tmp_path, tree, conversation_log=None)
+
+    await _message(builder)
+
+    assert "history" not in decide.calls[0][1]
+    assert decide.calls[0][3]["extra"]["history_chars"] == 0
+
+
+@pytest.mark.asyncio
+async def test_a_zero_history_budget_sends_the_message_alone(tmp_path, tree, enabled, monkeypatch):
+    """The shipped default: no key on the wire, and the transcript is never read."""
+    monkeypatch.setattr(core, "history_budget_chars", lambda *a, **k: 0)
+    decide = _Recorder(WIDENED)
+    monkeypatch.setattr(core, "decide", decide)
+    log = _transcript(tmp_path, ("user", "we were talking about invoices"))
+    builder = _builder(tmp_path, tree, conversation_log=log)
+
+    await _message(builder)
+
+    state = decide.calls[0][1]
+    assert "history" not in state
+    assert set(state) == {"message", "candidates"}

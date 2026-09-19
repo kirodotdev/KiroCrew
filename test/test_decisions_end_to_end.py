@@ -118,11 +118,34 @@ async def test_jev_response_reaches_the_assembled_message(
             "semantic",
             "/no skill applies",
         }
-        rows = list((tmp_path / "data" / "decisions").glob("*.jsonl"))
-        assert len(rows) == 1
-        row = json.loads(rows[0].read_text(encoding="utf-8"))
-        assert row["point"] == "skills.select"
-        assert row["error"] == ("invalid-result" if choice == "unoffered" else None)
-        assert "zebra please" not in json.dumps(row)
+        files = list((tmp_path / "data" / "decisions").glob("*.jsonl"))
+        assert len(files) == 1
+        rows = [
+            json.loads(line)
+            for line in files[0].read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert [row["point"] for row in rows] == ["skills.select"] * len(rows)
+        # The CALL row is the gate's: one per decision asked, carrying the
+        # error category when there was one. Identified by the field only it has
+        # -- the outcome row carries `baseline`, this one carries `candidates`
+        # without it.
+        asked = [row for row in rows if "candidates" in row and "baseline" not in row]
+        assert len(asked) == 1
+        assert asked[0]["error"] == ("invalid-result" if choice == "unoffered" else None)
+        assert asked[0]["candidates"] == 2
+        # The OUTCOME row is the point's, and exists only where an answer did:
+        # an `agree` against an answer that never arrived compares one arm with
+        # nothing.
+        outcome = [row for row in rows if "baseline" in row]
+        if choice == "unoffered":
+            assert outcome == []
+        else:
+            assert len(outcome) == 1
+            assert outcome[0]["baseline"] == ["lexical"], "what word overlap would have injected"
+            assert outcome[0]["jev"] == ([] if expected is None else [expected])
+            assert outcome[0]["agree"] is (expected == "lexical")
+            assert outcome[0]["turn_id"] == asked[0]["turn_id"]
+        assert "zebra please" not in json.dumps(rows)
     else:
         assert not (tmp_path / "data" / "decisions").exists()
