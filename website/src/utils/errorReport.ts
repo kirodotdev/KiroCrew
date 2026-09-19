@@ -505,3 +505,56 @@ export function __resetNavSeamForTests(): void {
   _softNavigate = null
   _handoffListeners.clear()
 }
+
+// ── Gateway-connectivity seam ────────────────────────────────────────────────
+//
+// The hand-off delivers the error to a chat composer, and the composer can only
+// send while the gateway is reachable — while it is down the composer itself is
+// inert ("gateway offline — message will not send"). So an "Ask the agent"
+// affordance shown next to a connectivity failure is a dead end: the click
+// navigates to a chat that cannot run the agent, which is worse than no button.
+//
+// The dashboard's authoritative flag is `dashboardSlice.connected`, but the
+// button must stay mountable OUTSIDE the store `<Provider>` (its callers include
+// ErrorBoundary fallbacks — see AskAgentButton). Same resolution as the
+// soft-navigation seam above: `useWebSocket` mirrors the flag here, beside the
+// very dispatches that set the store's copy, and the button subscribes to this
+// module instead of the store.
+//
+// Defaults to `true` — reachable until the socket layer reports otherwise — so
+// nothing changes for surfaces that never learn about connectivity (popouts
+// mount the socket hook too, but a test render or an embedded frame may not).
+
+let _gatewayConnected = true
+const _gatewayListeners = new Set<() => void>()
+
+/**
+ * Mirror of the dashboard↔gateway connection flag. Written only by
+ * `useWebSocket`'s `markGatewayConnected`/`markGatewayDisconnected` helpers,
+ * which move this flag and the store's `sseConnected`/`sseDisconnected` copy
+ * together so the two cannot drift.
+ */
+export function setGatewayConnected(connected: boolean): void {
+  if (_gatewayConnected === connected) return
+  _gatewayConnected = connected
+  for (const fn of _gatewayListeners) {
+    try { fn() } catch { /* a bad subscriber must not break connectivity tracking */ }
+  }
+}
+
+/** Snapshot for `useSyncExternalStore`. */
+export function isGatewayConnected(): boolean {
+  return _gatewayConnected
+}
+
+/** Subscribe to connectivity changes. Returns an unsubscribe. */
+export function subscribeGatewayConnected(fn: () => void): () => void {
+  _gatewayListeners.add(fn)
+  return () => { _gatewayListeners.delete(fn) }
+}
+
+/** Test seam — the flag is module state. */
+export function __resetGatewayConnectedForTests(): void {
+  _gatewayConnected = true
+  _gatewayListeners.clear()
+}
