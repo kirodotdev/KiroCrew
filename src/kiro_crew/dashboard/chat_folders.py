@@ -459,10 +459,17 @@ def _folder_project_overlap_denied(resolved: str) -> str | None:
     return conflict
 
 
-def _resolve_folder_project_dir(
-    folders: list[dict[str, Any]], folder_id: str
-) -> tuple[str, str | None]:
-    """Return the nearest validated project directory inherited by a folder."""
+def _nearest_folder_value(folders: list[dict[str, Any]], folder_id: str, key: str) -> object:
+    """Return the nearest truthy *key* on *folder_id* or its ancestor chain.
+
+    The ONE ancestor walk every inherited folder setting shares (``project_dir``
+    and ``default_agent`` both follow the nearest-ancestor rule; see
+    ``learn-cron-dashboard.md``), so a second consumer cannot drift from the
+    first on cycle handling or on what "inherit" means. Pure: no filesystem
+    access, so it is safe to run under the folder-store lock. Cycle-guarded and
+    returns ``""`` for an unknown folder or when nothing on the chain sets it.
+    Values come back RAW -- callers validate type and content.
+    """
     by_id = {str(folder.get("id") or ""): folder for folder in folders if isinstance(folder, dict)}
     seen: set[str] = set()
     current_id = folder_id
@@ -471,13 +478,27 @@ def _resolve_folder_project_dir(
         folder = by_id.get(current_id)
         if folder is None:
             break
-        raw_project = folder.get("project_dir")
-        if raw_project:
-            if not isinstance(raw_project, str):
-                return "", "project_dir must be a string"
-            return _validate_project_dir(raw_project.strip())
+        value = folder.get(key)
+        if value:
+            return value
         current_id = str(folder.get("parent_id") or "")
-    return "", None
+    return ""
+
+
+def _resolve_folder_project_dir(
+    folders: list[dict[str, Any]], folder_id: str
+) -> tuple[str, str | None]:
+    """Return the nearest validated project directory inherited by a folder.
+
+    Filesystem work (``_validate_project_dir`` resolves and stats the path), so
+    callers on the event loop run it via ``asyncio.to_thread``.
+    """
+    raw_project = _nearest_folder_value(folders, folder_id, "project_dir")
+    if not raw_project:
+        return "", None
+    if not isinstance(raw_project, str):
+        return "", "project_dir must be a string"
+    return _validate_project_dir(raw_project.strip())
 
 
 def _refuse_unattributable_caller(

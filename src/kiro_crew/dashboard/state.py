@@ -2091,6 +2091,8 @@ class _ChatSlot:
         "_created_by",
         "_created_by_sid",
         "_lineage_minted",
+        "_folder_workspace_authority",
+        "_folder_workspace_grant",
         "_artifact",
         "_channel_folder_filed",
         "_resumed_count",
@@ -2458,6 +2460,12 @@ class _ChatSlot:
         #: ``parent`` -- ``_created_by`` alone is restored for authorization, never
         #: promoted to lineage.
         self._lineage_minted: bool = False
+        #: Audit projection of the workspace named by the protected grant. It is
+        #: set at mint or protected-record restore and never read from transcript
+        #: metadata. Authorization uses the complete creator/workspace/store tuple
+        #: below, so this display field cannot grant reach by itself.
+        self._folder_workspace_authority: str = ""
+        self._folder_workspace_grant: tuple[str, str, str] | None = None
         # Artifact companion binding: set when this slot is a
         # companion chat session for an artifact (slug). At most one
         # non-archived slot per slug by convention — the frontend flow

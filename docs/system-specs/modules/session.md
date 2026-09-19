@@ -103,7 +103,13 @@ too; history deletion has no tombstone that retires the key or fences delayed
 saves. Selection retention follows the existing protected identity lifetime,
 rather than treating removal of an editable transcript as revocation of identity.
 A permitted non-owner dashboard caller may select a provider
-template or an existing V1 member, including the default assistant. A private V2
+template or an existing V1 member, including the default assistant. The same
+protected record may carry a `folder_workspace_grant` minted only by validated
+session-control creation. It freezes creator key, target workspace, and memory
+store for that stable effective session key. Selection rewrites preserve an
+existing grant, while restore projects it off-loop; transcript metadata is not a
+source. A malformed grant invalidates the protected record, and absence grants
+nothing. A private V2
 member choice requires the owner and is refused before provider reset or history
 mutation. Non-owner resolution retains the namespace it first resolved, even if
 discovery imports a same-named member during the request; a V1-to-V2 change during

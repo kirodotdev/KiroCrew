@@ -429,8 +429,12 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "falls back to the calling slot's agent so the child stays in "
                             "this workspace's memory boundary. A conductor that omits it "
                             "therefore gets a second conductor, which has no fs_write and "
-                            "cannot do the work. Name the agent the child needs "
-                            "explicitly \u2014 kirocrew-worker for a leaf work item."
+                            "cannot do the work. The one exception: a `folder` whose "
+                            "nearest ancestor is linked to a project AND pins a "
+                            "default_agent supplies that agent instead. Name the agent the "
+                            "child needs explicitly \u2014 kirocrew-worker for a leaf work "
+                            "item \u2014 unless such a folder default applies. An explicit "
+                            "agent must resolve in the workspace the child is created in."
                         ),
                     },
                     "folder": {
@@ -439,7 +443,13 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "Sidebar folder to file the new session into, atomically with "
                             "creation — a folder id or a '/'-separated human path. Missing "
                             "path segments are created (mkdir -p), like chat_folder_create's "
-                            "`parent`. Omit to leave the session at the top level."
+                            "`parent`. A folder linked to a project (directly or via an "
+                            "ancestor) gives the child that project as its working "
+                            "directory, in the caller's workspace, as the dashboard does. "
+                            "Only when that project is the unique root of another "
+                            "configured workspace does the child move there, and only for "
+                            "a crew-member caller. Omit to leave the session at the top "
+                            "level in the caller's workspace."
                         ),
                     },
                 },

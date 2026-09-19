@@ -16,7 +16,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 
 | Tool | Route | What it does |
 |------|-------|--------------|
-| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation |
+| `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation; a project-linked folder supplies the child's cwd (and, when pinned, its default agent), and moves a crew member's child into another workspace only when that project is the unique root of one |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
 | `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn |
@@ -67,7 +67,35 @@ An unresolvable folder refuses the whole create — nothing exists yet, so refus
 loses nothing — existence is confirmed read-only under the folder-store lock
 (`read_folders`) before the allocation, and the move path's Model-B un-hide runs
 only after the filing has landed, so a refused create leaves no folder-tree
-mutation behind.
+mutation behind. A folder with an inherited `project_dir` (resolved by the same
+nearest-ancestor walk `POST /api/chat/slots` uses, `_nearest_folder_value` in
+`chat_folders.py`, then validated off the loop by `_resolve_folder_project_dir`)
+gives the child that project as its cwd in the caller's workspace — dashboard
+parity, and the ordinary configuration, since most linked projects are checkouts
+rather than workspace roots. The workspace changes only when the validated
+project is the unique root of a configured workspace other than the caller's
+(`_folder_workspace_names`, compared by realpath, never the loader's
+unknown-name fallback): a project shared by two configured workspaces refuses
+(`folder_workspace_ambiguous`), and crossing is refused for every caller but a
+crew member (`folder_workspace_forbidden`). Both the realpath-backed folder and
+binding mappings and the ordinary binding-to-workspace mapping run through
+`asyncio.to_thread`, so no create branch can move workspace resolution onto the
+gateway event loop. After the final folder-store snapshot, a project-linked
+create re-runs canonical path, existence, and sensitivity validation off-loop;
+once that hop returns, the folder generation, caller identity, and allocation
+are checked with no intervening await. A pathname replacement during earlier
+preparation therefore revokes the create. Replacement after allocation remains
+the shared cwd lifetime boundary and is not widened into a workspace grant. An
+omitted agent then takes the
+folder's nearest inherited `default_agent` ahead of the caller's agent; an
+explicit agent remains an override. The inputs the create CONSUMED — existence,
+the inherited project, and the inherited default agent only when it was read —
+are re-snapshotted under the folder lock as the last suspension before
+allocation (`_folder_target_inputs`), so a concurrent delete, reparent or
+project change revokes the decision (`folder_target_changed`, 409) while a
+rename, a visual move, or an edit to a `default_agent` this create never
+consulted does not. A folder with no inherited project remains filing-only and
+keeps caller workspace/agent inheritance unchanged.
 
 ### What a created child inherits
 
@@ -77,8 +105,23 @@ Creation copies two different kinds of state, and the split is deliberate.
 boundary; a child left in `default` would be both a boundary crossing and
 unaddressable by its own creator), inherits the caller's agent when none is
 named, takes that workspace's project directory as its cwd, and is attributed to
-the caller via `created_by` so the per-creator slot ceiling is countable. The
-caller's ACP session id is also frozen onto the child at this mint
+the caller via `created_by` so the per-creator slot ceiling and ownership fence
+are countable. A project-linked folder changes two of those inputs the way the
+dashboard's own create does: the folder's inherited project becomes the child's
+cwd, and an omitted agent takes the folder's nearest inherited `default_agent`
+ahead of the caller's agent (never the global default — that fallback is the
+one `rfc-conductor-work-ledger.md` records as wrong here). The workspace changes
+only when that project is the unique root of a configured workspace other than
+the caller's, and only for a crew-member caller; the selected agent must then
+bind to that target workspace, the memory-delegation gate below still requires
+the child's store to be one the caller may delegate to. The create writes one
+`folder_workspace_grant` into the existing protected agent-selection record
+keyed by the child's stable effective session key. That grant freezes the
+creator key, target workspace, and authorized memory store. The live slot holds
+only an in-memory projection of that protected record; transcript metadata can
+neither create nor restore the exception. A missing, malformed, or inconsistent
+protected record therefore fails closed. The caller's ACP session id is also
+frozen onto the child at this mint
 (`_created_by_sid`), from the live caller handle, so the child's `session/opened`
 lineage cites the creator that was live when it was made rather than a
 replacement that may take the creator's slot before the child's first turn. The
@@ -118,10 +161,13 @@ create already in flight. Revoking mid-call yields an untrusted child.
 
 Nothing about trust is persisted at birth. The birth metadata carries
 `tab_id`, `origin`, `created_at`, `workspace`, `agent`, `project`, `title`,
-`memory_mode`, and `folder_id` / `created_by` when set — no trust field — so a
-restart returns the child to interactive along with its creator.
+`memory_mode`, and `folder_id` / `created_by` when set — no trust or
+cross-workspace grant field — so a restart returns the child to interactive
+along with its creator. The protected agent-selection record carries the grant
+independently of this agent-editable transcript.
 
-The create's SEL record carries `agent`, `folder_id`, and what the child was
+The create's SEL record carries `agent`, `folder_id`, `folder_workspace_authority`
+(the workspace folder authority placed the child into, or `""`), and what the child was
 born with: `inherited_trust` and `inherited_trust_reads`, present on both
 outcomes so `"false"` is positive evidence the posture did not transfer. That is
 what makes an auto-approved tool call in a dispatched session traceable to the
@@ -174,7 +220,7 @@ that is out of bounds is visible after the fact even though nothing happened.
 | Target is app-scoped | 403 | App sessions are the app's, not a peer's |
 | Target is channel-linked (`linked_session_key` set) | 403 | Its conversation is mirrored to Slack/Telegram, so reaching it crosses a surface boundary both ways — and its stop cannot be honoured, because the stop path addresses `dashboard:<slot>` while a linked slot's turns run under its linked key |
 | Target or caller has an outbound channel mirror (`get_mirror_link`) | 403 | The same boundary reached by the other mechanism. `linked_session_key` marks a channel-BORN slot; a dashboard-born slot given a mirror link republishes its turns to a channel just as surely, and the link lives in the session store rather than on the slot, so the slot-side check reads empty on exactly the session that mirrors |
-| Target is in another workspace | 403 | Workspaces are the memory boundary |
+| Target is in another workspace | 403 | Workspaces are the memory boundary. Sole exception: a crew member reaching the direct child its own `session_create` placed in another workspace through a project-linked folder. The child's protected `folder_workspace_grant`, keyed by stable effective session identity, must name this caller, the child's current workspace, and the memory store still held by both caller and child. Missing, malformed, or inconsistent protected provenance fails closed; transcript `folder_workspace_authority`, `created_by`, and `memory_store` values cannot mint the exception. The ordinary creator fence still uses `created_by` independently. `folder_id` is deliberately NOT the key: it is a mutable filing field any later move sets. Ordinary callers, crons, descendants, foreign targets and cross-store children remain refused |
 | Target names no open session | 404 | A mistake, not an authorization failure |
 | Title matches more than one session | 409 | Guessing means acting on the wrong conversation |
 

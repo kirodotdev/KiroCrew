@@ -79,7 +79,10 @@ from kiro_crew.memory_stores import UnknownMemoryStore, named_store_or_empty
 from kiro_crew.messaging.link import is_channel_session_key
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
-from kiro_crew.session_agent_selection import session_agent_selection_name
+from kiro_crew.session_agent_selection import (
+    session_agent_selection_name,
+    session_folder_workspace_grant,
+)
 from kiro_crew.validation import ARTIFACT_SLUG_RE
 
 logger = logging.getLogger(__name__)
@@ -101,6 +104,10 @@ _SKIP_MEMBER_RESTORE: tuple[str, str] = ("", "__skip__")
 #: non-member key) — defaulting to ``None`` would silently unpin every member
 #: slot restored by a caller that forgot to prefetch.
 _IDENTITY_UNRESOLVED: tuple[str, str] = ("", "__unresolved__")
+
+#: In-memory prefetch field, never serialized into transcript metadata.
+_PROTECTED_FOLDER_WORKSPACE_GRANT = "_protected_folder_workspace_grant"
+_GRANT_UNRESOLVED = object()
 
 
 # Recognized title-origin values (mirrors chat_title._TITLE_ORIGINS; duplicated
@@ -514,6 +521,15 @@ def _restored_agent_name(session_key: str, meta: dict) -> str:
     return selected or (agent if isinstance(agent, str) else "")
 
 
+def _restored_folder_workspace_grant(session_key: str) -> tuple[str, str, str] | None:
+    """Restore cross-workspace authority only from protected session identity."""
+    try:
+        return session_folder_workspace_grant(session_key)
+    except UnknownMemoryStore:
+        logger.warning("Could not read restored workspace grant for %s", session_key, exc_info=True)
+        return None
+
+
 def _prefetch_rehydrate_inputs(
     conv_log: ConversationLog,
     history_key: str,
@@ -554,6 +570,9 @@ def _prefetch_rehydrate_inputs(
         meta, readable = conv_log.get_metadata(history_key), True
     if not readable or not meta or (meta.get("closed") and not adopt_closed):
         return meta or {}, readable, None, None, None, None
+    meta = dict(meta)
+    identity_key = str(meta.get("linked_session_key") or history_key)
+    meta[_PROTECTED_FOLDER_WORKSPACE_GRANT] = _restored_folder_workspace_grant(identity_key)
     return (
         meta,
         readable,
@@ -562,7 +581,7 @@ def _prefetch_rehydrate_inputs(
         # The transcript key is "dashboard:" + slot name; identity is a
         # property of the slot name.
         _member_restore_identity(history_key.removeprefix("dashboard:")),
-        _restored_agent_name(str(meta.get("linked_session_key") or history_key), meta),
+        _restored_agent_name(identity_key, meta),
     )
 
 
@@ -1371,6 +1390,14 @@ def _rehydrate_slot_from_history(
             # so a value read back from it must not become the gateway-authored
             # crew-log lineage record. Attribution above is restored for the
             # ownership boundary only.
+        protected_grant = meta.get(_PROTECTED_FOLDER_WORKSPACE_GRANT, _GRANT_UNRESOLVED)
+        if protected_grant is _GRANT_UNRESOLVED:
+            protected_grant = _restored_folder_workspace_grant(
+                str(meta.get("linked_session_key") or history_key)
+            )
+        if isinstance(protected_grant, tuple) and len(protected_grant) == 3:
+            slot._folder_workspace_grant = protected_grant
+            slot._folder_workspace_authority = protected_grant[1]
         if meta.get("folder_id"):
             slot.folder_id = meta["folder_id"]
         if meta.get("channel_folder_filed"):
@@ -1812,17 +1839,16 @@ def _prefetch_recent_session(
     if not has_folder and not has_pin:
         if cutoff is not None and session.get("modified", 0) < cutoff:
             return None, None, None, None
+    identity_key = str(
+        meta.get("linked_session_key") or slot_transcript_key(_recent_session_slot_name(key) or key)
+    )
+    meta = dict(meta)
+    meta[_PROTECTED_FOLDER_WORKSPACE_GRANT] = _restored_folder_workspace_grant(identity_key)
     return (
         meta,
         conv_log.read_messages_chained(key),
         _member_restore_identity(_recent_session_slot_name(key) or ""),
-        _restored_agent_name(
-            str(
-                meta.get("linked_session_key")
-                or slot_transcript_key(_recent_session_slot_name(key) or key)
-            ),
-            meta,
-        ),
+        _restored_agent_name(identity_key, meta),
     )
 
 
@@ -1943,6 +1969,10 @@ def _apply_recent_session(
         slot._created_by = str(meta["created_by"])
         # `created_by_sid` is never restored here either -- see
         # _rehydrate_slot_from_history: transcript metadata is not a lineage source.
+    folder_workspace_grant = meta.get(_PROTECTED_FOLDER_WORKSPACE_GRANT)
+    if isinstance(folder_workspace_grant, tuple) and len(folder_workspace_grant) == 3:
+        slot._folder_workspace_grant = folder_workspace_grant
+        slot._folder_workspace_authority = folder_workspace_grant[1]
     if meta.get("folder_id"):
         slot.folder_id = meta["folder_id"]
     if meta.get("channel_folder_filed"):
@@ -3443,8 +3473,8 @@ def _save_slot_to_history(
                     # session-control authorization reads it, so dropping it here
                     # would orphan a member's workers on the next restart.
                     fields["created_by"] = slot._created_by
-                # `_created_by_sid` is NOT persisted (lineage is process-local; see
-                # _ChatSlot._lineage_minted).
+                # `_created_by_sid` and the protected workspace grant are not
+                # persisted in transcript metadata.
                 if slot.linked_session_key:
                     fields["linked_session_key"] = slot.linked_session_key
                 if getattr(slot, "channel_origin", False):
@@ -3842,7 +3872,8 @@ def _save_slot_to_history(
                 # Creator attribution — read by the member ownership boundary in
                 # session-control authorization; see the partial-save mirror above.
                 meta_line["created_by"] = slot._created_by
-            # `_created_by_sid` is NOT persisted -- see the partial-save mirror above.
+            # `_created_by_sid` and the protected workspace grant are not
+            # persisted in transcript metadata.
             # Artifact companion binding — persisted so a bound
             # session restored after a gateway restart (or resumed from the
             # History page) comes back as the artifact's active bound session.

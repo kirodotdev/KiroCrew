@@ -18,6 +18,20 @@ if TYPE_CHECKING:
     from kiro_crew.config.sections import ResolvedBindings
 
 SelectionChange = tuple[dict[str, Any] | None, dict[str, Any]]
+FolderWorkspaceGrant = tuple[str, str, str]
+
+
+def _folder_workspace_grant(row: dict[str, Any]) -> FolderWorkspaceGrant | None:
+    """Validate the optional grant carried by this protected session record."""
+    raw = row.get("folder_workspace_grant")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {"created_by", "workspace", "memory_store"}:
+        raise UnknownMemoryStore("Conversation selection is invalid")
+    values = (raw["created_by"], raw["workspace"], raw["memory_store"])
+    if not all(isinstance(value, str) and value for value in values):
+        raise UnknownMemoryStore("Conversation selection is invalid")
+    return values
 
 
 def _selection_path(session_key: str) -> Path:
@@ -56,7 +70,17 @@ def _read_selection(path: Path, session_key: str) -> dict[str, Any] | None:
         or not row["revision"]
     ):
         raise UnknownMemoryStore("Conversation selection is invalid")
+    _folder_workspace_grant(row)
     return row
+
+
+def session_folder_workspace_grant(session_key: str) -> FolderWorkspaceGrant | None:
+    """Read cross-workspace authority from the gateway-owned session record."""
+    try:
+        row = _read_selection(_selection_path(session_key), session_key)
+    except (OSError, RuntimeError) as exc:
+        raise UnknownMemoryStore("Conversation selection is unreadable") from exc
+    return _folder_workspace_grant(row) if row is not None else None
 
 
 def session_agent_selection_name(session_key: str) -> str | None:
@@ -128,17 +152,26 @@ def record_agent_selection(
     bindings: ResolvedBindings,
     *,
     replace: bool = False,
+    folder_workspace_grant: FolderWorkspaceGrant | None = None,
 ) -> SelectionChange | None:
     """Record a validated dispatch or an authorized explicit choice.
 
     This grants no memory access: private-session assignment and ownership are
     still checked independently before provider allocation. An automatic dispatch
-    cannot replace a choice made while its resolution was in flight.
+    cannot replace a choice made while its resolution was in flight. The optional
+    folder grant is accepted only from the validated session-creation transaction;
+    later selection changes preserve it rather than deriving it from transcript data.
     """
     kind = getattr(bindings, "selection_kind", "")
     selected = agent_name or bindings.resolved_alias
     if kind not in ("member", "template") or not selected or not bindings.requested_resolved:
+        if folder_workspace_grant is not None:
+            raise UnknownMemoryStore("Conversation selection grant has no valid session selection")
         return None
+    if folder_workspace_grant is not None and not all(
+        isinstance(value, str) and value for value in folder_workspace_grant
+    ):
+        raise UnknownMemoryStore("Conversation selection grant is invalid")
     path = _selection_path(session_key)
     row = {
         "version": 1,
@@ -150,6 +183,15 @@ def record_agent_selection(
     # must not overwrite an explicit owner pick committed during its lookup.
     with _config_write_lock(path):
         prior = _read_selection(path, session_key)
+        grant = folder_workspace_grant or (
+            _folder_workspace_grant(prior) if prior is not None else None
+        )
+        if grant is not None:
+            row["folder_workspace_grant"] = {
+                "created_by": grant[0],
+                "workspace": grant[1],
+                "memory_store": grant[2],
+            }
         if prior is not None and all(prior.get(k) == v for k, v in row.items()) and not replace:
             return None
         observed_revision = getattr(bindings, "selection_revision", None)
