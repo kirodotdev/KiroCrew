@@ -298,14 +298,20 @@ def read_session_execution(session_key: str, *, required: bool = False) -> Execu
         raise _unavailable("session record is unreadable")
     execution = execution_from_record(record, required=required)
     if execution is None:
+        from kiro_crew.memory_stores import MissingExecutionIdentity
+
+        missing = MissingExecutionIdentity(
+            "Execution memory is unavailable: session has no canonical member identity; "
+            "Global was not used"
+        )
         if record.get("member_id") or record.get("selection_kind") == "member":
-            raise _unavailable("session has no canonical member identity")
+            raise missing
         store = record.get("memory_store")
         if store and store != "default":
             from kiro_crew.memory_stores import memory_store_version
 
             if memory_store_version(store) == 2:
-                raise _unavailable("session has no canonical member identity")
+                raise missing
     return execution
 
 

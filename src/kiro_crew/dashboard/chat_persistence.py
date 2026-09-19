@@ -3311,12 +3311,35 @@ def _save_slot_to_history(
         if getattr(slot, "linked_session_key", "") == routing:
             break
     from kiro_crew.execution_context import read_session_execution
+    from kiro_crew.memory_stores import MissingExecutionIdentity
 
     def retention_allows_write() -> bool:
-        execution = read_session_execution(note_auth_key)
-        return getattr(slot, "memory_mode", "persistent") == "persistent" and (
-            execution is None or execution.memory_mode == "persistent"
-        )
+        if getattr(slot, "memory_mode", "persistent") != "persistent":
+            return False
+        try:
+            execution = read_session_execution(note_auth_key)
+        except MissingExecutionIdentity as exc:
+            # Only this refusal is let through: a readable record that names a
+            # member or private store but has no ``execution_context`` field at
+            # all -- a session written before that field existed. This write is
+            # the TRANSCRIPT, not private memory: the carrier only decides
+            # retention here, and with none to read the slot's own mode
+            # (already ``persistent`` above) is the only retention there is.
+            # Refusing would fail every save and every close of such a
+            # session, which then restores itself to the list forever.
+            # Every other ``UnknownMemoryStore`` (unreadable record, a
+            # present-but-malformed carrier, an undeclared store) propagates:
+            # its retention is unknown, so the refusal stands. Authorizing
+            # private memory from the store name stays refused where it is
+            # read for that purpose.
+            logger.debug(
+                "Slot %s predates canonical execution identity (%s); saving its "
+                "transcript under the slot's own retention mode",
+                slot.key,
+                exc,
+            )
+            return True
+        return execution is None or execution.memory_mode == "persistent"
 
     if not retention_allows_write():
         return True

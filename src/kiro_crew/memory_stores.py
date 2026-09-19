@@ -100,6 +100,13 @@ class MemberAlreadyExists(UnknownMemoryStore):
     """A member creation lost a race with an existing config entry."""
 
 
+class MissingExecutionIdentity(UnknownMemoryStore):
+    """A readable session record marks a member or private store but carries no
+    ``execution_context`` -- the one shape a record written before that field
+    existed has. Raised only there: an unreadable record, a present-but-malformed
+    carrier and an undeclared store all stay plain :class:`UnknownMemoryStore`."""
+
+
 def memory_store_name_defect(name: object) -> str | None:
     """Why *name* is unusable as a store name, or ``None`` when it is fine.
 
