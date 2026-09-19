@@ -36,7 +36,10 @@ from kiro_crew.feishu.transport import (
     SPOOL_GROUP_ROUTE_PREFIX,
 )
 from kiro_crew.history import mint_row_mid
-from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.commands import (
+    compact_unsupported_backend,
+    compact_unsupported_reply_zh,
+)
 from kiro_crew.messaging.conversation import (
     ConversationState,
     reserve_new_generation,
@@ -68,6 +71,7 @@ if TYPE_CHECKING:
     from kiro_crew.session import SessionManager
 
 logger = logging.getLogger(__name__)
+
 
 # Canonical kiro-cli agent fallback so Feishu sessions load kirocrew-core
 # (spawn_run etc.) instead of kiro-cli's bare built-in default.  Mirrors the
@@ -347,7 +351,8 @@ class FeishuDispatcher:
             if unsupported:
                 logger.debug("Feishu: manual /compact declined — %s compacts itself", unsupported)
                 await self.client.send_reply(
-                    inbound.message_id, "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。"
+                    inbound.message_id,
+                    compact_unsupported_reply_zh(unsupported),
                 )
                 return
             await provider.compact()

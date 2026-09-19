@@ -33,12 +33,20 @@ from typing import Any
 from kiro_crew.messaging.link import SLACK_NAMESPACE, channel_namespace_of
 from kiro_crew.platform.context import PlatformCompositionError
 from kiro_crew.platform.governance_profiles import vet_and_audit
+from kiro_crew.session_compaction import (
+    COMPACT_OUTCOME_COMPACTED,
+    COMPACT_OUTCOME_RECYCLED,
+    COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
+)
 
 logger = logging.getLogger(__name__)
 
 #: Notices are plain text: a channel session may be read on a client with no
 #: markdown rendering, and the dashboard's own notice copy does not transfer
 #: (it references UI affordances the channel user does not have).
+#: The compaction-outcome vocabulary the session layer reports. Imported rather
+#: than restated: these notices are chosen by it, and a second spelling of the
+#: same value is how a notice starts describing the wrong arm.
 CHANNEL_COMPACT_NOTICE = (
     "Context reached {pct:.0f}% and was auto-compacted. Earlier turns are now a "
     "summary; this conversation continues where it left off."
@@ -46,6 +54,22 @@ CHANNEL_COMPACT_NOTICE = (
 CHANNEL_COMPACT_FAILED_NOTICE = (
     "Context reached {pct:.0f}% but auto-compact failed. It retries after a "
     "cooldown — send {cmd} to compact now, or {new_cmd} to start fresh."
+)
+#: The session was REPLACED after a compaction that could have worked failed. Says
+#: what happened rather than claiming a summary, and names the loss the user would
+#: otherwise discover by asking the agent something it cannot recall.
+CHANNEL_RESTART_NOTICE = (
+    "Context reached {pct:.0f}% and compaction didn't succeed, so this session was "
+    "restarted. The messages above are still here; the agent no longer remembers "
+    "them. Send {new_cmd} any time to start fresh yourself."
+)
+#: The same restart where NOTHING could have compacted it. Only this one names the
+#: missing capability: the notice above is reached by backends that have compaction
+#: and failed once, and telling those users their backend cannot compact is false.
+CHANNEL_RESTART_UNCOMPACTABLE_NOTICE = (
+    "Context reached {pct:.0f}% and this backend cannot compact at all, so this "
+    "session was restarted. The messages above are still here; the agent no longer "
+    "remembers them. Send {new_cmd} any time to start fresh yourself."
 )
 
 #: Manual fallbacks differ per channel: the bang-prefixed transports own their
@@ -59,16 +83,45 @@ _MANUAL_COMMANDS: dict[str, tuple[str, str]] = {
 _DEFAULT_COMMANDS = ("/compact", "/new")
 
 
-def notice_text(namespace: str, pct: float, *, success: bool) -> str:
-    """Render the notice for *namespace* at *pct* usage."""
-    if success:
-        return CHANNEL_COMPACT_NOTICE.format(pct=pct)
-    compact_cmd, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
-    return CHANNEL_COMPACT_FAILED_NOTICE.format(pct=pct, cmd=compact_cmd, new_cmd=new_cmd)
+def notice_text(
+    namespace: str,
+    pct: float,
+    *,
+    success: bool,
+    outcome: str = COMPACT_OUTCOME_COMPACTED,
+) -> str:
+    """Render the notice for *namespace* at *pct* usage.
+
+    ``outcome`` says WHICH arm ran, and a channel needs it for the same reason the
+    dashboard does: a recycle is a success to the caller, so ``success`` alone
+    rendered "it was compacted automatically" for a session that had been REPLACED.
+    The restart wordings name the loss the user would otherwise find by asking the
+    agent something it cannot recall, and only the uncompactable one says the
+    backend cannot compact -- a kiro-cli session whose in-place ``/compact`` merely
+    timed out reaches the other.
+
+    ``new_cmd`` is threaded into both restart notices because it is the one action a
+    user can take afterwards, and it is already per-namespace.
+    """
+    if not success:
+        compact_cmd, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
+        return CHANNEL_COMPACT_FAILED_NOTICE.format(pct=pct, cmd=compact_cmd, new_cmd=new_cmd)
+    if outcome == COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE:
+        _, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
+        return CHANNEL_RESTART_UNCOMPACTABLE_NOTICE.format(pct=pct, new_cmd=new_cmd)
+    if outcome == COMPACT_OUTCOME_RECYCLED:
+        _, new_cmd = _MANUAL_COMMANDS.get(namespace, _DEFAULT_COMMANDS)
+        return CHANNEL_RESTART_NOTICE.format(pct=pct, new_cmd=new_cmd)
+    return CHANNEL_COMPACT_NOTICE.format(pct=pct)
 
 
 async def deliver_channel_compaction_notice(
-    state: Any, key: str, pct: float, *, success: bool
+    state: Any,
+    key: str,
+    pct: float,
+    *,
+    success: bool,
+    outcome: str = COMPACT_OUTCOME_COMPACTED,
 ) -> None:
     """Post the auto-compact notice into the conversation behind *key*.
 
@@ -81,9 +134,11 @@ async def deliver_channel_compaction_notice(
     if not namespace:
         return
     if namespace == SLACK_NAMESPACE:
-        await _deliver_slack(state, key, notice_text(namespace, pct, success=success))
+        await _deliver_slack(
+            state, key, notice_text(namespace, pct, success=success, outcome=outcome)
+        )
         return
-    await _deliver_via_transport(state, key, pct, success=success)
+    await _deliver_via_transport(state, key, pct, success=success, outcome=outcome)
 
 
 def _channel_egress_permitted(session_key: str, channel_type: str) -> bool:
@@ -148,7 +203,14 @@ async def _deliver_slack(state: Any, key: str, text: str) -> None:
         logger.debug("compact notice: slack delivery failed for %s", key, exc_info=True)
 
 
-async def _deliver_via_transport(state: Any, key: str, pct: float, *, success: bool) -> None:
+async def _deliver_via_transport(
+    state: Any,
+    key: str,
+    pct: float,
+    *,
+    success: bool,
+    outcome: str = COMPACT_OUTCOME_COMPACTED,
+) -> None:
     """Send through the governed cross-surface ladder (Discord and friends).
 
     The notice text is rendered from the RESOLVED channel type rather than the
@@ -187,7 +249,7 @@ async def _deliver_via_transport(state: Any, key: str, pct: float, *, success: b
     if target is None:
         return
     resolved, transport = target
-    text = notice_text(resolved.channel_type, pct, success=success)
+    text = notice_text(resolved.channel_type, pct, success=success, outcome=outcome)
     try:
         await transport.send_message(resolved.channel_id, text, thread_id=resolved.thread_id)
     except Exception:

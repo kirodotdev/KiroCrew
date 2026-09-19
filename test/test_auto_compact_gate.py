@@ -107,6 +107,13 @@ def _provider_factory(
         # reset_after_compaction leaves the fresh stats unconfirmed.
         m.context_usage_unknown = lambda: (True if state["compacted"] else unknown)
         m.manual_compact_unsupported_backend = unsupported
+        # Set EXPLICITLY, because the two capabilities answer different
+        # questions and this suite drives the one where they differ. KAS cannot
+        # be handed ``/compact`` AND needs nothing from Crew, which is the pair
+        # that reaches the decline. An auto-created mock attribute would be
+        # truthy, and the gate's ``str`` guard would read it as ``None`` by luck
+        # rather than by statement.
+        m.compaction_unmanaged_backend = None
 
         async def _stream(_cmd):
             for ev in []:
