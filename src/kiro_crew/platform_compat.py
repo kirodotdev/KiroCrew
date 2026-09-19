@@ -45,6 +45,10 @@ IS_POSIX: bool = not IS_WINDOWS
 IS_LINUX: bool = sys.platform == "linux"
 IS_MACOS: bool = sys.platform == "darwin"
 
+# Win32 process identifiers cross the API boundary as a fixed-width DWORD.
+# ctypes otherwise truncates a larger Python integer before OpenProcess sees it.
+_WINDOWS_PID_MAX = (1 << 32) - 1
+
 
 _UTF8_PROCESS_ENV = {
     "PYTHONUTF8": "1",
@@ -4290,20 +4294,28 @@ def pgroup_exists(pgid: int) -> bool:
     evades ``kill_process_tree`` -- callers that must catch those use the
     escaped-children reapers, not this.
 
-    POSIX: ``os.killpg(pgid, 0)`` -- conservative on EPERM (unsignalable
-    reads as alive). Windows: process groups in this sense do not exist and
-    ``kill_process_tree`` already walks the whole child tree via
-    ``taskkill /T``, so the group id (== the launcher pid) is probed as a
-    plain pid via :func:`pid_exists`.
+    POSIX: ``os.killpg(pgid, 0)`` -- conservative on EPERM and on an integer
+    outside the native ``pid_t`` range (both read as alive/unknown). Windows:
+    process groups in this sense do not exist and ``kill_process_tree`` already
+    walks the whole child tree via ``taskkill /T``, so the group id (== the
+    launcher pid) is probed as a plain pid via :func:`pid_exists`. A value wider
+    than the Win32 DWORD PID boundary also reads as alive/unknown rather than
+    being truncated into a different identity.
     """
-    if not IS_POSIX:
-        return pid_exists(pgid)
     if pgid <= 0:
         return False
+    if not IS_POSIX:
+        if pgid > _WINDOWS_PID_MAX:
+            return True
+        return pid_exists(pgid)
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
         return False
+    except OverflowError:
+        # Persisted owner markers can be syntactically numeric without fitting
+        # pid_t. Unknown identity is not proof that cleanup is safe.
+        return True
     except OSError:
         return True  # exists but we can't signal it
     return True
