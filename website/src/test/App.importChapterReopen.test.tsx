@@ -44,6 +44,7 @@ const themeState = {
 
 vi.mock('../hooks/useTheme', () => ({
   useTheme: () => themeState,
+  useOptionalTheme: () => themeState,
   ThemeProvider: ({ children }: { children: ReactNode }) => children,
 }))
 

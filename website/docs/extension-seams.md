@@ -161,6 +161,65 @@ own static tree, and core CI pins that file byte-identical to
 drift apart. An edition that overlays the PWA icons but leaves the gateway logo
 stock reintroduces exactly that drift — brand one, brand both.
 
+## Desktop pre-boot branding: `desktop/` overlay
+
+The native Electron splash appears before the dashboard and cannot consume React
+theme branding. An edition may provide `desktop/loading.html`; the desktop build
+validates that `desktop/` contains only allowlisted files, stages the page under
+the distinct packaged name `edition-loading.html`, and removes it on every build
+entry and exit. Electron chooses the staged edition page when present and otherwise
+loads the stock `loading.html` on cold boot and every recovery path.
+
+The fixed allowlist currently contains only `loading.html`. It deliberately does
+not permit `main.js`, package metadata, executable icons, or arbitrary directories:
+an edition can own the splash document without shadowing native control logic or
+silently widening what its build input may replace. Composition requires the same
+`KIROCREW_EDITION_DIR` plus `KIROCREW_ALLOW_EDITION=1` pair as the frontend; an
+edition directory without the opt-in fails closed. `SKIP_ELECTRON=1` stages
+nothing, so backend-only builds cannot leave a native asset behind.
+
+Staging injects a deny-by-default Content Security Policy that permits only
+inline script/style and embedded data images/fonts. Remote fetches, frames,
+workers, forms, and navigation are blocked. Local shell pages receive only the
+three splash IPC methods (`onStatus`, `onBootReady`, and `bootComplete`), never
+the dashboard's privileged gateway, updater, filesystem, or browser bridges.
+
+The page runs with the restricted local-shell subset of the Electron preload
+bridge. Preserve its startup and recovery feedback contract:
+
+- Read the optional `accent` query parameter for the saved theme accent. Validate
+  it as a color before applying it and supply a readable fallback.
+- Subscribe to `window.electronAPI.onStatus(callback)` immediately. The callback
+  receives a text message such as `Starting gateway…` or recovery progress;
+  render it with `textContent` in a visible `role="status"` region. Keep this
+  region readable over the artwork. The subscription returns an unsubscribe
+  function.
+- Subscribe to `window.electronAPI.onBootReady(callback)` immediately. When that
+  callback fires, finish the page's exit transition and call
+  `window.electronAPI.bootComplete()`. A static page can acknowledge immediately.
+  The shell waits for this acknowledgement before navigating to the dashboard;
+  missing it adds an eight-second timeout. Honor reduced-motion preferences if
+  the page animates. This subscription also returns an unsubscribe function.
+
+For example, after a visible `<p id="status" role="status">Starting gateway…</p>`:
+
+```html
+<script>
+  const api = window.electronAPI;
+  const stopStatus = api.onStatus((message) => {
+    document.getElementById('status').textContent = message;
+  });
+  const stopReady = api.onBootReady(() => api.bootComplete());
+  window.addEventListener('pagehide', () => { stopStatus(); stopReady(); });
+</script>
+```
+
+Use a self-contained document: arbitrary sibling assets are not staged. Verify
+the packaged Electron page on cold boot and recovery, including status updates,
+dashboard handoff and Back navigation. Build entry clears stale splash and
+managed-marker inputs before validation or backend work, and its exit trap
+cleans inputs staged by that run even when packaging fails.
+
 ## Edition peer-dependency rule
 
 An edition dir resolves bare imports from its OWN `node_modules`, so any
@@ -324,12 +383,15 @@ ships in the edition's own overlay: this seam contributes only the picker entry.
 `value` already in `THEMES`, or already registered by an earlier call, is rejected
 (core wins).
 
-**Theme branding reaches three consumers.** `getThemeBranding(colorTheme)` drives
-the `App.tsx` shell chrome, `WelcomeView.tsx` (the new-session brand mark), and
+**Theme branding reaches four consumers.** `getThemeBranding(colorTheme)` drives
+the `App.tsx` shell chrome, `WelcomeView.tsx` (the new-session brand mark),
+`OnboardingChapterShell.tsx` (first-run/prerequisite mark and decorative art), and
 `pages/chat/ChatFooter.tsx` (the turn-running loader). A registered theme's `logo`
-shows in the first two, falling back to the stock ghost mark when the theme
-registers none. The loader contract is documented in
-[theming-contract](theming-contract.md).
+shows in all three brand-mark locations, falling back to the stock ghost when the
+theme registers none. `branding.onboardingDecorations` replaces the complete
+decorative mascot layer; omitting it preserves the stock mascots. Reusing `logo`
+keeps the shell, welcome page, and onboarding lockup on one authoritative asset.
+The loader contract is documented in [theming-contract](theming-contract.md).
 
 A branding's optional `onActivate` side-effect fires on each transition into that
 theme, including the first render for the initially-active theme, because the

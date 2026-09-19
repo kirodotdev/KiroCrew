@@ -26,6 +26,21 @@ The app will:
 5. Point the user at Kiro CLI installation and sign-in on the gateway host when
    either prerequisite is missing
 
+A downstream edition may provide `desktop/loading.html` under its
+`KIROCREW_EDITION_DIR`. `packaging/build-desktop.sh` validates the fixed desktop
+allowlist, stages that document as `edition-loading.html` for the current build,
+and removes it on exit. Cold boot and recovery use the edition page when packaged
+and otherwise fall back to this repository's stock `loading.html`; the edition
+never overwrites the core file. Both loading pages and the token prompt are
+removed from navigation history after the dashboard loads. Recovery preserves
+the user's dashboard routes while removing the transient page, so Back cannot
+return to a completed loading screen.
+
+Every local shell page is restricted by a deny-by-default Content Security
+Policy. Its preload exposes only splash status and boot-completion signals, and
+loading pages cannot open windows or navigate. The token prompt alone may
+navigate to the exact gateway origin selected by the main process.
+
 The Electron shell uses the same gateway-hosted setup screen as every browser;
 it has no separate installer or login runner, and it performs neither step. The
 screen links out to <https://kiro.dev/cli/> for the CLI, and names the commands
