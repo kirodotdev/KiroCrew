@@ -15,7 +15,7 @@ latched in the tracker so a long plan does not re-announce it at every boundary.
 from __future__ import annotations
 
 import time
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -37,6 +37,8 @@ def _make_state():
     state.push_slots_update = MagicMock()
     state.subagents = MagicMock()
     state.subagents.running_agents_for = MagicMock(return_value=[])
+    state.subagents.has_pending_work_for_async = AsyncMock(return_value=False)
+    state.subagents.wait_for_parent_reports = AsyncMock(return_value=False)
     return state
 
 
@@ -60,6 +62,9 @@ def _stage_turns(monkeypatch, *, age_plan_by=0.0):
     box = {"n": 0}
 
     async def _mock_run_chat(state, slot, message, **kwargs):
+        callback = kwargs.get("_on_consumed")
+        if callable(callback):
+            callback(True)
         box["n"] += 1
         slot.append("assistant", f"stage {box['n']} output", "msg msg-a")
         if age_plan_by:

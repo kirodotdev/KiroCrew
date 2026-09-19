@@ -124,7 +124,7 @@ async def drain_slack_backfill(
     # changes. A turn completing mid-drain would then be undetectable on the one
     # slot busy enough to make the race likely. total_messages is a lifetime
     # counter and survives trimming.
-    started_running = slot.running
+    started_running = slot.turn_running
     started_total = slot.total_messages
     session_key = effective_session_key(slot)
 
@@ -241,7 +241,7 @@ async def drain_slack_backfill(
     # nothing else will spend it. Expire it here rather than leaving live buttons
     # for an answer the conversation no longer wants.
     #
-    # ``started_running or slot.running``, not a before/after comparison: a turn
+    # ``started_running or slot.turn_running``, not a before/after comparison: a turn
     # that is already in flight when the drain begins and is STILL in flight when
     # it ends (a long cron or injected turn) leaves the flag identical at both
     # ends and may not have appended a row yet, so both a `!=` on running and the
@@ -262,7 +262,7 @@ async def drain_slack_backfill(
     # unlink already succeeded, where there was nothing yet for it to abort on.
     _unlinked = slot._slack_channel != channel or slot._slack_thread_ts != thread_ts
     if live_ts and (
-        _unlinked or started_running or slot.running or slot.total_messages != started_total
+        _unlinked or started_running or slot.turn_running or slot.total_messages != started_total
     ):
         try:
             await expire_slack_options(state, session_key, ts=live_ts)

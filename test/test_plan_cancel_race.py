@@ -68,6 +68,19 @@ def _cancelled_rows(slot) -> int:
     return sum(1 for m in slot.messages if "Plan cancelled" in (m.get("content") or ""))
 
 
+def _arm_owned_stage_delivery(slot) -> None:
+    from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
+
+    slot.stage_boundary.arm(1, consumed=True)
+    announce = "[Subagent completion event]\nstage-owned result"
+    slot.queue_append(
+        announce,
+        kind=SUBAGENT_COMPLETION_KIND,
+        meta=slot.stage_boundary.tag_meta(),
+    )
+    slot.note_pending_subagent_delivery(announce, ["stage-agent"])
+
+
 @pytest.mark.asyncio
 async def test_cancel_before_stage_loop_starts_does_not_advance(tmp_path, monkeypatch):
     """Cancel processed before the stage loop creates a tracker: NO stage runs.
@@ -124,6 +137,323 @@ async def test_double_cancel_appends_exactly_one_cancelled_row(tmp_path):
     assert (
         _cancelled_rows(slot) == 1
     ), f"expected exactly one cancelled row, transcript has {_cancelled_rows(slot)}"
+
+
+@pytest.mark.asyncio
+async def test_idle_cancel_settles_owned_stage_delivery_debt(tmp_path):
+    """A paused boundary releases its queue row and retention debt on Cancel."""
+    state, slot = _make_orchestrator_state(tmp_path, "cancel-idle-debt", ["First"])
+    settled: list[list[str]] = []
+
+    async def _settle(agent_ids: list[str]) -> None:
+        settled.append(agent_ids)
+
+    state.subagents.settle_queued_delivery = _settle
+    _arm_owned_stage_delivery(slot)
+    assert slot._stage_controller_task is None and not slot._in_stage_execution
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        await _cancel(client, slot.key)
+
+    assert slot._queue == [], "idle Cancel left the stage-owned completion queued"
+    assert slot._subagent_delivery_pending == {}, "idle Cancel stranded delivery debt"
+    assert settled == [["stage-agent"]]
+    assert slot.stage_boundary.stage is None
+
+
+@pytest.mark.asyncio
+async def test_typed_stop_releases_owned_stage_delivery_debt(tmp_path):
+    """A typed stop settles the same owned rows and debt as plan Cancel."""
+    from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
+
+    state, slot = _make_orchestrator_state(tmp_path, "typed-stop-debt", ["First"])
+    tracker = OrchestrationTracker(stage_timeout_seconds=60)
+    tracker._stage_rounds[1] = MAX_STAGE_ROUNDS
+    slot._orch_tracker = tracker
+    _arm_owned_stage_delivery(slot)
+    settled: list[list[str]] = []
+
+    async def _settle(agent_ids: list[str]) -> None:
+        settled.append(agent_ids)
+
+    state.subagents.settle_queued_delivery = _settle
+    async with TestClient(TestServer(_make_app(state))) as client:
+        response = await client.post("/api/chat", json={"slot": slot.key, "message": "stop"})
+        assert response.status == 200 and (await response.json()).get("stopped") is True
+
+    assert slot._queue == []
+    assert slot._subagent_delivery_pending == {}
+    assert settled == [["stage-agent"]]
+    assert slot.stage_boundary.stage is None
+
+
+@pytest.mark.asyncio
+async def test_typed_stop_quiesces_controller_before_terminal_notice(tmp_path, monkeypatch):
+    """A between-stage controller cannot emit after the stopped notice."""
+    from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
+
+    state, slot = _make_orchestrator_state(tmp_path, "typed-stop-controller", ["First"])
+    tracker = OrchestrationTracker(stage_timeout_seconds=60)
+    tracker._stage_rounds[1] = MAX_STAGE_ROUNDS
+    slot._orch_tracker = tracker
+    slot.stage_boundary.arm(1, consumed=True)
+    controller_started = asyncio.Event()
+    controller_tail = "controller tail after cancellation"
+
+    async def _controller() -> None:
+        controller_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            slot.append("assistant", controller_tail, "msg msg-a")
+
+    controller = asyncio.create_task(_controller())
+    slot.track_stage_controller(controller)
+    await controller_started.wait()
+    # Model the typed-control admission snapshot: no child turn is active, but
+    # the outer stage controller has not quiesced yet.
+    monkeypatch.setattr(type(slot), "turn_running", property(lambda _slot: False))
+    terminal_message = "🛑 [SYSTEM] Orchestration stopped by user."
+    try:
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post("/api/chat", json={"slot": slot.key, "message": "stop"})
+            assert response.status == 200
+            assert (await response.json()).get("stopped") is True
+            if not controller.done():
+                controller.cancel()
+            await asyncio.gather(controller, return_exceptions=True)
+
+        contents = [str(row.get("content") or "") for row in slot.messages]
+        terminal_index = contents.index(terminal_message)
+        assert controller_tail in contents[:terminal_index]
+        assert contents[terminal_index:] == [terminal_message]
+    finally:
+        if not controller.done():
+            controller.cancel()
+            await asyncio.gather(controller, return_exceptions=True)
+
+
+@pytest.mark.parametrize("surface", ["plan-action", "typed-stop"])
+@pytest.mark.asyncio
+async def test_plan_cancel_revokes_every_captured_parent_before_boundary_clear(tmp_path, surface):
+    """Cancel revokes linked and dashboard stage children before releasing ownership."""
+    from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
+
+    state, slot = _make_orchestrator_state(tmp_path, f"captured-parent-{surface}", ["First"])
+    slot.stage_boundary.arm(1, consumed=True)
+    captured_keys = {"slack:1712345678.901", "discord:channel:message"}
+    slot.stage_boundary.parent_session_keys.update(captured_keys)
+    dashboard_key = f"dashboard:{slot.key}"
+    parent_keys = captured_keys | {dashboard_key}
+    calls: list[str] = []
+
+    async def _child() -> None:
+        await asyncio.Event().wait()
+
+    children = {key: asyncio.create_task(_child()) for key in parent_keys}
+
+    async def _cancel_parent(parent_key: str) -> tuple[int, int]:
+        assert slot.stage_boundary.stage == 1, "boundary cleared before child cancellation"
+        calls.append(parent_key)
+        child = children.get(parent_key)
+        if child is not None and not child.done():
+            child.cancel()
+            return (1, 0)
+        return (0, 0)
+
+    state.subagents.cancel_for_parent = _cancel_parent
+    state.subagents.running_agents_for = MagicMock(return_value=[])
+    try:
+        async with TestClient(TestServer(_make_app(state))) as client:
+            if surface == "plan-action":
+                await _cancel(client, slot.key)
+            else:
+                tracker = OrchestrationTracker(stage_timeout_seconds=60)
+                tracker._stage_rounds[1] = MAX_STAGE_ROUNDS
+                slot._orch_tracker = tracker
+                response = await client.post(
+                    "/api/chat", json={"slot": slot.key, "message": "stop"}
+                )
+                assert response.status == 200
+                assert (await response.json()).get("stopped") is True
+        await asyncio.sleep(0)
+        assert set(calls) == parent_keys
+        assert len(calls) == len(parent_keys), "a stage parent was cancelled more than once"
+        assert all(child.cancelled() for child in children.values())
+        assert slot.stage_boundary.stage is None
+    finally:
+        for child in children.values():
+            if not child.done():
+                child.cancel()
+        await asyncio.gather(*children.values(), return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_active_stage_cancel_releases_boundary_and_hands_off_once(tmp_path, monkeypatch):
+    """Active plan Cancel joins, releases, reports, and hands off once."""
+    import kiro_crew.dashboard.chat_orchestrator as orchestrator
+
+    state, slot = _make_orchestrator_state(tmp_path, "active-cancel", ["First"])
+    slot.stage_boundary.arm(1, consumed=True)
+    slot.queue_append("after cancel")
+    controller_started = asyncio.Event()
+    handed_off: list[str] = []
+    order: list[str] = []
+
+    async def _controller() -> None:
+        controller_started.set()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            slot._in_stage_execution = False
+            order.append("controller-finished")
+
+    async def _start_next(_state, _slot) -> bool:
+        handed_off.append(_slot.queue_pop(0)["content"])
+        order.append("handoff")
+        return True
+
+    controller = asyncio.create_task(_controller())
+    slot._in_stage_execution = True
+    slot.track_stage_controller(controller)
+    slot.task = controller
+    await controller_started.wait()
+
+    append_and_surface = orchestrator.append_and_surface
+
+    def _record_report(*args, **kwargs):
+        if len(args) > 3 and "Plan cancelled" in str(args[3]):
+            order.append("cancel-reported")
+        return append_and_surface(*args, **kwargs)
+
+    monkeypatch.setattr(orchestrator, "append_and_surface", _record_report)
+    monkeypatch.setattr(orchestrator, "_start_next_queued_turn", _start_next)
+    try:
+        async with TestClient(TestServer(_make_app(state))) as client:
+            await _cancel(client, slot.key)
+        assert order == ["controller-finished", "cancel-reported", "handoff"]
+        assert handed_off == ["after cancel"]
+        assert slot.stage_boundary.stage is None
+        assert slot._queue == []
+        assert controller.done()
+    finally:
+        if not controller.done():
+            controller.cancel()
+            await asyncio.gather(controller, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_cancel_holds_admission_until_settlement_and_terminal_broadcast(
+    tmp_path, monkeypatch
+):
+    """Repeat Cancel cannot release early; the first queued turn hands off last."""
+    state, slot = _make_orchestrator_state(tmp_path, "cancel-admission", ["First"])
+    _arm_owned_stage_delivery(slot)
+    settle_started, finish_settle = asyncio.Event(), asyncio.Event()
+    order: list[str] = []
+
+    async def _settle(_agent_ids: list[str]) -> None:
+        order.append("settle-start")
+        settle_started.set()
+        await finish_settle.wait()
+        order.append("settle-end")
+
+    async def _run_after_cancel(*_args, **_kwargs) -> None:
+        order.append("handoff")
+
+    state.subagents.settle_queued_delivery = _settle
+    monkeypatch.setattr(
+        state,
+        "broadcast_ws",
+        lambda event, _payload: order.append("chat_done") if event == "chat_done" else None,
+    )
+    monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", _run_after_cancel)
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _run_after_cancel)
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        cancel_path = f"/api/chat/slots/{slot.key}/plan-action"
+        cancel_task = asyncio.create_task(client.post(cancel_path, json={"action": "cancel"}))
+        await asyncio.wait_for(settle_started.wait(), timeout=1)
+        repeat_cancel = asyncio.create_task(client.post(cancel_path, json={"action": "cancel"}))
+        await asyncio.sleep(0)
+        try:
+            assert not repeat_cancel.done()
+            response = await client.post(
+                "/api/chat?ws=1",
+                json={"slot": slot.key, "message": "after cancel"},
+            )
+            assert response.status == 200 and (await response.json()).get("queued") is True
+            assert slot.stage_boundary.stage == 1
+            assert "handoff" not in order
+        finally:
+            finish_settle.set()
+            cancel_response, repeat_response = await asyncio.wait_for(
+                asyncio.gather(cancel_task, repeat_cancel), timeout=1
+            )
+        assert cancel_response.status == repeat_response.status == 200
+
+    turn = slot.task
+    if isinstance(turn, asyncio.Task):
+        await asyncio.wait_for(turn, timeout=1)
+    assert order == ["settle-start", "settle-end", "chat_done", "handoff"]
+    assert slot.stage_boundary.stage is None
+    assert slot._queue == []
+
+
+@pytest.mark.asyncio
+async def test_concurrent_cancels_start_only_one_queued_turn(tmp_path, monkeypatch):
+    """A live successor task keeps the second Cancel from handing off again."""
+    state, slot = _make_orchestrator_state(tmp_path, "concurrent-cancel", ["First"])
+    _arm_owned_stage_delivery(slot)
+    slot.queue_append("first queued turn")
+    slot.queue_append("second queued turn")
+    settle_started = asyncio.Event()
+    finish_settle = asyncio.Event()
+    release_turns = asyncio.Event()
+    started: list[str] = []
+    live_tasks: list[asyncio.Task] = []
+
+    async def _settle(_agent_ids: list[str]) -> None:
+        settle_started.set()
+        await finish_settle.wait()
+
+    async def _start_one(_state, _slot):
+        entry = _slot.queue_pop(0)
+        started.append(entry["content"])
+        task = asyncio.create_task(release_turns.wait())
+        live_tasks.append(task)
+        _slot.task = task
+        return True
+
+    state.subagents.settle_queued_delivery = _settle
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn",
+        _start_one,
+    )
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        cancel_path = f"/api/chat/slots/{slot.key}/plan-action"
+        first_cancel = asyncio.create_task(client.post(cancel_path, json={"action": "cancel"}))
+        await asyncio.wait_for(settle_started.wait(), timeout=1)
+        second_cancel = asyncio.create_task(client.post(cancel_path, json={"action": "cancel"}))
+        for _ in range(100):
+            if getattr(slot._lock, "_waiters", None):
+                break
+            await asyncio.sleep(0)
+        assert getattr(slot._lock, "_waiters", None), "repeat Cancel never reached release lock"
+        finish_settle.set()
+        responses = await asyncio.wait_for(
+            asyncio.gather(first_cancel, second_cancel),
+            timeout=1,
+        )
+        assert all(response.status == 200 for response in responses)
+
+    try:
+        assert started == ["first queued turn"]
+        assert [entry["content"] for entry in slot._queue] == ["second queued turn"]
+    finally:
+        release_turns.set()
+        await asyncio.gather(*live_tasks)
 
 
 @pytest.mark.asyncio
@@ -279,6 +609,63 @@ async def test_mid_loop_cancel_drops_queued_approval_at_finally_drain(tmp_path, 
         f"is a plain message and hands off first: {handed_off}"
     )
     assert [e["content"] for e in slot._queue] == ["real message during plan"]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_plan_delivers_unrelated_completion(tmp_path, monkeypatch):
+    """Cancel drops only this plan's work, not an earlier agent's result."""
+    from kiro_crew.dashboard.chat import _stage_loop
+    from kiro_crew.dashboard.chat_utils import SUBAGENT_COMPLETION_KIND
+
+    state, slot = _make_orchestrator_state(tmp_path, "cancel-unrelated-result", ["First"])
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    handed_off: list[dict] = []
+    unrelated = "[Subagent completion event]\nresult from an earlier turn"
+    owned = "[Subagent completion event]\nresult from this stage"
+
+    async def _mock_run_chat(_state, _slot, _message, **_kwargs):
+        entered.set()
+        await release.wait()
+
+    async def _mock_start_next_queued_turn(_state, _slot):
+        handed_off.append(_slot.queue_pop(0))
+        return True
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
+    monkeypatch.setattr(
+        "kiro_crew.dashboard.chat_orchestrator._start_next_queued_turn",
+        _mock_start_next_queued_turn,
+    )
+
+    async with TestClient(TestServer(_make_app(state))) as client:
+        loop_task = asyncio.create_task(_stage_loop(state, slot, auto_run=True))
+        try:
+            await asyncio.wait_for(entered.wait(), timeout=5)
+            # This agent started before the plan. Its completion happens to land
+            # while Autopilot is active, but the cancelled plan does not own it.
+            owner = slot.stage_boundary.owner
+            assert owner is not None
+            slot.queue_append(
+                unrelated,
+                kind=SUBAGENT_COMPLETION_KIND,
+                meta=slot.stage_boundary.tag_meta({}, owner=""),
+            )
+            slot.queue_append(
+                owned,
+                kind=SUBAGENT_COMPLETION_KIND,
+                meta=slot.stage_boundary.tag_meta({}, owner=owner),
+            )
+            await _cancel(client, slot.key)
+        finally:
+            release.set()
+        await asyncio.wait_for(loop_task, timeout=5)
+
+    assert [entry["content"] for entry in handed_off] == [unrelated], (
+        "plan cancellation discarded an unrelated agent completion instead of "
+        "delivering it as the next ordinary queued turn"
+    )
+    assert slot._queue == [], "the cancelled stage's owned completion survived cancellation"
 
 
 def test_is_plan_approval_entry_matches_tag_only():

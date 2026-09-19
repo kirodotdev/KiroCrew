@@ -482,6 +482,125 @@ class TestBatchIdentity:
         assert events[0][2]["outcome"] == "stopped"
 
     @pytest.mark.asyncio
+    async def test_stage_owned_queued_stop_holds_its_parent_report_barrier(self):
+        """The next stage waits until its queued predecessor reports stopped."""
+        from kiro_crew.subagent import stage_boundary_owner_for_run
+
+        report_started = asyncio.Event()
+        release_report = asyncio.Event()
+        announced: list[SubagentInfo] = []
+
+        async def on_done(info):  # type: ignore[no-untyped-def]
+            announced.append(info)
+            report_started.set()
+            await release_report.wait()
+
+        parent = "dashboard:one"
+        owner = "stage-owner"
+        mgr = SubagentManager(
+            sessions=_mock_sessions(),
+            ctx_builder=_mock_ctx(),
+            on_done=on_done,
+        )
+        mgr._queue = [
+            {
+                "task": "stage-owned queued task",
+                "_preassigned_id": "q-stage-stop",
+                "parent_session_key": parent,
+                "_stage_boundary_owner": owner,
+            }
+        ]
+        mgr._emit_queue_depth = MagicMock()
+
+        assert await mgr.cancel("q-stage-stop") is True
+        await report_started.wait()
+        barrier = asyncio.create_task(mgr.wait_for_parent_reports(parent, owner))
+        await asyncio.sleep(0)
+
+        assert stage_boundary_owner_for_run(announced[0]) == owner
+        assert not barrier.done(), "the next stage captured a late queued-stop report"
+
+        release_report.set()
+        assert await barrier is True
+
+    def test_stage_boundary_owner_survives_every_run_reconstruction_site(self):
+        """Every run copy keeps the boundary token that admitted its source."""
+        import inspect
+        from types import SimpleNamespace
+
+        from kiro_crew.dashboard.handlers.messaging import (
+            _stage_boundary_owner_for_parent,
+            _stage_boundary_slot_for_parent,
+            api_spawn_retry,
+        )
+        from kiro_crew.dashboard.state import StageBoundary
+        from kiro_crew.subagent_manager.admission.gate import _GateMixin
+        from kiro_crew.subagent_manager.cancellation import CancellationCoordinator
+        from kiro_crew.subagent_manager.continuation import ContinuationCoordinator
+
+        requirements = {
+            "spawn": (SubagentManager.spawn, "_stage_boundary_owner=_stage_boundary_owner"),
+            "spawn result": (
+                SubagentManager.spawn,
+                "result._stage_boundary_owner = _stage_boundary_owner",
+            ),
+            "queued spawn": (
+                _GateMixin.spawn_impl,
+                '"_stage_boundary_owner": _stage_boundary_owner',
+            ),
+            "retry": (
+                api_spawn_retry,
+                "_stage_boundary_owner_for_parent(state, old.parent_session_key)",
+            ),
+            "respawn": (
+                CancellationCoordinator._schedule_cancel_recovery_impl,
+                "self._manager._run(info)",
+            ),
+            "queued stop": (
+                CancellationCoordinator._report_queued_stop_impl,
+                '_stage_boundary_owner=str(params.get("_stage_boundary_owner") or "")',
+            ),
+            "automatic follow-up": (
+                ContinuationCoordinator._deliver_followups_impl,
+                "_stage_boundary_owner=stage_boundary_owner_for_run(info)",
+            ),
+            "synthetic failure": (
+                ContinuationCoordinator._announce_followup_failure_impl,
+                "synthetic._stage_boundary_owner = stage_boundary_owner_for_run(info)",
+            ),
+            "channel parent": (
+                _stage_boundary_slot_for_parent,
+                "effective_session_key(candidate) == parent",
+            ),
+        }
+        missing = [
+            site
+            for site, (function, needle) in requirements.items()
+            if needle not in inspect.getsource(function)
+        ]
+        continuation_source = inspect.getsource(ContinuationCoordinator._continue_prelude_impl)
+        if (
+            continuation_source.count("_stage_boundary_owner=_stage_boundary_owner")
+            != continuation_source.count("SubagentInfo(") + 1
+        ):
+            missing.append("continuation result")
+        assert missing == [], f"stage boundary owner dropped at: {missing}"
+
+        parent = "slack:123.456"
+        boundary = StageBoundary(stage=1, generation="stage-owner")
+        slot = SimpleNamespace(
+            key="slack_123.456",
+            linked_session_key=parent,
+            stage_boundary=boundary,
+        )
+        state = SimpleNamespace(_slots={slot.key: slot})
+        with patch(
+            "kiro_crew.dashboard.handlers.messaging.dashboard_slot_key",
+            return_value="",
+        ):
+            assert _stage_boundary_owner_for_parent(state, parent) == "stage-owner"
+
+    @pytest.mark.asyncio
     async def test_stop_parent_removes_its_queued_agents_before_start(self):
         mgr = SubagentManager(sessions=_mock_sessions(), ctx_builder=_mock_ctx())
         mgr._queue = [
@@ -2346,6 +2465,27 @@ class TestRetryGating:
         assert resp.status == 200
         assert mgr.spawn.call_args.args[0] == "original raw task"
         assert mgr.spawn.call_args.kwargs["parent_session_key"] == "dashboard:m"
+
+    @pytest.mark.asyncio
+    async def test_retry_inherits_original_stage_boundary_owner(self):
+        """Retry ownership follows the failed work, not the retry click time."""
+        from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
+        failed = SubagentInfo(id="f1", task="failed", parent_session_key="dashboard:m")
+        failed.done = True
+        failed.error = "boom"
+        failed._stage_boundary_owner = "stage-owner"
+        failed.execution_context = ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew"
+        )
+        mgr = self._mgr_with(failed)
+        mgr.spawn = MagicMock(return_value=SubagentInfo(id="n1", task="failed"))
+
+        resp = await api_spawn_retry(self._request(mgr, "f1"))
+
+        assert resp.status == 200
+        assert mgr.spawn.call_args.kwargs["_stage_boundary_owner"] == "stage-owner"
 
 
 # ── 6. Durable task queue at scale ───────────────────────────────────

@@ -71,6 +71,7 @@ only**; none is serialized by `to_dict()` or written to the history meta line.
 | `_plan_stage_count` | `int` (property) | `len(_stage_titles)` |
 | `_auto_run` | `bool` | "Go All" was chosen: stage gates are skipped |
 | `_in_stage_execution` | `bool` | True only while `_stage_loop` drives a turn; gates the plan detector |
+| `stage_boundary` | `StageBoundary` | Atomically owns the pending stage, provider consumption, exact retry, continuation obligation, Stop-preservation generation, parent keys, recovery counters, and queue-ownership generation |
 
 `surface` is emitted alongside `mode` in the slots payload as a forward-compat
 alias (identical today) so a future backend can split nav destination from mode
@@ -172,7 +173,10 @@ gate is what makes the stop control actually stop the plan.
   (`{"ok": true, "queued": true}`).
 
 Typing `go` / `go all` in the chat box reaches the same loop through `api_chat`
-(`dashboard/chat_handlers.api_chat`).
+(`dashboard/chat_handlers.api_chat`). The OpenAI-compatible
+`/v1/chat/completions` path uses `slot.running` for named-slot admission, so it
+refuses unrelated requests throughout stage settlement even while no child turn
+occupies `slot.task`.
 
 **Widget-origin refusal.** `go`/`go all` is the only privilege escalation
 reachable from chat *text* (it flips the slot into unattended per-stage
@@ -247,14 +251,39 @@ entry.
    instruction. It is appended as a hidden user message (`auto-go` class) and
    passed to `_run_chat`. An exception from `_run_chat` clears `_auto_run`,
    posts a stage-error notice, logs `auto_run_stage_error`, and breaks.
-7. **Wait for the stage's sub-agents.** Polls
-   `state.subagents.running_agents_for("dashboard:<slot>")` every 2s, up to 150
-   rounds (5 minutes), broadcasting a `chat_status` count every 10 polls. This
-   is **fail-closed**: a missing manager, or `running_agents_for` returning
-   `None` either before or during polling, stops auto-run with a notice and a
-   `auto_run_subagent_check_failed` SEL event rather than silently skipping
-   verification. Exhausting the 150 rounds stops auto-run with
-   `auto_run_subagent_timeout`.
+7. **Settle the stage boundary.** `_settle_stage_delivery` polls every 2s
+   across every immutable parent key captured by the boundary. Its wait budget
+   derives from the configured stage timeout and is bounded by
+   `_STAGE_SUBAGENT_POLL_ROUND_CAP`; a disabled timeout uses that same cap. A
+   missing manager, a missing queue-aware capability, or a `running_agents_for`
+   result of `None` fails closed with `auto_run_subagent_check_failed`; exhausting
+   the poll cap stops auto-run with `auto_run_subagent_timeout`.
+
+   **Settlement invariants.** These ids are stable; code comments and review
+   findings cite them bare, and the named tests decide if prose and behavior
+   disagree.
+
+   | Id | Guarantees | Pinned by | Constrains |
+   |---|---|---|---|
+   | S1 | Only completion or recovery rows tagged with the active `StageBoundary.owner` run inside that stage. A tagged completion routes status, stage delivery, and delivery settlement by its exact captured `(parent, owner-generation)`, independent of alias arm time. Only untagged runs use the parent/latest compatibility fallback; canonical is used when no alias has an active owner. Foreign rows remain queued until stage execution ends. | `test_autopilot_stage_completion_handoff.py::test_stage_settlement_consumes_only_owned_completion`, `::test_active_stage_holds_foreign_completion_until_boundary_exit`, `test_handlers_messaging_coverage.py::TestApiSpawnRetry::test_stage_boundary_owner_prefers_active_alias_over_inactive_canonical`, `::test_stage_boundary_slot_falls_back_to_canonical_without_active_owner`, `test_slack_gateway.py::TestSubagentDone::test_dashboard_completion_routes_to_exact_run_owner` | `chat_utils.py` (`owned_stage_delivery_entry`), `chat_orchestrator.py` (`_settle_stage_delivery`), `chat_runner.py` (`_start_next_queued_turn`), `dashboard/handlers/messaging.py` (`_stage_boundary_slot_for_parent`), `state.py` (`StageBoundary.generation`), `slack/gateway.py` (`_subagent_done`) |
+   | S2 | Consumed but interrupted stage work retains its exact retry or continuation obligation until successful settlement and capture; queueing or prompt consumption alone never discharges it. | `test_autopilot_stage_completion_handoff.py::test_unrelated_completion_does_not_suppress_consumed_stage_continuation`, `::test_exact_preconsumption_recovery_finishes_before_stage_advance` | `state.py` (`StageBoundary.continuation_required`, `preserve`), `chat_orchestrator.py` (`_queue_consumed_stage_resume`, `_settle_stage_delivery`) |
+   | S3 | Failed-report buckets retain frozen compact snapshots—never live `SubagentInfo` rows—with exact run/parent/owner-generation identities, timing scalars, and only result, task, raw-task, and error delivery text, each UTF-8 byte-capped with a visible omitted-byte marker. The same snapshot restores terminal outcome, partial state, and result location verbatim on temporary redelivery records. Payload and saturation-marker rows share bounded exact buckets plus one global bucket. At exact-scope saturation, the saturating scope enters the global bucket without displacing an arbitrary existing scope; the first collapse emits one SEL event naming that producer. The global bucket intentionally fails closed gateway-wide, and every bystander pause notice names the same producer parent/owner next to the existing discard/Cancel remedy. Marker identity lets exact boundary discard remove its debt. Finished-run deletion fences any active report task before reading debt or removing the record. | `test_subagent_reap_race.py::test_retained_report_payload_caps_text_bytes_and_redelivers`, `::test_report_failure_scope_cap_overflow_fails_closed_globally`, `::test_report_failure_saturation_markers_share_payload_caps`, `::test_saturated_report_payload_boundary_stays_blocked_until_discard`, `::test_settle_before_delete_waits_for_inflight_terminal_report`, `::test_settle_before_delete_keeps_run_until_report_delivery_succeeds`, `test_autopilot_stage_completion_handoff.py::test_stage_failure_notice_distinguishes_global_overflow_from_own_debt`, `::test_failed_delivery_pause_reaches_transcript_and_linked_channel`, `test_handlers_messaging_coverage.py::TestApiSpawnDelete::test_managed_delete_settlement_uses_one_public_manager_seam`, `::test_delete_scopes_settlement_to_the_deleted_runs_owner` | `subagent.py` (`_ReportFailureSnapshot`, `_truncate_report_failure_text`, `_admit_report_failure`, `_global_report_failure_active`, `_peek_report_failures`, `settle_before_delete`), `chat_orchestrator.py` (`_settle_stage_delivery`, `_halt_plan`), `chat_runner.py` (`_deliver_linked_slack_message`, `_deliver_cross_surface_reply`), `dashboard/handlers/messaging.py` (`api_spawn_delete`) |
+   | S4 | One accepted Go owns one three-retrigger recovery budget across all of its stages; stage arm and clear preserve the count and the next accepted Go resets it. | `test_autopilot_stage_completion_handoff.py::test_recovery_retriggers_accumulate_across_stages_for_one_go` | `state.py` (`StageBoundary.recovery_retrigger_count`), `chat_handlers.py` and `chat_orchestrator.py` (Go admission), `slack/gateway.py` (retrigger gate) |
+   | S5 | Plan cancellation releases its boundary, publishes one terminal stop, and hands the oldest surviving queued turn to exactly one owner only after active stage work has stopped. | `test_plan_cancel_race.py::test_active_stage_cancel_releases_boundary_and_hands_off_once`, `::test_concurrent_cancels_start_only_one_queued_turn` | `chat_orchestrator.py` (`_release_cancelled_plan_boundary`, `_cancel_release_owns_handoff`) |
+
+   Every Autopilot halt appends through the same transcript-feed seam the dashboard renders and mirrors to a linked Slack or non-Slack channel. Own debt and gateway-wide report overflow have distinct notice text.
+
+   The queue-aware probe includes accepted spawns not yet registered as running,
+   completed inner runs whose outer report-registration task remains live, active
+   report tasks, retained report debt, owned delivery rows and delivery counters.
+   Capture requires two clean event-loop passes over those sources. The provider
+   consumption callback decides whether an interrupted stage reruns or continues;
+   auth and refusal retries preserve their enqueue-time system provenance. A
+   pending boundary contributes to `slot.running` until guarded Go or Cancel
+   releases it. Execution-only consumers use `turn_running`, while destructive
+   history edits (regenerate, variant switching, and edit-resend) use `running`
+   so they cannot rewrite the transcript reserved for the next stage, as
+   specified in [session.md](session.md).
 8. **Capture the stage result**, split across the thread boundary.
    `_collect_stage_result_parts` walks the assistant messages back to this
    stage's separator **on the loop**, because `slot.messages` is live state the
@@ -356,15 +385,19 @@ mid-plan is not read as a control command; the Cancel and Stop buttons are
 unconditional.
 
 **Two flags, two meanings — every advancement gate reads both.** Stop sets
-`slot._stopping`: the slot is being torn down, so nothing on it may keep running.
-Cancel and the typed stop words set `tracker.stopped` and leave `_stopping`
-alone: the slot stays alive and usable, and only the plan ends. A gate reading
-one flag therefore observes only half the stops, and the window that matters is
-`_run_chat` — the loop's longest await, so the likeliest place for a cancel to
-land, and the point it would otherwise resume from straight into the next stage
-against a revoked approval. `_orchestration_stopped(slot, tracker)` is the single
-predicate all four gates (top-of-iteration, post-`_run_chat`, the sub-agent poll
-condition, and pre-capture) call, so the two channels cannot drift apart again.
+`slot._stopping` for session teardown; plan Cancel and typed stop set
+`tracker.stopped` while leaving the slot usable. `_orchestration_stopped` reads
+both flags plus the monotonic stop generation at every advancement and settlement
+gate, so a Stop that resolves back to idle still revokes the controller entry that
+observed it.
+
+Settlement invariant S2 decides whether interrupted stage input reruns or first
+settles its retained continuation. Settlement invariant S5 owns plan-cancellation
+release and successor handoff. Before that release, Cancel revokes subagents under
+the legacy `dashboard:<slot>` key and every parent key captured by the boundary,
+then drops only tagged Go approvals, the exact retry and delivery rows owned by
+the cancelled generation. Foreign-generation completions and ordinary queued user
+messages survive for the one successor handoff.
 
 The inverse — having Cancel set `slot._stopping` — is deliberately **not** what
 this does: that flag carries teardown semantics for paths outside the stage loop,

@@ -326,6 +326,35 @@ async def test_switch_variant_rejected_while_a_turn_is_in_flight(state) -> None:
         slot.task.cancel()
 
 
+@pytest.mark.parametrize(
+    ("path", "body"),
+    [
+        ("regenerate", None),
+        ("switch-variant", {"index": 0}),
+        ("edit-resend", {"index": 0, "content": "edited"}),
+    ],
+)
+@pytest.mark.asyncio
+async def test_destructive_history_endpoints_refuse_a_paused_boundary(state, path, body) -> None:
+    slot = state.get_or_create_slot("s1")
+    slot.append("user", "original")
+    slot.append("assistant", "v2")
+    slot.messages[-1]["variants"] = [
+        {"content": "v1", "ts": "t1"},
+        {"content": "v2", "ts": "t2"},
+    ]
+    slot.stage_boundary.arm(1, consumed=True)
+    assert slot.running is True and slot.turn_running is False
+
+    async with _client(state) as client:
+        response = await client.post(f"/api/chat/slots/s1/{path}", json=body)
+        payload = await response.json()
+
+    assert response.status == 409
+    assert payload == {"error": "slot is busy", "code": "slot_busy"}
+    assert [message["content"] for message in slot.messages] == ["original", "v2"]
+
+
 @pytest.mark.asyncio
 async def test_switch_variant_broadcasts_redacted_content(state) -> None:
     """The broadcast leaves the process, so the chosen variant is redacted."""

@@ -38,6 +38,27 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.history import ConversationLog
 
 
+class _StageManager:
+    def __init__(self) -> None:
+        self.running_agents_for = MagicMock(return_value=[])
+
+    async def has_pending_work_for_async(self, _parent: str) -> bool:
+        return False
+
+    async def wait_for_parent_reports(self, _parent: str, _owner: str = "") -> bool:
+        return False
+
+
+def _mark_stage_consumed(kwargs: dict) -> None:
+    callback = kwargs.get("_on_consumed")
+    if callable(callback):
+        callback(True)
+
+
+async def _consumed_stage_turn(*_args, **kwargs) -> None:
+    _mark_stage_consumed(kwargs)
+
+
 def _provider_mock() -> AsyncMock:
     """A stand-in for the ACP session provider a chat turn drives.
 
@@ -12695,8 +12716,7 @@ class TestOrchestratorPlanGateArming:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = _ChatSlot("flag-test", mode="orchestrator")
         slot._stage_titles = ["A", "B"]
         slot._orch_tracker = None
@@ -12704,6 +12724,7 @@ class TestOrchestratorPlanGateArming:
         seen: list[bool] = []
 
         async def _rec(s, sl, msg, **kw):
+            _mark_stage_consumed(kw)
             seen.append(sl._in_stage_execution)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _rec)
@@ -12725,8 +12746,7 @@ class TestOrchestratorPlanGateArming:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = _ChatSlot("clamp-test", mode="orchestrator")
         slot._stage_titles = ["A", "B", "C"]  # total = 3
         slot._orch_tracker = None
@@ -12735,6 +12755,7 @@ class TestOrchestratorPlanGateArming:
 
         async def _shrink(s, sl, msg, **kw):
             nonlocal calls
+            _mark_stage_consumed(kw)
             calls += 1
             sl._stage_titles = ["A"]  # plan shrinks to 1 stage mid-run
 
@@ -12756,8 +12777,7 @@ class TestOrchestratorPlanGateArming:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         return state
 
     @pytest.mark.asyncio
@@ -12877,11 +12897,9 @@ class TestPlanExecutionViaButton:
     def _make_state(self, has_subagents=True):
         state = MagicMock()
         state.broadcast_ws = MagicMock()
-        if has_subagents:
+        state.subagents = _StageManager()
+        if not has_subagents:
             state.subagents.running_agents_for.return_value = []
-        else:
-            state.subagents = MagicMock()
-            state.subagents.running_agents_for = MagicMock(return_value=[])
         return state
 
     @pytest.mark.asyncio
@@ -12992,6 +13010,35 @@ class TestWidgetOriginAutoRunGuard:
         run_chat_mock.assert_called_once()
 
     @pytest.mark.asyncio
+    async def test_pending_stage_queues_widget_origin_go(self, tmp_path, monkeypatch):
+        """Rejected widget control text cannot bypass pending-stage isolation."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("pending-widget-go", mode="orchestrator")
+        slot.stage_boundary.stage = 1
+
+        stage_loop_mock = AsyncMock()
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._stage_loop", stage_loop_mock)
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?ws=1",
+                json={
+                    "message": "Go",
+                    "slot": slot.key,
+                    "meta": {"origin": "widget"},
+                },
+            )
+            assert response.status == 200
+            assert (await response.json()).get("queued") is True
+
+        stage_loop_mock.assert_not_called()
+        run_chat_mock.assert_not_called()
+        assert any(entry.get("content") == "Go" for entry in slot._queue)
+
+    @pytest.mark.asyncio
     async def test_human_go_all_still_escalates(self, tmp_path, monkeypatch):
         """A human-typed 'go all' (no widget origin) MUST still enable auto-run."""
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
@@ -13078,11 +13125,10 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_consumed_stage_turn)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=False)
@@ -13109,11 +13155,10 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_consumed_stage_turn)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -13139,14 +13184,14 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=5)
 
         call_count = 0
 
         async def _mock_run_chat(s, sl, msg, **kw):
             nonlocal call_count
+            _mark_stage_consumed(kw)
             call_count += 1
             if call_count >= 2:
                 # Simulate user clicking Stop after stage 2
@@ -13172,8 +13217,7 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=3)
 
         # Pre-create tracker with timeout
@@ -13228,8 +13272,7 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=2)
         state._slots = {slot.key: slot}  # slot still registered
         slot.queue_append("user typed mid-plan")
@@ -13237,6 +13280,7 @@ class TestPythonStageLoop:
         seen = []
 
         async def _mock_run_chat(s, sl, msg, **kw):
+            _mark_stage_consumed(kw)
             seen.append(sl._in_stage_execution)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
@@ -13262,8 +13306,7 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=1)
         state._slots = {}  # slot deleted while the plan ran
         slot.queue_append("queued during plan")
@@ -13292,8 +13335,7 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=1)
         state._slots = {slot.key: slot}
         slot.queue_append("queued during plan")
@@ -13333,6 +13375,88 @@ class TestPythonStageLoop:
 
         run_chat_mock.assert_not_called()  # queued, not run concurrently with the plan
         assert any(i["content"] == "queued mid-plan" for i in slot._queue)
+
+    @pytest.mark.asyncio
+    async def test_pending_stage_boundary_queues_unrelated_message(self, tmp_path, monkeypatch):
+        """A post-login reply cannot enter the transcript before stage capture."""
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("pending-stage-chat", mode="orchestrator")
+        slot.stage_boundary.stage = 1
+
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?ws=1",
+                json={"message": "unrelated post-login reply", "slot": slot.key},
+            )
+            assert response.status == 200
+            assert (await response.json()).get("queued") is True
+
+        run_chat_mock.assert_not_called()
+        assert any(entry.get("content") == "unrelated post-login reply" for entry in slot._queue)
+
+    @pytest.mark.asyncio
+    async def test_pending_stage_queues_stop_prefixed_message_without_escalation(
+        self, tmp_path, monkeypatch
+    ):
+        """A stop-prefixed ordinary message cannot bypass a pending boundary."""
+        from kiro_crew.context_management import OrchestrationTracker
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("pending-stage-stop-text", mode="orchestrator")
+        slot.stage_boundary.stage = 1
+        slot._orch_tracker = OrchestrationTracker(stage_timeout_seconds=30)
+        assert slot._orch_tracker.has_escalated is False
+
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?ws=1",
+                json={"message": "stop explaining this", "slot": slot.key},
+            )
+            assert response.status == 200
+            assert (await response.json()).get("queued") is True
+
+        run_chat_mock.assert_not_called()
+        assert any(entry.get("content") == "stop explaining this" for entry in slot._queue)
+
+    @pytest.mark.asyncio
+    async def test_pending_stage_consumes_stop_prefixed_message_after_escalation(
+        self, tmp_path, monkeypatch
+    ):
+        """The real escalated-plan Stop command still bypasses the pending hold."""
+        from kiro_crew.context_management import MAX_STAGE_ROUNDS, OrchestrationTracker
+
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("pending-stage-stop-command", mode="orchestrator")
+        slot.stage_boundary.stage = 1
+        tracker = OrchestrationTracker(stage_timeout_seconds=30)
+        for _ in range(MAX_STAGE_ROUNDS):
+            tracker.record_round(1)
+        assert tracker.has_escalated is True
+        slot._orch_tracker = tracker
+
+        run_chat_mock = AsyncMock()
+        monkeypatch.setattr("kiro_crew.dashboard.chat_handlers._run_chat", run_chat_mock)
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            response = await client.post(
+                "/api/chat?ws=1",
+                json={"message": "stop this plan", "slot": slot.key},
+            )
+            assert response.status == 200
+            assert (await response.json()).get("stopped") is True
+
+        assert tracker.stopped is True
+        assert slot._plan_cancelled is True
+        run_chat_mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_queued_receipt_carries_the_entry_queue_id(self, tmp_path, monkeypatch):
@@ -13426,11 +13550,11 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=2)
 
         async def _mock_run_chat(s, sl, msg, **kw):
+            _mark_stage_consumed(kw)
             sl.append("assistant", "Result for stage", "msg msg-a")
 
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", _mock_run_chat)
@@ -13509,8 +13633,7 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=3)
 
         async def _exploding_run_chat(s, sl, msg, **kw):
@@ -13539,8 +13662,7 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=2)
 
         _poll_count = 0
@@ -13551,10 +13673,10 @@ class TestPythonStageLoop:
             # Simulate subagent finishing after 2 polls
             return [{"id": "sa-1"}] if _poll_count < 3 else []
 
-        state.subagents = MagicMock()
+        state.subagents = _StageManager()
         state.subagents.running_agents_for = _running_agents
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_consumed_stage_turn)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator.asyncio.sleep", AsyncMock())
 
@@ -13578,7 +13700,7 @@ class TestPythonStageLoop:
         state.subagents.running_agents_for.return_value = None  # error case
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_consumed_stage_turn)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -13600,7 +13722,7 @@ class TestPythonStageLoop:
         state.subagents = None  # manager missing
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_consumed_stage_turn)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         await _stage_loop(state, slot, auto_run=True)
@@ -13619,11 +13741,10 @@ class TestPythonStageLoop:
         state = MagicMock()
         state.broadcast_ws = MagicMock()
         state.push_slots_update = MagicMock()
-        state.subagents = MagicMock()
-        state.subagents.running_agents_for = MagicMock(return_value=[])
+        state.subagents = _StageManager()
         slot = self._make_slot(max_stages=3)
 
-        run_chat_mock = AsyncMock()
+        run_chat_mock = AsyncMock(side_effect=_consumed_stage_turn)
         monkeypatch.setattr("kiro_crew.dashboard.chat_orchestrator._run_chat", run_chat_mock)
 
         # First Go: runs stage 1 only
@@ -17935,7 +18056,8 @@ class TestStopTurnSlotState:
         slot = state.get_or_create_slot("s1")
         slot.task = asyncio.ensure_future(asyncio.sleep(999))
         slot._stop_state = "soft_pending"
-        slot._queue.extend(["msg1", "msg2", "msg3"])
+        for content in ("msg1", "msg2", "msg3"):
+            slot.queue_append(content)
 
         async def fake_stop_turn(
             key, *, force=False, preserve_queue=False, on_soft=None, on_hard=None

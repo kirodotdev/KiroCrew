@@ -68,6 +68,7 @@ from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
     DashboardState,
+    stage_boundary_for,
 )
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -94,7 +95,11 @@ from kiro_crew.solo_spawn import (
     solo_spawn_question,
 )
 from kiro_crew.spawn_warm import warm_project_agents_for_spawn
-from kiro_crew.subagent import effort_applied_note, effort_drop_reason
+from kiro_crew.subagent import (
+    effort_applied_note,
+    effort_drop_reason,
+    stage_boundary_owner_for_run,
+)
 from kiro_crew.subagent_persistence import _agent_dir, read_state
 from kiro_crew.validation import (
     _EMOJI_NAME_RE,
@@ -220,6 +225,63 @@ async def _spawn_request_memory_mode(
         parent_mode if caller == parent else await resolve_session_memory_mode(state, caller)
     )
     return strictest((parent_mode, caller_mode)) or "persistent"
+
+
+def _stage_boundary_slot_for_parent(
+    state: DashboardState,
+    parent: str,
+    boundary_owner: str = "",
+) -> Any | None:
+    """Return an exact tagged owner, or legacy parent/latest fallback."""
+    slots = getattr(state, "_slots", None)
+    if not isinstance(slots, dict):
+        return None
+    slot_name = dashboard_slot_key(parent)
+    if not slot_name and parent.startswith("dashboard:"):
+        slot_name = parent.removeprefix("dashboard:")
+    canonical = slots.get(slot_name) if slot_name else None
+    same_parent = tuple(
+        candidate
+        for candidate in slots.values()
+        if candidate is canonical or effective_session_key(candidate) == parent
+    )
+    if boundary_owner:
+        return next(
+            (
+                candidate
+                for candidate in same_parent
+                if stage_boundary_for(candidate).owner == boundary_owner
+            ),
+            None,
+        )
+    aliases = tuple(candidate for candidate in same_parent if candidate is not canonical)
+    active_aliases = tuple(
+        candidate for candidate in aliases if stage_boundary_for(candidate).owner
+    )
+    if active_aliases:
+        parent_matches = tuple(
+            candidate
+            for candidate in active_aliases
+            if parent in stage_boundary_for(candidate).parent_session_keys
+        )
+        eligible = parent_matches or active_aliases
+        return max(
+            eligible,
+            key=lambda candidate: (
+                stage_boundary_for(candidate).armed_at,
+                str(getattr(candidate, "key", "")),
+            ),
+        )
+    return canonical or (same_parent[0] if same_parent else None)
+
+
+def _stage_boundary_owner_for_parent(state: DashboardState, parent: str) -> str:
+    """Return the active stage token for *parent*, or explicit unowned ``""``."""
+    slot = _stage_boundary_slot_for_parent(state, parent)
+    if slot is None:
+        return ""
+    owner = stage_boundary_for(slot).owner
+    return owner if isinstance(owner, str) else ""
 
 
 async def api_spawn(request: web.Request) -> web.Response:
@@ -442,6 +504,7 @@ async def api_spawn(request: web.Request) -> web.Response:
         crew=crew,
         _memory_mode=admitted_mode,
         _execution_context=admitted_execution.to_record(),
+        _stage_boundary_owner=_stage_boundary_owner_for_parent(state, parent_session),
     )
     if not info:
         # Reached mgr.spawn (submission COUNTED at the top of spawn()) but
@@ -634,6 +697,7 @@ async def api_spawn_continue(request: web.Request) -> web.Response:
         max_turns=max_turns,
         cwd=resumed_cwd,
         _memory_mode=admitted_mode,
+        _stage_boundary_owner=_stage_boundary_owner_for_parent(state, parent_session),
     )
     if not info:
         return web.json_response(
@@ -1122,6 +1186,10 @@ async def api_spawn_retry(request: web.Request) -> web.Response:
         app=execution.app,
         _memory_mode=execution.memory_mode,
         _execution_context=execution.to_record(),
+        _stage_boundary_owner=(
+            _stage_boundary_owner_for_parent(state, old.parent_session_key)
+            or stage_boundary_owner_for_run(old)
+        ),
     )
     if not info:
         return web.json_response(
@@ -1190,13 +1258,29 @@ async def api_spawn_delete(request: web.Request) -> web.Response:
             )
             return web.json_response({"ok": True, "cancelled": True})
         return web.json_response({"error": "not found"}, status=404)
-    if not state.subagents or agent_id not in state.subagents._agents:
+    manager = state.subagents
+    info = manager.get(agent_id) if manager is not None else None
+    if manager is None or info is None:
         return web.json_response({"error": "not found"}, status=404)
-    cancelled = await state.subagents.cancel(agent_id)
+    cancelled = await manager.cancel(agent_id)
     if not cancelled:
-        # Already done — just remove from list
-        state.subagents._agents.pop(agent_id, None)
-        state.subagents._tasks.pop(agent_id, None)
+        deleted_owner = stage_boundary_owner_for_run(info)
+        parent_active_owner = _stage_boundary_owner_for_parent(
+            state,
+            info.parent_session_key,
+        )
+        active_owner = (
+            parent_active_owner if deleted_owner and parent_active_owner == deleted_owner else ""
+        )
+        settlement = await manager.settle_before_delete(agent_id, active_owner)
+        if settlement == "pending":
+            return web.json_response(
+                {
+                    "error": "completion delivery is still pending",
+                    "code": "completion_delivery_pending",
+                },
+                status=409,
+            )
     return web.json_response({"ok": True, "cancelled": cancelled})
 
 

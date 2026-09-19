@@ -17,6 +17,8 @@ import time
 import traceback
 import uuid
 from collections.abc import Coroutine, Iterable, Iterator
+from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, TypeVar
@@ -2032,6 +2034,100 @@ def request_slot_origin(app: str) -> str:
     return SlotOrigin.APP if app else SlotOrigin.USER
 
 
+STAGE_BOUNDARY_OWNER_META_KEY = "stageBoundaryOwner"
+
+
+@dataclass
+class StageBoundary:
+    """One stage's delivery, recovery, and cancellation ownership."""
+
+    stage: int | None = None
+    consumed: bool = True
+    retry_queue_id: str = ""
+    continuation_required: bool = False
+    preserve_stop_generation: int = -1
+    parent_session_keys: set[str] = dataclass_field(default_factory=set)
+    synthetic_recovery_inflight: int = 0
+    recovery_retrigger_count: int = 0
+    generation: str = ""
+    armed_at: int = 0
+
+    @property
+    def owner(self) -> str | None:
+        """The current queue-ownership token, if a boundary is armed."""
+        return self.generation if self.stage is not None and self.generation else None
+
+    def arm(self, stage: int, *, consumed: bool = False) -> None:
+        """Start a new stage boundary and mint its queue ownership token."""
+        if self.stage != stage or self.owner is None:
+            self.generation = uuid.uuid4().hex
+        self.stage = stage
+        self.armed_at = time.monotonic_ns()
+        self.consumed = consumed
+        self.retry_queue_id = ""
+        self.continuation_required = False
+        self.preserve_stop_generation = -1
+        self.parent_session_keys.clear()
+        self.synthetic_recovery_inflight = 0
+
+    def preserve(self, stage: int, *, consumed: bool) -> None:
+        """Keep an interrupted stage armed until a later guarded Go."""
+        if self.stage != stage:
+            self.arm(stage, consumed=consumed)
+        else:
+            self.consumed = consumed
+        self.continuation_required = consumed
+
+    def mark_consumed(self, consumed: bool) -> None:
+        """Record provider consumption and retire an obsolete exact retry."""
+        self.consumed = consumed
+        if consumed:
+            self.retry_queue_id = ""
+
+    def clear(self) -> None:
+        """Atomically release every live field owned by the current boundary."""
+        self.stage = None
+        self.armed_at = 0
+        self.consumed = True
+        self.retry_queue_id = ""
+        self.continuation_required = False
+        self.preserve_stop_generation = -1
+        self.parent_session_keys.clear()
+        self.synthetic_recovery_inflight = 0
+
+    def tag_meta(self, meta: dict | None = None, *, owner: str | None = None) -> dict:
+        """Copy *meta* and tag it with an explicit or current owner token."""
+        tagged = dict(meta or {})
+        actual_owner = self.owner if owner is None else owner
+        if actual_owner:
+            tagged[STAGE_BOUNDARY_OWNER_META_KEY] = actual_owner
+        return tagged
+
+    def owns_entry(self, entry: dict, *, owner: str | None = None) -> bool:
+        """Whether a queue entry belongs to the selected boundary token."""
+        meta = entry.get("meta")
+        actual_owner = self.owner if owner is None else owner
+        return bool(
+            actual_owner
+            and isinstance(meta, dict)
+            and meta.get(STAGE_BOUNDARY_OWNER_META_KEY) == actual_owner
+        )
+
+
+def stage_boundary_for(slot: object) -> StageBoundary:
+    """Return *slot*'s boundary; a minimal test double starts unarmed."""
+    boundary: StageBoundary | None = getattr(slot, "stage_boundary", None)
+    if boundary is not None:
+        return boundary
+    boundary = StageBoundary()
+    try:
+        setattr(slot, "stage_boundary", boundary)
+    except (AttributeError, TypeError):
+        if isinstance(slot, _ChatSlot):
+            raise
+    return boundary
+
+
 class _ChatSlot:
     """Independent chat session that runs server-side."""
 
@@ -2117,6 +2213,8 @@ class _ChatSlot:
         "_plan_cancelled",
         "_auto_run",
         "_in_stage_execution",
+        "_stage_controller_task",
+        "stage_boundary",
         "_last_turn_auth_required",
         "_recovery_chat_triggered",
         "_stage_titles",
@@ -2138,7 +2236,6 @@ class _ChatSlot:
         "_subagent_deliveries_inflight",
         "_subagents_inline_collected",
         "_subagent_delivery_pending",
-        "_recovery_retrigger_count",
         "_prompt_busy_retries",
         "_acp_pipe_death_retries",
         "_stale_recovery_retries",
@@ -2581,8 +2678,16 @@ class _ChatSlot:
         # user message (chip card) even when slot.task is momentarily idle between
         # stages, and _start_next_queued_turn HOLDS user messages (recovery/system
         # still drain) until the plan ends — so autopilot reuses the normal-chat
-        # queue/chip path without changing slot.task / slot.running semantics.
+        # queue/chip path. After the controller exits, an uncancelled pending
+        # boundary keeps ``running`` true until guarded Go settles or reruns it.
         self._in_stage_execution: bool = False
+        # Outer Python stage driver, kept separately while ``task`` names the
+        # active LLM turn so slot teardown can cancel both lifetimes.
+        self._stage_controller_task: asyncio.Task[Any] | None = None
+        # Atomic owner of the active stage's delivery, recovery, parent-session,
+        # and cancellation state. Compatibility properties below expose the old
+        # names to focused tests, but production paths mutate this object.
+        self.stage_boundary = StageBoundary()
         # Set by _run_chat's teardown to that turn's ACP auth-required outcome, so
         # the orchestrator _stage_loop can mirror the "hold the queue for
         # post-login resume" guard on its end-of-plan handoff (a signed-out CLI
@@ -2636,7 +2741,6 @@ class _ChatSlot:
         # retention TTL is measured from consumption rather than from run
         # completion. See ``take_pending_subagent_deliveries``.
         self._subagent_delivery_pending: dict[str, list[str]] = {}
-        self._recovery_retrigger_count: int = 0
         self._prompt_busy_retries: int = 0
         self._acp_pipe_death_retries: int = 0
         # Auto-recovery of a genuinely-wedged (stale) turn: bumped when the ACP
@@ -3732,6 +3836,16 @@ class _ChatSlot:
         """
         return queue_persist_signature(self.durable_queue_entries()) != self._queue_persisted_sig
 
+    def track_stage_controller(self, task: asyncio.Task[Any]) -> None:
+        """Keep the outer stage driver reachable while ``task`` names a child turn."""
+        self._stage_controller_task = task
+
+        def _clear(done: asyncio.Task[Any]) -> None:
+            if self._stage_controller_task is done:
+                self._stage_controller_task = None
+
+        task.add_done_callback(_clear)
+
     @property
     def task(self) -> asyncio.Task[Any] | None:
         return self._task
@@ -3743,8 +3857,22 @@ class _ChatSlot:
         self._task = value
 
     @property
+    def turn_running(self) -> bool:
+        """Whether an active model turn or stage controller still owns the slot."""
+        task = self.task
+        controller = self._stage_controller_task
+        return bool(
+            (task is not None and not task.done())
+            or (controller is not None and not controller.done())
+        )
+
+    @property
     def running(self) -> bool:
-        return self.task is not None and not self.task.done()
+        """Admission/reservation predicate; use ``turn_running`` for execution.
+
+        See ``docs/system-specs/modules/session.md``.
+        """
+        return bool(self.turn_running or self.stage_boundary.stage is not None)
 
     @property
     def queue_depth(self) -> int:
