@@ -166,7 +166,6 @@ src/kiro_crew/dashboard/channel_folders.py
 src/kiro_crew/dashboard/chat_auto_tag.py
 src/kiro_crew/dashboard/chat_folder_suggest.py
 src/kiro_crew/dashboard/chat_nav.py
-src/kiro_crew/dashboard/chat_slack.py
 src/kiro_crew/dashboard/chat_title.py
 src/kiro_crew/dashboard/crash_dump_store.py
 src/kiro_crew/dashboard/file_index.py
@@ -298,7 +297,6 @@ src/kiro_crew/slack/blocks.py
 src/kiro_crew/slack/client.py
 src/kiro_crew/slack/enterprise.py
 src/kiro_crew/slack/events.py
-src/kiro_crew/slack/interactions.py
 src/kiro_crew/slack/sessions_view.py
 src/kiro_crew/subagent_scale.py
 src/kiro_crew/suggestions.py

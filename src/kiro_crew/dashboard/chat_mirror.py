@@ -656,7 +656,15 @@ async def api_chat_slot_mirror_link(request: web.Request) -> web.Response:
             # Offloaded for the same reason as the transcript read: config load
             # is blocking file I/O and must not run on the event loop.
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            deep_link = session_deep_link(cfg.dashboard.url, slot.key)
+            # Same origin choice as send_message's session-link button: this
+            # link lands in Slack, so honor slack.use_tunnel_url — a local-only
+            # origin is unreachable from a phone. No click token: mirror links
+            # can reach shared channels. The tunnel-vs-not decision lives in one
+            # shared helper (tunnel_origin_if_opted_in).
+            from kiro_crew.dashboard.urls import tunnel_origin_if_opted_in
+
+            tunnel_url = tunnel_origin_if_opted_in(cfg.slack.use_tunnel_url)
+            deep_link = session_deep_link(cfg.dashboard.url, slot.key, tunnel_url=tunnel_url)
         except Exception:
             logger.debug("mirror-link: could not build session link", exc_info=True)
         units.append(f"… {summary} — {deep_link}" if deep_link else f"… {summary}")

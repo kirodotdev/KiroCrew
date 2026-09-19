@@ -217,6 +217,23 @@ def schemas() -> list[dict[str, Any]]:
                             "reply_broadcast=true without thread_ts returns 400. Defaults to false."
                         ),
                     },
+                    "include_session_link": {
+                        "type": "boolean",
+                        "description": (
+                            "When true and the message is delivered to Slack, append an "
+                            '"Open session" button that deep-links to THIS session\'s '
+                            "dashboard chat (a cron links to its origin session). The link "
+                            "is built server-side from the verified caller identity, so it "
+                            "always points at the calling session — you never assemble it. "
+                            "The button's embedded sign-in credential expires ~5 minutes "
+                            "after send: a later tap still opens the session for a browser "
+                            "holding a dashboard session cookie, and otherwise lands on "
+                            "the sign-in page — so do not present the button as a durable "
+                            "link. Silently omitted (message still delivered) for non-Slack "
+                            "delivery, a caller with no resolvable session, or when no "
+                            "dashboard origin/tunnel is available. Defaults to false."
+                        ),
+                    },
                     "session": {
                         "type": "string",
                         "enum": list(_SESSION_TARGETS),
@@ -482,6 +499,10 @@ def send_message(name: str, args: dict[str, Any]) -> str:
         payload["thread_ts"] = args["thread_ts"]
     if args.get("reply_broadcast"):
         payload["reply_broadcast"] = args["reply_broadcast"]
+    # Server-side deep-link button opt-in. Forwarded as a plain flag; the gateway
+    # resolves the caller identity and builds the URL, so no session key is sent.
+    if args.get("include_session_link"):
+        payload["include_session_link"] = True
     if session:
         payload["session"] = session
     # Always tell the gateway when the caller is a cron — even on a bare

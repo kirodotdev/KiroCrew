@@ -1941,6 +1941,26 @@ async def test_non_api_path_gets_html_403() -> None:
     assert b"kirocrew token" in resp.body
 
 
+@pytest.mark.asyncio
+async def test_signin_recovery_preserves_destination_path() -> None:
+    # The recovery script runs in the browser on the SAME URL the stale button
+    # was tapped (a session deep link, /chat?sid=...&token=<stale>, served 403
+    # inline). It must round-trip that destination -- keep the path + query and
+    # swap ONLY the pasted token -- instead of redirecting to the dashboard root
+    # and discarding /chat?sid=..., which is the "tap and get nowhere" dead end
+    # this PR exists to remove (UX stale-tap finding).
+    mw = token_auth_middleware()
+    req = _make_request(path="/dashboard", method="POST", remote="10.0.0.1")  # No token
+    resp = await mw(req, _ok_handler)
+    assert resp.status == 403
+    body = resp.body.decode()
+    # Rebuilds from the current URL and swaps only the token param.
+    assert "new URL(window.location.href)" in body
+    assert "searchParams.set('token'" in body
+    # The old path-discarding redirect (protocol//host?token=) is gone.
+    assert "window.location.host+'?token='" not in body
+
+
 # -- Property 12b: SPA shell is public so the app can cold-start refresh --
 
 

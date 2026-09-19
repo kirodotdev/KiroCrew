@@ -169,9 +169,7 @@ async def drain_slack_backfill(
         # tail off disk, which is the locked, on-loop I/O this path exists to
         # avoid. A row with no ts therefore posts untokened -- honoured on click,
         # the same direction every other unprovable case takes.
-        _token = (
-            mint_options_token(state, session_key, row_ts) if interactive and row_ts else None
-        )
+        _token = mint_options_token(state, session_key, row_ts) if interactive and row_ts else None
         blocks = (
             build_options_blocks(choices, staleness_token=_token)
             if interactive
@@ -213,10 +211,20 @@ async def drain_slack_backfill(
             # Offloaded: KiroCrewConfig.load() reads and validates the config
             # file, which is blocking I/O like the transcript read above.
             cfg = await asyncio.to_thread(KiroCrewConfig.load)
-            link = session_deep_link(cfg.dashboard.url, slot.key)
+            # Same origin choice as send_message's session-link button: this
+            # marker lands in Slack, so honor slack.use_tunnel_url — a
+            # local-only origin is unreachable from a phone. No click token:
+            # backfill markers can reach shared channels. The tunnel-vs-not
+            # decision lives in one shared helper (tunnel_origin_if_opted_in).
+            from kiro_crew.dashboard.urls import tunnel_origin_if_opted_in
+
+            tunnel_url = tunnel_origin_if_opted_in(cfg.slack.use_tunnel_url)
+            link = session_deep_link(cfg.dashboard.url, slot.key, tunnel_url=tunnel_url)
         except Exception:
             logger.debug("slack backfill: could not build session link", exc_info=True)
-        marker = f"_… {summary} — <{link}|open in the dashboard>_" if link else f"_… {summary}_"
+        # "open session" matches the send_message button label ("Open session"):
+        # one phrase for one act, opening this session's dashboard tab.
+        marker = f"_… {summary} — <{link}|open session>_" if link else f"_… {summary}_"
         await _post(marker)
 
     newest = len(selection.recent_rows) - 1
@@ -312,9 +320,7 @@ def _spawn_slack_backfill(
     mid-drain abandons the task and leaves a partially seeded thread. That is
     accepted: the link is already persisted and the thread is live.
     """
-    task = asyncio.create_task(
-        drain_slack_backfill(state, slot, channel, thread_ts)
-    )
+    task = asyncio.create_task(drain_slack_backfill(state, slot, channel, thread_ts))
     state._background_tasks.add(task)
     task.add_done_callback(state._background_tasks.discard)
     task.add_done_callback(_log_task_exception)
