@@ -110,7 +110,7 @@ pool default changes.
 | Constant | Value | Purpose |
 |----------|-------|---------|
 | `_MAX_CONCURRENT` | 3 | The `SubagentManager` constructor's `max_concurrent` default. The resolved cap's fallback and floor is `_LEGACY_DEFAULT_MAX` (also 3), and a pinned cap's floor is `config.sections.MAX_SUBAGENTS_FIXED_FLOOR` (3). `agent.max_subagents` defaults to `0` = auto: the cap is `agent.subagent_auto_max` (default 32) as written, a high count ceiling standing in for provider concurrency and fd / PID limits; memory bounds starts beneath it through the spawn floor (*Memory guard*), never the count. 3 applies when host memory cannot be read. A positive value pins a fixed cap (floored at 3). The cap is re-derived on every config reload, not only at boot — see [`reconfigure`](#reconfigurecfg-apply_limitscfg-max_concurrentnone-live-config). |
-| `_TIMEOUT_SECS` | 10800 | Hard timeout per subagent (3 hours), from `constants.SUBAGENT_TIMEOUT_SECS` |
+| `_TIMEOUT_SECS` | 10800 | Hard timeout per subagent (3 hours), from `constants.SUBAGENT_TIMEOUT_SECS`. Each run captures its deadline on `SubagentInfo.timeout_secs` when execution starts; `asyncio.wait_for` and the reaper both enforce that captured value, and the reaper measures it from `_exec_started` while the run executes, so a spawn-approval wait before the first start never spends it (see *Reaper Loop* for a run that is not executing). A config reload changes the deadline of future runs only. The run also resolves one explicit ACP prompt budget at execution start, at least 60 s past the captured deadline and never below the live configured transport budget, and reuses it for every original, retry, fallback, and recovery prompt on the shared and dedicated ACP providers (both declare `prompt_timeout_for_deadline`; an undeclared legacy provider keeps its one-argument `stream(message)` call), so a config cut cannot shorten the transport under an in-flight run. |
 | `DEFAULT_SPAWN_MIN_MEMORY_GB` | 2.0 | Default of `agent.spawn_min_memory_gb`, from `constants.DEFAULT_SPAWN_MIN_MEMORY_GB`: GiB that must remain available AFTER an admitted start. The one source for the dataclass default, the loader fallback, the gate's fallback and `check_memory_available`'s default |
 | `_UNLEARNED_DEDICATED_START_GB` | 1.0 | Dedicated start price for a cost bucket with no learned settled figure yet: the default `kirocrew` agent's measured first-session tree (kiro-cli 2.26.1, USS, its MCP roster included), rounded up. See *Memory guard* |
 | `_SETTLED_PROJECTION_CEILING_GB` | 2.0 | The most a learned settled figure may raise a dedicated start's price |
@@ -122,7 +122,7 @@ pool default changes.
 | `INJECTION_TIMEOUT` | 900 | Inner cap: max seconds for a single `stream_and_collect` call (15 minutes); default `_DEFAULT_INJECTION_TIMEOUT = 900.0`, tunable via `KIROCREW_INJECTION_TIMEOUT` (float seconds, clamped to `_ON_DONE_TIMEOUT`) |
 | `_RESET_TIMEOUT` | 30 | Max seconds for session reset in finally block |
 | `_TURN_LIMIT` | 1000 | Default tool-call budget per subagent, from `constants.DEFAULT_SUBAGENT_MAX_TURNS` (configurable via `agent.subagent_max_turns`, per-spawn via `max_turns`) |
-| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). The badge never terminates anything. Its one effect beyond the card: a stalled child no longer holds the parent's user messages (`chat_runner.subagents_hold_user_messages`): a new send is dispatched, and a message already parked when the flag is set drains immediately — the `subagent_stalled` event fires `chat_runner.drain_idle_parent_queue_for_stall`, which starts the idle parent slot's queued-turn drain (a running slot and a live sibling are left alone). The user closes it from the UX (per-row stop / Stop-all) and the three-hour default `_TIMEOUT_SECS` ceiling still applies. A WATCHDOG stall (`EVENT_COMPLETE` with `error: tool stall`) is a different signal and IS acted on: see *Stop reason → state*. |
+| `_STALL_IDLE_SECS` | 120 | Seconds with no stream activity before a running subagent is surfaced as **stalled** in the running-card (configurable via `agent.subagent_stall_idle_secs`). The badge never terminates anything. Its one effect beyond the card: a stalled child no longer holds the parent's user messages (`chat_runner.subagents_hold_user_messages`): a new send is dispatched, and a message already parked when the flag is set drains immediately — the `subagent_stalled` event fires `chat_runner.drain_idle_parent_queue_for_stall`, which starts the idle parent slot's queued-turn drain (a running slot and a live sibling are left alone). The user closes it from the UX (per-row stop / Stop-all) and the run's captured deadline (three hours by default, `_TIMEOUT_SECS`) still applies. A WATCHDOG stall (`EVENT_COMPLETE` with `error: tool stall`) is a different signal and IS acted on: see *Stop reason → state*. |
 | `_SYSTEM_PREFIX` | (string) | Injected before task text to prevent spawn recursion |
 | `COMPLETION_KEEP_DEFAULT_CHARS` | 3000 | Default character cap for the completion event injected into the parent session (configurable via `agent.completion_keep_chars`). Lives in `context_management.py` alongside the helper. |
 
@@ -798,7 +798,9 @@ the cap inline. A resolution failure keeps the current cap and logs at WARNING.
 
 Every consumer reads the manager attribute at the point of use — the admission
 gate (`_should_stagger_queue_impl`, `_drain_queue_impl`), the run timeout
-(`asyncio.wait_for(..., timeout=_default_timeout)`), the reaper's TTL prune
+(read once when a run starts executing and captured on
+`SubagentInfo.timeout_secs`, which `asyncio.wait_for` and the reaper both
+enforce, so a reload applies to the next run), the reaper's TTL prune
 (`_result_ttl_secs`) and stall detector (`_stall_idle_secs`), the parentless
 approval policy — so the assignment is the whole apply. Cap-change
 invariants:
@@ -1915,11 +1917,11 @@ class SubagentInfo:
 
 1. `spawn()` increments `_running_count`, creates asyncio task
 2. `_spawn_with_approval()` (no auto rung matched): requests approval through `on_spawn_approval`, whose callback sets the wait
-3. `_run()` wraps `_run_inner()` with `asyncio.wait_for(_TIMEOUT_SECS)`
+3. `_run()` captures the effective deadline on `SubagentInfo.timeout_secs` only while the record still carries the zero sentinel (unexpected-cancel recovery respawns the same record and keeps its nonzero captured deadline), and wraps `_run_inner()` with `asyncio.wait_for(timeout_secs)`
 4. `_run_inner()` resolves `parent_policy` (the chain under the tool approval ladder), creates session `subagent:{id}` via `SessionManager.get_or_create(approval_policy=parent_policy)` — policy is persisted on the new session
 5. Streams through ACP with context injection, tool approval cascade, and turn counting
 6. On completion (in `_run` finally block): spawn a shielded report that fires `subagent_done` with terminal `elapsed` and cumulative `credits`, then calls `on_done`. Session release/reset and concurrency-slot release proceed independently of the report; successful delivery waits for teardown before marking the result delivered and stores both usage values in that delivery tombstone.
-7. On timeout: `error = "Timed out after 180 minutes"`, unless the run already claimed its completed ending (the ending claim below), which the deadline only cuts short
+7. On timeout: `error = "Timed out after {N} minutes"`, where N is the run's captured deadline, unless the run already claimed its completed ending (the ending claim below), which the deadline only cuts short
 8. On turn limit: `error = "turn_limit:{turn_limit}"` (default 1000)
 9. On `CancelledError`: by cancellation source (see **Terminal-State Contract** below) — user stop → neutral `user_stopped` record (NO error); shutdown / spent one-shot → `error = "cancelled"`; anything after the run claimed its completed ending (the ending claim below) → completed; any other unexpected cancel → one-shot auto-continue via `_schedule_cancel_recovery`
 
@@ -2130,7 +2132,7 @@ An unmarked `CancelledError` (see intentional-cancel rule) triggers `_schedule_c
 
 ## Reaper Loop
 
-`start_reaper()` launches a periodic loop (60s interval) that force-kills subagents exceeding the configured timeout deadline. Defense-in-depth for cases where `asyncio.wait_for` fails to fire due to event-loop saturation or orphaned tasks.
+`start_reaper()` launches a periodic loop (60s interval) that force-kills subagents exceeding their captured `timeout_secs` deadline, measured from `_exec_started`. A run that is not executing is measured on its registration age instead. Parked before its first start (at spawn approval, or approved and waiting for admission into startup) it has captured no deadline and is bounded by the live default. Between the two attempts of a context-overflow cancel recovery, which clears `_exec_started` before the replacement waits for capacity, it keeps its captured deadline, so a reload during that wait cannot cut it. The reap record names that same deadline. Defense-in-depth for cases where `asyncio.wait_for` fails to fire due to event-loop saturation or orphaned tasks; the wrapper and the reaper enforce the same value for a given run.
 
 - `_reaper_loop`: sweeps every 60s, calls `_force_reap` on expired agents
 - **taskq pump** (`OrphanStallMonitor.taskq_pump`, facade `_taskq_pump`): `start_reaper` runs it once after `taskq_boot_dispatch` (building the manager's `DependencyCoordinator` from `agent.dependency_*` over the admission store, `capacity = _max_concurrent`, and running `coordinator.rebuild()` after `open_default_store` ran `WaitLedger.rebuild()`), every sweep re-runs it as the backstop, and every run that parks on a wait calls it. One pass = `admission.taskq_expire_waits()` (wait deadlines) + `coordinator.tick()` (due scopes) + a one-shot `loop.call_later` re-armed at `coordinator.next_deadline()`, so a scope is woken when it is due, not on the next 60s sweep. The coordinator is registered process-wide (`taskq.dependency.register_coordinator`) for the main chat's read of scope schedules. Terminal runs call `coordinator.forget(id)` from `_run`'s finally (a finished probe is the scope's recovery signal) and withdraw any pending resume entry.

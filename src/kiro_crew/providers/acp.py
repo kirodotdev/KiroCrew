@@ -23,6 +23,7 @@ from kiro_crew.acp.client import (
     catalog_row_would_drop,
     model_is_unusable,
     resolve_pin_spelling_on,
+    resolve_prompt_timeout_for_deadline,
     sandbox_init_failure_for_runtime,
 )
 from kiro_crew.acp.mcp_session_report import (
@@ -2554,7 +2555,13 @@ class AcpProvider(LLMProvider):
         # the fallback keeps those guides reachable without a false capability.
         return self._client.backend == ACP_BACKEND_KAS
 
-    async def stream(self, message: str, *, allow_image: bool = True) -> AsyncIterator[LLMEvent]:
+    def prompt_timeout_for_deadline(self, deadline: float) -> float:
+        """Resolve the immutable transport budget this ACP session supports."""
+        return resolve_prompt_timeout_for_deadline(deadline)
+
+    async def stream(
+        self, message: str, timeout: float | None = None, *, allow_image: bool = True
+    ) -> AsyncIterator[LLMEvent]:
         # The direct client can respawn in ensure_ready; resolve that BEFORE
         # comparing receipts so a recycled conversation receives the full text.
         if isinstance(self._client, AcpClient):
@@ -2562,6 +2569,8 @@ class AcpProvider(LLMProvider):
         send = self._client.stream_events
         if not allow_image:
             send = functools.partial(send, allow_image=False)
+        if timeout is not None:
+            send = functools.partial(send, timeout=timeout)
         async with aclosing(
             self.essential_delivery.stream(message, send, lambda: self.context_incarnation)
         ) as events:

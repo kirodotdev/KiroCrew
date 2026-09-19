@@ -17,6 +17,7 @@ from kiro_crew.acp.client import AcpAuthRequired
 from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.acp.session_provider import AcpSessionProvider
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, AcpEvent, TurnUsage
+from kiro_crew.agent_sdk import capture_prompt_timeout
 from kiro_crew.providers.acp import AcpProvider
 
 
@@ -155,6 +156,42 @@ class TestStreamCommandRouting:
         provider._client.stream_command.assert_not_called()
         assert len(events) == 1
         assert events[0].text == "ok"
+
+
+class TestStreamTimeoutForwarding:
+    @pytest.mark.asyncio
+    async def test_dedicated_client_receives_explicit_transport_timeout(self):
+        provider = _build_provider(backend=ACP_BACKEND_CLAUDE)
+        provider._client.stream_events = MagicMock(
+            return_value=_async_iter([AcpEvent(kind="complete", stop_reason="end_turn")])
+        )
+        timeout = capture_prompt_timeout(provider, 21600.0)
+
+        events = await _drain(provider.stream("long run", timeout=timeout))
+
+        assert timeout == 21660.0
+        assert [event.kind for event in events] == ["complete"]
+        provider._client.stream_events.assert_called_once_with("long run", timeout=21660.0)
+
+    @pytest.mark.asyncio
+    async def test_runtime_backed_client_forwards_timeout_to_handle_prompt(self):
+        handle = AcpSessionHandle("s1", asyncio.Queue(), MagicMock())
+        seen: list[tuple[str, float | None]] = []
+
+        async def prompt(message: str, timeout: float | None = None):
+            seen.append((message, timeout))
+            yield AcpEvent(kind="complete", stop_reason="end_turn")
+
+        handle.prompt = prompt
+        provider = _build_provider(backend="")
+        provider._client = AcpSessionProvider(handle, runtime=MagicMock())
+        timeout = capture_prompt_timeout(provider, 21600.0)
+
+        events = await _drain(provider.stream("long shared run", timeout=timeout))
+
+        assert timeout == 21660.0
+        assert [event.kind for event in events] == ["complete"]
+        assert seen == [("long shared run", 21660.0)]
 
 
 class TestToLlmEventFieldPropagation:

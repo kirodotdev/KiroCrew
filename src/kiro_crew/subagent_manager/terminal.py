@@ -970,7 +970,11 @@ class TerminalCoordinator(ManagerComponent):
                     elif reason == "startup_timeout":
                         info.error = f"Failed to start within {self._manager._startup_deadline}s (no runtime launched, no turn produced; {info._startup_cotenant_frames} co-tenant frame(s) received, none addressed to this session) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                     else:
-                        info.error = f"Reaped after {int(elapsed)}s (exceeded {self._manager._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
+                        # The deadline the reaper enforced (monitoring.py): the
+                        # run's own captured timeout, or the manager default for a
+                        # run that never read one. A config reload moves the
+                        # default without moving this run's deadline.
+                        info.error = f"Reaped after {int(elapsed)}s (exceeded {info.timeout_secs or self._manager._default_timeout}s deadline) [{_timeout_context(info, include_elapsed=False, turn_limit=self._manager._effective_turn_limit(info))}]"
                 if kill_failed is not None:
                     # The caller's error text names what the fallback could not
                     # do, next to the reap that asked for it; ``outcome`` still

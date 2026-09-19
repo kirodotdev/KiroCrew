@@ -16,6 +16,12 @@ import pytest
 
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 
+
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(close_subagent_managers) -> None:
+    """Every manager built here opens tasks.db; close it at teardown, not at GC."""
+
+
 # Subagent-registry isolation is provided globally by the autouse
 # ``_isolate_subagents_dir`` fixture in ``conftest.py``.
 
@@ -204,6 +210,96 @@ class TestFollowUpDelivery:
         assert len(announced) == 1
         assert announced[0].done and "expired" in announced[0].error
         assert announced[0].parent_session_key == "dash:9"
+
+    @pytest.mark.asyncio
+    async def test_live_timeout_reduction_keeps_run_deadline(self, monkeypatch) -> None:
+        """The watcher follows the in-flight run's captured deadline, not a
+        lower manager default installed by live configuration."""
+        from types import SimpleNamespace
+
+        import kiro_crew.subagent as subagent_module
+
+        mgr = _manager()
+        mgr._default_timeout = 60
+        info = SubagentInfo(id="r6-live-config", task="t", timeout_secs=3600)
+        mgr._agents[info.id] = info
+        info.pending_followups = ["important correction"]
+        continues: list[str] = []
+        _patch_continue(
+            monkeypatch,
+            mgr,
+            lambda cid, task, **kw: (
+                continues.append(cid),
+                SubagentInfo(id="child", task=task),
+            )[1],
+        )
+
+        ticks = iter((0.0, 361.0, 362.0))
+
+        async def _finish_run(_delay: float) -> None:
+            info.done = True
+
+        monkeypatch.setattr(
+            subagent_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: next(ticks)),
+        )
+        monkeypatch.setattr(
+            subagent_module,
+            "asyncio",
+            SimpleNamespace(sleep=_finish_run),
+        )
+
+        await mgr._deliver_followups(info)
+
+        assert continues == [info.id]
+        assert info.pending_followups == []
+
+    @pytest.mark.asyncio
+    async def test_watcher_waits_for_the_run_to_capture_its_deadline(self, monkeypatch) -> None:
+        """A follow-up queued before the run starts executing times out on the
+        deadline the run captures, not on the manager default seen at queue time."""
+        from types import SimpleNamespace
+
+        import kiro_crew.subagent as subagent_module
+
+        mgr = _manager()
+        mgr._default_timeout = 60
+        info = SubagentInfo(id="r6-capture", task="t")
+        mgr._agents[info.id] = info
+        info.pending_followups = ["important correction"]
+        continues: list[str] = []
+        _patch_continue(
+            monkeypatch,
+            mgr,
+            lambda cid, task, **kw: (
+                continues.append(cid),
+                SubagentInfo(id="child", task=task),
+            )[1],
+        )
+        ticks = iter((0.0, 361.0, 362.0))
+
+        async def _capture_then_finish(_delay: float) -> None:
+            if info.timeout_secs == 0:
+                info.timeout_secs = 3600
+            else:
+                info.done = True
+
+        monkeypatch.setattr(
+            subagent_module,
+            "time",
+            SimpleNamespace(monotonic=lambda: next(ticks)),
+        )
+        monkeypatch.setattr(
+            subagent_module,
+            "asyncio",
+            SimpleNamespace(sleep=_capture_then_finish),
+        )
+
+        await mgr._deliver_followups(info)
+
+        assert continues == [info.id]
+        assert info.pending_followups == []
 
     @pytest.mark.asyncio
     async def test_user_stopped_run_suppresses_followups(self, monkeypatch) -> None:

@@ -24,6 +24,12 @@ from kiro_crew.subagent import SubagentInfo, SubagentManager
 # looks short of memory, which is the runner's state, not this test's input.
 pytestmark = pytest.mark.usefixtures("healthy_host_memory")
 
+
+@pytest.fixture(autouse=True)
+def _close_subagent_managers(close_subagent_managers) -> None:
+    """Every manager built here opens tasks.db; close it at teardown, not at GC."""
+
+
 # Subagent-registry isolation is provided globally by the autouse
 # ``_isolate_subagents_dir`` fixture in ``conftest.py`` — no per-file fixture needed.
 
@@ -106,7 +112,7 @@ def _mock_sessions(*, sharing_eligible: bool = True) -> MagicMock:
     mock_handle.is_turn_active = False
     mock_handle.destroy = AsyncMock()
 
-    async def _handle_prompt(msg):
+    async def _handle_prompt(msg, timeout=None):
         yield AcpEvent(kind=EVENT_TEXT_CHUNK, text="shared response")
         yield AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn")
 
@@ -304,6 +310,53 @@ class TestSessionSharingSpawn:
             assert observed == [f"subagent:{info.id}"]
         finally:
             await manager.cancel_all()
+
+    @pytest.mark.asyncio
+    async def test_dedicated_cleanup_identity_is_published_before_the_timeout_capture(
+        self, monkeypatch
+    ):
+        """A Stop landing on the ``capture_prompt_timeout`` await finds the live
+        cleanup identity already published. That capture is the dedicated path's
+        first await after the claim; were it to run ahead of the path's only
+        ``_publish_identity`` call, a cancel there would leave the tombstone
+        without the identity provider-file reclamation requires."""
+        from test_subagent import _mock_ctx_builder_auto_spawn
+        from test_subagent import _mock_sessions as dedicated_sessions
+
+        from kiro_crew.subagent_manager.run import RunEventCoordinator
+
+        sessions = dedicated_sessions()
+        provider = sessions.get_or_create.return_value[0]
+        provider.session_id = "sess-dedicated-capture"
+        manager = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder_auto_spawn())
+        published: list[str] = []
+        monkeypatch.setattr(
+            RunEventCoordinator,
+            "_publish_identity",
+            staticmethod(lambda agent_id, **kw: published.append(kw["session_id"])),
+        )
+        loop = asyncio.get_running_loop()
+        seen_at_capture: list[list[str]] = []
+
+        def _capture(client, default):
+            # In the to_thread worker: record what the publish had done by now,
+            # then land a Stop on the await this call is running under. The
+            # cancel is queued before this returns, so it is processed ahead of
+            # the worker's result and the run is cancelled at that exact await.
+            seen_at_capture.append(list(published))
+            info.user_stopped = True
+            loop.call_soon_threadsafe(manager._tasks[info.id].cancel)
+            return None
+
+        monkeypatch.setattr("kiro_crew.agent_sdk.capture_prompt_timeout", _capture)
+        with patch("kiro_crew.subagent.Stats"), patch("kiro_crew.subagent.sel"):
+            info = manager.spawn("stopped during the timeout capture")
+            assert info is not None
+            await asyncio.gather(manager._tasks[info.id], return_exceptions=True)
+
+        assert seen_at_capture == [["sess-dedicated-capture"]]
+        assert info.done and info.error == "cancelled"
+        provider.stream.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_shared_session_creates_on_runtime(self):

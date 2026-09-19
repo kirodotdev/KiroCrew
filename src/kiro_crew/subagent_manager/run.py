@@ -898,8 +898,13 @@ class RunEventCoordinator(ManagerComponent):
         # report once its kill has decided (see the ``finally``).
         reap_owns_report = False
         try:
+            # Capture the deadline once, when execution starts. A record that
+            # unexpected-cancel recovery respawns keeps its nonzero value, so a
+            # config reload between the two attempts cannot move it.
+            if info.timeout_secs == 0:
+                info.timeout_secs = self._manager._default_timeout
             await asyncio.wait_for(
-                self._manager._run_inner(info, session_key), timeout=self._manager._default_timeout
+                self._manager._run_inner(info, session_key), timeout=info.timeout_secs
             )
             if info._reap_started and not info.done:
                 # Returned with no ending while a reap is in flight -- the tail
@@ -922,7 +927,7 @@ class RunEventCoordinator(ManagerComponent):
             # unwinds -- is never overwritten or respawned, and its log line
             # says the run completed rather than naming what cut its tail short.
             if not info.reaped and not info.done:
-                info.error = f"Timed out after {self._manager._default_timeout // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
+                info.error = f"Timed out after {info.timeout_secs // 60} minutes [{_timeout_context(info, turn_limit=self._manager._effective_turn_limit(info))}]"
                 info.done = True
                 Stats().inc_subagent_failed()
                 self._manager._write_tombstone(info, "timeout")
@@ -2022,6 +2027,7 @@ class RunEventCoordinator(ManagerComponent):
             raise ValueError("memory_unavailable: the recorded memory identity is malformed")
         # Local imports: this body runs on ``kiro_crew.subagent``'s globals
         # (bind_component_globals), which do not export these names.
+        from kiro_crew.agent_sdk import capture_prompt_timeout
         from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_STRUCTURED_STATUS
         from kiro_crew.recovery.ladder import InfraError
         from kiro_crew.taskq.dependency import classify_exception
@@ -2737,6 +2743,16 @@ class RunEventCoordinator(ManagerComponent):
         _policy = _policy_for(_spec)
         # Set when the stream ends on a generate failure after real output.
         _kept_after_generate_failure = False
+        # One run owns one immutable manager deadline. Capture a transport
+        # budget only when the concrete provider declares that capability, then
+        # reuse it across every retry, fallback, and recovery continuation.
+        # Legacy duck providers retain their one-argument stream call. Captured
+        # here, after the cleanup identity above is published and persisted: a
+        # cancel landing on this await still leaves a tombstone whose provider
+        # files can be reclaimed.
+        prompt_timeout = await asyncio.to_thread(
+            capture_prompt_timeout, client, float(info.timeout_secs)
+        )
 
         async def _stream_with_transient_retry():
             """Yield stream events, retrying transient backend errors.
@@ -2802,7 +2818,12 @@ class RunEventCoordinator(ManagerComponent):
                     # by a continuation on the same session.
                     _withheld: LLMEvent | None = None
                     _infra: Any = None
-                    async for _ev in client.stream(msg):
+                    stream = (
+                        client.stream(msg)
+                        if prompt_timeout is None
+                        else client.stream(msg, timeout=prompt_timeout)
+                    )
+                    async for _ev in stream:
                         if not _ev.runtime_global:
                             # A frame addressed to THIS session: the run's own
                             # turn exists, so the durable row is ``running`` and

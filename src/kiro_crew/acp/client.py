@@ -1484,6 +1484,22 @@ def resolve_prompt_timeout() -> float:
     return prompt_timeout_for_ceiling(configured)
 
 
+def resolve_prompt_timeout_for_deadline(deadline: float) -> float:
+    """Resolve one transport budget around an immutable outer deadline.
+
+    The ordinary resolver preserves the historical four-hour floor exactly.
+    A caller that has already captured its own deadline needs a stricter
+    guarantee: ACP must expire after that owner, including when the deadline is
+    exactly the floor. The larger live chat-turn budget still wins. Callers
+    retain the returned value for the whole operation so a config reload cannot
+    shorten later prompts in the same operation.
+    """
+    configured = resolve_prompt_timeout()
+    if deadline <= 0:
+        return configured
+    return max(configured, float(deadline) + _PROMPT_TIMEOUT_MARGIN_SECS)
+
+
 def _effective_prompt_timeout(timeout: float | None) -> float:
     """An explicit caller timeout wins; ``None`` resolves from config."""
     return float(timeout) if timeout is not None else resolve_prompt_timeout()
