@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 from collections import deque
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -54,6 +55,17 @@ def _fast_kill_windows(monkeypatch):
     not promise. Zero makes `wait_for` raise on its first check: same code path,
     reached deterministically with no sleeping.
     """
+    monkeypatch.setattr(
+        rt,
+        "platform_compat",
+        SimpleNamespace(
+            IS_WINDOWS=False,
+            SIGTERM=rt.platform_compat.SIGTERM,
+            SIGKILL=rt.platform_compat.SIGKILL,
+            kill_process_tree=None,
+            pid_exists=None,
+        ),
+    )
     monkeypatch.setattr(rt.AcpRuntime, "_KILL_TERM_TIMEOUT", 0)
     monkeypatch.setattr(rt.AcpRuntime, "_KILL_REAP_TIMEOUT", 0)
 

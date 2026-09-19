@@ -1205,29 +1205,15 @@ def _sync_kill_provider(provider: object) -> None:
                 # nothing to pin and no recorded id to pin against.
                 platform_compat.kill_process_tree(pid, platform_compat.SIGKILL)
         except (ProcessLookupError, PermissionError, OSError) as exc:
-            logger.debug(
-                "_sync_kill_provider: taskkill /T did not terminate PID %d (%s)",
+            logger.warning(
+                "_sync_kill_provider: Windows tree cleanup incomplete for PID %d (%s)",
                 pid,
                 exc,
             )
+            if pid_from_client:
+                return
             try:
-                # The fallback carries the SAME pin as the tree kill above: the
-                # /T refusal means the provider may already be exiting, which is
-                # exactly when its pid becomes reusable, so an un-pinned kill here
-                # would undo the guarantee the pinned tree kill just gave.
-                if pid_from_client:
-                    assert recorded_start is not None  # implied by root_verified
-                    if not platform_compat.kill_pid_pinned(
-                        pid, recorded_start, platform_compat.SIGKILL
-                    ):
-                        logger.warning(
-                            "_sync_kill_provider: NOT killing pid %d -- identity could "
-                            "not be pinned for the fallback kill",
-                            pid,
-                        )
-                        return
-                else:
-                    platform_compat.kill_pid(pid, platform_compat.SIGKILL)
+                platform_compat.kill_pid(pid, platform_compat.SIGKILL)
             except (ProcessLookupError, PermissionError, OSError) as pid_exc:
                 logger.debug(
                     "_sync_kill_provider: taskkill did not terminate PID %d (%s)",
@@ -1691,31 +1677,45 @@ def _prune_stale_session_token_files(ttl_secs: float = _SESSION_TOKEN_TTL_SECS) 
 
 
 def cleanup_orphaned_session_roots() -> int:
-    """Kill session root PIDs whose owning gateway is confirmed dead.
+    """Advance failed exact-handle drains, then reap dead-gateway PID records.
 
-    Reads ``kiro_session_pids.txt`` entries (format ``<gateway_pid>:<child_pid>``),
-    checks if the gateway PID is alive, and for dead gateways validates the
-    child PID is still a kiro-cli process (PID-reuse guard via
-    ``_is_managed_agent_process`` and PPid reparent-to-init check) before
-    issuing SIGKILL.
+    On Windows, process-local cleanup state is attempted first. It owns exact
+    root and intermediary handles transferred by failed runtime/client teardown;
+    this pass never reconstructs that authority from a PID. The ordinary
+    ``kiro_session_pids.txt`` crash-orphan sweep then keeps its existing rules.
 
-    Called periodically from ``session.py``'s ``_cleanup_loop`` to reap
-    kiro-cli processes left behind by crashed gateway instances.
-
-    Returns the number of orphaned processes killed.
+    Called periodically from ``session.py``'s ``_cleanup_loop``. Returns the
+    number of exact-handle trees completed plus orphaned processes killed.
     """
+
+    def _retire_completed_root(root_pid: int) -> None:
+        # Runs under the pending-state lock while the exact root handle still
+        # pins this incarnation, BEFORE it is closed. Retiring PID-file records
+        # and the protected-PID shield here closes the reuse window: a recycled
+        # pid cannot register fresh tracking that this untrack would then erase.
+        # It MUST fully succeed or raise: a partial retirement that returned
+        # would let the handle close with metadata still live. The individual
+        # calls are best-effort against their own missing-entry cases, so an
+        # exception here is a real failure and correctly keeps the receipt.
+        if not _untrack_pid(root_pid) or not _untrack_session_pid(root_pid):
+            raise OSError("Windows tree tracking retirement did not complete")
+        unregister_protected_pid(root_pid)
+
+    completed_roots = platform_compat.retry_pending_windows_process_trees(
+        on_complete=_retire_completed_root
+    )
+    killed = len(completed_roots)
     path = _session_pid_file_path()
     if not path.exists():
-        return 0
+        return killed
 
     with _session_pid_file_lock():
         lines = path.read_text(encoding="utf-8").splitlines()
 
     if not lines:
-        return 0
+        return killed
 
     my_gw_pid = os.getpid()
-    killed = 0
     entries_to_remove: set[str] = set()
 
     for line in lines:
@@ -1977,35 +1977,36 @@ def _untrack_child_pids(pids: Mapping[int, object]) -> None:
         _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
-def _untrack_pid(pid: int) -> None:
-    """Remove a PID from the tracking file."""
+def _untrack_pid(pid: int) -> bool:
+    """Remove a PID, reporting whether its tracking file was updated."""
     with _pid_file_lock():
         path = _pid_file_path()
         if not path.exists():
-            return
+            return True
         lines = path.read_text(encoding="utf-8").splitlines()
         lines = [ln for ln in lines if ln.strip() != str(pid)]
-        _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
+        return _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
-def _untrack_session_pid(pid: int) -> None:
+def _untrack_session_pid(pid: int) -> bool:
     """Remove this gateway's ``<gw_pid>:<pid>`` entry from the session PID
     tracking file.  Called on clean provider shutdown so the periodic
     orphan sweep doesn't race against legitimate still-running kiro-cli
     processes whose in-memory session entry has transiently gone away
-    (e.g. during compaction/reset/replace)."""
+    (e.g. during compaction/reset/replace). Return whether the write succeeded.
+    """
     prefix = f"{os.getpid()}:{pid}"
     with _session_pid_file_lock():
         path = _session_pid_file_path()
         if not path.exists():
-            return
+            return True
         lines = path.read_text(encoding="utf-8").splitlines()
         # Match both the legacy ``gw:pid`` form and the token-bearing
         # ``gw:pid:token`` form (see _track_session_pid).
         lines = [
             ln for ln in lines if ln.strip() != prefix and not ln.strip().startswith(prefix + ":")
         ]
-        _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
+        return _rewrite_pid_file(path, "\n".join(lines) + "\n" if lines else "")
 
 
 # ── Sweep-protected PIDs ──────────────────────────────────────────────────

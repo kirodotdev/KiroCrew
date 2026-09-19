@@ -2723,6 +2723,28 @@ class AcpRuntime:
             except (asyncio.CancelledError, Exception):
                 pass
 
+        if self._process and platform_compat.IS_WINDOWS:
+            process = self._process
+            pid = process.pid
+            try:
+                await platform_compat.terminate_windows_asyncio_tree(process)
+            except (OSError, asyncio.TimeoutError):
+                logger.warning(
+                    "AcpRuntime Windows tree cleanup incomplete for PID %s; retaining process",
+                    pid,
+                    exc_info=True,
+                )
+                raise
+            self._process = None
+            self._process_instance = ""
+            try:
+                await asyncio.to_thread(_untrack_pid, pid)
+                await asyncio.to_thread(_untrack_session_pid, pid)
+                unregister_protected_pid(pid)
+            except Exception:
+                logger.debug("AcpRuntime: PID untracking failed for %s", pid, exc_info=True)
+            return
+
         if self._process:
             pid = self._process.pid
             # platform_compat.kill_process_tree: killpg on POSIX (the spawn
