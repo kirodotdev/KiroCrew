@@ -29,6 +29,7 @@ from typing import Any, Protocol
 from kiro_crew import acp_tool_gate, model_registry
 from kiro_crew.acp import kas_wire
 from kiro_crew.acp._dispatch import (
+    DRAIN_YIELD_AFTER_S,
     build_permission_event,
     classify_notification,
     error_is_refusal_terminal,
@@ -2928,6 +2929,7 @@ class AcpSessionHandle:
         parked_at_own_data = parked_at_data
 
         _buffered: list[JsonRpcMessage] = []
+        _last_yield = time.monotonic()
         try:
             while time.monotonic() < deadline:
                 remaining = deadline - time.monotonic()
@@ -3022,6 +3024,22 @@ class AcpSessionHandle:
                         usage=self.last_prompt_stats.to_turn_usage(),
                     )
                     return
+
+                # Cooperative yield, placed where the previous frame is fully
+                # handled and the next one is not yet dequeued: every branch
+                # below either runs to the bottom of the loop body or takes a
+                # `continue`, so no dequeued frame is held in a local here and
+                # both watchdog clocks are already updated. A cancellation
+                # landing on this yield therefore drops nothing -- a yield
+                # placed right after the dequeue instead would strand the frame
+                # in hand, terminal response and death sentinel included. The
+                # 5s TimeoutError branch below cannot serve as the yield point
+                # either: it fires only on an EMPTY queue, so it is dead during
+                # exactly the backlog it would need to guard.
+                _now = time.monotonic()
+                if _now - _last_yield >= DRAIN_YIELD_AFTER_S:
+                    await asyncio.sleep(0)
+                    _last_yield = time.monotonic()
 
                 try:
                     msg = await asyncio.wait_for(self._queue.get(), timeout=min(remaining, 5.0))

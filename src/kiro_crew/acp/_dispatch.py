@@ -67,6 +67,19 @@ from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
+# Starvation guard for both read loops (AcpClient._prompt_loop and
+# AcpSessionHandle._dispatch_events): the longest one task step may hold the
+# event loop before it must yield. Neither loop's read is a suspension point
+# when input is already buffered -- ``asyncio.wait_for`` runs its awaitable
+# inline, ``Queue.get`` returns without awaiting on a non-empty queue, and
+# ``StreamReader.readline`` returns without awaiting when the line is already
+# in its buffer -- so a backlog drains entirely inside one task step, starving
+# every other session, the dashboard websocket and the loop-stall heartbeat for
+# the whole drain. Budgeted by wall clock rather than frame count because
+# per-frame consumer cost varies by orders of magnitude, and loop-held time is
+# the quantity the watchdog measures. Shared so the two loops cannot drift.
+DRAIN_YIELD_AFTER_S = 0.05
+
 
 def build_session_new_params(
     cwd: str | Path,

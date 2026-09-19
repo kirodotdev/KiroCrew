@@ -15,7 +15,15 @@ import time
 from pathlib import Path
 
 import pytest
-from stall_dump_helpers import CHAT_STACK, CRON_STACK, IDLE_WORKER, SLACK_STACK, write_dump
+from stall_dump_helpers import (
+    CHAT_STACK,
+    CRON_STACK,
+    DISPATCH_STACK,
+    IDLE_WORKER,
+    PROMPT_LOOP_STACK,
+    SLACK_STACK,
+    write_dump,
+)
 
 from kiro_crew import cron_inflight, stall_attribution
 from kiro_crew.dashboard import crash_dump_store
@@ -172,6 +180,28 @@ class TestSurface:
     def test_dashboard_chat_and_slack(self) -> None:
         assert classify_surface(parse_frames(CHAT_STACK)) == "dashboard chat"
         assert classify_surface(parse_frames(SLACK_STACK)) == "slack"
+
+    def test_session_event_dispatch_named_instead_of_unknown(self) -> None:
+        """The per-turn event drain is a named surface.
+
+        Its outer frames are ``dashboard/state.py``, which matches no rule of
+        its own, so the drain's own entry is the only thing that keeps a dump
+        wedged in this loop out of "unknown" -- where the doctor can say
+        nothing about it."""
+        assert classify_surface(parse_frames(DISPATCH_STACK)) == "event dispatch (read-loop drain)"
+
+    def test_both_read_loops_share_the_one_surface(self) -> None:
+        # Same defect class, two transports (shared runtime vs dedicated
+        # process). One label, so a dump is attributed whichever loop wedged.
+        assert classify_surface(parse_frames(PROMPT_LOOP_STACK)) == (
+            "event dispatch (read-loop drain)"
+        )
+
+    def test_an_entry_point_further_out_still_names_the_surface(self) -> None:
+        # The drain rule must not shadow a real surface: the walk is bottom-up,
+        # so a chat turn whose stack happens to pass through the drain is still
+        # attributed to the turn that started it.
+        assert classify_surface(parse_frames(DISPATCH_STACK[:1] + CHAT_STACK)) == "dashboard chat"
 
     def test_unknown_when_no_crew_frame(self) -> None:
         assert classify_surface(parse_frames(IDLE_WORKER)) == "unknown"

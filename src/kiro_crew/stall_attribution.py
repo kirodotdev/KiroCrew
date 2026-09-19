@@ -59,6 +59,16 @@ _SURFACE_RULES: tuple[tuple[str, tuple[str, ...], tuple[str, ...]], ...] = (
     ("teams", ("/kiro_crew/teams/",), ()),
     ("webex", ("/kiro_crew/webex/",), ()),
     ("messaging", ("/kiro_crew/messaging/dispatch.py",), ()),
+    # Not an entry point but a loop: the per-turn event drain. Matched by
+    # FUNCTION name alone -- a path fragment would label a stall in any other
+    # function of those modules a queue drain, which is a worse answer than
+    # "unknown" because it reads as evidence. Listed last so any surface above
+    # still names the turn's origin when its frame is further out (the walk is
+    # bottom-up), and reached when nothing else in the stack is recognised. The
+    # frame at the deadline may be a bystander: the watchdog dumps whoever holds
+    # the loop when the timer fires, not whoever consumed the preceding 25s, and
+    # each loop's own idle branch is reachable only from empty input.
+    ("event dispatch (read-loop drain)", (), ("_dispatch_events", "_prompt_loop")),
 )
 
 #: Gate frames worth naming as "stuck in": the security gate and its callers.
