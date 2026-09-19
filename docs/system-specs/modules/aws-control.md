@@ -437,6 +437,31 @@ locally; it does not restore it into live gateway state.
 `test_aws_control_app.py::TestRound22Hardening.test_restore_refuses_a_symlinked_destination`
 pins the staged restore safety boundary.
 
+### Run identity and failed state writes
+
+A run's `at` is the observed UTC wall time, not a unique identifier or a
+monotonic clock. `process` (a random process token plus PID) and `sequence`
+distinguish and order this process's completed run records even when wall time
+ties or moves backwards. Recording and state updates share an in-process lock;
+the existing sidecar lock still serializes disk writes across processes.
+A newly recorded run unconditionally replaces its kind's prior state under the
+sidecar lock, including prior-process or legacy records with equal or later wall
+times. Only best-effort overlay/recovery comparisons use local sequence or the
+other-process/legacy wall-time fallback; that fallback does not establish global
+newest when a process's state was unobservable.
+
+A successful upload stays successful if its state read or write fails. Memory
+holds one last run per account/kind and at most `MAX_REMEMBERED_UPLOADS` pending
+key/fingerprint pairs per account, not full run history. `last_runs` and the
+restore proof read that memory. The next successful state update considers the
+pending runs and merges their fingerprints under the sidecar lock. Its final
+run slot can supersede a pending run rather than storing that run as history;
+only after the write succeeds are the exact processed pending records cleared.
+Failed recovery acknowledges nothing. Same-time acknowledgement of a different
+run cannot clear the current one. The existing durable fingerprint bound still
+applies, and a restart before recovery loses process-only metadata.
+No API ordering envelope or UI state is added.
+
 ### Several installs, one drive
 
 Drive discovery is by tag, so every install pointed at the account finds the same

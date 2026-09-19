@@ -189,11 +189,22 @@ def _locked_state_update(mutate) -> Any:
     """
     lock_path = _state_path().with_suffix(".lock")
     _state_path().parent.mkdir(parents=True, exist_ok=True)
-    with open_lock_file(lock_path) as fd:
+    with _run_lock, open_lock_file(lock_path) as fd:
         with file_lock(fd, exclusive=True, required=True):
             state = _read_state_for_update()
+            pending, uploads = _merge_pending(state)
             result = mutate(state)
             write_state(state)
+            for account, kind, record in pending:
+                _forget_unpersisted(account, kind, record)
+            with _unpersisted_lock:
+                for key, fingerprints in uploads.items():
+                    held = _unpersisted_uploads.get(key, {})
+                    for name, fingerprint in fingerprints.items():
+                        if held.get(name) == fingerprint:
+                            held.pop(name, None)
+                    if not held:
+                        _unpersisted_uploads.pop(key, None)
     return result
 
 
@@ -582,6 +593,11 @@ def uploaded_objects(account: str) -> dict[str, str]:
     still happened, and the archive is still in the bucket; leaving it out would
     make an operator confirm an archive this process uploaded minutes ago.
     """
+    with _run_lock:
+        return _uploaded_objects_locked(account)
+
+
+def _uploaded_objects_locked(account: str) -> dict[str, str]:
     entry = _account_view(account)
     stored = entry.get("uploads")
     objects: dict[str, str] = {}
@@ -594,6 +610,7 @@ def uploaded_objects(account: str) -> dict[str, str]:
         objects = {k: "" for k in stored if isinstance(k, str)}
     path = _state_key()
     with _unpersisted_lock:
+        objects.update(_unpersisted_uploads.get((path, account), {}))
         for (state_path, acct, _kind), record in _unpersisted_runs.items():
             if state_path == path and acct == account:
                 held = record.get("key")
@@ -672,7 +689,67 @@ class UnprovenArchive(RuntimeError):
 #: Bounded by the accounts the owner has actually connected times the two backup
 #: kinds, and an entry is dropped as soon as one write for that key succeeds.
 _unpersisted_runs: dict[tuple[str, str, str], dict[str, Any]] = {}
+_unpersisted_uploads: dict[tuple[str, str], dict[str, str]] = {}
 _unpersisted_lock = threading.Lock()
+# Serialize record creation through recovery/acknowledgement in this process.
+# The sidecar still serializes disk updates across processes; it cannot order
+# successful uploads whose state was inaccessible to another process.
+_run_lock = threading.RLock()
+_run_process = uuid.uuid4().hex
+_run_sequence = 0
+
+
+def _run_is_newer(candidate: dict[str, Any], previous: Any) -> bool:
+    """Local sequence orders one process; other/legacy records use wall time."""
+    if not isinstance(previous, dict):
+        return True
+    process = candidate.get("process")
+    sequence, old_sequence = candidate.get("sequence"), previous.get("sequence")
+    if (
+        isinstance(process, str)
+        and process
+        and process == previous.get("process")
+        and type(sequence) is int
+        and type(old_sequence) is int
+    ):
+        return sequence > old_sequence
+    old_at = previous.get("at")
+    return not isinstance(old_at, str) or old_at < str(candidate.get("at", ""))
+
+
+def _merge_uploads(entry: dict[str, Any], additions: dict[str, str]) -> None:
+    uploads = entry.setdefault("uploads", {})
+    if not isinstance(uploads, dict):
+        uploads = entry["uploads"] = {}
+    uploads.update(additions)
+    for stale in list(uploads)[: max(0, len(uploads) - MAX_REMEMBERED_UPLOADS)]:
+        uploads.pop(stale, None)
+
+
+def _merge_pending(state: dict[str, Any]) -> tuple[list, dict]:
+    """Carry bounded recovery metadata into the next successful state update."""
+    path = _state_key()
+    with _unpersisted_lock:
+        pending = [
+            (account, kind, record)
+            for (state_path, account, kind), record in _unpersisted_runs.items()
+            if state_path == path
+        ]
+        uploads = {
+            key: dict(fingerprints)
+            for key, fingerprints in _unpersisted_uploads.items()
+            if key[0] == path
+        }
+    for account, kind, record in pending:
+        entry = _account_state(state, account)
+        runs = entry.setdefault("runs", {})
+        if not isinstance(runs, dict):
+            runs = entry["runs"] = {}
+        if _run_is_newer(record, runs.get(kind)):
+            runs[kind] = record
+    for (_, account), fingerprints in uploads.items():
+        _merge_uploads(_account_state(state, account), fingerprints)
+    return pending, uploads
 
 
 def _state_key() -> str:
@@ -706,56 +783,36 @@ def _state_key() -> str:
 
 
 def _remember_unpersisted(account: str, kind: str, record: dict[str, Any]) -> None:
+    path = _state_key()
     with _unpersisted_lock:
-        _unpersisted_runs[(_state_key(), account, kind)] = record
+        run_key = (path, account, kind)
+        if _run_is_newer(record, _unpersisted_runs.get(run_key)):
+            _unpersisted_runs[run_key] = record
+        uploads = _unpersisted_uploads.setdefault((path, account), {})
+        uploads[record["key"]] = str(record.get("fingerprint", "") or "")
+        for stale in list(uploads)[: max(0, len(uploads) - MAX_REMEMBERED_UPLOADS)]:
+            uploads.pop(stale, None)
 
 
-def _forget_unpersisted(account: str, kind: str, persisted_at: str) -> None:
-    """Drop the held entry once a write for the same key has persisted.
+def _forget_unpersisted(account: str, kind: str, persisted: dict[str, Any]) -> None:
+    """Clear exactly the held record processed by a successful state update.
 
-    Conditional, not unconditional, and the condition is the point. This runs
-    AFTER the sidecar lock is released, so another run for the same key can fail
-    its write and cache a NEWER record inside the window between this run's write
-    and this pop; an unconditional pop would evict that record, and the panel
-    would then report the older archive as the last run while the newer upload
-    has no record anywhere.
-
-    Taking the sidecar lock for the pop would not fix it. The matching
-    :func:`_remember_unpersisted` also runs outside that lock, and more
-    fundamentally two gateway processes hold SEPARATE in-memory caches, so no
-    file lock can serialize one process's pop against the other's cache. The
-    invariant that holds in both cases is monotonic: never evict a record
-    STRICTLY NEWER than the one just persisted.
-
-    An EQUAL stamp evicts. Two back-to-back runs can stamp identically where the
-    clock is coarse -- Windows granularity is far above a microsecond -- and
-    keeping the held record on a tie makes it immortal for the life of the
-    process, since no later write can ever compare greater. A tie means the two
-    records are simultaneous and the persisted one is on disk, so retaining the
-    held copy buys nothing. A stamp that is missing or not a string cannot be
-    ordered and is unusable, so it is dropped.
+    Its fingerprint is merged even when the final run slot supersedes it.
+    Equal wall times do not identify equal runs. Full record equality also
+    keeps legacy records without process/sequence metadata acknowledgeable.
     """
     key = (_state_key(), account, kind)
     with _unpersisted_lock:
-        held = _unpersisted_runs.get(key)
-        if held is None:
-            return
-        held_at = held.get("at")
-        if not isinstance(held_at, str) or held_at <= persisted_at:
+        if _unpersisted_runs.get(key) == persisted:
             _unpersisted_runs.pop(key, None)
 
 
 def _merge_unpersisted(account: str, runs: dict[str, Any]) -> dict[str, Any]:
     """Overlay this process's unpersisted runs onto what the state file holds.
 
-    Newest wins, rather than memory always winning: a second gateway process on
-    the same data home can persist a NEWER run while this one still remembers a
-    write that failed, and the sidecar lock exists precisely because that other
-    process can exist. Both stamps come from the same UTC
-    ``isoformat(timespec="microseconds")`` call, so comparing the strings orders
-    them -- and microseconds rather than seconds is what makes that comparison
-    able to separate two uploads that finished in the same second. A persisted
-    stamp that is not a string is unusable and loses.
+    Same-process runs use local sequence, including equal/backwards wall times.
+    Other processes and legacy records retain the wall-time fallback; this is
+    not proof of global order when their state updates were unobservable.
     """
     path = _state_key()
     with _unpersisted_lock:
@@ -765,9 +822,7 @@ def _merge_unpersisted(account: str, runs: dict[str, Any]) -> dict[str, Any]:
             if state_path == path and acct == account
         }
     for kind, record in remembered.items():
-        persisted = runs.get(kind)
-        persisted_at = persisted.get("at") if isinstance(persisted, dict) else None
-        if not isinstance(persisted_at, str) or persisted_at < str(record.get("at", "")):
+        if _run_is_newer(record, runs.get(kind)):
             runs[kind] = record
     return runs
 
@@ -775,7 +830,19 @@ def _merge_unpersisted(account: str, runs: dict[str, Any]) -> dict[str, Any]:
 def _record_run(
     account: str, kind: str, key: str, size: int, fingerprint: str = ""
 ) -> dict[str, Any]:
+    with _run_lock:
+        return _record_run_locked(account, kind, key, size, fingerprint)
+
+
+def _record_run_locked(
+    account: str, kind: str, key: str, size: int, fingerprint: str
+) -> dict[str, Any]:
+    global _run_sequence
+    _run_sequence += 1
     record: dict[str, Any] = {
+        # Include PID so a fork cannot reuse its parent's sequence namespace.
+        "process": f"{_run_process}:{os.getpid()}",
+        "sequence": _run_sequence,
         "key": key,
         "bytes": size,
         # Carried on the held record as well, so an upload whose state write failed
@@ -794,39 +861,14 @@ def _record_run(
             # A corrupted non-dict `runs` must not crash AFTER the archive
             # already uploaded (500 + no ledger entry + duplicate on retry).
             runs = entry["runs"] = {}
-        # The upload ledger, written in the SAME locked mutation as the run
-        # record. This is what lets a restore prove an archive is this install's
-        # own rather than infer it from a key prefix any bucket writer can create
-        # a folder under -- see `ORIGIN_UNVERIFIED`. Same corrupted-shape rule as
-        # `runs`: repair rather than crash after the bytes already left.
-        uploads = entry.setdefault("uploads", {})
-        if not isinstance(uploads, dict):
-            uploads = entry["uploads"] = {}
-        # Key -> body fingerprint, so a restore can ask whether the object at that
-        # key is still the one this install put there. Re-recording a key replaces
-        # its entry rather than adding one: a retry landing on an identical key is
-        # the same archive, and its bytes are what matter.
-        uploads[key] = fingerprint
-        # Bounded no matter how long the install runs. Insertion order is oldest
-        # first, so dropping from the front drops the oldest.
-        for stale in list(uploads)[: max(0, len(uploads) - MAX_REMEMBERED_UPLOADS)]:
-            uploads.pop(stale, None)
-        # Stamp HERE, not where `record` was built. `mutate` runs inside the
-        # sidecar lock, so a stamp taken here is ordered by the same lock that
-        # orders the writes; a stamp taken before the lock is not. Two runs can
-        # stamp in one order and acquire the lock in the other -- a manual run
-        # racing the nightly loop -- and then the older-stamped record writes
-        # LAST and the ledger reports the wrong archive as the last run.
-        #
-        # This is load-bearing for more than the ledger: everything that compares
-        # these stamps (the overlay's newest-wins in `_merge_unpersisted`, the
-        # monotonic eviction in `_forget_unpersisted`) is only sound if stamp
-        # order matches WRITE order, which is exactly what generating it in here
-        # buys. Microsecond precision alone does not: it separates two stamps
-        # without telling you which write landed first.
+        _merge_uploads(entry, {key: fingerprint})
+        # Keep the observed wall time, even on a coarse or backwards clock.
+        # Local sequence, not timestamp precision, orders this process's runs.
         record["at"] = dt.datetime.now(dt.timezone.utc).isoformat(timespec="microseconds")
+        # This new locked write supersedes prior state, regardless of its clock
+        # or process. Recency comparisons belong only to best-effort recovery.
         runs[kind] = record
-        return runs[kind]
+        return record
 
     try:
         recorded = _locked_state_update(mutate)
@@ -864,7 +906,6 @@ def _record_run(
             exc,
         )
         return record
-    _forget_unpersisted(account, kind, record["at"])
     return recorded
 
 
@@ -1906,9 +1947,10 @@ def last_runs(account: str) -> dict[str, Any]:
     overlay the nightly loop treats the account as never backed up and uploads
     again on every wake. See :data:`_unpersisted_runs`.
     """
-    runs = _account_view(account).get("runs", {})
-    runs = dict(runs) if isinstance(runs, dict) else {}
-    return _merge_unpersisted(account, runs)
+    with _run_lock:
+        runs = _account_view(account).get("runs", {})
+        runs = dict(runs) if isinstance(runs, dict) else {}
+        return _merge_unpersisted(account, runs)
 
 
 def due_for_nightly(account: str, now: Optional[dt.datetime] = None) -> bool:
