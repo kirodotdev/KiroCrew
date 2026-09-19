@@ -103,6 +103,13 @@
 ## Checklist
 
 - [ ] At most two commits (one is the norm), with a Conventional Commits title (`feat|fix|docs|refactor|perf|test|chore|ci|build|revert: ...`)
+<!-- If your branch goes stale, REBASE it. Do not press the "Update branch"
+     button on the PR page and do not merge the base branch in: both add a merge
+     commit, which counts toward the limit above and will fail PR Hygiene on a
+     PR that was otherwise green.
+
+       git fetch origin && git rebase origin/<base branch>
+       git push --force-with-lease -->
 - [ ] Existing tests pass and new tests added for new functionality
 - [ ] Self-review completed; code follows project style guidelines
 - [ ] Documentation updated (if applicable)
