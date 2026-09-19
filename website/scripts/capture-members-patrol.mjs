@@ -65,6 +65,7 @@ const MEMBERS = [
   member('ledger', { last_active_ts: NOW - 900, last_message: 'Work ledger reconciled, no drift.' }),
   member('scout', { last_active_ts: NOW - 4 * 3600, last_message: 'Queue scan finished, nothing new.' }),
   member('scribe', { last_active_ts: NOW - 26 * 3600, last_message: 'Release notes drafted.' }),
+  member('signal', { last_active_ts: NOW - 30, last_message: 'Interrupted by a restart mid-patrol.' }),
   member('fixer', { last_active_ts: NOW - 2 * 86400, last_message: 'Two PRs opened for the queue.' }),
 ]
 const loopRecord = (slug, extra) => ({
@@ -95,7 +96,11 @@ const SCRIBE = loopRecord('scribe', {
   message: 'Draft release notes for every merged PR.', active: false,
   idle_secs: 3600, cycle_count: 7, last_fire_ts: NOW - 26 * 3600, next_due_ts: 0, stopped_reason: 'approval_stalled',
 })
-const BASELINE = [RADAR, LEDGER, SCOUT, SCRIBE]
+const SIGNAL = loopRecord('signal', {
+  message: 'Watch the release train and wake on a red build.', active: false,
+  idle_secs: 30, cycle_count: 2, last_fire_ts: NOW - 120, next_due_ts: 0, stopped_reason: 'interrupted',
+})
+const BASELINE = [RADAR, LEDGER, SCOUT, SCRIBE, SIGNAL]
 
 // Mutable registry: the recordings flip it between frames; `mode` lets the
 // two evidence frames make the read hang or fail.
@@ -178,7 +183,14 @@ async function openMembers(theme, { record = false } = {}) {
     if (!wsServer) throw new Error('the page never opened /api/ws')
     wsServer.send(JSON.stringify({ type: 'autonudge_state', data: { event, slot: loop.slot_key, loop } }))
   }
-  return { page, context, pushLoop }
+  /** Push one `member_projection` frame (gateway envelope) — a contributor's
+   *  published view plus its render schema, exactly as the eventlog WS route
+   *  emits it. Used to drive a projection frame client-side. */
+  const pushProjection = async (slug, key, value, seq, schema) => {
+    if (!wsServer) throw new Error('the page never opened /api/ws')
+    wsServer.send(JSON.stringify({ type: 'member_projection', data: { slug, key, value, seq, schema } }))
+  }
+  return { page, context, pushLoop, pushProjection }
 }
 
 /** Exactly the badges the registry implies: one accent badge per ACTIVE loop
@@ -198,9 +210,9 @@ async function expectBadges(page, want) {
 
 async function openDrawerFor(page, name, expectedState) {
   await page.getByText(name, { exact: true }).first().click()
-  const drawer = page.locator('[data-testid="member-drawer"]')
+  const drawer = page.locator('[data-testid="member-side-panel"]')
   if (!(await drawer.isVisible().catch(() => false))) {
-    await page.locator('[data-testid="member-drawer-toggle"]').click()
+    await page.locator('[data-testid="member-panel-toggle"]').click()
   }
   await drawer.waitFor({ state: 'visible', timeout: 15000 })
   await expectState(page, expectedState)
@@ -222,7 +234,7 @@ async function expectState(page, expectedState) {
 }
 
 // ── Still frames ─────────────────────────────────────────────────────────────
-const { page: dark, context: darkCtx } = await openMembers('dark')
+const { page: dark, context: darkCtx, pushProjection: darkPushProjection } = await openMembers('dark')
 await openDrawerFor(dark, 'radar', 'active')
 await dark.locator('[data-testid="member-wake-patrol"]').waitFor({ timeout: 15000 })
 await dark.screenshot({ path: `${OUT}/01-active-dark.png` })
@@ -248,9 +260,30 @@ await openDrawerFor(dark, 'scribe', 'stopped')
 await dark.screenshot({ path: `${OUT}/05-stalled-dark.png` })
 console.log('05-stalled-dark: scribe stopped, approval went unanswered')
 
+await openDrawerFor(dark, 'signal', 'stopped')
+await dark.screenshot({ path: `${OUT}/05b-interrupted-dark.png` })
+console.log('05b-interrupted-dark: signal stopped, interrupted by a restart — reads "Interrupted by a restart.", not a raw token')
+
 await openDrawerFor(dark, 'fixer', 'none')
 await dark.screenshot({ path: `${OUT}/06-none-dark.png` })
 console.log('06-none-dark: fixer has no patrol scheduled')
+
+// ── Projection-armed patrol ("Patrolling") ───────────────────────────────────
+// A wake projection can report a patrol as armed before any loop record lands
+// (patrol: 'armed', no autonudge loop). The drawer renders the accent
+// "Patrolling" verdict and lists the patrol as a wake source without an
+// "Every N" interval it does not yet have — rather than a lit icon over
+// "No patrol scheduled."
+await darkPushProjection(
+  'fixer',
+  'wake',
+  { patrol: 'armed', slot_key: 'fixer#dm', since: NOW - 20 },
+  1,
+)
+await dark.locator('[data-testid="member-wake-patrol"]').waitFor({ timeout: 15000 })
+await dark.screenshot({ path: `${OUT}/06b-armed-dark.png` })
+console.log('06b-armed-dark: projection-armed patrol reads "Patrolling", listed as a wake source with no interval')
+
 await darkCtx.close()
 
 // 09/10: the two non-verdict states of the block — read in flight, read failed.
@@ -258,7 +291,7 @@ await darkCtx.close()
   registry.mode = 'hang'
   const { page, context } = await openMembers('dark')
   await page.getByText('fixer', { exact: true }).first().click()
-  await page.locator('[data-testid="member-drawer"]').waitFor({ state: 'visible', timeout: 15000 })
+  await page.locator('[data-testid="member-side-panel"]').waitFor({ state: 'visible', timeout: 15000 })
   await page.locator('[data-testid="member-patrol-loading"]').waitFor({ state: 'visible', timeout: 15000 })
   // DetailPanel's width spring is still running when the skeleton first
   // shows; let it settle so the frame is the resting layout, not mid-tween.
@@ -269,7 +302,7 @@ await darkCtx.close()
   registry.mode = 'fail'
   const { page: p2, context: c2 } = await openMembers('dark')
   await p2.getByText('fixer', { exact: true }).first().click()
-  await p2.locator('[data-testid="member-drawer"]').waitFor({ state: 'visible', timeout: 15000 })
+  await p2.locator('[data-testid="member-side-panel"]').waitFor({ state: 'visible', timeout: 15000 })
   await p2.locator('[data-testid="member-patrol-error"]').waitFor({ state: 'visible', timeout: 30000 })
   await p2.locator('[data-testid="member-roster-patrol-error"]').waitFor({ state: 'visible', timeout: 15000 })
   await p2.waitForTimeout(600)

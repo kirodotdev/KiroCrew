@@ -14993,6 +14993,7 @@
       "patrol_stopped_cycle_cap": "已达到唤醒次数上限。",
       "patrol_stopped_runtime_budget": "已达到时长预算。",
       "patrol_stopped_approval_stalled": "在此对话中等待工具审批时停止。",
+      "patrol_stopped_interrupted": "因重启而中断。",
       "patrol_last_wake_ago": "上次唤醒：{{when}}",
       "patrol_none": "未安排巡逻。",
       "patrol_error": "无法加载此成员的巡逻状态。",
