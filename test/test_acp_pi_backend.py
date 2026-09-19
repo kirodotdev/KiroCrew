@@ -31,12 +31,15 @@ import logging
 import os
 import re
 import shutil
+import stat
 import subprocess
 import textwrap
 from pathlib import Path
 
 import pytest
 
+from conftest import make_dir_link
+from kiro_crew import acp_tool_gate, sandbox, security
 from kiro_crew.acp import client as acp_client
 from kiro_crew.acp._dispatch import GATE_ENVELOPE_MARKER, build_permission_event, gate_envelope
 from kiro_crew.acp.client import (
@@ -65,11 +68,14 @@ from kiro_crew.acp.types import JsonRpcMessage
 from kiro_crew.acp_backends import (
     ACP_BACKEND_OPENCODE,
     ACP_BACKEND_PI,
+    ACP_BACKEND_ROUTING,
     Routing,
     gate_probe_command_for,
     routing_for,
 )
 from kiro_crew.acp_tool_gate import gate_extension_issue
+from kiro_crew.config.paths import config_dir
+from kiro_crew.instances import run_marker
 from kiro_crew.subprocess_utf8 import UTF8_TEXT
 
 _ENV_PI_ACP_BIN = "PI_ACP_BIN"
@@ -213,7 +219,7 @@ class TestGateLauncher:
     def test_the_launcher_is_written_once_and_lives_in_the_run_dir(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
         first = _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
         second = _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
@@ -230,7 +236,7 @@ class TestGateLauncher:
         run_dir.mkdir()
         work = tmp_path / "work"
         work.mkdir()
-        monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
         _ensure_pi_gate_launcher(str(tmp_path / "pi"), str(tmp_path / "gate.ts"))
         assert list(work.iterdir()) == []
@@ -286,7 +292,7 @@ class TestGateLauncher:
         run_dir = tmp_path / "run"
         run_dir.mkdir()
         monkeypatch.setattr(acp_client, "pi_gate_extension_path", lambda: str(crlf_file))
-        monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         sealed = Path(_seal_pi_gate_extension())
         assert sealed.read_bytes() == lf
         # And a byte that is NOT a line ending still fails the digest.
@@ -319,12 +325,12 @@ class TestGateLauncher:
 
 
 class TestSealedExtension:
-    """The harness loads a digest-verified copy in the run dir, never the package file."""
+    """The harness loads a digest-verified copy in the gate artifact dir, never the package file."""
 
     def _run_dir(self, monkeypatch, tmp_path):
         run_dir = tmp_path / "run"
         run_dir.mkdir()
-        monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
         return run_dir
 
     def test_the_shipped_bytes_are_sealed_read_only_in_the_run_dir(self, monkeypatch, tmp_path):
@@ -373,42 +379,36 @@ class TestAMissingExtensionIsTheSameRefusal:
         assert "cannot be read" in str(excinfo.value)
 
 
-class TestGateArtifactsRefuseASharedDirectory:
-    """The seal->exec window is a security property, so the tmpdir fallback is refused.
+class TestGateArtifactsRefuseAnUnsafeDirectory:
+    """The seal-to-exec window requires a real owner-only artifact directory."""
 
-    ``sandbox._ensure_run_dir`` degrades to the system temp directory when the
-    configured run directory cannot be created, with a warning. For a sandbox
-    launcher that is a liveness matter; for the gate artifacts it is a bypass: a
-    same-UID process can re-chmod and rewrite a file in a shared directory before
-    the harness loads it. So the session is REFUSED, not degraded -- the posture the
-    sandbox floor already takes when the credential mask cannot be applied.
-    """
-
-    def _point(self, monkeypatch, tmp_path, *, fallback: bool):
+    def _point(self, monkeypatch, tmp_path):
         cfg = tmp_path / "cfg"
-        (cfg / "run").mkdir(parents=True)
-        elsewhere = tmp_path / "tmpfallback"
-        elsewhere.mkdir()
-        # The driver binds both names at import, so the seam is the driver's own.
+        cfg.mkdir()
         monkeypatch.setattr(acp_client, "config_dir", lambda: cfg)
-        monkeypatch.setattr(
-            acp_client, "_ensure_run_dir", lambda: str(elsewhere if fallback else cfg / "run")
-        )
-        return cfg / "run", elsewhere
+        return cfg / "pi-gate"
 
-    def test_the_configured_run_dir_is_accepted(self, monkeypatch, tmp_path):
-        run_dir, _ = self._point(monkeypatch, tmp_path, fallback=False)
-        assert Path(acp_client._pi_gate_run_dir()) == run_dir
+    def test_the_dedicated_directory_is_created_owner_only(self, monkeypatch, tmp_path):
+        expected = self._point(monkeypatch, tmp_path)
+        assert Path(acp_client._pi_gate_artifact_dir()) == expected
+        if not acp_client.platform_compat.IS_WINDOWS:
+            assert stat.S_IMODE(expected.stat().st_mode) == 0o700
 
-    def test_the_tempdir_fallback_refuses_the_session(self, monkeypatch, tmp_path):
-        _, elsewhere = self._point(monkeypatch, tmp_path, fallback=True)
+    def test_a_linked_artifact_directory_refuses_the_session(self, monkeypatch, tmp_path):
+        expected = self._point(monkeypatch, tmp_path)
+        elsewhere = tmp_path / "shared"
+        elsewhere.mkdir()
+        make_dir_link(expected, elsewhere)
         with pytest.raises(AcpToolGateUnroutable) as excinfo:
-            acp_client._pi_gate_run_dir()
-        assert "run directory" in str(excinfo.value)
-        assert list(elsewhere.iterdir()) == [], "nothing may be written to the fallback"
+            acp_client._pi_gate_artifact_dir()
+        assert "not a real directory" in str(excinfo.value)
+        assert list(elsewhere.iterdir()) == []
 
-    def test_neither_artifact_is_written_under_the_fallback(self, monkeypatch, tmp_path):
-        _, elsewhere = self._point(monkeypatch, tmp_path, fallback=True)
+    def test_neither_writer_uses_a_linked_artifact_directory(self, monkeypatch, tmp_path):
+        expected = self._point(monkeypatch, tmp_path)
+        elsewhere = tmp_path / "shared"
+        elsewhere.mkdir()
+        make_dir_link(expected, elsewhere)
         monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
         with pytest.raises(AcpToolGateUnroutable):
             _seal_pi_gate_extension()
@@ -417,9 +417,9 @@ class TestGateArtifactsRefuseASharedDirectory:
         assert list(elsewhere.iterdir()) == []
 
     def test_both_writers_go_through_the_strict_resolver(self):
-        for fn in (_seal_pi_gate_extension, _ensure_pi_gate_launcher):
-            source = inspect.getsource(fn)
-            assert "_pi_gate_run_dir()" in source
+        for function in (_seal_pi_gate_extension, _ensure_pi_gate_launcher):
+            source = inspect.getsource(function)
+            assert "_pi_gate_artifact_dir()" in source
             assert "_ensure_run_dir" not in source
 
 
@@ -1359,7 +1359,7 @@ def test_live_the_shipped_extension_loads_and_the_read_back_sees_it(tmp_path, mo
     agent_dir.mkdir()
     run_dir = tmp_path / "run"
     run_dir.mkdir()
-    monkeypatch.setattr(acp_client, "_pi_gate_run_dir", lambda: str(run_dir))
+    monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(run_dir))
     monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
     pi_bin, _searched = _resolve_pi_bin()
     assert pi_bin
@@ -1408,3 +1408,339 @@ def test_live_the_shipped_extension_loads_and_the_read_back_sees_it(tmp_path, mo
     commands = _pi_commands_from_readback(completed.stdout)
     assert commands is not None
     assert gate_extension_issue(ACP_BACKEND_PI, commands, extension)
+
+
+# ── The gate artifacts survive the sandbox mask ───────────────────────────────
+
+
+class TestTheGateArtifactsStayReachableInsideTheSandbox:
+    """The credential-bearing run directory stays hidden while pi's gate can run."""
+
+    def _hidden(self, backend: str = ACP_BACKEND_PI) -> tuple[str, ...]:
+        return acp_tool_gate.adapter_hidden_credential_dirs(backend)
+
+    def _run_dir(self) -> str:
+        return os.path.normpath(str(config_dir() / "run"))
+
+    def _artifact_dir(self) -> str:
+        return os.path.normpath(str(config_dir() / "pi-gate"))
+
+    def _launcher_lists(self) -> tuple[list, list]:
+        hidden = self._hidden()
+        script = sandbox._build_launcher_script(
+            "standard",
+            strip_python_env=True,
+            extra_hidden_dirs=hidden,
+            extra_expose_files=acp_tool_gate.adapter_expose_files(ACP_BACKEND_PI, hidden),
+        )
+        masked = json.loads(re.search(r"^SENSITIVE_DIRS = (\[.*\])$", script, re.M).group(1))
+        readonly = json.loads(re.search(r"^READONLY_DIRS = (\[.*\])$", script, re.M).group(1))
+        return masked, readonly
+
+    def _is_masked(self, path: str, targets: tuple[str, ...] | list[str]) -> bool:
+        normalized = os.path.normpath(path)
+        return any(
+            os.path.commonpath((normalized, os.path.normpath(target))) == os.path.normpath(target)
+            for target in targets
+        )
+
+    def test_pi_gate_is_excluded_from_the_child_mask_but_remains_on_the_floor(self):
+        hidden = self._hidden()
+        assert not any(Path(path).name == "pi-gate" for path in hidden)
+        assert any(Path(leaf).name == "pi-gate" for leaf in security.sensitive_home_dirs())
+
+    def test_pi_mask_keeps_run_and_the_gateway_secret_parent_hidden(self):
+        hidden = self._hidden()
+        normalized = {os.path.normpath(path) for path in hidden}
+        assert self._run_dir() in normalized
+        credential_parent = str(run_marker.secret_path(32145).parent)
+        assert self._is_masked(credential_parent, hidden)
+
+    def test_gate_artifact_exclusion_is_per_backend(self):
+        backend = next(
+            backend
+            for backend, routing in ACP_BACKEND_ROUTING.items()
+            if backend != ACP_BACKEND_PI and routing in acp_tool_gate.ENFORCED_ROUTINGS
+        )
+        normalized = {os.path.normpath(path) for path in self._hidden(backend)}
+        assert self._artifact_dir() in normalized
+
+    def test_gate_artifact_leaf_is_created_and_sealed_on_the_shared_walk(self):
+        """The leaf is materialized and sealed like every other governance ceiling.
+
+        It has to be: ``mount(2)`` cannot seal an absent path, so a leaf left off the
+        precreate list stays WRITABLE in the sandbox on every install that has not run
+        pi yet -- which is the ordinary install. The nofollow list matters for the same
+        reason it matters for ``playwright-cli``: the gateway later execs out of this
+        name, so the mounted name must stay the real directory.
+        """
+        assert "pi-gate" in sandbox._CREW_READONLY_LEAVES
+        assert "pi-gate" in sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+        assert "pi-gate" in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
+        assert set(sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(
+            sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES
+        )
+
+    @pytest.mark.parametrize("leaf_name", ["pi-gate", "playwright-cli"])
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+    def test_a_squat_refuses_the_spawn_with_no_per_leaf_exception(
+        self, monkeypatch, tmp_path, leaf_name
+    ):
+        """The shared walk carries no per-adapter branch: both leaves refuse alike.
+
+        Parametrized over the pi leaf and a pre-existing one so a later exemption for
+        either has to change this test rather than pass quietly. ``pi-gate`` sharing the
+        seam is the point: the walk stays one code path for every backend.
+        """
+        leaf = tmp_path / leaf_name
+        leaf.symlink_to(tmp_path / "nowhere")
+        monkeypatch.setattr(sandbox, "_sealable_absent_ceilings", lambda: ([str(leaf)], []))
+        with pytest.raises(sandbox.SandboxCeilingUnsealable):
+            sandbox._materialize_sealable_ceilings()
+
+    @pytest.mark.parametrize(
+        "squat",
+        ["dangling-symlink", "symlink-to-dir", "regular-file"],
+    )
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX symlink creation")
+    def test_the_resolver_refuses_every_squat_the_shared_walk_used_to_catch(
+        self, monkeypatch, tmp_path, squat
+    ):
+        """The checks moved to the resolver, so the resolver must still make them.
+
+        These are the three states ``_refuse_if_dangling_symlink``,
+        ``_refuse_if_symlink_leaf`` and ``_require_real_dir_nofollow`` covered while the
+        leaf sat on the shared lists. Each one must refuse the session here instead.
+        """
+        monkeypatch.setattr(acp_client, "config_dir", lambda: tmp_path)
+        leaf = tmp_path / "pi-gate"
+        if squat == "dangling-symlink":
+            leaf.symlink_to(tmp_path / "nowhere")
+        elif squat == "symlink-to-dir":
+            elsewhere = tmp_path / "elsewhere"
+            elsewhere.mkdir()
+            leaf.symlink_to(elsewhere, target_is_directory=True)
+        else:
+            leaf.write_text("not a directory", encoding="utf-8")
+        with pytest.raises(AcpToolGateUnroutable):
+            acp_client._pi_gate_artifact_dir()
+
+    def test_the_resolver_tightens_a_loose_preexisting_leaf(self, monkeypatch, tmp_path):
+        """A real directory left group-readable is narrowed to owner-only, not refused.
+
+        ``0o750`` rather than a wider mode on purpose: what is under test is that the
+        resolver removes access it did not grant, and one group bit proves that as well
+        as seven bits would while keeping the fixture off the insecure-permissions rule.
+        """
+        monkeypatch.setattr(acp_client, "config_dir", lambda: tmp_path)
+        leaf = tmp_path / "pi-gate"
+        leaf.mkdir(mode=0o750)
+        os.chmod(leaf, 0o750)  # nosemgrep: python.lang.security.audit.insecure-file-permissions.insecure-file-permissions -- a deliberately LOOSE fixture: what is under test is that the resolver NARROWS a pre-existing directory to owner-only, so it has to start wider than 0o700. One group-read bit under tmp_path, never published. lockdown-ok.  # noqa: E501  # fmt: skip
+        assert stat.S_IMODE(leaf.stat().st_mode) != 0o700, "the fixture must start loose"
+        assert Path(acp_client._pi_gate_artifact_dir()) == leaf
+        if not acp_client.platform_compat.IS_WINDOWS:
+            assert stat.S_IMODE(leaf.stat().st_mode) == 0o700
+
+    @pytest.mark.skipif(
+        not acp_client.platform_compat.IS_POSIX,
+        reason="_build_launcher_script requires os.getuid",
+    )
+    def test_linux_launcher_masks_run_and_voice_but_exposes_and_seals_gate_artifacts(self):
+        masked, readonly = self._launcher_lists()
+        masked_set = {os.path.normpath(path) for path in masked}
+        readonly_set = {os.path.normpath(path) for path in readonly}
+        assert self._run_dir() in masked_set
+        assert self._artifact_dir() not in masked_set
+        assert self._artifact_dir() in readonly_set
+        voice_runtime = {os.path.normpath(path) for path in sandbox._voice_runtime_sandbox_paths()}
+        assert voice_runtime and voice_runtime <= masked_set
+
+    @pytest.mark.skipif(
+        not acp_client.platform_compat.IS_POSIX,
+        reason="_build_seatbelt_profile shares launcher state that requires os.getuid",
+    )
+    def test_seatbelt_masks_run_but_exposes_and_seals_gate_artifacts(self):
+        profile = sandbox._build_seatbelt_profile("standard", extra_hidden_dirs=self._hidden())
+        assert f'(deny file-read* (subpath "{self._run_dir()}"))' in profile
+        assert f'(deny file-read* (subpath "{self._artifact_dir()}"))' not in profile
+        assert f'(deny file-write* (subpath "{self._artifact_dir()}"))' in profile
+
+    def test_both_gate_artifacts_use_the_strict_artifact_resolver(self, monkeypatch, tmp_path):
+        artifact_dir = tmp_path / "pi-gate"
+        artifact_dir.mkdir()
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(artifact_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
+        sealed = _seal_pi_gate_extension()
+        launcher = _ensure_pi_gate_launcher("/usr/bin/pi", sealed)
+        assert Path(sealed).parent == artifact_dir
+        assert Path(launcher).parent == artifact_dir
+        for function in (_seal_pi_gate_extension, _ensure_pi_gate_launcher):
+            source = inspect.getsource(function)
+            assert "_pi_gate_artifact_dir()" in source
+            assert "_ensure_run_dir" not in source
+
+    def test_every_file_written_to_the_artifact_leaf_is_swept(self, monkeypatch, tmp_path):
+        """The leaf's invariant is a ratchet, not a comment.
+
+        The leaf is excluded from the pi child's OS mask, so it is the one directory
+        under the data home that an enforced harness can read. That is safe only while
+        nothing but Crew's own gate artifacts lands there. A comment saying so is what
+        this change's own pattern harvest calls the defect class, so the property is
+        asserted: every name the writers produce is matched by the sweep family, which
+        means a future writer dropping a differently-named file fails here rather than
+        leaving an unswept, child-readable file behind.
+        """
+        artifact_dir = tmp_path / "pi-gate"
+        artifact_dir.mkdir()
+        monkeypatch.setattr(acp_client, "_pi_gate_artifact_dir", lambda: str(artifact_dir))
+        monkeypatch.setattr(acp_client, "_pi_gate_launcher_cache", {})
+        sealed = _seal_pi_gate_extension()
+        _ensure_pi_gate_launcher("/usr/bin/pi", sealed)
+        families = sandbox._PI_GATE_DIR_ARTIFACTS
+        written = sorted(entry.name for entry in artifact_dir.iterdir())
+        assert written, "the writers produced nothing to check"
+        for name in written:
+            prefix = next((p for p in families if name.startswith(p)), None)
+            assert (
+                prefix is not None
+            ), f"{name} is written to the leaf but no sweep family claims it"
+            assert any(
+                name.endswith(suffix) for suffix in families[prefix]
+            ), f"{name} carries a suffix the sweep family does not reclaim"
+
+    def test_the_strict_artifact_resolver_uses_the_dedicated_owner_only_leaf(
+        self, monkeypatch, tmp_path
+    ):
+        cfg = tmp_path / "cfg"
+        cfg.mkdir()
+        monkeypatch.setattr(acp_client, "config_dir", lambda: cfg)
+        artifact_dir = Path(acp_client._pi_gate_artifact_dir())
+        assert artifact_dir == cfg / "pi-gate"
+        if not acp_client.platform_compat.IS_WINDOWS:
+            assert stat.S_IMODE(artifact_dir.stat().st_mode) == 0o700
+
+    def test_stale_pi_gate_artifacts_are_swept_from_the_dedicated_directory(
+        self, monkeypatch, tmp_path
+    ):
+        artifact_dir = tmp_path / "pi-gate"
+        artifact_dir.mkdir()
+        stale = artifact_dir / "kirocrew_pi_gate_999999_gate.ts"
+        stale.write_text("gate", encoding="utf-8")
+        monkeypatch.setattr(sandbox.platform_compat, "pid_exists", lambda _pid: False)
+        removed = sandbox.cleanup_stale_sandbox_profiles(
+            data_home=tmp_path, legacy_dir=str(tmp_path / "absent")
+        )
+        assert removed == 1
+        assert not stale.exists()
+
+    def test_sweep_refuses_a_linked_pi_gate_artifact_directory(self, monkeypatch, tmp_path):
+        target = tmp_path / "outside-pi-gate"
+        target.mkdir()
+        stale = target / "kirocrew_pi_gate_999999_gate.ts"
+        stale.write_text("gate", encoding="utf-8")
+        make_dir_link(tmp_path / "pi-gate", target)
+        monkeypatch.setattr(sandbox.platform_compat, "pid_exists", lambda _pid: False)
+        removed = sandbox.cleanup_stale_sandbox_profiles(
+            data_home=tmp_path, legacy_dir=str(tmp_path / "absent")
+        )
+        assert removed == 0
+        assert stale.exists()
+
+    def test_sweep_refuses_a_linked_run_artifact_directory(self, monkeypatch, tmp_path):
+        target = tmp_path / "outside-run"
+        target.mkdir()
+        stale = target / "kirocrew_sandbox_999999.py"
+        stale.write_text("launcher", encoding="utf-8")
+        make_dir_link(tmp_path / "run", target)
+        monkeypatch.setattr(sandbox.platform_compat, "pid_exists", lambda _pid: False)
+        removed = sandbox.cleanup_stale_sandbox_profiles(
+            data_home=tmp_path, legacy_dir=str(tmp_path / "absent")
+        )
+        assert removed == 0
+        assert stale.exists()
+
+
+# ── The read-back against a real child ───────────────────────────────────────
+
+
+class TestTheReadBackAgainstARealChild:
+    """A fake harness on disk, so the parse, the status and the refusal are all real."""
+
+    EXT = "/site/gate.ts"
+
+    def _fake(self, tmp_path: Path, body: str) -> list[str]:
+        script = tmp_path / "fake_pi.sh"
+        script.write_text("#!/bin/sh\n" + textwrap.dedent(body))
+        script.chmod(0o700)
+        return [str(script), *acp_client._PI_RPC_ARGS]
+
+    def _verify(self, tmp_path: Path, argv: list[str], extension_path: str = "") -> tuple:
+        client = AcpClient(work_dir=tmp_path, acp_backend=ACP_BACKEND_PI)
+        return client._verify_pi_gate(argv, extension_path or self.EXT)
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell launcher")
+    def test_a_launcher_the_os_will_not_run_reports_the_bare_exit(self, tmp_path):
+        """A silent child reports only its exit status."""
+        argv = self._fake(tmp_path, "exec 2>/dev/null\nexit 126\n")
+        issue, remedy = self._verify(tmp_path, argv)
+        assert "the harness's command registry could not be read back" in issue
+        assert issue.endswith("(exit 126)")
+        assert PI_INSTALL_COMMAND in remedy
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell launcher")
+    def test_a_registry_carrying_crews_probe_is_no_issue(self, tmp_path):
+        sealed = str(tmp_path / "gate.ts")
+        Path(sealed).write_text("// gate\n")
+        payload = _response(_registry((PROBE, sealed))).replace("'", "'\\''")
+        argv = self._fake(tmp_path, f"cat >/dev/null\nprintf '%s\\n' '{payload}'\n")
+        assert self._verify(tmp_path, argv, sealed) == ("", "")
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX shell launcher")
+    def test_a_response_shape_this_gateway_cannot_read_is_refused(self, tmp_path):
+        """Protocol drift reads as "not established", never as "loaded"."""
+        drifted = json.dumps(
+            {
+                "id": "kiro-crew-gate-readback",
+                "type": "response",
+                "command": "get_commands",
+                "success": True,
+                "data": {"slashCommands": [{"name": PROBE}]},
+            }
+        ).replace("'", "'\\''")
+        argv = self._fake(tmp_path, f"cat >/dev/null\nprintf '%s\\n' '{drifted}'\n")
+        issue, remedy = self._verify(tmp_path, argv)
+        assert "could not be read back" in issue
+        assert "no response" in issue
+        assert PI_INSTALL_COMMAND in remedy
+
+
+# ── The refusal is a refusal ─────────────────────────────────────────────────
+
+
+class TestAReadBackFailureRefusesTheSession:
+    """Not a warning, and not a config the operator can switch off."""
+
+    def test_this_harness_is_enforced(self):
+        assert acp_tool_gate.is_enforced(ACP_BACKEND_PI)
+        assert routing_for(ACP_BACKEND_PI) is Routing.VERIFIED_GATE_EXTENSION
+
+    def test_the_readback_issue_raises_rather_than_returning(self):
+        with pytest.raises(acp_tool_gate.ToolGateUnroutable) as excinfo:
+            acp_tool_gate.enforce_runtime_routing(
+                ACP_BACKEND_PI,
+                "the harness's command registry could not be read back (exit 126)",
+                remedy="reinstall it",
+            )
+        message = str(excinfo.value)
+        assert "would not reach Kiro Crew's security gate" in message
+        assert acp_tool_gate.UNENFORCED_CONTROLS in message
+        assert "reinstall it" in message
+
+    def test_the_arm_raises_on_any_routing_issue_before_the_first_prompt(self):
+        """Read off the arm itself: the issue is enforced, never logged and carried on."""
+        body = _pi_arm()
+        enforce_at = body.find("acp_tool_gate.enforce_runtime_routing")
+        assert body.find("if routing_issue:") != -1
+        assert enforce_at != -1
+        assert "raise AcpToolGateUnroutable" in body
+        assert "allow_ungated" not in body

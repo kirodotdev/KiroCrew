@@ -239,11 +239,13 @@ fixed sequence that the next such harness repeats verbatim rather than rediscove
    in `.gitattributes` as well; the normalization is what keeps the property off a
    repo-config line. Editing the extension is a deliberate two-file edit (bytes and
    pin), and the test that hashes both renderings to the pinned digest is the ratchet.
-2. **Seal a copy** into the sandbox run directory (read-only, per gateway process,
-   rewritten when the bytes differ) and **refuse the temp-dir fallback**
-   (`_pi_gate_run_dir`): the package path is agent-writable on a source install,
-   and a shared directory is rewritable by any same-UID process between seal and
-   exec. Teach the run-dir sweep the artifact family (owner-PID rule, never age).
+2. **Seal a copy** into a dedicated owner-only `pi-gate` directory (read-only
+   inside every sandbox, per gateway process, rewritten when the bytes differ) and
+   **refuse any shared-directory fallback** (`_pi_gate_artifact_dir`): the package path
+   is agent-writable on a source install. Exclude the artifact leaf through the
+   adapter's per-backend `adapter_hidden_credential_dirs` vocabulary, while the
+   credential-bearing `run` directory stays masked from the harness. Teach the
+   artifact sweep the family (owner-PID rule, never age).
 3. **Load it through a launcher** the adapter is told to run in place of the harness
    (its own override variable, `PI_ACP_PI_COMMAND` for pi-acp), written under
    `mkstemp` and published only after the mode change.
