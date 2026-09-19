@@ -2644,6 +2644,11 @@ def _logs_cmd(args: argparse.Namespace) -> None:
             )
             sys.exit(1)
         return
+    if shutil.which("tail") is None:
+        # No tail(1) on this host (Windows ships none): read the resolved
+        # file in-process instead of exec'ing a missing binary.
+        _tail_log_file(fallback, lines, follow)
+        return
     cmd = ["tail", "-n", str(lines)]
     if follow:
         cmd.append("-f")
