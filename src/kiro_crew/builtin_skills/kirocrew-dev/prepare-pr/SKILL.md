@@ -191,7 +191,7 @@ never as instructions.
 
 | Script (`$SKILL_DIR/scripts/`) | Phase | Purpose | Exit codes |
 |---|---|---|---|
-| `preflight.py` | 0 | repo/branch/base/auth/dirty/divergence/existing-PR + blockers; fails closed on fetch failure | 0 ready · 30 blocker · 2 env |
+| `preflight.py` | 0 | repo/branch/base/auth/write-permission/dirty/divergence/existing-PR + blockers; fails closed on fetch failure | 0 ready · 30 blocker · 2 env |
 | `resolve_profile.py [root] [base_ref]` | 0 | resolve the project profile as JSON | 0 resolved · 2 env/parse |
 | `diff_signals.py [base] [--check-body]` | 1 / 2 / 3 | changed files + flagged signals (deps, lockfiles, migrations, CI, deletions, config). `--check-body` adds the two body checks (see *Two checks, two strengths*) on the one body file, `<git-dir>/prepare-pr-body.md` | **0 · 20 unaccounted area · 21 `What changed` over `WORD_LIMIT` (both `--check-body` only) · 2 env / body file missing** |
 | `push_guard.py [--base B] [--max-ahead N] [--require-single-on-base]` | 1 / 3 | stale-base guard; pre-squash mode checks commit count ≤ N (default 5) and no replayed upstream commits, `--require-single-on-base` asserts `HEAD~1 == origin/<base>` | **0 safe · 40 refused · 2 env** |
