@@ -187,6 +187,7 @@ export default function ErrorNotice({
           <AskAgentButton
             report={report}
             message={message}
+            warn={warn}
             onHandoff={onHandoff}
           />
         )}
@@ -224,6 +225,7 @@ export default function ErrorNotice({
         <AskAgentButton
           report={report}
           message={message}
+          warn={warn}
           onHandoff={onHandoff}
           className="mt-[1px]"
         />
