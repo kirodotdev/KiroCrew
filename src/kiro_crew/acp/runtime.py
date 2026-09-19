@@ -952,7 +952,11 @@ _ENTITLEMENT_PROBE_TIMEOUT = 30.0
 _ENTITLEMENT_PROBE_TTL_SECS = 20.0
 
 
-KIRO_CLI_BIN = "kiro-cli"
+# Re-exported from the module that owns the resolver, not re-declared. A second literal
+# here is free to drift from the name the spawn actually uses, and the reclaim sweep
+# projects its marker set from the same registry the owner's value is asserted against.
+from kiro_crew.acp.client import KIRO_CLI_BIN  # noqa: E402  (re-export, not a new name)
+
 CLIENT_NAME = "kirocrew"
 CLIENT_VERSION = "0.1.2"
 # Re-exported, not re-declared. Each host's ACP revision and its own ``acp``

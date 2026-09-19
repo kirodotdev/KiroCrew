@@ -22,6 +22,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.agent_sdk.backends import agent_process_markers, node_adapter_entry_relpaths
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import (
@@ -119,20 +120,35 @@ def _pid_in_spawn_grace(pid: int) -> bool:
 def _pid_start_token(pid: int) -> str | None:
     """Stable, persistable identity token for a live PID (PID-recycle guard).
 
-    Thin delegate to ``platform_compat.get_process_start_id``, which is
+    A thin delegate to ``platform_compat.get_process_start_id``, which is
     in-process on every platform (``/proc`` read on Linux, ``libproc`` ctypes on
     macOS) — deliberately NOT ``ps``, so the token lookup itself is non-blocking
     and safe to call from the asyncio event loop. (Whether an enclosing tracker
     may run on the loop is governed by that tracker's exclusive file lock, not
     by this lookup — see ``AUTOSDE: no-blocking-call-on-event-loop``.)
 
-    Returns ``None`` when identity cannot be determined (Windows, or a process
-    we may not introspect). Callers MUST treat ``None`` as "unknown", never as a
-    mismatch — see the sweep call sites.
+    Returns ``None`` when identity cannot be determined, meaning a process we may
+    not introspect or a read that failed. Every platform Crew supports HAS a
+    source — ``/proc`` on Linux, ``libproc`` on macOS, the creation FILETIME on
+    Windows — so ``None`` is a failed read rather than an unsupported host.
+    Callers MUST treat ``None`` as "unknown", never as a mismatch — see the sweep
+    call sites.
 
     Note this cannot reuse ``acp.client._get_start_time``: that hashes with
     builtin ``hash()``, which is PYTHONHASHSEED-randomized per interpreter and
     therefore meaningless once written to disk and compared by a later gateway.
+
+    SUBTRACTIVE ONLY. A live value that differs from the recorded one proves the PID
+    was recycled and prunes the entry without a signal; a value that MATCHES never
+    authorizes one, because the tracking file is same-uid-writable and this token is
+    readable from ``/proc`` for any introspectable PID. What authorizes a kill is the
+    argv test plus each arm's own reparent or gateway-liveness condition.
+
+    That rule is also why the Linux value needs no boot scope here: it counts
+    ``/proc`` start ticks from BOOT, so a post-reboot PID can repeat an earlier
+    boot's pair — which under subtractive use costs a missed prune, not a wrong kill.
+    ``platform_compat._own_identity_token`` is the reboot-unique form, should a
+    future change want one.
     """
     return platform_compat.get_process_start_id(pid)
 
@@ -164,9 +180,14 @@ def _track_session_pid(pid: int) -> None:
     Entries are written as ``<gateway_pid>:<child_pid>:<start_token>`` so each
     gateway instance can identify and sweep only its own children, and so the
     sweep can verify the PID still names the SAME process before killing
-    (PID-recycle guard — see ``_pid_start_token``). When no token is available
-    (Windows, ``ps`` failure) the legacy ``<gateway_pid>:<child_pid>`` form is
-    written and the sweep falls back to cmdline + spawn-grace checks only.
+    (PID-recycle guard — see ``_pid_start_token``). A token is available on every
+    platform Crew supports, Windows included, so the legacy
+    ``<gateway_pid>:<child_pid>`` form is written only when the probe itself
+    fails; the sweep then rests on the argv gate and the spawn grace alone. That gate
+    recognises every registered harness (``_MANAGED_AGENT_BASENAMES``, projected from
+    the backend registry) wherever a command line is readable, and on Windows only an
+    image name is -- so an interpreter-hosted adapter reads as ``node.exe`` there and a
+    token-less entry for one is not recognised. See :func:`_is_managed_agent_process`.
     """
     token = _pid_start_token(pid)
     prefix = f"{os.getpid()}:{pid}"
@@ -236,19 +257,303 @@ def _rewrite_pid_file(path: Path, content: str) -> bool:
 # PIDs before a kill, and as a NEGATIVE gate in the work-orphan sweep: these
 # runtimes are reclaimed by their own tracked-PID sweep, never by the
 # marker-based work sweep (see _is_sweepable_orphan_work).
-_MANAGED_AGENT_MARKERS: tuple[str, ...] = ("kiro-cli", "claude")
+#
+# PROJECTED from the backend registry rather than spelled here. A hand-written
+# pair ("kiro-cli", "claude") answered for two of the eight harnesses Crew
+# spawns, so a dead gateway's codex-acp, opencode, pi-acp, goose or dsh orphan
+# answered "not ours" — and the reclaim's branch for an unrecognised PID both
+# SPARES the process and DROPS its tracking entry, which is the one file every
+# sweep mechanism keys off to find it. The orphan was spared and forgotten.
+#
+# ``agent_process_markers`` is the one place a harness's process name is written,
+# beside the launch table three of them already read, and a ratchet in
+# ``test_pid_lifecycle`` fails when a registered backend has no name there. So a
+# harness added later is one row in that table, not an edit here.
+#
+# ``kiro_crew.agent_sdk.backends`` is a stdlib-only leaf, which is what makes this
+# import safe: ``check_agent_sdk_boundary`` forbids ``kiro_crew.acp`` and
+# ``kiro_crew.providers`` from this module, and ``test_agent_lifecycle_cycle`` pins
+# their absence. The adapters' own basename constants live with their resolvers in
+# the ACP layer; a test asserts the two agree rather than this module reaching for
+# them.
+#
+# Windows is NOT fixed by widening this set: ``process_matches`` reads only the
+# image name there, so a Node-hosted adapter is ``node.exe`` whatever names this
+# holds. That is tracked separately, and the reclaim leaves such an entry to its
+# other guards rather than pretending to recognise it.
+#: The Claude CLI's own binary, which is not any backend's primary launch name.
+#: Projecting only the primary names would stop recognising a process this file
+#: recognises today — the same leak in the other direction, and
+#: ``test_claude_runtime_basename_also_detected`` pins it.
+#:
+#: ``kiro-cli-chat`` is deliberately NOT here: this tuple is matched as a SUBSTRING,
+#: so every cmdline it would match already matches the projected ``kiro-cli``. It
+#: appears in the exact-match set below, where it does carry coverage.
+_LEGACY_AGENT_MARKERS: tuple[str, ...] = ("claude",)
 
-# Exact argv0 basenames that may authorize an abandoned-scope reclaim. Unlike
-# _MANAGED_AGENT_MARKERS, this set is identity rather than substring matching:
-# it is deliberately private to _is_agent_runtime_anchor so the tracked-PID and
-# orphan-work sweeps retain their existing broader marker semantics.
-_MANAGED_AGENT_RUNTIME_BASENAMES: frozenset[bytes] = frozenset(
-    {b"claude", b"claude-agent-acp", b"kiro-cli", b"kiro-cli-chat"}
+#: Matched as a SUBSTRING of a whole command line, which is what
+#: ``platform_compat.process_matches`` does. Substring is the right subject there: an
+#: adapter hosted by an interpreter appears as ``node /path/to/codex-acp``, and only a
+#: substring test finds the adapter in it.
+_MANAGED_AGENT_MARKERS: tuple[str, ...] = tuple(
+    sorted(set(agent_process_markers()) | set(_LEGACY_AGENT_MARKERS))
+)
+
+#: Matched as an EXACT argv0 basename, for the two consumers whose subject is a
+#: basename rather than a command line: the work sweep's negative gate
+#: (:func:`_is_sweepable_orphan_work`) and the untracked-runtime report
+#: (:func:`_is_untracked_managed_agent_orphan`).
+#:
+#: Exact, because substring over a basename over-matches on the short generic names
+#: the projection introduced — ``mongoose`` contains ``goose``, and a basename holding
+#: ``dsh`` is not ``dsh``. On the negative gate an over-match wrongly EXCLUDES a
+#: process from the work sweep; on the report it names a process that is not a harness.
+#: Neither is a kill (the report says so in as many words), and both are wrong.
+#:
+#: ``kiro-cli-chat`` belongs here and not above: as an exact basename it is not
+#: covered by ``kiro-cli``.
+_MANAGED_AGENT_BASENAMES: frozenset[bytes] = frozenset(
+    name.encode() for name in {*agent_process_markers(), "claude", "kiro-cli-chat"}
 )
 
 
+def _basename_of(token: bytes) -> bytes:
+    """The last path segment of an argv token, for both separators.
+
+    Windows records ``C:\\Program Files\\nodejs\\node.exe``, so splitting on ``/``
+    alone would carry a whole backslashed path into an exact-name test and never match.
+    """
+    return token.rsplit(b"/", 1)[-1].rsplit(b"\\", 1)[-1]
+
+
+def _basename_names_a_harness(basename: bytes) -> bool:
+    """True when *basename* IS a harness process name, exactly.
+
+    Trimmed at the first control byte before comparing. argv0 is set by the process
+    itself, so it is untrusted, and a real basename never contains one — while a
+    hostile argv0 carrying a newline is precisely the case the report's escaping
+    exists for, and it must still reach it. Trimming grants nothing: a process that
+    can name itself ``kiro-cli\nfoo`` can name itself ``kiro-cli``.
+    """
+    for index, byte in enumerate(basename):
+        if byte < 0x20:
+            basename = basename[:index]
+            break
+    return basename in _MANAGED_AGENT_BASENAMES
+
+
+# Which harnesses the scope reaper may anchor on, SELECTED out of
+# _MANAGED_AGENT_BASENAMES rather than spelled again. Both sets test an exact argv0
+# basename, so a name written twice is a name that can drift; selecting keeps one
+# spelling and leaves the two free to disagree about the thing they SHOULD disagree
+# about, which is authority.
+#
+# Narrower on purpose, and the reason is the difference between the two questions.
+# _MANAGED_AGENT_BASENAMES answers "is this a harness process" for a negative sweep gate
+# and a report, neither of which terminates anything. This set authorizes an
+# abandoned-scope reclaim to KILL, and widening a kill path to five more harnesses is
+# its own change with its own review, so the projection is left here to reuse rather
+# than consumed by a set that grew on speculation. Until then a codex-acp, opencode, pi-acp, goose or dsh tree in an
+# abandoned scope is not anchored, and that gap is recorded rather than quietly closed
+# by a set that happened to grow.
+#
+# The selection is checked: ``test_the_scope_anchor_is_a_subset_of_the_projection``
+# fails if a name here stops appearing in the projection, so a registry rename cannot
+# silently empty this set and disarm the reaper.
+_SCOPE_REAP_ANCHOR_NAMES: frozenset[str] = frozenset(
+    {"claude", "claude-agent-acp", "kiro-cli", "kiro-cli-chat"}
+)
+_MANAGED_AGENT_RUNTIME_BASENAMES: frozenset[bytes] = frozenset(
+    name for name in _MANAGED_AGENT_BASENAMES if name.decode() in _SCOPE_REAP_ANCHOR_NAMES
+)
+
+
+# Interpreters that RUN a harness rather than being one. Every bespoke adapter Crew
+# spawns is a Node entry script with a ``#!/usr/bin/env node`` shebang, so the kernel
+# execs the interpreter and ``/proc/<pid>/cmdline`` reads ``node /opt/n/bin/codex-acp``
+# -- argv0 names the interpreter and the harness is in argv1. Listed so that shape can
+# be recognised WITHOUT accepting a harness name anywhere in a command line.
+#
+# Node spellings only. No registered backend launches under any other interpreter, and
+# each name here WIDENS the slot in which a harness name is accepted, so a name added
+# on speculation is authority granted for a shape nothing produces. A harness that
+# ships as a Python entry script adds its interpreter here with its own review.
+_HARNESS_INTERPRETERS: frozenset[bytes] = frozenset({b"node", b"nodejs", b"node.exe"})
+
+
+def _argv_tokens(cmdline: bytes) -> list[bytes]:
+    """Split a raw command line into argv tokens, preferring the NUL boundaries.
+
+    Linux ``/proc/<pid>/cmdline`` separates argv with NUL, which is the EXACT
+    boundary: splitting such a line on whitespace instead breaks a path containing a
+    space into two tokens. That is not a hypothetical -- a macOS or Linux home
+    directory named ``John Smith`` turns ``/Users/John Smith/.local/bin/node`` into
+    ``/Users/John`` plus ``Smith/.local/bin/node``, so argv0's basename reads ``John``,
+    the interpreter is not recognised, and the adapter in the next token is never
+    examined. The reclaim then treats a real harness as unmanaged, which is the leak
+    this module exists to close.
+
+    Whitespace is the fallback for a line with no NUL in it, which is what macOS
+    ``ps -o command=`` returns. There the ambiguity is the platform's, not ours --
+    ``ps`` joins argv with spaces and a spaced path is unrecoverable from the result.
+    Same two-step as :func:`_work_orphan_basename`.
+    """
+    if b"\x00" in cmdline:
+        return [token for token in cmdline.split(b"\x00") if token]
+    return cmdline.split()
+
+
+def _harness_naming_tokens(cmdline: bytes) -> list[bytes]:
+    """The argv tokens whose basename is allowed to name a harness.
+
+    Two, at most, and each chosen by POSITION rather than by content.
+
+    - ``argv[0]``, always: the file the kernel actually execed.
+    - ``argv[1]``, and only when ``argv[0]``'s basename is an interpreter from
+      :data:`_HARNESS_INTERPRETERS`. That is the script slot of the shebang shape above,
+      and it is the only way a bespoke adapter appears at all.
+
+    ``argv[1]`` exactly, never "the first token that does not look like a flag". Crew
+    launches a Node adapter as ``[node, <script>]`` (``_resolve_node_adapter_argv``) and
+    passes no interpreter options, so the script is always at index 1 -- and scanning past
+    options instead hands an option VALUE to the name test. ``--require`` and its kin take
+    one, so ``node app.js --require /any/path`` would offer ``/any/path`` as the script
+    slot, and a path an unrelated process merely MENTIONS would authorize a SIGKILL of it.
+    Telling a value-taking option from a boolean one needs a table of Node's flags, which
+    is an open set and a moving one; the position is closed and is the shape Crew produces.
+
+    A leading ``-`` at index 1 therefore opens no slot: Crew never emits one, so that
+    command line is not ours to reason about.
+
+    What is excluded is the rest of argv. A process's arguments are chosen by whoever
+    started it and say nothing about what it IS, so ``node build.js --agent goose`` or an
+    editor opened on a file called ``dsh`` would otherwise be answered "this is a harness"
+    -- and on the reclaim path that answer authorizes a SIGKILL of a PID this gateway never
+    spawned.
+    """
+    tokens = _argv_tokens(cmdline)
+    if not tokens:
+        return []
+    naming = [tokens[0]]
+    if (
+        _basename_of(tokens[0]) in _HARNESS_INTERPRETERS
+        and len(tokens) > 1
+        and not tokens[1].startswith(b"-")
+    ):
+        naming.append(tokens[1])
+    return naming
+
+
+# A Node adapter reaches ``node`` two ways: its installed bin shim
+# (``node /opt/n/bin/codex-acp``), whose basename IS the adapter's name, or the package
+# entry the resolver builds, whose basename is ``index.js`` and names nothing. The second
+# shape therefore needs the path, and WHICH path is the whole question.
+#
+# The identity is the EXACT relative launch path, not a name found along it. Crew spawns a
+# Node adapter from one of three published packages, and
+# ``backends.node_adapter_entry_relpaths()`` is that list -- the same table the resolvers
+# read to build the path, so the two cannot disagree.
+#
+# Matching a package DIRECTORY NAME against the harness names is what this replaces, and
+# the difference is the axis. A directory name is chosen by whoever installed the package,
+# so "what a process may call itself" stays open: an unrelated npm application at
+# ``node /srv/goose/dist/index.js`` carries a directory named for a harness Crew never
+# launches through Node at all, and the reclaim would SIGKILL it. Comparing the resolved
+# relative path closes the axis, because the three paths are a set this repository owns.
+#
+# Segment-aligned on purpose: a trailing-substring test would accept
+# ``/srv/evil-pi-acp/dist/index.js``.
+_NODE_ADAPTER_ENTRY_SEGMENTS: frozenset[tuple[bytes, ...]] = frozenset(
+    tuple(segment.encode("utf-8") for segment in relpath.split("/"))
+    for relpath in node_adapter_entry_relpaths()
+)
+
+
+def _token_is_node_adapter_entry(token: bytes) -> bool:
+    """True when *token* is a path Crew launches a Node-hosted adapter with.
+
+    The token's tail must equal one of the resolved ``<package>/dist/index.js`` relative
+    paths, segment for segment. Absolute prefix is free -- the package can be installed
+    anywhere (a global root, a project ``node_modules``, a vendored tree) and the resolver
+    walks several -- but everything from the package name down is exact.
+    """
+    segments = tuple(seg for seg in token.replace(b"\\", b"/").split(b"/") if seg)
+    for candidate in _NODE_ADAPTER_ENTRY_SEGMENTS:
+        if len(segments) >= len(candidate) and segments[-len(candidate) :] == candidate:
+            return True
+    return False
+
+
+def _cmdline_names_a_harness(cmdline: bytes) -> bool:
+    """True when a harness-naming token IS a harness process name.
+
+    Exact per token, because this answer authorizes a signal. A raw substring test over
+    the whole command line accepts any line that merely contains a needle, and the
+    projected names include three-character ones: ``dsh`` sits inside ``friendship``,
+    ``goose`` inside ``mongoose``. A recycled PID landing on such a process would pass
+    the recycle guard and be killed.
+
+    Which tokens may answer is :func:`_harness_naming_tokens` -- argv0, plus the script
+    slot of an interpreter-hosted adapter. That slot gets two tries, and they test two
+    different kinds of identity:
+
+    - the BASENAME, exactly, for the bin-shim spelling (``node /opt/n/bin/codex-acp``);
+    - the resolved ENTRY PATH, exactly, for the package spelling
+      (:func:`_token_is_node_adapter_entry`), whose basename is ``index.js`` and names
+      nothing.
+
+    The resolver hands the adapter to Node either way, so recognising only the first left
+    the ``dist/index.js`` launch unreclaimable. The second is a path this repository
+    publishes rather than a name read out of one, which is what keeps an unrelated npm
+    application from answering for a harness.
+    """
+    for token in _harness_naming_tokens(cmdline):
+        if _basename_names_a_harness(_basename_of(token)):
+            return True
+        if _token_is_node_adapter_entry(token):
+            return True
+    return False
+
+
 def _is_managed_agent_process(pid: int) -> bool:
-    """Check if a PID belongs to an agent process managed by KiroCrew (guards against PID recycling)."""
+    """Check if a PID belongs to an agent process managed by Kiro Crew (recycle guard).
+
+    Tokenized wherever a command line can be read, which is Linux and macOS. Linux uses
+    ``_pid_cmdline``'s ``/proc`` read; macOS uses ``platform_compat.process_command_line``,
+    whose ``ps -o command=`` call is the same one ``process_matches`` already pays for
+    there, so the precision costs nothing extra.
+
+    Both platforms need it equally. The projected names include three-character ones and
+    a raw substring test over a whole command line accepts any line containing them, so
+    tightening only Linux would leave macOS strictly MORE collision-prone than the
+    two-name pair this set replaced.
+
+    WINDOWS: only an image name is readable cheaply there (a real command line means a
+    WMI query per PID, and these sweep loops ask for every tracked entry), so the name is
+    compared EXACTLY against the same basename set rather than passed to
+    ``process_matches``, whose Windows arm is a substring test. Exactness matters in the
+    same direction as the tokenizing above: the projected set has three-character names,
+    and a substring test on an image name is the one place ``mongoose.exe`` could answer
+    for ``goose``. It can only ever false-match there, because a true adapter's image
+    name is ``node.exe`` -- which is the RESIDUAL, and why Windows reclaim needs an
+    identity independent of argv rather than a better name match. Carried as a stated
+    residual rather than closed here: closing it needs a per-PID identity Windows can read
+    cheaply, which is its own change.
+    """
+    cmdline = _pid_cmdline(pid)
+    if not cmdline and sys.platform == "darwin":
+        cmdline = platform_compat.process_command_line(pid).encode("utf-8", "replace")
+    if cmdline:
+        return _cmdline_names_a_harness(cmdline)
+    if platform_compat.IS_WINDOWS:
+        image = platform_compat.process_image_name(pid)
+        if not image:
+            return False
+        stem = image.rsplit("\\", 1)[-1].rsplit("/", 1)[-1].lower()
+        candidates = {stem}
+        if stem.endswith(".exe"):
+            candidates.add(stem[: -len(".exe")])
+        return any(name.decode().lower() in candidates for name in _MANAGED_AGENT_BASENAMES)
     return platform_compat.process_matches(pid, _MANAGED_AGENT_MARKERS)
 
 
@@ -316,10 +621,24 @@ def _collect_active_pids(sessions: "dict") -> tuple[set[int], bool]:
 
 
 def _kill_pid_tree(pid: int) -> tuple[int, bool]:
-    """Kill *pid* and its descendant kiro-cli processes (bottom-up).
+    """Kill *pid* and its descendant agent processes (bottom-up).
 
     Returns ``(total_killed, root_killed)`` so callers can distinguish
     whether the root process itself was sent SIGKILL.
+
+    The argv gate below is a PID-RECYCLE guard and the only thing that authorizes a
+    signal here: it asks whether this PID still names the kind of process the
+    tracking entry described. :data:`_MANAGED_AGENT_MARKERS` is projected from the
+    backend registry, so it answers for every harness Crew spawns rather than for
+    two of them.
+
+    A recorded start token does NOT authorize a kill anywhere in this module, by
+    design. It is subtractive evidence only — a live token that differs from the
+    recorded one proves the PID was recycled, and the entry is pruned without a
+    signal — because the tracking file is same-uid-writable and a token is readable
+    from ``/proc`` for any introspectable PID, so a matching token is not a
+    capability this file's contents may confer. That is the rule
+    ``kiro_pids.txt``'s own arm follows, and ``session.md`` states it for both.
     """
     if pid <= 0:
         return 0, False
@@ -454,9 +773,6 @@ def _sweep_pid_entries(
             # Managed check (periodic only)
             if is_managed is not None and is_managed(pid):
                 continue
-            if not _is_managed_agent_process(pid):
-                killed_or_dead.add(stripped)
-                continue
             # ── PID-recycle identity check ──────────────────────────
             # The strongest guard: the entry recorded the child's start token
             # at spawn. If the live process's token DIFFERS, this PID has been
@@ -472,6 +788,20 @@ def _sweep_pid_entries(
             # fail-safe as _pid_gone_or_unmanaged — "any inconclusive result
             # retains"). Keep the entry and fall through to the grace check;
             # the next sweep retries.
+            #
+            # It runs AHEAD of the argv gate below because both answer the same
+            # question — "does this PID still name the process the entry
+            # described?" — and the token answers it exactly, for every harness,
+            # on every platform, while :data:`_MANAGED_AGENT_MARKERS` answers it
+            # by resemblance for two of the eight. Behind the argv gate, a
+            # confirmed orphan whose argv resembles neither marker took the
+            # prune arm: the entry was dropped as though the PID had been
+            # recycled and the process was spared, which untracks a live orphan
+            # that every sweep mechanism keys off this file to find. The same
+            # ordering argument the PPid fallback carries in
+            # :func:`cleanup_orphaned_session_roots` applies to the argv gate
+            # here: a weaker guard must not veto a settled identity.
+            token_settled = False
             if recorded_token is not None:
                 live_token = _pid_start_token(pid)
                 if live_token is not None and live_token != recorded_token:
@@ -479,6 +809,30 @@ def _sweep_pid_entries(
                     continue
                 if live_token is None:
                     continue  # identity unknown — retain entry, retry next sweep
+                token_settled = True
+            # The argv test is what authorizes the kill, for every entry. A
+            # matching token above does not substitute for it: the token is
+            # subtractive evidence, and the tracking file is same-uid-writable.
+            if not _is_managed_agent_process(pid):
+                if token_settled:
+                    # Two pieces of evidence disagree, and the DISPOSAL of the entry
+                    # must follow the stronger one. A settled token is proof this PID
+                    # is still the process this gateway spawned; the argv gate merely
+                    # failed to recognise it, which is what happens on Windows, where
+                    # only an image name is readable and an interpreter-hosted adapter
+                    # reads as ``node.exe``. Pruning there spares the process AND
+                    # discards the record -- and that record is the only thing any
+                    # sweep keys off to find it, so the process becomes unreclaimable
+                    # by anything. Retaining costs one entry re-examined per pass and
+                    # keeps the deferred per-platform identity fix able to reach it.
+                    logger.debug(
+                        "Orphan sweep: PID %s is unrecognised by argv but its token "
+                        "settled identity - retaining the entry",
+                        pid,
+                    )
+                    continue
+                killed_or_dead.add(stripped)
+                continue
             # ── Spawn grace period (Fix A) ──────────────────────────
             # Skip live PIDs younger than SWEEP_SPAWN_GRACE_SECONDS.
             # POSIX-wide (Linux /proc, macOS ps -o etime=); Windows: no age
@@ -555,19 +909,97 @@ def _periodic_pid_sweep(my_gw_pid: int, active_pids: set[int]) -> tuple[set[str]
     return killed_or_dead, candidates
 
 
+def _session_pid_entry_index(my_gw_pid: int) -> dict[int, tuple[str, str | None]]:
+    """``{child_pid: (entry_line, recorded_token)}`` over *my_gw_pid*'s entries.
+
+    The periodic sweep runs in two phases with an event-loop hop between them, so
+    the kill phase cannot be handed a verdict computed in the scan phase and trust
+    it: the PID may have been reallocated while the loop was doing something else.
+    It re-reads what the ENTRY recorded and re-derives the verdict against the live
+    process, which is both fresher and the only thing that can be re-derived.
+
+    Returning the entry LINE matters as much as the token. Entry text is what
+    :func:`_write_back_pid_file` matches on, and a ``<gw>:<pid>`` string rebuilt
+    from parts matches only a two-field entry — so a token-bearing entry stays in
+    the file after its process is reaped, and the sweep meets a dead PID there on
+    every later pass.
+    """
+    index: dict[int, tuple[str, str | None]] = {}
+    path = _session_pid_file_path()
+    try:
+        with _session_pid_file_lock():
+            if not path.exists():
+                return index
+            lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        logger.warning("Could not read %s for the kill phase", path, exc_info=True)
+        return index
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split(":")
+        if len(parts) not in (2, 3):
+            continue
+        try:
+            gw_pid = int(parts[0])
+            child_pid = int(parts[1])
+        except ValueError:
+            continue
+        if gw_pid != my_gw_pid or child_pid <= 0:
+            continue
+        recorded_token = parts[2] or None if len(parts) == 3 else None
+        index[child_pid] = (stripped, recorded_token)
+    return index
+
+
 def _kill_confirmed_and_writeback(
     my_gw_pid: int, confirmed: list[int], killed_or_dead: set[str]
 ) -> int:
-    """Phase 2b: kill confirmed orphans and write back PID file (sync, thread-safe)."""
+    """Phase 2b: kill confirmed orphans and write back PID file (sync, thread-safe).
+
+    The scan phase (``_sweep_pid_entries`` under ``dry_run``) reports PIDs only, so no
+    verdict crosses the event-loop hop between the phases. Each candidate is re-judged
+    here against the file as it reads NOW: the entry's own recorded token is re-read and
+    the subtractive check re-applied, and :func:`_kill_pid_tree` re-applies the argv gate
+    that authorizes the signal. A candidate the re-read finds no entry for is skipped
+    rather than killed, because nothing in the file then says what that PID was.
+    """
+    index = _session_pid_entry_index(my_gw_pid)
     orphan_killed = 0
     for pid in confirmed:
+        found = index.get(pid)
+        if found is None:
+            # This gateway's entry for the PID is not in the file the kill phase
+            # read. There is therefore nothing that records what this PID was when
+            # it was tracked, so the recycle guard cannot be applied to it at all --
+            # and an entry that is absent is also an entry this pass owes no
+            # write-back. Killing anyway would mean signalling a PID on the strength
+            # of a verdict reached before an event-loop hop, which is the exact
+            # inheritance this two-phase split exists to refuse. Skip: either the
+            # entry reappears on a later pass and is swept with its own evidence, or
+            # it is genuinely untracked and no sweep is responsible for it.
+            #
+            # The unreadable-file arm of _session_pid_entry_index returns an EMPTY
+            # index, so this also makes a transient read failure cost zero kills for
+            # one pass instead of un-vouched kills for every candidate.
+            logger.info("Orphan sweep: no PID-file entry for %s in the kill phase - skipping", pid)
+            continue
+        entry, recorded_token = found
+        if recorded_token is not None:
+            live_token = _pid_start_token(pid)
+            if live_token is None:
+                # Identity unknown: retain the entry and retry next sweep, the
+                # same fail-safe the scan phase applies.
+                continue
+            if live_token != recorded_token:
+                # Provably a different incarnation — prune, never kill.
+                killed_or_dead.add(entry)
+                continue
         total, root = _kill_pid_tree(pid)
         orphan_killed += total
-        if root:
-            killed_or_dead.add(f"{my_gw_pid}:{pid}")
-        else:
-            if not platform_compat.pid_exists(pid):
-                killed_or_dead.add(f"{my_gw_pid}:{pid}")
+        if root or not platform_compat.pid_exists(pid):
+            killed_or_dead.add(entry)
     if killed_or_dead:
         _write_back_pid_file(killed_or_dead)
     return orphan_killed
@@ -1746,11 +2178,12 @@ def _cleanup_orphaned_mcp_servers() -> int:
 
 
 def cleanup_orphaned_sessions(*, narrow_with_leaders: bool = True) -> None:
-    """Kill leftover kiro-cli processes from a previous gateway run.
+    """Kill leftover agent-harness processes from a previous gateway run.
 
     Reads ``kiro_session_pids.txt`` (written at spawn time), validates each
-    PID still belongs to a kiro-cli process (guards against PID recycling),
-    kills descendants bottom-up, then truncates the file.
+    PID still names the process the entry recorded — by start token, falling
+    back to cmdline resemblance for a token-less entry (guards against PID
+    recycling) — kills descendants bottom-up, then truncates the file.
 
     Runs at gateway startup before any new sessions are created, so the file
     contains only PIDs from the previous run.
@@ -1959,11 +2392,15 @@ def _prune_stale_session_token_files(ttl_secs: float = _SESSION_TOKEN_TTL_SECS) 
 def cleanup_orphaned_session_roots() -> int:
     """Kill session root PIDs whose owning gateway is confirmed dead.
 
-    Reads ``kiro_session_pids.txt`` entries (format ``<gateway_pid>:<child_pid>``),
-    checks if the gateway PID is alive, and for dead gateways validates the
-    child PID is still a kiro-cli process (PID-reuse guard via
-    ``_is_managed_agent_process`` and PPid reparent-to-init check) before
-    issuing SIGKILL.
+    Reads ``kiro_session_pids.txt`` entries (format
+    ``<gateway_pid>:<child_pid>[:<start_token>]``), checks if the gateway PID is
+    alive, and for dead gateways validates the child PID still names the process the
+    entry recorded before issuing SIGKILL. What AUTHORIZES the signal is
+    ``_is_managed_agent_process`` — the argv gate, applied to every entry whatever it
+    recorded. The recorded start token only ever SUBTRACTS: a live value that differs
+    prunes without a signal, an unreadable one retains the entry, and a value that
+    matches settles identity well enough to skip the weaker PPid reparent test. A
+    token-less entry is judged by the argv gate plus that PPid test.
 
     Called periodically from ``session.py``'s ``_cleanup_loop`` to reap
     kiro-cli processes left behind by crashed gateway instances.
@@ -1995,6 +2432,7 @@ def cleanup_orphaned_session_roots() -> int:
         # token-bearing entry instead of sweeping it.
         parts = stripped.split(":")
         recorded_token: str | None = None
+        token_settled = False
         if len(parts) == 3:
             recorded_token = parts[2] or None
         elif len(parts) != 2:
@@ -2034,12 +2472,10 @@ def cleanup_orphaned_session_roots() -> int:
         if child_liveness == platform_compat.PID_UNSIGNALABLE:
             continue  # can't signal — skip
 
-        # Child is alive. Guard against PID reuse: verify it's still a
-        # managed agent process (kiro-cli/claude in cmdline).
-        if not _is_managed_agent_process(child_pid):
-            # PID was recycled by an unrelated process — prune entry
-            entries_to_remove.add(stripped)
-            continue
+        # Child is alive. Two independent questions follow, in this order: is this
+        # PID provably a DIFFERENT incarnation (the entry's own start token, which can
+        # only subtract), and is it a harness at all (the argv gate, which is what
+        # authorizes the signal and runs for every entry).
 
         # Strongest PID-reuse guard FIRST: the entry recorded the child's start
         # token at spawn (see _pid_start_token). A MISMATCH means this PID now
@@ -2058,7 +2494,6 @@ def cleanup_orphaned_session_roots() -> int:
         # such orphan as "PID recycled" and pruned its tracking entry WITHOUT
         # killing it — sparing the process and then forgetting it, so no later
         # sweep could ever reap it.
-        identity_confirmed = False
         if recorded_token is not None:
             live_token = _pid_start_token(child_pid)
             if live_token is not None and live_token != recorded_token:
@@ -2066,15 +2501,39 @@ def cleanup_orphaned_session_roots() -> int:
                 continue
             if live_token is None:
                 continue  # identity unknown — retain entry, retry next sweep
-            identity_confirmed = True
+            token_settled = True
 
-        # Fallback PID-reuse guard for entries with NO recorded token (Windows,
-        # or a failed token probe at spawn): verify PPid is 1 (reparented to
-        # init) or the dead gateway PID (race window). A recycled PID would have
-        # a completely different parent. platform_compat.get_ppid returns -1 on
-        # failure (Linux /proc, macOS libproc, Windows snapshot). This is only
-        # reached when the token could not establish identity.
-        if not identity_confirmed:
+        # The argv test authorizes, for every entry. A matching token does not
+        # substitute for it: the tracking file is same-uid-writable, so its contents
+        # may not confer a capability.
+        if not _is_managed_agent_process(child_pid):
+            if token_settled:
+                # The stronger evidence decides the entry's FATE, exactly as in the
+                # periodic sweep: a settled token proves this PID still names the
+                # process the entry recorded, so pruning would spare the process and
+                # discard the only record any sweep could find it by. That is the
+                # unreclaimable state, not a conservative one. Retain and re-examine
+                # next start; the deferred per-platform identity work is what closes
+                # the gap for good.
+                logger.debug(
+                    "Startup reclaim: PID %s is unrecognised by argv but its token "
+                    "settled identity - retaining the entry",
+                    child_pid,
+                )
+                continue
+            # PID was recycled by an unrelated process — prune entry
+            entries_to_remove.add(stripped)
+            continue
+
+        # The PPid test is a SECOND recycle guard, and a settled token makes it
+        # unnecessary. That ordering predates this change and is load-bearing: an
+        # orphan does not always reparent to init, because a child placed in its own
+        # cgroup scope by the service manager reparents to that user manager, which is
+        # a subreaper — so its PPid is neither 1 nor the dead gateway's. Running PPid
+        # over a settled token classified every such orphan as recycled and pruned its
+        # entry WITHOUT killing it: spared, then forgotten. platform_compat.get_ppid
+        # returns -1 on failure (Linux /proc, macOS libproc, Windows snapshot).
+        if not token_settled:
             try:
                 actual_ppid = platform_compat.get_ppid(child_pid)
             except Exception:
@@ -3090,11 +3549,21 @@ def _kill_orphan_browser_daemon(pid: int, cmdline: bytes) -> int:
 
 
 def _work_orphan_basename(cmdline: bytes) -> bytes:
-    """argv0 basename from a raw cmdline (NUL-separated Linux, space macOS)."""
-    args = cmdline.split(b"\x00")
-    if len(args) == 1:
-        args = cmdline.split(b" ")
-    return args[0].rsplit(b"/", 1)[-1]
+    """argv0's basename from a raw command line.
+
+    The same two steps the reclaim's own gate uses, reached through the same helpers
+    rather than spelled again: :func:`_argv_tokens` prefers the NUL boundaries and falls
+    back to spaces only off Linux, and :func:`_basename_of` splits on ``/`` and ``\\``.
+
+    Splitting on a single space here, with no ``\\`` handling, is the spaced-path defect
+    this module documents: a home directory like ``/Users/John Smith`` makes one argv0 read
+    as two tokens, so the basename answers ``John`` and the process is not recognised.
+    Sharing the helpers is what keeps one fix from reaching only one of the two readers.
+    """
+    tokens = _argv_tokens(cmdline)
+    if not tokens:
+        return b""
+    return _basename_of(tokens[0])
 
 
 def _is_agent_runtime_anchor(cmdline: bytes, *, has_kirocrew_marker: bool) -> bool:
@@ -3169,7 +3638,7 @@ def _is_sweepable_orphan_work(pid: int, cmdline: bytes, age_seconds: float) -> b
     if not _work_sweep_cmdline_is_test_runner(cmdline):
         return False
     basename = _work_orphan_basename(cmdline)
-    if any(marker.encode() in basename for marker in _MANAGED_AGENT_MARKERS):
+    if _basename_names_a_harness(basename):
         return False
     if _work_orphan_session_leader_alive(pid):
         return False  # owning agent session still live — a backgrounded run
@@ -3291,7 +3760,7 @@ def _is_untracked_managed_agent_orphan(pid: int, cmdline: bytes, tracked_pids: s
     if any(marker in normalized for marker in _GATEWAY_MARKERS):
         return False
     basename = _work_orphan_basename(cmdline)
-    if not any(marker.encode() in basename for marker in _MANAGED_AGENT_MARKERS):
+    if not _basename_names_a_harness(basename):
         return False
     if pid in tracked_pids:
         return False  # a reaper can already reach it

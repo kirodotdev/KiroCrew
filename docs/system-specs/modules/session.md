@@ -2481,14 +2481,119 @@ untracked orphans and SIGKILLed them mid-chat (surfacing as
 
 ### Cross-platform process management (platform_compat)
 
+### Reclaim identity: a projected marker set, and a subtractive token
+
+`kiro_session_pids.txt` entries are swept by `_sweep_pid_entries` (periodic, in two
+phases) and `cleanup_orphaned_session_roots` (startup). What authorizes a signal in
+both is `_is_managed_agent_process(pid)` — does this PID still name the kind of process
+the entry described — plus each arm's own condition: a dead owning gateway, and for a
+token-less entry a reparent to init or to the dead gateway.
+
+That gate is per-TOKEN and exact wherever a command line can be read (Linux `/proc`,
+macOS `ps`), never a substring of the whole line: the projected names include
+three-character ones, and `dsh` sits inside `friendship`, `goose` inside `mongoose`. The
+tokens allowed to answer are chosen by POSITION: `argv[0]`, and — only when `argv[0]`'s
+basename is `node`, `nodejs` or `node.exe` — `argv[1]`, which is the script slot of a
+Node-hosted adapter.
+
+`argv[1]` exactly, never "the first token that does not look like a flag". Crew launches an
+adapter as `[node, <script>]` and passes no interpreter options, so the script is always at
+index 1 — while scanning past options hands an option VALUE to the name test. `--require`
+and its kin take one, so `node app.js --require /any/path` would offer `/any/path` as the
+script slot, and a path an unrelated process merely MENTIONS would authorize a SIGKILL of
+it. Distinguishing a value-taking Node option from a boolean one needs a table of Node's
+flags, which is an open set and a moving one; index 1 is neither. A leading `-` at index 1
+opens no slot, because Crew never emits one. Node spellings only: every registered backend's bespoke adapter is a
+Node entry script, and each name in that set widens the slot in which a harness name is
+accepted, so one added for an interpreter nothing launches under is authority granted for
+a shape that does not exist. An adapter shipping as a Python entry script adds its
+interpreter there with its own review. The rest of argv is excluded because arguments are
+chosen by whoever started the process and say nothing about what it is; accepting them let
+`node build.js --agent goose` authorize a SIGKILL.
+
+The script slot accepts two spellings, because the resolver produces two, and they are
+matched by two different KINDS of identity. The bin shim is `node /opt/n/bin/codex-acp`,
+where the basename IS the name, matched exactly. The package entry is
+`node <pkg>/dist/index.js`, where the basename is `index.js` and names nothing — so that
+one is matched against the RESOLVED RELATIVE PATH, one of
+`backends.node_adapter_entry_relpaths()`, segment for segment against the token's tail.
+The install root above the package is free, because the resolver walks several roots; from
+the package name down it is exact.
+
+Matching a NAME found along the path is what this replaces, and the difference is which
+axis stays open. A package directory's name is chosen by whoever installed it, so reading
+the harness names out of it leaves "what a process may call itself" unbounded — and the
+harness set includes single-binary harnesses Crew never hands to Node at all (`goose` runs
+as `goose acp`, likewise `opencode` and `dsh`). A real unrelated npm application at
+`node /srv/goose/dist/index.js` therefore answered for a harness and would be SIGKILLed by
+the periodic reclaim. The three launch paths are a closed set this repository publishes, so
+comparing them closes the axis instead of narrowing it: `ACP_BACKEND_NODE_ADAPTER_PACKAGES`
+in `agent_sdk.backends` is the one table, the resolvers build their entry paths from it, and
+the reclaim reads the same list — so a path the resolver can produce and the reclaim cannot
+recognise, or a path the reclaim accepts and Crew never spawns, are both a failing test
+rather than a leaked process or a wrong kill.
+
+`_MANAGED_AGENT_MARKERS` is PROJECTED from the backend registry
+(`agent_sdk.backends.agent_process_markers`), not written by hand. A hand-written
+`("kiro-cli", "claude")` pair answered for two of the eight harnesses Crew spawns, so
+a dead gateway's `codex-acp`, `opencode`, `pi-acp`, `goose` or `dsh` orphan answered
+"not ours" — and the branch for an unrecognised PID both spares the process and drops
+its tracking entry, the one file every sweep mechanism keys off to find it. Spared and
+forgotten. A harness added later is one row in `ACP_BACKEND_PROCESS_NAMES`, and a
+ratchet in `test_pid_lifecycle` fails when a registered backend has no row. The three
+self-served harnesses read their own `ACP_BACKEND_LAUNCH` row so the two cannot
+disagree, and the three bespoke adapters' own `*_ACP_BIN` constants (plus
+`KIRO_CLI_BIN`) INDEX the table rather than repeating it — `acp.client` may read
+`agent_sdk.backends`, a stdlib-only leaf, even though `session_pid` may not read the
+ACP layer, so the one-way dependency removes the duplicate spelling instead of only
+policing it. A test asserts the equality, so a literal reintroduced in either place is
+caught there rather than by a sweep failing to recognise the process the adapter spawns.
+
+The recorded start token is SUBTRACTIVE EVIDENCE ONLY, the same rule `kiro_pids.txt`
+follows. A live value that differs from the recorded one proves the PID was recycled
+and prunes the entry without a signal; an unreadable live value is "unknown" and
+retains the entry for the next pass; a value that MATCHES authorizes nothing, because
+the tracking file is same-uid-writable and the token is readable from `/proc` for any
+introspectable PID, so the file's contents may not confer a capability. A settled
+token does remove the weaker PPid recycle test in the startup arm, which predates this
+and is load-bearing: an orphan does not always reparent to init, since a child placed
+in its own cgroup scope reparents to that user manager, a subreaper.
+
+Because the token grants nothing, its Linux boot-relativity costs a missed prune
+rather than a wrong kill. `platform_compat._own_identity_token` is the reboot-unique
+form should a future change need one.
+
+The periodic sweep's two phases do not pass a verdict between them. The kill phase
+re-reads the entry and re-applies the subtractive check, since an event-loop hop
+separates the phases and a PID can be reallocated across it. A candidate whose entry is
+absent from that re-read is SKIPPED, not killed: nothing in the file then records what
+the PID was, so the recycle guard has no input, and an absent entry is also one this
+pass owes no write-back. The unreadable-file arm returns an empty index, which makes a
+transient read failure cost zero kills for one pass rather than un-vouched kills for
+every candidate. The phase also prunes by the entry's own TEXT: a rebuilt `<gw>:<pid>`
+string never matches a token-bearing line, so a reaped process's entry survived in the
+file and every later pass met a dead PID there.
+
+RESIDUAL — Windows. Only an image name is readable cheaply there (a real command line
+means a WMI query per PID, and these sweeps ask for every tracked entry), so an
+interpreter-hosted adapter reads as `node.exe` whatever names the set holds, and its
+orphans are not reclaimed by name on that platform. The image name is still compared
+EXACTLY against the same basename set, so the gap can only ever spare a process, never kill
+an unrelated one. Closing it needs a per-PID identity Windows can read cheaply, which is
+its own change; it is stated here rather than narrowed, because a better name match cannot
+reach it. The basename split handles `\` as well as `/` regardless, so a Windows-shaped
+argv0 in a command line that DOES get read is not carried whole into an exact-name test.
+
 All process liveness/kill/PID-file-lock operations in `session.py` and
 `session_pid.py` go through `kiro_crew.platform_compat` so KiroCrew runs natively on
 Windows as well as macOS/Linux. The critical correctness reason is that
 **`os.kill(pid, 0)` is NOT a liveness probe on Windows — it terminates the process** —
 so every liveness check uses `platform_compat.pid_exists(pid)` (or the tri-state
 `pid_liveness`) instead, kills use `kill_pid` / `kill_process_tree`, the PID-reuse
-guard reads the parent via `get_ppid`, the managed-agent check uses
-`process_matches(pid, ("kiro-cli","claude"))`, and the PID-file locks use
+guard reads the parent via `get_ppid`, the managed-agent check authorizes on argv
+for every entry (`process_matches(pid, _MANAGED_AGENT_MARKERS)`, with the recorded
+`get_process_start_id` token as subtractive evidence only — see "Reclaim identity"
+above), and the PID-file locks use
 `platform_compat.file_lock` / `acquire_lock` / `try_acquire_lock` (POSIX `flock`
 vs Windows `msvcrt`). On POSIX the behavior is unchanged.
 

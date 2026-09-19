@@ -1904,6 +1904,90 @@ ACP_BACKEND_LAUNCH: Mapping[str, SelfServedLaunch] = {
 #: written a second time, so the two cannot disagree.
 ACP_BACKENDS_SELF_SERVED_ACP: FrozenSet[str] = frozenset(ACP_BACKEND_LAUNCH)
 
+#: The argv0 basename each harness's child process runs as.
+#:
+#: Read by the PID-file reclaim in :mod:`kiro_crew.session_pid`, which asks one
+#: question of a tracked PID it is about to signal: does this PID still name the kind
+#: of process the tracking entry described? That is a recycle guard, and it needs a
+#: name per harness rather than a capability.
+#:
+#: Declared HERE rather than in the reclaim, for the reason every per-backend fact is
+#: declared here: a harness added to :data:`ACP_BACKENDS_KNOWN` and not to this table
+#: is a harness whose orphans the reclaim cannot recognise, and the reclaim's failure
+#: mode for an unrecognised orphan is to drop its tracking entry and spare the
+#: process — so nothing later can find it. ``test_pid_lifecycle`` ratchets the
+#: coverage, so the omission is a red test rather than a leaked process.
+#:
+#: The three self-served harnesses read their own ``ACP_BACKEND_LAUNCH`` row so the
+#: two tables cannot disagree. The rest are spelled out because their launch is
+#: bespoke: kiro-cli serves both the kiro and KAS backends (KAS is kiro-cli's relay),
+#: and the claude, codex and pi adapters are Node entry scripts whose basenames live
+#: with their resolvers in the ACP layer, which this module must not import.
+ACP_BACKEND_PROCESS_NAMES: Mapping[str, str] = {
+    ACP_BACKEND_KIRO: "kiro-cli",
+    ACP_BACKEND_KAS: "kiro-cli",
+    ACP_BACKEND_CLAUDE: "claude-agent-acp",
+    ACP_BACKEND_CODEX: "codex-acp",
+    ACP_BACKEND_PI: "pi-acp",
+    **{backend: record.binary for backend, record in sorted(ACP_BACKEND_LAUNCH.items())},
+}
+
+
+#: The npm package that ships each NODE-HOSTED adapter.
+#:
+#: Three harnesses are entry scripts Crew hands to ``node``; every other harness is a
+#: binary that serves ACP itself. Only these three can appear in a command line as
+#: ``node <path>``, so only these three need a path to be recognised by.
+#:
+#: Declared here for the same reason :data:`ACP_BACKEND_PROCESS_NAMES` is: the resolvers
+#: live in the ACP layer, which this module must not import, while the reclaim in
+#: :mod:`kiro_crew.session_pid` must not import the ACP layer either. One table both can
+#: read is what keeps the resolver's spelling and the reclaim's from drifting -- and a
+#: drift there is a launch the reclaim cannot recognise, or a path it recognises that
+#: Crew never spawns.
+#:
+#: ``pi-acp`` is unscoped and the other two are scoped: the values are the real published
+#: names, not a pattern, because a pattern is what would let an unrelated package satisfy
+#: it.
+ACP_BACKEND_NODE_ADAPTER_PACKAGES: Mapping[str, str] = {
+    ACP_BACKEND_CLAUDE: "@agentclientprotocol/claude-agent-acp",
+    ACP_BACKEND_CODEX: "@agentclientprotocol/codex-acp",
+    ACP_BACKEND_PI: "pi-acp",
+}
+
+#: The entry script inside such a package, as every resolver builds it.
+NODE_ADAPTER_ENTRY_SEGMENTS: tuple[str, ...] = ("dist", "index.js")
+
+
+def node_adapter_entry_relpaths() -> tuple[str, ...]:
+    """Every ``<package>/dist/index.js`` tail Crew launches a Node adapter with.
+
+    The IDENTITY of an interpreter-hosted adapter, for a consumer that has a command
+    line and must decide whether Crew spawned it. Matching a package DIRECTORY NAME
+    against the harness names instead makes "what a process may call itself" an open
+    axis: an unrelated npm application at ``node /srv/goose/dist/index.js`` carries a
+    directory named after a harness Crew never launches through Node at all. These
+    relative paths are a closed set this repository owns, so the axis closes with it.
+
+    Returned as POSIX-separated relative paths, sorted for a stable value.
+    """
+    return tuple(
+        sorted(
+            "/".join((package, *NODE_ADAPTER_ENTRY_SEGMENTS))
+            for package in ACP_BACKEND_NODE_ADAPTER_PACKAGES.values()
+        )
+    )
+
+
+def agent_process_markers() -> tuple[str, ...]:
+    """Every harness argv0 basename, sorted and de-duplicated.
+
+    A tuple of substrings for a cmdline match, which is what
+    ``platform_compat.process_matches`` takes. Sorted so the value is stable to read
+    in a log, de-duplicated because kiro and KAS share ``kiro-cli``.
+    """
+    return tuple(sorted(set(ACP_BACKEND_PROCESS_NAMES.values())))
+
 
 def launch_for(backend: str) -> SelfServedLaunch:
     """The launch record for *backend*, raising ``KeyError`` when it has none.

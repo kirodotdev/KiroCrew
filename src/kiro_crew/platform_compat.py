@@ -3696,9 +3696,12 @@ def process_matches(pid: int, needles: tuple[str, ...]) -> bool:
 
     Used to guard against PID recycling before killing a tracked process.
     Linux: ``/proc/<pid>/cmdline``. macOS: ``ps -o command=``.
-    Windows: the image name from ``CreateToolhelp32Snapshot`` (full command
-    line is not cheaply available; the ``.exe`` name suffices for matching
-    ``kiro-cli`` / ``claude``). Returns False on any failure.
+    Windows: the image name from ``CreateToolhelp32Snapshot`` (the full command
+    line is not cheaply available). A harness hosted by an interpreter reads as
+    that interpreter's image there — a Node-hosted ACP adapter is ``node.exe`` —
+    so a needle naming the adapter itself cannot match on Windows, and a caller
+    that needs a per-harness answer reads a recorded start identity instead
+    (``get_process_start_id``). Returns False on any failure.
     """
     try:
         if sys.platform == "linux":
@@ -3723,6 +3726,21 @@ def process_matches(pid: int, needles: tuple[str, ...]) -> bool:
     except Exception:
         return False
     return False
+
+
+def process_image_name(pid: int) -> str:
+    """The process image (exe) name for *pid* on Windows, ``""`` anywhere else.
+
+    Exposed because an image name is the only per-process identity Windows offers
+    cheaply, and a caller that wants to compare it EXACTLY cannot use
+    :func:`process_matches`, whose Windows arm is a substring test. Off Windows the
+    answer is ``""`` rather than a POSIX equivalent: the platforms that have a real
+    command line should read that instead of a name that would drop the interpreter
+    distinction.
+    """
+    if not IS_WINDOWS:
+        return ""
+    return _win_process_image_name(pid) or ""
 
 
 def _win_process_image_name(pid: int) -> str | None:

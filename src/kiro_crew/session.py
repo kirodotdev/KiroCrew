@@ -558,8 +558,16 @@ BACKGROUND_AGENT = "kirocrew-lite"
 # whose teardown verb does not dispose a session accumulates every one of them in
 # the adapter's own map, so a shared process serving this path grows without
 # bound. Foreground sessions accumulate the same way but at the rate a person
-# opens chats, and the runtime's age/RSS recycle eventually collects the process,
-# which is why the eviction term is required HERE and not there.
+# opens chats, and each one is disposed by the teardown of the conversation that
+# owns it, which is why the eviction term is required HERE and not there.
+#
+# The age/RSS recycle is NOT what bounds a foreground runtime: ``_is_stale`` is
+# consulted from one place, the reuse path in
+# ``session_background.get_bg_session``, so its 6 h / 500 MB ceilings govern the
+# ``_bg`` runtime this set gates and nothing else. A foreground runtime and a
+# per-parent companion runtime are bounded by their own teardown and by
+# ``_expire_idle``, and a harness added here on the belief that a ceiling will
+# catch what its teardown verb does not would have no such backstop.
 #
 # The two terms are separate memberships, earned separately. codex holds both:
 # it runs on the shared runtime, and its teardown is a ``session/close`` request,
