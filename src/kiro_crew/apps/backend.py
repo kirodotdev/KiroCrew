@@ -112,6 +112,9 @@ logger = logging.getLogger(__name__)
 _MIN_PORT = 9100
 _MAX_PORT = 9200
 _HEALTH_CHECK_TIMEOUT = 5
+# How much of a failed probe's exception message reaches the log. Part of it is the app
+# backend's own bytes (see _probe_failure_detail), and a status line may be 64 KB long.
+_PROBE_DETAIL_MAX_CHARS = 120
 _HEALTH_CHECK_RETRIES = 15
 _HEALTH_CHECK_INTERVAL = 2.0
 # ``healthCheck`` is app-authored text. A leading slash terminates the URL authority;
@@ -291,7 +294,7 @@ def _listening_pids(port: int) -> list[int]:
 def _probe_adoption_health(port: int, health_path: str) -> bool:
     """Whether an already-running backend answers its health check."""
 
-    return _health_probe(port, health_path, timeout=3)
+    return _health_probe(port, health_path, timeout=3).healthy
 
 
 def _capture_adopted_owners(
@@ -3180,13 +3183,69 @@ def _health_probe_url(port: int, health_path: str) -> str | None:
     return f"http://127.0.0.1:{port}{health_path}"
 
 
+@dataclass(frozen=True)
+class HealthProbeOutcome:
+    """What one unsigned loopback health GET observed.
+
+    Carries the observed HTTP status so a failure can be READ rather than investigated:
+    a 403 (the health path sits behind the app's own auth), a 404 (no handler) and a dead
+    port are the same single log line otherwise. ``status`` is None when no HTTP response
+    was produced at all, and ``detail`` is the short phrase the logs print.
+
+    ``healthy`` is recorded by the probe rather than derived from ``status``, because the
+    two ways a status arrives do NOT share a verdict: the opener REFUSES redirects, so a
+    3xx reaches us as an ``HTTPError`` whose code is below 400 while nothing served the
+    health check. Deriving the verdict from the number would promote exactly that.
+    """
+
+    status: int | None
+    detail: str
+    healthy: bool = False
+
+    @classmethod
+    def answered(cls, status: int) -> HealthProbeOutcome:
+        """A status on a response the opener RETURNED — the unchanged verdict, < 400."""
+        return cls(status, f"HTTP {status}", healthy=status < 400)
+
+    @classmethod
+    def refused(cls, status: int) -> HealthProbeOutcome:
+        """A status the opener raised: a 4xx/5xx, or a redirect it would not follow."""
+        return cls(status, f"HTTP {status}")
+
+
+def _probe_failure_detail(exc: BaseException) -> str:
+    """Name why an unsigned loopback GET produced no status, in one short phrase.
+
+    Unwraps ``URLError``, whose ``reason`` is the interesting exception; the wrapper's own
+    ``str`` buries it in ``<urlopen error ...>``.
+
+    The fallback renders the message with ``repr`` and a length cap because an app backend
+    is arbitrary third-party code and part of that message is ITS bytes: a ``BadStatusLine``
+    carries the raw first line off the socket, up to 64 KB of it, which is free to hold a
+    carriage return or a terminal escape. Printed as-is into the gateway log, those bytes
+    could add a line the gateway never wrote. ``repr`` escapes them and the cap keeps one
+    failed probe from writing a screenful.
+    """
+    inner = exc
+    if isinstance(exc, urllib.error.URLError) and isinstance(exc.reason, BaseException):
+        inner = exc.reason
+    if isinstance(inner, ConnectionRefusedError):
+        return "connection refused"
+    if isinstance(inner, TimeoutError):  # socket.timeout is an alias for it
+        return "timed out"
+    message = str(inner)
+    if len(message) > _PROBE_DETAIL_MAX_CHARS:
+        message = message[:_PROBE_DETAIL_MAX_CHARS] + "..."
+    return f"{type(inner).__name__}: {message!r}"
+
+
 def _health_probe(
     port: int,
     health_path: str,
     *,
     timeout: float = _HEALTH_CHECK_TIMEOUT,
-) -> bool:
-    """Whether the validated loopback health endpoint answers below 400. Never raises.
+) -> HealthProbeOutcome:
+    """What the validated loopback health endpoint answered. Never raises.
 
     `http.client.HTTPException` is caught alongside the socket errors because it is NOT
     an `OSError` or `URLError` subclass (only `RemoteDisconnected` is, via
@@ -3199,13 +3258,43 @@ def _health_probe(
     """
     url = _health_probe_url(port, health_path)
     if url is None:
-        return False
+        return HealthProbeOutcome(None, "unsafe healthCheck path")
     try:
         req = urllib.request.Request(url, method="GET")
         with loopback_urlopen(req, timeout=timeout) as resp:
-            return bool(resp.status < 400)
-    except (urllib.error.URLError, OSError, http.client.HTTPException):
-        return False
+            return HealthProbeOutcome.answered(int(resp.status))
+    except urllib.error.HTTPError as exc:
+        # `urlopen` RAISES instead of returning the response for every status the probe
+        # must call unhealthy — a 403 from an auth-gated health path, a 404 from a missing
+        # handler, and a 3xx the loopback opener will not follow — so the status an
+        # operator needs arrives HERE, never above. Caught before URLError, its base class.
+        with exc:  # the error IS the response; closing it releases the socket
+            return HealthProbeOutcome.refused(int(exc.code))
+    except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+        return HealthProbeOutcome(None, _probe_failure_detail(exc))
+
+
+def _health_failure_hint(outcome: HealthProbeOutcome) -> str:
+    """The misconfigurations a status alone does not explain, or "".
+
+    Both are cases where the backend is up and answering, so the number on its own reads
+    like a working service. 401/403: the health path most likely sits behind auth the probe
+    cannot satisfy, because the probe is deliberately UNSIGNED — though the backend is free
+    to refuse for a reason of its own, so this one names the likely cause rather than
+    asserting it. 3xx: the loopback opener refuses redirects, so a status a reader would
+    call success never reached a handler.
+    """
+    if outcome.status in (401, 403):
+        return (
+            " — usually the healthCheck path is behind auth the unsigned probe cannot "
+            "satisfy; point backend.healthCheck at an unauthenticated route"
+        )
+    if outcome.status is not None and 300 <= outcome.status < 400:
+        return (
+            " — the probe does not follow redirects; point backend.healthCheck at the "
+            "route that answers directly"
+        )
+    return ""
 
 
 def _health_check_loop(ap: AppProcess, health_path: str) -> AppProcess | None:
@@ -3223,12 +3312,14 @@ def _health_check_loop(ap: AppProcess, health_path: str) -> AppProcess | None:
     """
     app_name = ap.app_name
     port = ap.port
+    last = HealthProbeOutcome(None, "no probe completed")
     for attempt in range(_HEALTH_CHECK_RETRIES):
         time.sleep(_HEALTH_CHECK_INTERVAL)
         with _lock:
             if _processes.get(app_name) is not ap:
                 return None  # replaced or stopped — this poll is a retired generation
-        if _health_probe(port, health_path):
+        last = _health_probe(port, health_path)
+        if last.healthy:
             # Health-gated MCP registration: only now that the
             # backend has passed /health do we write its HTTP MCP url (live port) to
             # global mcp.json. Registering before this could leave a dead-but-enabled
@@ -3245,8 +3336,8 @@ def _health_check_loop(ap: AppProcess, health_path: str) -> AppProcess | None:
             return ap
 
     logger.warning(
-        "App %s backend failed health check after %d attempts",
-        app_name, _HEALTH_CHECK_RETRIES,
+        "App %s backend failed health check after %d attempts (last: %s)%s",
+        app_name, _HEALTH_CHECK_RETRIES, last.detail, _health_failure_hint(last),
     )
     # Backend never became healthy: scrub any optimistic/stale MCP entry so kiro-cli does
     # not keep dialing a dead port on every session (the reverted-outage shape).
@@ -3677,7 +3768,8 @@ def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
                 return
             continue
 
-        if _health_probe(ap.port, health_path):
+        probed = _health_probe(ap.port, health_path)
+        if probed.healthy:
             consecutive_failures = 0
             consecutive_healthy_sweeps += 1
             healthy = True
@@ -3701,7 +3793,13 @@ def _watch_backend_health_sweeps(ap: AppProcess, health_path: str) -> None:
                     continue
                 _promote(ap)
             else:
-                _demote(ap, reason=f"{consecutive_failures} consecutive failed health probes")
+                _demote(
+                    ap,
+                    reason=(
+                        f"{consecutive_failures} consecutive failed health probes "
+                        f"(last: {probed.detail}){_health_failure_hint(probed)}"
+                    ),
+                )
         elif mcp_healthy != healthy:
             # The verdict is unchanged but mcp.json never caught up — a previous
             # reconcile failed. Retry it here rather than waiting for the next health

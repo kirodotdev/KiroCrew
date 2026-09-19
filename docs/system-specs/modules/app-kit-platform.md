@@ -1902,6 +1902,21 @@ state that is no longer on disk, so nothing retries. **The scrub also re-materia
   warn once per distinct value. The shared `_health_probe` opens accepted URLs through
   `loopback_urlopen`, which ignores HTTP proxy environment variables and rejects
   redirects, so a probe cannot be redirected or proxied away from `127.0.0.1`.
+- **The probe carries no credential, and says what it observed.** The GET is unsigned, so
+  a `healthCheck` naming a route behind the backend's own auth answers 401/403 on every
+  attempt and the app never becomes reachable — indistinguishable, in a bare pass/fail
+  log, from a missing handler or a dead port. `_health_probe` therefore answers a
+  `HealthProbeOutcome` (the observed status, or the transport failure that produced none)
+  and both the startup exhaustion warning and the watch's demotion reason print it, with
+  401/403 adding the likely cause a status alone does not name — auth the unsigned probe
+  cannot satisfy — and the remedy of pointing `backend.healthCheck` at an unauthenticated
+  route. It reads as likely rather than certain, because a backend may refuse for a reason
+  of its own. The adoption probe keeps its boolean answer, so the two adoption warnings
+  still report only that the check failed. The verdict itself is unchanged, and it is RECORDED by the
+  probe rather than derived from the number, because the opener refuses redirects: a 3xx
+  arrives as an `HTTPError` whose code is below 400 with nothing having served the health
+  check, so only a status on a response the opener RETURNED can be healthy — in practice a
+  2xx, which is what the manifest reference asks a `healthCheck` route for.
 - **Every writer of an app's MCP and agent state shares one serialization.** Two
   independent families write it: the lifecycle paths in `apps/bridges.py` (enable,
   update, boot reconcile) and the backend's health watch. Unserialized they interleave

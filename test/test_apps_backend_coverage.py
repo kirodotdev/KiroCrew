@@ -4639,7 +4639,9 @@ class TestRestartExitedBackend:
         with bmod._lock:
             bmod._processes["app"] = ap
             bmod._restart_attempts["app"] = 2
-        monkeypatch.setattr(bmod, "_health_probe", lambda *_args: True)
+        monkeypatch.setattr(
+            bmod, "_health_probe", lambda *_args: bmod.HealthProbeOutcome.answered(200)
+        )
 
         def _sleep(_delay: float) -> None:
             nonlocal sweeps
