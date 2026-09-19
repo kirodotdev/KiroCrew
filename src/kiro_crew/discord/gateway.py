@@ -22,7 +22,7 @@ from kiro_crew.discord.client import DiscordClient
 from kiro_crew.discord.commands import application_command_payload
 from kiro_crew.discord.transport import DiscordTransport
 from kiro_crew.discord.transport_dispatch import DiscordDispatcher
-from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.driver import resolve_transport_approval_mode
 from kiro_crew.messaging.transport import InboundMessage
 
 if TYPE_CHECKING:
@@ -32,16 +32,8 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
-    """Resolve the transport approval mode (mirrors the Telegram path).
-
-    YOLO -> auto-approve; otherwise the CLI ``--approval`` override or the
-    configured ``agent.approval_mode`` decides, collapsing anything that isn't
-    ``auto`` to interactive (deny-by-default unless a decider/hook approves).
-    """
-    if getattr(orch, "_approval_mode", None) == "yolo":
-        return APPROVAL_AUTO
-    mode = getattr(orch, "_approval_mode", None) or orch._cfg.agent.approval_mode
-    return APPROVAL_AUTO if mode == APPROVAL_AUTO else APPROVAL_INTERACTIVE
+    """This transport's approval mode, resolved by the shared channel helper."""
+    return resolve_transport_approval_mode(orch)
 
 
 #: How long the background registration waits for the Gateway handshake. Longer

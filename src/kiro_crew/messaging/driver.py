@@ -63,6 +63,40 @@ APPROVAL_TRUST = "trust"
 APPROVAL_TRUST_READS = "trust-reads"
 APPROVAL_INTERACTIVE = "interactive"
 
+
+def resolve_transport_approval_mode(
+    orch: Any, *, yolo_probe: Callable[[], bool] | None = None
+) -> str:
+    """The approval mode a transport dispatch runs this turn under.
+
+    Three inputs decide it, tightest first: the runtime YOLO toggle when the
+    channel has one (``yolo_probe``), the CLI ``--approval`` override carried on
+    the orchestrator, then the configured ``agent.approval_mode``.
+
+    Anything that is not exactly :data:`APPROVAL_AUTO` collapses to
+    :data:`APPROVAL_INTERACTIVE`, so an unrecognized spelling is
+    deny-by-default rather than an accidental auto-approve. A ``yolo_probe``
+    that raises is treated as "not yolo" for the same reason: a broken runtime
+    toggle must not silently widen what the turn may do.
+
+    ``orch`` is duck-typed (``_approval_mode``, ``_cfg.agent.approval_mode``) so
+    each channel gateway passes its own orchestrator without this module
+    depending on any one of them.
+    """
+    if yolo_probe is not None:
+        try:
+            if yolo_probe():
+                return APPROVAL_AUTO
+        except Exception:  # noqa: BLE001 - a broken toggle must not widen the turn
+            logger.debug("yolo probe failed; treating as inactive", exc_info=True)
+
+    override = getattr(orch, "_approval_mode", None)
+    if override == "yolo":
+        return APPROVAL_AUTO
+    mode = override or orch._cfg.agent.approval_mode
+    return APPROVAL_AUTO if mode == APPROVAL_AUTO else APPROVAL_INTERACTIVE
+
+
 #: A decision callback: given a permission-request event, return True to
 #: approve. Used for the interactive ladder (each channel supplies its own,
 #: e.g. by awaiting a button click). Returns None/False => deny.

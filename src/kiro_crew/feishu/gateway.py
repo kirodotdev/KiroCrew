@@ -21,7 +21,7 @@ from kiro_crew import extras
 from kiro_crew.feishu.client import LarkClient
 from kiro_crew.feishu.transport import FeishuTransport
 from kiro_crew.feishu.transport_dispatch import FeishuDispatcher
-from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.driver import resolve_transport_approval_mode
 
 if TYPE_CHECKING:
     from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -30,17 +30,8 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
-    """Resolve the transport approval mode (mirrors the WeCom / Telegram path).
-
-    YOLO -> auto-approve; otherwise the CLI ``--approval`` override or the
-    configured ``agent.approval_mode`` decides.  Feishu has no interactive
-    buttons, so anything other than ``auto`` collapses to interactive
-    (deny-by-default unless a hook approves).
-    """
-    if getattr(orch, "_approval_mode", None) == "yolo":
-        return APPROVAL_AUTO
-    mode = getattr(orch, "_approval_mode", None) or orch._cfg.agent.approval_mode
-    return APPROVAL_AUTO if mode == APPROVAL_AUTO else APPROVAL_INTERACTIVE
+    """This transport's approval mode, resolved by the shared channel helper."""
+    return resolve_transport_approval_mode(orch)
 
 
 async def maybe_start_feishu(orch: "GatewayOrchestrator") -> "LarkClient | None":

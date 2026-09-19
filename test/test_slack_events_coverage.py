@@ -40,6 +40,7 @@ from kiro_crew.config.loader import (
     KiroCrewConfig,
     MessagingConfig,
 )
+from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
 from kiro_crew.slack import events as ev
 
 # ---------------------------------------------------------------------------
@@ -1774,19 +1775,19 @@ class TestResolveApprovalMode:
         orch = _make_orch()
         orch._approval_mode = "interactive"
         with patch("kiro_crew.slack.events.is_yolo_mode", return_value=True):
-            assert ev._resolve_approval_mode(orch) == ev.APPROVAL_AUTO
+            assert ev._resolve_approval_mode(orch) == APPROVAL_AUTO
 
     def test_cli_flag_wins_over_config(self):
         orch = _make_orch()
-        orch._approval_mode = ev.APPROVAL_AUTO
+        orch._approval_mode = APPROVAL_AUTO
         with patch("kiro_crew.slack.events.is_yolo_mode", return_value=False):
-            assert ev._resolve_approval_mode(orch) == ev.APPROVAL_AUTO
+            assert ev._resolve_approval_mode(orch) == APPROVAL_AUTO
 
     def test_anything_else_is_interactive(self):
         orch = _make_orch()
         orch._approval_mode = "reads"
         with patch("kiro_crew.slack.events.is_yolo_mode", return_value=False):
-            assert ev._resolve_approval_mode(orch) == ev.APPROVAL_INTERACTIVE
+            assert ev._resolve_approval_mode(orch) == APPROVAL_INTERACTIVE
 
 
 # ---------------------------------------------------------------------------

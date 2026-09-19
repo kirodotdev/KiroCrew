@@ -7,7 +7,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from kiro_crew.config.paths import data_home
-from kiro_crew.messaging.driver import APPROVAL_AUTO, APPROVAL_INTERACTIVE
+from kiro_crew.messaging.driver import resolve_transport_approval_mode
 from kiro_crew.whatsapp.client import (
     STATE_CONNECTED,
     WhatsAppClient,
@@ -25,10 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
-    if getattr(orch, "_approval_mode", None) == "yolo":
-        return APPROVAL_AUTO
-    mode = getattr(orch, "_approval_mode", None) or orch._cfg.agent.approval_mode
-    return APPROVAL_AUTO if mode == APPROVAL_AUTO else APPROVAL_INTERACTIVE
+    """This transport's approval mode, resolved by the shared channel helper."""
+    return resolve_transport_approval_mode(orch)
 
 
 def _configured_group_jids(groups: object) -> list[str]:

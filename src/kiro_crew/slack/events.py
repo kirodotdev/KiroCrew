@@ -54,6 +54,7 @@ from kiro_crew.executors import subprocess_executor
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.mcp_discovery import list_servers
 from kiro_crew.messaging.dispatch import admit_inbound_callback
+from kiro_crew.messaging.driver import resolve_transport_approval_mode
 from kiro_crew.messaging.identity import channel_inbound_permitted
 from kiro_crew.platform import current_context, safe_context_call
 from kiro_crew.platform.interfaces import InterceptDecision
@@ -83,8 +84,6 @@ from kiro_crew.slack.files import (
     voice_memo_notes,
 )
 from kiro_crew.slack.handler import (
-    APPROVAL_AUTO,
-    APPROVAL_INTERACTIVE,
     describe_grant_lifetime,
     handle_message,
     is_allowed_user,
@@ -1755,20 +1754,18 @@ async def _handle_message_deleted(orch: GatewayOrchestrator, event: dict) -> Non
 
 
 def _resolve_approval_mode(orch: "GatewayOrchestrator") -> str:
-    """Slack dispatch approval mode: CLI --approval flag wins, else config.
+    """Slack dispatch approval mode: runtime YOLO, CLI --approval, else config.
 
     Normalized to handle_message's auto/interactive contract; reads/yolo are
     gated separately (gateway approval-event path, global YOLO/trust).
+
+    Slack is the one channel with a runtime YOLO toggle (owner-toggled via the
+    ``yolo`` slash command, TTL-capped safety_override), so it supplies the
+    probe the shared resolver folds in. The native loop checks ``is_yolo_mode``
+    inline; the transport TurnDriver only sees this resolved mode, so folding it
+    in here at the single per-message chokepoint keeps both paths consistent.
     """
-    # Runtime YOLO (owner-toggled via the `yolo` slash command, TTL-capped safety_override)
-    # auto-approves all tools. The native loop checks is_yolo_mode() inline; the
-    # transport TurnDriver only sees this resolved mode, so fold YOLO in here at
-    # the single per-message chokepoint (evaluated fresh each message) — both
-    # paths then honor the runtime toggle consistently.
-    if is_yolo_mode():
-        return APPROVAL_AUTO
-    mode = orch._approval_mode or orch._cfg.agent.approval_mode
-    return APPROVAL_AUTO if mode == APPROVAL_AUTO else APPROVAL_INTERACTIVE
+    return resolve_transport_approval_mode(orch, yolo_probe=is_yolo_mode)
 
 
 async def _dispatch_queued(
