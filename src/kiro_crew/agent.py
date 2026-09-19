@@ -1716,9 +1716,9 @@ def _all_skill_paths() -> list[str]:
                     current_event = ""
                     if manifest.is_file():
                         try:
-                            current_event = json.loads(manifest.read_text(encoding="utf-8")).get(
-                                "currentEventId", ""
-                            )
+                            manifest_data = json.loads(manifest.read_text(encoding="utf-8"))
+                            if isinstance(manifest_data, dict):
+                                current_event = manifest_data.get("currentEventId", "")
                         except (json.JSONDecodeError, OSError):
                             pass
                     for sub in pkg.iterdir():
