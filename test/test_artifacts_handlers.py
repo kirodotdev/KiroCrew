@@ -450,6 +450,31 @@ class TestCreate:
         assert (isolated_store.root / "hello" / "current.html").exists()
 
     @pytest.mark.asyncio
+    async def test_create_runs_the_store_write_off_the_event_loop(
+        self, isolated_store, patch_restricted, monkeypatch
+    ) -> None:
+        # create() ends in the store's pinned staging (an O_NOFOLLOW walk plus
+        # create + rename). Like every other store call in this handler, that
+        # filesystem work must go through _run_off_loop so slow storage stalls
+        # one request, not the whole gateway.
+        import kiro_crew.dashboard.handlers.artifacts as art_handlers
+
+        real_off_loop = art_handlers._run_off_loop
+        seen: list[bool] = []
+
+        async def _hooked(fn):  # type: ignore[no-untyped-def]
+            seen.append(True)
+            return await real_off_loop(fn)
+
+        monkeypatch.setattr(art_handlers, "_run_off_loop", _hooked)
+        resp = await api_artifacts_create(
+            _request(body={"name": "Offloaded", "content": "<p>x</p>"})
+        )
+        assert resp.status == 201
+        assert seen, "store.create() ran on the event loop"
+        assert (isolated_store.root / "offloaded" / "current.html").exists()
+
+    @pytest.mark.asyncio
     async def test_validation_error_returns_400(self, isolated_store, patch_restricted) -> None:
         body = {"name": "", "content": "x"}
         resp = await api_artifacts_create(_request(body=body))
@@ -1233,6 +1258,12 @@ class TestDetail:
         sel_stub.log_tool_invocation.assert_not_called()
 
 
+def _tok(store, slug: str, text: str) -> str:
+    """Wire token the store would hand out for *slug* carrying *text* (minted
+    under the artifact's current salt); test-side only."""
+    return store._token_for_text(text, store._load_meta(slug).content_salt)
+
+
 class TestUpdate:
     @pytest.mark.asyncio
     async def test_content_update_carries_theme_contrast_warning(
@@ -1332,6 +1363,97 @@ class TestUpdate:
             _request(body={"description": "z" * 5_000}, match={"slug": "x"})
         )
         assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_stale_token_returns_409_with_recovery_fields(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        # Optimistic-concurrency loss: a save carrying a token that
+        # does not match live content is refused with everything the
+        # client needs to refetch and re-base.
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_update(
+            _request(
+                body={"content": "v2", "expected_token": _tok(isolated_store, "x", "stale")},
+                match={"slug": "x"},
+            )
+        )
+        assert resp.status == 409
+        body = _json_body(resp)
+        assert body["current_token"] == _tok(isolated_store, "x", "v1")
+        assert body["version"] == 1
+        assert "error" in body
+        # Refused before any write: content unchanged.
+        assert isolated_store.get("x").content == "v1"
+
+    @pytest.mark.asyncio
+    async def test_matching_token_saves_and_returns_fresh_token(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_update(
+            _request(
+                body={"content": "v2", "expected_token": _tok(isolated_store, "x", "v1")},
+                match={"slug": "x"},
+            )
+        )
+        assert resp.status == 200
+        body = _json_body(resp)
+        assert body["content"] == "v2"
+        # The response carries the NEXT token so the client can keep saving.
+        assert body["content_token"] == _tok(isolated_store, "x", "v2")
+
+    @pytest.mark.asyncio
+    async def test_malformed_token_returns_400_not_409(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        # A non-string token is a caller bug (400), not a phantom conflict.
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_update(
+            _request(body={"content": "v2", "expected_token": 123}, match={"slug": "x"})
+        )
+        assert resp.status == 400
+        # A string that is not a token this store could have minted -- wrong
+        # length, or non-ASCII, which the constant-time compare would refuse by
+        # raising -- is a 400 as well, never a 500 and never a phantom 409.
+        for bad in ("abc", "é" * 64, "A" * 64):
+            resp = await api_artifact_update(
+                _request(body={"content": "v2", "expected_token": bad}, match={"slug": "x"})
+            )
+            assert resp.status == 400, bad
+        assert isolated_store.get("x").content == "v1"
+
+    @pytest.mark.asyncio
+    async def test_detail_response_includes_content_token(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        isolated_store.create(name="x", content="v1", slug="x")
+        resp = await api_artifact_detail(_request(match={"slug": "x"}))
+        assert resp.status == 200
+        assert _json_body(resp)["content_token"] == _tok(isolated_store, "x", "v1")
+
+    @pytest.mark.asyncio
+    async def test_wire_token_is_not_the_hash_of_the_redacted_or_raw_content(
+        self, isolated_store, patch_restricted
+    ) -> None:
+        # The detail response redacts credentials out of ``content`` but the
+        # token beside it is minted from the RAW content. An unkeyed hash there
+        # would let the reader confirm a guess for the redacted secret offline;
+        # the keyed token gives nothing to compare a guess against.
+        import hashlib
+
+        secret = "connect with password=hunter2 please"
+        isolated_store.create(name="x", content=secret, slug="x")
+        body = _json_body(await api_artifact_detail(_request(match={"slug": "x"})))
+        token = body["content_token"]
+        assert token != hashlib.sha256(secret.encode()).hexdigest()
+        assert token != hashlib.sha256(body["content"].encode()).hexdigest()
+        assert "content_sha256" not in body
+        # ...and it still round-trips as the save token.
+        resp = await api_artifact_update(
+            _request(body={"content": "v2", "expected_token": token}, match={"slug": "x"})
+        )
+        assert resp.status == 200
 
     @pytest.mark.asyncio
     async def test_artifact_error_fallback_returns_500(
@@ -2161,7 +2283,7 @@ class TestRelocate:
         assert resp.status == 200, _json_body(resp)
         # …and the store agrees, which is the whole point of one producer.
         assert isolated_store._try_read_source_path(str(target)) == "# hi"
-        assert isolated_store._try_write_source_path(str(target), "# edited") is True
+        assert isolated_store._try_write_source_path(str(target), "# edited") == "ok"
 
     @pytest.mark.asyncio
     async def test_configured_extra_root_allowed(
