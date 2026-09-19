@@ -284,6 +284,17 @@ a real install recall returned zero hits forever while every unit test passed. T
 can be individually correct and collectively dead; only an integration caller proves
 otherwise.
 
+Dispatch prepares the other half of semantic retrieval: after claiming an incident it
+binds the process-wide cached embed callable to its short-lived store, attempts one
+interactive query embedding with a five-second queue/admission budget, and passes that
+vector explicitly into `ledger_index.search_similar`. Native inference already running
+cannot be interrupted and may finish after that budget. `VectorMemoryStore.search_episodic` does
+not embed `query_text`; without that boundary the advertised semantic leads are only FTS5
+keyword matches. A cold, unavailable, stale-space, busy, or failing embedder yields no
+query vector and dispatch immediately retains the same tag-scoped keyword search. The
+model loads in the background; dispatch never calls `wait_ready`, and semantic recall
+remains optional to claiming and fingerprint matches.
+
 **Four fatal bugs were found by a real two-instance roundtrip against a bare remote,
 every one of which the mocked-git tests passed** (`test/test_omc_ledger_sync_coverage.py`):
 

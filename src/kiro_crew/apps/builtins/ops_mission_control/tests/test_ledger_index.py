@@ -23,9 +23,11 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from typing import Any
+from unittest import mock
 
 from kiro_crew.apps.builtins.ops_mission_control.backend import ledger, ledger_index
 from kiro_crew.apps.builtins.ops_mission_control.backend.models import LedgerEntry
@@ -325,6 +327,80 @@ class TestSemanticRecallWiring(_Env):
         claimed = dispatch.attach_similar_lessons(self._claimed(), store, limit=2)
         self.assertEqual(len(claimed.similar), 2, "capped at the requested limit")
         self.assertEqual(claimed.matches, [], "semantic recall must not touch matches")
+
+    def _real_store_with_semantic_pair(self):
+        """One literal hit and one stronger cross-wording vector hit."""
+        from kiro_crew.vector_memory import VectorMemoryStore
+
+        literal = LedgerEntry.create(
+            pattern="database outage affected the primary service",
+            fix="restart the database service",
+        )
+        semantic = LedgerEntry.create(
+            pattern="sqlite writer lock exhausted the connection pool",
+            fix="serialize write transactions and release them promptly",
+        )
+        ledger._write_all([literal, semantic])
+
+        store = VectorMemoryStore(db_path=self.tmp / "memory.db", embedding_dim=2)
+        store.init()
+        self.assertTrue(
+            store.write_episodic(
+                ledger_index.entry_text(literal),
+                embedding=[0.0, 1.0],
+                tags=[ledger_index.SOURCE_TAG],
+                source="ops-ledger",
+            )
+        )
+        self.assertTrue(
+            store.write_episodic(
+                ledger_index.entry_text(semantic),
+                embedding=[1.0, 0.0],
+                tags=[ledger_index.SOURCE_TAG],
+                source="ops-ledger",
+            )
+        )
+        return store, literal, semantic
+
+    def test_production_dispatch_uses_a_bounded_query_vector(self) -> None:
+        """Different wording wins semantically without an unbounded queue wait."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+        from kiro_crew.embeddings import PRIORITY_INTERACTIVE, embedding_work
+
+        store, _literal, semantic = self._real_store_with_semantic_pair()
+        self.assertEqual(dispatch._SIMILAR_QUERY_TIMEOUT_SECS, 5.0)
+
+        def _query_vector(text: str, priority: int) -> list[float]:
+            work = embedding_work.get()
+            self.assertIsNotNone(work, "dispatch must carry an explicit embedding deadline")
+            assert work is not None
+            remaining = work.deadline - time.monotonic()
+            self.assertGreater(remaining, 0.0)
+            self.assertLessEqual(remaining, dispatch._SIMILAR_QUERY_TIMEOUT_SECS)
+            self.assertEqual(priority, PRIORITY_INTERACTIVE)
+            self.assertEqual(text, "database outage")
+            return [1.0, 0.0]
+
+        with mock.patch.object(store, "_try_embed", side_effect=_query_vector):
+            with mock.patch("kiro_crew.vector_memory.VectorMemoryStore", return_value=store):
+                claimed = self._claimed(title="database outage", resource="")
+                dispatch._attach_similar_safely(claimed)
+
+        self.assertTrue(claimed.similar)
+        self.assertEqual(claimed.similar[0].entry_id, semantic.entry_id)
+
+    def test_cold_embedder_keeps_keyword_fallback(self) -> None:
+        """No query vector is an ordinary bounded fallback, not a failed claim."""
+        from kiro_crew.apps.builtins.ops_mission_control.backend import dispatch
+
+        store, literal, _semantic = self._real_store_with_semantic_pair()
+        with mock.patch.object(store, "_try_embed", return_value=None) as embed:
+            with mock.patch("kiro_crew.vector_memory.VectorMemoryStore", return_value=store):
+                claimed = self._claimed(title="database outage", resource="")
+                dispatch._attach_similar_safely(claimed)
+
+        embed.assert_called_once()
+        self.assertEqual([entry.entry_id for entry in claimed.similar], [literal.entry_id])
 
     def test_a_fingerprint_match_is_never_repeated_as_similar(self) -> None:
         """The brief must not list one entry twice under two confidence framings."""
