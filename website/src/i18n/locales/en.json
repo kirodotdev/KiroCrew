@@ -4930,6 +4930,7 @@
       "save": "Save",
       "save_edit": "Save edit",
       "send_now": "Send now",
+      "wont_survive_a_restart": "won\u2019t survive a restart",
       "sub_agent_result_one": "{{count}} sub-agent result",
       "sub_agent_result_other": "{{count}} sub-agent results"
     },
