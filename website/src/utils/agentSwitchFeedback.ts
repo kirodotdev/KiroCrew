@@ -95,24 +95,6 @@ export function agentSwitchOffersHandoff(message?: string | null): boolean {
   return !!message && message === i18nT('utils.agentSwitchFeedback.workspace_unavailable')
 }
 
-/**
- * Whether the switch was WITHHELD rather than broken -- `ErrorNotice`'s `warn` axis.
- *
- * True for the two recognized refusals only. Every other outcome this module reports is a
- * genuine failure -- a rejected agent name, a missing slot, a network error, the generic
- * fallback -- and must keep the danger default, because `warn` renders `role="status"` and a
- * CircleAlert, which announces a real breakage as a polite notice.
- *
- * Keyed on the copy this module produced, so it cannot disagree with the branch that chose it.
- */
-export function agentSwitchWasWithheld(message?: string | null): boolean {
-  if (!message) return false
-  return (
-    message === i18nT('utils.agentSwitchFeedback.workspace_unavailable')
-    || message === i18nT('utils.agentSwitchFeedback.turn_in_flight')
-  )
-}
-
 /** Newest journal entry carrying a status+code pair, or nothing if the failure never reached it. */
 function codedReport(status: number, code: string): ErrorReport | undefined {
   // `recentErrors` is newest-first, so the first match is the live failure rather than a
@@ -135,18 +117,11 @@ function codedReport(status: number, code: string): ErrorReport | undefined {
  * reworded, a code cannot. Keyed on the copy this module produced, so it cannot disagree with the
  * branch that chose it. Every other failure keeps the message lookup, which is exact there
  * because that path passes the API layer's own message through untouched.
- *
- * Both coded refusals are resolved, not just the one that currently offers a hand-off: the pairing
- * of a localized message with a journal keyed on prose is what breaks the lookup, so any refusal
- * that later opts into a hand-off would inherit the same silent gap.
  */
 export function agentSwitchFailureReport(message?: string | null): ErrorReport | undefined {
   if (!message) return undefined
   if (message === i18nT('utils.agentSwitchFeedback.workspace_unavailable')) {
     return codedReport(503, 'workspace_unavailable')
-  }
-  if (message === i18nT('utils.agentSwitchFeedback.turn_in_flight')) {
-    return codedReport(409, 'turn_in_flight')
   }
   return findReport(message)
 }

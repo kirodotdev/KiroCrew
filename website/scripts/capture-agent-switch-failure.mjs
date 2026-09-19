@@ -71,10 +71,10 @@ await page.waitForTimeout(2500)
 await page.getByRole('button', { name: /^Agent: / }).first().click()
 await page.getByRole('option', { name: /reviewer/ }).first().click()
 
-// This scene's stubbed 400 carries no refusal code, so it is a genuine breakage and
-// the notice announces assertively as `role="alert"` — NOT the `status` a withheld
-// switch gets. Wait on the region rather than sleeping, so the shot cannot race the
-// render or photograph an already-expired notice.
+// Every switch failure announces assertively as `role="alert"`, a refusal that merely
+// WITHHELD the switch included: it is still a rejected request, and toning one down to a
+// polite `status` is the violation `errors-use-error-notice` names. Wait on the region
+// rather than sleeping, so the shot cannot race the render or photograph an expired notice.
 await page.getByRole('alert').filter({ hasText: FAILURE }).first()
   .waitFor({ state: 'visible', timeout: 5000 })
 

@@ -179,20 +179,16 @@ describe('agent switch failure report', () => {
       .toBe(newer.id)
   })
 
-  it('resolves the in-flight refusal on its own code, not the workspace one', () => {
+  it('never hands the in-flight refusal the workspace failure context, and resolves no code of its own', () => {
     journalWorkspace503()
-    const busy = recordError({
+    recordError({
       source: 'api',
       message: 'a turn is in flight',
       status: 409,
       code: 'turn_in_flight',
       endpoint: '/api/chat/slots/chat-1/agent',
     })
-    // Both localized, both unreachable by message — so a resolver keyed on anything looser than
-    // the status+code pair would hand the busy notice the workspace failure's context.
-    const recovered = agentSwitchFailureReport(agentSwitchFailureMessage(turnInFlight409()))
-    expect(recovered?.id).toBe(busy.id)
-    expect(recovered?.code).toBe('turn_in_flight')
+    expect(agentSwitchFailureReport(agentSwitchFailureMessage(turnInFlight409()))).toBeUndefined()
   })
 
   it('keeps the exact message lookup for a failure whose copy was not replaced', () => {
