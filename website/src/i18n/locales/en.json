@@ -5026,7 +5026,6 @@
       "quote_hint": "Quotes the selection into the composer of this conversation — your reply goes to the main chat"
     },
     "sendToInstanceSubmenu": {
-      "failed": "Failed",
       "not_connected": "not connected",
       "send_a_copy_to": "Send a copy to",
       "sent": "Sent",
@@ -5040,6 +5039,7 @@
       "copy_link": "Copy link",
       "focus_popped_out_window": "Focus popped-out window",
       "move_to_folder": "Move to folder…",
+      "offline_reason": "Gateway offline — the dimmed actions need a connection",
       "pop_out_to_window": "Pop out to window",
       "rename": "Rename",
       "reveal_in_sidebar": "Reveal in sidebar",

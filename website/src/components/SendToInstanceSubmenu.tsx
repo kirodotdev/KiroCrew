@@ -1,5 +1,4 @@
-import type React from 'react'
-import { useState } from 'react'
+import { Fragment, useId, useState } from 'react'
 import { useMutation, useQuery } from '@tanstack/react-query'
 import { AlertCircle, Check, ChevronRight, Loader2, Send, Server } from 'lucide-react'
 import { api, type InstanceView } from '../api/client'
@@ -10,7 +9,14 @@ import {
   ContextMenuSub, ContextMenuSubTrigger, ContextMenuSubContent, ContextMenuItem,
 } from './ui/context-menu'
 
+import ErrorNotice, {
+  ErrorNoticeMenuItem,
+  type ErrorNoticeMenuItemComponent,
+} from './ErrorNotice'
+import OfflineMenuReason from './OfflineMenuReason'
 import { i18nT } from '../i18n/t'
+import { offlineProps } from '../utils/offline'
+import { useConnected } from '../hooks/useConnected'
 
 /** Per-instance outcome of the most recent send attempt in this open menu. */
 type SendState =
@@ -46,10 +52,10 @@ interface SendToInstanceSubmenuProps {
  * this menu produces a visible local change, so closing on click is its own
  * confirmation; a transfer's only effect happens on ANOTHER machine, so a
  * close-and-say-nothing would leave the user with no way to tell a completed
- * copy from a silently dropped one. There is no toast primitive in this app —
- * the sibling convention is an inline note next to the control
- * (InstancesPanel's `actionErr` / `connectedNote`), and the row IS the control
- * here.
+ * copy from a silently dropped one. A FAILURE renders the peer's own words on the
+ * row through `errors-use-error-notice`'s sanctioned in-menu pair — a passive
+ * inline `ErrorNotice` plus a sibling `ErrorNoticeMenuItem` carrying the hand-off,
+ * never a hand-written danger span.
  *
  * Copy semantics: the local session is untouched and the peer allocates its own
  * key, so a repeat click is harmless and sends a second copy. That is also why
@@ -68,31 +74,37 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
   readonly instances: readonly InstanceView[]
   readonly states: Readonly<Record<string, SendState>>
   readonly onSend: (instanceId: string) => void
-  readonly Item: React.ComponentType<{
-    title?: string
-    disabled?: boolean
-    onSelect?: (event: Event) => void
-    children?: React.ReactNode
-  }>
+  readonly Item: ErrorNoticeMenuItemComponent
 }) {
+  // The gateway link, not the peer's `status.state` below — read here, as
+  // FolderPickerItems does, so no caller can omit the gate.
+  const gatewayOnline = useConnected()
   const notConnected = i18nT('components.sendToInstanceSubmenu.not_connected')
+  const sendVerb = i18nT('utils.offline.send_to_instances')
+  const errorIdBase = useId()
+  // Radix dismisses the menu on select unless the event is defaulted, so a bare
+  // `undefined` closed the flyout — and took the reason row with it — having sent nothing.
+  const refuse = (event: Event) => { event.preventDefault() }
   return (
     <>
       {instances.map(inst => {
         const connected = inst.status?.state === 'connected'
         const st = states[inst.id] ?? { kind: 'idle' }
+        const errorId = `${errorIdBase}-${inst.id}`
         return (
+          <Fragment key={inst.id}>
           <Item
-            key={inst.id}
             title={connected ? inst.name : `${inst.name} — ${notConnected}`}
+            {...offlineProps(gatewayOnline, sendVerb, inst.name)}
+            className={gatewayOnline ? undefined : 'opacity-40 text-muted'}
             disabled={!connected || st.kind === 'sending'}
-            onSelect={connected
+            onSelect={connected && gatewayOnline
               ? (event: Event) => {
                 // Keep the menu open so the row can report the outcome.
                 event.preventDefault()
                 onSend(inst.id)
               }
-              : undefined}
+              : refuse}
           >
             <Server
               size={13}
@@ -121,15 +133,22 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
               </span>
             )}
             {st.kind === 'error' && (
+              // role="presentation" and the blocked handlers: a click reaching the
+              // row would replace this error with a fresh spinner.
               <span
-                className="ml-auto flex items-center gap-1 text-[10px] text-danger shrink-0"
-                title={st.message}
+                className="ml-auto"
+                role="presentation"
+                onClick={(e) => e.stopPropagation()}
+                onPointerDown={(e) => e.stopPropagation()}
               >
-                <AlertCircle size={12} />
-                {i18nT('components.sendToInstanceSubmenu.failed')}
+                <ErrorNotice id={errorId} message={st.message} variant="inline" />
               </span>
             )}
           </Item>
+          {st.kind === 'error' && (
+            <ErrorNoticeMenuItem Item={Item} message={st.message} describedBy={errorId} />
+          )}
+          </Fragment>
         )
       })}
     </>
@@ -137,6 +156,9 @@ export function InstanceSendItems({ instances, states, onSend, Item }: {
 }
 
 export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstanceSubmenuProps) {
+  // Read here rather than taken as a prop: every caller wants the same gate, and
+  // an optional one left a caller ungated.
+  const connected = useConnected()
   const [states, setStates] = useState<Record<string, SendState>>({})
 
   const { data } = useQuery({
@@ -185,18 +207,32 @@ export default function SendToInstanceSubmenu({ slotKey, variant }: SendToInstan
   const SubContent = variant === 'context' ? ContextMenuSubContent : DropdownMenuSubContent
   const Item = variant === 'context' ? ContextMenuItem : DropdownMenuItem
 
+  // Neither held closed nor `disabled`: Radix drops a disabled trigger from
+  // roving focus, and closing the flyout mid-browse yanks it from the pointer.
   return (
     <Sub>
-      <SubTrigger>
+      <SubTrigger
+        {...offlineProps(connected, i18nT('utils.offline.send_to_instances'))}
+        className={connected ? undefined : 'opacity-40 text-muted'}
+      >
         <Send size={13} className="shrink-0 text-muted" />
         <span className="flex-1">{i18nT('components.sendToInstanceSubmenu.send_a_copy_to')}</span>
         <ChevronRight size={12} className="text-muted" />
       </SubTrigger>
       <SubContent className="min-w-[210px] max-h-[280px] overflow-y-auto">
+        {!connected && (
+          <OfflineMenuReason
+            testId="send-instance-offline-reason"
+            reason={i18nT('utils.offline.gateway_offline_reconnect', {
+              action: i18nT('utils.offline.send_to_instances'),
+            })}
+          />
+        )}
         <InstanceSendItems
           instances={instances}
           states={states}
-          onSend={(id) => sendMutation.mutate({ id })}
+          // The trigger only announces, so an opened flyout must still refuse.
+          onSend={(id) => { if (!connected) return; sendMutation.mutate({ id }) }}
           Item={Item}
         />
       </SubContent>

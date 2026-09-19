@@ -15,9 +15,10 @@
  */
 import * as React from 'react'
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, fireEvent } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { Provider } from 'react-redux'
 
 const mocks = vi.hoisted(() => ({ exportSession: vi.fn() }))
 vi.mock('../api/client', () => ({
@@ -38,17 +39,22 @@ import {
   __resetErrorJournalForTests,
   __resetNavSeamForTests,
 } from '../utils/errorReport'
+import { store } from '../store'
+import { sseConnected, sseDisconnected } from '../store/dashboardSlice'
 
 /** A plain stand-in for the Radix menu-item primitive. */
-function StubItem({ title, disabled, onSelect, children }: {
+function StubItem({ title, disabled, onSelect, children, ...rest }: {
   title?: string
   disabled?: boolean
   onSelect?: (event: Event) => void
   children?: React.ReactNode
+  'aria-disabled'?: boolean
+  'aria-label'?: string
 }) {
   return (
     <button
       type="button"
+      {...rest}
       title={title}
       disabled={disabled}
       data-testid="row"
@@ -64,21 +70,27 @@ function queryClient() {
 }
 
 function renderRow(memoryMode?: 'persistent' | 'incognito' | 'temporary') {
+  store.dispatch(sseConnected())
   return render(
     <QueryClientProvider client={queryClient()}>
-      <ExportSessionItem slotKey="slot-1" Item={StubItem} memoryMode={memoryMode} />
+      <Provider store={store}>
+        <ExportSessionItem slotKey="slot-1" Item={StubItem} memoryMode={memoryMode} />
+      </Provider>
     </QueryClientProvider>,
   )
 }
 
 function renderMenu() {
+  store.dispatch(sseConnected())
   return render(
     <QueryClientProvider client={queryClient()}>
-      <DropdownMenu defaultOpen>
-        <DropdownMenuContent>
-          <ExportSessionItem slotKey="slot-1" Item={DropdownMenuItem} memoryMode="persistent" />
-        </DropdownMenuContent>
-      </DropdownMenu>
+      <Provider store={store}>
+        <DropdownMenu defaultOpen>
+          <DropdownMenuContent>
+            <ExportSessionItem slotKey="slot-1" Item={DropdownMenuItem} memoryMode="persistent" />
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </Provider>
     </QueryClientProvider>,
   )
 }
@@ -137,6 +149,20 @@ describe('ExportSessionItem', () => {
     await waitFor(() => expect(screen.getByText('Exported')).toBeTruthy())
   })
 
+  it('refuses while the gateway is offline, since the gateway reads the transcript', () => {
+    store.dispatch(sseDisconnected())
+    const qc = new QueryClient({ defaultOptions: { mutations: { retry: false } } })
+    render(
+      <QueryClientProvider client={qc}>
+        <Provider store={store}>
+          <ExportSessionItem slotKey="slot-1" Item={StubItem} memoryMode="persistent" />
+        </Provider>
+      </QueryClientProvider>,
+    )
+    expect(row().disabled).toBe(false)
+    expect(row().getAttribute('aria-disabled')).toBe('true')
+  })
+
   it('keeps the menu open on select, so the row can report at all', () => {
     // preventDefault on the select event is what holds a Radix menu open. Without
     // it the menu closes and a refusal has nowhere left to render.
@@ -150,9 +176,12 @@ describe('ExportSessionItem', () => {
         }} />
       )
     }
+    store.dispatch(sseConnected())
     render(
       <QueryClientProvider client={queryClient()}>
-        <ExportSessionItem slotKey="slot-1" Item={Recorder} memoryMode="persistent" />
+        <Provider store={store}>
+          <ExportSessionItem slotKey="slot-1" Item={Recorder} memoryMode="persistent" />
+        </Provider>
       </QueryClientProvider>,
     )
     row().click()
@@ -262,5 +291,49 @@ describe('ExportSessionItem', () => {
     // hiding the action there would make the feature look missing.
     renderRow(undefined)
     expect(row().disabled).toBe(false)
+  })
+})
+
+describe('ExportSessionItem \u2013 the gated row reads as gated', () => {
+  beforeEach(() => {
+    mocks.exportSession.mockReset()
+  })
+
+  // offlineProps() carries aria/title only, no class, so without an explicit
+  // one the row stayed inert while still rendering at full weight.
+  it('dims while offline', () => {
+    store.dispatch(sseDisconnected())
+    render(
+      <QueryClientProvider client={queryClient()}>
+        <Provider store={store}>
+          <ExportSessionItem slotKey="slot-1" Item={StubItem} memoryMode="persistent" />
+        </Provider>
+      </QueryClientProvider>,
+    )
+    expect(row().className).toContain('opacity-40')
+    expect(row().className).toContain('text-muted')
+  })
+
+  it('refuses offline WITHOUT the native disabled its siblings avoid', () => {
+    store.dispatch(sseDisconnected())
+    render(
+      <QueryClientProvider client={queryClient()}>
+        <Provider store={store}>
+          <ExportSessionItem slotKey="slot-1" Item={StubItem} memoryMode="persistent" />
+        </Provider>
+      </QueryClientProvider>,
+    )
+    // The menu primitive answers `disabled` with pointer-events-none, which puts
+    // the reason tooltip out of reach and drops the row from roving focus.
+    expect(row()).not.toBeDisabled()
+    expect(row()).toHaveAttribute('aria-disabled', 'true')
+    expect(row().title).toBeTruthy()
+    fireEvent.click(row())
+    expect(mocks.exportSession).not.toHaveBeenCalled()
+  })
+
+  it('does not dim while connected', () => {
+    renderRow('persistent')
+    expect(row().className || '').not.toContain('opacity-40')
   })
 })

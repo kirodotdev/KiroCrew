@@ -7470,7 +7470,6 @@
       "quote_hint": "選択部分をこの会話の入力欄に引用します — 返信はメインのチャットに送られます"
     },
     "sendToInstanceSubmenu": {
-      "failed": "失敗",
       "not_connected": "未接続",
       "send_a_copy_to": "コピーを送信",
       "sent": "送信しました",
@@ -7486,6 +7485,7 @@
       "mark_as_read": "読了にマーク",
       "mark_as_unread": "未読にマーク",
       "move_to_folder": "フォルダーに移動…",
+      "offline_reason": "ゲートウェイがオフラインです — 淡色表示の操作には接続が必要です",
       "open_in_new_tab": "セッションタブで開く",
       "pin": "ピン留め",
       "pop_out_to_window": "ウィンドウにポップアウト",
@@ -15281,9 +15281,24 @@
       "saving": "保存中…"
     },
     "offline": {
+      "change_tags": "タグを変更",
+      "close_sessions": "セッションを終了",
       "disabled_gateway_offline": "{{label}} は無効です — ゲートウェイがオフラインです",
+      "export_sessions": "セッションをエクスポート",
       "gateway_offline_reconnect": "ゲートウェイがオフラインです — {{action}}するには再接続してください",
-      "submit_comments": "コメントを送信"
+      "move_folders": "フォルダーを移動",
+      "move_sessions": "セッションを移動",
+      "optimize": "プロンプトを最適化",
+      "pin_sessions": "セッションをピン留め",
+      "recolor_sessions": "セッションの色を変更",
+      "reload_sessions": "セッションを再読み込み",
+      "rename_sessions": "セッション名を変更",
+      "resume_sessions": "セッションを再開",
+      "send": "送信",
+      "send_to_instances": "インスタンスに送信",
+      "submit_comments": "コメントを送信",
+      "switch_session_modes": "セッションモードを変更",
+      "switch_sessions": "セッションを変更"
     },
     "popoutController": {
       "your_browser_blocked_the_pop_out_window_allow_po": "ブラウザーがポップアップウィンドウをブロックしました。このサイトのポップアップを許可して、もう一度お試しください。"
