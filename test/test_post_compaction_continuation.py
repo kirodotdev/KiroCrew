@@ -592,6 +592,13 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
     compacting -- the exact data loss this invariant rules out. Pinned in source
     for the same reason as the sibling wiring test: the branch sits inside the
     runner's single very long turn function.
+
+    The window admits the leaked-tool-call scan that sits ahead of the reset (a
+    leak streamed before the boundary is invisible to the turn-end gates once
+    the accumulator is cleared, so the scan has to read it here). Only that
+    named statement and comments are allowed through: an arbitrary statement
+    between the guard and the reset still fails, which is what keeps this from
+    degrading into "the two lines appear somewhere in the file".
     """
     src = (
         pathlib.Path(__file__).resolve().parents[1]
@@ -600,10 +607,11 @@ def test_the_runner_only_clears_text_on_an_observed_terminal() -> None:
         / "dashboard"
         / "chat_runner.py"
     ).read_text(encoding="utf-8")
+    # A comment line, or a line of the boundary scan (its call is wrapped across
+    # three lines by the formatter, so each shape is named).
+    filler = r"(?:[ \t]*(?:#[^\n]*|_compaction_dropped_leak = [^\n]*|assistant_text|\))\n)*"
     assert re.search(
-        r"if not event\.synthesized:\s*\n"
-        r"(?:\s*#[^\n]*\n)*"
-        r'\s*assistant_text = ""\s*\n'
-        r"\s*_wsred\.reset\(\)",
+        r"if not event\.synthesized:[ \t]*\n" + filler + r'[ \t]*assistant_text = ""[ \t]*\n'
+        r"[ \t]*_wsred\.reset\(\)",
         src,
     ), "the compaction-terminal text reset must be guarded by `not event.synthesized`"

@@ -373,6 +373,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     EmptyTurnActivity,
     RecoveryPayload,
     classify_empty_turn,
+    has_leaked_tool_call,
     has_unfinished_progress_claim,
     is_promise_only_terminal,
     is_synthetic_payload_item,
@@ -381,6 +382,7 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
     normalize_stop_reason,
     payload_for_replay,
     should_continue_after_compaction,
+    should_notice_compaction_dropped_leak,
     should_notice_leaked_tool_call,
     should_notice_mixed_turn_leak,
     should_recover_promise_only,
@@ -8419,6 +8421,15 @@ async def _run_chat(
     # _recovering_promise: the turn announced work it never did, so it must not
     # be recorded as a success or reset the retry budgets.
     _noticed_leak = False
+    # Set when a REAL mid-turn compaction terminal cleared `assistant_text`
+    # while it held a leaked tool call. The turn-end gates read that
+    # accumulator, so the fact has to be captured at the boundary or it is lost
+    # with the text: see `should_notice_compaction_dropped_leak`.
+    _compaction_dropped_leak = False
+    # Set once ANY leak card has landed this turn. It is what keeps one turn to
+    # one leak card, so the dropped-leak notice can sit outside the
+    # outcome-owning chain instead of taking an exclusive slot there.
+    _leak_card_posted = False
     # Set when the turn's LAST tool result was an infrastructure refusal the
     # recovery ladder chose to retry (L1: the MCP stub's -32001 capacity error
     # or a gateway recoverable_infra marker) and one continuation was queued.
@@ -12670,6 +12681,23 @@ async def _run_chat(
                         # so every chunk of the turn already sits in
                         # `assistant_text`, and clearing it here would delete the
                         # answer a backend produced AFTER compacting.
+                        #
+                        # Scan for a leaked tool call BEFORE the reset: the
+                        # turn-end leak gates read this accumulator, so a leak
+                        # that streamed before the boundary is invisible to them
+                        # once it is cleared, and both decline on an empty
+                        # segment. The block already reached the user (chunks
+                        # stream to the wire as they arrive) and the boundary
+                        # does not flush, so without this the turn shows raw
+                        # invoke syntax, runs no tool, persists nothing and
+                        # explains nothing. Only the FACT survives the reset;
+                        # the text is gone by turn end, which is the defect.
+                        # OR-accumulated: a turn may cross more than one
+                        # boundary, and a leak dropped at an earlier one is not
+                        # un-reported by a later clean segment.
+                        _compaction_dropped_leak = _compaction_dropped_leak or has_leaked_tool_call(
+                            assistant_text
+                        )
                         assistant_text = ""
                         _wsred.reset()
             elif event.kind == EVENT_CLEAR_STATUS:
@@ -14154,6 +14182,7 @@ async def _run_chat(
                 "msg msg-info",
             )
             _noticed_leak = True
+            _leak_card_posted = True
         elif should_notice_mixed_turn_leak(
             stop_reason=_stop_reason,
             end_turn_reason=STOP_REASON_END_TURN,
@@ -14188,6 +14217,7 @@ async def _run_chat(
                 "re-sending (an active monitor loop retries on its next cycle).",
                 "msg msg-info",
             )
+            _leak_card_posted = True
         # L1 of the recovery ladder (RFC overload-resilience §7): the turn ended
         # normally but its LAST tool result was an INFRASTRUCTURE refusal -- the
         # MCP stub's ``-32001 capacity`` error (the gateway daemon had no spawn
@@ -14508,6 +14538,45 @@ async def _run_chat(
                 "Stop hook explicitly requests a bounded continuation. Separately "
                 "shown subagents or monitor loops, if any, continue on their own; "
                 "otherwise send a message to resume.",
+                "msg msg-info",
+            )
+        # OUTSIDE the chain above, deliberately. Every arm in it owns the turn's
+        # outcome -- it un-lands, re-drives or re-queues -- and two of them are
+        # RECOVERIES (the L1 infrastructure retry and the promise-only guard).
+        # This card owns no outcome, so taking an exclusive slot ahead of them
+        # would starve a turn that both dropped a leak at its boundary and needs
+        # a recovery: its gates (normal end_turn, no cancel, no refusal, depth 0)
+        # exclude neither shape, so the recovery would simply never run. An
+        # independent `if` lets both happen, which is what the turn actually
+        # warrants -- one explanation, and the recovery it was already owed.
+        #
+        # `_leak_card_posted` (not the ordering) is what keeps one turn to one
+        # leak card: either arm above that already carded sets it.
+        if should_notice_compaction_dropped_leak(
+            dropped_leak=_compaction_dropped_leak,
+            leak_already_noticed=_leak_card_posted,
+            stop_reason=_stop_reason,
+            end_turn_reason=STOP_REASON_END_TURN,
+            prompt_depth=_prompt_depth,
+            is_cancelled=(_stop_reason == STOP_REASON_CANCELLED),
+            refusal_reasons=_refusal_reasons,
+        ):
+            # `_noticed_leak` stays False: the turn keeps whatever outcome its
+            # own arm gave it, including the post-compaction continuation that
+            # fires BECAUSE the segment is blank. The card explains the raw
+            # syntax the user saw; it never asks for the call to be re-issued.
+            logger.warning(
+                "Leaked tool call dropped at a compaction boundary for slot %s — "
+                "an invoke block streamed as text and the mid-turn summarization "
+                "cleared the segment before the turn-end scan (credits=%.4f)",
+                slot.key,
+                _turn_credits,
+            )
+            slot.append(
+                "notice",
+                "ℹ️ A tool call leaked into the reply text instead of executing, "
+                "just before the context was compacted — that call did not run. "
+                "Any raw `<invoke>` text above is that leak, not a reply.",
                 "msg msg-info",
             )
         # On an empty-response re-queue the turn produced nothing and will

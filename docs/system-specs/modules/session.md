@@ -609,7 +609,38 @@ send time.
   notice/un-landing applies only to ZERO-tool-call turns — a mixed turn that
   executed tools and then leaked its final dispatch as text lands normally
   (un-landing a turn whose earlier calls had real side effects would
-  misdescribe it) and is logged at WARNING as a diagnostic instead.
+  misdescribe it) and gets its own notice card, worded for that shape:
+  the earlier calls were ATTEMPTED and may already have taken effect, so the
+  reader is told to check what landed rather than that nothing ran
+  (`should_notice_mixed_turn_leak`).
+- **Leak dropped at a compaction boundary** (issue #11995): a REAL
+  (non-synthesized) mid-turn compaction terminal is a segment boundary, so the
+  runner clears `assistant_text` there — text streamed before the
+  summarization belongs to the window that was just summarized and must not
+  carry into the segment flushed afterwards. Both gates above read that
+  accumulator AT TURN END, so a leak that streamed BEFORE the boundary was
+  invisible to them and both declined on an empty segment, while the raw
+  invoke block had already reached the user (chunks stream to the wire as they
+  arrive) and the boundary flushes nothing. The turn then took the
+  post-compaction continuation arm precisely BECAUSE the segment was blank, so
+  the session showed raw machine syntax followed by "continuing
+  automatically", ran no tool, and accounted for neither. The scan therefore
+  runs AT the boundary, before the clear, and only the resulting boolean
+  travels to turn end (`should_notice_compaction_dropped_leak`); a scan placed
+  after the clear reads an empty string and silently restores the defect, which
+  is why the ordering carries a source-level ratchet, and the recorded fact
+  ACCUMULATES (`or`) so a turn crossing two boundaries does not lose the first
+  one's leak to a later clean segment. Strictly notice-only and weaker than both
+  siblings: it un-lands nothing and sets no flag a recovery arm reads. Because it
+  owns no turn outcome it is evaluated OUTSIDE the `if`/`elif` chain its siblings
+  sit in — every arm of that chain owns the outcome and two are recoveries (the
+  L1 infrastructure retry, the promise-only guard), and since these gates exclude
+  neither shape, an exclusive slot would starve a turn that both dropped a leak
+  and needed a recovery. One turn still gets one leak card, enforced by a flag
+  the siblings set (`leak_already_noticed`) rather than by position. It needs no
+  tool-count gate (that gate protects un-landing, and there is nothing here to
+  un-land) and no stage-execution gate (a notice changes no turn result the stage
+  loop reads).
 - **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on a backend that can serve
   `/compact`: kiro-cli via a `/compact` **prompt** (`session/prompt` +
   `_kiro.dev/compaction/status` watch — never the string form of

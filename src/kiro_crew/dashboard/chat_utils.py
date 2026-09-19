@@ -2395,6 +2395,81 @@ def should_notice_mixed_turn_leak(
     return has_leaked_tool_call(final_segment_text)
 
 
+def should_notice_compaction_dropped_leak(
+    *,
+    dropped_leak: bool,
+    leak_already_noticed: bool,
+    stop_reason: str,
+    end_turn_reason: str,
+    prompt_depth: int,
+    is_cancelled: bool,
+    refusal_reasons: list,
+) -> bool:
+    """Decide whether to surface a notice for a leak the COMPACTION BOUNDARY ate.
+
+    The shape neither sibling can see. A real (non-synthesized) mid-turn
+    compaction terminal is a segment boundary, so the runner resets
+    ``assistant_text`` there: text streamed before the summarization belongs to
+    the window that was just summarized and must not carry into the segment
+    flushed afterwards. That reset is correct for the text path and wrong for
+    this one — the leak scan reads the accumulator AT TURN END, so a leak that
+    streamed before the boundary is gone by the time either
+    :func:`should_notice_leaked_tool_call` or
+    :func:`should_notice_mixed_turn_leak` runs, and both decline on an empty
+    segment.
+
+    The leak still reached the user: chunks stream to the wire as they arrive,
+    so the raw invoke block was on screen before the boundary wiped the
+    accumulator. Nothing persisted it (the boundary does not flush) and nothing
+    explained it, so the turn shows raw machine syntax, runs no tool, and
+    carries no account of either — the silent pass-through this predicate
+    closes.
+
+    The turn then usually takes the post-compaction continuation arm, which
+    fires precisely BECAUSE the segment is blank
+    (:func:`should_continue_after_compaction`). So the user sees the leaked XML
+    followed by "continuing automatically", with no statement that a tool call
+    was written as prose instead of run.
+
+    Takes the FACT, not the text: at turn end the text is already gone, which is
+    the defect. The boundary is the only place it exists, so the scan
+    (:func:`has_leaked_tool_call`) runs there and only the boolean travels.
+
+    NOTICE-ONLY, and more strictly so than its siblings. It does not un-land the
+    turn and sets no flag any recovery arm reads, so it never competes with the
+    continuation the compaction path injects — a leaked block must not be
+    re-issued by this layer under any of the three auto-approval routes
+    (:func:`should_notice_leaked_tool_call` documents why). It therefore needs
+    no ``turn_tool_calls`` gate: that gate exists to protect UN-LANDING, and
+    there is nothing here to un-land. It needs no ``in_stage_execution`` gate
+    either, for the reason its mixed-turn sibling does not: a notice changes no
+    turn result the orchestrator's stage loop reads.
+
+    Owning no outcome is also why the caller evaluates this OUTSIDE the
+    ``if``/``elif`` chain its siblings sit in. Every arm of that chain owns the
+    turn's outcome, and two of them are RECOVERIES (the L1 infrastructure retry
+    and the promise-only guard); a turn can both drop a leak at its boundary and
+    need one of those, and the gates below exclude neither shape. An exclusive
+    slot would therefore starve the recovery, so the card is evaluated
+    independently and the turn keeps whatever outcome its own arm gave it.
+    ``leak_already_noticed`` — not the ordering — is what keeps one turn to one
+    leak card: the caller sets it on whichever sibling already carded.
+
+    Gates are the turn-shape ones only: the boundary recorded a leak, no sibling
+    has carded this turn, the turn ended NORMALLY, was not cancelled, carried no
+    tool refusals (those paths own their own reporting), and is top-level.
+    """
+    if not dropped_leak:
+        return False
+    if leak_already_noticed:
+        return False
+    if is_cancelled or refusal_reasons:
+        return False
+    if stop_reason != end_turn_reason:
+        return False
+    return prompt_depth == 0
+
+
 #: Normalised, CLOSED stop-reason vocabulary for the empty-turn diagnostic. The
 #: raw wire value is never logged: a backend is free to invent a reason string,
 #: and an unbounded value in a diagnostic is both a cardinality hazard and a
