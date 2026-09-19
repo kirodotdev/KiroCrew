@@ -33,6 +33,7 @@ function makeSpec(overrides: Partial<BotChannelSpec> = {}): BotChannelSpec {
   return {
     name: 'Zzchat',
     queryKey: `cov80-bot-${seq++}`,
+    namespace: 'discord',
     logo: <span data-testid="brand-logo" />,
     description: 'zz-description',
     host: 'zz.invalid',

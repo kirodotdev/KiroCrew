@@ -10,6 +10,7 @@ import { api, type SlackConfigData, type SlackConfigSave } from '../../api/clien
 import { copyToClipboard } from '../../utils/clipboard'
 
 import { i18nT } from '../../i18n/t'
+import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 import ErrorNotice from '../../components/ErrorNotice'
 import { SchemaRestartBadge } from '../../components/settingRef/RestartRequiredBadge'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
@@ -454,6 +455,14 @@ export function SlackPanel() {
                   disabled={ro}
                 />
               </div>
+            )}
+            {!!data.session_folder && (
+              <ChannelFolderBackfill
+                namespace="slack"
+                folderName={data.session_folder}
+                disabled={ro}
+                testId="session-folder-backfill"
+              />
             )}
           </div>
         </SettingsCard>
