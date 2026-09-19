@@ -109,7 +109,10 @@ once, at install, so registry auth applies at install time only.
 1. Detect a vetted managed or fixed-system `playwright-cli`, plus Node.js 20 or
    newer. Resolution never consults `PATH`.
 2. Install when absent: `npm install -g --prefix <data-home>/playwright-cli
-   @playwright/cli@latest`. The prefix holds the entrypoint and package tree.
+   @playwright/cli@latest`. The installed version comes from the attributed
+   package's `node_modules/@playwright/cli/package.json`, read directly on the
+   two rare detection and Browser-view spawn paths. The prefix holds the
+   entrypoint and package tree.
    The sandbox pre-creates this directory and exposes it read-only to agent
    descendants; the gateway installer runs outside that sandbox. Before npm
    receives the prefix, the installer creates the leaf and pins it with the
@@ -431,8 +434,102 @@ tunnel that forwards a fixed set of ports. The pin is never handed to the
 child: the supervisor claims the pinned port itself with a bound listener it
 keeps holding, an atomic ownership proof that makes the deterministic,
 operator-named port race-free, and relays byte-for-byte to the child's own
-ephemeral port. The child's OS-assigned port keeps the unpinned path's
-advisory bind window (unpredictable, loopback-local); both bind loopback only. The served dashboard
+ephemeral port. With a usable attribution path, the child keeps the unpinned
+path's advisory bind window (unpredictable, loopback-local). On a structurally
+blind host it instead receives port 0 and lets the kernel choose while binding;
+both paths bind loopback only. After the child answers, the supervisor asks
+`platform_compat.probe_port_listeners` who owns its port. A PID in the spawned
+process tree is positive ownership proof. When that global lookup is absent or
+cannot attribute a known listener, the supervisor checks the spawned child and
+its current descendants by PID. Linux follows direct child lists under
+`/proc/<pid>/task/<tid>/children`; macOS uses `proc_listchildpids`. The walk
+starts at the spawned root and reads only PIDs it discovers in that subtree.
+The supervisor captures the root start ID immediately after `Popen` returns and
+stores it with the exact live process handle. Startup, adoption, and reuse all
+require that same handle to remain alive and its current start ID to equal the
+captured value before and after listener confirmation; a mismatch is reaped and
+replaced rather than treated as this Browser view.
+For every candidate PID, parentage and start identity come from one kernel read:
+Linux uses one `/proc/<pid>/stat` value, while macOS uses one
+`PROC_PIDTBSDINFO` value with microsecond start resolution. A Browser-specific
+three-way comparator classifies each edge as later, earlier, or inconclusive. A
+strictly later child may join the tree; a strictly earlier child is the stale
+orphan shape and its subtree is excluded. Equal coarse timestamps or unparseable
+identities make the ownership result inconclusive rather than foreign. The
+parent must keep its identity across the child-list read, and each descendant
+must keep its identity around the listener probe.
+
+If the atomic path is unavailable, the POSIX fallback takes two
+`ps -Ao pid=,ppid=,lstart=` snapshots and retains only rows whose PPID and
+one-second `lstart` identity are identical in both. Parent and child created in
+the same displayed second therefore yield an inconclusive proof. Windows
+brackets two Toolhelp PID-to-PPID snapshots with the query-only process
+creation-time primitive. Each listener candidate's path to the root must keep
+the same PIDs, creation IDs, and edges; the three-way order rule applies to
+every edge, while unrelated helper siblings may appear or disappear. A matching
+`netstat` owner is rechecked around a confirming listener lookup before it
+becomes positive ownership proof. A changed or unreadable identity on the
+candidate chain is inconclusive; bare-PID ancestry never authorizes a URL.
+Other POSIX hosts run `lsof` scoped with `-p <pid>`. Exit 1 means a completed
+no-match only when stdout and stderr are both empty; any diagnostic makes
+ownership inconclusive. The control-listener self-test runs before a spawn when
+`ensure_running` must choose between the ordinary fixed-child-port path and the
+structurally blind `--port 0` path. During reuse it runs only after an
+inconclusive target lookup. Its result is cached for the gateway process by the
+resolved `lsof` or `netstat` path. A tool-path change or replacement Browser
+child invalidates the cache. If the self-test proved `lsof` globally blind, its
+PID-scoped empty result is inconclusive too. Windows has no
+independent PID-scoped socket query, so an absent or blind `netstat` still uses
+the child-report fallback described below. A completed identity-attributed
+check for every PID that finds no owner is a definitive mismatch even if another
+process answers the health probe.
+
+Only a structurally blind host falls back to trusted child stdout during
+startup. A transient incomplete probe on a structurally capable host remains
+inconclusive even if a fresh startup line is available. The parser extracts the
+scheme, host, and port from a listener line, so harmless banner prefixes,
+separators, and URL paths may change without disabling the panel. It still
+requires HTTP, `127.0.0.1`, and either the assigned port or, for a port-0
+request, a valid child-selected port. Playwright writes the line only after its
+server binds, and a process racing for a supervisor-selected TCP port cannot
+write to the child's pipe. A reader that consumes stdout without finding a
+recognized listener URL fails closed and logs the installed `playwright-cli`
+version beside the verified banner form. On a structurally blind host,
+`status()` names the same runtime contract in operator terms: the Browser CLI
+version did not print `Listening on http://127.0.0.1:<port>`, and an upgrade may
+have changed it. Ownership and relay failures likewise describe the failed
+Browser-view task; PID, port, and thread details remain in debug or warning
+logs. Line count, byte count, and time bound only the proof window. A recognized
+report remains valid when a later limit switches the reader to discard mode.
+Without a match, the limit invalidates the report. The daemon keeps draining and
+discarding stdout until EOF so a chatty long-lived child cannot fill its pipe and
+block. Every daemon thread start passes one guarded helper. A failed proof
+reader or post-bind relay start closes the child pipes and reaps the spawned
+process; failed relay connection or pump starts close their tracked sockets.
+
+Reuse and status split the `unproven` owner verdict into two capability tiers. An
+incomplete target or control lookup is never evidence of a foreign owner; the
+supervisor preserves the live child in a degraded state and withholds its URL
+until current ownership evidence is available. A completed target negative is
+foreign only when the control listener proves the attribution tool functional.
+Structural blindness means Windows `netstat` or non-Linux POSIX `lsof` is absent
+or proved blind and there is no independent per-process path.
+The supervisor then starts the child with `show --port 0` and records the
+kernel-selected port only from that exact child's private startup pipe. That
+structural proof is bound to the process handle, captured root start ID, and
+reported port. It remains valid for the lifetime of that exact handle while the
+root start ID still matches, `poll()` reports it live, and the child stays
+healthy. Reuse and `status()` return the same URL under that proof. The proof
+cannot transfer to a replacement handle. A live record without that matching
+proof reports that port ownership could not be confirmed; it does not mislabel
+the failure as banner drift. A dead or identity-mismatched handle is reaped once
+and replaced, and the replacement child's fresh report binds its new lifetime
+proof. Reachability alone never adopts a foreign listener. A completed ownership
+mismatch or failed health check still fails closed; a missing recognized report
+fails the initial start.
+The dashboard control socket cannot replace these checks with a nonce challenge
+because its reveal request carries only `sessionName` and its fixed PID response
+echoes no client-supplied field. The served dashboard
 provides the session grid with live screencast, a session detail view with tab bar
 and navigation controls, and full remote mouse and keyboard input, so a human can
 take over a session directly: this is the path for a CAPTCHA or a 2FA prompt that

@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import ctypes.util
+import enum
 import errno
 import functools
 import io
@@ -1264,15 +1265,23 @@ _DARWIN_VNODE_INFO_PATH_SIZE = _DARWIN_VNODE_INFO_SIZE + _DARWIN_MAXPATHLEN
 _DARWIN_PROC_VNODEPATHINFO_SIZE = 2 * _DARWIN_VNODE_INFO_PATH_SIZE
 
 # ``proc_pidinfo(PROC_PIDTBSDINFO)`` fills a ``proc_bsdinfo`` struct whose
-# start-time pair lives at fixed offsets: 12 leading uint32 fields (48 bytes),
-# ``pbi_comm[16]`` + ``pbi_name[32]`` (96), then 6 more 4-byte fields (120),
-# then ``pbi_start_tvsec`` / ``pbi_start_tvusec`` as two uint64s (120 / 128,
-# struct size 136). Only those two matter here; the total size doubles as the
-# layout check.
+# parent pid and start-time pair live at fixed offsets. ``pbi_ppid`` is the
+# fifth uint32 (16), followed later by ``pbi_start_tvsec`` and
+# ``pbi_start_tvusec`` as two uint64s (120 / 128, struct size 136). The total
+# size doubles as the layout check.
 _DARWIN_PROC_PIDTBSDINFO = 3
 _DARWIN_PROC_BSDINFO_SIZE = 136
+_DARWIN_PBI_PPID_OFFSET = 16
 _DARWIN_PBI_START_TVSEC_OFFSET = 120
 _DARWIN_PBI_START_TVUSEC_OFFSET = 128
+
+
+class ProcessStartIdentity(NamedTuple):
+    """A process start ID and parent PID captured by one kernel read."""
+
+    start_id: str
+    ppid: int
+
 
 # ``proc_pidinfo(PROC_PIDTASKINFO)`` fills a ``proc_taskinfo`` struct that opens
 # with six uint64 fields — ``pti_virtual_size``, ``pti_resident_size``,
@@ -1347,18 +1356,14 @@ def _darwin_process_cwd(pid: int) -> str | None:
         return None
 
 
-def _darwin_process_start_microtime(pid: int) -> str | None:
-    """macOS start time of *pid* via ``libproc``, at microsecond resolution.
+def _darwin_process_start_identity(pid: int) -> ProcessStartIdentity | None:
+    """Read macOS start ID and PPID atomically from one ``proc_bsdinfo``.
 
     ``proc_pidinfo(PROC_PIDTBSDINFO)`` needs no entitlement for a same-uid
-    process and never spawns a subprocess. The value is the absolute wall-clock
-    start instant (``pbi_start_tvsec`` / ``pbi_start_tvusec``), so it stays
-    unique across reboots and is six decimal orders finer than the 1s ``ps -o
-    lstart=`` probe — fine enough that a recycled PID cannot alias within the
-    same second. The kernel reports how many bytes it filled; anything other
-    than the exact struct size means the layout assumed by the offsets above no
-    longer matches, so the answer is refused rather than sliced out of the
-    wrong place (same rule as the cwd probe).
+    process and never spawns a subprocess. Reading both fields from this one
+    kernel-filled struct prevents a recycled pid from pairing old parentage
+    with a new process identity. The start instant is absolute wall time at
+    microsecond resolution, six decimal orders finer than ``ps -o lstart=``.
     """
     lib = _darwin_libproc_handle()
     if lib is None:
@@ -1375,17 +1380,29 @@ def _darwin_process_start_microtime(pid: int) -> str | None:
         if filled != _DARWIN_PROC_BSDINFO_SIZE:
             return None
         # Both x86_64 and arm64 macOS are little-endian.
+        ppid = int.from_bytes(
+            buf.raw[_DARWIN_PBI_PPID_OFFSET : _DARWIN_PBI_PPID_OFFSET + 4],
+            "little",
+        )
         sec = int.from_bytes(
-            buf.raw[_DARWIN_PBI_START_TVSEC_OFFSET:_DARWIN_PBI_START_TVUSEC_OFFSET], "little"
+            buf.raw[_DARWIN_PBI_START_TVSEC_OFFSET:_DARWIN_PBI_START_TVUSEC_OFFSET],
+            "little",
         )
         usec = int.from_bytes(
-            buf.raw[_DARWIN_PBI_START_TVUSEC_OFFSET:_DARWIN_PROC_BSDINFO_SIZE], "little"
+            buf.raw[_DARWIN_PBI_START_TVUSEC_OFFSET:_DARWIN_PROC_BSDINFO_SIZE],
+            "little",
         )
         if sec <= 0:
             return None
-        return f"{sec}.{usec:06d}"
+        return ProcessStartIdentity(f"{sec}.{usec:06d}", ppid)
     except Exception:
         return None
+
+
+def _darwin_process_start_microtime(pid: int) -> str | None:
+    """macOS start time of *pid* via the atomic ``proc_bsdinfo`` reader."""
+    identity = _darwin_process_start_identity(pid)
+    return identity.start_id if identity is not None else None
 
 
 def _darwin_process_cpu_nanos(pid: int) -> int | None:
@@ -1902,6 +1919,41 @@ _DARWIN_OFF_START_TVSEC = 120
 _DARWIN_OFF_START_TVUSEC = 128
 
 
+def get_process_start_identity(
+    pid: int, *, proc_root: Path | None = None
+) -> ProcessStartIdentity | None:
+    """Return ``(start_id, ppid)`` from one per-pid kernel record.
+
+    Linux reads both fields from one ``/proc/<pid>/stat`` value. macOS reads
+    both from one ``PROC_PIDTBSDINFO`` value. Other platforms return ``None``;
+    callers that can tolerate the coarser ``ps`` fallback must bracket it
+    separately so process recycling cannot join parentage from one process to
+    the identity of another.
+    """
+    if pid <= 0:
+        return None
+    if sys.platform == "linux":
+        stat_path = (
+            Path(f"/proc/{pid}/stat") if proc_root is None else proc_root / str(pid) / "stat"
+        )
+        try:
+            stat_data = stat_path.read_text(encoding="utf-8", errors="replace")
+            close_paren = stat_data.rfind(")")
+            if close_paren < 0:
+                return None
+            fields = stat_data[close_paren + 2 :].split()
+            ppid = int(fields[1])
+            start_id = fields[19]
+            if ppid < 0 or not start_id.isdigit():
+                return None
+            return ProcessStartIdentity(start_id, ppid)
+        except (OSError, ValueError, IndexError):
+            return None
+    if sys.platform == "darwin":
+        return _darwin_process_start_identity(pid)
+    return None
+
+
 def get_process_start_id(pid: int) -> str | None:
     """Return a stable per-process start-time identity string, or ``None``.
 
@@ -1930,15 +1982,8 @@ def get_process_start_id(pid: int) -> str | None:
     if sys.platform == "win32":
         return process_start_time(pid)
     if sys.platform == "linux":
-        try:
-            stat_data = Path(f"/proc/{pid}/stat").read_text()
-            # comm (field 2) may contain spaces/parens — parse after the LAST ')'
-            close_paren = stat_data.rfind(")")
-            if close_paren < 0:
-                return None
-            return stat_data[close_paren + 2 :].split()[19]
-        except Exception:
-            return None
+        identity = get_process_start_identity(pid)
+        return identity.start_id if identity is not None else None
     if sys.platform == "darwin":
         try:
             start = _darwin_libproc_start_id(pid)
@@ -2297,7 +2342,7 @@ def get_tcp_peer_pid(
 
 
 def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> list[int]:
-    """Return a breadth-first descendant list from a PID -> PPID snapshot."""
+    """Return breadth-first descendants with sibling PIDs in ascending order."""
 
     result: list[int] = []
     frontier = [root_pid]
@@ -2305,7 +2350,7 @@ def _descendants_from_parent_map(root_pid: int, parent_map: dict[int, int]) -> l
     while frontier:
         parents = set(frontier)
         frontier = []
-        for child_pid, parent_pid in parent_map.items():
+        for child_pid, parent_pid in sorted(parent_map.items()):
             if parent_pid in parents and child_pid not in seen:
                 seen.add(child_pid)
                 result.append(child_pid)
@@ -2926,29 +2971,424 @@ def tool_outside_trusted_dirs(name: str) -> str | None:
 
 
 def _posix_process_parent_map() -> dict[int, int]:
-    """Return one ``ps`` PID -> PPID snapshot; empty when enumeration fails."""
+    """Return the PID -> PPID view of the shared POSIX process snapshot."""
 
-    if IS_WINDOWS:
+    processes = _posix_process_snapshot()
+    if processes is None:
         return {}
+    return {process_pid: process.ppid for process_pid, process in processes.items()}
+
+
+class ProcessDescendantIdentity(NamedTuple):
+    """A descendant PID bound to its parent and process-start identity."""
+
+    pid: int
+    ppid: int
+    start_time: str
+
+
+class _BrowserProcessStartOrder(enum.Enum):
+    """Creation order for one Browser ancestry edge."""
+
+    LATER = "later"
+    EARLIER = "earlier"
+    INCONCLUSIVE = "inconclusive"
+
+
+def _browser_process_start_order(
+    child_token: str,
+    parent_token: str,
+) -> _BrowserProcessStartOrder:
+    """Compare Browser ancestry identities without collapsing uncertainty."""
+
+    def _numeric_parts(token: str) -> tuple[int, str] | None:
+        whole, separator, fraction = token.partition(".")
+        if not whole.isdigit() or (separator and not fraction.isdigit()):
+            return None
+        return int(whole), fraction
+
+    child_numeric = _numeric_parts(child_token)
+    parent_numeric = _numeric_parts(parent_token)
+    if child_numeric is not None or parent_numeric is not None:
+        if child_numeric is None or parent_numeric is None:
+            return _BrowserProcessStartOrder.INCONCLUSIVE
+        child_whole, child_fraction = child_numeric
+        parent_whole, parent_fraction = parent_numeric
+        if child_whole > parent_whole:
+            return _BrowserProcessStartOrder.LATER
+        if child_whole < parent_whole:
+            return _BrowserProcessStartOrder.EARLIER
+        width = max(len(child_fraction), len(parent_fraction))
+        child_fraction = child_fraction.ljust(width, "0")
+        parent_fraction = parent_fraction.ljust(width, "0")
+        if child_fraction > parent_fraction:
+            return _BrowserProcessStartOrder.LATER
+        if child_fraction < parent_fraction:
+            return _BrowserProcessStartOrder.EARLIER
+        return _BrowserProcessStartOrder.INCONCLUSIVE
+
+    try:
+        child_time = time.strptime(child_token, "%a %b %d %H:%M:%S %Y")[:6]
+        parent_time = time.strptime(parent_token, "%a %b %d %H:%M:%S %Y")[:6]
+    except ValueError:
+        return _BrowserProcessStartOrder.INCONCLUSIVE
+    if child_time > parent_time:
+        return _BrowserProcessStartOrder.LATER
+    if child_time < parent_time:
+        return _BrowserProcessStartOrder.EARLIER
+    return _BrowserProcessStartOrder.INCONCLUSIVE
+
+
+class _PosixProcessSnapshotRow(NamedTuple):
+    """One parsed POSIX process row; identity may be unavailable."""
+
+    ppid: int
+    start_time: str | None
+
+
+def _linux_direct_child_pids(pid: int, proc_root: Path) -> list[int] | None:
+    """Return direct children from this pid's kernel ``children`` files."""
+    task_root = proc_root / str(pid) / "task"
+    try:
+        tasks = list(task_root.iterdir())
+    except OSError:
+        return None
+    children: set[int] = set()
+    read_any = False
+    for task in tasks:
+        if not task.name.isdigit():
+            continue
+        try:
+            raw = (task / "children").read_text(encoding="ascii")
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return None
+        read_any = True
+        try:
+            children.update(int(token) for token in raw.split())
+        except ValueError:
+            return None
+    return sorted(children) if read_any else None
+
+
+def _direct_child_pids_for_identity_walk(pid: int, proc_root: Path | None) -> list[int] | None:
+    """Return direct children without scanning unrelated host processes."""
+    if IS_LINUX:
+        root = proc_root if proc_root is not None else Path("/proc")
+        return _linux_direct_child_pids(pid, root)
+    if sys.platform == "darwin":
+        return darwin_child_pids(pid)
+    return None
+
+
+def _atomic_process_descendant_identities(
+    root_pid: int, proc_root: Path | None
+) -> list[ProcessDescendantIdentity] | None:
+    """Walk descendants whose parentage and start ID share one kernel read."""
+
+    def _identity(pid: int) -> ProcessStartIdentity | None:
+        if IS_LINUX:
+            root = proc_root if proc_root is not None else Path("/proc")
+            return get_process_start_identity(pid, proc_root=root)
+        return get_process_start_identity(pid)
+
+    root_identity = _identity(root_pid)
+    if root_identity is None:
+        return None
+    frontier = [(root_pid, root_identity)]
+    seen = {root_pid}
+    descendants: list[ProcessDescendantIdentity] = []
+    index = 0
+    while index < len(frontier):
+        parent_pid, expected_parent = frontier[index]
+        index += 1
+        children = _direct_child_pids_for_identity_walk(parent_pid, proc_root)
+        if children is None:
+            return None
+        # The child list belongs to the expected parent only if that parent kept
+        # the same kernel identity across the enumeration.
+        if _identity(parent_pid) != expected_parent:
+            continue
+        for child_pid in children:
+            if child_pid in seen or child_pid <= 0:
+                continue
+            child_identity = _identity(child_pid)
+            if child_identity is None or child_identity.ppid != parent_pid:
+                continue
+            start_order = _browser_process_start_order(
+                child_identity.start_id,
+                expected_parent.start_id,
+            )
+            if start_order is _BrowserProcessStartOrder.INCONCLUSIVE:
+                return None
+            if start_order is _BrowserProcessStartOrder.EARLIER:
+                continue
+            seen.add(child_pid)
+            descendants.append(
+                ProcessDescendantIdentity(
+                    child_pid,
+                    child_identity.ppid,
+                    child_identity.start_id,
+                )
+            )
+            frontier.append((child_pid, child_identity))
+    return descendants
+
+
+def _posix_process_snapshot() -> dict[int, _PosixProcessSnapshotRow] | None:
+    """Parse one trusted ``ps`` snapshot without aborting on malformed rows."""
+    if IS_WINDOWS:
+        return None
     ps_bin = trusted_system_bin("ps")
     if ps_bin is None:
-        return {}
+        return None
     try:
-        out = subprocess.check_output(
-            [ps_bin, "-Ao", "pid=,ppid="], timeout=5, stderr=subprocess.DEVNULL
+        output = subprocess.check_output(
+            [ps_bin, "-Ao", "pid=,ppid=,lstart="],
+            timeout=5,
+            stderr=subprocess.DEVNULL,
         ).decode(errors="replace")
     except (OSError, subprocess.SubprocessError):
-        return {}
-    parent_map: dict[int, int] = {}
-    for line in out.splitlines():
-        parts = line.split()
+        return None
+    processes: dict[int, _PosixProcessSnapshotRow] = {}
+    for line in output.splitlines():
+        parts = line.split(maxsplit=2)
         if len(parts) < 2:
             continue
         try:
-            parent_map[int(parts[0])] = int(parts[1])
+            process_pid = int(parts[0])
+            parent_pid = int(parts[1])
         except ValueError:
             continue
-    return parent_map
+        if process_pid <= 0 or parent_pid < 0:
+            continue
+        start_time = parts[2].strip() if len(parts) == 3 else ""
+        processes[process_pid] = _PosixProcessSnapshotRow(
+            parent_pid,
+            start_time or None,
+        )
+    return processes
+
+
+def _posix_process_identity_map() -> dict[int, ProcessDescendantIdentity] | None:
+    """Keep only identities stable across two fallback ``ps`` snapshots."""
+    before = _posix_process_snapshot()
+    if before is None:
+        return None
+    after = _posix_process_snapshot()
+    if after is None:
+        return None
+    return {
+        process_pid: ProcessDescendantIdentity(
+            process_pid,
+            process.ppid,
+            process.start_time,
+        )
+        for process_pid, process in before.items()
+        if process.start_time is not None and after.get(process_pid) == process
+    }
+
+
+def _ordered_posix_descendant_identities(
+    root_pid: int,
+    identities: Mapping[int, ProcessDescendantIdentity],
+) -> list[ProcessDescendantIdentity] | None:
+    """Return ordered fallback descendants, preserving uncertain edges."""
+    parent_map = {process_pid: identity.ppid for process_pid, identity in identities.items()}
+    admitted = {root_pid}
+    descendants: list[ProcessDescendantIdentity] = []
+    for process_pid in _descendants_from_parent_map(root_pid, parent_map):
+        identity = identities[process_pid]
+        parent = identities.get(identity.ppid)
+        if identity.ppid not in admitted or parent is None:
+            continue
+        start_order = _browser_process_start_order(
+            identity.start_time,
+            parent.start_time,
+        )
+        if start_order is _BrowserProcessStartOrder.INCONCLUSIVE:
+            return None
+        if start_order is _BrowserProcessStartOrder.EARLIER:
+            continue
+        admitted.add(process_pid)
+        descendants.append(identity)
+    return descendants
+
+
+def _windows_chain_to_root(
+    candidate_pid: int,
+    root_pid: int,
+    parent_map: dict[int, int],
+) -> tuple[int, ...] | None:
+    """Return candidate-to-root PIDs, empty when foreign, or none on a cycle."""
+    chain: list[int] = []
+    seen: set[int] = set()
+    current = candidate_pid
+    while current != root_pid:
+        if current in seen:
+            return None
+        seen.add(current)
+        parent = parent_map.get(current)
+        if type(parent) is not int or parent <= 0:
+            return ()
+        chain.append(current)
+        current = parent
+    chain.append(root_pid)
+    return tuple(chain)
+
+
+def _windows_process_descendant_identities(
+    root_pid: int,
+    candidate_pids: set[int] | None = None,
+) -> list[ProcessDescendantIdentity] | None:
+    """Return creation-time-bound Windows descendants or listener candidates.
+
+    Toolhelp supplies PID-to-PPID edges but no process identity. Take the edge
+    snapshot twice and bracket it with the query-only creation-time primitive.
+    Each candidate must keep the same candidate-to-root chain, including every
+    edge and creation ID. A strictly earlier child is excluded; an equal or
+    unparseable order makes that candidate inconclusive. Unrelated helper
+    siblings may appear or disappear without invalidating a stable listener
+    owner's chain.
+    """
+    try:
+        first_map = _windows_process_parent_map()
+        if root_pid not in first_map:
+            return None
+        if candidate_pids is None:
+            candidates = _descendants_from_parent_map(root_pid, first_map)
+        else:
+            candidates = sorted(
+                process_pid
+                for process_pid in candidate_pids
+                if type(process_pid) is int and process_pid > 1 and process_pid != root_pid
+            )
+        first_chains = {
+            process_pid: _windows_chain_to_root(process_pid, root_pid, first_map)
+            for process_pid in candidates
+        }
+        tracked = {root_pid}
+        for chain in first_chains.values():
+            if chain:
+                tracked.update(chain)
+        first_ids = {process_pid: get_process_start_id(process_pid) for process_pid in tracked}
+
+        second_map = _windows_process_parent_map()
+        if root_pid not in second_map:
+            return None
+        second_chains = {
+            process_pid: _windows_chain_to_root(process_pid, root_pid, second_map)
+            for process_pid in candidates
+        }
+        second_ids = {process_pid: get_process_start_id(process_pid) for process_pid in tracked}
+    except Exception:
+        return None
+
+    first_root_id = first_ids.get(root_pid)
+    second_root_id = second_ids.get(root_pid)
+    if (
+        not isinstance(first_root_id, str)
+        or not first_root_id
+        or second_root_id != first_root_id
+        or first_map[root_pid] != second_map[root_pid]
+    ):
+        return None
+
+    identities: list[ProcessDescendantIdentity] = []
+    inconclusive = False
+    for candidate_pid in candidates:
+        first_chain = first_chains[candidate_pid]
+        second_chain = second_chains[candidate_pid]
+        if first_chain is None or second_chain is None:
+            inconclusive = True
+            continue
+        if first_chain != second_chain:
+            if first_chain or second_chain:
+                inconclusive = True
+            continue
+        if not first_chain:
+            continue
+        if any(
+            not isinstance(first_ids.get(process_pid), str)
+            or not first_ids[process_pid]
+            or second_ids.get(process_pid) != first_ids[process_pid]
+            for process_pid in first_chain
+        ):
+            inconclusive = True
+            continue
+        creation_order_valid = True
+        creation_order_inconclusive = False
+        for child_pid, parent_pid in zip(first_chain, first_chain[1:]):
+            child_start = first_ids.get(child_pid)
+            parent_start = first_ids.get(parent_pid)
+            if not isinstance(child_start, str) or not isinstance(parent_start, str):
+                creation_order_inconclusive = True
+                break
+            start_order = _browser_process_start_order(child_start, parent_start)
+            if start_order is _BrowserProcessStartOrder.INCONCLUSIVE:
+                creation_order_inconclusive = True
+                break
+            if start_order is _BrowserProcessStartOrder.EARLIER:
+                creation_order_valid = False
+                break
+        if creation_order_inconclusive:
+            inconclusive = True
+            continue
+        if not creation_order_valid:
+            continue
+        start_id = first_ids[candidate_pid]
+        if not isinstance(start_id, str):
+            inconclusive = True
+            continue
+        identities.append(
+            ProcessDescendantIdentity(
+                candidate_pid,
+                first_map[candidate_pid],
+                start_id,
+            )
+        )
+    if identities:
+        return identities
+    return None if inconclusive else []
+
+
+def process_descendant_identities(
+    pid: int,
+    *,
+    proc_root: Path | None = None,
+    candidate_pids: set[int] | None = None,
+) -> list[ProcessDescendantIdentity] | None:
+    """Return descendants with start identity bound atomically to parentage.
+
+    Linux and macOS walk only the root's current descendants. Each candidate
+    pid's start ID and PPID come from one ``/proc/<pid>/stat`` or
+    ``PROC_PIDTBSDINFO`` kernel record. A strictly later child is accepted, a
+    strictly earlier child is excluded, and equal or unparseable order is
+    inconclusive. Windows validates each requested listener candidate's complete
+    listener candidate's complete ancestry chain across two Toolhelp snapshots;
+    unrelated siblings do not invalidate that proof. With no candidates it
+    returns every independently stable descendant chain. If the native POSIX
+    path is unavailable, other POSIX hosts fall back to two whole-process ``ps``
+    snapshots and retain only rows whose parentage and one-second ``lstart``
+    identity are unchanged.
+    """
+    if type(pid) is not int or pid <= 1:
+        return []
+    if IS_WINDOWS:
+        return _windows_process_descendant_identities(pid, candidate_pids)
+    if IS_LINUX or sys.platform == "darwin":
+        descendants = _atomic_process_descendant_identities(pid, proc_root)
+        if descendants is not None:
+            return descendants
+    if not IS_POSIX:
+        return []
+    identities = _posix_process_identity_map()
+    if identities is None:
+        return None
+    if pid not in identities:
+        return []
+    return _ordered_posix_descendant_identities(pid, identities)
 
 
 def process_descendants(pid: int) -> list[int]:
@@ -3917,37 +4357,48 @@ def loopback_owner_pids(listeners: list[PortListener]) -> list[int]:
     return list(dict.fromkeys(e.pid for e in covering))
 
 
-def find_port_listeners(port: int) -> list[PortListener]:
-    """Return (pid, local address) for each LISTEN socket on TCP *port*.
+def probe_port_listeners(
+    port: int, *, process_pid: int | None = None
+) -> tuple[list[PortListener], bool]:
+    """Return LISTEN sockets on *port* and whether the lookup completed.
 
-    Best-effort, deduped on (pid, address, family), never raises. POSIX asks
-    ``lsof -nP -iTCP:<port> -sTCP:LISTEN -Fptn`` (field output per socket:
-    ``p<pid>``, ``t<IPv4|IPv6>``, ``n<addr>:<port>``); Windows parses
-    ``netstat -ano`` (no lsof; netstat ships in-box), matching rows whose
-    local address ends in ``:<port>`` and whose state is LISTENING. Returns
-    ``[]`` on any failure (callers treat "no listener found" as "nothing to
-    stop"; use listening_pid_tool_available() to tell a genuine empty result
-    apart from the tool being absent).
+    POSIX asks ``lsof -nP -iTCP:<port> -sTCP:LISTEN -Fptn``. When
+    *process_pid* is supplied it adds ``-a -p <pid>`` so lsof inspects only that
+    process. Exit 1 with no stdout or stderr is lsof's ordinary completed "no
+    matches" answer. A diagnostic, timeout, execution error, unavailable binary,
+    or any other nonzero exit is not a completed lookup. Windows parses
+    ``netstat -ano`` and requires a zero exit; it has no PID-scoped command mode.
+
+    The status bit is for security-sensitive callers that must distinguish a
+    completed empty answer from an operational failure. Ordinary callers should
+    use :func:`find_port_listeners`, which preserves the existing best-effort
+    ``[]``-on-any-failure contract.
     """
     if IS_POSIX:
         lsof_bin = trusted_system_bin("lsof")
         if lsof_bin is None:
-            return []
+            return [], False
         try:
+            argv = [lsof_bin, "-nP"]
+            if process_pid is not None:
+                argv.extend(["-a", "-p", str(process_pid)])
+            argv.extend([f"-iTCP:{port}", "-sTCP:LISTEN", "-Fptn"])
             out = subprocess.check_output(
                 # -n/-P keep addresses and ports numeric so the field parse
                 # below never sees a resolved host or service name; the t
                 # (type) field carries the family, without which the two
                 # wildcard binds are indistinguishable (both print ``*``).
-                [lsof_bin, "-nP", f"-iTCP:{port}", "-sTCP:LISTEN", "-Fptn"],
+                argv,
                 text=True,
-                stderr=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
                 timeout=_LSOF_TIMEOUT_SECS,
             )
+        except subprocess.CalledProcessError as exc:
+            if exc.returncode == 1 and not exc.output and not exc.stderr:
+                return [], True
+            return [], False
         except (FileNotFoundError, subprocess.SubprocessError, OSError):
-            # CalledProcessError included: lsof exits non-zero when nothing
-            # matches the filter, which is the ordinary "port is free" answer.
-            return []
+            return [], False
         suffix = f":{port}"
         listeners: list[PortListener] = []
         seen: set[PortListener] = set()
@@ -3969,7 +4420,7 @@ def find_port_listeners(port: int) -> list[PortListener]:
                 if entry not in seen:
                     seen.add(entry)
                     listeners.append(entry)
-        return listeners
+        return listeners, True
     # Windows: netstat -ano. Lines look like:
     #   TCP    127.0.0.1:7777         0.0.0.0:0    LISTENING    17152   (IPv4)
     #   TCP    [::1]:7777             [::]:0       LISTENING    17152   (IPv6)
@@ -3982,7 +4433,7 @@ def find_port_listeners(port: int) -> list[PortListener]:
     # port suffix match already handles both families uniformly.
     netstat_bin = trusted_system_bin("netstat")
     if netstat_bin is None:
-        return []
+        return [], False
     try:
         out = subprocess.check_output(
             [netstat_bin, "-ano"],
@@ -3999,7 +4450,7 @@ def find_port_listeners(port: int) -> list[PortListener]:
             creationflags=_SUBPROCESS_NO_WINDOW,
         )
     except (FileNotFoundError, subprocess.SubprocessError, OSError, ValueError):
-        return []
+        return [], False
     suffix = f":{port}"
     listeners = []
     seen = set()
@@ -4043,6 +4494,103 @@ def find_port_listeners(port: int) -> list[PortListener]:
             if entry not in seen:
                 seen.add(entry)
                 listeners.append(entry)
+    return listeners, True
+
+
+def _linux_loopback_listener_inodes(port: int, proc_root: Path) -> set[str] | None:
+    """LISTEN socket inodes on *port* that can answer IPv4 loopback.
+
+    ``/proc/net/tcp`` stores IPv4 addresses little-endian. ``tcp6`` stores each
+    32-bit word little-endian. The browser child is asked to bind 127.0.0.1, but
+    wildcard and IPv4-mapped wildcard-compatible rows are included because a
+    successful loopback health probe can reach them too.
+    """
+    v4_addresses = {"00000000", "0100007F"}
+    v6_addresses = {
+        "0" * 32,
+        "0000000000000000FFFF00000100007F",
+    }
+    inodes: set[str] = set()
+    completed = False
+    for name, accepted_addresses in (("tcp", v4_addresses), ("tcp6", v6_addresses)):
+        try:
+            rows = (proc_root / "net" / name).read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        completed = True
+        for row in rows.splitlines()[1:]:
+            fields = row.split()
+            if len(fields) <= 9 or fields[3].upper() != "0A":
+                continue
+            try:
+                address, port_hex = fields[1].rsplit(":", 1)
+                bound_port = int(port_hex, 16)
+            except (ValueError, IndexError):
+                continue
+            if bound_port == port and address.upper() in accepted_addresses:
+                inode = fields[9]
+                if inode.isdigit() and int(inode) > 0:
+                    inodes.add(inode)
+    return inodes if completed else None
+
+
+def process_owns_loopback_listener(
+    pid: int, port: int, *, proc_root: Path | None = None
+) -> bool | None:
+    """Whether *pid* owns a LISTEN socket that can answer 127.0.0.1:*port*.
+
+    ``True`` and ``False`` are completed per-process observations. ``None``
+    means this host cannot make the observation, so callers may use a separate
+    child-specific proof without mistaking probe failure for non-ownership.
+
+    Linux compares socket inodes from ``/proc/net/tcp{,6}`` with symlink targets
+    under ``/proc/<pid>/fd``. Other POSIX hosts run the existing listener parser
+    with lsof scoped by ``-a -p <pid>``. Windows returns ``None`` because netstat
+    cannot make a per-process query independent of the global lookup.
+    """
+    if type(pid) is not int or pid <= 0 or type(port) is not int or not 1 <= port <= 65535:
+        return None
+    if IS_LINUX:
+        root = proc_root if proc_root is not None else Path("/proc")
+        listener_inodes = _linux_loopback_listener_inodes(port, root)
+        if listener_inodes is None:
+            return None
+        if not listener_inodes:
+            return False
+        try:
+            descriptors = list((root / str(pid) / "fd").iterdir())
+        except OSError:
+            return None
+        readable = 0
+        for descriptor in descriptors:
+            try:
+                target = os.readlink(descriptor)
+            except OSError:
+                continue
+            readable += 1
+            if target.startswith("socket:[") and target.endswith("]"):
+                if target[8:-1] in listener_inodes:
+                    return True
+        if descriptors and readable == 0:
+            return None
+        return False
+
+    if not IS_POSIX:
+        return None
+    listeners, completed = probe_port_listeners(port, process_pid=pid)
+    if not completed:
+        return None
+    return pid in loopback_owner_pids(listeners)
+
+
+def find_port_listeners(port: int) -> list[PortListener]:
+    """Return LISTEN sockets on *port*, or ``[]`` on any lookup failure.
+
+    Best-effort, deduped on ``(pid, address, family)``, and never raises. Use
+    :func:`probe_port_listeners` when a caller must distinguish a completed
+    empty lookup from an operational failure.
+    """
+    listeners, _completed = probe_port_listeners(port)
     return listeners
 
 

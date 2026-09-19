@@ -1412,8 +1412,11 @@ BENIGN_SPAWNS: frozenset[str] = frozenset(
         # only caller-supplied element is the path being revealed — which is
         # passed as a later argv element, never as the command.
         "platform_compat.py::open_with_default_app",
-        "platform_compat.py::_posix_process_parent_map",
-        "platform_compat.py::find_port_listeners",
+        # Read-only process-table snapshot through the trusted absolute ``ps``
+        # binary. It uses fixed argv, no shell or cwd, and accepts no agent input.
+        # It cannot route through sandbox because sandbox imports this module.
+        "platform_compat.py::_posix_process_snapshot",
+        "platform_compat.py::probe_port_listeners",
         # Read-only kernel socket attribution: trusted absolute lsof binary,
         # fixed flags and a validated numeric port, no shell/user command.
         "platform_compat.py::_macos_tcp_peer_pid",
