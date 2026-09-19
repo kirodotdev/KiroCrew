@@ -5,6 +5,11 @@ const path = require("path");
 
 const { createTokenRetryHandler, dashboardRetryPath } = require("./token-retry");
 const { createRendererRecovery } = require("./renderer-recovery");
+const {
+  buildSandboxFailureDialog,
+  describeWindowsSandboxFailure,
+  SANDBOX_OFF_SWITCH,
+} = require("./windows-sandbox-advice");
 const { createHangRecovery } = require("./hang-recovery");
 const { armSplashHistoryClear, fileShellPageBasename } = require("./splash-history");
 const { hideToTray, cancelPendingTrayHide } = require("./hide-to-tray");
@@ -84,6 +89,11 @@ function createWindowLifecycle(options) {
     backendUrl,
     port,
     glog = () => {},
+    // Absolute path of the launcher log, named in the sandbox-failure dialog so
+    // the reader can quote it to whoever manages the device. Optional and
+    // defaulted: a caller that cannot resolve it gets a dialog without the
+    // pointer rather than no dialog.
+    logPath = () => "",
     readInternalSecret = () => "",
     fetchLocalToken,
     fetchRemoteToken,
@@ -894,6 +904,36 @@ function createWindowLifecycle(options) {
     if (state) store.set("windowState", state);
   }
 
+  // Whether a sandboxed renderer has ever hosted a finished document since this
+  // app started. A completed load proves a renderer process ran, which proves
+  // the sandbox admitted one — the one signal that separates a sandbox that
+  // cannot start a child from a renderer that ran and then aborted in V8, since
+  // those two share exit code 0x80000003 and can share a `crashed` reason.
+  //
+  // Every document counts, INCLUDING the boot splash the window loads before the
+  // dashboard (gateway-supervisor.js loads loading.html first) and including an
+  // HTTP error body. That is deliberate, not an oversight: the question is
+  // whether a renderer can start at all, and Electron sandboxes renderers by
+  // default, so a rendered splash answers it. Requiring a dashboard load instead
+  // would report an SPA-side V8 abort as a sandbox failure.
+  //
+  // Scoped to the LIFECYCLE, not to `createWindow`, and latched without ever
+  // being cleared. Both matter: what is being evidenced is a property of the
+  // HOST — can Chromium start a sandboxed child here — so a reload, or a window
+  // that is closed and recreated, must not make the app forget the answer it
+  // already has. A per-window flag would reset to false and then report "no
+  // document ever finished a load" on a second window's death, which would be
+  // false at app scope. See windows-sandbox-advice.js.
+  let sandboxedRendererRan = false;
+
+  // One sandbox-failure dialog per app run. Recovery can be exhausted again by a
+  // second window, and `showErrorBox` is modal and blocking, so an unlatched call
+  // would stack boxes the user has to dismiss one at a time in front of an app
+  // that is already not working. Same reasoning as the mic-permission latch
+  // below. App-scoped for the same reason as the flag above: the answer does not
+  // become new information because a different window asked.
+  let sandboxDialogShown = false;
+
   function createWindow() {
     const state = sanitizeWindowState(store.get("windowState"), {
       displays: screen.getAllDisplays().map((display) => ({
@@ -972,6 +1012,12 @@ function createWindowLifecycle(options) {
     // request either way. See pane-asset-journal.js.
     attachPaneAssetJournal(mainWindow.webContents.session, glog, backendUrl);
 
+    // Set the lifecycle-scoped latch declared above. Attached per window so a
+    // recreated window keeps feeding the same evidence, never resetting it.
+    mainWindow.webContents.on("did-finish-load", () => {
+      sandboxedRendererRan = true;
+    });
+
     const rendererRecovery = createRendererRecovery({
       isQuitting,
       log: glog,
@@ -1014,8 +1060,50 @@ function createWindowLifecycle(options) {
           glog(`renderer recovery reload failed: ${error && error.message}`);
         });
       },
-      onGiveUp: ({ reason }) => {
+      onGiveUp: ({ reason, exitCode, attempts }) => {
         glog(`renderer recovery exhausted (reason=${reason}); leaving the window as-is`);
+        // A blocked sandbox is the one exhaustion cause the reload could never
+        // have fixed, and the details to identify it are only in hand here.
+        // `hasSwitch` rather than a scan of process.argv: Chromium's own parser
+        // is what decided whether the sandbox is off, and it accepts forms a
+        // string comparison does not (`--no-sandbox=1`, `/no-sandbox`).
+        const advice = describeWindowsSandboxFailure({
+          platform: process.platform,
+          reason,
+          exitCode,
+          attempts,
+          execPath: process.execPath,
+          sandboxedRendererRan,
+          sandboxAlreadyOff: app.commandLine.hasSwitch(SANDBOX_OFF_SWITCH),
+        });
+        if (!advice) return;
+        glog(`renderer recovery: ${advice.cause}`);
+        for (const line of advice.remedy) glog(`renderer recovery: ${line}`);
+        // Then put it on screen. The log line above goes first deliberately: it
+        // is the channel that needs nothing from Chromium and nothing from the
+        // user, so it must be on disk before anything that can fail or block.
+        //
+        // This is the only surface left. No renderer can start, so there is no
+        // in-app UI to render the diagnosis into — without this the user watches
+        // a grey window disappear and the explanation exists only in a file they
+        // have no reason to know about. `showErrorBox` rather than
+        // `showMessageBox`: it needs no parent window (there is no usable one
+        // here) and is synchronous, matching early-boot-guard.js on the other
+        // no-window failure path.
+        //
+        // Suppressed while quitting: a modal box during shutdown blocks the quit
+        // the user just asked for, and a renderer dying as the app closes is
+        // expected rather than diagnostic.
+        if (sandboxDialogShown || isQuitting()) return;
+        sandboxDialogShown = true;
+        try {
+          const box = buildSandboxFailureDialog(advice, { logPath: logPath() });
+          dialog.showErrorBox(box.title, box.content);
+        } catch (error) {
+          // A dialog that cannot be shown must not break the give-up path; the
+          // log above already carries the whole diagnosis.
+          glog(`renderer recovery: sandbox advice dialog failed: ${error && error.message}`);
+        }
       },
     });
 

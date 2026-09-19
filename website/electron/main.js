@@ -371,6 +371,7 @@ windows = createWindowLifecycle({
   backendUrl: BACKEND_URL,
   port: PORT,
   glog,
+  logPath: gatewayLogPath,
   readInternalSecret,
   fetchLocalToken: (...args) => gateway.fetchLocalToken(...args),
   fetchRemoteToken: (...args) => gateway.fetchRemoteToken(...args),
