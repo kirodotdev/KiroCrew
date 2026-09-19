@@ -51,6 +51,7 @@ function telegramSpec(): BotChannelSpec {
   return {
     name: 'Telegram',
     queryKey: 'telegram-config',
+    namespace: 'telegram',
     logo: <TelegramLogo size={20} />,
     description: i18nT('pages.settings.telegramPanel.description'),
     host: 'api.telegram.org',

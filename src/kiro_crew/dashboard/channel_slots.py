@@ -60,7 +60,12 @@ import weakref
 from itertools import islice
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.dashboard.channel_folders import lookup_channel_folder
+from kiro_crew.dashboard.channel_folders import (
+    CHANNEL_CONFIG_SECTIONS,
+    configured_folder_name,
+    folder_id_for_name,
+    lookup_channel_folder,
+)
 from kiro_crew.dashboard.chat_title import _persist_title
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import _normalize_slot_key, durable_row_count, row_mid
@@ -102,6 +107,20 @@ _CHANNEL_LABELS: dict[str, str] = {
 #: Older lines stay on disk as the frozen prefix and are reachable through the
 #: slot-detail endpoint's pagination.
 _RESTORE_WINDOW = 500
+
+#: Most conversations one explicit backfill click files. THIS module owns the
+#: bound: the endpoint and the panel read it from here rather than restating a
+#: number of their own.
+#:
+#: A channel with years of history can hold thousands of sessions and each move
+#: takes that transcript's cross-process lock, so an unbounded pass would answer
+#: the click with a request that runs for minutes and may time out having done
+#: an unknown fraction of the work. Capping instead makes the partial state the
+#: normal state and reportable: the response says how many are left, the button
+#: stays available, and a second click continues. Filing is idempotent, so
+#: clicking again can only ever pick up conversations the previous click did not
+#: reach.
+BACKFILL_MOVE_LIMIT = 200
 
 
 def channel_label(session_key: str) -> str:
@@ -347,6 +366,40 @@ def needs_default_filing(meta: dict[str, Any]) -> bool:
     return not (
         meta.get("folder_id") or meta.get("channel_folder_filed") or meta.get("channel_origin")
     )
+
+
+def needs_backfill_filing(meta: dict[str, Any]) -> bool:
+    """True when an EXPLICIT backfill may file this conversation.
+
+    :func:`needs_default_filing` minus its ``channel_origin`` clause, and that
+    single difference IS the feature. Automatic first-surface filing has to
+    refuse a conversation the dashboard already saved, because from the record
+    alone it cannot tell "never filed" from "filed, and then moved to the top
+    level by the user" -- and the safe reading of an ambiguous record is to
+    leave the placement alone. That refusal is why switching the setting on does
+    nothing for conversations that already existed.
+
+    A user clicking a button that names the folder is not ambiguous, so this
+    guard keeps only the two records that actually mean "the user has placed
+    this", and drops the one that merely means "this conversation predates the
+    setting":
+
+    * ``folder_id`` -- it is in a folder right now. Filing it would move it OUT
+      of wherever the user put it, and this button offers to fill one folder,
+      not to rearrange the sidebar.
+    * ``channel_folder_filed`` -- filing already ran here. With no ``folder_id``
+      beside it that means exactly one thing: it was filed, and then deliberately
+      moved to the top level. Re-filing would undo that.
+
+    What is left eligible is precisely the population this addresses: surfaced
+    while filing was off, so it carries ``channel_origin`` and neither of the
+    other two.
+
+    Used as the ``update_metadata_if`` guard as well as the pre-scan filter, so
+    the decision is re-made against the locked on-disk record at the moment of
+    the write -- a placement made while the scan ran wins.
+    """
+    return not (meta.get("folder_id") or meta.get("channel_folder_filed"))
 
 
 def surface_channel_session(
@@ -1129,6 +1182,353 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             _sync_dashboard_slots(state)
         state.push_slots_update()
     return surfaced
+
+
+def _live_slot_placement(state: "DashboardState", key: str) -> tuple[Any, str]:
+    """Return the open tab for session *key* and the folder it currently shows.
+
+    The in-memory placement is consulted because it can be AHEAD of disk: a
+    folder the user just dragged the tab into is set on the slot immediately and
+    saved asynchronously, so between their drag and that save the record still
+    reads unfiled. Filing on the strength of the record alone would then move a
+    conversation the user placed one second earlier, and the guard on the write
+    cannot catch it -- the guard reads the same not-yet-updated record.
+    """
+    slot = state._slots.get(channel_slot_name(key))
+    if slot is None:
+        return None, ""
+    return slot, str(getattr(slot, "folder_id", "") or "")
+
+
+def _clean_title(raw: object) -> str:
+    """A conversation title safe to echo back into the dashboard.
+
+    Titles are generated from channel message content, so on this boundary they
+    are untrusted text exactly as transcript content is. Delegates to
+    :func:`_redact_assistant` rather than calling the two redactors here: they
+    are order-dependent (exfiltration URLs before credentials) and one
+    transcript must not have two redaction policies.
+    """
+    if not isinstance(raw, str) or not raw.strip():
+        return ""
+    return _redact_assistant(raw.strip())
+
+
+async def backfill_channel_folder(state: "DashboardState", namespace: str) -> dict[str, Any]:
+    """File *namespace*'s already-existing unfiled conversations into its folder.
+
+    The explicit counterpart to the automatic filing in
+    :func:`_reconcile_channel_slots_locked`: that one files conversations as they
+    are first surfaced, which leaves every conversation that existed BEFORE the
+    setting was switched on untouched, with no affordance anywhere to catch them
+    up. This is that affordance.
+
+    Reached only from a button the user clicks, never from a timer and never as a
+    side effect of saving settings, so nothing here moves a conversation without
+    an instruction that named the folder. Two independent reasons for that shape
+    rather than one: a settings save fires on every unrelated field too (a
+    token-only save would silently bulk-move conversations), and the moves are
+    not collectively undoable, so the user has to be the one asking.
+
+    Returns a report, not a count. Because there is no undo, the response names
+    every conversation it moved -- that list is what lets the user put one back
+    by hand, and it is the only record of what happened.
+
+    ``reason`` distinguishes the ways this can do nothing, which a count of zero
+    cannot: ``not_configured`` (the setting is off for this channel),
+    ``folder_missing`` (configured, but no folder answered to that name when the
+    pass started -- never created, or a hand-edited config), ``folder_gone`` (the
+    folder was there and was DELETED while the pass ran), ``unavailable`` (the
+    conversation store is absent or its listing raised, so nothing was even
+    attempted), ``all_failed`` (every attempted write failed), and ``""`` for a
+    pass that actually ran.
+
+    ``folder_missing`` and ``folder_gone`` are deliberately NOT one value, for the
+    same reason ``unavailable`` and ``all_failed`` are not: the remedies are
+    opposite. Saving the settings creates a folder that was never there, and does
+    nothing for conversations already stamped with the id of one that has been
+    deleted -- recreating mints a fresh id, so those are stranded and have to be
+    moved by hand. A single value made the panel infer which case it had from
+    ``failed``/``moved``, which is a claim about this function's control flow made
+    in the client.
+
+    ``unavailable`` and ``all_failed`` are deliberately NOT one value. They need
+    opposite sentences: one says a read failed, the other says the reads worked
+    and the writes did not, and only the second has a count worth reporting.
+    """
+    # Exactly the five things a caller reads. The report IS the response body
+    # (``web.json_response(report)``), so a key nothing renders is wire weight
+    # that still has to be kept true on every path through this function.
+    report: dict[str, Any] = {
+        "folder_name": "",
+        "moved": [],
+        "reason": "",
+        "remaining": 0,
+        "failed": 0,
+    }
+    if namespace not in CHANNEL_CONFIG_SECTIONS:
+        report["reason"] = "not_configured"
+        return report
+    log = state.conversation_log
+    if log is None:
+        report["reason"] = "unavailable"
+        return report
+
+    # Off-loop: a config read. Asked separately from ``lookup_channel_folder``
+    # (which also reads it) only because that function answers "" for BOTH a
+    # channel with the setting off and a configured folder that is absent, and
+    # the panel needs to say different things about those.
+    folder_name = await asyncio.to_thread(configured_folder_name, namespace)
+    if not folder_name:
+        report["reason"] = "not_configured"
+        return report
+    report["folder_name"] = folder_name
+    # Resolved from the name captured just above, NOT by calling
+    # ``lookup_channel_folder``, which would read config a second time. Two reads
+    # are two chances to observe different values: a settings save moving this
+    # channel from folder A to folder B between them yields A's name and B's id,
+    # and since the receipt reports the name while every write uses the id, the
+    # user would be told A while every session landed in B.
+    folder_id = await folder_id_for_name(state, namespace, folder_name)
+    if not folder_id:
+        report["reason"] = "folder_missing"
+        return report
+
+    loop = asyncio.get_running_loop()
+    try:
+        sessions = await loop.run_in_executor(None, log.list_sessions)
+    except Exception:
+        logger.warning("channel backfill: list_sessions failed for %s", namespace, exc_info=True)
+        report["reason"] = "unavailable"
+        return report
+
+    candidates = [s for s in sessions if channel_namespace_of(s.get("key", "")) == namespace]
+    if not candidates:
+        return report
+
+    def _load_meta() -> dict[str, dict[str, Any]]:
+        out: dict[str, dict[str, Any]] = {}
+        for s in candidates:
+            key = s.get("key", "")
+            if not key or key in out:
+                continue
+            try:
+                out[key] = log.get_metadata(key)
+            except Exception:
+                # An unreadable record is not evidence that filing is wanted.
+                # ``{}`` would pass the guard here and then fail it again under
+                # the lock, so the write is refused either way -- this only keeps
+                # the pre-scan count honest.
+                out[key] = {}
+        return out
+
+    metadata = await loop.run_in_executor(None, _load_meta)
+
+    eligible: list[dict[str, Any]] = []
+
+    for s in candidates:
+        key = s.get("key", "")
+        meta = metadata.get(key) or {}
+        # Ephemeral stays ephemeral: an incognito/temporary thread must not gain
+        # a durable placement, the same rule ``eligible_channel_sessions``
+        # applies when deciding what may become a tab at all.
+        if any(is_incognito_transcript(m) for m in (meta.get("memory_mode"), s.get("memory_mode"))):
+            continue
+        if not needs_backfill_filing(meta) or _live_slot_placement(state, key)[1]:
+            continue
+        eligible.append(s)
+
+    # Newest first, so a run that hits the cap files the conversations the user
+    # is most likely looking for rather than an arbitrary slice.
+    eligible.sort(key=lambda s: float(s.get("modified", 0) or 0), reverse=True)
+    if len(eligible) > BACKFILL_MOVE_LIMIT:
+        report["remaining"] = len(eligible) - BACKFILL_MOVE_LIMIT
+        eligible = eligible[:BACKFILL_MOVE_LIMIT]
+
+    # Drop every record this pass will not write. `metadata` is read again far
+    # below, for the receipt titles, so it outlives the scan -- and without this it
+    # outlives it holding the WHOLE namespace while the loop takes up to
+    # BACKFILL_MOVE_LIMIT locks and awaits that many writes. Bounding it here makes
+    # the long-lived set proportional to what the cap allows, not to the history.
+    #
+    # It does NOT bound the scan's own peak: counting `remaining` exactly means
+    # reading every candidate's metadata first, and that is the trade this keeps
+    # (an exact count over a lower peak) rather than hides.
+    keep = {s.get("key", "") for s in eligible}
+    metadata = {k: v for k, v in metadata.items() if k in keep}
+
+    # Imported locally to avoid the module cycle through chat_persistence
+    # (chat_tags -> chat_persistence -> this module), matching the reconcile and
+    # surface paths.
+    from kiro_crew.dashboard.chat_tags import tags_write_lock, validate_folder_tag_ids
+
+    def _read_folder_tags(folders: list[dict[str, Any]], fid: str = folder_id) -> list[str] | None:
+        """This folder's raw tag ids, or ``None`` when it is absent.
+
+        That distinction is load-bearing and ``[]`` cannot carry it: a folder
+        that exists carrying no tags and a folder that has been DELETED both have
+        no tags to read, and only one of them may be filed into. Stamping a dead
+        ``folder_id`` alongside the filing marker is the worst outcome this
+        function can cause -- the conversation ends up in no folder AND
+        permanently ineligible for a later backfill, because the marker is what
+        :func:`needs_backfill_filing` refuses on. There is no recovery path for
+        that, so the read has to be able to say "gone".
+        """
+        for f in folders:
+            if f.get("id") != fid:
+                continue
+            raw = f.get("tags")
+            return list(raw) if isinstance(raw, list) else []
+        return None
+
+    slots_touched = False
+    write_failures = 0
+    for s in eligible:
+        key = s.get("key", "")
+        # Re-read the folder inside the lock for EVERY write, which is the
+        # reconcile path's discipline rather than a cheaper read-once: a folder
+        # PATCH, a tag deletion, or the folder's own DELETION committing partway
+        # through this pass must be visible to the conversations filed after it,
+        # and one long hold across every write would block dashboard tag edits for
+        # the whole run.
+        try:
+            async with tags_write_lock(state):
+                raw_folder_tags = await state.read_folders(_read_folder_tags)
+                if raw_folder_tags is None:
+                    # The folder was deleted while this pass ran. Stop rather than
+                    # skip: every remaining conversation would hit the same
+                    # missing folder, and the whole point of stopping HERE is that
+                    # nothing gets stamped with a dead id.
+                    #
+                    # Its OWN reason, not the `folder_missing` the lookup above
+                    # reports. Those two need opposite sentences -- one folder was
+                    # never created and saving the settings creates it, the other
+                    # existed a moment ago and anything already filed into it is
+                    # now stranded -- and one value for both left the panel
+                    # inferring which it was from `failed > 0`, an inference about
+                    # this function's internals made a layer away.
+                    report["reason"] = "folder_gone"
+                    break
+                inherited = validate_folder_tag_ids(raw_folder_tags, state)
+                filing_meta: dict[str, Any] = {
+                    "folder_id": folder_id,
+                    "channel_folder_filed": True,
+                }
+                if inherited:
+                    # UNION, never replace. The store merges with
+                    # ``metadata.update(fields)``, so a bare list under ``tags``
+                    # overwrites the whole key -- and this path reaches records the
+                    # automatic one never does. A conversation surfaced while
+                    # filing was off, tagged by the user and never filed, with its
+                    # tab closed, passes this guard (which reads placement, not
+                    # tags) and has no live slot to union the tags back through;
+                    # replacing would destroy them with nothing recording what they
+                    # were.
+                    #
+                    # Read FRESH rather than from the pre-scan snapshot: the
+                    # snapshot predates this pass's awaits, so unioning it would
+                    # also resurrect a tag the user removed in between. A fresh
+                    # read honours both their additions and their removals, and
+                    # leaves only the lock-acquisition window.
+                    #
+                    # Fails CLOSED on an unreadable record -- no ``tags`` key at
+                    # all, so the write cannot touch them. Inheriting a folder's
+                    # tags is a convenience; losing the user's is not recoverable,
+                    # so the two are not weighed equally.
+                    try:
+                        current = await asyncio.to_thread(log.get_metadata, key)
+                        existing = [t for t in (current.get("tags") or []) if isinstance(t, str)]
+                        merged = list(dict.fromkeys([*existing, *inherited]))
+                        # Omitting an unchanged key keeps the write off ``tags``
+                        # entirely when the folder adds nothing new.
+                        if merged != existing:
+                            filing_meta["tags"] = merged
+                    except Exception:
+                        logger.warning(
+                            "channel backfill: could not read tags for %s; not inheriting",
+                            key,
+                            exc_info=True,
+                        )
+                # Re-check the open tab after the awaits above, not just in the
+                # pre-scan: the user can drag this conversation into a folder
+                # while the pass runs, and until their save lands the record the
+                # guard reads still says unfiled.
+                slot, placed = _live_slot_placement(state, key)
+                if placed:
+                    continue
+                filed = await asyncio.to_thread(
+                    log.update_metadata_if, key, filing_meta, needs_backfill_filing
+                )
+                # Mirror the persisted placement onto the open tab, INSIDE the
+                # lock and against a freshly read slot. Without this the tab keeps
+                # showing the conversation at the top level until a restart
+                # re-reads the record, so the button would look inert on the very
+                # conversations the user is watching.
+                #
+                # Re-read rather than reuse the `slot` above: the write is an
+                # await, and a drag landing during it sets the slot's folder in
+                # memory before its own save lands. Mirroring the value read
+                # BEFORE that await would revert the user's move, and the guard on
+                # the write cannot catch it because it reads the record their save
+                # has not reached yet.
+                if filed:
+                    slot, placed_now = _live_slot_placement(state, key)
+                    if slot is not None and not placed_now:
+                        slot.folder_id = folder_id
+                        slot._channel_folder_filed = True
+                        tags_changed = False
+                        for tid in inherited:
+                            if tid not in slot.tags:
+                                slot.tags.append(tid)
+                                tags_changed = True
+                        if tags_changed:
+                            bump_revision = getattr(slot, "bump_tags_revision", None)
+                            if callable(bump_revision):
+                                bump_revision()
+                        slots_touched = True
+        except Exception:
+            # One conversation failing is not a reason to abandon the rest, and
+            # nothing partial is left behind: the metadata write is atomic, so it
+            # either landed or it did not. Counted rather than only logged,
+            # because a swallowed failure with an empty `moved` list otherwise
+            # reports as "nothing needed moving" to a user whose conversations are
+            # all still unfiled.
+            logger.warning("channel backfill: could not file %s", key, exc_info=True)
+            write_failures += 1
+            continue
+        if not filed:
+            # The guard refused under the lock -- the record gained a placement
+            # or a filing marker while this pass ran. That is the user's own
+            # action, so it stands and this is not retried.
+            continue
+        report["moved"].append(
+            {
+                "key": key,
+                "title": _clean_title((metadata.get(key) or {}).get("title")),
+                "label": channel_label(key),
+            }
+        )
+
+    # A conversation whose write failed is still unfiled, so it belongs in the
+    # count that invites another click.
+    # Counted into ``remaining`` because the user's next click should retry them,
+    # and reported SEPARATELY because "still unfiled" reads as routine batching:
+    # without this, a run whose writes keep failing is indistinguishable from a
+    # capped run, and the user clicks again forever against the same error.
+    report["remaining"] += write_failures
+    report["failed"] = write_failures
+    if write_failures and not report["moved"] and not report["reason"]:
+        # Every attempt failed. Reporting an empty `moved` with no reason would
+        # render as "nothing to move", which is the opposite of what happened.
+        #
+        # Its OWN reason rather than `unavailable`: the store was read fine, so a
+        # message about failing to read the session history names the wrong cause,
+        # and this is the one refusal that has a count the user can act on.
+        report["reason"] = "all_failed"
+
+    if slots_touched:
+        state.push_slots_update()
+    return report
 
 
 async def surface_channel_state(state: object | None, dashboard_cfg: object) -> None:

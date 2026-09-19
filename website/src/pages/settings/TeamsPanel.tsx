@@ -11,6 +11,7 @@ import { TagListEditor } from './SlackPanel'
 import { api, type TeamsConfigData, type TeamsConfigSave } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Teams"
 const AZURE_BOT_URL = 'https://portal.azure.com/#create/Microsoft.AzureBot'
@@ -500,6 +501,14 @@ export function TeamsPanel() {
                   disabled={ro}
                 />
               </div>
+            )}
+            {!!data.session_folder && (
+              <ChannelFolderBackfill
+                namespace="teams"
+                folderName={data.session_folder}
+                disabled={ro}
+                testId="session-folder-backfill"
+              />
             )}
           </div>
         </SettingsCard>

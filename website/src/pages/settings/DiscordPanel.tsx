@@ -33,6 +33,7 @@ function discordSpec(): BotChannelSpec {
   return {
     name: 'Discord',
     queryKey: 'discord-config',
+    namespace: 'discord',
     logo: <DiscordIcon size={20} />,
     description: i18nT('pages.settings.discordPanel.description'),
     host: 'discord.com',

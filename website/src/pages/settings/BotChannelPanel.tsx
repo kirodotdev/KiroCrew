@@ -9,6 +9,7 @@ import ErrorNotice from '../../components/ErrorNotice'
 import { TagListEditor } from './SlackPanel'
 
 import { i18nT } from '../../i18n/t'
+import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 /** Config shape shared by every bot-token channel (Discord, Telegram, …). */
 export interface BotChannelConfigData {
   connected: boolean
@@ -97,6 +98,14 @@ export interface BotChannelSpec {
   name: string
   /** react-query cache key, e.g. "discord-config". */
   queryKey: string
+  /**
+   * Channel session-key namespace, e.g. ``discord``. Distinct from `queryKey`
+   * and from `name`: this is the identifier the BACKEND keys config sections and
+   * session keys on, and neither of the other two is safe to derive it from --
+   * `name` is display copy ("Microsoft Teams") and `queryKey` is a cache string
+   * whose shape the cache owns.
+   */
+  namespace: string
   /** Brand logo element for the header (20px) — a *Logo.tsx component. */
   logo: ReactNode
   /** One-line panel description under the title. */
@@ -902,6 +911,14 @@ export function BotChannelPanel({ spec }: { spec: BotChannelSpec }) {
                   disabled={ro}
                 />
               </div>
+            )}
+            {!!data.session_folder && (
+              <ChannelFolderBackfill
+                namespace={spec.namespace}
+                folderName={data.session_folder}
+                disabled={ro}
+                testId="session-folder-backfill"
+              />
             )}
           </div>
         </SettingsCard>

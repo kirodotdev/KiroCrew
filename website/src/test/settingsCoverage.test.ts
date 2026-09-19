@@ -61,6 +61,7 @@ function readPanel(file: string): string {
  */
 const UNMAPPED_PANELS: Record<string, string> = {
   'ChannelDisabledPanel.tsx': 'informational placeholder (locked/loading/error states), zero controls',
+  'ChannelFolderBackfill.tsx': 'one action button shared by the channel panels; files existing conversations into the folder the OWNING panel configures, and holds no setting of its own',
   'ChannelsPanel.tsx': 'list-detail shell routing to per-channel panels; carries no controls of its own',
   'DiscordPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=discord',
   'TelegramPanel.tsx': 'thin BotChannelSpec wrapper; BotChannelPanel fans its entries out to channel=telegram',

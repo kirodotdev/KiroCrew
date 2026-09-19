@@ -124,7 +124,22 @@ export const CHUNK_BUDGETS = {
   // was set at 3.7% over its own measurement, below the 5% convention, and
   // ordinary catalog growth since then used that margin up. Back to the 5%
   // convention over the measured size.
-  t: 861 * KB, // measured 820.3 KB on the capability-inheritance build rebased onto f382f0a70 (~5% headroom)
+  // Re-measured 2026-09-19 on this channel-folder backfill branch rebased onto
+  // main @ 1c7f963706: main's catalogs ALONE build the chunk at 881,305 B
+  // (860.6 KB) against the 861 KB ceiling -- 359 B left, or 0.04% headroom. With
+  // this feature's copy it builds at 882,910 B (862.2 KB), 1.2 KB over.
+  // Attribution is measured, not assumed: reverting ONLY the 14 files under
+  // `website/src/i18n/` to the base and rebuilding drops the chunk to the
+  // 881,305 B above, so the delta this branch owns is 1,605 B -- its 18 keys of
+  // product copy across 13 catalogs plus the generated `en-XA` pseudo-locale,
+  // which roughly doubles the byte cost of every string. The report still counts
+  // 12 modules and this branch adds no dependency, and no lazy `import()`
+  // boundary can move a catalog string out of this chunk (same as the `all`
+  // entry's note above). This is the documented drift for the fourth time: a
+  // ceiling left at 0.04% headroom fails on the next feature's ordinary strings
+  // rather than on the new library it exists to catch. Back to the 5% convention
+  // over the measured size.
+  t: 905 * KB, // measured 862.2 KB on this branch rebased onto 1c7f963706 (~5% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

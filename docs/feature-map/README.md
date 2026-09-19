@@ -271,6 +271,7 @@ is `/settings/<key>`. Panels live in `pages/settings/`.
 | `shortcuts` | Keyboard shortcut reference and overrides | `ShortcutsPanel.tsx` | `handlers/files.py` | `GET,PUT /api/dashboard/config` |
 | `skills` | Skill enablement and context budget | `SkillsPanel.tsx` | `handlers/prompts.py`, `handlers/skill_budget.py` | `GET /api/skills`, `GET /api/skills/-/budget` |
 | `channels` | Slack, Discord, Telegram, WhatsApp, Teams, and more | `ChannelsPanel.tsx` + one panel per provider | `handlers/messaging.py` | `GET,PUT /api/slack/config`, `GET,PUT /api/discord/config`, `GET /api/slack/manifest` |
+| `channels` -> file existing sessions | Move a channel's already-existing unfiled sessions into its configured session folder. Reached from Settings -> Channels -> a provider panel, via "File existing sessions", which appears once a folder is saved | `settings/ChannelFolderBackfill.tsx` (shared by every channel panel) | `handlers/messaging.py`, `channel_slots.py` | `POST /api/channel-folders/backfill` |
 | `browser` | Install playwright-cli, attach token, engine choice | `BrowserPanel.tsx` | `handlers/messaging.py` | `GET,POST /api/browser/install`, `PUT /api/browser/token`, `POST /api/browser/engine` |
 | `computer-use` | Enable and scope native desktop automation | `ComputerUsePanel.tsx` | `handlers/computer_use.py` | `GET,PUT /api/computer-use/config`, `POST /api/computer-use/invoke` |
 | `webhooks` | Inbound webhook tokens and contexts | `WebhooksPanel.tsx` | `handlers/hooks.py` | `GET /api/webhooks`, `POST /api/webhooks/tokens`, `POST /api/webhooks/test` |
