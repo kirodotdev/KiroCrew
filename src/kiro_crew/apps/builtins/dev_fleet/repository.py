@@ -287,24 +287,45 @@ def _default_main_repo_state() -> tuple[str, bool]:
 MAIN_REPO, MAIN_REPO_INFERRED = _default_main_repo_state()
 BASE_BRANCH = "main"
 
-# --- full discovery, once per process ---
+# --- full discovery: once per process, or once per attempt while unresolved ---
 _DISCOVERY_DONE = False
 _DISCOVERY_LOCK: asyncio.Lock | None = None
 
 
 async def ensure_main_repo_discovered() -> None:
-    """Run the complete main-checkout discovery chain exactly once in this process.
+    """Resolve the main checkout, and keep trying while there is none to find.
 
     The backend runs it from ``server.dev_fleet_startup``; the GATEWAY runs it lazily
     from its in-gateway cutover route (``gateway_routes._ensure_repo``), because
     ``_make_live`` validates its target against the discovered worktree set and the
-    gateway never ran the backend's startup hook. Idempotent and single-flight, so
-    two first requests do not race the globals below.
+    gateway never ran the backend's startup hook; and ``/api/fleet`` runs it per poll
+    while nothing is resolved, so a user who answers the setup card stops seeing that
+    card without restarting the gateway. Single-flight, so several concurrent first
+    requests run discovery once between them rather than racing the globals below.
 
-    Discovery runs on a local so the global is written exactly once — this keeps the
-    function out of the ``MAIN_REPO`` AST ratchet's allowlist: nothing here reads the
-    bare global, so a git call added to discovery (where it is most often still
-    unresolved) cannot consume it unnoticed.
+    Latched only once a checkout RESOLVED. An unresolved process has no answer worth
+    keeping — there is no fleet to serve, and the answer changes the moment the
+    operator writes ``dev_fleet.repo_path`` — so trying again is the point. Only that
+    half self-heals: ``_load_dev_fleet_cfg`` re-reads ``config.json`` on every call,
+    whereas ``KIROCREW_DEVFLEET_REPO`` is read off THIS process's environment, which
+    no outside shell can change, so setting the variable still requires a restart and
+    always will. A resolved path that FAILS the marker test latches like any other
+    resolution: tiers 1-2 are taken verbatim, so re-running returns the same path
+    every time, and that state renders its own banner naming the path and the remedy
+    rather than asking for a restart.
+
+    Every global written here is a function of THIS attempt alone, including
+    ``_REPO_INVALID_MSG``, which an unresolved attempt clears instead of inheriting.
+    That is what makes a second attempt safe to run at all: the shape to avoid is a
+    later attempt assigning ``MAIN_REPO`` while an earlier attempt's validation
+    verdict survives beside it, because then ``_repo()`` hands out a path whose
+    markers were never checked — and ``worktree remove``, ``update-ref -d``,
+    ``pull --ff-only`` and ``pip install -e`` run inside whatever that is.
+
+    Discovery runs on a local so the global is written exactly once per attempt —
+    this keeps the function out of the ``MAIN_REPO`` AST ratchet's allowlist: nothing
+    here reads the bare global, so a git call added to discovery (where it is most
+    often still unresolved) cannot consume it unnoticed.
     """
     global _DISCOVERY_DONE, _DISCOVERY_LOCK, MAIN_REPO, MAIN_REPO_INFERRED, _REPO_INVALID_MSG
     if _DISCOVERY_DONE:
@@ -317,6 +338,7 @@ async def ensure_main_repo_discovered() -> None:
         loop = asyncio.get_running_loop()
         configured = await loop.run_in_executor(subprocess_executor(), _configured_main_repo)
         discovered = await loop.run_in_executor(subprocess_executor(), _discover_main_repo)
+        invalid_msg: str | None = None
         if discovered:
             discovered = await loop.run_in_executor(
                 subprocess_executor(), _resolve_primary_checkout, discovered
@@ -334,7 +356,7 @@ async def ensure_main_repo_discovered() -> None:
                 subprocess_executor(),
                 lambda: (_is_kirocrew_checkout(discovered), _repo_source_hint()),
             )
-            _REPO_INVALID_MSG = (
+            invalid_msg = (
                 None
                 if valid
                 else (
@@ -344,10 +366,23 @@ async def ensure_main_repo_discovered() -> None:
             )
         MAIN_REPO = discovered
         MAIN_REPO_INFERRED = bool(discovered and not configured)
-        await _load_trusted_credential_helpers()
+        # Assigned on BOTH branches. An attempt that found nothing must not inherit
+        # an earlier attempt's invalid-path message, or `_repo()` would raise
+        # RepoUnreadable against a path this process does not hold.
+        _REPO_INVALID_MSG = invalid_msg
+        if runtime._GIT_TRUSTED_HELPERS is None:
+            # Two `git config` subprocesses, and repo-INDEPENDENT (--system and
+            # --global scope only, never repo-local), so this is a once-per-process
+            # warm rather than something a re-resolution attempt repeats. `None` is
+            # the not-yet-loaded sentinel; the loader always assigns a dict, so an
+            # operator with no helpers configured still latches at `{}`.
+            await _load_trusted_credential_helpers()
+        # Both decline to cache when `_repo()` raises and cost no subprocess in that
+        # case, so an unresolved attempt leaves them to the attempt that resolves.
         await _load_fallback_repos()
         await _upstream_remote()
-        _DISCOVERY_DONE = True
+        # The local, not the global: see the ratchet note in the docstring.
+        _DISCOVERY_DONE = bool(discovered)
 
 
 # --- upstream remote resolution (replaces hardcoded 'origin') ---

@@ -78,7 +78,7 @@ repository adopted as the main checkout would have its worktrees listed and Pull
 rebase and worktree-removal git commands run inside it. Tiers 1–2 skip the test *during
 discovery* because the user named that path — a typo must surface as an error against it
 rather than be silently replaced by a discovered checkout — but the path is still validated
-once at startup, and `_repo()` — the single accessor every git argv and path build goes
+once, on the attempt that resolves it, and `_repo()` — the single accessor every git argv and path build goes
 through — then raises `RepoUnreadable` naming it. The gate lives in the accessor rather than
 in worktree discovery because sync and the background refresher reach git without passing
 through discovery, and `pull --ff-only` plus `pip install -e` inside an unrelated repository
@@ -105,6 +105,31 @@ When no tier resolves, `MAIN_REPO` is `""` — never a synthesized path. Discove
 produces a red "Discovery Error" naming a directory the user never chose, which reads as a
 broken app rather than an unanswered question.
 
+That unresolved state is retried, not latched. `ensure_main_repo_discovered()` records
+"done" only once a checkout RESOLVED, and `/fleet` calls
+`worktree_ops._ensure_repo_resolved()` per poll, so an operator who writes
+`dev_fleet.repo_path` while the gateway is running gets a fleet on the next poll rather
+than after a restart. A resolved install returns at a truthiness guard before any await,
+so the retry costs nothing once there is a fleet to serve. An unresolved one re-runs tiers
+2 and 5 on the subprocess executor and spawns no subprocess, because `_load_fallback_repos`
+and `_upstream_remote` both decline before reaching git while `_repo()` raises; the
+credential-helper warm is guarded by its own `None` sentinel, so its two `git config` calls
+stay once-per-process.
+
+Only tier 2 self-heals. `_load_dev_fleet_cfg` re-reads `config.json` on every call, whereas
+tier 1 is read off this process's own environment, which no outside shell can change, so
+setting `KIROCREW_DEVFLEET_REPO` still requires a restart and the setup card names the two
+routes separately. A resolved path that FAILS the marker test latches like any other
+resolution: tiers 1–2 are taken verbatim, so re-running returns the same path every time,
+and that state renders the `RepoUnreadable` banner naming the path and the remedy. Every
+global the chain writes is a function of the current attempt alone, including the
+invalid-path message, which an attempt that finds nothing clears rather than inherits —
+`MAIN_REPO` from one attempt beside an earlier attempt's verdict would hand `_repo()` a path
+whose markers were never checked. A late resolution also restarts the background refresher,
+which returns rather than idles when nothing is resolved; leaving it stopped would serve a
+fleet whose rows never refresh again, so the setup card disappears and the page looks alive
+while nothing fetches (`test/test_dev_fleet_repo_reresolution.py`).
+
 Because `""` would make `git -C ""` operate on the backend's own working directory (and
 `Path("")` is `Path(".")`), no consumer reads the global directly: every site that runs git
 against the checkout or builds paths from it resolves it through the `_repo()` accessor,
@@ -112,7 +137,8 @@ which returns the path or raises `RepoNotConfigured`. Sites that deliberately de
 instead of failing catch it and say what the degraded answer is — upstream-remote
 resolution falls back to `origin`, build-pending detection reports nothing pending,
 fallback-remote loading leaves the list empty, sync refuses with its usual
-`{"ok": false}` shape, and the background refresher idles. Bare `MAIN_REPO` loads outside
+`{"ok": false}` shape, and the background refresher stops until a later resolution
+restarts it. Bare `MAIN_REPO` loads outside
 the accessor are limited to truthiness guards. An AST ratchet scans every Dev Fleet backend
 component (`test/test_dev_fleet_repo_accessor.py`) and permits the authoritative load only
 inside `repository._repo()`; helpers in every sibling module must route through that

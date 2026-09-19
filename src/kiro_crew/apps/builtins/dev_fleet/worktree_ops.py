@@ -2697,8 +2697,9 @@ async def _status_refresher() -> None:
     except repository.RepoUnavailable as exc:
         # No usable checkout to fetch or cache — nothing found, or the configured
         # path is not one. Returning ends the task instead of logging a traceback
-        # every cycle forever; the resolved value only changes on restart, so
-        # there is nothing to wait for.
+        # every cycle forever. A checkout found LATER restarts it from
+        # ``_ensure_repo_resolved``, which is the only thing that can change this
+        # answer inside one process.
         runtime.logger.info("dev-fleet: status refresher idle — %s", exc)
         return
     while True:
@@ -2712,6 +2713,35 @@ async def _status_refresher() -> None:
         except Exception:
             runtime.logger.exception("dev-fleet status refresher failed")
         await asyncio.sleep(_NET_REFRESH_S)
+
+
+async def _ensure_repo_resolved() -> None:
+    """Re-run main-checkout discovery while nothing is resolved, and start the
+    status refresher when an attempt resolves one.
+
+    ``/api/fleet`` calls this per poll. A resolved install returns at the first
+    guard before any await, so the cost is paid only in the state that by
+    definition has no fleet to poll — and the setup card the user is looking at
+    stops being a lie within one poll instead of at the next gateway restart.
+
+    The refresher start lives here rather than in ``repository`` because the loop
+    and its task handle are owned at this level and ``repository`` sits below it in
+    the component DAG. Starting it is not optional bookkeeping: ``_status_refresher``
+    RETURNS when nothing is resolved rather than idling, so a late resolution that
+    left it stopped would serve a fleet whose rows never refresh again — the setup
+    card disappears, the page looks alive, and nothing fetches. That is a worse
+    state than the honest "restart the gateway" this replaces.
+    """
+    global _refresher_task
+    if repository.MAIN_REPO:
+        return
+    await repository.ensure_main_repo_discovered()
+    if not repository.MAIN_REPO:
+        return
+    if _background_tasks_disabled():
+        return
+    if _refresher_task is None or _refresher_task.done():
+        _refresher_task = asyncio.create_task(_status_refresher())
 
 
 # --- auto-prune reaper (opt-in) ---------------------------------------------
@@ -2852,6 +2882,7 @@ __all__ = (
     "_auto_prune_once",
     "_auto_prune_reaper",
     "_background_tasks_disabled",
+    "_ensure_repo_resolved",
     "_pod_checkout_guard",
     "_pod_down",
     "_pod_env",
