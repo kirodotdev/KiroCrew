@@ -13019,6 +13019,16 @@
         "copy_failed_select_the_link_and_copy_it_manually": "কপি ব্যর্থ হয়েছে। লিংকটি নির্বাচন করে নিজে কপি করুন।"
       },
       "aboutPanel": {
+        "agent_request_body_latest": "একটি এজেন্ট ({{who}}) সর্বশেষ সংস্করণে আপডেট করতে বলেছে। ইনস্টল না করা পর্যন্ত কিছুই বদলাবে না।",
+        "agent_request_body_version": "একটি এজেন্ট ({{who}}) v{{version}}-এ আপডেট করতে বলেছে। ইনস্টল না করা পর্যন্ত কিছুই বদলাবে না।",
+        "agent_request_decline": "প্রত্যাখ্যান করো",
+        "agent_request_decline_failed": "অনুরোধ প্রত্যাখ্যান করা যায়নি",
+        "agent_request_expires": "{{when}} শেষ",
+        "agent_request_feed_differs": "v{{requested}} চাওয়া হয়েছিল, কিন্তু আপডেট ফিড v{{found}} দিচ্ছে। ইনস্টল করলে v{{found}} পাবে।",
+        "agent_request_heading": "একটি এজেন্ট আপডেটের অনুরোধ করেছে",
+        "agent_request_install": "ইনস্টল করে রিস্টার্ট করো",
+        "agent_request_install_version": "v{{version}} ইনস্টল করে রিস্টার্ট করো",
+        "agent_request_unknown_requester": "একটি এজেন্ট",
         "diverged": "আলাদা হয়ে গেছে",
         "checkout_diverged_from_upstream": "এই চেকআউটটি তার আপস্ট্রিম থেকে আলাদা হয়ে গেছে ({{distance}})। আপডেট করতে rebase বা merge করুন — কিছুই স্বয়ংক্রিয়ভাবে প্রয়োগ হয় না, তাই আপনার লোকাল কমিটগুলি নিরাপদ।",
         "commits_ahead_one": "{{count}}টি কমিট এগিয়ে",

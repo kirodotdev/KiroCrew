@@ -13381,6 +13381,16 @@
         "copy_failed_select_the_link_and_copy_it_manually": "Не удалось скопировать. Выдели ссылку и скопируй её вручную."
       },
       "aboutPanel": {
+        "agent_request_body_latest": "Агент ({{who}}) просит обновить до последней версии. Ничего не изменится, пока ты не установишь.",
+        "agent_request_body_version": "Агент ({{who}}) просит обновить до v{{version}}. Ничего не изменится, пока ты не установишь.",
+        "agent_request_decline": "Отклонить",
+        "agent_request_decline_failed": "Не удалось отклонить запрос",
+        "agent_request_expires": "Истекает {{when}}",
+        "agent_request_feed_differs": "Запрошена v{{requested}}, но канал предлагает v{{found}}. Установится v{{found}}.",
+        "agent_request_heading": "Агент запросил обновление",
+        "agent_request_install": "Установить и перезапустить",
+        "agent_request_install_version": "Установить v{{version}} и перезапустить",
+        "agent_request_unknown_requester": "Агент",
         "diverged": "Расхождение",
         "checkout_diverged_from_upstream": "Эта рабочая копия разошлась с upstream ({{distance}}). Выполните rebase или merge, чтобы обновиться — ничего не применяется автоматически, поэтому ваши локальные коммиты в безопасности.",
         "commits_ahead_one": "{{count}} коммит впереди",

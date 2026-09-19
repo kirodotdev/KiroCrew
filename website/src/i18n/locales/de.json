@@ -13018,6 +13018,16 @@
         "copy_failed_select_the_link_and_copy_it_manually": "Kopieren fehlgeschlagen. Wählen Sie den Link aus und kopieren Sie ihn manuell."
       },
       "aboutPanel": {
+        "agent_request_body_latest": "Ein Agent ({{who}}) möchte auf die neueste Version aktualisieren. Es ändert sich nichts, bis du installierst.",
+        "agent_request_body_version": "Ein Agent ({{who}}) möchte auf v{{version}} aktualisieren. Es ändert sich nichts, bis du installierst.",
+        "agent_request_decline": "Ablehnen",
+        "agent_request_decline_failed": "Anfrage konnte nicht abgelehnt werden",
+        "agent_request_expires": "Läuft {{when}} ab",
+        "agent_request_feed_differs": "Angefordert wurde v{{requested}}, der Update-Feed bietet aber v{{found}}. Installiert wird v{{found}}.",
+        "agent_request_heading": "Ein Agent hat ein Update angefordert",
+        "agent_request_install": "Installieren und neu starten",
+        "agent_request_install_version": "v{{version}} installieren und neu starten",
+        "agent_request_unknown_requester": "Ein Agent",
         "diverged": "Abgewichen",
         "checkout_diverged_from_upstream": "Dieser Checkout ist vom Upstream abgewichen ({{distance}}). Zum Aktualisieren Rebase oder Merge ausführen — nichts wird automatisch angewendet, die lokalen Commits bleiben also erhalten.",
         "commits_ahead_one": "{{count}} Commit voraus",
