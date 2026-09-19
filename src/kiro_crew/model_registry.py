@@ -807,6 +807,94 @@ def has_known_window(canonical_or_id: str) -> bool:
     )
 
 
+def catalog_namespaces() -> frozenset[str]:
+    """Every namespace that has a model catalog to answer questions about.
+
+    The union of the STATIC index (the ``providers`` keys in
+    ``model_registry.json``) and the RUNTIME advertised-model cache (one bucket
+    per namespace, filled by :func:`refresh_advertised_models`). Both halves are
+    needed: the static JSON carries only ``acp`` and ``claude_code``, so a
+    harness whose ids the file never lists — codex, opencode, goose, pi,
+    deepseek — is known ONLY through what it advertised on a past session.
+
+    A namespace absent from both has nothing to say about any id, which is a
+    different answer from "does not serve it" and callers must be able to tell
+    the two apart.
+    """
+    return frozenset(_CANONICAL_INDEX) | frozenset(_ADVERTISED_MODELS)
+
+
+def catalog_key(model_id: str) -> str:
+    """One comparison key for a model id, for matching two catalogs' spellings.
+
+    :func:`_normalize_advertised_key` already folds the inference-profile prefix
+    and the window marker; this adds the EFFORT suffix, because effort is a
+    per-request dial rather than part of the model's identity -- a catalog that
+    advertises ``openai.gpt-5.6-sol[low]`` is advertising the same model a pin
+    spells ``openai.gpt-5.6-sol[xhigh]``. Both sides of a comparison must be
+    folded with this same function or the two spellings never meet; a normalizer
+    applied to only one side is the shape of bug it exists to prevent.
+
+    ``""`` for an empty id and for the ``auto`` sentinel: neither names a model.
+    """
+    s = model_id.strip()
+    if not s or s == "auto":
+        return ""
+    base, _effort = split_effort_suffix(s)
+    return _normalize_advertised_key(base or s)
+
+
+def namespace_vocabulary(
+    model_id: str,
+    namespace: str,
+    advertised: "Sequence[str] | None" = None,
+) -> bool:
+    """Whether *model_id* is one of *namespace*'s OWN model ids.
+
+    A vocabulary answer is distinct from entitlement, and the distinction is
+    load-bearing. "Is this id in my vocabulary" decides whether a pin was chosen
+    for some OTHER harness. "Can this account run it" is entitlement, which
+    ``acp.client.model_is_unusable`` owns. An advertised list answers the second
+    directly and the first only positively: a list is what the account may run,
+    so an id missing from it may be unentitled rather than foreign.
+
+    So presence is taken from any source, while ABSENCE is never proof on its own:
+
+    * *advertised* -- the ids this session's harness listed, freshest of the three;
+    * the cross-session advertised cache for *namespace*;
+    * the static index, but ONLY where the id is a genuine id of this namespace.
+
+    The static clause round-trips through :func:`to_provider_id` on purpose. An
+    entry can be an ALIAS that folds onto a different model: ``claude-haiku-4.5``
+    resolves in the ``claude_code`` index, yet its provider id is Sonnet, because
+    that backend serves no Haiku and the alias exists for dropdown dedup. Reading
+    such an alias as vocabulary lets a pin survive into a silent substitution.
+    An id the index does not resolve at all is not vocabulary either, which is
+    what keeps one harness's ids out of another's answer.
+    """
+    wanted = catalog_key(model_id)
+    if not wanted or not namespace:
+        return False
+    if advertised and any(catalog_key(a) == wanted for a in advertised):
+        return True
+    cached = _ADVERTISED_MODELS.get(namespace)
+    if cached and any(catalog_key(a) == wanted for a in cached):
+        return True
+    stripped = model_id.strip()
+    key = _resolve_canonical(stripped, namespace)
+    # A canonical key belongs to its namespace. An alias resolves to a different
+    # key, so it continues to the round-trip and cannot pass as vocabulary.
+    if key == stripped:
+        return True
+    if key is None:
+        base, _effort = split_effort_suffix(stripped)
+        key = _resolve_canonical(base, namespace)
+    if key is None:
+        return False
+    provider_id = _REGISTRY[key].get("providers", {}).get(namespace, "")
+    return bool(provider_id) and catalog_key(provider_id) == wanted
+
+
 def get_entry(canonical_key: str) -> dict[str, Any] | None:
     """Return the registry entry for a canonical key, or None if unknown.
 

@@ -11,6 +11,7 @@ from contextlib import aclosing
 from pathlib import Path
 from typing import Any
 
+from kiro_crew import model_scope
 from kiro_crew.acp.client import (
     DEFAULT_MODEL,
     AcpAuthRequired,
@@ -52,6 +53,7 @@ from kiro_crew.acp.types import (
 from kiro_crew.acp_backends import POLICY_ID_BY_BACKEND
 from kiro_crew.agent_sdk import host_auth
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
+from kiro_crew.agent_sdk.backends import model_registry_namespace
 from kiro_crew.agent_sdk.capabilities import SessionCapabilities, capabilities_for
 from kiro_crew.agent_sdk.tool_search import (
     TOOL_SEARCH_DEFAULT_MIN_PCT,
@@ -1175,21 +1177,37 @@ class AcpProvider(LLMProvider):
                 # default, so the turn succeeds.
                 _advertised = advertised_model_ids(handle.available_models)
                 _send_model = configured_model
-                if model_is_unusable(configured_model, _advertised):
+                _namespace = model_registry_namespace(self._client.backend)
+                _foreign_scope = not model_scope.pin_applies(
+                    configured_model,
+                    _namespace,
+                    advertised=_advertised,
+                )
+                if _foreign_scope:
+                    # Harness ownership and account entitlement are separate
+                    # decisions. A foreign pin inherits this harness's default.
+                    _send_model = ""
+                    logger.info(
+                        "Configured model %s belongs to another harness, not %s; "
+                        "leaving the session on the backend default",
+                        configured_model,
+                        _namespace,
+                    )
+                elif model_is_unusable(configured_model, _advertised):
                     # A literal miss can be a stale `<namespace>::` qualifier on
                     # a model the backend fully serves: resolve to the
                     # advertised spelling and send THAT — same fold the display
                     # verdict uses, so chip and wire agree. A pin absent under
                     # either spelling still takes the withhold.
                     _send_model = resolve_pin_spelling(configured_model, _advertised)
-                if not _send_model:
+                if not _send_model and not _foreign_scope:
                     logger.warning(
                         "Configured model %s is not available to this account; "
                         "leaving the session on the backend default (advertised: %s)",
                         configured_model,
                         ", ".join(_advertised),
                     )
-                else:
+                elif _send_model:
                     _t_model = time.monotonic()
                     try:
                         await handle.set_model(_send_model)

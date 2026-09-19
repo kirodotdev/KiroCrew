@@ -46,7 +46,14 @@ from typing import (
     TypeVar,
 )
 
-from kiro_crew import acp_tool_gate, agent_scratch, agent_sdk, model_registry, platform_compat
+from kiro_crew import (
+    acp_tool_gate,
+    agent_scratch,
+    agent_sdk,
+    model_registry,
+    model_scope,
+    platform_compat,
+)
 from kiro_crew import sel as sel_module
 from kiro_crew.acp import seed_provenance
 from kiro_crew.acp._dispatch import (
@@ -6263,19 +6270,9 @@ class AcpClient:
         """Switch model on a running session (used by warm pool post-claim)."""
         if not self._session_id:
             raise AcpError("Cannot set model before session is initialized")
-        # Unlike the spawn path, this is an explicit request for THIS model, so
-        # a silent downgrade would report success while running something else.
-        # Refuse before the wire and name what the account can use.
-        # AcpModelUnavailable (not a bare AcpError) so callers can tell "invalid
-        # request" from "the call didn't land": the generic failure is recovered
-        # by resetting the session, which for THIS case would destroy a live
-        # conversation and then land on a different model anyway.
-        #
-        # Callers passing an INHERITED value (warm-pool post-claim re-apply of a
-        # persisted slot model) must pre-check with model_is_unusable and skip
-        # instead of calling into here — otherwise the same stale setting that is
-        # quietly withheld on a cold start would raise and kill a warm claim,
-        # making the outcome depend on whether a pooled process happened to exist.
+        # This path deliberately does not scope: an explicit pick must reach the
+        # adapter because its advertised list can omit an entitlement the adapter
+        # accepts, and inherited pins are already scoped by their callers.
         if self._is_kiro and self._model_is_unusable(model_id):
             _rejected_log, _ = redact_exfiltration_urls(str(model_id))
             _rejected_log, _ = redact_credentials(_rejected_log)
@@ -6603,6 +6600,16 @@ class AcpClient:
         slot value is untouched, so a picker reading it still shows the model
         that was withheld. Healing the stored value is a separate change.
 
+        One class of inherited pin is refused for EVERY backend rather than only
+        the entitlement-checked one: a pin that a different harness's model
+        catalog claims and this one does not (``model_scope``). That is a
+        statement about which harness the value was picked in, which every
+        backend can answer from its own namespace, unlike an entitlement question
+        that only kiro can answer for its own partition. It is the case that
+        motivated this withhold contract in the first place: a model chosen under
+        one backend and re-sent after a switch to another. Scoped out before the
+        wire, so the adapter never refuses the id and never warns about it.
+
         An EXPLICIT switch is handled the opposite way in :meth:`set_model`:
         there the user asked for that exact model, and quietly running another
         one would be a lie.
@@ -6614,16 +6621,39 @@ class AcpClient:
         the base window. Same call as :meth:`set_model` uses, so an explicit switch
         and a startup application agree on one exact spelling.
         """
-        if self._uses_advertised_model_selection:
-            self._model = model_registry.resolve_wire_model_id(
-                self._model, self._model_registry_namespace
-            )
         if not self._model or self._model == DEFAULT_MODEL:
             logger.info("ACP model: %s (from agent config)", self._model or "auto")
             # Inheriting is only safe when the inherited model is served; the
             # backend can default to one this partition does not carry.
             await self._ensure_served_default()
             return
+        advertised = self._advertised_model_ids()
+        # Factory resolution covers every surface from the shared cache; this
+        # wire site also carries the current session's fresh advertised list.
+        if not model_scope.pin_applies(
+            self._model,
+            self._model_registry_namespace,
+            advertised=advertised,
+        ):
+            # Another harness's model. Recorded as the default for the same
+            # reason the entitlement withhold below does: the "!= DEFAULT_MODEL"
+            # test above is what the warm-pool re-apply path reads, so leaving
+            # the foreign id here would re-offer it on every claim.
+            self._model = (
+                model_scope.scoped_pin(
+                    self._model,
+                    self._model_registry_namespace,
+                    advertised=advertised,
+                    source=f"{self.backend} startup",
+                )
+                or DEFAULT_MODEL
+            )
+            await self._ensure_served_default()
+            return
+        if self._uses_advertised_model_selection:
+            self._model = model_registry.resolve_wire_model_id(
+                self._model, self._model_registry_namespace
+            )
         if self._is_kiro and self._model_is_unusable(self._model):
             # A literal miss can be a stale ``<namespace>::`` qualifier on a
             # model the backend fully serves: resolve to the advertised

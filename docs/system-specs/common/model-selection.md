@@ -54,11 +54,137 @@ alone so the warm-pool re-apply and the slot backfill still read "inherit". The
 dashboard carries the corrected id as the slot's `served_model` so the composer
 chip names the model a turn will run on instead of `auto`.
 
+## A pin belongs to the harness it was chosen in
+
+A stored pin records WHAT was picked and never WHERE. Switching `agent.acp_backend`
+changes which adapter the next session starts, so an unscoped pin reaches a harness
+that never served it: the adapter refuses the id, the session lands on that
+harness's default, and the user reads a warning about a model they did not pick
+this turn.
+
+`model_scope.pin_applies(pin, namespace)` decides whether a pin may be applied,
+and `model_scope.scoped_pin(pin, namespace)` returns the pin or `""`. The namespace
+is the model-registry namespace of the backend that will run the session
+(`agent_sdk.backends.model_registry_namespace`), so two harnesses sharing one
+vocabulary — `kiro` and `kas`, both `acp` — share pins, and a harness added through
+the `ACP_BACKEND_*` seam is covered by having a namespace rather than by a branch.
+
+A pin is refused only when BOTH hold:
+
+- the session's own harness has advertised a list and the pin is not in it. An
+  absence from a warm advertised list is evidence. An absence from the STATIC
+  `model_registry.json` index is not: that file names `acp` and `claude_code` only,
+  so every other harness is missing from it by construction.
+- some OTHER namespace's catalog claims the pin, which is what makes it
+  attributable rather than merely unrecognized. An id no catalog claims — a
+  regional Bedrock profile, a model newer than every catalog — reaches the wire
+  unchanged.
+
+`model_registry.namespace_vocabulary(id, namespace, advertised)` answers the
+per-namespace half, and it answers a question distinct from entitlement. "Is this
+id in my vocabulary" decides whether a pin was chosen for another harness. "Can
+this account run it" belongs to `model_is_unusable`. Conflating them misnames the
+cause: a native pin the account is not entitled to would be reported as belonging
+elsewhere, and its entitlement warning suppressed.
+
+So PRESENCE is taken from any of three sources while ABSENCE is never proof on its
+own:
+
+- the `advertised` list this session's harness sent, which is the freshest and
+  sometimes the only source. `kiro` and `kas` are NOT members of
+  `ACP_BACKENDS_ADVERTISED_MODEL_SELECTION`, so nothing ever fills the `acp`
+  advertised cache; without a live list a kiro session could not tell a foreign
+  pin from a native one, and the wire sites pass theirs for exactly that reason.
+- the cross-session advertised cache for that namespace.
+- the static index, but ONLY where the id round-trips through `to_provider_id` to
+  itself. An entry can be an ALIAS folding onto a different model — kiro serves
+  `claude-haiku-4.5` while the `claude_code` index maps that spelling to Sonnet —
+  and reading such an alias as vocabulary lets a pin survive into a silent
+  substitution.
+
+A pin that IS one of a namespace's canonical registry keys is native by identity,
+checked before the round-trip. `catalog_key` folds a `[1m]` bracket but not a `-1m`
+suffix, so `opus-4.8-1m` does not match its own provider id
+`global.anthropic.claude-opus-4-8[1m]`; the identity check admits it without adding
+a spelling rule. An alias resolves to a DIFFERENT canonical key, so it still takes
+the round-trip and is still rejected.
+
+`model_scope.foreign_namespaces(id, namespace)` names the OTHER namespaces whose
+vocabulary holds the id, excluding the session's own. The exclusion is
+load-bearing: two namespaces list one model family, so without it a harness is
+reported as foreign to itself.
+
+### Scoping is a read, and every tier takes it
+
+Nothing on disk is rewritten. The stored pin stays as the user picked it and is
+simply not read by a harness that cannot claim it, so switching back restores it
+with no migration and no second field.
+
+Both resolvers scope EVERY tier and let an out-of-scope tier defer to the next, so
+an out-of-scope pin reads exactly like an unset one:
+
+- `KiroCrewConfig.acp_effective_model` — the provider factory's selection, which
+  every surface routes through. It takes the per-session `backend` because
+  `create_provider_factory` resolves that before the model; a member-DM thread
+  auto-routed to another harness is judged against the harness it runs.
+- `config.loader.resolve_effective_model` — the display resolver behind the model
+  chip. It scopes against the configured backend.
+
+The two MUST agree on whether a pin survives, or the chip names a model no turn
+runs. `test_model_scope_wire_paths.py` pins that agreement.
+
+The provider factory judges from the catalogs alone because it runs before any
+session exists. The three WIRE sites each hold this session's advertised list and
+pass it in, so they decide from fresher evidence than the factory can. That split
+is deliberate: the factory gives breadth across every surface, the wire sites add
+freshness.
+
+The split has a limit, and it is asymmetric by backend. For a backend in
+`ACP_BACKENDS_ADVERTISED_MODEL_SELECTION` the cache carries a warm list, so the
+factory and the chip reach the same verdict the wire does. For `kiro` and `kas`
+the `acp` cache stays cold, so the catalogs alone cannot call any pin foreign: the
+chip and the factory keep a pin from another harness, and only the wire — holding
+the live `session/new` list — withholds it. No turn runs the wrong model, because
+every send is a wire decision. The chip can still name one until the session
+starts. Closing that needs a warm `acp` list from kiro's own ground truth, the
+`chat --list-models` cache, rather than from a `session/new` payload the registry
+attributes to `claude-agent-acp`.
+
+Three more sites apply the same rule on the wire, and one on the picker:
+`AcpClient._apply_startup_model`, the shared-runtime cold start in
+`providers/acp.py`, the warm-pool post-claim switch in `session_allocation.py`
+(through the injected `model_pin_applies` dep), and `_scoped_default` behind
+`GET /api/models`. A harness-scope refusal logs at INFO on wire paths and at
+DEBUG on display paths, and MUST NOT take the entitlement warning path: harness
+ownership and account entitlement are separate
+questions, and reporting one as the other names the wrong cause.
+
+**Every site scopes the pin BEFORE translating it into a backend's namespace.** For
+an alias that translation is already a substitution — `to_provider_id`
+turns `claude-haiku-4.5` into Sonnet's id, because the claude backend serves no
+Haiku — so a site that scopes the translated value asks about the substitute and
+the pin passes. `test_model_scope_wire_paths.py::TestScopeSeesTheUntranslatedPin`
+parses `src/kiro_crew` and fails when any scope call receives a value assigned from
+`to_provider_id` / `to_acp_id` / `resolve_wire_model_id` in the same function. It
+asserts the property rather than freezing a list of sites, so a legitimate new site
+needs no edit.
+
+It tracks both flow shapes a translated value takes: a local name, and an attribute
+such as `self._model`. Covering only local names leaves the attribute form
+invisible, and the client handshake carries the pin in exactly that form.
+
+This check asserts a property rather than enumerating read sites. It fails when any
+scope call receives a translated value, whether that value reaches the call through a
+local name or through an attribute such as `self._model`. The property holds for a
+future site without registering its name, whereas an inventory only observes names that
+already exist.
+
 ## An explicit user pick is the opposite
 
-A model the user chose raises `AcpModelUnavailable` instead of resolving. Never
-silently swap a model a user picked: the substitution is invisible, and the user reads
-the cheaper model's output as the one they asked for.
+A model the user chose reaches the adapter, which raises `AcpModelUnavailable` when
+it refuses every accepted spelling. Never silently swap a model a user picked: the
+substitution is invisible, and the user reads the cheaper model's output as the one they
+asked for.
 
 ## Where each choice comes from
 

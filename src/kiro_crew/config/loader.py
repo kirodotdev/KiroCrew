@@ -35,7 +35,14 @@ from urllib.parse import urlsplit as _urlsplit  # noqa: F401 - compatibility fac
 # FROZEN pre-split alias snapshot (test_loader_reexports_historical_snapshot_by_identity),
 # so new resolution helpers are reached through the module, not re-exported.
 import kiro_crew.config.resolution as _resolution
-from kiro_crew import __version__, model_registry, pinned_fs, platform_compat, windows_acl
+from kiro_crew import (
+    __version__,
+    model_registry,
+    model_scope,
+    pinned_fs,
+    platform_compat,
+    windows_acl,
+)
 from kiro_crew.agent_sdk.capabilities import MODEL_NAMESPACE_ACP, capabilities_for
 from kiro_crew.agent_spec_format import iter_agent_spec_files, parse_agent_spec_text
 
@@ -5115,6 +5122,7 @@ class KiroCrewConfig:
         agent: str | None,
         model_override: str | None,
         global_model: str | None = None,
+        namespace: str | None = None,
     ) -> str:
         """The model id the ACP factory selects — what its effort gate keys on.
 
@@ -5160,18 +5168,44 @@ class KiroCrewConfig:
             global_model = self.agent.model
             if global_model == DEFAULT_MODEL:
                 global_model = self._resolve_agent_model()
+        # Kiro's namespace is ``acp``, so a supplied member route is unambiguous.
+        if namespace is None:
+            namespace = capabilities_for(self.agent.acp_backend).model_id_namespace
+        candidates: list[tuple[str, str]] = []
         if model_override:
-            m: str = model_override
-        elif not agent or agent == "kirocrew":
-            m = global_model
+            candidates.append((model_override, "model_override"))
+        if agent and agent != "kirocrew":
+            candidates.append((self._resolve_named_agent_model(agent), f"agent spec {agent}"))
+        candidates.append((global_model, "agent.model"))
+        # A pin says WHAT was picked, never for WHICH harness, so a backend switch
+        # hands the next session a model the new harness never served. Scope each
+        # precedence tier to the namespace that will run it and let an out-of-scope
+        # tier defer to the next candidate. The surviving pin is scoped BEFORE
+        # translation because translating a foreign id can make it look native.
+        for candidate, pin_source in candidates:
+            m = model_scope.scoped_pin(candidate, namespace, source=pin_source)
+            if m:
+                break
         else:
-            m = self._resolve_named_agent_model(agent) or global_model
-        if not m:
             return ""
-        namespace = capabilities_for(self.agent.acp_backend).model_id_namespace
-        if namespace != MODEL_NAMESPACE_ACP:
-            return model_registry.to_provider_id(m, namespace)
-        return model_registry.to_acp_id(m)
+        if m == DEFAULT_MODEL:
+            # The empty string is the nothing-pinned spelling every tier below reads.
+            return ""
+        # ``to_acp_id``, not ``to_provider_id``, is the kiro-family choice because
+        # kiro serves the registry aliases as distinct real models.
+        translated = (
+            model_registry.to_acp_id(m)
+            if namespace == MODEL_NAMESPACE_ACP
+            else model_registry.to_provider_id(m, namespace)
+        )
+        # Translation may RE-SPELL a pin, never RE-POINT it at another model. A
+        # different id from a namespace whose vocabulary does not claim this pin
+        # is an alias folding onto a substitute, and a pin the user picked
+        # outranks a substitution they cannot see. A namespace the registry does
+        # not model answers identically, so it re-points nothing.
+        if translated != m and not model_registry.namespace_vocabulary(m, namespace):
+            return m
+        return translated
 
     def crew_pinned_effort(self, agent: str | None, crew_agent: str | None = None) -> str:
         """The reasoning effort THIS CREW pins, or ``""`` when it pins none.
@@ -5449,7 +5483,36 @@ class KiroCrewConfig:
             # gate actually keys on. (Why the translation is keyed on the
             # backend, and why to_acp_id is the non-claude choice, is documented
             # on that method.)
-            m = self.acp_effective_model(agent, model_override, global_model=model)
+            # Per-session backend selection -- ONE call to the selection gate's
+            # per-session half (members.select_provider_backend: member-DM
+            # auto-route > configured default). The factory body carries no
+            # branching of its own, so the kiro construction path gains no
+            # second check (harness-parity H3/H13); resolve_selected_backend
+            # inside the helper applies the same governance/selectability gate
+            # as the persisted field, so a denied or unknown value degrades to
+            # kiro -- the member thread then runs as plain chat and the mount
+            # step logs why.
+            # circular import: members sits above config in the layering.
+            from kiro_crew.members import select_provider_backend
+
+            _backend = select_provider_backend(
+                session_key,
+                self.agent.member_acp_backend,
+                self.agent.acp_backend,
+            )
+            # Resolved BEFORE the model, and threaded into the resolution: the
+            # model's namespace translation and its pin-scope check both have to
+            # key on the backend this session actually gets, not on the
+            # configured default. A member-DM thread auto-routed to another
+            # harness runs a backend the config does not name, so keying either
+            # on the configured field judges the pin for a namespace that
+            # session never reaches.
+            m = self.acp_effective_model(
+                agent,
+                model_override,
+                global_model=model,
+                namespace=capabilities_for(_backend).model_id_namespace,
+            )
             # Thread the slot's effort into a per-model override so the kiro
             # cli.json overlay is written from it at spawn — without this, a
             # kiro cold start (or the handler's reset-then-respawn) would only
@@ -5496,23 +5559,6 @@ class KiroCrewConfig:
                         session_key or "?",
                         m or "auto",
                     )
-            # Per-session backend selection — ONE call to the selection gate's
-            # per-session half (members.select_provider_backend: member-DM
-            # auto-route > configured default). The factory body carries no
-            # branching of its own, so the kiro construction path gains no
-            # second check (harness-parity H3/H13); resolve_selected_backend
-            # inside the helper applies the same governance/selectability gate
-            # as the persisted field, so a denied or unknown value degrades to
-            # kiro — the member thread then runs as plain chat and the mount
-            # step logs why.
-            # circular import: members sits above config in the layering.
-            from kiro_crew.members import select_provider_backend
-
-            _backend = select_provider_backend(
-                session_key,
-                self.agent.member_acp_backend,
-                self.agent.acp_backend,
-            )
             return AcpProvider(
                 work_dir=wdir,
                 model=m,
@@ -6415,23 +6461,38 @@ def resolve_effective_model(
     A per-session pick outranks all of these and is NOT considered here — the
     caller holds it. Returns ``""`` when every tier defers, meaning the backend
     picks (kiro-cli's own ``chat.defaultModel``).
+
+    Every tier is scoped to the namespace of the backend that would run the
+    session, the same gate ``create_provider_factory`` applies to the value it
+    sends. Without that the chip and the wire disagree in the one case the scope
+    exists for: after a backend switch the chip kept naming the previous
+    harness's pin while every turn ran on the new harness's default. A tier whose
+    pin the active harness cannot claim is skipped, so the next tier down answers
+    -- exactly as if that tier were unset.
     """
+    namespace = capabilities_for(config.agent.acp_backend).model_id_namespace
+
+    def _in_scope(pin: str) -> str:
+        return model_scope.scoped_pin(
+            pin, namespace, source="resolve_effective_model", log_level=logging.DEBUG
+        )
+
     _, kiro_agent, model_pin = resolve_agent_identity(
         config, agent_name, selection_kind=selection_kind
     )
-    if model_pin:
+    if _in_scope(model_pin):
         return model_pin
     if kiro_agent and kiro_agent != "kirocrew":
         pinned = normalize_agent_model(config._resolve_named_agent_model(kiro_agent))
-        if pinned:
+        if _in_scope(pinned):
             return pinned
 
     configured = normalize_agent_model(config.agent.model)
-    if configured:
+    if _in_scope(configured):
         return configured
     # agent.model is "auto"/unset: fall through to the installed agent file the
     # factory would read, so the chip shows what will actually be used.
-    return normalize_agent_model(config._resolve_agent_model())
+    return _in_scope(normalize_agent_model(config._resolve_agent_model()))
 
 
 def validate_kiro_agent_references(

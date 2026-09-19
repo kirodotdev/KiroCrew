@@ -13,7 +13,7 @@ import asyncio
 import logging
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import Executor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -102,6 +102,14 @@ class AllocationDeps:
     load_watchdog_settings: Callable[[str], object]
     advertised_model_ids: Callable[[Any], list[str]]
     model_is_unusable: Callable[[str, list[str]], bool]
+    #: Whether a stored pin belongs to the harness a provider runs on
+    #: (``model_scope.pin_applies``), and that harness's model-id namespace.
+    #: Injected rather than imported for the same reason every other model
+    #: helper here is: this module is constructed with its whole world so a test
+    #: can substitute one, and reaching for ``kiro_crew.model_scope`` directly
+    #: would make the pool's scope rule the only one a test cannot swap.
+    model_pin_applies: Callable[[str, str, Sequence[str] | None], bool]
+    provider_model_namespace: Callable[[LLMProvider], str]
     resolve_pin_spelling: Callable[[str, list[str]], str]
     to_provider_id: Callable[[str, str], str]
     to_acp_id: Callable[[str], str]
@@ -1540,6 +1548,19 @@ class SessionAllocationService:
                             if owner._pool_agent
                             else None
                         )
+                        if pool_model:
+                            try:
+                                advertised = self._deps.advertised_model_ids(
+                                    provider.available_models()
+                                )
+                            except Exception:  # pragma: no cover - defensive
+                                advertised = []
+                            _namespace = self._deps.provider_model_namespace(provider)
+                            _foreign_scope = not self._deps.model_pin_applies(
+                                model,
+                                _namespace,
+                                advertised,
+                            )
                         if self._deps.is_claude_backend(provider):
                             switch_model = self._deps.to_provider_id(model, "claude_code")
                             comparable_pool = (
@@ -1552,13 +1573,18 @@ class SessionAllocationService:
                             comparable_pool = (
                                 self._deps.to_acp_id(pool_model) if pool_model else pool_model
                             )
-                        if pool_model and switch_model != comparable_pool:
-                            try:
-                                advertised = self._deps.advertised_model_ids(
-                                    provider.available_models()
-                                )
-                            except Exception:  # pragma: no cover - defensive
-                                advertised = []
+                        if pool_model and _foreign_scope:
+                            # Harness ownership and account entitlement are
+                            # separate decisions. A foreign pin inherits this
+                            # harness's current pooled model.
+                            self._deps.logger.info(
+                                "Pool post-claim: model %s belongs to another harness, "
+                                "not %s; leaving the claimed process on %s",
+                                model,
+                                _namespace,
+                                pool_model,
+                            )
+                        elif pool_model and switch_model != comparable_pool:
                             _send_model = switch_model
                             if advertised and self._deps.model_is_unusable(
                                 switch_model, advertised

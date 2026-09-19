@@ -20,7 +20,7 @@ from typing import Any
 
 from aiohttp import BodyPartReader, web
 
-from kiro_crew import agent_state, model_registry
+from kiro_crew import agent_state, model_registry, model_scope
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp_backends import (
     ACP_BACKEND_CLAUDE,
@@ -50,7 +50,7 @@ from kiro_crew.agent_discovery import (
     spec_model,
     spec_str,
 )
-from kiro_crew.agent_sdk.capabilities import capabilities_of
+from kiro_crew.agent_sdk.capabilities import capabilities_for, capabilities_of
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.agent_sdk.provider_identity import is_claude_code
 from kiro_crew.agent_spec_format import (
@@ -2185,6 +2185,27 @@ def _wrap_list_models_argv(argv: list[str]) -> tuple[list[str], str | None]:
     return wrap_argv(argv, mode=configured_sandbox_mode(), is_kiro_cli=True)
 
 
+def _scoped_default(cfg: Any, backend: str) -> str:
+    """The stored pin, but only when *backend*'s own harness can claim it.
+
+    A pin chosen in another harness is not a default here: marking it as one puts
+    an id the returned list does not even contain into the picker's selected slot,
+    while every turn runs the harness default. Same rule the provider factory
+    sends by, so the marker and the wire agree.
+
+    Called from the two branches that read the pin rather than once above them:
+    the kiro branch does not consult ``agent.model`` at all, and pulling the read
+    up would make it pay for a value it never uses (harness-parity H13 -- the
+    test is whether the kiro path changed, not whether it still works).
+    """
+    return model_scope.scoped_pin(
+        getattr(cfg.agent, "model", "") or "",
+        capabilities_for(backend).model_id_namespace,
+        source="api_models",
+        log_level=logging.DEBUG,
+    )
+
+
 async def api_models(request: web.Request) -> web.Response:
     """GET /api/models — the model list for the configured backend.
 
@@ -2195,9 +2216,13 @@ async def api_models(request: web.Request) -> web.Response:
     cfg = await asyncio.to_thread(KiroCrewConfig.load)
     backend = getattr(cfg.agent, "acp_backend", "")
     if backend == ACP_BACKEND_CLAUDE:
-        return web.json_response(_cc_models(request, configured_default=cfg.agent.model))
+        return web.json_response(
+            _cc_models(request, configured_default=_scoped_default(cfg, backend))
+        )
     if backend == ACP_BACKEND_CODEX:
-        return web.json_response(_codex_models(request, configured_default=cfg.agent.model))
+        return web.json_response(
+            _codex_models(request, configured_default=_scoped_default(cfg, backend))
+        )
     # Signed-out gateways must never reach the spawn below. kiro-cli auto-opens
     # an interactive browser login for ANY subcommand run unauthenticated
     # (--no-interactive does not suppress it, and there is no opt-out env var),

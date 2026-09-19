@@ -100,7 +100,7 @@ if TYPE_CHECKING:
     from kiro_crew.acp.runtime import AcpRuntime, AcpSessionHandle
     from kiro_crew.session_capabilities import LoadedCapabilities
 
-from kiro_crew import model_registry, platform_compat, shutdown_event
+from kiro_crew import model_registry, model_scope, platform_compat, shutdown_event
 from kiro_crew.acp.client import advertised_model_ids, model_is_unusable
 from kiro_crew.acp.types import (
     ACP_BACKEND_KIRO,
@@ -113,6 +113,7 @@ from kiro_crew.acp_backends import selectable_backends
 from kiro_crew.agent import kiro_agents_dir_path
 from kiro_crew.agent_discovery import _read_agent_spec, spec_model
 from kiro_crew.agent_sdk.backend_identity import is_claude_backend_name
+from kiro_crew.agent_sdk.backends import model_registry_namespace
 from kiro_crew.agent_sdk.drivers.acp import resolve_pin_spelling
 from kiro_crew.agent_spec_format import iter_agent_spec_files
 from kiro_crew.config import KiroCrewConfig, live
@@ -1101,6 +1102,14 @@ class SessionManager:
             load_watchdog_settings=lambda crew: _load_allocation_watchdog_settings(crew),
             advertised_model_ids=lambda models: advertised_model_ids(models),
             model_is_unusable=lambda model, advertised: model_is_unusable(model, advertised),
+            model_pin_applies=lambda model, namespace, advertised: model_scope.pin_applies(
+                model,
+                namespace,
+                advertised=advertised,
+            ),
+            provider_model_namespace=lambda provider: model_registry_namespace(
+                getattr(getattr(provider, "client", provider), "backend", "") or ""
+            ),
             resolve_pin_spelling=lambda model, advertised: resolve_pin_spelling(model, advertised),
             to_provider_id=lambda model, provider: model_registry.to_provider_id(model, provider),
             to_acp_id=lambda model: model_registry.to_acp_id(model),
