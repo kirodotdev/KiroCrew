@@ -10066,6 +10066,13 @@ class AcpClient:
                     # tool that streams progress then silently stalls is still
                     # caught.)
                     self._tool_dispatched = False
+                    # Same seam as the shared handle, with the same test: only a
+                    # TERMINAL result hands the turn back to the model. A streamed
+                    # in-progress update yields a result event too, and arming the
+                    # model-wait clock on it would expose a still-writing tool to a
+                    # probe that ends the turn.
+                    if tool_result_event.tool_status in TERMINAL_TOOL_STATUSES:
+                        self._stale_eligible = True
                     # Fire the PostToolUse HOOK ENGINE now that the tool RESULT
                     # (and its output) exists — the Pre-vs-Post split is required
                     # because fire_tool_hooks above is PreToolUse-only. No-op

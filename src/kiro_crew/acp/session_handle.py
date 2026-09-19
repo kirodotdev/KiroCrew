@@ -93,6 +93,7 @@ from kiro_crew.acp.liveness import (
 from kiro_crew.acp.mcp_session_report import KasMcpReadiness, McpSessionReport
 from kiro_crew.acp.prompt_blocks import build_prompt_blocks, summarize_prompt_structure
 from kiro_crew.acp.types import (
+    TERMINAL_TOOL_STATUSES,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
     ACP_BACKENDS_ADVERTISED_MODEL_SELECTION,
@@ -4914,6 +4915,23 @@ class AcpSessionHandle:
                     # later non-interactive retry of it is not a safe replay.
                     self._tool_output_seen.add(ev.tool_call_id)
                 self._tool_dispatched = False
+                # The tool clock covers a call that is still in flight; this is
+                # the other half. Once a TERMINAL result lands, the turn is
+                # waiting on the MODEL again, so the stale clock has to cover
+                # that wait. Arming only on a text chunk left the gap after the
+                # last result unwatched: a turn whose model never sends the
+                # follow-up sat outside every watchdog -- rows complete, no
+                # terminal event -- and parked the slot with no probe and no log
+                # line to explain it.
+                #
+                # Terminal, not `tool_final`: a streamed in-progress update
+                # yields an EVENT_TOOL_RESULT too, and arming the model-wait
+                # clock on one would put a tool that is still writing under a
+                # watchdog whose probe ends the turn. `tool_final` is true only
+                # for "completed", while a failed, cancelled or refused tool is
+                # equally finished and equally leaves the turn waiting.
+                if ev.tool_status in TERMINAL_TOOL_STATUSES:
+                    self._stale_eligible = True
                 self._inflight_tool = None
                 self._inflight_interactive = None
                 self._inflight_tool_call_id = ""
