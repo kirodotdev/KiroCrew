@@ -12,6 +12,12 @@ from .types import DeferPoint, FairnessSettings, tombstone_terminal_state
 
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
+# How many times a single row's state is re-read before the answer is given up on, and the
+# pause between tries. Same shape and reasoning as the durable sweep's own bound: an error
+# reading one row is normally writer-thread contention, not an outage.
+_STATE_READ_ATTEMPTS = 3
+_STATE_READ_BACKOFF_SECS = 0.2
+
 #: What a store-only queued count answers while the store cannot be read: SOME
 #: waiting work, never none. Every consumer of that count is a fail-closed
 #: predicate -- the attached-children guard before a session teardown
@@ -1290,8 +1296,90 @@ class _TaskqBridgeMixin(ManagerComponent):
             return True
         return waiting_outside == 0
 
-    def taskq_cancel_queued(self, agent_id: str) -> dict[str, Any] | None:
+    async def taskq_cancel_queued_async(
+        self, agent_id: str, *, allow_admitted: bool = True
+    ) -> dict[str, Any] | None:
+        """:meth:`taskq_cancel_queued` run whole on the writer thread.
+
+        The sync twin is reached from ``_unqueue`` on paths already off the loop. A
+        parent-end teardown is not one of them: it runs as a coroutine inside the
+        session lifecycle, so ``store.get``/``store.cancel`` there stall the gateway
+        loop for as long as the task store is contended — the
+        ``no-sync-store-call-from-a-coroutine`` rule.
+
+        DELEGATION, not a second copy. ``store.run`` takes any callable and runs it on
+        the writer thread, so the twin's own body runs there unchanged: one hop instead
+        of two, and the race-safety argument in its docstring — the state test and the
+        cancel sharing one ``only_from`` under the generation the read returned — is the
+        same code rather than the same intent restated. Restating it is what would let
+        the two drift, and a drift here reads as "cancelled row with a running spawn
+        under it" on exactly one of the two paths.
+        """
+        store = self.taskq_store()
+        if store is None:
+            return None
+        return await store.run(self.taskq_cancel_queued, agent_id, allow_admitted=allow_admitted)
+
+    async def taskq_row_is_claimed_unstarted_async(self, agent_id: str) -> bool:
+        """True only when *agent_id*'s row is CLAIMED and not started (``admitted``).
+
+        This is the one state a parent-end teardown must not reap through the live path:
+        the row's claimer sits between its claim and its registration, so stopping it here
+        is the act the store's own state gate just refused, reached through another door.
+        Every other answer -- started, missing, unreadable -- takes the reap.
+
+        A row that cannot be read answers ``False`` for "claimed", because an unknown is
+        not a claim. Folding the two together spared a LIVE run whenever the store was
+        briefly unreadable, leaving it working against a conversation that has ended --
+        the failure this path exists to prevent. The narrow exemption needs positive
+        evidence, so only the state that names it earns it.
+
+        The read is retried on the same bound the durable sweep uses: an error here is
+        normally writer-thread contention rather than a real outage.
+        """
+        # The same deferred import the other 28 store calls in this module use, rather than
+        # a module-scope one: this file is reached from the gateway boot path, and the
+        # convention there is that a flag-gated subsystem's IMPORT is deferred too. Spelled
+        # as the package alias so this line has the shape its siblings do.
+        from kiro_crew import taskq as _taskq_model
+
+        store = self.taskq_store()
+        if store is None:
+            return False
+        for attempt in range(_STATE_READ_ATTEMPTS):
+            try:
+                rec = await store.run(store.get, agent_id)
+            except Exception:
+                if attempt + 1 < _STATE_READ_ATTEMPTS:
+                    await _asyncio.sleep(_STATE_READ_BACKOFF_SECS)
+                    continue
+                _glue_logger.warning(
+                    "taskq: could not read the state of %s in %d attempts; treating it as "
+                    "not claimed so a live run is not spared by a store outage",
+                    agent_id,
+                    _STATE_READ_ATTEMPTS,
+                    exc_info=True,
+                )
+                return False
+            return rec is not None and rec.state == _taskq_model.ADMITTED
+        return False
+
+    def taskq_cancel_queued(
+        self, agent_id: str, *, allow_admitted: bool = True
+    ) -> dict[str, Any] | None:
         """Cancel a persisted row that has not started; returns its params for the report.
+
+        ``allow_admitted=False`` refuses a row that has been CLAIMED but not started.
+        Stop-all leaves it True: the user pressed Stop, and a claimed-not-started row is
+        work they asked to end. A parent-end teardown passes False, for two reasons that
+        arrive at the same place. An ``admitted`` row has a claimer between its claim and
+        its registration, so cancelling it there leaves that claimer to register and run
+        work the teardown believed it had stopped -- and the claimer's own re-read of the
+        state before registering is the guard that then has nothing to catch, because the
+        row is gone rather than claimable. And a row in that window may be carrying a
+        decision a person made (a spawn approval is the visible case), which a teardown
+        has no standing to revoke on their behalf. Refusing leaves the row to the
+        incarnation that owns it.
 
         Race-safe against the drain because the STATE TEST AND THE CANCEL SHARE
         ONE TRANSACTION: ``unstarted`` is both the predicate this code judges the
@@ -1312,7 +1400,9 @@ class _TaskqBridgeMixin(ManagerComponent):
             rec = store.get(agent_id)
             if rec is None or rec.terminal:
                 return None
-            unstarted = _taskq.CLAIMABLE | frozenset({_taskq.ADMITTED})
+            unstarted = _taskq.CLAIMABLE
+            if allow_admitted:
+                unstarted = unstarted | frozenset({_taskq.ADMITTED})
             if rec.state not in unstarted:
                 return None
             previous = store.cancel(

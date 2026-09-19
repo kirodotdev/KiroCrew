@@ -328,6 +328,159 @@ The `is_yolo()` read happens once, when `parent_policy` is resolved at
 `_run_inner` start — a YOLO toggle mid-execution takes effect on the next
 subagent run, not on the current run's remaining tools.
 
+### `snapshot_teardown_children(parent_session_key) -> (agent_id, ...)`
+The SELECTION half of a parent-end teardown, and synchronous on purpose: the
+session lifecycle calls it while it still holds the registry lock, in the same
+hold as the pop that retires the key. Every await after that point is a window in
+which a cold start can register a SUCCESSOR under the same key, so an answer
+computed later can name the successor's runs. Returns the live and the queued runs
+both — a queued run's stagger timer would otherwise start work for a parent that
+is gone.
+
+What it MARKS is wider than what it returns, and the two questions are different:
+the return value is what to cancel, the mark is whose delivery to drop. A run that is
+`done` but whose outcome has not reached the parent has nothing to cancel and everything
+to gate. Selecting on "not done" alone left that class free to inject, and the injector
+resolves the parent key through the session registry and CREATES a session when none is
+live, so the delivery rebuilt the conversation the teardown had just taken down.
+
+"Has the outcome reached the parent" is asked through `delivery_is_parked`, which reads
+one declared table, `DELIVERY_ROUTING_FIELDS`. The table is enumerated from the PRODUCING
+side: every `SubagentInfo` attribute written by the four modules that own terminal-outcome
+routing (`subagent_manager/terminal.py`, `subagent_manager/waves.py`,
+`subagent_manager/cancellation.py`, `slack/gateway.py`), classified as `PARKS_WHEN_SET`,
+`PARKS_WHEN_UNSET` or `NOT_DELIVERY_STATE`.
+
+That direction matters because the question has five representations, not one, and reading
+them off failures found one per round:
+
+| state | what parks |
+|---|---|
+| `_reported_to_parent` | falsy — its own report never returned. The only positive evidence, which is why it reads the other way round |
+| `_digest_held` | the gateway held this member's injection for the wave digest (the restart-safety contract the run loop reads) |
+| `_digest_held_at` | the same hold's timestamp, kept separate because the hold-deadline sweep must not mutate the flag |
+| `_digest_settle_ids` | non-empty — other runs' deliveries are parked ON this record |
+| `_delivery_queued` | the announce sits in the parent's slot queue until a turn drains it |
+
+`_digest_flush_only` is classified as not-a-parked-state: it marks the synthetic record
+`force_digest_flush` builds, which is a CARRIER of a future injection with a fresh id, so
+an id-keyed gate can never recognise it — that path is disarmed at its source in
+`_expired_digest_holds` instead.
+
+The union is deliberately conservative. Reading "parked" for a run whose delivery did land
+costs nothing, because the gate only skips an injection and a delivered run does not inject
+again; reading "landed" for a parked one rebuilds a retired conversation.
+
+`test_the_delivery_parked_states_are_enumerated_from_the_producers` recomputes the write
+set from those four modules' AST and fails when it stops matching the table, so a new
+parked state cannot be added by a producer without a teardown rule. A companion test drives
+each rule in the table on its own, so a classification nothing reads cannot go unchecked.
+
+### `cancel_for_teardown(agent_ids) -> stopped`
+The CANCELLATION half. Takes ids rather than a parent key, because a key would be
+re-resolved here and that is the defect the snapshot exists to avoid. Each run is
+marked `_teardown_cancelled` and then stopped through the ordinary `cancel`
+machinery; no second reap path exists and one would drift. A queued run's store phase
+goes through `taskq_cancel_queued_async`, which is `taskq_cancel_queued` handed whole to
+`store.run` rather than a second copy of its transaction — one hop onto the writer
+thread, and the race-safety argument (the state test and the cancel sharing one
+`only_from` under the generation the read returned) is the same code rather than the same
+intent restated.
+
+The mark is what separates this from `cancel_for_parent`. A user pressing Stop all
+wants the outcome reported back into a conversation they are still looking at, and
+`_on_done` resolves the parent key through the session registry and injects,
+CREATING a session when none is live. At a parent end that would rebuild the
+conversation the teardown just took down and seed it with a retired run's terminal
+text, so `_report_terminal_impl` drops the injection for a marked run. The
+`subagent_done` event still goes out, so a dashboard watching the card sees it end,
+and the run's own result file and tombstone are unaffected.
+
+The mark gates the FAILURE announce on the same grounds. `notify_injection_failed`
+is the one choke point every undeliverable-report caller funnels through — the
+`_on_done` timeout in `_report_terminal_impl` and the gateway's five injection
+paths — and it queues a synthetic completion into the parent's dashboard slot for
+the LLM to drain on that key's next turn. A queued notice therefore outlives the
+conversation it describes: the next turn on the key belongs to whatever session the
+key serves next, which would read a retired run's completion text as its own. So a
+marked run announces nothing, and the gate sits in the choke point rather than at
+the six callers, where it would have to be restated and could drift.
+
+The WAVE DIGEST needs more than the id gate, because its flush record is synthetic. A
+member parks its siblings' announces on its own digest (`_digest_held_at`,
+`_digest_settle_ids`), and when the hold ages out the reaper arms
+`force_digest_flush`, which builds a fresh `SubagentInfo` with a new id and announces
+through `_on_done` directly — an id-keyed gate can never recognise it, so it would
+rebuild the retired parent's conversation minutes after the skip. Two guards close it at
+the source: a suppressed report drops its own hold and marks the siblings it was holding,
+and `_expired_digest_holds` skips a marked member so a batch of them produces no expiry
+at all. The held siblings are marked, never tombstoned: their results reached no parent,
+so restart orphan reconciliation must still be able to find them.
+
+ACCEPTED RESIDUAL: the gate is in-memory, so it does not survive a restart. A run left
+recoverable this way is found by the next start's reconciliation, which reads `result.txt`
+and re-delivers — into whatever the key serves by then. The alternative is a durable
+"do not deliver" mark in the run folder that `list_orphans` reads, and that is a worse
+trade here: it converts a recoverable result into a discarded one on the strength of a
+flag written by a process that has since died, and the failure it prevents (one stale
+completion in a later conversation on the same key, after a gateway restart) is visible
+and correctable, while a wrongly-marked result is silently lost. The `on_orphan_notify`
+DM fallback is the honest channel for the same outcome and stays. Revisit if reconciliation
+gains a durable notion of which conversation a result belongs to.
+
+The gate set is bounded by AGE, never by count (`_AgingIdSet`, TTL
+`_TEARDOWN_GATE_TTL_SECS`, one day against an `_ON_DONE_TIMEOUT` of twenty minutes plus
+the digest hold). A capacity rule evicts by arrival order regardless of whether the run
+can still announce, so one parent with more queued children than the capacity would drop
+its own earliest ids while their reports were still being spawned — and those reports then
+walk through the gate and rebuild the conversation the teardown took down. The lifetime is
+not tied to the run's `_agents` record either: that record is popped while a run is still
+tearing down (a dashboard "clear completed" does it), which is the same reason
+`_teardown_gates` outlives those records. A read does not refresh an entry, or the TTL
+would stop describing what is retained.
+
+### RESIDUAL: what a parent end does NOT stop
+
+A parent end arms its mark and takes its snapshot at the one synchronous point available:
+inside the registry lock hold that retires the key. Anything already IN FLIGHT at that
+instant sees neither. That leaves two halves, and they are the same defect at opposite ends
+of the same window:
+
+- **Admitted late may start.** A spawn between its row write and its registration is in
+  neither the queue nor `_agents` — `spawn_async` persists the row and then re-enters
+  `spawn` to register — so no selection can name it, and it starts into whatever the key
+  serves next. A durable row that has spilled out of the in-memory window is outside the
+  snapshot for the same reason: the store keeps more than the window holds, and a restart
+  repopulates the store without repopulating the window.
+- **Reporting late may deliver.** A report that has already passed the delivery gate and
+  is suspended inside `_on_done` is not stopped by marking its id afterwards. The injector
+  resolves the parent through `get_or_create`, which CREATES a session when none is live,
+  and never re-reads the mark — so it can rebuild the conversation the teardown just took
+  down and seed it with the retired run's text.
+
+Both are bounded by the run's own timeout. The delivery gate is a backstop for the FIRST
+half only when the run was selected: a run the snapshot never named is never marked, and a
+report already past the gate is not reached by marking it later.
+
+Neither half is closed by another recheck at one end. Selecting more, or re-testing before
+injecting, both need an await, and an await here cannot tell work belonging to the retired
+conversation from work a successor under the same key has just started: a spilled row of
+the conversation that ended looks exactly like one the successor queued, and a report
+resolving its parent looks the same whichever conversation it belongs to. The answer is one
+identity every path can test, not a recheck per path — a conversation-incarnation counter
+that does not exist today. Tracked in #12069, which carries both halves.
+
+What makes that unanswerable today is that the session layer has no counter for it.
+`session_generation` reads `_ownership_generations`, which is an ALLOCATION-OWNERSHIP
+counter: its own docstring says "every reservation publication/removal advances the
+canonical key's counter", and `get_or_create` advances it twice per call — once taking
+its allocation reservation token and once in `_remove_reservation_now` releasing it — with
+no teardown in the path. `reset` advances it on a RECYCLE too, where the children are
+guaranteed to survive. Fencing on it therefore refuses ordinary queued work rather than
+successors' work, which is the opposite of the intent — so no fence is better than that
+fence, and the residual is carried openly instead. #12069 carries the counter design and
+its cost.
+
 ### `cancel_for_parent(parent_session_key) -> (running, queued)`
 Stops every running agent and removes every not-yet-started stagger/concurrency
 queue entry owned by one parent session. A `_resume_id` entry is NOT one of
@@ -1520,7 +1673,24 @@ Decision + lifecycle:
 - Cleanup (`_run` finally + `_force_reap`) calls `_shared_provider.shutdown()` to
   tear down only the session — it never kills the shared runtime, which other
   subagents may still use. The runtime is killed when the parent session ends
-  (`SessionManager.release_subagent_runtime`, invoked from `reset()`).
+  (`SessionManager.release_subagent_runtime`).
 
 Non-kiro (alternate ACP backend) parents are never eligible and always use the
 legacy `AcpClient` per-process path regardless of the flag.
+
+### Parent end ends the children, on every backend
+
+Reaping the companion runtime ends the children of a harness that multiplexes
+them onto one process, because killing that process is what ends them — a side
+effect, not a decision. A harness running one process per child has no entry in
+`_subagent_runtimes`, so the reap reaches nothing and its children outlive the
+conversation that asked for them, each holding an agent process and that process's
+MCP fleet until its own `agent.subagent_timeout_secs` expires. Seven of the eight
+registered backends take that path; only kiro is in
+`ACP_BACKENDS_SESSION_SHARING`.
+
+So every lifecycle site that releases a companion runtime also ends the parent's
+runs, through the two halves above. The boundary is not re-derived per surface:
+because it rides the release, the dashboard, a channel command and the idle sweep
+all inherit it without a call of their own, and no backend is named anywhere in
+it. `session.md` lists the sites and the two exemptions.

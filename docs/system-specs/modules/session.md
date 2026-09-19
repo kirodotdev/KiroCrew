@@ -1511,6 +1511,8 @@ Three properties the route holds, each of which fails silently if broken:
   `dashboard:<slot>`: a channel-born slot's turns run on the channel's session,
   and the derived form yields a key no session ever had — the clear finds nothing
   and the call still reports success.
+- The teardown also ends the parent's sub-agent runs; see "Parent end ends the
+  children" below for why that rides the release rather than being called here.
 - `discard_conversation`, never `destroy`: the entry carries the Slack
   thread/channel linkage and the reverse index built from it.
 - It is nonetheless a FULL teardown (provider shutdown plus
@@ -1547,6 +1549,95 @@ The transcript is deliberately left in place, so the tab still shows earlier
 messages the model no longer remembers. That is the honest rendering — the record
 is the user's, the context was the conversation's — and it is why this is an
 explicit request rather than something the gateway does on its own.
+
+### Parent end ends the children
+
+`release_subagent_runtime` IS this module's parent-end boundary, so the runs a
+parent owns are ended at every site that calls it. Both halves are driven here:
+`_snapshot_parent_children` in the same lock hold as the pop, because every await
+after that is a window a successor can register under the retired key in, and
+`_cancel_parent_children` after the provider teardown, bounded and best-effort,
+with the release as the backstop for whatever it does not reach. `subagent.md`
+describes the two verbs and why the teardown one suppresses parent delivery.
+
+Two properties of that call, each of which fails silently if broken:
+
+- **It is outside any `if session` guard.** A live provider is not what makes a call a
+  parent end. A reset pops the session and keeps the conversation, so the tab close that
+  follows arrives with `session is None` while the children are still running — and that
+  is the call that ends them. `remove` guarded both the cancel and the release on a live
+  provider, which skipped exactly the sequence the reset/remove split makes ordinary.
+- **The timeout bounds the parent's WAIT, not the reap.** `_cancel_parent_children` runs
+  the verb as a task registered in `_background_tasks` and waits on
+  `asyncio.shield(task)`, so `_CHILD_CANCEL_TIMEOUT_SECS` expiring leaves the reap
+  running to completion. A bare `wait_for` cancels what it waits on, and this coroutine
+  kills child processes: a long child reset would have its `_force_reap` cancelled after
+  the marks were written and before the kills landed, leaving a write-capable child
+  executing against a conversation that has ended.
+
+Sites: `reset` (conditionally, see below), `remove`, `destroy`,
+`discard_conversation`, `remove_if_unclaimed`, `retire_kiro_identity_sessions`.
+
+The selection is NOT complete, and deliberately so. The mark and the snapshot are both
+taken inside this lock hold, which is the only synchronous point available, so anything
+already in flight sees neither: a spawn admitted late may still START, and a report already
+past the delivery gate may still DELIVER into a conversation that has ended. Both are
+bounded by the run's own timeout. Neither closes with another recheck at one end, because
+any wider selection or later re-test needs an await, and an await cannot tell work
+belonging to the retired conversation from work a successor under the same key has just
+started — which needs a conversation-incarnation counter the session layer does not have.
+Full argument in [subagent.md](subagent.md) § RESIDUAL; tracked in #12069.
+
+The distinction is "does the CONVERSATION end", not "does the process die". `remove` is a
+revivable ending — the entry survives for a future `session/load` — and it still takes the
+children, because the conversation is over as far as the parent is concerned.
+
+`reset` is on the other side by DEFAULT. It keeps the session-map entry and its resume sid,
+so the next turn restores the same native conversation through `session/load`, which is why
+it is the verb every evict-and-retry path reaches for: a wedged prompt (`AcpPromptBusy`), a
+failed auto-compaction, a provider or model switch (`_reset_slot_session`, which serves the
+agent / model / reasoning-effort / workspace switches and the reload endpoint), an idle
+expiry, the channel watchdog, a task step's re-prompt. A child of a recycled session has a
+conversation to deliver into and is bounded by its own run timeout, so stopping it would
+discard live work for a conversation that is coming right back. The RSS recycle sits here
+too and needs no argument: `_rss_threshold_check` declines outright for a session with
+attached sub-agent work.
+
+But some endings reach ONLY `reset`, so `ends_conversation=True` exists to say so, and
+those callers are:
+
+| caller | why it ends the conversation |
+|---|---|
+| `dashboard/handlers_channel.py` — `api_channel_clear_context` | the user asked the agent to forget the conversation (`scope=all` also wipes the channel's shared buffer) |
+| `cron.py` — `cancel` / `_force_reap` | the job is cancelled or reaped, so its conversation is over |
+| `taskrunner.py` — `_cleanup_run_sessions` | cancel cleanup ends every step conversation of the run |
+| `workflows/agent_pool.py` — `reset` | the pool STARTS A NEW conversation on a pooled key |
+
+The default is the recycle because that is what the overwhelming majority of `reset`'s ~46
+callers are, and the two mistakes do not cost the same — but a MISSED flag costs more than an
+orphan, which is the number a future caller has to weigh. It arms no delivery gate either, so
+the child's report still reaches `_on_done`, which resolves the parent through
+`get_or_create` and creates a session when none is live: the conversation the caller ended
+re-opens, seeded with that report. The miss is the headline defect in full, not a bounded
+process. A wrong `True` destroys live work for a conversation that resumes next turn, which is
+why the default stays the recycle — but a new ending path that forgets the flag RESURRECTS,
+and nothing structural catches it, because a keyword is invisible to the AST ratchet. Until
+#12069's conversation-incarnation identity makes a forgotten flag harmless, the flag is the
+whole guard and the path pin below is the only thing watching it.
+
+Two exemptions from the release-site rule, each on a fact about itself:
+
+- `close_all` — gateway shutdown runs `SubagentManager.cancel_all`, which also drains
+  follow-up watchers and announces undelivered messages.
+- `_retire_kiro_subagent_runtimes` — it reaps only IDLE companion runtimes, skipping any
+  that answer `has_active_or_initializing_sessions()`, so it has no running child to end
+  and the parent conversation continues.
+
+A ratchet in `test_session.py` reads that off the source on the AST: a method that releases
+a companion runtime without calling both halves fails it, the two exemptions are named
+there, and an exempt method that stops releasing a runtime is reported so its exemption
+never goes unchecked. The `ends_conversation=True` call sites are pinned separately, by
+path, because a structural ratchet cannot see a keyword and losing one is silent.
 
 ### Load Recovery (stale native session lock — F2)
 

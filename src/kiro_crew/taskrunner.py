@@ -2240,7 +2240,9 @@ class TaskRunner:
             except Exception:
                 pass
             try:
-                await self._sessions.reset(key)
+                # Cancel cleanup: the run is over, so each step conversation ends and
+                # takes its sub-agent runs with it.
+                await self._sessions.reset(key, ends_conversation=True)
             except (asyncio.CancelledError, Exception) as exc:
                 logger.warning("reset failed for session %s: %s", key, exc)
                 failed_keys.append(key)

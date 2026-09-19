@@ -158,6 +158,7 @@ class _CompactionOwner(Protocol):
         expect_session: Any | None = None,
         skip_if_busy: bool = False,
         clear_conversation: bool = False,
+        ends_conversation: bool = False,
     ) -> bool: ...
 
 
@@ -833,6 +834,17 @@ class CompactionCoordinator:
                 expect_session=expect,
                 skip_if_busy=True,
                 clear_conversation=True,
+                # ``clear_conversation`` IS the conversation ending, so this reset is an
+                # end and not the recycle the rest of this module performs. It clears the
+                # native resume sid and suppresses replay, so the successor cold-starts
+                # with none of this conversation's history -- there is nothing for a child
+                # to deliver into, and a child that reports anyway resolves the parent
+                # through ``get_or_create`` and re-opens the conversation this call threw
+                # away, seeded with a retired run's output.
+                #
+                # The other reset in this module is the ordinary auto-compaction retry and
+                # keeps the default: same conversation, new process.
+                ends_conversation=True,
             )
         except Exception:
             self._deps.logger.exception("Session %s critical reset failed", key)

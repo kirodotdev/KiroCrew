@@ -233,6 +233,38 @@ class TerminalCoordinator(ManagerComponent):
         )
         if not self._manager._on_done:
             return
+        if info.id in getattr(self._manager, "_teardown_cancelled_ids", ()):
+            # The parent this would report to has been retired. ``_on_done``
+            # resolves the parent key through the session registry and injects,
+            # which CREATES a session when none is live — so delivering here
+            # rebuilds the conversation the teardown just took down and seeds it
+            # with a retired run's terminal text. The ``subagent_done`` event above
+            # has already gone out, so a dashboard watching the card still sees it
+            # end; what is skipped is the injection into a conversation that is
+            # over. The run's own result file and tombstone are unaffected.
+            # Releasing the hold is part of the same statement. A wave member parks
+            # its siblings' announces on its own digest (``_digest_held_at``,
+            # ``_digest_settle_ids``), and the reaper's hold-expiry sweep arms a
+            # ``force_digest_flush`` for a batch whose hold has aged out. That flush
+            # builds a SYNTHETIC record with a fresh id, so the gate above can never
+            # match it: it would reach ``_on_done`` on its own and rebuild the retired
+            # parent's conversation minutes after this skip. Dropping this run out of
+            # the hold, and marking the siblings it was holding, leaves no injector
+            # armed for the wave. The siblings are NOT marked delivered -- their results
+            # never reached a parent, so orphan reconciliation must still be able to
+            # find them.
+            info._digest_held_at = 0.0
+            held, info._digest_settle_ids = info._digest_settle_ids, []
+            if held:
+                self._manager._teardown_cancelled_ids.update(held)
+            logger.info("Reaper: skipping parent delivery for %s — its parent ended", info.id)
+            # The gate has now done its job for this run: the delivery it existed to stop
+            # has been stopped, and ``_on_done`` was never called, so none of the gateway's
+            # injection paths can fire for it either. Discarding here is what keeps the gate
+            # from depending on its age backstop in the ordinary case -- an id is retained
+            # until the run's delivery is actually suppressed rather than for a fixed span.
+            self._manager._teardown_cancelled_ids.discard(info.id)
+            return
         try:
             await asyncio.wait_for(self._manager._on_done(info), timeout=_ON_DONE_TIMEOUT)
             # The outcome has REACHED the parent. Recorded before any further
@@ -709,6 +741,17 @@ class TerminalCoordinator(ManagerComponent):
         report could not be injected, including runs cancelled or rejected
         before they ever executed.
         """
+        if info.id in getattr(self._manager, "_teardown_cancelled_ids", ()):
+            # Same statement as the terminal-report gate: this run's parent has
+            # been retired, so there is no conversation for a failure notice to
+            # belong to. The notice is queued into the parent's slot and drained
+            # into the LLM's context on the parent key's next turn, so leaving it
+            # queued would surface a retired run's completion text inside whatever
+            # conversation that key serves next. This is the single choke point
+            # for every failure-announce caller (the ``_on_done`` timeout here and
+            # the gateway's injection paths), so gating it once covers them all.
+            logger.info("Reaper: skipping failure announce for %s — its parent ended", info.id)
+            return
         try:
             # Lazy: the dashboard layer must not be imported by a core module at
             # import time.

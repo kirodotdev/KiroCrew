@@ -10108,6 +10108,13 @@ class GatewayOrchestrator:
             # ``_start_subagent_dispatch_after_memory_ready`` opens it.
             defer_queue_dispatch=True,
         )
+        # A parent that ends takes its children with it, on every backend. The
+        # session lifecycle owns the boundary and drives both halves at each of its
+        # parent-end paths, so no surface that closes, resets, discards or retires a
+        # conversation needs a cancel call of its own. The manager is passed whole
+        # rather than as two bound methods because the halves have to agree about
+        # which runs they are talking about.
+        self.sessions.set_child_teardown_handler(self.subagent_mgr)
         self.subagent_mgr.start_reaper()
 
     async def _start_subagent_dispatch_after_memory_ready(self) -> None:

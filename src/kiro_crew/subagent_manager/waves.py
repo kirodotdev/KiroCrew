@@ -307,6 +307,13 @@ class WaveDigestCoordinator(ManagerComponent):
             _bid = info.batch_id
             if not _bid or info._digest_held_at <= 0.0:
                 continue
+            if info.id in self._manager._teardown_cancelled_ids:
+                # Its parent ended, so the flush this hold would arm has nowhere to
+                # announce to -- and the flush record is synthetic, so the delivery
+                # gate cannot recognise it downstream. Skipping the member here is
+                # what keeps a whole batch of teardown-cancelled members from
+                # producing an expiry at all.
+                continue
             _prev = oldest.get(_bid)
             if _prev is None or info._digest_held_at < _prev:
                 oldest[_bid] = info._digest_held_at

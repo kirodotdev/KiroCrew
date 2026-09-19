@@ -1137,6 +1137,21 @@ class _GateMixin(ManagerComponent):
             info (SubagentInfo): The subagent metadata.
         """
         assert self._manager._on_done is not None
+        if info.id in getattr(self._manager, "_teardown_cancelled_ids", ()):
+            # Same statement as the terminal-report gate, at the OTHER announce
+            # entry point. ``_on_done`` resolves the parent key through the
+            # session registry and injects, which CREATES a session when none is
+            # live, so announcing here rebuilds the conversation the teardown
+            # just took down. The rejection paths reach this function directly
+            # rather than through ``_report_terminal``, so the gate that covers
+            # the run that EXECUTED does not cover the run that was refused
+            # before it ever started -- and a spawn parked on its approval is
+            # marked by the teardown precisely because its delivery must not
+            # land. The id is left in the gate rather than discarded: this
+            # function is one of several announce entry points, and the age
+            # backstop is what retires the mark.
+            logger.info("Skipping parent announce for %s - its parent ended", info.id)
+            return
         try:
             await self._manager._on_done(info)
         except Exception as exc:

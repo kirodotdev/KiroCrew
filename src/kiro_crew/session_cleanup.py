@@ -90,6 +90,7 @@ class CleanupOwner(Protocol):
         skip_if_busy: bool = False,
         skip_if_injecting: bool = False,
         clear_conversation: bool = False,
+        ends_conversation: bool = False,
     ) -> bool: ...
 
     async def _fire_recycle_callback(self, key: str, *, reason: str) -> None: ...
@@ -1047,6 +1048,11 @@ class SessionCleanup:
                     skip_if_injecting=True,
                 )
             else:
+                # Expiry recycles a PROCESS; the conversation survives on disk and
+                # resumes through ``session/load``. So this is not a parent end, and the
+                # session's in-flight sub-agent runs are left alone -- they have a
+                # conversation to deliver into, and their own run timeout bounds them.
+                # That is why neither call here passes ``ends_conversation``.
                 reset_done = await self._owner.reset(key, skip_if_busy=True, skip_if_injecting=True)
             if not reset_done:
                 # The release above ran BEFORE the reset, so a reset that
