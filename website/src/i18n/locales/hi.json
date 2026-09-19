@@ -6982,6 +6982,8 @@
       "open_app_full_screen": "ऐप को पूर्ण स्क्रीन में खोलें"
     },
     "mcpBrowserModal": {
+      "provider_results_incomplete": "{{total}} में से {{failed}} प्रदाताओं ने जवाब नहीं दिया — परिणाम अधूरे हो सकते हैं।",
+      "retry": "फिर कोशिश करें",
       "a_server_named_already_exists": "एक सर्वर जिसका नाम है “{{name}}” पहले से भिन्न कॉन्फ़िगरेशन के साथ मौजूद है।\n          इसे इंस्टॉल किए गए सर्वरों की तालिका से प्रबंधित करें।",
       "add_server": "सर्वर जोड़ें",
       "and_enable_it_there_to_start_using_it": "और इसका उपयोग शुरू करने के लिए इसे वहीं सक्षम करें।",

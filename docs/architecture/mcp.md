@@ -486,6 +486,17 @@ The Integrations page aggregates the scope files into one view with per-scope
 badges. Clicking a badge **stages** an intent; the page accumulates staged
 changes and exposes Apply / Discard. Only Apply performs writes.
 
+**Add Server search reports every attempted provider.**
+`GET /api/mcp/discover` keeps its existing `results` and `providers` fields and
+adds `provider_outcomes: [{name, status}]`, where `status` is `ok`, `timeout`, or
+`error`. The additive field keeps older clients compatible. A short availability
+probe attempts no provider and returns an empty outcome list. The Add Server
+modal keeps results from responsive providers and shows one inline incomplete
+notice when any sibling provider fails. When every attempted provider fails, it
+shows the shared `ErrorNotice` instead of the zero-match empty state. Retry runs
+the whole search again; per-provider retry and provider-cache refresh are not
+part of this contract.
+
 `POST /api/mcp/apply` takes a batched payload and applies it in a fixed order:
 
 1. **Uninstalls first.** `_purge_server_config()` removes the entry from

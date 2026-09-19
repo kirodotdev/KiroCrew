@@ -201,7 +201,11 @@ class TestDiscoverSearch:
                 resp = await client.get("/api/mcp/discover", params={"q": q})
                 assert resp.status == 200
                 data = await resp.json()
-                assert data == {"results": [], "providers": ["official"]}
+                assert data == {
+                    "results": [],
+                    "providers": ["official"],
+                    "provider_outcomes": [],
+                }
             assert provider.search_calls == 0
         finally:
             await client.close()
@@ -231,6 +235,7 @@ class TestDiscoverSearch:
             assert resp.status == 200
             data = await resp.json()
             assert data["providers"] == ["official"]
+            assert data["provider_outcomes"] == [{"name": "official", "status": "ok"}]
             assert data["results"] == [
                 {
                     "id": _WEATHER_ID,
@@ -246,6 +251,17 @@ class TestDiscoverSearch:
                     "deprecated": False,
                 }
             ]
+        finally:
+            await client.close()
+
+    async def test_search_reports_provider_error(self, sandbox, fake_sel, reset_registry):
+        client = await _client(FakeOfficialProvider(raise_unavailable=True))
+        try:
+            resp = await client.get("/api/mcp/discover", params={"q": "weather"})
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["results"] == []
+            assert data["provider_outcomes"] == [{"name": "official", "status": "error"}]
         finally:
             await client.close()
 

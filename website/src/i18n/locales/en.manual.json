@@ -2426,6 +2426,8 @@
       "open_app_full_screen": "Open app full screen"
     },
     "mcpBrowserModal": {
+      "provider_results_incomplete": "{{failed}} of {{total}} providers did not answer — results may be incomplete.",
+      "retry": "Retry",
       "a_server_named_already_exists": "A server named “{{name}}” already exists with a different configuration.\n          Manage it from the installed servers table.",
       "waiting_for_the_install_plan_to_load": "Waiting for the install plan to load",
       "detail_load_failed": "Couldn’t load this server’s details.",

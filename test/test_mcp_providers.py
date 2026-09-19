@@ -567,6 +567,23 @@ class TestRegistryFanOut:
         assert [r.id for r in results] == ["f1"]
 
     @pytest.mark.asyncio
+    async def test_search_outcomes_report_timeout_without_dropping_results(self, monkeypatch):
+        from kiro_crew.mcp_providers import base as base_mod
+
+        monkeypatch.setattr(base_mod, "_SEARCH_TIMEOUT_SECS", 0.05)
+        registry = ProviderRegistry()
+        registry.register(_StubProvider("slow", [_result("slow", "s1")], delay=1.0))
+        registry.register(_StubProvider("fast", [_result("fast", "f1")]))
+
+        response = await registry.search_with_outcomes("query")
+
+        assert [r.id for r in response.results] == ["f1"]
+        assert [(o.name, o.status) for o in response.provider_outcomes] == [
+            ("slow", "timeout"),
+            ("fast", "ok"),
+        ]
+
+    @pytest.mark.asyncio
     async def test_unavailable_provider_skipped(self):
         registry = ProviderRegistry()
         registry.register(_StubProvider("off", [_result("off", "x")], available=False))
@@ -594,6 +611,24 @@ class TestRegistryFanOut:
         registry.register(_StubProvider("ok", [_result("ok", "k1")]))
         results = await registry.search("query")
         assert [r.id for r in results] == ["k1"]
+
+    @pytest.mark.asyncio
+    async def test_search_outcomes_report_provider_error(self):
+        class _Boom(_StubProvider):
+            async def search(self, query: str, *, limit: int = 20):
+                raise RuntimeError("kaput")
+
+        registry = ProviderRegistry()
+        registry.register(_Boom("boom"))
+        registry.register(_StubProvider("ok", [_result("ok", "k1")]))
+
+        response = await registry.search_with_outcomes("query")
+
+        assert [r.id for r in response.results] == ["k1"]
+        assert [(o.name, o.status) for o in response.provider_outcomes] == [
+            ("boom", "error"),
+            ("ok", "ok"),
+        ]
 
 
 # ---------------------------------------------------------------------------

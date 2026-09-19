@@ -6879,6 +6879,8 @@
       "open_app_full_screen": "全屏打开应用"
     },
     "mcpBrowserModal": {
+      "provider_results_incomplete": "{{total}} 个提供商中有 {{failed}} 个未响应 — 结果可能不完整。",
+      "retry": "重试",
       "a_server_named_already_exists": "名为“{{name}}”的服务器已存在，但配置不同。\n          请在已安装服务器表中管理它。",
       "add_server": "添加服务器",
       "and_enable_it_there_to_start_using_it": "并在那里启用它以开始使用。",

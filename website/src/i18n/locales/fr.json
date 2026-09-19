@@ -7085,6 +7085,8 @@
       "open_app_full_screen": "Ouvrir l'application en plein écran"
     },
     "mcpBrowserModal": {
+      "provider_results_incomplete": "{{failed}} fournisseurs sur {{total}} n’ont pas répondu — les résultats sont peut-être incomplets.",
+      "retry": "Réessayer",
       "a_server_named_already_exists": "Un serveur nommé «{{name}}» existe déjà avec une configuration différente.\n          Gérez-le depuis le tableau des serveurs installés.",
       "add_server": "Ajouter un serveur",
       "and_enable_it_there_to_start_using_it": "et activez-le à cet endroit pour commencer à l'utiliser.",

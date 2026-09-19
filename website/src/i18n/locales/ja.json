@@ -6879,6 +6879,8 @@
       "open_app_full_screen": "アプリを全画面で開く"
     },
     "mcpBrowserModal": {
+      "provider_results_incomplete": "{{total}} 件中 {{failed}} 件のプロバイダーが応答しませんでした — 結果が不完全な可能性があります。",
+      "retry": "再試行",
       "a_server_named_already_exists": "「{{name}}」という名前のサーバーが既に異なる設定で存在します。\n          インストール済みサーバーテーブルから管理してください。",
       "add_server": "サーバーを追加",
       "and_enable_it_there_to_start_using_it": "そこで有効にして使い始めてください。",

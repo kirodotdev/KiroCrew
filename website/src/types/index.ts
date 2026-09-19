@@ -749,10 +749,18 @@ export interface DiscoveredMcpServer {
   deprecated: boolean
 }
 
+/** Outcome of one provider leg in an MCP discovery search. */
+export interface McpProviderOutcome {
+  name: string
+  status: 'ok' | 'timeout' | 'error'
+}
+
 /** Response from GET /api/mcp/discover */
 export interface McpDiscoverResponse {
   results: DiscoveredMcpServer[]
   providers: string[]
+  /** Additive for compatibility with gateways that predate outcome reporting. */
+  provider_outcomes?: McpProviderOutcome[]
 }
 
 /** Install-plan preview inside the discover detail response. */
