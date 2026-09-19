@@ -1785,7 +1785,11 @@
       "stop_file_help_none": "This loop was armed without a stop file, so {{token}} is sent blank. Press Stop loop below to halt it."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Close all tabs",
       "close_failed": "Couldn't stop this terminal's shell on the server. It will be cleaned up automatically.",
+      "close_other_tabs": "Close other tabs",
+      "close_tab": "Close",
+      "close_tabs_to_right": "Close tabs to the right",
       "closing_terminal": "Closing terminal…",
       "maximum_terminals": "Maximum {{n}} terminals",
       "terminal": "Terminal"

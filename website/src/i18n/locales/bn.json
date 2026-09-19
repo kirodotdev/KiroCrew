@@ -5876,6 +5876,10 @@
       "stop_file_help_none": "এই লুপটি স্টপ ফাইল ছাড়া চালু করা হয়েছিল, তাই {{token}} ফাঁকা পাঠানো হয়। এটি থামাতে নিচের “লুপ বন্ধ করুন” চাপো।"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "সব ট্যাব বন্ধ করো",
+      "close_other_tabs": "অন্যান্য ট্যাব বন্ধ করো",
+      "close_tab": "বন্ধ করো",
+      "close_tabs_to_right": "ডান পাশের ট্যাবগুলো বন্ধ করো",
       "close_terminal": "টার্মিনাল বন্ধ করুন",
       "focus_popout": "পপআউটে ফোকাস করুন",
       "hide_terminal_panel": "টার্মিনাল প্যানেল লুকান",

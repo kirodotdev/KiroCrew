@@ -5782,6 +5782,10 @@
       "stop_file_help_none": "此循环启动时没有设置停止文件，因此 {{token}} 会以空白发送。点击下方的“停止循环”来终止它。"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "关闭所有标签页",
+      "close_other_tabs": "关闭其他标签页",
+      "close_tab": "关闭",
+      "close_tabs_to_right": "关闭右侧标签页",
       "close_terminal": "关闭终端",
       "focus_popout": "聚焦弹出窗口",
       "hide_terminal_panel": "隐藏终端面板",

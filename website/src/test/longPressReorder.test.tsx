@@ -15,14 +15,16 @@ import { useLongPressReorder, LONG_PRESS_MS, LONG_PRESS_SLOP_PX } from '../hooks
 
 let captured: ReturnType<typeof useLongPressReorder> | null = null
 
-function Harness() {
-  const r = useLongPressReorder()
+type HoldRelease = (e: PointerEvent, target: HTMLElement) => void
+
+function Harness({ onHoldRelease }: { onHoldRelease?: HoldRelease }) {
+  const r = useLongPressReorder({ onHoldRelease })
   captured = r
   return <div data-testid="chip" data-dragging={r.dragging} onPointerDown={r.itemProps.onPointerDown} />
 }
 
-function mount() {
-  const utils = render(<Harness />)
+function mount(onHoldRelease?: HoldRelease) {
+  const utils = render(<Harness onHoldRelease={onHoldRelease} />)
   const chip = utils.getByTestId('chip')
   const start = vi.spyOn(captured!.itemProps.dragControls, 'start')
   return { ...utils, chip, start }
@@ -88,6 +90,95 @@ describe('useLongPressReorder', () => {
     act(() => { vi.advanceTimersByTime(1) })
     expect(start).toHaveBeenCalledTimes(1)
     expect(captured!.dragging).toBe(true)
+  })
+
+  // One hold, two outcomes. The arm itself is unchanged by the option: the
+  // drag is live from the 450ms mark either way, and only what the finger does
+  // next tells a reorder from a menu.
+  it('fires the hold-release action when the finger lifts in place after arming', () => {
+    vi.useFakeTimers()
+    const onHoldRelease = vi.fn()
+    const { chip, start } = mount(onHoldRelease)
+    fireEvent.pointerDown(chip, { pointerType: 'touch', clientX: 10, clientY: 10 })
+    act(() => { vi.advanceTimersByTime(LONG_PRESS_MS) })
+    expect(start).toHaveBeenCalledTimes(1)
+    expect(captured!.dragging).toBe(true)
+    expect(onHoldRelease).not.toHaveBeenCalled()
+
+    fireEvent.pointerUp(window, { clientX: 12, clientY: 11 })
+    expect(onHoldRelease).toHaveBeenCalledTimes(1)
+    expect(onHoldRelease.mock.calls[0][1]).toBe(chip)
+    expect(captured!.dragging).toBe(false)
+  })
+
+  it('does not fire the hold-release action once the armed finger has travelled', () => {
+    vi.useFakeTimers()
+    const onHoldRelease = vi.fn()
+    const { chip, start } = mount(onHoldRelease)
+    fireEvent.pointerDown(chip, { pointerType: 'touch', clientX: 10, clientY: 10 })
+    act(() => { vi.advanceTimersByTime(LONG_PRESS_MS) })
+    expect(start).toHaveBeenCalledTimes(1)
+
+    fireEvent.pointerMove(window, { clientX: 10 + LONG_PRESS_SLOP_PX + 1, clientY: 10 })
+    fireEvent.pointerUp(window)
+    expect(onHoldRelease).not.toHaveBeenCalled()
+    expect(captured!.dragging).toBe(false)
+  })
+
+  // Lifting before the arm is a tap, and a tap is not a hold-release.
+  it('does not fire the hold-release action for a tap', () => {
+    vi.useFakeTimers()
+    const onHoldRelease = vi.fn()
+    const { chip } = mount(onHoldRelease)
+    fireEvent.pointerDown(chip, { pointerType: 'touch', clientX: 10, clientY: 10 })
+    act(() => { vi.advanceTimersByTime(LONG_PRESS_MS - 1) })
+    fireEvent.pointerUp(window)
+    act(() => { vi.advanceTimersByTime(LONG_PRESS_MS) })
+    expect(onHoldRelease).not.toHaveBeenCalled()
+  })
+
+  // A Radix ContextMenuTrigger around the chip arms its own 700ms touch timer
+  // and skips it when the press arrives default-prevented. Only a touch press
+  // with a hold-release owner is prevented: a mouse press is not (framer needs
+  // its compat events elsewhere) and neither is a touch press on a chip with
+  // no menu.
+  it('default-prevents the touch press only when it owns a hold-release', () => {
+    const owned = mount(vi.fn())
+    expect(fireEvent.pointerDown(owned.chip, { pointerType: 'touch', clientX: 10, clientY: 10 })).toBe(false)
+    fireEvent.pointerUp(window)
+    expect(fireEvent.pointerDown(owned.chip, { pointerType: 'mouse', clientX: 10, clientY: 10 })).toBe(true)
+    fireEvent.pointerUp(window)
+    owned.unmount()
+
+    const bare = mount()
+    expect(fireEvent.pointerDown(bare.chip, { pointerType: 'touch', clientX: 10, clientY: 10 })).toBe(true)
+  })
+
+  // Android raises a native `contextmenu` on a long press and cancels the touch
+  // unless it is prevented — which would open the menu mid-arm AND kill the
+  // drag. While the touch is down the chip swallows it; once the finger is up
+  // the chip's own opener must get through.
+  it('swallows a native contextmenu for exactly as long as the touch is down', () => {
+    vi.useFakeTimers()
+    const seenAtDocument = vi.fn()
+    document.addEventListener('contextmenu', seenAtDocument)
+    try {
+      const { chip } = mount(vi.fn())
+      fireEvent.pointerDown(chip, { pointerType: 'touch', clientX: 10, clientY: 10 })
+      // Pending phase.
+      expect(fireEvent.contextMenu(chip)).toBe(false)
+      expect(seenAtDocument).not.toHaveBeenCalled()
+      // Armed phase.
+      act(() => { vi.advanceTimersByTime(LONG_PRESS_MS) })
+      expect(fireEvent.contextMenu(chip)).toBe(false)
+      expect(seenAtDocument).not.toHaveBeenCalled()
+      // Released.
+      fireEvent.pointerUp(window)
+      expect(fireEvent.contextMenu(chip)).toBe(true)
+      expect(seenAtDocument).toHaveBeenCalledTimes(1)
+    } finally {
+      document.removeEventListener('contextmenu', seenAtDocument)
+    }
   })
 
   it('cancels the pending arm once the finger travels — the swipe is a scroll', () => {

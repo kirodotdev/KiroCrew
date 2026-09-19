@@ -5876,6 +5876,10 @@
       "stop_file_help_none": "Diese Schleife wurde ohne Stoppdatei gestartet, daher wird {{token}} leer gesendet. Drücke unten „Schleife stoppen“, um sie anzuhalten."
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "Alle Tabs schließen",
+      "close_other_tabs": "Andere Tabs schließen",
+      "close_tab": "Schließen",
+      "close_tabs_to_right": "Tabs rechts schließen",
       "close_terminal": "Terminal schließen",
       "focus_popout": "Ausgekoppeltes Fenster fokussieren",
       "hide_terminal_panel": "Terminal-Panel ausblenden",

@@ -5876,6 +5876,10 @@
       "stop_file_help_none": "यह लूप बिना स्टॉप फ़ाइल के शुरू किया गया था, इसलिए {{token}} खाली भेजा जाता है। इसे रोकने के लिए नीचे “लूप रोकें” दबाएँ।"
     },
     "bottomTerminalPanel": {
+      "close_all_tabs": "सभी टैब बंद करें",
+      "close_other_tabs": "अन्य टैब बंद करें",
+      "close_tab": "बंद करें",
+      "close_tabs_to_right": "दाईं ओर के टैब बंद करें",
       "close_terminal": "टर्मिनल बंद करें",
       "focus_popout": "पॉपआउट पर फ़ोकस करें",
       "hide_terminal_panel": "टर्मिनल पैनल छिपाएँ",
