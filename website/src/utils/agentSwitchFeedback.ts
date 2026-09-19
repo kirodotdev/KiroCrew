@@ -95,24 +95,6 @@ export function agentSwitchOffersHandoff(message?: string | null): boolean {
   return !!message && message === i18nT('utils.agentSwitchFeedback.workspace_unavailable')
 }
 
-/**
- * Whether the switch was WITHHELD rather than broken -- `ErrorNotice`'s `warn` axis.
- *
- * True for the two recognized refusals only. Every other outcome this module reports is a
- * genuine failure -- a rejected agent name, a missing slot, a network error, the generic
- * fallback -- and must keep the danger default, because `warn` renders `role="status"` and a
- * CircleAlert, which announces a real breakage as a polite notice.
- *
- * Keyed on the copy this module produced, so it cannot disagree with the branch that chose it.
- */
-export function agentSwitchWasWithheld(message?: string | null): boolean {
-  if (!message) return false
-  return (
-    message === i18nT('utils.agentSwitchFeedback.workspace_unavailable')
-    || message === i18nT('utils.agentSwitchFeedback.turn_in_flight')
-  )
-}
-
 /** Newest journal entry carrying a status+code pair, or nothing if the failure never reached it. */
 function codedReport(status: number, code: string): ErrorReport | undefined {
   // `recentErrors` is newest-first, so the first match is the live failure rather than a

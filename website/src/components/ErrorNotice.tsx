@@ -1,5 +1,5 @@
 import type { ComponentType, ReactNode } from 'react'
-import { AlertTriangle, CircleAlert, Sparkles, X } from 'lucide-react'
+import { AlertTriangle, Sparkles, X } from 'lucide-react'
 import AskAgentButton, { handoffErrorToAgent } from './AskAgentButton'
 import type { ErrorReport } from '../utils/errorReport'
 
@@ -87,12 +87,12 @@ export function ErrorNoticeMenuItem({
  * as flex children, so dropping a bordered box into one would break the row. The
  * variant is a layout choice only; both carry the same agent hand-off.
  *
- * ## `warn` is severity, and it is a separate axis from `variant`
- *
- * Danger chrome is read before the words are, so a notice reporting a PARTIAL
- * SUCCESS in red alarm colours tells a scanning user the operation failed and
- * invites them to re-run it. `warn` is for that case — something was withheld,
- * nothing broke. Leave it off (the default) for a genuine failure.
+ * There is deliberately NO severity axis here. Every value this component renders
+ * is the outcome of something that failed, and `errors-use-error-notice` counts a
+ * warn- or status-toned failure as the same violation as a hand-rolled red div:
+ * toning a failure down to a polite status does not make it status. A refusal that
+ * withheld an action is still a rejected request, so it keeps `role="alert"` and
+ * the danger palette.
  */
 export default function ErrorNotice({
   id,
@@ -103,9 +103,9 @@ export default function ErrorNotice({
   dismissLabel,
   dismissLabelVisible = false,
   variant = 'block',
-  warn = false,
   askAgent = false,
   askAgentLabel,
+  gate,
   actionPlacement = 'beside',
   messagePlacement = 'beside',
   footer,
@@ -156,11 +156,6 @@ export default function ErrorNotice({
   /** `block` = boxed banner; `inline` = compact text for an existing flex row. */
   variant?: 'block' | 'inline'
   /**
-   * Severity, independent of `variant`. On for an outcome that withheld
-   * something without failing (a partial clear); off for a real failure.
-   */
-  warn?: boolean
-  /**
    * Opt IN to the agent hand-off. **Defaults to `false`, and the direction of that
    * default is the safety property.**
    *
@@ -184,6 +179,16 @@ export default function ErrorNotice({
    * `askAgent` is off.
    */
   askAgentLabel?: string
+  /**
+   * Forwarded to `AskAgentButton`'s own `gate`, and the companion to `askAgent`
+   * above: that doc explains the hand-off unmounts whatever rendered this banner
+   * and destroys any unsaved value in that subtree. `askAgent` decides whether the
+   * button exists; `gate` is how a surface that DOES hold a draft still offers it
+   * — `useGuardedLeave`'s `leave` asks the guard first and vetoes the navigation
+   * when the user says keep editing. Without it the hand-off navigates directly,
+   * so a guarded surface must pass it rather than rely on `askAgent` alone.
+   */
+  gate?: (proceed: () => void) => void
   /**
    * Where the hand-off sits in the block variant. `beside` (default) puts it in
    * the banner's right-hand column, which is right for a banner that spans a
@@ -260,24 +265,16 @@ export default function ErrorNotice({
   // the icon-only ✕ sees the same promise a screen reader announces.
   const dismissName = dismissLabel ?? i18nT('components.errorNotice.dismiss')
 
-  const fg = warn ? 'text-warn' : 'text-danger'
-  // Politeness rides the SEVERITY axis rather than a prop: a withheld action broke nothing,
-  // so interrupting speech misreports it -- and per-site roles drifted apart once already.
-  const role = warn ? 'status' : 'alert'
-  const dismissFg = warn ? 'text-warn/70 hover:text-warn' : 'text-danger/70 hover:text-danger'
-  // Warn ranks BELOW danger: a withheld act lost nothing, so it must not out-shout a real
-  // failure. Circle < triangle in weight, and danger's triangle is left as every surface has it.
-  const Icon = warn ? CircleAlert : AlertTriangle
 
   if (variant === 'inline') {
     return (
       <span
-        role={role}
-        className={`inline-flex items-center gap-1.5 text-[12px] ${fg} ${messageBelow ? 'flex-wrap' : ''} ${className}`}
+        role="alert"
+        className={`inline-flex items-center gap-1.5 text-[12px] text-danger ${messageBelow ? 'flex-wrap' : ''} ${className}`}
         id={id}
         data-testid={testId}
       >
-        <Icon size={14} className="shrink-0" aria-hidden="true" />
+        <AlertTriangle size={14} className="shrink-0" aria-hidden="true" />
         {title && <strong className="font-semibold">{title}</strong>}
         <span className={`min-w-0 ${messageBelow ? 'basis-full text-[11px] font-normal text-danger/80' : ''} ${messageClassName}`} style={{ overflowWrap: 'anywhere' }} title={messageTooltip}>{withOriginLink(message)}</span>
         {askAgent && (
@@ -286,12 +283,13 @@ export default function ErrorNotice({
             message={message}
             onHandoff={onHandoff}
             label={askAgentLabel}
+            gate={gate}
           />
         )}
         {onDismiss && (
           <button
             type="button"
-            className={`shrink-0 bg-transparent border-none p-0 cursor-pointer ${dismissFg} transition-colors${dismissLabelVisible ? ' inline-flex items-center gap-1 text-[12px] font-medium whitespace-nowrap' : ''}`}
+            className={`shrink-0 bg-transparent border-none p-0 cursor-pointer text-danger/70 hover:text-danger transition-colors${dismissLabelVisible ? ' inline-flex items-center gap-1 text-[12px] font-medium whitespace-nowrap' : ''}`}
             aria-label={dismissName}
             title={dismissName}
             onClick={onDismiss}
@@ -335,12 +333,12 @@ export default function ErrorNotice({
 
   return (
     <div
-      role={role}
-      className={`rounded-lg border ${warn ? 'border-warn/40 bg-warn/10' : 'border-danger/40 bg-danger/10'} px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] ${fg} ${className}`}
+      role="alert"
+      className={`rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 flex ${dismissLabelVisible ? 'flex-wrap md:flex-nowrap ' : ''}items-start gap-2 text-[13px] text-danger ${className}`}
       id={id}
       data-testid={testId}
     >
-      <Icon size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
+      <AlertTriangle size={14} className="mt-[2px] shrink-0" aria-hidden="true" />
       <div className="min-w-0 flex-1 whitespace-pre-wrap" style={{ overflowWrap: 'anywhere' }}>
         {title && <strong className="font-semibold">{title} </strong>}
         {/* Wrapped only when asked: the bare text node is the shape every
@@ -366,6 +364,7 @@ export default function ErrorNotice({
           message={message}
           onHandoff={onHandoff}
           label={askAgentLabel}
+          gate={gate}
           className="mt-[1px]"
         />
       )}

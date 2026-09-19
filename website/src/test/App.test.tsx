@@ -1744,9 +1744,10 @@ describe('onCycleAgent keyboard shortcut', () => {
     const noticeText = await screen.findByText(
       REAL_FAILURE,
     )
-    // An invalid agent name BROKE the switch, so it takes the assertive `role="alert"`. `warn`
-    // (`role="status"`) is reserved for the two refusals that withheld it without breaking
-    // anything -- covered in AgentSwitchNotice.test.tsx, which owns that axis.
+    // Every switch failure takes the assertive `role="alert"`, a refusal that merely withheld
+    // the switch included: toning one down to a polite `role="status"` is what the blocking
+    // `errors-use-error-notice` rule names as the violation. AgentSwitchNotice.test.tsx pins
+    // that for the withheld case.
     // Exactly one region -- one nested inside the notice would double-announce.
     const live = noticeText.closest('[role="alert"]')
     expect(live).not.toBeNull()

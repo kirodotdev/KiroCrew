@@ -1,5 +1,5 @@
 import ErrorNotice from './ErrorNotice'
-import { agentSwitchFailureReport, agentSwitchOffersHandoff, agentSwitchWasWithheld } from '../utils/agentSwitchFeedback'
+import { agentSwitchFailureReport, agentSwitchOffersHandoff } from '../utils/agentSwitchFeedback'
 
 /**
  * The agent-switch result toast.
@@ -22,21 +22,32 @@ import { agentSwitchFailureReport, agentSwitchOffersHandoff, agentSwitchWasWithh
  * viewport anchoring, elevation, and an OPAQUE backdrop, since the notice's own tint is
  * translucent and would otherwise read against whatever it covers.
  *
- * `warn` is CONDITIONAL, not the surface's fixed severity. The two recognized refusals -- a turn
- * in flight, and an unavailable workspace root -- WITHHELD the switch without anything breaking,
- * so they earn it. Every other outcome reaching this component is a genuine failure (a rejected
- * agent name, a missing slot, a network error, the generic fallback) and keeps the danger default;
- * passing `warn` unconditionally announced those as a polite `role="status"` notice. The hand-off
- * is on where this surface has nothing to lose: it owns no editable field, and the composer draft
- * the navigation passes through is flushed to its per-slot store on unmount.
+ * Every outcome here keeps the danger palette and `role="alert"`, the two recognized refusals
+ * included. A withheld switch is still a REJECTED REQUEST carrying a backend `{ error, code }`
+ * body, and `errors-use-error-notice` (blocking) names a warn-toned or `role="status"` failure as
+ * the same violation as a hand-rolled red div: toning a failure down does not make it status.
+ *
+ * The hand-off is GATED, not merely opted into. This notice owns no editable field, but it floats
+ * over the whole app: the switch is reachable from a global Alt+Shift cycle that is not input-gated,
+ * so an unsaved draft can be mounted UNDER it. `askAgent` only decides the button exists; without a
+ * `gate` the hand-off soft-navigates to `/chat` directly and unmounts that subtree, destroying the
+ * draft with no prompt. `useGuardedLeave` asks the leave guard first and vetoes the navigation when
+ * the user chooses to keep editing.
  */
 export default function AgentSwitchNotice({
   message,
   onDismiss,
+  gate,
 }: {
   /** Resolved by `agentSwitchFailureMessage`; falsy renders nothing. */
   message?: string | null
   onDismiss: () => void
+  /**
+   * The leave guard the hand-off must clear, threaded from `App` rather than read here with
+   * `useGuardedLeave`: that hook needs a Router in context, and keeping this wrapper free of
+   * routing context is what lets it be unit-rendered bare.
+   */
+  gate?: (proceed: () => void) => void
 }) {
   if (!message) return null
   return (
@@ -51,8 +62,8 @@ export default function AgentSwitchNotice({
       <ErrorNotice
         message={message}
         report={agentSwitchFailureReport(message)}
-        warn={agentSwitchWasWithheld(message)}
         askAgent={agentSwitchOffersHandoff(message)}
+        gate={gate}
         onDismiss={onDismiss}
         testId="agent-switch-error"
       />

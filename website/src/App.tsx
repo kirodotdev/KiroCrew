@@ -1646,6 +1646,9 @@ const TERMINAL_PROBE_TIMEOUT_MS = 10_000
 
 export default function App() {
   const location = useLocation()
+  // Threaded into AgentSwitchNotice below: its agent hand-off navigates away, so it must clear the
+  // leave guard first or an unsaved draft mounted under that floating notice is lost silently.
+  const agentSwitchLeave = useGuardedLeave()
   const isEmbed = location.pathname.startsWith('/embed/')
   // Sticky popout-ness: computed from the pathname at DOCUMENT LOAD, not the
   // live route. A window that loaded as /popout/* stays in the popout branch
@@ -4626,6 +4629,10 @@ export default function App() {
         <AgentSwitchNotice
           message={agentSwitchNotice.message}
           onDismiss={() => dispatch(setAgentSwitchNotice(null))}
+          // The switch is reachable from a global Alt+Shift cycle that is not input-gated, so an
+          // unsaved draft can be mounted under this floating notice. Without the gate the hand-off
+          // soft-navigates to /chat and unmounts that subtree, destroying the draft with no prompt.
+          gate={proceed => agentSwitchLeave(proceed, '/chat')}
         />
       )}
 

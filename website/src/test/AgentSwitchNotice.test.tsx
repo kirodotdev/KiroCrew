@@ -33,9 +33,12 @@ describe('the agent-switch notice', () => {
     expect(notice.textContent).toContain("project folder isn't available")
   })
 
-  it('carries the withheld-not-broken severity, and its icon', () => {
-    // The LOCALIZED refusal, not a hand-written approximation of it: severity is keyed on the
-    // copy this module produced, so a near-miss string is a generic failure and reads as danger.
+  it('reports a WITHHELD switch as a failure too, not a polite status', () => {
+    // A refusal that withheld the switch is still a rejected request carrying a backend
+    // `{ error, code }` body, so it keeps danger chrome and `role="alert"`:
+    // `errors-use-error-notice` (blocking) counts a warn- or status-toned failure as the same
+    // violation as a hand-rolled red div. Pinned on the LOCALIZED refusal, the one this module
+    // actually produces, so the assertion cannot drift from the live copy.
     render(
       <AgentSwitchNotice
         message={i18nT('utils.agentSwitchFeedback.turn_in_flight')}
@@ -43,9 +46,10 @@ describe('the agent-switch notice', () => {
       />,
     )
     const notice = screen.getByTestId('agent-switch-error')
-    // warn, not the danger default: the switch was withheld, nothing broke.
-    expect(notice.className).toContain('border-warn')
-    expect(notice.className).not.toContain('border-danger')
+    expect(notice.className).toContain('border-danger')
+    expect(notice.className).not.toContain('border-warn')
+    expect(notice.querySelector('[role="alert"]') ?? notice.closest('[role="alert"]')).toBeTruthy()
+    expect(notice.querySelector('[role="status"]')).toBeNull()
     // Severity is encoded by icon too, never colour alone.
     expect(notice.querySelector('svg')).toBeTruthy()
   })
@@ -91,6 +95,28 @@ describe('the agent-switch notice', () => {
     )
     const notice = screen.getByTestId('agent-switch-error')
     expect(Array.from(notice.querySelectorAll('button')).length).toBeGreaterThan(1)
+  })
+
+  it('runs the hand-off through the leave guard, so an unsaved draft is not lost silently', () => {
+    // This notice floats over the whole app and the switch is reachable from a global, non
+    // input-gated Alt+Shift cycle, so a dirty editor can be mounted UNDERNEATH it. The hand-off
+    // soft-navigates to /chat and unmounts that subtree, so it must ask the guard FIRST --
+    // `askAgent` alone only decides the button exists. Pinned on the gate being consulted rather
+    // than on navigation, because the veto has to happen before anything is staged.
+    const gate = vi.fn<(proceed: () => void) => void>()
+    render(
+      <AgentSwitchNotice
+        message={i18nT('utils.agentSwitchFeedback.workspace_unavailable')}
+        onDismiss={() => undefined}
+        gate={gate}
+      />,
+    )
+    const notice = screen.getByTestId('agent-switch-error')
+    const handoff = Array.from(notice.querySelectorAll('button'))
+      .find(b => /agent/i.test(b.textContent ?? ''))
+    expect(handoff).toBeTruthy()
+    fireEvent.click(handoff!)
+    expect(gate).toHaveBeenCalledTimes(1)
   })
 
   it('withholds the hand-off while a turn is in flight, so the user is not moved off it', () => {
