@@ -329,3 +329,355 @@ class TestTheReportStillFolds:
         assert "aws sts get-caller-identity" in body
         rows = json.loads((tmp_path / "rows.json").read_text(encoding="utf-8"))
         assert rows["golden_paths"][0]["command_or_flow"] == "aws sts get-caller-identity"
+
+
+def _corpus(*rows: dict) -> str:
+    return json.dumps({"golden_paths": list(rows)}, indent=2)
+
+
+def _row(command: str, *, reason: str = "the owner runs this daily") -> dict:
+    return {
+        "kind": "shell",
+        "command_or_flow": command,
+        "platform": "posix",
+        "reason": reason,
+    }
+
+
+class TestDropChangedFieldsSplitsTheCorpusByWhatIsClassified:
+    """A corpus cannot be redacted where the classifier reads it, and only there.
+
+    ``deny_diff`` selects rows by ``kind`` and ``platform`` and hands
+    ``command_or_flow`` to the deny composite verbatim at the base ref and at the
+    head ref, so a placeholder in any of the three measures an operation nobody
+    proposed -- and a placeholder where a command belongs is a command nobody ever
+    refused, which classifies as ALLOWED.
+
+    ``reason`` is prose. The classifier takes it with ``entry.get("reason", "")`` and
+    classifies nothing from it, so removing it costs that row's EXPLANATION and
+    leaves the measurement untouched.
+
+    NO ROW IS EVER REMOVED, and that is a security property rather than tidiness.
+    The rows are model-authored out of the diff under review, so a removed row is a
+    boundary the lane silently stopped probing, on input the author of that diff
+    influences.
+    """
+
+    def test_a_shape_in_the_prose_removes_the_field_and_keeps_the_row(self, tmp_path: Path) -> None:
+        clean = _row("cat ~/.kirocrew/cloud.json")
+        shaped = _row("grep -c . ~/.kirocrew/cloud.json", reason=f"the role reads {ARN} first")
+        path = tmp_path / "candidates.json"
+        path.write_text(_corpus(clean, shaped), encoding="utf-8")
+
+        code = redact.main(
+            ["--mode", "json", "--drop-changed-fields", "--fail-if-changed", str(path)]
+        )
+
+        assert code == 10
+        body = path.read_text(encoding="utf-8")
+        rows = json.loads(body)["golden_paths"]
+        assert len(rows) == 2, "no row may be removed"
+        assert rows[0] == clean
+        assert rows[1] == {
+            "kind": "shell",
+            "command_or_flow": "grep -c . ~/.kirocrew/cloud.json",
+            "platform": "posix",
+        }, "the classified fields stay verbatim and only the prose field goes"
+        assert "[REDACTED" not in body, "a corpus must carry no redaction marker"
+
+    def test_a_shape_in_a_classified_field_refuses_and_writes_nothing(self, tmp_path: Path) -> None:
+        """It can be neither rewritten nor removed, so the run is refused.
+
+        Rewriting measures an operation nobody proposed. Removing the row drops the
+        boundary it probes, which is a coverage hole rather than a scrub. Exit 11 says
+        so, and the file is left exactly as it arrived.
+        """
+        original = _corpus(
+            _row("cat ~/.kirocrew/cloud.json"),
+            _row(f"aws secretsmanager describe-secret --secret-id {ARN}"),
+        )
+        path = tmp_path / "candidates.json"
+        path.write_text(original, encoding="utf-8")
+
+        code = redact.main(["--mode", "json", "--drop-changed-fields", str(path)])
+
+        assert code == 11
+        assert path.read_text(encoding="utf-8") == original
+
+    def test_one_classified_shape_refuses_even_beside_prunable_prose(self, tmp_path: Path) -> None:
+        """Fail closed on the strictest row, not on the average of them."""
+        path = tmp_path / "candidates.json"
+        original = _corpus(
+            _row("ls ~/.kirocrew", reason=f"after reading {ARN}"),
+            _row(f"aws iam get-role --role-name {ARN}"),
+        )
+        path.write_text(original, encoding="utf-8")
+
+        assert redact.main(["--mode", "json", "--drop-changed-fields", str(path)]) == 11
+        assert path.read_text(encoding="utf-8") == original
+
+    def test_each_classified_field_refuses_on_its_own(self, tmp_path: Path) -> None:
+        """All three are read by the classifier, so all three refuse.
+
+        ``kind`` and ``platform`` come from closed sets, so a shape in one is already
+        a row the validator would reject -- but this flag must not be the thing that
+        decides that, and a shape there is no more rewritable than one in the command.
+        """
+        for field in ("kind", "command_or_flow", "platform"):
+            path = tmp_path / f"candidates-{field}.json"
+            original = _corpus({**_row("ls ~/.kirocrew"), field: ARN})
+            path.write_text(original, encoding="utf-8")
+
+            assert redact.main(["--mode", "json", "--drop-changed-fields", str(path)]) == 11, field
+            assert path.read_text(encoding="utf-8") == original, field
+
+    def test_a_clean_corpus_is_untouched_and_reports_unchanged(self, tmp_path: Path) -> None:
+        rows = [_row("cat ~/.kirocrew/cloud.json"), _row("ls ~/.kirocrew")]
+        path = tmp_path / "candidates.json"
+        path.write_text(_corpus(*rows), encoding="utf-8")
+
+        code = redact.main(
+            ["--mode", "json", "--drop-changed-fields", "--fail-if-changed", str(path)]
+        )
+
+        assert code == 0
+        assert json.loads(path.read_text(encoding="utf-8"))["golden_paths"] == rows
+
+    def test_each_credential_class_prunes_the_prose_field(self, tmp_path: Path) -> None:
+        """The flag borrows the redaction vocabulary rather than restating it.
+
+        A rule added to ``redact_text`` must reach this decision with no second edit,
+        so the classes are pinned through the flag as well as through the scrub.
+        """
+        for shaped_reason in (
+            f"the role is {ARN}",
+            f"the key id is {KEY_ID}",
+            # The account id is bounded by `\b`, so it needs a non-word character
+            # beside it. `p{ACCT}` does NOT match, so a fixture spelled that way
+            # asserts nothing about the account-id rule.
+            f"the account is /{ACCT}/",
+            f"the env holds aws_session_token={SESSION_TOKEN}",
+        ):
+            path = tmp_path / "candidates.json"
+            path.write_text(_corpus(_row("ls ~/.kirocrew", reason=shaped_reason)), encoding="utf-8")
+
+            assert (
+                redact.main(
+                    ["--mode", "json", "--drop-changed-fields", "--fail-if-changed", str(path)]
+                )
+                == 10
+            ), shaped_reason
+            row = json.loads(path.read_text(encoding="utf-8"))["golden_paths"][0]
+            assert "reason" not in row, shaped_reason
+            assert row["command_or_flow"] == "ls ~/.kirocrew", shaped_reason
+
+    def test_a_secret_named_by_an_extra_field_removes_that_field(self, tmp_path: Path) -> None:
+        """In JSON a key and its value are two separate strings.
+
+        The assignment rule cannot see the pair, so the anchored key rule is what
+        catches ``{"aws_session_token": "<secret>"}``. It reaches this decision through
+        the same walk, so the field goes and the row stays.
+        """
+        path = tmp_path / "candidates.json"
+        path.write_text(
+            _corpus(dict(_row("ls ~/.kirocrew"), aws_session_token=SESSION_TOKEN)),
+            encoding="utf-8",
+        )
+
+        assert (
+            redact.main(["--mode", "json", "--drop-changed-fields", "--fail-if-changed", str(path)])
+            == 10
+        )
+        row = json.loads(path.read_text(encoding="utf-8"))["golden_paths"][0]
+        assert "aws_session_token" not in row
+        assert row["command_or_flow"] == "ls ~/.kirocrew"
+
+    def test_a_credential_shape_in_an_extra_field_KEY_removes_that_field(
+        self, tmp_path: Path
+    ) -> None:
+        """A key is a field name, and an unclassified one is removable.
+
+        ``--mode json`` refuses the whole document on a shaped key, because rewriting
+        one changes the schema its consumer reads. Removing the field is the narrower
+        answer and does not touch what is measured. This is the path through the
+        exception, which only a key the redaction itself would rewrite reaches.
+        """
+        path = tmp_path / "candidates.json"
+        path.write_text(
+            _corpus({**_row("ls ~/.kirocrew"), ARN: "the role this row assumes"}),
+            encoding="utf-8",
+        )
+
+        assert (
+            redact.main(["--mode", "json", "--drop-changed-fields", "--fail-if-changed", str(path)])
+            == 10
+        )
+        row = json.loads(path.read_text(encoding="utf-8"))["golden_paths"][0]
+        assert ARN not in row
+        assert row["command_or_flow"] == "ls ~/.kirocrew"
+
+    def test_a_shape_outside_the_rows_is_refused(self, tmp_path: Path) -> None:
+        """Nothing outside a row says whether the classifier reads it.
+
+        Rewriting it would put a marker into a file whose contract is that the
+        measured bytes are untouched, so the answer is to refuse: the document is not
+        the one the flag describes.
+        """
+        path = tmp_path / "candidates.json"
+        path.write_text(
+            json.dumps({"golden_paths": [_row("ls ~/.kirocrew")], "note": f"for {ARN}"}, indent=2),
+            encoding="utf-8",
+        )
+
+        assert redact.main(["--mode", "json", "--drop-changed-fields", str(path)]) == 1
+
+    def test_a_document_with_no_rows_key_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "candidates.json"
+        path.write_text(json.dumps({"rows": [_row("ls ~/.kirocrew")]}), encoding="utf-8")
+
+        assert redact.main(["--mode", "json", "--drop-changed-fields", str(path)]) == 1
+
+    def test_an_unparseable_corpus_is_refused(self, tmp_path: Path) -> None:
+        path = tmp_path / "candidates.json"
+        path.write_text('{"golden_paths": [', encoding="utf-8")
+
+        assert redact.main(["--mode", "json", "--drop-changed-fields", str(path)]) == 1
+
+    def test_a_bare_list_is_accepted_like_the_committed_corpus(self, tmp_path: Path) -> None:
+        """``deny_diff.load_corpus`` accepts both shapes, so this must too."""
+        path = tmp_path / "candidates.json"
+        path.write_text(
+            json.dumps([_row("ls ~/.kirocrew", reason=f"the role is {ARN}")]), encoding="utf-8"
+        )
+
+        assert (
+            redact.main(["--mode", "json", "--drop-changed-fields", "--fail-if-changed", str(path)])
+            == 10
+        )
+        assert json.loads(path.read_text(encoding="utf-8"))[0] == {
+            "kind": "shell",
+            "command_or_flow": "ls ~/.kirocrew",
+            "platform": "posix",
+        }
+
+    def test_the_flag_is_refused_with_text_mode(self, tmp_path: Path) -> None:
+        """A corpus is a parsed document, and text mode has no fields to tell apart.
+
+        Accepting the pair would line-redact the very commands the flag exists to keep
+        byte-faithful.
+        """
+        path = tmp_path / "candidates.json"
+        path.write_text(_corpus(_row("ls ~/.kirocrew")), encoding="utf-8")
+
+        with pytest.raises(SystemExit) as caught:
+            redact.main(["--mode", "text", "--drop-changed-fields", str(path)])
+
+        assert caught.value.code == 2
+
+    def test_the_removed_count_is_printed_for_the_lane_to_report(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """The removal costs an explanation, so the number reaches the job log."""
+        path = tmp_path / "candidates.json"
+        path.write_text(
+            _corpus(
+                _row("ls ~/.kirocrew"),
+                _row("cat ~/.kirocrew/cloud.json", reason=f"the role is {ARN}"),
+                _row("jq . ~/.kirocrew/config.json", reason=f"the account is /{ACCT}/"),
+            ),
+            encoding="utf-8",
+        )
+
+        redact.main(["--mode", "json", "--drop-changed-fields", str(path)])
+
+        assert "removed=2" in capsys.readouterr().out
+
+    def test_the_pruned_rows_are_all_still_adjudicated_by_validate(self, tmp_path: Path) -> None:
+        """END TO END, through the harness the lane actually runs.
+
+        The units above prove the file; this proves the consequence. Every row the
+        reviewer proposed reaches ``validate`` and the corpus it writes for the
+        differential, with each command byte-identical -- so a credential shape in
+        prose costs no measurement at all.
+        """
+        commands = [
+            "cat ~/.kirocrew/cloud.json",
+            "ls ~/.kirocrew",
+            "jq . ~/.kirocrew/config.json",
+        ]
+        path = tmp_path / "candidates.json"
+        path.write_text(
+            _corpus(
+                _row(commands[0]),
+                _row(commands[1], reason=f"the execution role reads {ARN}"),
+                _row(commands[2]),
+            ),
+            encoding="utf-8",
+        )
+        out = tmp_path / "normalized.json"
+
+        assert (
+            redact.main(["--mode", "json", "--drop-changed-fields", "--fail-if-changed", str(path)])
+            == 10
+        )
+        assert scope.main(["validate", "--candidates", str(path), "--out", str(out)]) == 0
+
+        normalized = json.loads(out.read_text(encoding="utf-8"))["golden_paths"]
+        assert [row["command_or_flow"] for row in normalized] == commands
+        assert normalized[1].get("reason", "") == ""
+
+    def test_a_pruned_corpus_still_loads_through_the_classifier_schema(
+        self, tmp_path: Path
+    ) -> None:
+        """``reason`` is optional in the row schema, so its absence is not a defect.
+
+        Pinned against ``deny_diff``'s own loader rather than asserted, because that
+        loader is what a removed field has to survive.
+        """
+        path = tmp_path / "candidates.json"
+        path.write_text(
+            _corpus(_row("ls ~/.kirocrew", reason=f"the role is {ARN}")), encoding="utf-8"
+        )
+        redact.main(["--mode", "json", "--drop-changed-fields", str(path)])
+
+        rows = deny_diff.load_corpus(path)
+
+        assert len(rows) == 1
+        assert rows[0].command == "ls ~/.kirocrew"
+        assert rows[0].reason == ""
+
+
+class TestTheFeatureDetectionContract:
+    """Both lanes stage this script from the BASE ref and grep its help for the flag.
+
+    That is what lets a workflow which knows the flag run against a base copy that
+    does not: an unknown argument is an argparse exit 2, which says nothing about
+    credentials, so the lanes ask first and fall back to refusing the run when the
+    answer is no.
+
+    The grepped STRING is therefore a contract between this script's argparse surface
+    and two ``run:`` bodies. A rename would leave the grep matching nothing, the
+    fallback engaged permanently, and no test failing -- so the string is pinned here,
+    and against the workflows that grep it.
+    """
+
+    FLAG = "--drop-changed-fields"
+
+    def test_the_flag_appears_in_the_help_the_lanes_grep(self, capsys) -> None:
+        with pytest.raises(SystemExit) as caught:
+            redact.main(["--help"])
+
+        assert caught.value.code == 0
+        assert self.FLAG in capsys.readouterr().out
+
+    @pytest.mark.parametrize(
+        "workflow",
+        ("security-scope-review.yml", "fork-security-scope-review.yml"),
+    )
+    def test_each_lane_greps_for_exactly_this_spelling(self, workflow: str) -> None:
+        text = (ROOT / ".github" / "workflows" / workflow).read_text(encoding="utf-8")
+
+        assert f'grep -q -- "{self.FLAG}"' in text, workflow
+        # And the fallback exists: a lane that detects the flag and then does nothing
+        # different when it is absent has no fail-closed path at all.
+        assert "predates --drop-changed-fields" in text, workflow
