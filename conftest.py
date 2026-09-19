@@ -2377,12 +2377,18 @@ def pytest_collection_modifyitems(config, items):
     a junction, silently dropping the Windows behavior those tests exist to
     cover.  Exact collection markers leave every non-link path untouched.
 
-    The lists live in ``test/windows-expected-failures.txt`` and
-    ``test/macos-expected-failures.txt`` -- one unparametrized node id per line,
-    captured from the first CI runs on that OS. Each is a burn-down backlog: fixed
+    The lists live in ``test/windows-expected-failures.txt``,
+    ``test/macos-expected-failures.txt`` and
+    ``test/codebuild-expected-failures.txt`` -- one node id per line, captured from
+    the first CI runs on that OS or runner. Each is a burn-down backlog: fixed
     tests get their line deleted, and anything NOT on the list still fails the
-    job, so the line holds for the tests that pass today. Both go through the same
-    ``_apply_tracked_gap_list`` matcher; do not add a third mechanism.
+    job, so the line holds for the tests that pass today. All three go through the
+    same ``_apply_tracked_gap_list`` matcher; do not add a fourth mechanism.
+
+    Two of the three are keyed on the OS and the third on the runner, because the
+    environment it describes is a Linux one that ``sys.platform`` cannot tell from
+    the hosted Linux shards passing the same tests in the same run. See
+    :func:`on_self_hosted_runner`.
 
     Lives HERE rather than in ``test/conftest.py`` because the lists already name node
     ids under ``src/kiro_crew/apps/builtins/auto_improvement/tests/``, and a hook rooted
@@ -2421,15 +2427,41 @@ def pytest_collection_modifyitems(config, items):
         _apply_tracked_gap_list(items, "windows-expected-failures.txt", "Windows")
     elif pc.IS_MACOS:
         _apply_tracked_gap_list(items, "macos-expected-failures.txt", "macOS")
+    elif on_self_hosted_runner():
+        _apply_tracked_gap_list(
+            items, "codebuild-expected-failures.txt", "self-hosted Linux runner"
+        )
+
+
+def on_self_hosted_runner() -> bool:
+    """Whether this run is on a self-hosted CI runner rather than a hosted one.
+
+    The third gap list is keyed on the RUNNER rather than the OS, because the
+    environment that fails those tests is a Linux one: no IPv6 loopback, no ``link``
+    on the filesystem, and an unprivileged user whose resolved home is ``/root``.
+    ``sys.platform`` cannot tell it from the hosted Linux shards that pass the same
+    tests in the same run, so the list would either apply everywhere or nowhere.
+
+    ``RUNNER_ENVIRONMENT`` is GitHub's own answer to that question, and ``ci.yml``
+    already gates this job's non-root boundary assertion on the same value
+    (``runner.environment == 'self-hosted'``). Keying off it reuses the signal the
+    workflow already treats as identifying the runner instead of inventing a second
+    one, and needs nothing added to the job's environment.
+
+    Absent outside CI, so a developer machine reads as hosted and applies no list --
+    which is right: a local run has none of the three constraints.
+    """
+    return os.environ.get("RUNNER_ENVIRONMENT") == "self-hosted"
 
 
 def _apply_tracked_gap_list(items, listname: str, platform_label: str) -> None:
     """Mark every collected item named in ``test/<listname>`` as a STRICT xfail.
 
-    ONE mechanism serves both OS gap lists. macOS reuses it rather than growing a
-    second matcher, so the node-id spelling rule (``_base_nodeid``: no ``[params]``,
-    no ``@group``) and the burn-down semantics -- anything NOT listed still fails
-    the job -- are identical on both platforms by construction.
+    ONE mechanism serves all three gap lists. macOS and the self-hosted Linux runner
+    reuse it rather than growing a second matcher, so the node-id spelling rule
+    (``_base_nodeid``: no ``[params]``, no ``@group``) and the burn-down semantics --
+    anything NOT listed still fails the job -- are identical for every list by
+    construction.
 
     **``xfail(strict=True)``, not ``skip``, because these files call themselves a
     burn-down backlog and say "fix the test and DELETE the line".** A skip does not

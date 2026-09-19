@@ -10,12 +10,14 @@ batch implementation would be free to break.
 from __future__ import annotations
 
 import json
+from typing import Any
 
 import pytest
 
 from kiro_crew import crew_log as lg
 from kiro_crew.crew_log import CrewLog, CrewLogError, Ref
 from kiro_crew.crew_log import projection as crew_log
+from kiro_crew.crew_log import store
 
 SESSION = "s-fold"
 GATEWAY = "gateway"
@@ -60,13 +62,74 @@ def _turn(
     model: str = "opus",
 ) -> None:
     """A whole turn: started, one step, completed."""
-    start: dict[str, object] = {"turn": turn, "actor": "user", "depth": 0}
+    for item in _turn_items(
+        turn,
+        credits=credits,
+        tokens=tokens,
+        stop_reason=stop_reason,
+        attempt=attempt,
+        model=model,
+    ):
+        handle.append(item["type"], item["data"], src=GATEWAY)
+
+
+def _tool(
+    handle: CrewLog, turn: int, call_id: str, name: str, *, status: str = "completed"
+) -> None:
+    for item in _tool_items(turn, call_id, name, status=status):
+        handle.append(item["type"], item["data"], src=GATEWAY)
+
+
+# --- writing a fixture that has to be LONG --------------------------------- #
+#
+# A bound in this module is a bound on retained state, so reaching one costs as
+# many entries as the bound itself, and ``FOLD_CHUNK_ENTRIES`` is 1024 -- 2049
+# entries to cross it twice. One ``append`` per entry is one cross-process lock,
+# one tail scan and one ``os.fsync`` EACH, which measures 76-90 ms per entry on
+# the Windows CI runner: that puts a 2049-entry fixture at 156-185 s against a
+# 180 s per-test cap. A breach there does not fail one test. Windows has no
+# SIGALRM, so pytest-timeout falls back to the thread method and terminates the
+# whole xdist worker, and the shard runs ``--max-worker-restart=0`` deliberately,
+# so one fixture can fail a shard of 1600 tests in a file its author never opened.
+#
+# So a fixture past a few hundred entries is written with ``append_many``, the
+# production group write: the same validation, the same consecutive seqs, the same
+# file, one fsync per group. A group shares one ``time`` -- which is what a
+# production group write does as well -- and no bound here is a bound on wall
+# clock. ``test_a_grouped_fixture_is_the_log_one_append_at_a_time_writes`` pins
+# that equivalence, so this stays a change in what the fixture COSTS.
+
+_GROUP_ENTRIES = 512
+
+
+def _append_grouped(
+    handle: CrewLog, items: list[dict[str, Any]], *, group: int = _GROUP_ENTRIES
+) -> None:
+    """Append *items* with one lock and one fsync per bounded group.
+
+    Bounded rather than one write of everything, so a long fixture still crosses
+    the tail scan and the ``needs_newline`` path more than once. *group* is only
+    for the test that pins this helper, which must cross a group boundary without
+    paying for a long fixture to do it.
+    """
+    for start in range(0, len(items), group):
+        handle.append_many(items[start : start + group], src=GATEWAY)
+
+
+def _turn_items(
+    turn: int,
+    *,
+    credits: float | None = 0.5,
+    tokens: dict[str, int] | None = None,
+    stop_reason: str = "end_turn",
+    attempt: int | None = None,
+    model: str = "opus",
+) -> list[dict[str, Any]]:
+    """The four entries of one whole turn, unwritten."""
+    start: dict[str, Any] = {"turn": turn, "actor": "user", "depth": 0}
     if attempt is not None:
         start["attempt"] = attempt
-    handle.append("turn/started", start, src=GATEWAY)
-    handle.append("step/started", {"turn": turn, "step": 1}, src=GATEWAY)
-    handle.append("step/completed", {"turn": turn, "step": 1, "ms": 120}, src=GATEWAY)
-    done: dict[str, object] = {
+    done: dict[str, Any] = {
         "turn": turn,
         "stop_reason": stop_reason,
         "depth": 0,
@@ -82,29 +145,41 @@ def _turn(
             "cache_read": 5,
             "cache_write": 1,
         }
-    handle.append("turn/completed", done, src=GATEWAY)
+    return [
+        {"type": "turn/started", "data": start},
+        {"type": "step/started", "data": {"turn": turn, "step": 1}},
+        {"type": "step/completed", "data": {"turn": turn, "step": 1, "ms": 120}},
+        {"type": "turn/completed", "data": done},
+    ]
 
 
-def _tool(
-    handle: CrewLog, turn: int, call_id: str, name: str, *, status: str = "completed"
-) -> None:
-    handle.append(
-        "tool/called",
-        {"turn": turn, "call_id": call_id, "name": name, "server": "core", "kind": "mcp"},
-        src=GATEWAY,
-    )
-    handle.append(
-        "tool/completed",
+def _tool_items(
+    turn: int, call_id: str, name: str, *, status: str = "completed"
+) -> list[dict[str, Any]]:
+    """The call and the completion of one tool frame, unwritten."""
+    return [
         {
-            "turn": turn,
-            "call_id": call_id,
-            "name": name,
-            "server": "core",
-            "status": status,
-            "elapsed_ms": 42,
+            "type": "tool/called",
+            "data": {
+                "turn": turn,
+                "call_id": call_id,
+                "name": name,
+                "server": "core",
+                "kind": "mcp",
+            },
         },
-        src=GATEWAY,
-    )
+        {
+            "type": "tool/completed",
+            "data": {
+                "turn": turn,
+                "call_id": call_id,
+                "name": name,
+                "server": "core",
+                "status": status,
+                "elapsed_ms": 42,
+            },
+        },
+    ]
 
 
 def _busy_log() -> CrewLog:
@@ -400,8 +475,13 @@ def test_timeline_keeps_the_newest_moments_and_says_how_many_it_dropped():
     handle = _log()
     _opened(handle)
     wanted = crew_log.TIMELINE_LIMIT + 5
-    for turn in range(1, wanted + 1):
-        handle.append("turn/started", {"turn": turn, "actor": "user", "depth": 0}, src=GATEWAY)
+    _append_grouped(
+        handle,
+        [
+            {"type": "turn/started", "data": {"turn": turn, "actor": "user", "depth": 0}}
+            for turn in range(1, wanted + 1)
+        ],
+    )
     value = crew_log.fold_timeline(_entries(handle))
     assert len(value["moments"]) == crew_log.TIMELINE_LIMIT
     assert value["dropped"] == wanted + 1 - crew_log.TIMELINE_LIMIT
@@ -517,8 +597,14 @@ def test_tools_keeps_totals_exact_past_the_name_budget():
     handle = _log()
     _opened(handle)
     extra = 3
-    for index in range(crew_log.TOOL_NAME_LIMIT + extra):
-        _tool(handle, 1, f"c{index}", f"tool_{index:04d}")
+    _append_grouped(
+        handle,
+        [
+            item
+            for index in range(crew_log.TOOL_NAME_LIMIT + extra)
+            for item in _tool_items(1, f"c{index}", f"tool_{index:04d}")
+        ],
+    )
     value = crew_log.fold_tools(_entries(handle))
     assert len(value["by_name"]) == crew_log.TOOL_NAME_LIMIT
     assert value["names_omitted"] == extra
@@ -780,18 +866,22 @@ def test_tools_open_map_is_bounded_when_calls_are_never_completed():
     handle = _log()
     _opened(handle)
     overflow = crew_log.OPEN_RETAIN_LIMIT + 25
-    for index in range(overflow):
-        handle.append(
-            "tool/called",
+    _append_grouped(
+        handle,
+        [
             {
-                "turn": 1,
-                "call_id": f"open-{index}",
-                "name": "fs_read",
-                "server": "core",
-                "kind": "mcp",
-            },
-            src=GATEWAY,
-        )
+                "type": "tool/called",
+                "data": {
+                    "turn": 1,
+                    "call_id": f"open-{index}",
+                    "name": "fs_read",
+                    "server": "core",
+                    "kind": "mcp",
+                },
+            }
+            for index in range(overflow)
+        ],
+    )
     bundle = crew_log.fold_session(SESSION, ("tools",))
     state = bundle.checkpoints["tools"].state
     assert len(state["open"]) == crew_log.OPEN_RETAIN_LIMIT
@@ -806,12 +896,16 @@ def test_approvals_pending_map_is_bounded_when_requests_are_never_decided():
     handle = _log()
     _opened(handle)
     overflow = crew_log.OPEN_RETAIN_LIMIT + 10
-    for index in range(overflow):
-        handle.append(
-            "approval/requested",
-            {"turn": 1, "approval_id": f"ap-{index}", "tool": "shell", "reason": "x"},
-            src=GATEWAY,
-        )
+    _append_grouped(
+        handle,
+        [
+            {
+                "type": "approval/requested",
+                "data": {"turn": 1, "approval_id": f"ap-{index}", "tool": "shell", "reason": "x"},
+            }
+            for index in range(overflow)
+        ],
+    )
     bundle = crew_log.fold_session(SESSION, ("approvals",))
     state = bundle.checkpoints["approvals"].state
     assert len(state["pending"]) == crew_log.OPEN_RETAIN_LIMIT
@@ -827,8 +921,14 @@ def test_usage_by_model_is_bounded_when_many_models_appear():
     handle = _log()
     _opened(handle)
     overflow = crew_log.MODEL_LIMIT + 15
-    for turn in range(1, overflow + 1):
-        _turn(handle, turn, credits=1.0, model=f"model-{turn}")
+    _append_grouped(
+        handle,
+        [
+            item
+            for turn in range(1, overflow + 1)
+            for item in _turn_items(turn, credits=1.0, model=f"model-{turn}")
+        ],
+    )
     value = crew_log.fold_session(SESSION, ("usage",)).projection("usage").value
     assert len(value["by_model"]) == crew_log.MODEL_LIMIT
     assert value["models_omitted"] == overflow - crew_log.MODEL_LIMIT
@@ -966,8 +1066,10 @@ def test_a_cold_fold_crossing_the_chunk_boundary_matches_the_whole_file(monkeypa
     handle = _log()
     _opened(handle)
     # Two entries per tool, so this clears the chunk boundary several times over.
+    items: list[dict[str, Any]] = []
     for index in range(crew_log.FOLD_CHUNK_ENTRIES):
-        _tool(handle, 1, f"c{index}", "fs_read")
+        items.extend(_tool_items(1, f"c{index}", "fs_read"))
+    _append_grouped(handle, items)
     assert handle.last_seq > crew_log.FOLD_CHUNK_ENTRIES
 
     passes = []
@@ -985,6 +1087,58 @@ def test_a_cold_fold_crossing_the_chunk_boundary_matches_the_whole_file(monkeypa
     # More than one pass, and no pass bigger than the chunk bound.
     assert len(passes) > 1
     assert max(passes) <= crew_log.FOLD_CHUNK_ENTRIES
+
+
+def test_a_grouped_fixture_is_the_log_one_append_at_a_time_writes(monkeypatch):
+    """Writing a fixture in groups changes its COST, not the log a fold reads.
+
+    The fixtures above reach bounds that are themselves in the hundreds or
+    thousands, and one ``append`` per entry is one ``os.fsync`` per entry. The
+    cold-fold fixture's 2049 of those measure 156-185 s on the Windows runner
+    against a 180 s per-test cap, and a breach there terminates the whole xdist
+    worker instead of failing one test, so a shard of 1600 tests dies on a file its
+    author never opened. Substituting ``append_many`` is only SAFE if the entries
+    are the same ones, and only WORTH it if the durable writes stop scaling with
+    the entry count -- so this pins both halves. Without it, an edit can quietly
+    restore the per-entry cost, and the only signal is an intermittent Windows
+    worker death with no assertion to read.
+    """
+    monkeypatch.setattr(store, "now_ms", lambda: 1_700_000_000_000)
+    syncs = {"n": 0}
+    real_write_then_sync = store._write_then_sync
+
+    def counting(path, blob):
+        syncs["n"] += 1
+        return real_write_then_sync(path, blob)
+
+    monkeypatch.setattr(store, "_write_then_sync", counting)
+
+    # Small, and a group size to match: this test must cross a group boundary
+    # without paying the cost it exists to remove.
+    tools, group = 10, 8
+    items = [item for index in range(tools) for item in _tool_items(1, f"c{index}", "fs_read")]
+
+    one_at_a_time = _log("s-one-at-a-time")
+    syncs["n"] = 0
+    for index in range(tools):
+        _tool(one_at_a_time, 1, f"c{index}", "fs_read")
+    per_entry_syncs = syncs["n"]
+
+    grouped = _log("s-grouped")
+    syncs["n"] = 0
+    _append_grouped(grouped, items, group=group)
+    grouped_syncs = syncs["n"]
+
+    # The same entries, in the same order, with the same seqs and bodies.
+    assert [entry.to_dict() for entry in _entries(grouped)] == [
+        entry.to_dict() for entry in _entries(one_at_a_time)
+    ]
+    assert grouped.last_seq == one_at_a_time.last_seq == len(items)
+
+    # One durable write per entry becomes one per group.
+    assert per_entry_syncs == len(items)
+    assert grouped_syncs == -(-len(items) // group)
+    assert grouped_syncs < per_entry_syncs
 
 
 def test_an_over_long_call_id_is_counted_and_not_retained():
@@ -1093,8 +1247,14 @@ def test_names_omitted_stops_counting_rather_than_counting_a_name_twice():
     handle = _log()
     _opened(handle)
     distinct = crew_log.TOOL_NAME_LIMIT * 3
-    for index in range(distinct):
-        _tool(handle, 1, f"c{index}", f"tool_{index:05d}")
+    _append_grouped(
+        handle,
+        [
+            item
+            for index in range(distinct)
+            for item in _tool_items(1, f"c{index}", f"tool_{index:05d}")
+        ],
+    )
     value = crew_log.fold_tools(_entries(handle))
 
     omitted_names = distinct - crew_log.TOOL_NAME_LIMIT
@@ -1114,8 +1274,14 @@ def test_names_omitted_is_exact_and_unsaturated_inside_the_dedup_budget():
     handle = _log()
     _opened(handle)
     extra = 4
-    for index in range(crew_log.TOOL_NAME_LIMIT + extra):
-        _tool(handle, 1, f"c{index}", f"tool_{index:05d}")
+    _append_grouped(
+        handle,
+        [
+            item
+            for index in range(crew_log.TOOL_NAME_LIMIT + extra)
+            for item in _tool_items(1, f"c{index}", f"tool_{index:05d}")
+        ],
+    )
     value = crew_log.fold_tools(_entries(handle))
     assert value["names_omitted"] == extra
     assert value["names_omitted_saturated"] is False
@@ -1194,12 +1360,26 @@ def test_models_omitted_counts_models_not_the_turns_they_ran():
     """
     handle = _log()
     _opened(handle)
-    for index in range(crew_log.MODEL_LIMIT):
-        _turn(handle, index + 1, credits=1.0, model=f"model_{index:04d}")
+    _append_grouped(
+        handle,
+        [
+            item
+            for index in range(crew_log.MODEL_LIMIT)
+            for item in _turn_items(index + 1, credits=1.0, model=f"model_{index:04d}")
+        ],
+    )
     # One further model, run over MANY turns.
     turns = 25
-    for index in range(turns):
-        _turn(handle, crew_log.MODEL_LIMIT + index + 1, credits=1.0, model="one-extra")
+    _append_grouped(
+        handle,
+        [
+            item
+            for index in range(turns)
+            for item in _turn_items(
+                crew_log.MODEL_LIMIT + index + 1, credits=1.0, model="one-extra"
+            )
+        ],
+    )
     value = crew_log.fold_usage(_entries(handle))
 
     assert len(value["by_model"]) == crew_log.MODEL_LIMIT
@@ -1214,8 +1394,14 @@ def test_models_omitted_saturates_rather_than_counting_a_model_twice():
     handle = _log()
     _opened(handle)
     distinct = crew_log.MODEL_LIMIT * 3
-    for index in range(distinct):
-        _turn(handle, index + 1, credits=1.0, model=f"model_{index:05d}")
+    _append_grouped(
+        handle,
+        [
+            item
+            for index in range(distinct)
+            for item in _turn_items(index + 1, credits=1.0, model=f"model_{index:05d}")
+        ],
+    )
     value = crew_log.fold_usage(_entries(handle))
     omitted = distinct - crew_log.MODEL_LIMIT
     assert value["models_omitted"] <= omitted
