@@ -99,7 +99,6 @@ from kiro_crew.transcribe import (
     batch_duration_cap_secs,
     ensure_ffmpeg_in_path,
     ffmpeg_source,
-    is_available,
 )
 
 logger = logging.getLogger(__name__)
@@ -926,7 +925,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
     # set outside the thread that exists to hold the lighter ones. Windows was
     # where this first showed up, as "event-loop heartbeat: lag".
 
-    def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool, bool]:
+    def _prereqs_and_probes() -> tuple[list[str], bool, bool, bool, bool, str]:
         cmds = _stt_prereq_commands(provider)
         ensure_ffmpeg_in_path()
         # `_find_ffmpeg`, not a bare `which`: the settings panel must report on the
@@ -937,7 +936,11 @@ async def api_stt_config(request: web.Request) -> web.Response:
         # user guidance (no Python environment of the user's own to fix), so
         # the UI needs to distinguish it from the pip-less/PEP 668 causes.
         bundled = platform_compat.is_bundled_interpreter()
-        return cmds, no_ffmpeg, unsupported, bundled, is_available(cfg.stt)
+        # Derive both `available` and `code` from the SAME detail (the same probe
+        # api_stt_status uses) so the two fields cannot disagree, and the chat
+        # modal can render the precise per-code reason from this one query.
+        detail = availability_detail(cfg.stt)
+        return cmds, no_ffmpeg, unsupported, bundled, detail.ok, detail.code
 
     (
         prereqs,
@@ -945,6 +948,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
         transcribe_unsupported,
         bundled_app,
         available,
+        availability_code,
     ) = await asyncio.to_thread(_prereqs_and_probes)
     return web.json_response(
         {
@@ -952,6 +956,7 @@ async def api_stt_config(request: web.Request) -> web.Response:
             "provider": provider,
             "model": cfg.stt.model,
             "available": available,
+            "code": availability_code,
             "streaming": cfg.stt.streaming,
             "endpointing": cfg.stt.endpointing,
             "dictation_panel": cfg.stt.dictation_panel,
@@ -1258,16 +1263,16 @@ def _ffmpeg_install_commands() -> list[str]:
 def _stt_prereq_commands(provider: str = "local") -> list[str]:
     """Shell commands the user has to run themselves (they need sudo, a GUI, or a shell).
 
-    Deliberately short, and there is no install button behind it any more. Desktop
-    releases already include both runtime pieces. A source install may need the
-    optional ``voice`` extra plus system ffmpeg for batch WebM/voice-memo input,
-    while ``local`` fetches its own model.
+    Returns the actionable commands the UI surfaces (Settings -> Voice and the
+    microphone modal): the ``pip`` command for the missing ``voice``/``voice-aws``
+    extra when that extra is absent and a pip channel into this interpreter
+    exists, plus the system ffmpeg install command(s) for batch WebM/voice-memo
+    input. The extra to name depends on the provider, because an extra resolves
+    atomically and advising the full local set to a cloud-only user can fail the
+    whole install.
 
-    Desktop builds bundle the extra and must never suggest installing a system
-    dependency. A source install using Apple's OS recogniser can still use a
-    system ffmpeg as a fallback when it did not install the voice extra.
-
-    An empty list means "nothing to do", which is the steady state.
+    Desktop builds bundle both runtime pieces and run on a frozen interpreter, so
+    they return an empty list -- the steady state, meaning "nothing to do".
     """
     cmds: list[str] = []
     # Which extra to name depends on the provider, because the two halves are

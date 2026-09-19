@@ -643,7 +643,13 @@ class TestSttConfigEndpoint:
     @pytest.fixture(autouse=True)
     def _quiet_probes(self, monkeypatch):
         monkeypatch.setattr(core_mod, "_stt_prereq_commands", lambda _p: [])
-        monkeypatch.setattr(core_mod, "is_available", lambda _cfg: False)
+        # api_stt_config derives BOTH `available` and `code` from availability_detail
+        # (the same probe api_stt_status uses), so the two fields cannot disagree.
+        monkeypatch.setattr(
+            core_mod,
+            "availability_detail",
+            lambda _cfg: core_mod.stt.Availability(False),
+        )
 
     @pytest.mark.asyncio
     async def test_put_rejects_malformed_body(self, seeded_config) -> None:
@@ -873,6 +879,47 @@ class TestSttConfigEndpoint:
         # Served independently of `available` so the UI can flag the .webm
         # decode gap even when the provider reads ready.
         assert isinstance(body["ffmpeg_missing"], bool)
+        # The availability code rides this same query so the chat modal can render
+        # the precise per-code reason without a second request. Empty here because
+        # the fixture's detail is `Availability(False)` with the default CODE_OK.
+        assert body["code"] == ""
+
+    @pytest.mark.asyncio
+    async def test_get_carries_the_availability_code_from_the_same_detail(
+        self, seeded_config, monkeypatch
+    ) -> None:
+        """The chat modal keys off a machine-readable code to explain WHY voice is
+        unavailable, and it reads that code from this one query the composer
+        already makes. `available` and `code` are derived from the SAME detail so
+        a "not available" answer can never carry an empty/OK code."""
+        monkeypatch.setattr(
+            core_mod,
+            "availability_detail",
+            lambda _cfg: core_mod.stt.Availability(
+                False, core_mod.stt.CODE_EXTRA_MISSING, "needs the voice extra"
+            ),
+        )
+        async with TestClient(TestServer(_stt_app())) as client:
+            body = await (await client.get("/api/config/stt")).json()
+        assert body["available"] is False
+        assert body["code"] == core_mod.stt.CODE_EXTRA_MISSING
+        assert body["code"] == "stt_extra_missing"
+
+    @pytest.mark.asyncio
+    async def test_get_carries_an_empty_code_when_available(
+        self, seeded_config, monkeypatch
+    ) -> None:
+        """When recognition can run the code is the empty string (CODE_OK), and
+        `available` is True: the two fields are read from one detail."""
+        monkeypatch.setattr(
+            core_mod,
+            "availability_detail",
+            lambda _cfg: core_mod.stt.Availability(True),
+        )
+        async with TestClient(TestServer(_stt_app())) as client:
+            body = await (await client.get("/api/config/stt")).json()
+        assert body["available"] is True
+        assert body["code"] == ""
 
     @pytest.mark.asyncio
     async def test_get_defaults_to_the_local_provider_with_streaming_on(

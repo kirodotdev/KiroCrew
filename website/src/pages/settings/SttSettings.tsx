@@ -703,11 +703,17 @@ export default function SttSettings({ cardIndex }: {
             />
             {downloading && download ? (
               <ModelDownloadProgress download={download} />
-            ) : selectedModel?.present ? (
+            ) : selectedModel?.present && available ? (
+              // Only reassure that the model is ready when the engine can
+              // actually run it. The file existing on disk says nothing about a
+              // missing extra / wheel / toolchain, so claiming "downloaded"
+              // while `available` is false contradicts the "Not installed"
+              // status badge and its per-code reason (unavailableText) above —
+              // which stays the authoritative message in that case.
               <p className="text-[12px] text-muted -mt-1 mb-1">
                 {i18nT('pages.settings.sttSettings.model_downloaded')}
               </p>
-            ) : selectedModel ? (
+            ) : selectedModel && !selectedModel.present ? (
               // Offered BEFORE the first dictation on purpose. The alternative is
               // that the download starts when the user is already talking, where a
               // multi-hundred-megabyte transfer is indistinguishable from a hang.
