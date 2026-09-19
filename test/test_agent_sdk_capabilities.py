@@ -273,7 +273,7 @@ MAIN_ROUTING = {
     "": ("agent_spec", ("", ""), False),
     "kas": ("agent_spec", ("", ""), False),
     "claude": ("seeded_settings", ("", ""), False),
-    "codex": ("session_config", ("mode", "read-only"), True),
+    "codex": ("session_config", ("mode", "agent"), True),
     "nope": ("unverified", ("", ""), False),
     "kiro": ("unverified", ("", ""), False),
 }
@@ -290,15 +290,14 @@ def test_routing_and_permission_config_are_unchanged_by_the_move(backend: str) -
     assert acp_tool_gate.is_enforced(backend) is expected_enforced
 
 
-def test_codex_still_needs_its_read_only_mode() -> None:
-    """The one enforced harness, named rather than only parametrized.
+def test_codex_uses_its_guardian_auto_review_mode() -> None:
+    """The Codex session posture, named rather than only parametrized.
 
-    ``codex`` is the backend whose whole security argument is the session-config
-    route plus the credential mask, so its two answers get an assertion a reader
-    finds by name.
+    ``agent`` is codex-acp's advertised ``auto_review`` mode. The session-config
+    write and credential mask remain independently asserted.
     """
     assert routing_for(ACP_BACKEND_CODEX) is sdk_backends.Routing.SESSION_CONFIG
-    assert permission_config_for(ACP_BACKEND_CODEX) == ("mode", "read-only")
+    assert permission_config_for(ACP_BACKEND_CODEX) == ("mode", "agent")
 
 
 def test_known_membership_is_unchanged_by_the_move() -> None:
