@@ -758,7 +758,6 @@ test/test_mochi_mcp_server.py
 test/test_mochi_routes.py
 test/test_model_registry.py
 test/test_model_registry_parity.py
-test/test_model_selection.py
 test/test_module_loader.py
 test/test_native_subagent_spawn.py
 test/test_no_blocking_call_on_loop.py
