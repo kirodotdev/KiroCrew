@@ -211,7 +211,6 @@ def test_the_crew_parameter_admits_exactly_the_crew_names_identity_admits() -> N
 
 def test_the_task_role_can_read_no_secret() -> None:
     properties = _role(_load(CREW), "TaskRole")
-    assert "Policies" not in properties, "the task role is meant to carry no policy at all"
     assert "ManagedPolicyArns" not in properties
     # Case-INSENSITIVE on purpose. The managed policy that would grant this is
     # spelled ``SecretsManagerReadWrite``, so a lower-case substring check reads
@@ -221,6 +220,48 @@ def test_the_task_role_can_read_no_secret() -> None:
         "the task role must never reach Secrets Manager: the credential is already in the "
         "container's environment, and a turn that could re-read it could read every crew's"
     )
+
+
+def test_the_task_role_grants_exactly_the_ssm_channel_and_nothing_else() -> None:
+    """The task role's whole grant, pinned action by action.
+
+    The invariant is "this role grants nothing beyond what it needs", and it is
+    stated exactly here rather than approximated by a blanket check that the role
+    carries no policies at all. It carries one: the four ssmmessages actions that
+    let the SSM agent open its channel so the crew is reachable from a laptop.
+    Naming them action by action is stricter than a blanket check, not looser,
+    because it also fails on a fifth action nobody argued for.
+
+    Every absent string below is a real way this could widen. ``ssm:`` rather than
+    ``ssmmessages:`` would hand the TASK the caller's session permission, so a
+    prompt-reachable turn could start its own sessions. ``kms:`` is the grant a
+    session-logging design would want and this lane deliberately does not have.
+    """
+    properties = _role(_load(CREW), "TaskRole")
+    policies = properties["Policies"]
+    assert len(policies) == 1, f"expected exactly one policy, found {len(policies)}"
+
+    statements = policies[0]["PolicyDocument"]["Statement"]
+    assert len(statements) == 1, f"expected one statement, found {len(statements)}"
+    actions = statements[0]["Action"]
+
+    assert set(actions) == {
+        "ssmmessages:CreateControlChannel",
+        "ssmmessages:CreateDataChannel",
+        "ssmmessages:OpenControlChannel",
+        "ssmmessages:OpenDataChannel",
+    }, actions
+    assert len(actions) == 4, f"duplicate actions would pass the set check: {actions}"
+
+    rendered = yaml.dump(properties).lower()
+    # The task never starts a session; it answers one the caller was authorised for.
+    assert "ssm:startsession" not in rendered
+    assert "ecs:executecommand" not in rendered
+    assert "kms:" not in rendered
+    # No wildcard ACTION. Resource is "*" and has to be -- an ssmmessages channel
+    # has no ARN before it exists -- but a wildcard action would be unbounded.
+    for action in actions:
+        assert not action.endswith("*"), action
 
 
 @pytest.mark.parametrize("logical_id", ["ExecutionRole", "TaskRole"], ids=["exec", "task"])
@@ -247,6 +288,27 @@ def test_each_role_is_assumable_only_on_behalf_of_this_account(logical_id: str) 
         isinstance(source_account, dict) and source_account.get("__tag__") == "Ref"
     ), f"{logical_id} pins aws:SourceAccount to {source_account!r} rather than this account"
     assert source_account["value"] == "AWS::AccountId", source_account["value"]
+
+    # aws:SourceAccount is the key that narrows this, and it is asserted above.
+    # aws:SourceArn is asserted here as ACCOUNT-WIDE on purpose. ECS does not
+    # support a cluster-qualified value -- AWS documents that specifying a specific
+    # cluster "is not currently supported, you should use the wildcard to specify
+    # all clusters" -- so a cluster-scoped ARN never matches what ECS presents and
+    # every task launch fails. This assertion pins the SUPPORTED shape and refuses
+    # the cluster-qualified one, so a future edit cannot reintroduce a value that
+    # reads as tighter while breaking every launch.
+    source_arn = condition["ArnLike"]["aws:SourceArn"]
+    assert (
+        isinstance(source_arn, dict) and source_arn.get("__tag__") == "Sub"
+    ), f"{logical_id} pins aws:SourceArn to {source_arn!r} rather than a derived ARN"
+    rendered = source_arn["value"]
+    assert rendered.endswith(":*"), rendered
+    assert "task/" not in rendered, (
+        f"{logical_id} qualifies aws:SourceArn with a task or cluster path "
+        f"({rendered}), which ECS does not support -- launches would fail"
+    )
+    for segment in ("${AWS::Partition}", "${AWS::Region}", "${AWS::AccountId}"):
+        assert segment in rendered, f"{logical_id} hardcodes instead of {segment}: {rendered}"
 
 
 def test_no_action_anywhere_is_a_prefix_wildcard() -> None:
@@ -297,24 +359,142 @@ def test_the_execution_roles_secret_read_is_scoped_to_one_crew() -> None:
         )
 
 
-def test_the_boundary_parameter_admits_only_empty_or_the_one_boundary() -> None:
-    """Empty is the declared degraded mode; anything else must be the one policy.
+def test_each_roles_ceiling_covers_its_own_grant() -> None:
+    """The invariant F1 was a violation of: a boundary caps, so it must COVER.
+
+    An IAM permissions boundary reduces a role to the intersection of its identity
+    policy and the ceiling. So every action a role's policies grant must appear in
+    the boundary the template attaches to THAT role, or the grant is silently capped
+    away. Getting this wrong does not fail a policy simulator or a template lint --
+    it fails at launch, because ECS performs the execution role's secret read and
+    log-stream open before the container starts.
+
+    Derived from the template and the two documents rather than restated: a grant
+    added to either role without a matching ceiling entry fails here. That is the
+    check that distinguishes "both roles carry a boundary" from "each role carries a
+    boundary that lets it do its job".
+    """
+    from kiro_crew.cloud import iam
+
+    document = _load(CREW)
+    ceilings = {
+        "TaskRole": (
+            "PermissionsBoundaryArn",
+            _statement_actions(iam.crew_boundary_policy_document()["Statement"][0]),
+        ),
+        "ExecutionRole": (
+            "ExecutionPermissionsBoundaryArn",
+            _statement_actions(iam.crew_exec_boundary_policy_document()["Statement"][0]),
+        ),
+    }
+    for logical_id, (parameter, permitted) in ceilings.items():
+        properties = _role(document, logical_id)
+        assert properties["PermissionsBoundary"] == {
+            "__tag__": "Ref",
+            "value": parameter,
+        }, f"{logical_id} does not carry {parameter}: {properties['PermissionsBoundary']!r}"
+        granted = {
+            action
+            for mapping in _walk(properties.get("Policies", []))
+            if "Action" in mapping
+            for action in _statement_actions(mapping)
+        }
+        assert granted, f"{logical_id} grants nothing, so this check proves nothing"
+        uncovered = sorted(granted - set(permitted))
+        assert not uncovered, (
+            f"{logical_id}'s boundary does not permit {uncovered}, so the boundary caps "
+            f"them away and the task cannot start"
+        )
+
+
+def test_neither_ceiling_admits_the_other_roles_work() -> None:
+    """Two ceilings rather than their union, which is why they are two.
+
+    A single boundary covering both roles would have to permit
+    ``secretsmanager:GetSecretValue``, and the task role is the one a prompt can
+    reach. Keeping the secret read out of ITS ceiling is what makes "the container
+    never holds the secret-reading role" a property of the ceiling too, not only of
+    the identity policy.
+    """
+    from kiro_crew.cloud import iam
+
+    task = set(_statement_actions(iam.crew_boundary_policy_document()["Statement"][0]))
+    execution = set(_statement_actions(iam.crew_exec_boundary_policy_document()["Statement"][0]))
+    assert (
+        "secretsmanager:GetSecretValue" not in task
+    ), "the task role's ceiling admits the crew secret read"
+    assert not any(
+        a.startswith("ssmmessages:") for a in execution
+    ), "the execution role's ceiling admits the SSM channel it has no use for"
+    assert not task & execution, (task, execution)
+
+
+def test_the_boundary_parameter_admits_only_the_one_boundary() -> None:
+    """The one policy and nothing else, empty included.
 
     A widened pattern is how a boundary stops being a ceiling: an operator could
     pass a policy they authored, and the role's effective permissions would be
-    capped by nothing meaningful.
+    capped by nothing meaningful. Empty is refused for its own reason:
+    ``cloud/source.py ensure_crew_boundary`` creates this policy, so an empty value
+    means a deployment whose two roles carry no ceiling at all, which the parameter
+    rejects rather than accepting as a mode.
     """
-    pattern = re.compile(_pattern(_load(CREW), "PermissionsBoundaryArn"))
+    parameters = _load(CREW)["Parameters"]
     account = "123456789012"
-    assert pattern.fullmatch("")
-    assert pattern.fullmatch(f"arn:aws:iam::{account}:policy/kirocrew-crew-boundary")
-    for rejected in (
-        f"arn:aws:iam::{account}:policy/anything-else",
-        f"arn:aws:iam::{account}:policy/kirocrew-crew-boundary-2",
-        f"arn:aws:iam::{account}:policy/AdministratorAccess",
-        "arn:aws:iam::123:policy/kirocrew-crew-boundary",
+    for name, policy in (
+        ("PermissionsBoundaryArn", "kirocrew-crew-boundary"),
+        ("ExecutionPermissionsBoundaryArn", "kirocrew-crew-exec-boundary"),
     ):
-        assert not pattern.fullmatch(rejected), f"{rejected!r} should not be accepted"
+        parameter = parameters[name]
+        assert "Default" not in parameter, (
+            f"{name} must stay required: a default would silently deploy its role with "
+            "no ceiling"
+        )
+        pattern = re.compile(parameter["AllowedPattern"])
+        assert pattern.fullmatch(f"arn:aws:iam::{account}:policy/{policy}"), name
+        for rejected in (
+            "",
+            f"arn:aws:iam::{account}:policy/anything-else",
+            f"arn:aws:iam::{account}:policy/{policy}-2",
+            f"arn:aws:iam::{account}:policy/AdministratorAccess",
+            f"arn:aws:iam::123:policy/{policy}",
+        ):
+            assert not pattern.fullmatch(rejected), f"{name} accepted {rejected!r}"
+        # Neither parameter may admit the OTHER role's ceiling: that swap is how a
+        # deployment would cap a role with a ceiling sized for different work.
+        other = (
+            "kirocrew-crew-exec-boundary"
+            if policy == "kirocrew-crew-boundary"
+            else "kirocrew-crew-boundary"
+        )
+        assert not pattern.fullmatch(
+            f"arn:aws:iam::{account}:policy/{other}"
+        ), f"{name} accepts the other role's boundary"
+
+
+def test_both_roles_carry_the_boundary_unconditionally() -> None:
+    """No ``!If`` on either role's ``PermissionsBoundary``.
+
+    The EC2 lane sets its boundary unconditionally, and T3's finding was that this
+    template did not. A condition here would be indistinguishable from the fixed
+    shape in review while re-admitting the ungoverned deployment: the parameter is
+    required, so an ``!If`` on it could only ever take its true branch, and its
+    presence would invite restoring the empty default that made it meaningful.
+    """
+    document = _load(CREW)
+    assert "HasBoundary" not in document.get("Conditions", {}), (
+        "the HasBoundary condition is dead once the parameter is required, and "
+        "keeping it invites the empty default back"
+    )
+    for logical_id, parameter in (
+        ("ExecutionRole", "ExecutionPermissionsBoundaryArn"),
+        ("TaskRole", "PermissionsBoundaryArn"),
+    ):
+        boundary = _role(document, logical_id)["PermissionsBoundary"]
+        assert boundary == {
+            "__tag__": "Ref",
+            "value": parameter,
+        }, f"{logical_id} does not carry {parameter} unconditionally: {boundary!r}"
 
 
 def test_both_arn_patterns_accept_exactly_the_partitions_identity_accepts() -> None:

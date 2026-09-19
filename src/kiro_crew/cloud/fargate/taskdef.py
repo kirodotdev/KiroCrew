@@ -142,7 +142,15 @@ CREW_TAG_KEY = "kirocrew:crew"
 #: Version of the fingerprint payload, hashed with it. A future change to which
 #: fields are hashed becomes a visibly different key rather than a silent
 #: collision with keys computed under the old shape.
-FINGERPRINT_SCHEME = 1
+#:
+#: Bumped to 2 when the container definition gained
+#: ``linuxParameters.initProcessEnabled``. The hashed FIELDS did not change, which
+#: is exactly why the bump is needed: a revision registered under scheme 1 has a
+#: DIFFERENT document for an identical key, so a caller confirming "revision N
+#: holds the content this spec describes" would accept a stale revision that runs
+#: without an init process. The new field is a constant, so hashing it could not
+#: have told the two apart; the scheme is the only thing that can.
+FINGERPRINT_SCHEME = 2
 
 #: A digest-pinned image reference: ``<repository>@sha256:<64 hex>``. A tag is
 #: refused. A tag can be moved after a revision is registered, which leaves the
@@ -382,6 +390,13 @@ def task_definition_document(spec: TaskDefinitionSpec) -> dict[str, Any]:
                 "image": spec.image,
                 "essential": True,
                 "portMappings": [{"containerPort": FRONT_PORT, "protocol": "tcp"}],
+                # An init process inside the container, which AWS recommends
+                # specifically for ECS Exec: the SSM agent the Fargate platform
+                # bind-mounts in leaves child processes behind, and with no pid 1
+                # willing to reap them they accumulate as zombies for the task's
+                # whole life. Set on the definition because RunTask cannot
+                # override ``linuxParameters``.
+                "linuxParameters": {"initProcessEnabled": True},
                 "secrets": [
                     {"name": name, "valueFrom": destinations[name].arn}
                     for name in sorted(destinations)

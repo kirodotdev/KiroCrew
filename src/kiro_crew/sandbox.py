@@ -1305,6 +1305,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "sealed browser runtime",
         "the agent could replace the browser executable the gateway runs",
     ),
+    # These two are gateway-owned run records: results stay readable, and agent code must
+    # not rewrite the app owner a continuation restores its authorization from. The wording
+    # follows _CREW_READONLY_LEAVES' own note on them. Every leaf sealed on either nofollow
+    # list needs an entry here, which is what the assert below enforces.
     "subagents": (
         "sealed run records",
         "the agent could rewrite the app owner a cold continuation restores its "
@@ -1315,6 +1319,10 @@ _DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
         "the agent could rewrite the app owner a retained V1 run restores its "
         "authorization from",
     ),
+    # Sealing the seam that turns the feature on without sealing the record it writes
+    # would be half a control: appending one feedback row is enough to put a verdict
+    # in the owner's own summary. Every legitimate writer is the gateway, outside the
+    # sandbox.
     "decisions": (
         "sealed decision log",
         "the agent could append a feedback row the owner's summary counts as a "

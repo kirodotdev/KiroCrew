@@ -235,9 +235,7 @@ def _zone_shadows_host(zone: str, host: str) -> bool:
     return host == zone or host.endswith("." + zone)
 
 
-def shadowed_download_hosts(
-    vpc_id: str, profile: str, region: str
-) -> list[tuple[str, str]]:
+def shadowed_download_hosts(vpc_id: str, profile: str, region: str) -> list[tuple[str, str]]:
     """``(host, zone)`` pairs where a private hosted zone hides a download host.
 
     An interface VPC endpoint with private DNS enabled creates a private hosted
@@ -309,9 +307,7 @@ def assert_download_hosts_resolvable(vpc_id: str, profile: str, region: str) -> 
     )
 
 
-def discover_network(
-    profile: str, region: str, instance_type: str = ""
-) -> tuple[str, str, str]:
+def discover_network(profile: str, region: str, instance_type: str = "") -> tuple[str, str, str]:
     """Resolve a (vpc_id, subnet_id, egress_kind) to launch into.
 
     ``egress_kind`` is ``"nat"`` or ``"igw"`` — the caller uses it to decide
@@ -689,9 +685,7 @@ def deploy(
                 subnet_id, profile, region, tier.instance_type
             )
         else:
-            vpc_id, subnet_id, egress_kind = discover_network(
-                profile, region, tier.instance_type
-            )
+            vpc_id, subnet_id, egress_kind = discover_network(profile, region, tier.instance_type)
         # Both paths above settle on a VPC; check the resolver BEFORE provisioning
         # anything. A private hosted zone that shadows a download host makes the
         # bootstrap fail deterministically minutes later, blaming the wrong layer.

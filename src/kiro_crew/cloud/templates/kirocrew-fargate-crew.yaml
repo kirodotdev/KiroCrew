@@ -33,26 +33,53 @@ Parameters:
 
   PermissionsBoundaryArn:
     Type: String
-    Default: ""
-    # Empty is a DECLARED degraded mode, not an oversight. The EC2 lane caps its
-    # instance role with a shared, pre-created, immutable boundary authored ONCE
-    # by launcher code (cloud/iam.py ensure_instance_boundary), so a leaked
-    # launcher credential cannot author a permissive one. No equivalent creator
-    # exists for the crew boundary yet: cloud/iam.py builds only the EC2 one.
-    # Rather than reference a policy nothing creates, this parameter accepts the
-    # exact ARN once that creator lands and otherwise deploys without a ceiling.
-    # A test asserts the pattern stays exact, so widening it is a visible edit.
-    # A test compares this against identity._PARTITION_RE behaviourally, so the
-    # partition alternation cannot drift from the one CrewBinding accepts: a
-    # pattern that admitted only "aws" would refuse a valid aws-cn or aws-us-gov
-    # ARN at parameter validation, and the per-crew stack would simply fail to
-    # deploy in those partitions.
-    AllowedPattern: "^$|^arn:aws(-[a-z0-9]+)*:iam::[0-9]{12}:policy/kirocrew-crew-boundary$"
+    # REQUIRED, with no Default. A security parameter that accepts empty is the
+    # optional-security-control shape: the parameter's presence makes the ceiling
+    # look present while an empty value leaves it absent. The creator exists:
+    # cloud/source.py ensure_crew_boundary authors this policy ONCE from a
+    # content-fixed document and FAILS CLOSED when an existing policy at the name
+    # does not match it, so a leaked launcher credential cannot seed a permissive
+    # ceiling and have it reused. With that in place there is no honest reason to
+    # accept empty, and the ceiling an empty value skips is the only thing standing
+    # between a compromised task role and whatever its policies later grow.
+    #
+    # Free to require right now: nothing deploys this template yet, so there is no
+    # existing stack to break.
+    #
+    # Three tests hold this shape. One asserts the pattern stays exact, so widening
+    # it is a visible edit. One asserts empty is REJECTED, so the degraded mode
+    # cannot return by restoring a single alternation. One compares this against
+    # identity._PARTITION_RE behaviourally, so the partition alternation cannot
+    # drift from the one CrewBinding accepts: a pattern admitting only "aws" would
+    # refuse a valid aws-cn or aws-us-gov ARN at parameter validation, and the
+    # per-crew stack would simply fail to deploy in those partitions.
+    AllowedPattern: "^arn:aws(-[a-z0-9]+)*:iam::[0-9]{12}:policy/kirocrew-crew-boundary$"
     Description: >-
-      ARN of the pre-created shared crew permissions boundary
-      (arn:aws:iam::<account>:policy/kirocrew-crew-boundary), or empty until the
-      code that creates it exists. When set, it is the ceiling on what these
-      roles can ever do regardless of attached policies.
+      ARN of the shared TASK-role permissions boundary
+      (arn:aws:iam::<account>:policy/kirocrew-crew-boundary), created by
+      cloud/source.py ensure_crew_boundary. The ceiling on what TaskRole can ever
+      do regardless of the policies attached to it.
+
+  ExecutionPermissionsBoundaryArn:
+    Type: String
+    # A SEPARATE ceiling for ExecutionRole, and the separation is load-bearing
+    # rather than tidy. A boundary caps to the intersection of the identity policy
+    # and the ceiling, and this role's job is different from TaskRole's: ECS uses it
+    # to fetch the crew's secret and open its log stream BEFORE the container
+    # starts. Capping it with the task role's four ssmmessages actions denies both,
+    # so no task launches at all. Sizing one ceiling to cover both roles would
+    # instead be their union, which hands TaskRole the secretsmanager read that
+    # keeping the secret off the container is the whole point of.
+    #
+    # Required with no Default for the same reason as the parameter above, and
+    # pinned to one exact policy name by the same kind of pattern, so an operator
+    # cannot pass a ceiling they authored.
+    AllowedPattern: "^arn:aws(-[a-z0-9]+)*:iam::[0-9]{12}:policy/kirocrew-crew-exec-boundary$"
+    Description: >-
+      ARN of the shared EXECUTION-role permissions boundary
+      (arn:aws:iam::<account>:policy/kirocrew-crew-exec-boundary), created by
+      cloud/source.py ensure_crew_exec_boundary. The ceiling on what ExecutionRole
+      can ever do regardless of the policies attached to it.
 
   EcrRepositoryArn:
     Type: String
@@ -69,7 +96,6 @@ Parameters:
       image is pulled from a public registry.
 
 Conditions:
-  HasBoundary: !Not [!Equals [!Ref PermissionsBoundaryArn, ""]]
   HasPrivateRegistry: !Not [!Equals [!Ref EcrRepositoryArn, ""]]
 
 Resources:
@@ -99,7 +125,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "kirocrew-crew-${Crew}-exec"
-      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      PermissionsBoundary: !Ref ExecutionPermissionsBoundaryArn
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -107,10 +133,32 @@ Resources:
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
             Condition:
-              # Without this the role is assumable on behalf of any task in the
-              # account, including one an unrelated stack registered.
+              # Two keys, and only one of them can narrow what this actually is.
+              #
+              # aws:SourceAccount closes the CROSS-ACCOUNT confused deputy: a
+              # principal in another account cannot get ecs-tasks.amazonaws.com to
+              # assume this role on its behalf. This is the key doing the work.
+              #
+              # aws:SourceArn is ACCOUNT-WIDE, not cluster-scoped, because ECS does
+              # not support the narrower form. AWS states it directly: "Using the
+              # aws:SourceArn condition key to specify a specific cluster is not
+              # currently supported, you should use the wildcard to specify all
+              # clusters", and the documented example is this exact shape beside
+              # SourceAccount. A cluster-qualified value does not match what ECS
+              # presents when it assumes the role, so every task launch would fail.
+              #
+              # What that costs, stated plainly rather than implied: within one
+              # account these two keys do NOT distinguish one cluster from another,
+              # so any task definition this account can register may carry this role
+              # -- and this role reads the crew's secret namespace. Account scoping
+              # plus SourceAccount is the supported ceiling here, not a trade chosen
+              # for convenience. Narrowing the same-account case needs a different
+              # mechanism than a trust-policy condition.
               StringEquals:
                 "aws:SourceAccount": !Ref "AWS::AccountId"
+              ArnLike:
+                "aws:SourceArn": !Sub
+                  "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*"
       Policies:
         - PolicyName: CrewSecretRead
           PolicyDocument:
@@ -165,8 +213,16 @@ Resources:
         - { Key: "kirocrew:crew", Value: !Ref Crew }
 
   # --- Task role: the identity the RUNNING container carries, and therefore the
-  #     blast radius one agent turn reaches. It is created with NO policies at
-  #     all, which is the intended starting state rather than an unfinished one.
+  #     blast radius one agent turn reaches. It carries exactly ONE policy, the
+  #     four ssmmessages actions the SSM agent needs to open its channel, and
+  #     nothing else. Those four are what make the task reachable from a laptop
+  #     over a port-forward; before this it had no policies at all.
+  #
+  #     Four actions and not a fifth. Not `ssm:*`, not `ssm:StartSession` (that is
+  #     the CALLER's permission, not the task's), not kms:Decrypt. The agent
+  #     opens control and data channels and does nothing else, so a wider grant
+  #     would buy the task nothing while widening what one prompt-reachable turn
+  #     could reach.
   #
   #     It must NEVER be granted secretsmanager:GetSecretValue. identity.py's
   #     task_role_arn docstring states the reason: the model credential is
@@ -178,7 +234,7 @@ Resources:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub "kirocrew-crew-${Crew}-task"
-      PermissionsBoundary: !If [HasBoundary, !Ref PermissionsBoundaryArn, !Ref "AWS::NoValue"]
+      PermissionsBoundary: !Ref PermissionsBoundaryArn
       AssumeRolePolicyDocument:
         Version: "2012-10-17"
         Statement:
@@ -186,8 +242,40 @@ Resources:
             Principal: { Service: ecs-tasks.amazonaws.com }
             Action: sts:AssumeRole
             Condition:
+              # Same pair as ExecutionRole, and the same ceiling: ECS does not
+              # support a cluster-qualified aws:SourceArn, so this is account-wide
+              # and the reasoning is spelled out on that role.
+              #
+              # The consequence lands harder here, so it is worth naming twice. This
+              # role holds a real grant, the SSM channel below, and account scoping
+              # means any task definition this account can register may carry it.
+              # SourceAccount keeps that within the owner's own account; nothing in
+              # a trust policy can narrow it to one cluster.
               StringEquals:
                 "aws:SourceAccount": !Ref "AWS::AccountId"
+              ArnLike:
+                "aws:SourceArn": !Sub
+                  "arn:${AWS::Partition}:ecs:${AWS::Region}:${AWS::AccountId}:*"
+      Policies:
+        - PolicyName: SsmChannel
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Resource "*" is the only form these four accept: an ssmmessages
+              # channel has no ARN to name before it is opened, and AWS's own
+              # managed policy for the same purpose is written the same way. The
+              # scoping that matters is therefore on the OTHER side -- the caller
+              # needs ssm:StartSession on this task's ARN and on the port-forward
+              # document, and holds no ecs:ExecuteCommand at all, so these four
+              # let the agent answer a session that IAM has already authorised
+              # rather than letting the task initiate anything.
+              - Effect: Allow
+                Action:
+                  - ssmmessages:CreateControlChannel
+                  - ssmmessages:CreateDataChannel
+                  - ssmmessages:OpenControlChannel
+                  - ssmmessages:OpenDataChannel
+                Resource: "*"
       Tags:
         - { Key: "kirocrew:managed", Value: "true" }
         - { Key: "kirocrew:crew", Value: !Ref Crew }

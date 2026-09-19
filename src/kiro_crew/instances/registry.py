@@ -42,6 +42,7 @@ from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import _DEFAULT_PORT, config_dir
 from kiro_crew.instances.constants import TTL_PATTERN
 from kiro_crew.instances.validation import _AWS_PROFILE_RE as _validation_aws_profile_re
+from kiro_crew.instances.validation import ssm_target_matches
 from kiro_crew.slugs import slug_hash_fallback
 
 logger = logging.getLogger(__name__)
@@ -62,10 +63,15 @@ _ID_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}\Z")
 _SSH_HOST_RE = re.compile(r"^[A-Za-z0-9._@\-]{1,255}\Z")
 _REMOTE_BIN_RE = re.compile(r"^[A-Za-z0-9._/~\- ]{0,512}\Z")
 
-# ssm_target: an EC2 instance id (i-<17 hex>) or an SSM managed-instance id
-# (mi-<17 hex>); early reject only, mirroring the ssh_host guard above — the
+# ssm_target: an EC2 instance id (i-<hex>), an SSM managed-instance id
+# (mi-<hex>), or an ECS task target (ecs:<cluster>_<taskId>_<runtimeId>) for the
+# Fargate lane; early reject only, mirroring the ssh_host guard above — the
 # authoritative validation lives with the tunnel manager (validation.py).
-_SSM_TARGET_RE = re.compile(r"^(i|mi)-[a-f0-9]{8,17}\Z")
+#
+# The shape is NOT re-spelled here. A per-module copy of the same security charset
+# lets one lane be widened while the other goes on refusing the value, so the
+# decision lives in validation.ssm_target_matches and is imported, the same seam
+# _AWS_PROFILE_RE uses below.
 # aws_profile: named profile in ~/.aws/config; conservative charset, no shell
 # metacharacters ('+' is legal: IAM entity names permit it, and SSO-derived
 # profiles use "<account>+<permission-set>"). Single source of truth lives in
@@ -235,12 +241,25 @@ class Instance:
                     f"invalid ssh_host {self.ssh_host!r}: must match {_SSH_HOST_RE.pattern}"
                 )
         else:  # ssm
-            if not self.ssm_target or not _SSM_TARGET_RE.match(self.ssm_target):
+            # Checked UNSTRIPPED, and the caller this reaches is user input, not a
+            # stored record: handlers_instances passes
+            # ``str(body.get("ssm_target", ""))`` from the request body straight
+            # into this constructor. ``validate_ssm_target`` is the layer that
+            # strips, and it is not on this path -- it runs later, at connect time.
+            #
+            # So the realistic case is a paste. An ECS target is 90-plus characters
+            # copied out of the AWS console, where a trailing space or newline rides
+            # along far more often than it does with ``i-0abc``, and this refuses it
+            # rather than storing it. That fails closed, which is why the behaviour
+            # is left alone here, but a reader should know it is the paste that
+            # lands on it.
+            if not self.ssm_target or not ssm_target_matches(self.ssm_target):
                 # No regex in the message — it reaches the Settings form verbatim.
                 raise InvalidInstanceError(
                     f"invalid ssm_target {self.ssm_target!r}: must be an EC2/SSM "
                     f"managed-instance id (i-... or mi-...) followed by 8 to 17 "
-                    f"hex digits"
+                    f"hex digits, or an ECS task target "
+                    f"(ecs:<cluster>_<task-id>_<runtime-id>)"
                 )
             if self.aws_profile and not _AWS_PROFILE_RE.match(self.aws_profile):
                 raise InvalidInstanceError(

@@ -134,6 +134,121 @@ def boundary_policy_json(account: str = "*") -> str:
     return json.dumps(boundary_policy_document(account))
 
 
+#: The Fargate TASK role's permissions boundary. A SECOND boundary rather than a reuse
+#: of ``kirocrew-ec2-boundary``, and that is the point: the EC2 ceiling's content
+#: is :data:`_SSM_CORE_ACTIONS` plus an S3 read, so it names ``ec2messages:*``,
+#: ``ssm:GetParameter`` and twelve other ``ssm:`` actions. Capping a role whose
+#: entire grant is four ``ssmmessages:*`` actions with that ceiling would cap
+#: nothing at all -- a ceiling above the floor -- while reading as compliance
+#: because a boundary would be attached. This one's ceiling is exactly the four,
+#: so the boundary and the role's policy say the same thing.
+#:
+#: The name is referenced by ``kirocrew-fargate-crew.yaml``'s
+#: ``PermissionsBoundaryArn`` parameter, whose ``AllowedPattern`` pins this exact
+#: policy name, so the two cannot drift apart silently.
+CREW_BOUNDARY_NAME = "kirocrew-crew-boundary"
+
+
+def crew_boundary_arn(account: str) -> str:
+    """ARN of the shared, create-once Fargate crew permissions boundary."""
+    return f"arn:aws:iam::{account}:policy/{CREW_BOUNDARY_NAME}"
+
+
+def crew_boundary_policy_document() -> dict[str, Any]:
+    """The CONTENT-FIXED ceiling for the Fargate task and execution roles.
+
+    Takes no ``account``, unlike :func:`boundary_policy_document`: that one's S3
+    statement has to name the account's launcher buckets, and this has no
+    resource-scoped statement to parameterise. Content-fixed with nothing in it to
+    vary means one policy serves every account and every region, which is what
+    makes "create once, never re-version" safe.
+
+    ``Resource: "*"`` on the four actions is the only form they accept -- an
+    ssmmessages channel has no ARN before it is opened -- and a boundary CAPS
+    rather than grants, so the breadth here cannot hand anything out. What it does
+    is refuse everything else: a task role that later acquired
+    ``secretsmanager:GetSecretValue``, ``ssm:StartSession`` or a wildcard would be
+    capped back to these four by this ceiling even if its own policy granted more.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "SsmChannelOnly",
+                "Effect": "Allow",
+                "Action": [
+                    "ssmmessages:CreateControlChannel",
+                    "ssmmessages:CreateDataChannel",
+                    "ssmmessages:OpenControlChannel",
+                    "ssmmessages:OpenDataChannel",
+                ],
+                "Resource": "*",
+            },
+        ],
+    }
+
+
+def crew_boundary_policy_json() -> str:
+    """The crew boundary document as compact JSON (for ``iam create-policy``)."""
+    return json.dumps(crew_boundary_policy_document())
+
+
+#: The Fargate EXECUTION role's permissions boundary. A THIRD boundary, and the
+#: reason is that a boundary caps to the intersection of the identity policy and
+#: the ceiling: capping this role with :func:`crew_boundary_policy_document`'s four
+#: ``ssmmessages`` actions would deny the secret read and the log-stream open that
+#: ECS performs BEFORE the container starts, so every task would fail to launch.
+#: The two roles have genuinely different jobs -- the task role talks to SSM, the
+#: execution role fetches the crew's secret and opens its log stream -- so one
+#: ceiling cannot fit both without being the union, and a union would hand the task
+#: role the secret read that keeping it off the container is the whole point of.
+CREW_EXEC_BOUNDARY_NAME = "kirocrew-crew-exec-boundary"
+
+
+def crew_exec_boundary_arn(account: str) -> str:
+    """ARN of the shared, create-once Fargate execution-role boundary."""
+    return f"arn:aws:iam::{account}:policy/{CREW_EXEC_BOUNDARY_NAME}"
+
+
+def crew_exec_boundary_policy_document() -> dict[str, Any]:
+    """The CONTENT-FIXED ceiling for the Fargate execution role.
+
+    Exactly the actions ``kirocrew-fargate-crew.yaml`` grants that role and no
+    others: the crew's secret read, the two log-stream writes, and the four ECR
+    reads a private registry needs. A contract test compares this set against the
+    template's own ExecutionRole policies, so a grant added there without a matching
+    entry here fails rather than silently launching a task ECS cannot start.
+
+    ``Resource: "*"`` because a boundary caps ACTIONS while the identity policy
+    keeps the resource scoping -- the secret read is pinned to one crew's namespace
+    and the log writes to that crew's group there, and a boundary cannot widen them.
+    """
+    return {
+        "Version": "2012-10-17",
+        "Statement": [
+            {
+                "Sid": "CrewExecutionEssentials",
+                "Effect": "Allow",
+                "Action": [
+                    "secretsmanager:GetSecretValue",
+                    "logs:CreateLogStream",
+                    "logs:PutLogEvents",
+                    "ecr:GetAuthorizationToken",
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:BatchGetImage",
+                    "ecr:GetDownloadUrlForLayer",
+                ],
+                "Resource": "*",
+            },
+        ],
+    }
+
+
+def crew_exec_boundary_policy_json() -> str:
+    """The execution-role boundary document as compact JSON."""
+    return json.dumps(crew_exec_boundary_policy_document())
+
+
 # The CloudFormation stack-name prefix (mirrors ec2.STACK_PREFIX); the stack
 # mutation/delete statement is scoped to it so the policy can't touch unrelated
 # stacks. Kept as a local constant to avoid importing the ec2 module here.
@@ -489,7 +604,7 @@ def policy_document() -> dict[str, Any]:
             #     default version id.
             #   * GetPolicyVersion — read the existing boundary's document so the
             #     launcher can VERIFY it matches the content-fixed document before
-            #     reusing it (source._verify_instance_boundary_content); a permissive
+            #     reusing it (source._verify_boundary_content); a permissive
             #     boundary seeded at this name is detected + refused, not trusted.
             #   * CreatePolicy — create it the first time.
             # We deliberately do NOT grant CreatePolicyVersion / DeletePolicyVersion
@@ -517,7 +632,17 @@ def policy_document() -> dict[str, Any]:
                 "iam:GetPolicy",
                 "iam:GetPolicyVersion",
             ],
-            "Resource": f"arn:aws:iam::*:policy/{BOUNDARY_NAME}",
+            # Two EXACT names, never a prefix. `policy/kirocrew-*` would let a
+            # leaked launcher credential author any policy whose name started that
+            # way and then attach it, which is the whole escalation this statement
+            # is shaped to prevent. The Fargate crew boundary is listed beside the
+            # EC2 one because it is created the same way -- once, content-fixed,
+            # never re-versioned -- and needs the same three verbs and no others.
+            "Resource": [
+                f"arn:aws:iam::*:policy/{BOUNDARY_NAME}",
+                f"arn:aws:iam::*:policy/{CREW_BOUNDARY_NAME}",
+                f"arn:aws:iam::*:policy/{CREW_EXEC_BOUNDARY_NAME}",
+            ],
         },
         {
             # Attach/detach are split out and constrained by iam:PolicyARN to the
@@ -602,6 +727,85 @@ def policy_document() -> dict[str, Any]:
                 "arn:aws:ssm:*::document/AWS-StartPortForwardingSession",
                 "arn:aws:ssm:*::document/AWS-RunShellScript",
                 "arn:aws:ssm:*:*:session/*",
+            ],
+        },
+        {
+            # The Fargate lane's target. A NEW statement rather than a widening of
+            # SsmSessionOnManagedInstances above: that one's resource is
+            # ``ec2:*:*:instance/*``, which no ECS task ARN can ever match, so
+            # editing it would have produced a statement that reads as if it covers
+            # both lanes while authorising only one.
+            #
+            # StartSession ONLY. SendCommand is deliberately absent: RunCommand
+            # cannot target an ECS task at all, so granting it here would be a
+            # permission with no reachable use -- and the pairing above is what
+            # makes it easy to add by reflex.
+            #
+            # Scoped by CLUSTER NAME PREFIX because this policy is content-fixed: it
+            # takes no arguments and is the same text for every deployment, which is
+            # why CloudFormationStackMutate scopes to ``stack/kirocrew-*`` rather
+            # than to one stack. The base template names its cluster
+            # ``kirocrew-crew-<tag>``, so this reaches the crew clusters this
+            # launcher creates and nothing else. That is the OUTER bound; the inner one is each crew
+            # stack's trust policy, which pins aws:SourceArn to its own exact
+            # cluster. The two are not in disagreement -- a caller may address any
+            # crew cluster, and only the tasks of one cluster may carry that
+            # cluster's roles.
+            #
+            # Residual, stated rather than papered over: no
+            # ``ssm:resourceTag/kirocrew:managed`` condition, unlike the instance
+            # statement above. Whether that key is evaluated when the StartSession
+            # target is an ECS task ARN is unverified, and an unhonoured condition
+            # fails the wrong way here -- it would stop the statement matching and
+            # break the lane rather than tighten it. The ARN pattern is the bound
+            # until that is measured live.
+            "Sid": "SsmSessionOnCrewTasks",
+            "Effect": "Allow",
+            "Action": [
+                "ssm:StartSession",
+            ],
+            "Resource": "arn:aws:ecs:*:*:task/kirocrew-crew-*/*",
+        },
+        {
+            # An explicit Deny on the interactive session documents AWS ships today,
+            # named one by one. An explicit Deny cannot be overridden by any Allow,
+            # which is the reason this is a Deny statement rather than simply the
+            # absence of these documents from the Allow lists above.
+            #
+            # What it does NOT do, said plainly because an earlier wording here
+            # claimed otherwise: it does not keep the shell closed against a document
+            # nobody has enumerated. AWS can ship a new interactive document tomorrow
+            # and this statement will not name it. So this list is defense in depth,
+            # not the barrier.
+            #
+            # The barrier is that NO Allow in this policy grants ANY interactive
+            # document, so IAM's default deny already refuses them. This Deny only
+            # begins to matter on the day an edit adds such an Allow -- which is the
+            # same day its enumeration gap would matter. Closing the gap needs an
+            # inverted Deny (NotResource), and that shape's failure mode is that a new
+            # resource type in the StartSession authorisation context denies the whole
+            # call: fail-closed, but it reads as an outage. That trade needs a
+            # deliberate operational decision with an owner, so this statement
+            # enumerates and the inversion is tracked separately.
+            #
+            # The Fargate task is permanently shell-capable once enableExecuteCommand
+            # is set -- the platform bind-mounts its SSM agent in -- so IAM is the
+            # only thing between a principal and a root shell in the container. The
+            # load-bearing halves of that are the total absence of ecs:ExecuteCommand
+            # and the absence of any interactive-document Allow. Port-forwarding needs
+            # none of these documents: AWS documents stopping non-ECS-Exec sessions
+            # with a Deny on ssm:StartSession scoped to the task, which would be
+            # pointless if ecs:ExecuteCommand gated the path.
+            "Sid": "DenyInteractiveSessionDocuments",
+            "Effect": "Deny",
+            "Action": [
+                "ssm:StartSession",
+            ],
+            "Resource": [
+                "arn:aws:ssm:*::document/SSM-SessionManagerRunShell",
+                "arn:aws:ssm:*::document/AWS-StartInteractiveCommand",
+                "arn:aws:ssm:*::document/AWS-StartSSHSession",
+                "arn:aws:ssm:*::document/AWS-StartNonInteractiveCommand",
             ],
         },
         {

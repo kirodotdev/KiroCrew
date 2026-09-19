@@ -33,6 +33,33 @@ class TestArgvBuilders:
         assert "--profile" not in argv
         assert "--region" not in argv
 
+    def test_ecs_argv_differs_from_ec2_only_in_the_target(self):
+        """One argv serves both lanes, so the EC2 command cannot drift.
+
+        The Fargate lane forwards into the task with the SAME
+        ``AWS-StartPortForwardingSession`` document as the EC2 lane -- there is no
+        per-lane document and no per-lane branch. Asserted as an element-wise
+        comparison rather than by spot-checking membership: if a future change
+        adds a Fargate-only flag, or swaps the document for the ToRemoteHost one
+        (which takes a caller-chosen ``host`` and so can be pointed at a third
+        machine), exactly one of these assertions fails.
+        """
+        task = "0123456789abcdef0123456789abcdef"
+        ecs_target = f"ecs:mycluster_{task}_{task}-1234567890"
+
+        ec2 = ssm.build_port_forward_argv("i-0abc", 5476, 5599, "dev", "us-east-1")
+        ecs = ssm.build_port_forward_argv(ecs_target, 5476, 5599, "dev", "us-east-1")
+
+        assert len(ec2) == len(ecs)
+        differing = [i for i, (a, b) in enumerate(zip(ec2, ecs)) if a != b]
+        assert differing == [ec2.index("--target") + 1]
+        assert ecs[differing[0]] == ecs_target
+        # The document is the plain one for both, and carries no `host` parameter.
+        assert "AWS-StartPortForwardingSession" in ecs
+        assert "AWS-StartPortForwardingSessionToRemoteHost" not in ecs
+        assert not any(arg.startswith("host=") or ",host=" in arg for arg in ecs)
+        assert "portNumber=5476,localPortNumber=5599" in ecs
+
     def test_argv_heads_resolved_absolutely_under_minimal_path(self, monkeypatch, tmp_path):
         """``build_port_forward_argv`` must resolve the CLI absolutely under a
         GUI-launched gateway's minimal PATH via the deploy engine's shared
@@ -533,6 +560,31 @@ class TestRunCommand:
         assert ssm._USERNAME_RE.match("ec2-user")
         assert not ssm._USERNAME_RE.match("bad user")
         assert not ssm._USERNAME_RE.match("-leadingdash")
+
+    def test_run_as_rejects_trailing_newline(self, monkeypatch):
+        """A trailing newline must not reach the remote command string.
+
+        ``run_as`` is interpolated into the single-line string
+        ``_wrap_remote_command`` builds (``… | sudo -u {run_as} -i bash``), where a
+        newline ends that line and begins a second shell statement. The pattern
+        was anchored with ``$``, which also matches just before a trailing
+        newline, so ``"ec2-user\\n"`` passed this check; it is now ``\\Z``.
+
+        No caller threads user input into ``run_as`` today -- every one passes the
+        default or a registry value ``validate_ssm_run_as`` has already bounded --
+        so this was latent rather than exploitable. It is pinned because
+        :func:`run_command`'s docstring promises the surface stays closed if a
+        caller ever does, and under ``$`` that promise did not hold.
+        """
+        assert not ssm._USERNAME_RE.match("ec2-user\n")
+        monkeypatch.setattr(aws, "checked_json", lambda *a, **k: pytest.fail("must reject first"))
+        with pytest.raises(aws.AWSError, match="run_as"):
+            ssm.run_command("i-0abc", "echo hi", "dev", run_as="ec2-user\n")
+
+    def test_wrapped_command_never_contains_a_newline_from_run_as(self):
+        """The property the anchor protects, asserted on the built string itself."""
+        wrapped = ssm._wrap_remote_command("echo hi", "ec2-user")
+        assert "\n" not in wrapped
 
 
 class TestManaged:

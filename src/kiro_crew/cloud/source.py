@@ -497,6 +497,78 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     """
     from kiro_crew.cloud import iam
 
+    account = _require_account(profile, region)
+    return _ensure_boundary(
+        name=iam.BOUNDARY_NAME,
+        arn=iam.boundary_arn(account),
+        expected=iam.boundary_policy_document(account),
+        description=(
+            "Kiro Crew EC2 instance permissions ceiling (SSM core + launcher source read)."
+        ),
+        profile=profile,
+        region=region,
+    )
+
+
+def ensure_crew_boundary(profile: str = "", region: str = "") -> str:
+    """Create (once, idempotently) the shared Fargate crew boundary; return its ARN.
+
+    The creator T3 asked for, and the reason ``kirocrew-fargate-crew.yaml`` can
+    REQUIRE a boundary instead of defaulting to none. Same create-once,
+    never-re-versioned contract as the instance boundary, and the SAME fail-closed
+    content check (:func:`_verify_boundary_content`) reached through the same
+    :func:`_ensure_boundary` sequence -- not a second copy of it. So an existing
+    policy at this name is reused only when its content is exactly ours; a
+    permissive one seeded there is refused rather than trusted to cap nothing.
+
+    The document takes no account: the crew ceiling is content-fixed
+    (:func:`iam.crew_boundary_policy_document`), so one policy serves every account
+    and every region. The ARN still embeds the account, which is why this resolves
+    it.
+    """
+    from kiro_crew.cloud import iam
+
+    account = _require_account(profile, region)
+    return _ensure_boundary(
+        name=iam.CREW_BOUNDARY_NAME,
+        arn=iam.crew_boundary_arn(account),
+        expected=iam.crew_boundary_policy_document(),
+        description=("Kiro Crew Fargate crew permissions ceiling (the four SSM channel actions)."),
+        profile=profile,
+        region=region,
+    )
+
+
+def ensure_crew_exec_boundary(profile: str = "", region: str = "") -> str:
+    """Create (once, idempotently) the Fargate execution-role boundary; return its ARN.
+
+    A THIRD boundary because a boundary caps to the intersection of the identity
+    policy and the ceiling. The execution role fetches the crew's secret and opens
+    its log stream BEFORE the container starts, so capping it with the task role's
+    four ``ssmmessages`` actions denies both and the task never launches. Sizing one
+    ceiling to cover both roles would instead be the union, which hands the task
+    role the secret read that keeping it off the container exists to prevent.
+
+    Same create-once contract and the same fail-closed content check as its two
+    siblings, through the same :func:`_ensure_boundary`.
+    """
+    from kiro_crew.cloud import iam
+
+    account = _require_account(profile, region)
+    return _ensure_boundary(
+        name=iam.CREW_EXEC_BOUNDARY_NAME,
+        arn=iam.crew_exec_boundary_arn(account),
+        expected=iam.crew_exec_boundary_policy_document(),
+        description=(
+            "Kiro Crew Fargate execution-role ceiling (crew secret read, log stream, ECR pull)."
+        ),
+        profile=profile,
+        region=region,
+    )
+
+
+def _require_account(profile: str, region: str) -> str:
+    """The caller's account id, or refuse: every boundary ARN embeds it."""
     account = _account_id(profile, region)
     if not account:
         raise aws.AWSError(
@@ -504,15 +576,37 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
             "check your credentials/profile and retry.",
             action="sts:GetCallerIdentity",
         )
-    arn = iam.boundary_arn(account)
+    return account
+
+
+def _ensure_boundary(
+    *,
+    name: str,
+    arn: str,
+    expected: dict,
+    description: str,
+    profile: str,
+    region: str,
+) -> str:
+    """Create-once-and-verify, shared by every permissions boundary this launcher owns.
+
+    ONE copy of the sequence rather than one per lane, because the ORDER here is
+    the security property and not an implementation detail: an existing policy is
+    verified BEFORE it is reused, a lost create race is verified on the way back,
+    and only a failure that is neither of those is surfaced as an error. A second
+    lane reimplementing this would be free to get that order wrong, and reusing
+    first while verifying later caps nothing for the width of the window.
+
+    IAM is a global service; ``--region`` is harmless but passed for consistency.
+    """
+    import json as _json
 
     # Already present? VERIFY its content matches our fixed document before reusing
     # it (a permissive boundary seeded at this name must NOT be trusted to cap
-    # anything). IAM is a global service; --region is harmless but passed for
-    # consistency.
+    # anything).
     rc, _out, _err = aws.run_aws(["iam", "get-policy", "--policy-arn", arn], profile, region)
     if rc == 0:
-        _verify_instance_boundary_content(arn, account, profile, region)
+        _verify_boundary_content(arn, name, expected, profile, region)
         return arn
 
     # Not present (or GetPolicy denied — CreatePolicy will surface the real
@@ -521,11 +615,11 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
         "iam",
         "create-policy",
         "--policy-name",
-        iam.BOUNDARY_NAME,
+        name,
         "--description",
-        "KiroCrew EC2 instance permissions ceiling (SSM core + launcher source read).",
+        description,
         "--policy-document",
-        iam.boundary_policy_json(account),
+        _json.dumps(expected),
     ]
     rc, _out, err = aws.run_aws(create, profile, region)
     if rc == 0:
@@ -536,7 +630,7 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     # its content matches ours before trusting it (the racer could have seeded a
     # permissive one). Fail closed on mismatch.
     if "EntityAlreadyExists" in (err or ""):
-        _verify_instance_boundary_content(arn, account, profile, region)
+        _verify_boundary_content(arn, name, expected, profile, region)
         return arn
     # Any other failure (AccessDenied, throttling) is real — surface it with the
     # precise missing action so the user knows what to grant.
@@ -544,7 +638,7 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     hint = f" — grant `{missing}` and retry" if missing else ""
     _audit_iam_policy_change("iam.create-policy", arn, "denied", error=(err or "").strip()[:300])
     raise aws.AWSError(
-        f"could not create the instance permissions boundary '{iam.BOUNDARY_NAME}': "
+        f"could not create the permissions boundary '{name}': "
         f"{(err or '').strip()[:300]}{hint}",
         action="iam:CreatePolicy",
         missing_action=missing,
@@ -553,19 +647,25 @@ def ensure_instance_boundary(profile: str = "", region: str = "") -> str:
     )
 
 
-def _verify_instance_boundary_content(arn: str, account: str, profile: str, region: str) -> None:
+def _verify_boundary_content(
+    arn: str, name: str, expected: dict, profile: str, region: str
+) -> None:
     """Fail closed unless the existing boundary's default version equals our fixed doc.
 
-    An existing ``kirocrew-ec2-boundary`` must ONLY be reused if its content is
-    exactly ``iam.boundary_policy_document(account)`` — otherwise a permissive
-    boundary seeded at this name (first-write race, or a hand-created one) would
-    silently cap nothing while the launcher creates/passes roles bounded by it.
-    Fetches the default policy version and compares semantically (order-insensitive
-    via canonical JSON). Raises :class:`aws.AWSError` on mismatch or if the content
-    can't be read.
-    """
-    from kiro_crew.cloud import iam
+    Shared by BOTH boundaries (``kirocrew-ec2-boundary`` and
+    ``kirocrew-crew-boundary``) rather than copied per lane: the fail-closed
+    comparison is the control that makes a create-once boundary trustworthy, so a
+    second copy of it is a second place for the check to rot. The caller supplies
+    the policy *name* (for the operator-facing message) and the *expected*
+    document; everything else here is lane-independent.
 
+    An existing policy at the fixed name must ONLY be reused if its content is
+    exactly *expected* — otherwise a permissive boundary seeded there (first-write
+    race, or a hand-created one) would silently cap nothing while the launcher
+    creates/passes roles bounded by it. Fetches the default policy version and
+    compares semantically (order-insensitive via canonical JSON). Raises
+    :class:`aws.AWSError` on mismatch or if the content can't be read.
+    """
     ver = aws.checked_json(
         ["iam", "get-policy", "--policy-arn", arn],
         profile,
@@ -578,7 +678,7 @@ def _verify_instance_boundary_content(arn: str, account: str, profile: str, regi
     if not default_version:
         raise aws.AWSError(
             f"could not determine the default version of the existing boundary "
-            f"'{iam.BOUNDARY_NAME}' — refusing to reuse an unverifiable ceiling.",
+            f"'{name}' — refusing to reuse an unverifiable ceiling.",
             action="iam:GetPolicy",
         )
     doc_resp = aws.checked_json(
@@ -592,12 +692,11 @@ def _verify_instance_boundary_content(arn: str, account: str, profile: str, regi
         actual = doc_resp.get("PolicyVersion", {}).get("Document", {})
     # The CLI returns the Document as a decoded JSON object (not URL-encoded) with
     # --output json. Compare canonically (sorted keys) against our fixed document.
-    expected = iam.boundary_policy_document(account)
     if _canonical(actual) != _canonical(expected):
         raise aws.AWSError(
-            f"the existing permissions boundary '{iam.BOUNDARY_NAME}' does NOT match "
+            f"the existing permissions boundary '{name}' does NOT match "
             "the expected content-fixed document — refusing to reuse it (a boundary "
-            "that caps nothing would defeat the instance-role ceiling). If you "
+            "that caps nothing would defeat the ceiling it exists to impose). If you "
             "intentionally changed it, delete it and let the launcher recreate it, "
             "or re-run `kirocrew cloud iam-boundary`.",
             action="iam:GetPolicyVersion",

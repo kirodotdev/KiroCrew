@@ -402,6 +402,26 @@ def run_task_request(
         "taskDefinition": f"{task_family(binding)}:{revision}",
         "launchType": "FARGATE",
         "count": 1,
+        # The SSM channel the owner reaches this task through. Set here, at the
+        # top level, NOT in ``overrides``: it is a RunTask field rather than a
+        # task-level override, so TASK_OVERRIDE_KEYS does not govern it and
+        # ``executionRoleArn``/``taskRoleArn`` staying absent from the overrides is
+        # unaffected.
+        #
+        # Unconditional, and not offered as a parameter. The flag cannot be turned
+        # on for a task that is already running, and this lane publishes no
+        # ingress, so a task launched without it is unreachable with no remedy but
+        # teardown and relaunch. A knob whose false value can only produce a dead
+        # crew is a footgun, not a posture.
+        #
+        # The cost, stated because it is real: this makes the task PERMANENTLY
+        # shell-capable. The Fargate agent bind-mounts the SSM agent in, commands
+        # run as root even where the container declares a user, and
+        # ``readonlyRootFilesystem`` becomes unusable. IAM is the only thing
+        # between a principal and that shell, which is why the caller policy
+        # grants ``ecs:ExecuteCommand`` to nobody and carries an explicit Deny on
+        # the interactive session documents.
+        "enableExecuteCommand": True,
         "networkConfiguration": {
             "awsvpcConfiguration": {
                 "subnets": list(placement.subnets),

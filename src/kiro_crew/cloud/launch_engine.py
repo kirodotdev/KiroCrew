@@ -189,7 +189,10 @@ class RealLaunchEngine:
         # the stack's DashboardPort default bound above — the two ends of one
         # crew must name the same port or the tunnel forwards to nothing.
         registered = connect_mod.register_instance(
-            instance_id, name=f"Kiro Crew Cloud ({tag})", profile=profile, region=region,
+            instance_id,
+            name=f"Kiro Crew Cloud ({tag})",
+            profile=profile,
+            region=region,
         )
         if registered is None:
             # register_instance is best-effort BY CONTRACT: it returns None both when the
