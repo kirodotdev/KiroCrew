@@ -48,6 +48,19 @@ logger = logging.getLogger(__name__)
 
 STATE_KEY_ENABLED = "enabled"
 STATE_KEY_ENDPOINT = "endpoint"
+#: The prior-conversation budget the owner reviewed, in characters. A CEILING, not
+#: the value in force: ``config.json`` still names what to use, and the gate takes
+#: the smaller of the two. It lives here because ``config.json`` is agent-writable,
+#: so a budget recorded only there could be raised by the very agent whose
+#: conversation would be sent -- the same argument that put ``endpoint`` here.
+STATE_KEY_HISTORY_BUDGET = "history_budget_chars"
+
+#: "Keep whatever ceiling is recorded" for :func:`save_enabled`. A distinct object,
+#: because ``0`` is a ceiling an owner may choose and no number can mean "not asked".
+#: Resolved inside the read-modify-write, so the value written comes from the same
+#: read the write is based on: a caller that resolved it first would hold a ceiling
+#: read before another writer lowered it, and hand that stale number back.
+KEEP_HISTORY_BUDGET: object = object()
 
 # Owner-only: the file records a security decision.
 _STATE_FILE_MODE = 0o600
@@ -96,6 +109,25 @@ def consented_endpoint(state: "dict | None" = None) -> str:
     return normalize_endpoint(data.get(STATE_KEY_ENDPOINT))
 
 
+def consented_history_budget(state: "dict | None" = None) -> int:
+    """Characters of PRIOR conversation the owner consented to, or 0.
+
+    0 for absent, for a non-integer, for a bool (``True`` is not a budget) and for
+    a negative number: every reading that is not an explicit non-negative whole
+    number means the owner reviewed no prior-turn egress, which is what every
+    consent recorded before this ceiling existed did.
+
+    A ceiling only. The gate takes ``min`` of this and the configured value, so
+    lowering the budget stays an ordinary config edit while RAISING it past what
+    was reviewed takes a new consent.
+    """
+    data = load_state() if state is None else state
+    raw = data.get(STATE_KEY_HISTORY_BUDGET)
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        return 0
+    return max(0, raw)
+
+
 def permits(endpoint: object, state: "dict | None" = None) -> bool:
     """Whether the keystone consents to sending to *endpoint*, exactly.
 
@@ -134,7 +166,7 @@ def read_state_strict() -> dict:
     return loaded
 
 
-def save_enabled(enabled: bool, *, endpoint: str) -> dict:
+def save_enabled(enabled: bool, *, endpoint: str, history_budget_chars: object = 0) -> dict:
     """Record *enabled* for *endpoint* atomically, owner-only; return the state written.
 
     Enabling records the endpoint the owner is consenting to -- the caller passes
@@ -144,14 +176,35 @@ def save_enabled(enabled: bool, *, endpoint: str) -> dict:
     operator added by hand survives. Raises :class:`ConsentCorruptError` rather
     than clobbering a corrupt file, and ``OSError`` on a write failure, so the
     HTTP handler can report a real error.
+
+    *history_budget_chars* is the prior-conversation ceiling the owner reviewed, and
+    it is recorded on the same terms as the endpoint: written on enable, cleared to
+    0 on disable so a later re-enable cannot inherit a budget nobody re-reviewed.
+    Its default is 0, so a caller that does not mention prior turns consents to none.
+
+    Pass :data:`KEEP_HISTORY_BUDGET` to leave a recorded ceiling as it is. It is
+    resolved from THIS function's own read, not the caller's, so the number written
+    comes from the same state the write is based on. A caller that read the ceiling
+    first and passed the number would hold a value read before a concurrent writer
+    lowered it, and handing that back would restore a ceiling somebody just reduced --
+    raising an egress limit by losing a race.
     """
     if not isinstance(enabled, bool):
         raise ValueError("enabled must be a bool")
+    keep = history_budget_chars is KEEP_HISTORY_BUDGET
+    if not keep:
+        if isinstance(history_budget_chars, bool) or not isinstance(history_budget_chars, int):
+            raise ValueError("history_budget_chars must be a whole number")
+        if history_budget_chars < 0:
+            raise ValueError("history_budget_chars cannot be negative")
     target = normalize_endpoint(endpoint)
     if enabled and not target:
         raise ValueError("consent needs the endpoint it is given for")
     state: dict[str, Any] = dict(read_state_strict())
+    if keep:
+        history_budget_chars = consented_history_budget(state)
     state[STATE_KEY_ENABLED] = enabled
     state[STATE_KEY_ENDPOINT] = target if enabled else ""
+    state[STATE_KEY_HISTORY_BUDGET] = history_budget_chars if enabled else 0
     atomic_write(consent_path(), json.dumps(state, indent=2) + "\n", mode=_STATE_FILE_MODE)
     return state

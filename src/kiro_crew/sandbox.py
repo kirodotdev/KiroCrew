@@ -457,6 +457,15 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # is being prompt-injected through. The read-only mount is the load-bearing
     # half; the shell gate matches no paths.
     "decisions_consent.json",
+    # The decision log that keystone's feature writes. Sealing the grant and
+    # leaving the RECORD writable would be half a control: an agent that cannot
+    # switch the seam on can still append a ``kind="feedback"`` line -- the exact
+    # shape ``decisions.log.build_feedback_row`` produces -- and the owner's own
+    # summary would count a verdict nobody gave. A top-level DIRECTORY, like
+    # ``profiles``: read stays open (a directory bind shows live contents, so a
+    # day-file written later is visible), and every legitimate writer is the
+    # gateway, outside the sandbox. Nothing writes a decision row from inside one.
+    "decisions",
     # Recorded consent to deliver a scanner-flagged file. Same class as
     # ``aws_service_consent.json``: a writable grant lets an auto-approved agent
     # consent, on the owner's behalf, to shipping the owner's secrets. This seal is
@@ -968,14 +977,27 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "memory_stores",
     "profiles",
     "playwright-cli",
+    # The decision log, on the ``profiles`` argument rather than the JSON one.
+    # (1) An EMPTY dir means what an ABSENT dir means to its only reader:
+    # A reader resolves a day-file by name and skips one that is not there, so no
+    # day-files is no rows either way. (2) A stale read cannot arise, because a
+    # directory bind shows LIVE contents -- a day-file the gateway writes later is
+    # seen, not frozen out. Without this entry the seal skips the absent directory,
+    # which is the state of every install that has never sampled a decision, and
+    # leaves exactly the name an agent would create in order to forge a verdict.
+    "decisions",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
-#: replaceable, which would let an agent choose the executable the gateway runs.
+#: replaceable, which would let an agent choose the executable the gateway runs --
+#: or, for ``decisions``, keep writing the log the owner reads verdicts from after
+#: its target was sealed instead of the leaf. Every seal here is the load-bearing
+#: half of a control, so none may be satisfied by a link the governed party planted.
 _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "playwright-cli",
     "subagents",
     "member-memory-bindings",
+    "decisions",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (

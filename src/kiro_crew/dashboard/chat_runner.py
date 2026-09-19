@@ -4003,6 +4003,58 @@ def _redaction_notice(cred_count: int, url_count: int) -> str:
     )
 
 
+def _discard_stale_decision(slot: _ChatSlot) -> None:
+    """Drop an outcome left pending by an earlier turn of this session. Never raises.
+
+    The claim side (:func:`_decisions_strip_meta`) keys on the session, so without
+    this a turn that published and then died before any assistant row -- an
+    interrupt, a provider failure before the first token -- would leave its
+    outcome for the NEXT reply to wear. The registry's TTL does not cover it: a
+    later turn that reaches no decision publishes nothing to replace the entry.
+
+    Imported inside the function for the same reason the claim side is: an
+    ordinary turn with the seam off must not pull the decisions package onto the
+    turn path, and this costs one dict lookup when there is nothing to drop.
+    """
+    try:
+        from kiro_crew.decisions.outcomes import discard
+
+        if discard(effective_session_key(slot)):
+            logger.debug("decisions: dropped an outcome left by an earlier turn")
+    except Exception:  # pragma: no cover - an observation may not cost a turn
+        logger.debug("decisions: could not drop a stale outcome", exc_info=True)
+
+
+def _decisions_strip_meta(slot: _ChatSlot) -> dict | None:
+    """This session's pending decision outcome as row ``meta``, or ``None``.
+
+    The decision that shaped this reply was made during prompt assembly, on a
+    worker thread, before any message existed to carry it
+    (:mod:`kiro_crew.decisions.outcomes`). This is the other end of that hand-off,
+    and it is read at the moment the assistant row is APPENDED rather than after:
+    ``slot.append`` broadcasts the live ``chat_message`` frame from inside the
+    call, so a field written onto the row afterwards would persist but be missing
+    from the frame the open tab renders -- one door out of two.
+
+    Carried under ``meta`` rather than as a top-level key because ``meta`` is the
+    part of a row that already travels every door: ``_build_message_entry_uncached``
+    persists it, the restore path reads it back, ``chat_message_frame`` puts it on
+    the WS push, and ``append``'s own ``mid`` minting merges into it rather than
+    replacing it. A new top-level key would be dropped by all of them.
+
+    ``None`` for a session with no decision -- which is every session while the
+    seam is off, and every unsampled session while it is on -- and ``append``
+    already writes no ``meta`` for ``None``, so the whole ride-along costs one
+    dict lookup on the reply path of an ordinary turn. Nothing here raises:
+    ``consume`` does not, by contract, because this runs where an exception would
+    cost the user their reply.
+    """
+    from kiro_crew.decisions.outcomes import consume
+
+    strip = consume(effective_session_key(slot))
+    return {"decisions_strip": strip} if strip else None
+
+
 def _append_redaction_notice(slot: _ChatSlot, redacted: str) -> None:
     """Append the redaction notice for an already-persisted body.
 
@@ -4193,7 +4245,16 @@ def _flush_segment(
     # other tabs viewing the same slot receive the finalized text.
     # The active tab already has this content from streaming chunks;
     # the chat_segment event tells it to finalize streaming → assistant.
-    slot.append("assistant", redacted, "msg msg-a", broadcast=not quiet_persist)
+    slot.append(
+        "assistant",
+        redacted,
+        "msg msg-a",
+        broadcast=not quiet_persist,
+        # The decision strip, when this turn made one. Passed here rather than
+        # written onto the row afterwards so the frame this call broadcasts
+        # carries it too -- see _decisions_strip_meta.
+        meta=_decisions_strip_meta(slot),
+    )
     # The append-only log's copy of the same body. Written here rather than at the
     # turn's terminal event because a turn produces SEVERAL assistant messages --
     # one per model call -- and the terminal event sees only the last. The identity
@@ -7520,6 +7581,14 @@ async def _run_chat(
 ) -> None:
     """Stream LLM response into *slot*.  Survives browser disconnect."""
 
+    # A decision outcome still pending when a turn STARTS belongs to a turn that
+    # has already finished, and one whose own turn produced no assistant row has
+    # no reply left to describe. Dropped here rather than on each way a turn can
+    # die -- there is one entry and many exits, so the entry is the place that
+    # cannot miss one. This turn publishes later (during prompt assembly), so its
+    # own outcome is unaffected; see `_decisions_strip_meta` for the claim side.
+    _discard_stale_decision(slot)
+
     # Chokepoint invariant: a crew-bound slot NEVER executes locally. Its turns go
     # through ``relay_remote_turn``; ``_run_chat`` is the LOCAL runner. Every
     # dispatch entry point (the primary send, regenerate, edit-resend, rewind,
@@ -7844,7 +7913,7 @@ async def _run_chat(
         body = _reflow_label_and_audit(slot, assistant_text)
         slot.purge_chunks()
         _redacted = redact_credentials(redact_exfiltration_urls(body)[0])[0]
-        slot.append("assistant", _redacted, "msg msg-a")
+        slot.append("assistant", _redacted, "msg msg-a", meta=_decisions_strip_meta(slot))
         _append_redaction_notice(slot, _redacted)
         crew_log_emit.on_message_sent(
             _crew_log_sid,

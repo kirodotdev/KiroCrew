@@ -54,7 +54,8 @@ class _SegmentSlotStub:
     Building ``DashboardState`` and two temporary directories inside every
     Hypothesis example made the property measure filesystem/antivirus startup,
     not segment ordering.  The production helper's contract at this seam is
-    only the message window, pending-chunk release, append, variants, and key.
+    only the message window, pending-chunk release, append (including the ``meta``
+    the flush attaches), variants, and key.
     Keeping those concrete (rather than a ``MagicMock``) means a missing call or
     a wrong mutation still fails the property.
     """
@@ -72,8 +73,15 @@ class _SegmentSlotStub:
         cls: str = "",
         *,
         broadcast: bool = True,
+        meta: dict | None = None,
     ) -> dict:
+        # `meta` mirrors the real `_ChatSlot.append`, which the flush passes the
+        # decision record through. Recorded rather than accepted-and-dropped: this
+        # double exists so a missing call or a wrong mutation still fails the
+        # property, and a swallowed argument is how a double stops doing that.
         message = {"role": role, "content": content, "cls": cls, "ts": ""}
+        if meta is not None:
+            message["meta"] = meta
         self.messages.append(message)
         return message
 
