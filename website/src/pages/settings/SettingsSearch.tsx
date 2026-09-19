@@ -1,8 +1,13 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
+import { useQuery } from '@tanstack/react-query'
 import { Search } from 'lucide-react'
 import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
-import { scoreSettingEntry } from '../../components/commandPalette/settingsSearchCore'
+import {
+  scoreSettingEntry,
+  settingEntryOffered,
+  type SettingsSearchGovernance,
+} from '../../components/commandPalette/settingsSearchCore'
 import { settingsRoute } from '../../components/commandPalette/settingsRoute'
 import { settingsSubtitle } from '../../components/commandPalette/settingsTabLabel'
 import type { SettingEntry } from '../../components/commandPalette/settingsTypes'
@@ -10,6 +15,7 @@ import { makeScoreThenNameComparator } from '../../utils/fuzzyMatch'
 import { useListKeyboardNav } from '../../hooks/useListKeyboardNav'
 import { SidePanelDockContext } from '../../components/SidePanelLayout'
 import { i18nT } from '../../i18n/t'
+import { api } from '../../api/client'
 
 /**
  * SettingsSearch — in-page search over SETTINGS_REGISTRY, rendered in the
@@ -49,9 +55,10 @@ const compareMatches = makeScoreThenNameComparator<Match>(
   m => m.label,
 )
 
-function searchSettings(query: string): Match[] {
+function searchSettings(query: string, governance: SettingsSearchGovernance): Match[] {
   const out: Match[] = []
   for (const entry of SETTINGS_REGISTRY) {
+    if (!settingEntryOffered(entry, governance)) continue
     const s = scoreSettingEntry(query, entry)
     if (!s) continue
     out.push({ entry, label: s.localizedLabel, score: s.score })
@@ -70,8 +77,23 @@ export default function SettingsSearch() {
   const rootRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
 
+  // The same `['dashboardConfig']` read the Decisions card uses, so this search and
+  // that card hide together: on a governed install there is no path to the feature,
+  // rather than a hidden card and a live search entry pointing at it.
+  const dashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: () => api.dashboardConfig(),
+    staleTime: 30_000,
+  })
+  // Offer unless the read SUCCEEDED and said otherwise: a failed or in-flight read is
+  // not a denial, and the card this navigates to reports the failure itself.
+  const decisionsEnabled = !dashCfgQ.isSuccess || dashCfgQ.data?.decisions_enabled === true
+
   const q = query.trim()
-  const results = useMemo(() => (q ? searchSettings(q) : []), [q])
+  const results = useMemo(
+    () => (q ? searchSettings(q, { decisionsEnabled }) : []),
+    [q, decisionsEnabled],
+  )
   const open = q.length > 0 && !dismissed
 
   const activate = useCallback((m: Match) => {

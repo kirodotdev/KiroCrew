@@ -57,6 +57,52 @@ export interface SettingEntryScore {
  * Token"), which would render per-channel entries as indistinguishable rows —
  * re-append it.
  */
+/**
+ * Registry id of the Decisions (Jev) toggle.
+ *
+ * The registry is CODEGEN'd from the static settings tree, so it lists every entry
+ * the build ships regardless of whether the running gateway offers it. This one is
+ * governed: `capabilities.decisions` can withdraw the feature, and
+ * `FeaturePreviewsSection` then renders no card at all. A search result is a promise
+ * that the page has the row, so an unfiltered corpus would land the user on a section
+ * where nothing is there — which reads as a broken page rather than an absent feature.
+ */
+export const DECISIONS_SETTING_ID = 'developer.decisions-jev'
+
+/** The governance answers the search needs, as the two surfaces resolve them. */
+export interface SettingsSearchGovernance {
+  /**
+   * Whether the Decisions entry may be offered: true unless the ceiling is KNOWN to
+   * withdraw it. Both surfaces resolve it as "the read has not succeeded, or it
+   * succeeded and said `decisions_enabled === true`", so only a definite answer
+   * withholds the row.
+   */
+  decisionsEnabled: boolean
+}
+
+/**
+ * Whether *entry* may be OFFERED by a search right now.
+ *
+ * Withheld on a KNOWN denial only. A read that failed is not a withdrawal: nothing has
+ * been denied, and reporting the setting as absent would be a stronger claim than the
+ * dashboard can make. The entry stays, and the card it leads to says the read failed —
+ * that card is the surface with somewhere to put the message, which a search result row
+ * is not.
+ *
+ * Deliberately NOT the card's own posture. The card withholds itself on an unresolved
+ * answer because it carries the egress switch and must not offer a write it cannot
+ * ground; a search row grants nothing and only navigates. Making them identical is what
+ * produced the state where a broken config read left the card visible-and-faded while
+ * the search insisted the setting did not exist.
+ */
+export function settingEntryOffered(
+  entry: SettingEntry,
+  governance: SettingsSearchGovernance,
+): boolean {
+  if (entry.id !== DECISIONS_SETTING_ID) return true
+  return governance.decisionsEnabled
+}
+
 export function localizedSettingLabel(entry: SettingEntry): string {
   const base = entry.labelKey ? i18nT(entry.labelKey) : entry.label
   return entry.labelKey && entry.labelSuffix ? `${base} (${entry.labelSuffix})` : base

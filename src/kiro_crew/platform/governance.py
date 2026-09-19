@@ -1515,6 +1515,28 @@ SCOPE_CATALOG: Dict[str, ScopeSpec] = {
     # Data row only — CONTRACT_VERSION and the evaluator are untouched (mirrors
     # social_share).
     "capabilities.feature_videos_download": ScopeSpec(CAPABILITY, capability_default=True),
+    # The Jev decision seam: an enabled, sampled session sends message excerpts and
+    # skill descriptions to an external, PAID provider endpoint and spends the
+    # operator's account to do it. The keystone ``decisions_consent.json`` is the
+    # OWNER's switch -- it is not a ceiling, and an owner who consented on a managed
+    # machine has still consented to something a fleet may not permit at all. So
+    # this row is the fleet's side of the same question, and it sits in the egress
+    # family with ``capabilities.telemetry`` / ``publish`` /
+    # ``feature_videos_download`` rather than with the advisory probes.
+    #
+    # Default True: naming the row without ``enabled`` keeps the documented
+    # behaviour for the standalone user, whose consent keystone is still the thing
+    # that turns the seam on. A governing ceiling -- policy or a profile bound to the
+    # dashboard surface -- withdraws it at TWO chokepoints
+    # (``decisions/capability.py``: evaluated on the pinned ``dashboard:ui``
+    # surface through ``vet_and_audit``, fail-closed, mirroring social_share): the
+    # consent PUT refuses to enable, and the gate's own consent read reports NOT
+    # consented, so a keystone that already says ``true`` is inert rather than
+    # carried over. ``GET /api/dashboard/config`` reports the answer as
+    # ``decisions_enabled`` so the Feature Previews card is not drawn at all.
+    # Data row only -- CONTRACT_VERSION and the evaluator are untouched (mirrors
+    # social_share).
+    "capabilities.decisions": ScopeSpec(CAPABILITY, capability_default=True),
 }
 
 

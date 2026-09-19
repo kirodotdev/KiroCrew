@@ -11,7 +11,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import type { ReactElement } from 'react'
-import { render, screen, renderHook, act, cleanup } from '@testing-library/react'
+import { render, screen, renderHook, act, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter, useLocation, useNavigationType } from 'react-router-dom'
 
@@ -345,13 +345,16 @@ describe('usePreviewFlagRevision', () => {
 
 describe('Settings > Developer > Feature Previews', () => {
   // One card in this section — Decisions — is backed by gateway state rather
-  // than a `previewFlags.ts` key: its switch reads the consent keystone and its
-  // share reads `['kirocrewConfig']`. Both stubbed here rather than left to reach
+  // than a `previewFlags.ts` key: whether it is drawn at all reads
+  // `decisions_enabled` off `['dashboardConfig']` (the `capabilities.decisions`
+  // ceiling), its switch reads the consent keystone and its share reads
+  // `['kirocrewConfig']`. All three stubbed here rather than left to reach
   // the network: every case below is about the four localStorage previews, and a
   // real read cannot succeed under vitest (a failed one would render an
   // ErrorNotice with its own "Ask the agent" link and pollute the link census).
   // `decisionsCard.test.tsx` owns that card's own states.
   beforeEach(() => {
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
     vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue({
       enabled: false, endpoint: '', configured_endpoint: 'https://api.typesafe.ai/v1/systemone', permits: false,
@@ -455,21 +458,25 @@ describe('Settings > Developer > Feature Previews', () => {
     expect(screen.getAllByText(/unpolished on purpose/i)).toHaveLength(1)
   })
 
-  it('carries the redirect anchor on ONE element that wraps the whole section', () => {
+  it('carries the redirect anchor on ONE element that wraps the whole section', async () => {
     // `?highlight=key:<anchor>` rings the element carrying data-setting-key.
     // The old-bookmark reader asked a section-sized question, so the ring must
     // enclose the header and every card — an anchor on a single card would
     // answer "is this row selected?" instead.
     const { container } = renderTab()
+    // Awaited: the Decisions card is not drawn until the governance read
+    // (`decisions_enabled`) lands, so the fifth switch arrives a tick late.
+    await waitFor(() => {
+      expect(screen.getAllByRole('switch')).toHaveLength(5)
+    })
     const anchors = container.querySelectorAll(`[data-setting-key="${FEATURE_PREVIEWS_HIGHLIGHT_ANCHOR}"]`)
     expect(anchors).toHaveLength(1)
     const anchor = anchors[0]
     expect(anchor.contains(screen.getByRole('heading', { name: /feature previews/i }))).toBe(true)
-    for (const s of screen.getAllByRole('switch')) expect(anchor.contains(s)).toBe(true)
     // Five, not four: the count is here so a card added outside the anchor
     // fails rather than silently escaping the ring. The fifth is Decisions,
     // whose switch is backend config — a different write path, the same ring.
-    expect(screen.getAllByRole('switch')).toHaveLength(5)
+    for (const s of screen.getAllByRole('switch')) expect(anchor.contains(s)).toBe(true)
   })
 
   it('carries a remote-instance-sessions card that starts off and writes only its own key', async () => {

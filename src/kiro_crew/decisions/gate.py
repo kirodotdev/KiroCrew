@@ -177,19 +177,62 @@ def configured_endpoint(config: Any | None = None) -> str:
 #: Endpoints already warned about, so a mismatch is said once, not once per message.
 _unconsented_warned: set[str] = set()
 
+#: Whether the governance denial has been said out loud yet, so a pinned-off fleet
+#: gets one line rather than one per message.
+_capability_denied_warned = False
 
-def _consented_for(config: Any | None) -> bool:
+
+def _capability_denied(session_key: str | None) -> bool:
+    """Whether the ``capabilities.decisions`` ceiling withdraws the seam. Filesystem IO.
+
+    *session_key* is the turn's own identity, which is what a profile binds on, so a
+    profile bound to THIS surface is consulted rather than a dashboard one. It is
+    runtime state, not caller input -- unlike the ``X-Session-Key`` header the two
+    dashboard callers deliberately ignore. A caller with no session at all names no
+    surface, so the probe's own default applies; there is nothing more specific to
+    honour, and every layer above the surface still binds.
+
+    Imported HERE rather than at module scope: the probe reaches
+    ``platform.governance_profiles``, and this package is imported inside hot
+    callers, so that graph is paid only by an install that actually got past
+    consent.
+    """
+    global _capability_denied_warned
+    from kiro_crew.decisions.capability import DASHBOARD_SURFACE_KEY, is_decisions_denied
+
+    if not is_decisions_denied(session_key or DASHBOARD_SURFACE_KEY):
+        return False
+    if not _capability_denied_warned:
+        _capability_denied_warned = True
+        logger.warning(
+            "decisions: the seam is withdrawn by governance "
+            "(capabilities.decisions); nothing is sent even though consent is on"
+        )
+    return True
+
+
+def _consented_for(config: Any | None, session_key: str | None = None) -> bool:
     """Read the keystone and hold it against the configured endpoint. Filesystem IO.
 
     A mismatch -- consent recorded for one address, config now naming another --
     is a refusal, and it is said out loud once per address: this is the state a
     redirected ``provider.endpoint`` produces, and an operator must be able to tell
     it apart from "off".
+
+    The GOVERNANCE ceiling is held above the keystone, and this is the chokepoint
+    that makes an already-consented keystone inert rather than carried over: every
+    ``decide`` and ``is_enabled`` path funnels its one keystone read through here,
+    so a fleet that pins ``capabilities.decisions`` off does not have to reach any
+    other call site. Checked AFTER the keystone, deliberately: an install without
+    consent -- the default, and the overwhelming majority -- must keep costing
+    nothing, and the governed probe writes an audited SEL row on every evaluation.
+    Past this line consent IS on, which is precisely when a fleet denial is a fact
+    an auditor needs recorded.
     """
     state = _consent.load_state()
     endpoint = configured_endpoint(config)
     if _consent.permits(endpoint, state):
-        return True
+        return not _capability_denied(session_key)
     if _consent.is_enabled(state) and endpoint not in _unconsented_warned:
         _unconsented_warned.add(endpoint)
         logger.warning(
@@ -383,7 +426,7 @@ def is_enabled(point: str, *, session_key: str | None = None, config: Any | None
         cfg = config if config is not None else _snapshot()
         if cfg is None:
             return False
-        return _sampled(point, session_key, cfg, consented=_consented_for(cfg))
+        return _sampled(point, session_key, cfg, consented=_consented_for(cfg, session_key))
     except Exception as exc:
         logger.debug("decisions: is_enabled(%s) failed (%s)", point, type(exc).__name__)
         return False
@@ -435,7 +478,7 @@ async def decide(
             return None
         # The keystone is a file read, so it leaves the event loop; everything
         # else `_sampled` checks is attribute reads on the snapshot.
-        consented = await asyncio.to_thread(_consented_for, cfg)
+        consented = await asyncio.to_thread(_consented_for, cfg, session_key)
         if not _sampled(point, session_key, cfg, consented=consented):
             return None
         budget = timeout_secs(cfg)

@@ -11,6 +11,10 @@ switch that lets conversation state leave the machine and it lives on the KEYSTO
 only a literal ``true`` on the keystone opens it, and that nothing an operator or
 an agent can write into ``config.json`` (``enabled``, the earlier
 ``preview``/``points``/``arm`` spelling) stands in for it.
+
+:class:`TestGovernanceWithdrawsTheSeam` pins the layer ABOVE that switch: a fleet
+that pins ``capabilities.decisions`` off makes an already-consented keystone inert,
+at the one keystone read every path funnels through.
 """
 
 from __future__ import annotations
@@ -378,6 +382,185 @@ class TestEnablingIsExplicit:
         assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=cfg)) is None
         assert oracle.entered is False
         assert log_home() == []
+
+
+# ---------------------------------------------------------------------------
+# Above the owner's switch: the fleet's ceiling
+# ---------------------------------------------------------------------------
+
+
+class TestGovernanceWithdrawsTheSeam:
+    """``capabilities.decisions``: the FLEET's switch above the owner's keystone.
+
+    The keystone is the owner's consent; this row is whether the machine may run
+    the seam at all. Enforced HERE -- at ``_consented_for``, the one keystone read
+    every ``decide`` and ``is_enabled`` path funnels through -- so a keystone
+    written before the pin is inert rather than carried over. Without this half, a
+    fleet that pinned the row would still send from any machine already consented.
+    """
+
+    @pytest.fixture(autouse=True)
+    def quiet(self, monkeypatch):
+        """The once-per-process warning flag, reset so each case can observe it."""
+        monkeypatch.setattr(gate_mod, "_capability_denied_warned", False)
+
+    @staticmethod
+    def _deny(monkeypatch, denied: bool) -> list[str]:
+        """Stand in for the governed probe; returns the SURFACE KEYS it was asked about.
+
+        Patched at the module the gate imports it FROM, because the import happens
+        inside the function -- patching a name on ``gate_mod`` would bind nothing. The
+        call log records the key rather than a tally, so a caller that stops passing
+        the turn's own surface is visible here instead of merely counted.
+        """
+        from kiro_crew.decisions import capability
+
+        calls: list[str] = []
+
+        def _probe(surface_key: str = capability.DASHBOARD_SURFACE_KEY) -> bool:
+            calls.append(surface_key)
+            return denied
+
+        monkeypatch.setattr(capability, "is_decisions_denied", _probe)
+        return calls
+
+    def test_a_consented_keystone_is_inert_under_a_denial(
+        self, install_impl, log_home, consent, monkeypatch, caplog
+    ):
+        import logging
+
+        calls = self._deny(monkeypatch, True)
+        oracle = install_impl(_ExplodingOracle())
+        with caplog.at_level(logging.WARNING, logger="kiro_crew.decisions.gate"):
+            assert is_enabled(POINT, config=_config()) is False
+            assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config())) is None
+            assert is_enabled(POINT, config=_config()) is False
+        assert oracle.entered is False, "a withdrawn seam must not reach the provider"
+        assert log_home() == [], "a refused decision writes no row"
+        assert len(calls) == 3, "every path through the keystone read asks the ceiling"
+        withdrawn = [r for r in caplog.records if "withdrawn by governance" in r.getMessage()]
+        assert len(withdrawn) == 1, "said once per process, not once per message"
+
+    def test_a_permitting_ceiling_changes_nothing(self, install_impl, consent, monkeypatch):
+        """The control: the same consented keystone still sends when nothing pins it."""
+        calls = self._deny(monkeypatch, False)
+        oracle = install_impl(_RecordingOracle())
+        assert is_enabled(POINT, config=_config()) is True
+        assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config())) is not None
+        assert oracle.calls, "the consented request was sent"
+        assert calls, "the ceiling was consulted rather than skipped"
+
+    def test_an_unconsented_install_never_asks_the_ceiling(
+        self, install_impl, consent, monkeypatch
+    ):
+        """No consent must keep costing nothing: the governed probe writes an
+        audited SEL row per evaluation, and the default install would otherwise pay
+        one on every message for an answer that cannot change the refusal."""
+        consent(None)
+        calls = self._deny(monkeypatch, False)
+        install_impl(_ExplodingOracle())
+        assert is_enabled(POINT, config=_config()) is False
+        assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config())) is None
+        assert calls == []
+
+    def test_the_denial_still_costs_only_the_one_keystone_hop(
+        self, install_impl, consent, monkeypatch
+    ):
+        """The ceiling read rides INSIDE the existing off-loop keystone hop, so the
+        no-second-await property :class:`TestDisabledPerformsNoAwait` pins survives
+        a denial as well as an absent keystone."""
+        self._deny(monkeypatch, True)
+        install_impl(_ExplodingOracle())
+        reads = []
+
+        async def _read(fn, *args):
+            reads.append(fn)
+            return fn(*args)
+
+        monkeypatch.setattr(gate_mod.asyncio, "to_thread", _read)
+        assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config())) is None
+        assert reads == [gate_mod._consented_for]
+
+    def test_a_profile_bound_to_the_turns_surface_denies_through_the_gate(
+        self, install_impl, consent, monkeypatch, tmp_path
+    ):
+        """The ceiling is evaluated on the TURN's surface, not a pinned dashboard one.
+
+        A profile binds on the surface inferred from the session key. The gate holds a
+        trusted session key -- the runtime's own identity for the turn, the same value
+        ``in_bucket`` hashes -- so a profile bound to that surface has to be consulted
+        on the one path that actually sends. Pinning ``dashboard:ui`` here left such a
+        profile unconsulted while a consented owner's turn sent message excerpts to the
+        paid endpoint.
+
+        The dashboard callers keep the pin, and this test asserts BOTH halves: the
+        non-dashboard turn is denied, and the probe's default -- what the config route
+        and the consent PUT use -- still permits. Without the second half the first
+        would also pass under a blanket denial, which is the opposite defect.
+        """
+        from kiro_crew.decisions.capability import is_decisions_denied
+        from kiro_crew.platform import context as pc
+        from kiro_crew.platform import governance_profiles as gp
+        from kiro_crew.platform.governance import parse_policy
+
+        profiles = tmp_path / "profiles"
+        profiles.mkdir()
+        (profiles / "slack.json").write_text(
+            json.dumps(
+                {
+                    "name": "slack-narrow",
+                    "bind": {"type": "surface", "id": "slack"},
+                    "capabilities": {"decisions": {"enabled": False}},
+                }
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(gp, "_PROFILES_DIR", profiles)
+        gp.reset_store()
+
+        class _Ctx:
+            governance = parse_policy({"version": 1, "boot": {"fail_closed": True}})
+
+        monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
+        try:
+            oracle = install_impl(_ExplodingOracle())
+            slack_key = "slack:C123"
+
+            # The probe itself, at both surfaces: the control that proves the profile
+            # is bound and that the default is NOT caught by it.
+            assert is_decisions_denied(slack_key) is True
+            assert is_decisions_denied() is False, (
+                "the dashboard default must stay permitted, or this test would pass "
+                "under a blanket denial instead of a surface-bound one"
+            )
+
+            # Through the gate, on the turn's own surface: refused, nothing sent.
+            assert is_enabled(POINT, session_key=slack_key, config=_config()) is False
+            assert (
+                asyncio.run(decide(POINT, "hi", QUESTIONS, session_key=slack_key, config=_config()))
+                is None
+            )
+            assert oracle.entered is False, "a surface-bound denial must not reach the provider"
+
+            # A turn on a surface the profile does not bind still runs.
+            assert is_enabled(POINT, session_key="dashboard:ui", config=_config()) is True
+        finally:
+            gp.reset_store()
+
+    def test_an_unevaluable_ceiling_fails_closed(self, install_impl, consent, monkeypatch):
+        """The probe itself is fail-closed; the gate must not re-open it by treating
+        a raising probe as "no opinion"."""
+        from kiro_crew.decisions import capability
+
+        monkeypatch.setattr(
+            capability,
+            "vet_and_audit",
+            lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+        oracle = install_impl(_ExplodingOracle())
+        assert is_enabled(POINT, config=_config()) is False
+        assert asyncio.run(decide(POINT, "hi", QUESTIONS, config=_config())) is None
+        assert oracle.entered is False
 
 
 # ---------------------------------------------------------------------------

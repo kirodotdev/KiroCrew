@@ -6225,7 +6225,7 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
         # PUT body. Drop them here instead of listing them in _allowed -- they
         # stay unwritable, but a round-tripped read-only field must not 400 an
         # unrelated toggle save.
-        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts", "social_share_enabled", "model_picker_hidden_models", "model_picker_configured"}
+        read_only_ignored_keys = {"gitlab_hosts", "jira_hosts", "social_share_enabled", "decisions_enabled", "model_picker_hidden_models", "model_picker_configured"}
         body = {
             k: v
             for k, v in body.items()
@@ -6688,8 +6688,14 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
     # enforcement point. Resolved off-thread (profile resolution may read from
     # disk); every decision is SEL-audited by the probe itself.
     from kiro_crew.dashboard import social_share
+    from kiro_crew.decisions.capability import is_decisions_denied
 
     social_share_denied = await asyncio.to_thread(social_share.is_share_denied)
+    # Same shape, same reason: the Decisions feature-preview card is drawn only when
+    # the ceiling permits the seam, and this endpoint is the only place the dashboard
+    # can learn that. Presentation, not the control -- the consent PUT and the gate's
+    # own consent read are the two chokepoints (``decisions/capability.py``).
+    decisions_denied = await asyncio.to_thread(is_decisions_denied)
     return web.json_response(
         {
             "restore_sessions": cfg.dashboard.restore_sessions,
@@ -6721,6 +6727,10 @@ async def api_dashboard_config(request: web.Request) -> web.Response:
             # withdraws the "Share as image" menu entry; there is no toggle behind
             # it, so nothing here is writable.
             "social_share_enabled": not social_share_denied,
+            # Read-only: the `capabilities.decisions` governance answer. False hides
+            # the Decisions (Jev) feature-preview card; the owner's own switch is
+            # the keystone behind `/api/decisions/consent`, never a field here.
+            "decisions_enabled": not decisions_denied,
             # Read-write (unlike the host allowlists above): a rule only changes
             # how this dashboard RENDERS text -- it grants no fetch and no CLI
             # any authority -- so the settings editor may manage it.

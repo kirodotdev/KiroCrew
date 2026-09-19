@@ -2292,7 +2292,9 @@ chokepoints — **policy layer only**, see below), and
 through `GET /api/dashboard/config`, every layer honoured, every decision
 audited; see below), and `capabilities.feature_videos_download` (fetching the
 signed feature-video manifest and its media from the vendor CDN — three
-chokepoints, every layer honoured; see below). Only the live `approval_mode`
+chokepoints, every layer honoured; see below), and `capabilities.decisions` (the
+Jev decision seam's paid external egress — the consent PUT plus the gate's own
+keystone read, every layer honoured; see below). Only the live `approval_mode`
 clamp remains reserved.
 
 The `commands` scope now **doubles as the enterprise force-pin** for built-in
@@ -2703,14 +2705,84 @@ route is fetched on every dashboard load by every install, and an audited
 readout nobody consumes.
 
 **Fails CLOSED** (`fail_closed=True`), joining `capabilities.publish` /
-`theme_install` / `telemetry` / `tailnet_origin` / `social_share`: a wrong-DENY
-withholds an intro clip, a wrong-PERMIT makes a vendor-CDN request on a fleet that
-forbade vendor egress. An unevaluable ceiling is audited as the denial it produces.
+`theme_install` / `telemetry` / `tailnet_origin` / `social_share` / `decisions`: a
+wrong-DENY withholds an intro clip, a wrong-PERMIT makes a vendor-CDN request on a
+fleet that forbade vendor egress. An unevaluable ceiling is audited as the denial it produces.
 
 **No CSP change.** `media-src` stays `'self' blob:`. Every clip the dashboard plays
 is served from this origin — a bundled asset or a downloaded, verified one — so the
 policy needs no off-origin media host, and a header that admitted one would be
 admitting a fetch the server never offers.
+
+### The Jev decision seam — `capabilities.decisions`
+
+An enabled, sampled session sends message excerpts and skill descriptions to an
+external, PAID provider endpoint and spends the operator's account to do it
+(`docs/system-specs/modules/decisions.md`). The owner's own switch is the keystone
+`decisions_consent.json`; this row is the FLEET's, and the two answer different
+questions — may my messages be sent, versus may this machine run the seam at all.
+An owner on a managed laptop can consent in good faith to an endpoint their fleet
+never approved, so the ceiling stands ABOVE the keystone rather than beside it.
+Governed by the `capabilities.decisions` `SCOPE_CATALOG` capability row
+(`capability_default=True`, data-only shape — no `CONTRACT_VERSION` or evaluator
+change, mirroring the rows above).
+
+**Two chokepoints, because either alone is a half-control.**
+`PUT /api/decisions/consent` refuses an ENABLING write with
+`403 decisions_capability_denied` and writes nothing, so a denial is visible where
+an owner would flip the switch; a DISABLING write still succeeds, because the gate
+already reads the seam as off and refusing it would trap an owner with a stale
+`"enabled": true` keystone they cannot clear. And `decisions.gate._consented_for` —
+the one keystone read every `decide` and `is_enabled` path funnels through — reports
+NOT consented under a denial, so a keystone written before the pin is inert rather
+than carried over. Without that half a fleet could pin the row and still send from
+every machine consented earlier. The ceiling is consulted AFTER the keystone and
+inside the same off-loop hop, so an install without consent pays no governance
+evaluation, no SEL row and no second `await`; past that line consent IS on, which is
+exactly when a denial is a fact an auditor needs recorded.
+
+**The reads are presentation, not the control.**
+`GET /api/decisions/consent` folds a denial into `permits` (there is no separate
+reason field — nothing read one, and the surface a caller acts on is the 403);
+`GET /api/dashboard/config` reports a read-only `decisions_enabled`
+(`decisions/capability.py`) and the frontend draws the Decisions card in
+Settings › Developer › Feature Previews only when it is `true`. A denial withholds
+the CARD rather than disabling it — the section's other unavailable states (an old
+gateway, an unreadable config) fade the card and name the fix because the user can
+act on those, and a ceiling is not something they can act on. The field is dropped
+from the `PUT` body (both settings surfaces round-trip the whole `GET`), so it can
+never be written. The ceiling viewer needs no i18n key: the humanising fallback
+renders the `decisions` leaf as "Decisions".
+
+**Shape: `social_share`, with one deliberate divergence.** The evaluation runs
+through `vet_and_audit` and **every denied decision is honoured**, whichever layer
+produced it, because this is a per-request question rather than a process-wide startup
+one. Unlike `social_share`, the surface key is a PARAMETER rather than a constant,
+because this probe has two kinds of caller. The dashboard ones (the config route, the
+consent `PUT`) keep the pinned `dashboard:ui` default, for `social_share`'s own reason:
+on an HTTP request the equivalent `X-Session-Key` header is caller-controlled, so
+honouring it would let a request carrying `slack:x` dodge a profile bound to the
+dashboard surface. The gate passes the turn's own session key, which is runtime state
+and not caller input — the same value `in_bucket` hashes and the decision log records.
+Pinning it there would leave a profile bound to a non-dashboard surface unconsulted on
+the one path that actually sends, which is a ceiling bypass rather than a defence. A
+caller with no session names no surface, so the default applies and every layer above
+the surface still binds.
+
+**Fails CLOSED** (`fail_closed=True`), joining `capabilities.publish` /
+`theme_install` / `telemetry` / `tailnet_origin` / `social_share` /
+`feature_videos_download`: a wrong-DENY falls back to the shipped word-overlap skill
+rule that every unconsented install already runs, a wrong-PERMIT sends message
+excerpts to a paid third party on a fleet that forbade it. An unevaluable ceiling is
+recorded as `denied` with a `fail-closed` reason.
+
+**Every decision is audited.** Each evaluation leaves a `governance_decision` SEL
+row (tool `dashboard_config_decisions`), grant and denial alike, through the shared
+seam. A policy pins the seam off MACHINE-WIDE with one object -- every surface, every path. A profile bound to a surface withdraws only turns on that surface, so stopping the seam everywhere means the policy, or a profile per sending surface:
+
+```json
+{"version": 1, "capabilities": {"decisions": {"enabled": false}}}
+```
 
 ### "Share as image" — `capabilities.social_share`
 

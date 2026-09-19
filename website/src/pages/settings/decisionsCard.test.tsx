@@ -10,6 +10,10 @@
  * in each is the same one: the card never offers a write it cannot make, and
  * never stays silent about why. The sampling share still comes from
  * `config.json`, so the two reads are stubbed separately.
+ *
+ * A third read decides whether the card exists at all: `GET /api/dashboard/config`
+ * reports `decisions_enabled`, the `capabilities.decisions` governance answer, and
+ * a fleet that pinned the seam off gets no card — see the last block.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
@@ -47,11 +51,19 @@ const consentOf = (enabled: boolean, overrides: Partial<DecisionsConsentData> = 
   ...overrides,
 })
 
-/** Stub both reads: the keystone (or a rejection) and the config's bucket. */
+/**
+ * Stub all three reads: the governance answer that decides whether the card is
+ * drawn, the keystone (or a rejection), and the config's bucket.
+ *
+ * `decisions_enabled: true` is the ungoverned default every case below assumes —
+ * a case that wants the withdrawn state passes `governed: false` and gets no card.
+ */
 function stubGateway(
   consent: DecisionsConsentData | { enabled: boolean } | Error,
   config: unknown = { decisions: { bucket: 100 } },
+  dashboard: unknown = { decisions_enabled: true },
 ) {
+  vi.spyOn(api, 'dashboardConfig').mockResolvedValue(dashboard as never)
   vi.spyOn(api, 'kirocrewConfig').mockResolvedValue(config as never)
   if (consent instanceof Error) {
     vi.spyOn(api, 'getDecisionsConsent').mockRejectedValue(consent)
@@ -71,13 +83,18 @@ describe('Decisions (Jev) preview card', () => {
     vi.restoreAllMocks()
   })
 
-  it('offers no write while the keystone has not been read', () => {
+  it('offers no write while the keystone has not been read', async () => {
     // A never-resolving read: the switch has no basis for the state it would
-    // show, so it must not be clickable in the meantime.
+    // show, so it must not be clickable in the meantime. Awaited rather than
+    // asserted on the first frame, because the card is not drawn until the
+    // governance read says it may be.
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
     vi.spyOn(api, 'getDecisionsConsent').mockReturnValue(new Promise(() => {}) as never)
     renderSection()
-    expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+    await waitFor(() => {
+      expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+    })
   })
 
   it('disables itself and names the gateway when the consent route is missing', async () => {
@@ -162,6 +179,7 @@ describe('Decisions (Jev) preview card', () => {
     // wrote it again. The second read is held open here to sit inside that window.
     let releaseRefetch: (value: unknown) => void = () => {}
     let reads = 0
+    vi.spyOn(api, 'dashboardConfig').mockResolvedValue({ decisions_enabled: true } as never)
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { bucket: 100 } } as never)
     vi.spyOn(api, 'getDecisionsConsent').mockImplementation((() => {
       reads += 1
@@ -369,5 +387,81 @@ describe('Decisions (Jev) preview card', () => {
       expect(api.saveDecisionsConsent).toHaveBeenCalled()
     })
     expect(Object.keys(localStorage).filter(k => k.startsWith(PREVIEW_FLAG_PREFIX))).toEqual([])
+  })
+
+  describe('capabilities.decisions governance gate', () => {
+    // The card is the door to a PAID external egress, so a managed fleet can
+    // withdraw the whole feature: `GET /api/dashboard/config` reports the ceiling's
+    // answer as `decisions_enabled` and the card is drawn only on a literal `true`.
+    // Fail closed on absence — an older gateway and a read still in flight both
+    // look the same from here, and neither is permission.
+
+    it('draws no card when governance withdrew the seam', async () => {
+      stubGateway({ enabled: false }, { decisions: { bucket: 100 } }, { decisions_enabled: false })
+      renderSection()
+      // A sibling card proves the section rendered, so an absent switch is the
+      // gate and not a failed render.
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: /Crew Members/i })).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
+      // Not merely hidden: nothing about the feature is on screen to act on.
+      expect(screen.queryByText(/sent over the internet to Jev/i)).toBeNull()
+    })
+
+    it('draws no card when the field is absent, and never guesses from the keystone', async () => {
+      // An older gateway has no `decisions_enabled` at all. A keystone that
+      // already says `true` must not stand in for the fleet's permission.
+      stubGateway({ enabled: true }, { decisions: { bucket: 100 } }, {})
+      renderSection()
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: /Crew Members/i })).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
+    })
+
+    it('explains a failed ceiling read instead of removing the feature', async () => {
+      // The read FAILING is not a withdrawal: nothing has been denied, the dashboard
+      // just does not know, and the user can retry. Hiding the card there would turn
+      // a transport failure into a feature that silently does not exist
+      // (AUTOSDE `errors-use-error-notice`). It has to fade and say so, exactly like
+      // the card's other two reads already do.
+      stubGateway({ enabled: false })
+      vi.spyOn(api, 'dashboardConfig').mockRejectedValue(new Error('offline'))
+      renderSection()
+      await waitFor(() => {
+        expect(screen.getByText(/could not read the settings/i)).toBeInTheDocument()
+      })
+      // The card is PRESENT — that is the whole point — and offers no write against a
+      // ceiling it could not read.
+      expect(decisionsSwitch()).toBeInTheDocument()
+      expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+    })
+
+    it('keeps hiding the card while the ceiling read is still in flight', async () => {
+      // The control for the case above: a read that has not LANDED is not a read that
+      // FAILED, and an unanswered ceiling is no basis for offering an egress switch.
+      // Without this, "fail closed on absence" and "explain a failure" collapse into
+      // each other and the first case would pass on a card that is simply always drawn.
+      stubGateway({ enabled: false })
+      vi.spyOn(api, 'dashboardConfig').mockReturnValue(new Promise(() => {}) as never)
+      renderSection()
+      await waitFor(() => {
+        expect(screen.getByRole('switch', { name: /Crew Members/i })).toBeInTheDocument()
+      })
+      expect(screen.queryByRole('switch', { name: 'Decisions (Jev)' })).toBeNull()
+      expect(screen.queryByText(/could not read the settings/i)).toBeNull()
+    })
+
+    it('draws the card when the ceiling permits it', async () => {
+      // The control: the same stubs, one field flipped, and the card is back —
+      // so the two cases above measure the gate rather than a broken render.
+      stubGateway({ enabled: false }, { decisions: { bucket: 100 } }, { decisions_enabled: true })
+      renderSection()
+      await waitFor(() => {
+        expect(decisionsSwitch()).toBeInTheDocument()
+      })
+      expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+    })
   })
 })

@@ -9,6 +9,16 @@ config names at that moment, and the gate sends only while the two still agree.
 The GET returns both so the card can show the owner WHERE consent would send, and
 say so when a later config edit moved the destination out from under it.
 
+Above the owner's switch sits the FLEET's: ``capabilities.decisions``
+(``decisions/capability.py``). The two answer different questions -- may my messages
+be sent, versus may this machine run the seam at all -- so a managed install can
+have an owner who consented in good faith to an endpoint the fleet never approved.
+A denial refuses an ENABLING PUT with ``403 decisions_capability_denied``, and both
+verbs fold it into ``permits`` so no caller reads "a decision would be sent" under a
+pin. A DISABLING PUT still succeeds under a denial: the gate already treats the seam
+as off, and refusing the write would trap an owner with a stale ``"enabled": true``
+keystone they cannot clear.
+
 This handler is the ONLY writer of ``decisions_consent.json``, and that is what
 makes "the agent cannot switch on the egress of its own conversation" true: the
 keystone leaf is on ``security._CREW_SECRET_LEAVES`` and mounted read-only in
@@ -65,6 +75,7 @@ _CODE_FEEDBACK_INVALID_BODY = "decisions_feedback_invalid_body"
 #: retry once the operator has made room, which is exactly what the WARNING the
 #: writer logs tells them to do.
 _CODE_FEEDBACK_NOT_RECORDED = "decisions_feedback_not_recorded"
+_CODE_CAPABILITY_DENIED = "decisions_capability_denied"
 
 OP_CONSENT_GET = "decisions_consent_get"
 OP_CONSENT_PUT = "decisions_consent_put"
@@ -130,8 +141,14 @@ async def _deny_non_owner(request: web.Request, operation: str) -> web.Response 
     return _owner_denial_response(request, "dashboard owner required", _CODE_OWNER_REQUIRED)
 
 
-def _payload(state: dict) -> dict:
-    """What both verbs return: the keystone, and the endpoint config names now."""
+def _payload(state: dict, *, denied: bool) -> dict:
+    """What both verbs return: the keystone and the endpoint config names now.
+
+    *denied* subtracts from ``permits`` rather than appearing as a field of its own:
+    the effective answer is what a caller acts on, and a separate reason field had no
+    reader. It is passed in rather than probed here because the probe is filesystem
+    IO and both callers already have a worker thread to spend it on.
+    """
     from kiro_crew.decisions import consent
     from kiro_crew.decisions import gate as _gate
 
@@ -142,7 +159,12 @@ def _payload(state: dict) -> dict:
         "configured_endpoint": configured,
         # Whether a decision would actually be sent right now: consent given, and
         # for THIS address. False with enabled=true is the redirected-config state.
-        "permits": consent.permits(configured, state),
+        # A governance denial makes the gate read the keystone as off, so it lands
+        # here too: ``permits`` is the EFFECTIVE answer, and folding the denial into
+        # it is what keeps the card from claiming a decision would be sent under a
+        # pin. The denial is not reported as a field of its own -- nothing reads one,
+        # and the surface a caller acts on is the 403 on an enabling write.
+        "permits": consent.permits(configured, state) and not denied,
         # The prior-conversation CEILING the owner reviewed. Reported so the card can
         # say what was consented to rather than what config.json currently asks for
         # -- those differ exactly when an agent has raised the config value, which is
@@ -157,9 +179,14 @@ async def api_decisions_consent_get(request: web.Request) -> web.Response:
     if denied is not None:
         return denied
     from kiro_crew.decisions import consent
+    from kiro_crew.decisions.capability import is_decisions_denied
 
     state = await asyncio.to_thread(consent.load_state)
-    payload = _payload(state)
+    # Off the loop for the same reason as the keystone read: profile resolution may
+    # read from disk. Audited by the probe itself. Named ``withdrawn`` because
+    # ``denied`` above is the owner gate's refusal, a different decision.
+    withdrawn = await asyncio.to_thread(is_decisions_denied)
+    payload = _payload(state, denied=withdrawn)
     # Read audited too: WHO learned whether the owner's messages leave the machine
     # is itself a fact an auditor needs, and it pairs with the denied-read row so
     # the log shows every read of the switch, not only the refused ones.
@@ -199,9 +226,10 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     Outcomes: ``200`` with the new state; ``400`` for a body that is not a JSON
     object carrying a boolean ``enabled`` (plus a string ``endpoint`` when
     enabling, and a non-negative whole ``history_budget_chars`` when present);
-    ``403`` for a non-owner; ``409`` when the echoed endpoint is not the one config
-    names now; ``500`` for a corrupt keystone, which is left byte-identical rather
-    than clobbered (the ``StateCorruptError`` precedent in
+    ``403`` for a non-owner, and for an ENABLING write the ceiling withdrew
+    (``decisions_capability_denied``); ``409`` when the echoed endpoint is not the one
+    config names now; ``500`` for a corrupt keystone, which is left byte-identical
+    rather than clobbered (the ``StateCorruptError`` precedent in
     ``handlers/computer_use.py``).
     """
     denied = await _deny_non_owner(request, OP_CONSENT_PUT)
@@ -257,7 +285,29 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
     # the gate will hold the config to afterwards. Different: the config moved
     # under the owner's review, so refuse and let the card show the new address.
     endpoint = _gate.configured_endpoint()
+    # ONE probe for this request, resolved before the branch so the refusal below
+    # and the ``permits`` value in the response cannot disagree. Off the loop:
+    # profile resolution may read from disk.
+    from kiro_crew.decisions.capability import is_decisions_denied
+
+    withdrawn = await asyncio.to_thread(is_decisions_denied)
     if enabled:
+        # The fleet's ceiling, ahead of every other check on an enabling write: a
+        # withdrawn seam must not acquire a keystone that says otherwise. Only the
+        # ENABLING direction is gated -- a disabling PUT stays available so an owner
+        # can clear a consent recorded before the pin (the gate already reads it as
+        # off, so the write changes no authority, it only tidies the record).
+        if withdrawn:
+            await _audit(
+                request, operation=OP_CONSENT_PUT, outcome="denied", error="capability_denied"
+            )
+            return web.json_response(
+                {
+                    "error": "the decision seam is withdrawn by governance policy",
+                    "code": _CODE_CAPABILITY_DENIED,
+                },
+                status=403,
+            )
         reviewed = consent.normalize_endpoint(body.get("endpoint"))
         if not reviewed:
             await _audit(request, operation=OP_CONSENT_PUT, outcome="denied", error="invalid_body")
@@ -303,7 +353,7 @@ async def api_decisions_consent_put(request: web.Request) -> web.Response:
             f"history_budget_chars={consent.consented_history_budget(state)}"
         ),
     )
-    return web.json_response(_payload(state))
+    return web.json_response(_payload(state, denied=withdrawn))
 
 
 async def api_decisions_feedback(request: web.Request) -> web.Response:

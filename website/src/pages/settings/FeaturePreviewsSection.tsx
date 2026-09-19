@@ -150,6 +150,14 @@ const DECISIONS_EGRESS_NOTE_ID = 'decisions-preview-egress-note'
  * No `configKey`: the switch writes no config path (see the section's doc
  * comment above).
  *
+ * Above the owner's switch sits the FLEET's. `capabilities.decisions` is a
+ * governance ceiling resolved server-side and reported as `decisions_enabled` on
+ * `GET /api/dashboard/config`; a fleet that pinned the seam off gets NO CARD, not
+ * a disabled one, because a ceiling is not a state the user can act on. The
+ * refusal itself is the consent PUT (403) and the gate's own consent read — this
+ * is presentation, and it is deliberately the only state here that hides rather
+ * than explains.
+ *
  * The point row is READ-ONLY on purpose. It names the one thing Jev decides in
  * plain words, with the backend's identifier beside it for a reader matching the
  * card against the decision log. It carries no on/off state of its own — the
@@ -167,6 +175,16 @@ const DECISIONS_EGRESS_NOTE_ID = 'decisions-preview-egress-note'
  */
 function DecisionsPreviewCard() {
   const qc = useQueryClient()
+  // `capabilities.decisions`, resolved server-side and reported by the endpoint
+  // the dashboard already fetches. FAIL CLOSED on `=== true`: an absent field is
+  // an older gateway or a read that has not landed, and neither is permission to
+  // offer an egress switch — the same posture `socialShareOn` uses in ChatPage.
+  const dashCfgQ = useQuery<{ decisions_enabled?: boolean }>({
+    queryKey: ['dashboardConfig'],
+    queryFn: () => api.dashboardConfig(),
+    staleTime: 30_000,
+  })
+  const governancePermits = dashCfgQ.data?.decisions_enabled === true
   const configQ = useQuery({ queryKey: ['kirocrewConfig'], queryFn: () => api.kirocrewConfig() })
   const consentQ = useQuery({
     queryKey: ['decisionsConsent'],
@@ -198,12 +216,28 @@ function DecisionsPreviewCard() {
   // surfaces here as an error carrying that status; any other failure is the
   // read problem.
   const backendMissing = consentQ.isError && isNotFoundError(consentQ.error)
-  const readFailed = configQ.isError || (consentQ.isError && !backendMissing)
+  const readFailed =
+    configQ.isError || dashCfgQ.isError || (consentQ.isError && !backendMissing)
   const loading = configQ.isLoading || consentQ.isLoading
   const describedBy =
     [backendMissing ? DECISIONS_BACKEND_NOTE_ID : '', DECISIONS_EGRESS_NOTE_ID]
       .filter(Boolean)
       .join(' ')
+
+  // Withdrawn by governance: no card at all, not a disabled one. The other
+  // unavailable states here (old gateway, unreadable config) fade the card and
+  // name the fix, because the user CAN act on those. A fleet ceiling is not
+  // something they can act on, and a greyed row inviting a support ticket is
+  // worse than a feature that was never offered. The refusal itself lives on the
+  // consent PUT and in the gate; this is presentation.
+  //
+  // A FAILED read is not a withdrawal and must not be silent: nothing has been
+  // denied, the dashboard just does not know yet, and the user can retry. It falls
+  // through to `readFailed` above, which fades the card and renders the same notice
+  // the other two reads render, rather than removing the feature from the page
+  // (AUTOSDE `errors-use-error-notice`). Still-loading keeps hiding it: an
+  // unanswered ceiling is no basis for offering an egress switch.
+  if (!governancePermits && !dashCfgQ.isError) return null
 
   return (
     <SettingsCard>

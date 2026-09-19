@@ -12,6 +12,10 @@ write -- and never in ``config.json``. Three things are pinned here:
   in the agent-writable ``config.json`` too;
 * the dashboard handler is owner-only on read and write, validates strictly,
   audits, and never clobbers a corrupt file.
+
+:class:`TestCapabilityCeiling` pins the FLEET's switch above the owner's --
+``capabilities.decisions`` -- at both of its chokepoints and on the dashboard
+config read that hides the card.
 """
 
 from __future__ import annotations
@@ -23,6 +27,8 @@ from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from aiohttp import StreamReader, web
+from dashboard_owner_helpers import NoConfiguredOwner
 
 from kiro_crew.config.sections import DECISION_PROVIDER_ENDPOINT_DEFAULT as DEFAULT_ENDPOINT
 from kiro_crew.decisions import consent
@@ -398,6 +404,14 @@ class TestWrite:
 # ---------------------------------------------------------------------------
 # The dashboard handler
 # ---------------------------------------------------------------------------
+
+
+def _stream(data: bytes):
+    """A minimal readable payload for ``make_mocked_request`` (no socket, no server)."""
+    stream = StreamReader(MagicMock(), limit=2**16)
+    stream.feed_data(data)
+    stream.feed_eof()
+    return stream
 
 
 def _request(*, app: str = "", user: str = "owner-1", owner: str = "owner-1", body=None):
@@ -824,3 +838,244 @@ class TestHandler:
         assert 'add_get("/api/decisions/consent"' in source
         assert 'add_put("/api/decisions/consent"' in source
         assert routes is not None
+
+
+# ---------------------------------------------------------------------------
+# The fleet's ceiling above the owner's switch: ``capabilities.decisions``
+# ---------------------------------------------------------------------------
+
+
+#: A ceiling that pins the seam off.
+_PIN_DOC: dict = {
+    "version": 1,
+    "boot": {"fail_closed": True},
+    "capabilities": {"decisions": {"enabled": False}},
+}
+
+
+@pytest.fixture
+def ceiling(monkeypatch):
+    """Install a boot-frozen ceiling for the duration of a test; returns a setter."""
+    from kiro_crew.platform import context as pc
+    from kiro_crew.platform.governance import parse_policy
+
+    def _set(doc: "dict | None") -> None:
+        parsed = parse_policy(doc) if doc is not None else None
+
+        class _Ctx:
+            governance = parsed
+
+        monkeypatch.setattr(pc, "current_context", lambda: _Ctx())
+
+    _set(None)
+    return _set
+
+
+@pytest.fixture
+def governance_rows(monkeypatch):
+    """Capture the ``governance_decision`` rows the probe writes through the seam."""
+    import kiro_crew.sel as sel_mod
+
+    rows: list[dict] = []
+    fake = MagicMock()
+    fake.log_governance_decision = lambda **kw: rows.append(kw)
+    monkeypatch.setattr(sel_mod, "sel", lambda: fake)
+    return rows
+
+
+class TestCapabilityCeiling:
+    """The fleet's side of the same question the keystone answers for the owner.
+
+    An owner on a managed machine can consent in good faith to a paid external
+    endpoint their fleet never approved, so the ceiling has to stand ABOVE the
+    keystone rather than beside it: enabling is refused, and an existing
+    ``"enabled": true`` is inert rather than carried over.
+    """
+
+    # ── the catalog row ───────────────────────────────────────────────
+
+    def test_the_row_is_a_default_on_capability(self):
+        """A DATA change: one row, no ``CONTRACT_VERSION`` or evaluator edit."""
+        from kiro_crew.platform.governance import CAPABILITY, SCOPE_CATALOG
+
+        spec = SCOPE_CATALOG["capabilities.decisions"]
+        assert spec.kind == CAPABILITY
+        # A policy governing some OTHER capabilities.* row must not silently
+        # withdraw a feature it never mentioned.
+        assert spec.capability_default is True
+
+    def test_a_policy_can_actually_express_the_pin(self):
+        from kiro_crew.platform.governance import CapabilityGate, parse_policy
+
+        gate = parse_policy(_PIN_DOC).get("capabilities.decisions")
+        assert isinstance(gate, CapabilityGate)
+        assert gate.enabled is False
+
+    # ── the probe ─────────────────────────────────────────────────────
+
+    def test_the_probe_permits_an_ungoverned_host_and_denies_a_pin(self, ceiling, governance_rows):
+        from kiro_crew.decisions.capability import is_decisions_denied
+
+        assert is_decisions_denied() is False
+        ceiling(_PIN_DOC)
+        assert is_decisions_denied() is True
+        assert [r["outcome"] for r in governance_rows] == ["allowed", "denied"]
+        assert {r["scope"] for r in governance_rows} == {"capabilities.decisions"}
+        assert {r["session_key"] for r in governance_rows} == {"dashboard:ui"}
+
+    def test_the_probe_pins_the_dashboard_surface_and_fails_closed(self, monkeypatch, ceiling):
+        """The surface key is what a profile binds on, and it is never a caller
+        value -- a request carrying ``slack:x`` must not dodge a dashboard-bound
+        profile. An unevaluable ceiling denies."""
+        from kiro_crew.decisions import capability
+
+        seen: list[dict] = []
+
+        def _spy(scope, item, **kw):
+            seen.append({"scope": scope, "item": item, **kw})
+            return MagicMock(permitted=True)
+
+        monkeypatch.setattr(capability, "vet_and_audit", _spy)
+        assert capability.is_decisions_denied() is False
+        assert seen == [
+            {
+                "scope": "capabilities.decisions",
+                "item": "",
+                "session_key": "dashboard:ui",
+                "tool_name": capability.AUDIT_TOOL,
+                "log_warning": False,
+                "fail_closed": True,
+            }
+        ]
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(capability, "vet_and_audit", _boom)
+        assert capability.is_decisions_denied() is True
+
+    def test_an_unevaluable_ceiling_records_the_denial_the_seam_could_not(
+        self, monkeypatch, governance_rows
+    ):
+        """``vet_and_audit`` never ran, so it wrote nothing: the probe must audit
+        the denial it is about to act on itself."""
+        from kiro_crew.decisions import capability
+
+        monkeypatch.setattr(
+            capability, "vet_and_audit", lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError())
+        )
+        assert capability.is_decisions_denied() is True
+        assert len(governance_rows) == 1
+        assert governance_rows[0]["scope"] == "capabilities.decisions"
+        assert governance_rows[0]["outcome"] == "denied"
+        assert governance_rows[0]["tool_name"] == capability.AUDIT_TOOL
+        assert "fail-closed" in governance_rows[0]["reason"]
+
+    # ── chokepoint (a): the consent PUT ───────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_enabling_is_refused_and_nothing_is_written(
+        self, keystone, audit, configured, ceiling, governance_rows
+    ):
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        ceiling(_PIN_DOC)
+        resp = await api_decisions_consent_put(
+            _request(body={"enabled": True, "endpoint": DEFAULT_ENDPOINT})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.text)["code"] == "decisions_capability_denied"
+        assert not keystone.exists(), "a withdrawn seam must not acquire a keystone"
+        assert audit[-1]["outcome"] == "denied" and audit[-1]["error"] == "capability_denied"
+
+    @pytest.mark.asyncio
+    async def test_disabling_still_succeeds_so_a_stale_consent_can_be_cleared(
+        self, keystone, audit, configured, ceiling, governance_rows
+    ):
+        """The owner consented BEFORE the pin. Refusing the disabling write too
+        would trap them with a keystone saying ``true`` they cannot clear."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_put
+
+        keystone.write_text(
+            json.dumps({"enabled": True, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
+        )
+        ceiling(_PIN_DOC)
+        resp = await api_decisions_consent_put(_request(body={"enabled": False}))
+        assert resp.status == 200
+        assert json.loads(resp.text)["enabled"] is False
+        assert consent.is_enabled() is False
+
+    @pytest.mark.asyncio
+    async def test_the_get_reports_the_denial_and_stops_claiming_it_permits(
+        self, keystone, audit, configured, ceiling, governance_rows
+    ):
+        """A keystone consenting for the configured address, under a pin: the card
+        must not read ``permits: true`` and offer to send."""
+        from kiro_crew.dashboard.handlers.decisions import api_decisions_consent_get
+
+        keystone.write_text(
+            json.dumps({"enabled": True, "endpoint": DEFAULT_ENDPOINT}), encoding="utf-8"
+        )
+        body = json.loads((await api_decisions_consent_get(_request())).text)
+        assert body["permits"] is True
+
+        ceiling(_PIN_DOC)
+        body = json.loads((await api_decisions_consent_get(_request())).text)
+        # ``enabled`` still reports the keystone as it stands -- the owner's record is
+        # not rewritten -- but the EFFECTIVE answer flips, which is the one a caller
+        # acts on. There is no separate reason field to read.
+        assert body["enabled"] is True
+        assert body["permits"] is False
+
+    # ── the dashboard config read that hides the card ─────────────────
+
+    @pytest.mark.asyncio
+    async def test_the_dashboard_config_read_reports_the_answer(
+        self, monkeypatch, ceiling, governance_rows
+    ):
+        """``GET /api/dashboard/config`` carries ``decisions_enabled`` beside
+        ``social_share_enabled``; the frontend hides the card on anything but
+        ``true``. Presentation, not the control -- the two chokepoints above are."""
+        from aiohttp.test_utils import make_mocked_request
+
+        import kiro_crew.dashboard.handlers as handlers_pkg
+        from kiro_crew.dashboard.handlers.files import api_dashboard_config
+
+        monkeypatch.setattr(handlers_pkg, "sel", lambda: MagicMock())
+        resp = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
+        assert json.loads(resp.text)["decisions_enabled"] is True
+
+        ceiling(_PIN_DOC)
+        resp = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
+        assert json.loads(resp.text)["decisions_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_the_config_put_drops_the_round_tripped_field(self, monkeypatch, ceiling):
+        """Both settings surfaces PUT the spread GET body back, so the read-only
+        field has to be DROPPED rather than rejected or every toggle save 400s."""
+        from aiohttp.test_utils import make_mocked_request
+
+        import kiro_crew.dashboard.handlers as handlers_pkg
+        from kiro_crew.dashboard.handlers.files import api_dashboard_config
+
+        monkeypatch.setattr(handlers_pkg, "sel", lambda: MagicMock())
+        get = await api_dashboard_config(make_mocked_request("GET", "/api/dashboard/config"))
+        body = json.loads(get.text)
+        assert "decisions_enabled" in body
+        payload = json.dumps({**body, "restore_sessions": True}).encode()
+        # The write is owner-gated, and the gate reads ``request.app["state"]``
+        # plus the claims the token middleware normally sets -- the same minimum
+        # ``dashboard_owner_helpers.as_owner`` installs, without a server.
+        app = web.Application()
+        app["state"] = NoConfiguredOwner()
+        put = make_mocked_request(
+            "PUT",
+            "/api/dashboard/config",
+            payload=_stream(payload),
+            headers={"Content-Type": "application/json", "Content-Length": str(len(payload))},
+            app=app,
+        )
+        put["user"] = "local-app"
+        put["app"] = ""
+        resp = await api_dashboard_config(put)
+        assert resp.status == 200, resp.text
