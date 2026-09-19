@@ -13,7 +13,8 @@
  * the Recurrence model is a single interval and cannot express them.
  */
 
-import { toUnits } from './reminderText'
+import { assembleParts } from './reminderParseParts'
+import type { ClockHit, DayOffsetHit, DelayHit, IntervalHit, ScheduleParts, Span } from './reminderParseParts'
 
 const MIN = 1
 const HOUR = 60
@@ -148,27 +149,13 @@ function inSchedulePosition(s: string, start: number, word: string): boolean {
   return /^[\s，,、。：:0-9０-９一二三四五六七八九十半点分]/.test(after)
 }
 
-export interface Span { start: number; end: number }
-
-export interface ZhParse {
-  /** Repeat interval in minutes, or null for one-time. */
-  everyMinutes: number | null
-  /** Relative delay in minutes ("20分钟后"). */
-  delayMinutes: number | null
-  /** Clock time, already meridiem-resolved. */
-  clock: { hour: number; minute: number; explicit: boolean } | null
-  /** 0 = today, 1 = 明天, 2 = 后天. */
-  dayOffset: number
-  /** Ranges to strip when building the reminder text. */
-  spans: Span[]
-  /** False when nothing schedule-like was found. */
-  hasSignal: boolean
-}
+/** The Chinese parser's result, whose shape is shared with every other language. */
+export type ZhParse = ScheduleParts
 
 const span = (m: RegExpMatchArray): Span => ({ start: m.index!, end: m.index! + m[0].length })
 
 /** 一天两次 / 每天三次 → an interval derived from a rate. */
-function findRate(s: string): { everyMinutes: number; span: Span } | null {
+function findRate(s: string): IntervalHit | null {
   const m = s.match(new RegExp(`(?:每|一)(天|日|小时|周)${NUM}次`))
   if (!m) return null
   const per = unitMinutes(m[1])
@@ -178,7 +165,7 @@ function findRate(s: string): { everyMinutes: number; span: Span } | null {
 }
 
 /** 每2小时 / 每天 / 每隔30分钟 / 每晚. */
-function findInterval(s: string): { everyMinutes: number; span: Span; hour?: number } | null {
+function findInterval(s: string): IntervalHit | null {
   const rate = findRate(s)
   if (rate) return rate
 
@@ -214,7 +201,7 @@ function findInterval(s: string): { everyMinutes: number; span: Span; hour?: num
 }
 
 /** 20分钟后 / 半小时后 / 过两小时. */
-function findDelay(s: string): { minutes: number; span: Span } | null {
+function findDelay(s: string): DelayHit | null {
   const after = s.match(new RegExp(`${NUM}\\s*${UNIT}(?:之)?后`))
   if (after) {
     const mins = unitMinutes(after[2])
@@ -235,7 +222,7 @@ function findDelay(s: string): { minutes: number; span: Span } | null {
 }
 
 /** 下午3点半 / 早上9点 / 8点30分 / 15:00. */
-function findClock(s: string): { hour: number; minute: number; explicit: boolean; span: Span } | null {
+function findClock(s: string): ClockHit | null {
   const partsAlt0 = DAY_PARTS.map(([w]) => w).join('|')
 
   // A colon time, optionally prefixed by a day part (下午3:51).
@@ -306,7 +293,7 @@ function findClock(s: string): { hour: number; minute: number; explicit: boolean
 }
 
 /** 今天 / 明天 / 后天 / 大后天. */
-function findDayOffset(s: string): { offset: number; span: Span } | null {
+function findDayOffset(s: string): DayOffsetHit | null {
   const table: ReadonlyArray<[RegExp, number]> = [
     [/大后天/, 3],
     [/后天/, 2],
@@ -328,36 +315,13 @@ function findDayOffset(s: string): { offset: number; span: Span } | null {
  * time, not language, and should not be duplicated.
  */
 export function parseZhParts(input: string): ZhParse {
-  const s = input
-  const interval = findInterval(s)
-  const delay = findDelay(s)
-  const dayOff = findDayOffset(s)
-
-  // Mask what the interval and delay already consumed, so the 2 in 每2小时 is not
-  // then read as 2点.
-  const masked = toUnits(s)
-  for (const sp of [interval?.span, delay?.span].filter(Boolean) as Span[]) {
-    for (let i = sp.start; i < sp.end; i++) masked[i] = ' '
-  }
-  let clock = findClock(masked.join(''))
-  if (!clock && interval?.hour != null) {
-    clock = { hour: interval.hour, minute: 0, explicit: true, span: interval.span }
-  }
-
-  const spans: Span[] = []
-  if (interval) spans.push(interval.span)
-  if (delay) spans.push(delay.span)
-  if (clock) spans.push(clock.span)
-  if (dayOff) spans.push(dayOff.span)
-
-  return {
-    everyMinutes: interval?.everyMinutes ?? null,
-    delayMinutes: delay?.minutes ?? null,
-    clock: clock ? { hour: clock.hour, minute: clock.minute, explicit: clock.explicit } : null,
-    dayOffset: dayOff?.offset ?? 0,
-    spans,
-    hasSignal: !!(interval || delay || clock || dayOff),
-  }
+  return assembleParts(
+    input,
+    findInterval(input),
+    findDelay(input),
+    findDayOffset(input),
+    findClock,
+  )
 }
 
 /** Politeness and framing that carries no meaning once the schedule is extracted. */
