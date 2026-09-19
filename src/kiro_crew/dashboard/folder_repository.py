@@ -8,6 +8,7 @@ import logging
 from pathlib import Path
 from typing import Any, Callable, TypeVar
 
+from kiro_crew.dashboard.snapshot_commit import commit_snapshot_while_holding_the_lock
 from kiro_crew.loop_lock import LoopBoundLock
 
 FOLDERS_FILE = "folders.json"
@@ -60,7 +61,7 @@ class FolderRepository:
         mutate: Callable[[list[dict[str, Any]]], tuple[bool, _T]],
         path_provider: Callable[[], Path],
         write_confirmed: Callable[[Path, list[dict[str, Any]]], None],
-        on_committed: Callable[[], None] | None = None,
+        on_committed: Callable[[list[dict[str, Any]]], None] | None = None,
     ) -> _T:
         """Serialize one mutation and retain it only after a confirmed off-loop write.
 
@@ -74,6 +75,10 @@ class FolderRepository:
         Keeping post-commit signals in the same critical section prevents two
         concurrent transactions from collapsing a monotonic generation bump.
         It is deliberately skipped for no-op and rolled-back transactions.
+
+        It receives the SNAPSHOT that was serialized and confirmed, not the live
+        list, so a signal derived from the store's contents cannot disagree with
+        the bytes that actually landed.
         """
         async with lock:
             before = [dict(folder) for folder in folders_provider()]
@@ -82,13 +87,18 @@ class FolderRepository:
                 return value
             path = path_provider()
             snapshot = [dict(folder) for folder in folders_provider()]
+
+            # The restore lives here, not in the helper: the helper re-raises the write's
+            # own failure and never a cancellation, so a still-completing write skips it.
+            write = asyncio.ensure_future(asyncio.to_thread(write_confirmed, path, snapshot))
             try:
-                await asyncio.to_thread(write_confirmed, path, snapshot)
+                await commit_snapshot_while_holding_the_lock(
+                    write,
+                    publish=lambda: on_committed(snapshot) if on_committed is not None else None,
+                )
             except Exception:
                 folders_provider()[:] = before
                 raise
-            if on_committed is not None:
-                on_committed()
             return value
 
     @staticmethod
