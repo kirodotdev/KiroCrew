@@ -1347,6 +1347,10 @@ def _rehydrate_slot_from_history(
             slot.memory_store = str(meta["memory_store"])
         if meta.get("project"):
             slot.project = meta["project"]
+        # Restored independently of the project: a record written before the marker existed
+        # carries a stale directory, and its absent marker must not read as "never cleared".
+        # Literal True only: the STRING "false" is truthy, and would restore a clear never made.
+        slot.project_cleared = meta.get("project_cleared") is True
         # Restore the remote executor marker INDEPENDENTLY of its target fields.
         # history JSONL is a file on disk, so a truncated write or a hand-edit can
         # leave the ``executor="remote"`` marker without a valid instance_id /
@@ -1951,6 +1955,9 @@ def _apply_recent_session(
         slot.memory_store = str(meta["memory_store"])
     if meta.get("project"):
         slot.project = meta["project"]
+    # Same rehydration as _rehydrate_slot_from_history, including its literal-True guard:
+    # without the marker a restored clear is spelled the same as a project never set.
+    slot.project_cleared = meta.get("project_cleared") is True
     if _member_identity is None and (_mode := _restored_mode(meta.get("mode"))):
         slot.mode = _mode
     if meta.get("created_by"):
@@ -3460,8 +3467,10 @@ def _save_slot_to_history(
                 # falsy as "the global store", which is also how a session written
                 # before crew stores existed reads.
                 fields["memory_store"] = named_store_or_empty(slot.memory_store)
-                if slot.project:
-                    fields["project"] = slot.project
+                # CLEARABLE like memory_store above: the merge cannot delete a key, so a
+                # truthy-only write leaves the old directory on disk for the next restart.
+                fields["project"] = slot.project
+                fields["project_cleared"] = bool(slot.project_cleared)
                 if slot._app:
                     fields["app"] = slot._app
                 if slot._origin:

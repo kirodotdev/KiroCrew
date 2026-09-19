@@ -10418,6 +10418,9 @@ def _hydrate_slot_from_history(
         slot.workspace = meta["workspace"]
     if meta.get("project"):
         slot.project = meta["project"]
+    # Restored OUTSIDE that truthy guard: a cleared project is "" and skips it, so the
+    # marker is the only thing separating a clear from a project never set.
+    slot.project_cleared = meta.get("project_cleared") is True
     if meta.get("channel_folder_filed"):
         # Resuming from History must carry the filing marker forward, or the
         # next save of this slot drops it and the conversation is re-filed.
