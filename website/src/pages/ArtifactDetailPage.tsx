@@ -46,6 +46,7 @@ import type { Artifact, ArtifactEvent, ArtifactComment, CommentAnchor, ChatSlot 
 
 import { i18nT } from '../i18n/t'
 import { errMessage } from '../utils/thunkError'
+import { byRecentActivity } from '../utils/slotRecency'
 import { fmtDateFields } from '../i18n/format'
 import ErrorNotice from '../components/ErrorNotice'
 import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
@@ -60,8 +61,11 @@ import { useLanguageGeneration } from '../i18n/useLanguageGeneration'
 function pickBoundSlot(slots: ChatSlot[] | undefined, slug: string): ChatSlot | null {
   const matches = (slots ?? []).filter((x) => x.artifact === slug)
   if (matches.length <= 1) return matches[0] ?? null
-  return [...matches].sort((a, b) =>
-    (b.last_activity_ts || '').localeCompare(a.last_activity_ts || ''))[0]
+  // "Most recently active" has to be decided on INSTANTS. `last_activity_ts` is
+  // the raw transcript `ts` and is not guaranteed to be one format, so comparing
+  // the text can hand back the older session — which is the one case this
+  // resolver exists to avoid, and the tie-break "New chat" depends on below.
+  return [...matches].sort(byRecentActivity)[0]
 }
 
 function readThemeVars(): Record<string, string> {
