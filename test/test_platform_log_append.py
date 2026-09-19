@@ -402,6 +402,162 @@ def test_link_installed_at_leaf_open_is_refused(path, tmp_path, monkeypatch):
     assert list(target.iterdir()) == []
 
 
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat leaf; the Windows leaf is by path")
+def test_log_directory_removed_before_the_leaf_open_is_recreated(path, monkeypatch):
+    """Creating the directory and opening the file in it are two syscalls (GH-12034).
+
+    A removal landing between them is an interleaving no ordering can close. The
+    sequence is re-run rather than reported, because the alternative is ``ENOENT``
+    on the bare ``openat`` leaf -- ``'day.jsonl'``, a name with no directory
+    component, which reads as a working-directory bug and is not one.
+    """
+    original = os.open
+    removals = 0
+
+    def removing(name, flags, mode=0o777, *, dir_fd=None):
+        nonlocal removals
+        if name == path.name and removals == 0:
+            removals += 1
+            os.rmdir(path.parent)
+        return original(name, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pla.os, "open", removing)
+    pla.append_line(path, b'{"kept":1}\n')
+    assert removals == 1  # the race really happened, so the retry is what passed
+    assert path.read_bytes() == b'{"kept":1}\n'
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat leaf; the Windows leaf is by path")
+def test_a_log_directory_removed_every_time_names_the_whole_path(path, monkeypatch):
+    """Exhausting the attempts reports the PATH, not the leaf the syscall was given.
+
+    The bare-leaf ``filename`` is what made this failure unreadable, so it is
+    asserted as the contract rather than left to whichever ``openat`` lost.
+    """
+    original = os.open
+
+    def removing(name, flags, mode=0o777, *, dir_fd=None):
+        if name == path.name:
+            os.rmdir(path.parent)
+        return original(name, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pla.os, "open", removing)
+    with pytest.raises(FileNotFoundError) as caught:
+        pla.append_line(path, b"{}\n")
+    assert caught.value.filename == str(path)
+    assert str(path.parent) in str(caught.value)
+    assert not path.parent.exists()
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat leaf; the Windows leaf is by path")
+def test_a_losing_attempt_releases_its_descriptors(path, monkeypatch):
+    """A discarded attempt closes its own pins, or it holds an inode for the process."""
+    original_open, original_close = os.open, os.close
+    opened: list[int] = []
+    closed: list[int] = []
+    removed = False
+
+    def removing(name, flags, mode=0o777, *, dir_fd=None):
+        nonlocal removed
+        if name == path.name and not removed:
+            removed = True
+            os.rmdir(path.parent)
+        fd = original_open(name, flags, mode, dir_fd=dir_fd)
+        opened.append(fd)
+        return fd
+
+    def recording_close(fd):
+        closed.append(fd)
+        original_close(fd)
+
+    monkeypatch.setattr(pla.os, "open", removing)
+    monkeypatch.setattr(pla.os, "close", recording_close)
+    pla.append_line(path, b"{}\n")
+    assert removed
+    # Opens and closes pair up exactly, across BOTH attempts: the transfer of the
+    # winning attempt's pins to the caller's stack must not close them twice, and
+    # the losing attempt's must not survive it.
+    assert sorted(opened) == sorted(closed)
+
+
+def test_an_absent_home_is_not_reported_as_a_removed_log_directory(tmp_path):
+    """A home that is simply not there raises as itself, not as a removal.
+
+    The retry's report says the log directory was removed, which is a specific
+    claim about what happened. This pins that the claim is not made for the
+    ordinary case of a path that never existed.
+    """
+    with pytest.raises(FileNotFoundError) as caught:
+        pla.append_line(tmp_path / "absent" / "decisions" / "day.jsonl", b"{}\n")
+    assert "was removed while this append" not in str(caught.value)
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat leaf; the Windows leaf is by path")
+def test_a_retry_cannot_be_redirected_by_swapping_the_anchor(tmp_path, monkeypatch):
+    """Every attempt targets the anchor resolved ONCE, before the first one.
+
+    A retry that re-resolved the anchor would follow a link put at its name in the
+    meantime and create the log directory -- and write the row -- inside whatever
+    that link points at. Resolving once turns that into ``pin_parent``'s
+    ``O_NOFOLLOW`` refusal, with nothing written anywhere.
+    """
+    home = tmp_path / "home"
+    home.mkdir()
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    target = home / "decisions" / "day.jsonl"
+    original = os.open
+    swapped = False
+
+    def swap_the_anchor(name, flags, mode=0o777, *, dir_fd=None):
+        nonlocal swapped
+        if name == target.name and not swapped:
+            swapped = True
+            os.rmdir(target.parent)
+            home.rename(tmp_path / "moved")
+            make_dir_link(home, elsewhere)
+        return original(name, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pla.os, "open", swap_the_anchor)
+    with pytest.raises(Exception):
+        pla.append_line(target, b"{}\n")
+    assert swapped
+    assert list(elsewhere.iterdir()) == []
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat leaf; the Windows leaf is by path")
+def test_a_refusal_that_is_not_a_removal_is_not_re_attempted(path, tmp_path, monkeypatch):
+    """Only a REMOVED directory is re-run. A link at the leaf is refused, once."""
+    target = tmp_path / "outside"
+    target.mkdir()
+    path.parent.mkdir()
+    make_dir_link(path, target)
+    original = os.open
+    leaf_opens = 0
+
+    def counting(name, flags, mode=0o777, *, dir_fd=None):
+        nonlocal leaf_opens
+        if name == path.name:
+            leaf_opens += 1
+        return original(name, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pla.os, "open", counting)
+    with pytest.raises(OSError):
+        pla.append_line(path, b"{}\n")
+    assert leaf_opens == 1
+
+
+def test_the_retention_sweep_still_refuses_an_absent_log_directory(path):
+    """``pinned_log_dir`` is deliberately OUTSIDE the retry: it creates nothing.
+
+    The sweep has nothing to do when the directory is not there, so re-attempting
+    would only delay the same answer.
+    """
+    with pytest.raises(FileNotFoundError):
+        with pla.pinned_log_dir(path.parent):
+            pass
+
+
 def test_independent_process_lock_blocks_append(path, tmp_path, monkeypatch):
     """The lock must serialize processes, not just threads in one interpreter."""
     import subprocess
