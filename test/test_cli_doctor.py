@@ -19,7 +19,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from conftest import requires_symlinks
-from kiro_crew import cli_doctor, cron
+from kiro_crew import cli_doctor, cron, extras
 from kiro_crew.agent_sdk.backends import ACP_BACKEND_PI
 
 
@@ -2717,6 +2717,161 @@ class TestWhatsAppSection:
 
         source = inspect.getsource(cli_doctor._doctor)
         assert "_doctor_whatsapp(cfg, issues)" in source
+
+
+class TestFaissHint:
+    """The absent-faiss advice has to name the interpreter that would import it.
+
+    A bare ``pip install faiss-cpu`` resolves to whatever ``pip`` the user's
+    PATH offers, which on a packaged or minimal install is not the gateway's
+    python -- so the wheel lands where this process never imports from, and the
+    next doctor run prints the identical line with nothing saying the install
+    missed. The command itself is rendered by
+    ``extras.pip_install_command_for``, tested directly in ``test_extras.py``;
+    what is guarded here is that doctor calls it instead of embedding a literal.
+    ``_doctor()`` spawns subprocesses, probes the network and calls ``sys.exit``,
+    so its source is read rather than run -- the same approach the WhatsApp
+    call-site guard above takes.
+    """
+
+    def _source(self) -> str:
+        import inspect
+
+        return inspect.getsource(cli_doctor._doctor)
+
+    def test_the_hint_is_rendered_for_this_interpreter(self) -> None:
+        assert "pip_install_command_for('faiss-cpu')" in self._source()
+
+    def test_no_bare_pip_command_is_printed(self) -> None:
+        """The literal this section replaced. Kept as its own assertion because a
+        re-added bare form would sit happily beside the correct call."""
+        assert "`pip install faiss-cpu`" not in self._source()
+
+    def test_the_renderer_names_the_running_interpreter(self) -> None:
+        """Ties the call site to real output: whatever doctor prints for that
+        call carries this process's own interpreter."""
+        assert sys.executable in extras.pip_install_command_for("faiss-cpu")
+
+    def test_the_command_is_printed_only_where_it_can_run(self) -> None:
+        """The command names the gateway's own interpreter, so on the bundled
+        desktop build running it would write into the code-signed bundle, break
+        later launches and be discarded on the next app update. Naming it there
+        is worse than naming nothing, which is what the dashboard's own install
+        card does in the same state."""
+        source = self._source()
+
+        assert "if pip_install_channel_available():" in source
+        gate = source.index("if pip_install_channel_available():")
+        call = source.index("pip_install_command_for('faiss-cpu')")
+        assert gate < call, "the render must sit inside the guard, not beside it"
+
+    def test_the_bundled_interpreter_yields_no_install_channel(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The behavioural half of the guard above, so the two cannot drift."""
+        monkeypatch.setattr(extras.platform_compat, "is_bundled_interpreter", lambda: True)
+
+        assert cli_doctor.pip_install_channel_available() is False
+
+
+class TestVoiceAwsHint:
+    """The optional AWS voice packages need the same treatment as faiss.
+
+    ``_doctor`` imports ``amazon_transcribe`` and ``boto3`` in this process, so a
+    bare ``pip install`` on those two lines misses for exactly the reason it
+    missed for faiss: it resolves to whatever ``pip`` the user's PATH offers, and
+    the wheel lands where this process never imports from. ``install_hint``'s own
+    docstring reserves the bare form for output "where the surrounding text
+    already says which environment is meant" and routes the copied-blind case to
+    ``pip_install_command`` -- which is what a doctor ``Install:`` line is.
+    """
+
+    def _source(self) -> str:
+        import inspect
+
+        return inspect.getsource(cli_doctor._doctor)
+
+    def test_both_voice_aws_lines_name_this_interpreter(self) -> None:
+        assert self._source().count("pip_install_command('voice-aws')") == 2
+
+    def test_no_bare_install_hint_remains_in_doctor(self) -> None:
+        """The form these two lines replaced. Asserted across the whole function,
+        so a re-added bare hint anywhere in doctor fails here rather than only at
+        the two sites this change touched."""
+        assert "install_hint(" not in self._source()
+
+    def test_the_renderer_names_the_running_interpreter(self) -> None:
+        """Ties the call sites to real output: voice-aws is a declared extra, so
+        the existing ``pip_install_command`` renders it."""
+        assert sys.executable in extras.pip_install_command("voice-aws")
+
+    def test_each_line_is_printed_only_where_it_can_run(self) -> None:
+        """Same bundled-interpreter hazard as the faiss line: naming the gateway's
+        interpreter there would write into the code-signed bundle. Both renders
+        must sit inside the guard, not beside it."""
+        lines = self._source().splitlines()
+        renders = [i for i, ln in enumerate(lines) if "pip_install_command('voice-aws')" in ln]
+
+        assert len(renders) == 2
+        for index in renders:
+            assert "if pip_install_channel_available():" in lines[index - 1]
+
+
+class TestDoctorPrintsNoBareInstallCommand:
+    """The invariant, asserted once over the whole function.
+
+    Every install command ``_doctor`` prints is for a module THIS process
+    imports, so a bare ``pip`` can resolve to an interpreter the gateway never
+    imports from, and the wheel lands out of reach. A per-site guard says
+    nothing about a site that does not exist yet, so the property is asserted
+    over the whole function instead: any printed line carrying a bare
+    ``pip install`` fails here.
+    """
+
+    def _source(self) -> str:
+        import inspect
+
+        return inspect.getsource(cli_doctor._doctor)
+
+    def test_no_printed_line_carries_a_bare_pip_install(self) -> None:
+        """Scoped to printed lines, so the surrounding code comments that mention
+        ``pip install -e`` in prose stay legal."""
+        offenders = [
+            line.strip()
+            for line in self._source().splitlines()
+            if "print(" in line and "pip install" in line
+        ]
+
+        assert offenders == []
+
+    def test_the_editable_install_fix_names_this_interpreter_and_is_gated(self) -> None:
+        lines = self._source().splitlines()
+        renders = [i for i, ln in enumerate(lines) if "pip_install_command_for('-e', '.')" in ln]
+
+        assert len(renders) == 1
+        assert "if pip_install_channel_available():" in lines[renders[0] - 1]
+
+    def test_the_fts5_fix_names_this_interpreter_and_is_gated(self) -> None:
+        lines = self._source().splitlines()
+        renders = [
+            i for i, ln in enumerate(lines) if "pip_install_command_for('pysqlite3-binary')" in ln
+        ]
+
+        assert len(renders) == 1
+        assert "if pip_install_channel_available():" in lines[renders[0] - 1]
+
+    def test_the_fts5_alternative_survives_the_gate(self) -> None:
+        """The one place gating must NOT hide the whole message. Where pip cannot
+        run, using a different Python is the only remaining fix, so that sentence
+        has to print in exactly the case the command is withheld. Checked by
+        indentation: the alternative sits outside the ``if``, not inside it."""
+        alternatives = [
+            ln
+            for ln in self._source().splitlines()
+            if "Or use a Python whose SQLite" in ln and ln.startswith(" " * 12 + "print(")
+        ]
+
+        assert len(alternatives) == 1, "the fts5 alternative must print unconditionally"
 
 
 class TestVenvDepsProbe:

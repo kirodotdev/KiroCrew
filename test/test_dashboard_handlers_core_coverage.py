@@ -36,7 +36,6 @@ from kiro_crew.config.loader import (
     SUBAGENT_MAX_TURNS_CEILING,
     config_path,
 )
-from kiro_crew.dashboard.handlers import _shared as shared_mod
 from kiro_crew.dashboard.handlers import core as core_mod
 from kiro_crew.sel import SelVerification as _SelVerification
 from kiro_crew.stt import models as stt_models
@@ -579,9 +578,9 @@ class TestPipInstallChannel:
         a uv-created venv (the default for `uv venv`) ships no `pip` module, so
         an unpinned `find_spec("pip")` returns None on this host and every test
         below that isn't otherwise exercising that branch would misfire."""
-        monkeypatch.setattr(shared_mod.platform_compat, "is_bundled_interpreter", lambda: False)
+        monkeypatch.setattr(extras.platform_compat, "is_bundled_interpreter", lambda: False)
         monkeypatch.setattr(
-            shared_mod.importlib.util,
+            extras.importlib.util,
             "find_spec",
             lambda name, *a, **kw: object() if name == "pip" else None,
         )
@@ -590,14 +589,14 @@ class TestPipInstallChannel:
         """A pip install into the desktop app's code-signed bundle breaks
         launches/updates and is discarded on every app update — the command
         must not be offered there even though pip itself may exist."""
-        monkeypatch.setattr(shared_mod.platform_compat, "is_bundled_interpreter", lambda: True)
+        monkeypatch.setattr(extras.platform_compat, "is_bundled_interpreter", lambda: True)
         assert core_mod._pip_install_channel_available() is False
 
     def test_pipless_interpreter_has_no_channel(self, monkeypatch) -> None:
         """uv tool installs and some pipx layouts ship no `pip` module, so
         `<python> -m pip` fails immediately — the command must not be shown."""
         monkeypatch.setattr(
-            shared_mod.importlib.util,
+            extras.importlib.util,
             "find_spec",
             lambda name, *a, **kw: None,
         )
@@ -606,9 +605,9 @@ class TestPipInstallChannel:
     def test_externally_managed_python_has_no_channel(self, monkeypatch, tmp_path) -> None:
         """PEP 668: pip refuses installs into an externally-managed
         interpreter (distro/brew pythons) — but only outside a venv."""
-        monkeypatch.setattr(shared_mod.sys, "prefix", shared_mod.sys.base_prefix)
+        monkeypatch.setattr(extras.sys, "prefix", extras.sys.base_prefix)
         (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
-        monkeypatch.setattr(shared_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        monkeypatch.setattr(extras.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is False
 
     def test_venv_on_managed_base_has_a_channel(self, monkeypatch, tmp_path) -> None:
@@ -616,17 +615,17 @@ class TestPipInstallChannel:
         resolves to the BASE interpreter's directory where distro pythons put
         the marker — the recommended install layout (venv on a Debian/brew
         python) must not be misread as unsupported."""
-        monkeypatch.setattr(shared_mod.importlib.util, "find_spec", lambda name: object())
-        monkeypatch.setattr(shared_mod.sys, "prefix", str(tmp_path / "venv"))
-        monkeypatch.setattr(shared_mod.sys, "base_prefix", str(tmp_path / "base"))
+        monkeypatch.setattr(extras.importlib.util, "find_spec", lambda name: object())
+        monkeypatch.setattr(extras.sys, "prefix", str(tmp_path / "venv"))
+        monkeypatch.setattr(extras.sys, "base_prefix", str(tmp_path / "base"))
         (tmp_path / "EXTERNALLY-MANAGED").write_text("", encoding="utf-8")
-        monkeypatch.setattr(shared_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        monkeypatch.setattr(extras.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is True
 
     def test_ordinary_venv_has_a_channel(self, monkeypatch, tmp_path) -> None:
-        monkeypatch.setattr(shared_mod.importlib.util, "find_spec", lambda name: object())
-        monkeypatch.setattr(shared_mod.sys, "prefix", shared_mod.sys.base_prefix)
-        monkeypatch.setattr(shared_mod.sysconfig, "get_path", lambda name: str(tmp_path))
+        monkeypatch.setattr(extras.importlib.util, "find_spec", lambda name: object())
+        monkeypatch.setattr(extras.sys, "prefix", extras.sys.base_prefix)
+        monkeypatch.setattr(extras.sysconfig, "get_path", lambda name: str(tmp_path))
         assert core_mod._pip_install_channel_available() is True
 
 
