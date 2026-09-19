@@ -53,7 +53,7 @@ Object.defineProperty(window, 'matchMedia', {
 import ChatPane from '../components/ChatPane'
 import { api } from '../api/client'
 
-function makeStore(slotKey: string, activeSlot?: string, messages: unknown[] = [], running = false) {
+function makeStore(slotKey: string, activeSlot?: string, messages: unknown[] = [], running = false, chat: Partial<RootState['chat']> = {}) {
   return configureStore({
     reducer: { dashboard: dashboardReducer, chat: chatReducer, notifications: notificationsReducer },
     preloadedState: {
@@ -65,35 +65,121 @@ function makeStore(slotKey: string, activeSlot?: string, messages: unknown[] = [
         subagentRunning: {}, subagentDetails: {}, subagentText: {},
       } as unknown as RootState['dashboard'],
       ...(activeSlot
-        ? { chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot, messages } as RootState['chat'] }
+        ? { chat: { ...chatReducer(undefined, { type: '@@INIT' }), activeSlot, messages, ...chat } as RootState['chat'] }
         : {}),
     } as Partial<RootState>,
   })
 }
 
-function renderPane(slotKey: string, opts: { onOpenFull?: (slot: string) => void; activeSlot?: string; messages?: unknown[]; running?: boolean } = {}) {
+function renderPane(slotKey: string, opts: { onOpenFull?: (slot: string) => void; inlineHistory?: boolean; activeSlot?: string; messages?: unknown[]; running?: boolean; chat?: Partial<RootState['chat']> } = {}) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  const store = makeStore(slotKey, opts.activeSlot, opts.messages, opts.running)
-  const view = render(
+  const store = makeStore(slotKey, opts.activeSlot, opts.messages, opts.running, opts.chat)
+  const pane = (key: string) => (
     <Provider store={store}>
       <QueryClientProvider client={qc}>
         <ThemeProvider>
           <MemoryRouter>
-            <ChatPane slotKey={slotKey} onOpenFull={opts.onOpenFull} />
+            <ChatPane slotKey={key} onOpenFull={opts.onOpenFull} inlineHistory={opts.inlineHistory} />
           </MemoryRouter>
         </ThemeProvider>
       </QueryClientProvider>
-    </Provider>,
+    </Provider>
   )
-  return { ...view, store }
+  const view = render(pane(slotKey))
+  return { ...view, store, rebind: (key: string) => view.rerender(pane(key)) }
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   // Not `...Once`: one test issuing a different number of calls shifts the shared
   // FIFO queue, and a later test then silently receives an earlier one's payload.
-  ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockResolvedValue({
+  ;(api.chatSlotDetail as ReturnType<typeof vi.fn>).mockReset().mockResolvedValue({
     messages: [], running: false, has_more: false, total: 0,
+  })
+})
+
+describe('embedded worker history', () => {
+  const newest = { role: 'assistant', content: 'recent worker reply', ts: '2026-08-13T09:05:00Z', meta: { mid: 'recent' } }
+  const oldest = { role: 'user', content: 'original worker request', ts: '2026-08-13T09:00:00Z', meta: { mid: 'original' } }
+
+  it('loads the full background history inline and preserves a live tail and draft', async () => {
+    vi.mocked(api.chatSlotDetail).mockImplementation(async (_slot, limit) => ({
+      messages: limit === undefined ? [oldest, newest] : [newest],
+      running: false, has_more: limit !== undefined, total: 2,
+    }))
+    const onOpenFull = vi.fn()
+    const view = renderPane('worker-history', { inlineHistory: true, onOpenFull })
+    const load = await view.findByTestId('load-earlier-messages')
+    const composer = view.container.querySelector('textarea[data-composer-input]') as HTMLTextAreaElement
+    expect(composer).not.toBeNull()
+    act(() => view.store.dispatch(appendSlotMessage({
+      slot: 'worker-history',
+      message: { role: 'assistant', content: 'live worker reply', ts: '2026-08-13T09:10:00Z', meta: { mid: 'live' } },
+    })))
+    fireEvent.change(composer, { target: { value: 'draft for worker' } })
+    load.focus()
+    fireEvent.click(load)
+    await view.findByText(oldest.content)
+    expect(view.getByText('live worker reply')).toBeTruthy()
+    expect(view.queryByTestId('load-earlier-messages')).toBeNull()
+    expect(onOpenFull).not.toHaveBeenCalled()
+    expect(document.activeElement).toBe(view.container.querySelector('.chat-container'))
+    expect(composer.value).toBe('draft for worker')
+    view.rebind('other-worker')
+    await waitFor(() => expect(api.chatSlotDetail).toHaveBeenCalledWith('other-worker', PANE_HYDRATE_LIMIT))
+  })
+
+  it('keeps the bounded conversation available after a failed upgrade and retries', async () => {
+    let fail = true
+    vi.mocked(api.chatSlotDetail).mockImplementation(async (_slot, limit) => {
+      if (limit === undefined && fail) throw new Error('offline')
+      return { messages: limit === undefined ? [oldest, newest] : [newest], running: false, has_more: limit !== undefined, total: 2 }
+    })
+    const view = renderPane('worker-retry', { inlineHistory: true })
+    fireEvent.click(await view.findByTestId('load-earlier-messages'))
+    await view.findByTestId('chat-pane-hydrate-error')
+    expect(view.getByText(newest.content)).toBeTruthy()
+    fail = false
+    fireEvent.click(view.getByRole('button', { name: 'Retry', exact: true }))
+    await view.findByText(oldest.content)
+    expect(view.queryByTestId('chat-pane-hydrate-error')).toBeNull()
+  })
+
+  it('loads a partial worker cached by a previous visit to Sessions', async () => {
+    vi.mocked(api.chatSlotDetail).mockImplementation(async (_slot, limit) => ({
+      messages: limit === undefined ? [oldest, newest] : [newest],
+      running: false, has_more: limit !== undefined, total: 2,
+    }))
+    const view = renderPane('visited-worker', {
+      inlineHistory: true, activeSlot: 'another-session',
+      chat: {
+        slotMessages: { 'visited-worker': [newest] },
+        slotHydrated: { 'visited-worker': true },
+        slotPaneHasMore: { 'visited-worker': true },
+        slotPaneBounded: {},
+      },
+    })
+    fireEvent.click(await view.findByTestId('load-earlier-messages'))
+    await view.findByText(oldest.content)
+    expect(view.queryByTestId('load-earlier-messages')).toBeNull()
+    expect(view.store.getState().chat.activeSlot).toBe('another-session')
+  })
+
+  it('pages an active worker through its existing cursor without navigating', async () => {
+    vi.mocked(api.chatSlotDetail).mockImplementation(async (_slot, _limit, before) => ({
+      messages: before ? [oldest] : [newest], running: false,
+      has_more: !before, total: 2, next_before: before ? 0 : 1,
+    }))
+    const view = renderPane('active-worker', {
+      inlineHistory: true, activeSlot: 'active-worker', messages: [newest],
+      chat: { slotHasMore: true, slotOldestIndex: 1, slotCursorKey: 'active-worker' },
+    })
+    fireEvent.click(await view.findByTestId('load-earlier-messages'))
+    await view.findByText(oldest.content)
+    expect(view.getByText(newest.content)).toBeTruthy()
+    expect(view.store.getState().chat.activeSlot).toBe('active-worker')
+    expect(view.store.getState().chat.slotHasMore).toBe(false)
+    expect(vi.mocked(api.chatSlotDetail).mock.calls.some(call => call[2] === 1)).toBe(true)
   })
 })
 

@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { screen, fireEvent, waitFor, act } from '@testing-library/react'
 import { renderWithProviders } from '../../test/helpers'
 import { __resetPanelTabs } from '../../hooks/usePanelTabs'
+import { sseSlots } from '../../store/dashboardSlice'
 
 /* The selection toolbar's "Ask about this" on a member thread lands in the
  * page's side panel: the chat page's tabbed SidePanel is docked here, and its
@@ -93,9 +94,10 @@ const sideTab = () => screen.queryByRole('tab', { name: 'Side Chat' })
 async function openThread() {
   ;(api.members as ReturnType<typeof vi.fn>).mockResolvedValue({ members: [row()], default_agent: 'kirocrew' })
   ;(api.memberThread as ReturnType<typeof vi.fn>).mockResolvedValue({ slot_key: 'member-oncall', slug: 'oncall', member: 'oncall', created: true })
-  renderWithProviders(<MembersPage />)
+  const utils = renderWithProviders(<MembersPage />)
   fireEvent.click(await screen.findByText('oncall'))
   await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
+  return utils
 }
 
 beforeEach(() => {
@@ -135,6 +137,26 @@ describe('MembersPage Side Chat in the side panel (selection Ask)', () => {
     )
     await screen.findByRole('menu')
     expect(screen.getByRole('menuitem', { name: 'Side Chat' })).toBeInTheDocument()
+  })
+
+  it('worker Side Chat follows the selected session and the member keeps its own panel tabs', async () => {
+    const { store } = await openThread()
+    fireEvent.click(screen.getByRole('button', { name: 'stub-ask' }))
+    expect(await screen.findByTestId('side-chat-stub')).toHaveTextContent('member-oncall')
+    act(() => {
+      store.dispatch(sseSlots([{
+        key: 'chat-worker', title: 'Worker task', messages: 1, running: false,
+        created_by: 'member-oncall', project: '/worker-project',
+      }]))
+    })
+    fireEvent.click(await screen.findByTestId('member-session-row'))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('chat-worker'))
+    expect(screen.queryByTestId('side-chat-stub')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'stub-ask' }))
+    expect(await screen.findByTestId('side-chat-stub')).toHaveTextContent('chat-worker')
+    fireEvent.click(screen.getByTestId('member-session-back'))
+    await waitFor(() => expect(screen.getByTestId('chat-pane-stub')).toHaveTextContent('member-oncall'))
+    expect(await screen.findByTestId('side-chat-stub')).toHaveTextContent('member-oncall')
   })
 
   it('narrow window: Ask reveals the overlay with the Side tab shown', async () => {
