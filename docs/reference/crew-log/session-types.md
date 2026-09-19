@@ -73,21 +73,46 @@ entry's write is the point the interrupted-turn repair runs.
 |---|---|---|---|---|
 | `agent` | string | required | Agent name, defaulted to `kirocrew` when the caller names none. | |
 | `slot` | string | required | Slot key. May be empty. | |
-| `model` | string | required | Configured model. Empty when the backend serves its own default. | |
+| `model` | string | required | Model the backend confirmed is serving this session. Empty when that id is not known. | |
+| `model_requested` | string | when this process observed the allocation and a tier resolved one | Model the gateway selected for the allocation that produced this session, before the provider decides whether to send it. | |
 | `cwd` | string | required | Working directory. May be empty. | |
 | `owner` | string | required | Owner, defaulted to `default`. | |
 | `resumed` | bool | required | `true` when this claim re-attached to an existing crew log. | |
 
 **Invariants** — At most one per create and one per re-attach. The session's
-*starting* model rides here rather than in a `model/selected` entry.
+*starting* model rides here rather than in a `model/selected` entry, which records
+only a later swap. The two model fields are a pair and neither is derived from the
+other: `model` is what the backend confirmed is serving, `model_requested` is what
+the gateway selected for the allocation that produced the session. It is absent
+when no tier resolved one AND when this gateway process did not observe that
+allocation, as on a re-attach, so its absence is not by itself a claim that
+nothing was selected. Selection is not transmission: a model this account cannot
+run is withheld inside the provider, so this field names the choice rather than a
+message the backend received. An empty `model` is
+not a claim that nothing was configured, and a `model_requested` that differs from
+`model` is not by itself a refusal — the backend serves the spelling it resolved.
+
+`model_requested` is written from #12017 onward. An entry older than that carries
+no such field whatever the gateway chose, so even the qualified reading of an
+absent field holds only for entries written since. A fold spanning the upgrade must
+read an absent field on an older entry as *unknown*, which is the same misreading
+#12017 exists to remove.
 
 ```json
 {"type":"session/opened","seq":1,"time":1789000000000,"src":"gateway","data":{"agent":"kirocrew","slot":"dashboard:3","model":"","cwd":"/home/u/proj","owner":"default","resumed":false}}
 ```
 
+```json
+{"type":"session/opened","seq":1,"time":1789000000000,"src":"gateway","data":{"agent":"worker","slot":"dashboard:7","model":"","model_requested":"claude-opus-5","cwd":"/home/u/proj","owner":"default","resumed":false}}
+```
+
 **Reader hint** — `resumed: true` means entries below this line belong to earlier
 runs of the same conversation, so a reader building "this run" starts here rather
-than at `seq` 1.
+than at `seq` 1. Read `model` for what serves the session and `model_requested` for
+what was chosen. Whether a request was APPLIED is not recorded here: a reader
+that needs it reads the provider's own outcome rather than comparing the two
+strings. When `model` is empty the served id, once known, appears on the first
+`turn/completed` that reports one.
 
 **Since** — #10091.
 

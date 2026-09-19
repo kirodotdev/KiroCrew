@@ -40,7 +40,7 @@ unset here -- see "Reconnect is not resume" below for what it is for.
 
 | Fact | Site | Data |
 |---|---|---|
-| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, cwd, `resumed`; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
+| `session/opened` | after `get_or_create`, on create or re-attach only | agent, slot key, model, `model_requested` when a tier resolved one, cwd, `resumed`; `parent {slot, sid?}` when `session_create` made the session IN THIS GATEWAY PROCESS (`_lineage_minted`) -- the creator's key from the slot's `_created_by`, and the creator's ACP session id FROZEN at mint (`_created_by_sid`) from the live caller handle, present when the caller had a session at that moment; a slot restored from transcript metadata writes no `parent` |
 | `turn/started` | after every dispatch gate, immediately before the stream opens | turn ordinal, actor, prompt depth |
 | `turn/refused` | each gate that refuses the dispatch | turn ordinal, actor, `reason`, prompt depth |
 | `turn/completed` | the `EVENT_COMPLETE` arm, beside `_emit_turn_metric`; the turn's `finally` when no terminal event arrived | the four `TurnUsage` token counts, credits, `duration_ms`, `stop_reason`, model, provider -- or `stop_reason: "failed"` with `error` and no usage |
@@ -95,6 +95,48 @@ through one helper. It is empty when the backend serves its own default, and the
 records that emptiness rather than naming a model -- the same rule that omits an
 unmeasured token count. `session/opened` is therefore written after the withhold
 verdict rather than at acquisition, which is still ahead of every turn entry.
+
+That emptiness has two causes, and the field alone cannot separate them. No tier
+resolved anything above the backend's own default, or a tier resolved a concrete
+model that never took effect: a model this account cannot run is withheld before it
+is sent, and a `set_model` that raises is logged and the session left on the
+backend's choice.
+Both write a warning to the server log and nothing to the record, so a dispatched
+worker running on a model nobody chose looks identical to one deliberately on auto.
+
+`session/opened` therefore also carries `model_requested`, the model the gateway
+SELECTED through the slot pin, the crew pin and the resolved default. The value is
+bound once at allocation, handed to the provider, and retained with the live slot so
+the first turn cannot replace it with a newer config resolution when it claims a
+pre-warmed session. It is written whenever that allocation resolved a tier, and its
+presence is NOT conditioned on `model`. When this process did not observe the
+allocation -- for example, on re-attach -- the field is absent rather than inferred
+from the observing turn. Selection is not transmission: the provider withholds a
+model this account cannot run rather than sending it, so the field names the choice,
+not a message the backend received.
+
+That unconditional rule is the point, because both ways of conditioning it lose
+the record. Suppressing it when it DIFFERS from `model` reports an honoured request
+as unconfirmed, since the backend serves the spelling it resolved
+(`resolve_pin_spelling` at send, `resolve_usable_model` inside `set_model`).
+Suppressing it when `model` is KNOWN drops the request whenever a refused pin
+leaves the session on a concrete backend default instead of the auto sentinel,
+which is ordinary operation -- and the entry is append-only, so that pair is gone
+with no recovery. Recording the request outright costs one short string.
+
+So the entry states two facts and infers nothing: `model` is what serves the
+session, `model_requested` is what was asked for. Whether the request was APPLIED
+is deliberately not a field here. Deriving it would mean either comparing model
+spellings, which is what the two failed guards did, or teaching the record writer
+to resolve models, which a spelling the registry cannot map defeats anyway. A
+consumer that needs the outcome reads the provider's own, and the served id a fold
+can trust arrives on `turn/completed`.
+
+The absence of `model_requested` carries its meaning only forward. Entries written
+before the field existed have none regardless of what was asked for, so a fold
+spanning the upgrade reads an absent field on an older entry as unknown rather
+than as "no tier resolved one" -- the reference page states the same boundary beside
+the field.
 
 ### A closer states only the outcome its site observed
 

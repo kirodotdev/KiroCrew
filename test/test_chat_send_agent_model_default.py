@@ -364,3 +364,90 @@ class TestEagerSpawnDefaultModel:
         assert _session_model(state) is None
         assert slot.model == ""
         assert seen["thread"] != threading.get_ident()
+
+
+class TestSessionOpenedRecordsTheAllocationsSelection:
+    """``session/opened.model_requested`` names the ALLOCATION's selection.
+
+    The turn that observes a session is not always the one that allocated it. An
+    eager allocation can outlive a config change, so re-resolving the selection at
+    the first turn writes a model that session never used -- into an append-only
+    entry nothing rewrites. These turns capture the kwarg the emitter receives, so
+    they fail if the runner goes back to resolving it per turn.
+    """
+
+    @staticmethod
+    def _capture():
+        return unittest.mock.patch.object(
+            chat_runner.crew_log_emit, "on_session_opened", unittest.mock.MagicMock()
+        )
+
+    @pytest.mark.asyncio
+    async def test_an_allocating_turn_records_its_own_selection(self, tmp_path, _runner_config):
+        _runner_config(_config(tmp_path))
+        state, _client = _turn_state(tmp_path)
+        slot = _slot()
+        assert slot._session_requested_model is None
+
+        with self._capture() as opened:
+            await _drive(state, slot)
+
+        assert slot._session_requested_model == GLOBAL_DEFAULT
+        assert opened.call_args.kwargs["model_requested"] == GLOBAL_DEFAULT
+
+    @pytest.mark.asyncio
+    async def test_a_prewarmed_claim_keeps_the_allocations_selection(
+        self, tmp_path, _runner_config
+    ):
+        """The regression: a claim of a pre-warmed session must not re-resolve.
+
+        An eager allocation arms a ``resumed=True`` observation for the real turn,
+        so this is the shape a prewarmed first turn sees. The config default has
+        moved since that allocation; the entry must still name what was allocated.
+        """
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        state.sessions.get_or_create = unittest.mock.AsyncMock(return_value=(client, False, True))
+        slot = _slot()
+        slot._session_requested_model = "model-the-allocation-chose"
+
+        with self._capture() as opened:
+            await _drive(state, slot)
+
+        assert slot._session_requested_model == "model-the-allocation-chose"
+        assert opened.call_args.kwargs["model_requested"] == "model-the-allocation-chose"
+
+    @pytest.mark.asyncio
+    async def test_a_fresh_allocation_replaces_a_dead_sessions_selection(
+        self, tmp_path, _runner_config
+    ):
+        """``is_new`` means THIS call allocated, so its own selection is the truth.
+
+        A value left by a session that died without a teardown must not outlive it
+        and be reported as this session's provenance.
+        """
+        _runner_config(_config(tmp_path))
+        state, _client = _turn_state(tmp_path)
+        slot = _slot()
+        slot._session_requested_model = "model-of-a-session-that-is-gone"
+
+        with self._capture() as opened:
+            await _drive(state, slot)
+
+        assert slot._session_requested_model == GLOBAL_DEFAULT
+        assert opened.call_args.kwargs["model_requested"] == GLOBAL_DEFAULT
+
+    @pytest.mark.asyncio
+    async def test_a_re_attach_with_no_provenance_records_nothing(self, tmp_path, _runner_config):
+        """Absent beats inferred: the allocating process is gone."""
+        _runner_config(_config(tmp_path))
+        state, client = _turn_state(tmp_path)
+        state.sessions.get_or_create = unittest.mock.AsyncMock(return_value=(client, False, True))
+        slot = _slot()
+        assert slot._session_requested_model is None
+
+        with self._capture() as opened:
+            await _drive(state, slot)
+
+        assert slot._session_requested_model is None
+        assert opened.call_args.kwargs["model_requested"] == ""

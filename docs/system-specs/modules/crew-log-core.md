@@ -163,7 +163,7 @@ source were removed (see the emitter spec's "Removed types").
 ### Session, turn
 | Type | `data` | Emitter |
 |---|---|---|
-| `session/opened` | header echo + `resumed`; `parent {slot, sid?}` on a session another session made through `session_create` | yes |
+| `session/opened` | header echo + `resumed`; `model_requested` when a tier resolved one; `parent {slot, sid?}` on a session another session made through `session_create` | yes |
 | `session/closed` | `{reason}` | yes |
 | `turn/started` | `{turn, actor, depth, message_seq?, attempt?}` | yes |
 | `turn/refused` | `{turn, actor, reason, depth}` | yes |

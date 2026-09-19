@@ -2490,6 +2490,7 @@ def on_session_opened(
     agent: str = "",
     slot: str = "",
     model: str = "",
+    model_requested: str = "",
     cwd: str = "",
     owner: str = "default",
     resumed: bool = False,
@@ -2509,6 +2510,32 @@ def on_session_opened(
     appends, so an agent or model switch that kept the conversation continues
     one log rather than starting a second one. ``model`` is not a header field
     in the storage schema, so it is carried on this entry instead.
+
+    ``model`` is the id the backend CONFIRMED, and it is empty whenever that id
+    is not known. It alone cannot say what the gateway chose: no tier resolved
+    anything above the backend's own default, a chosen model was applied, or a
+    chosen one never took effect and the backend's choice serves instead (a model
+    this account cannot run is withheld before it is sent, and a ``set_model``
+    that raises is logged and left alone). Each of the last two can end with an id
+    here or without one.
+
+    So ``model_requested`` records what the gateway SELECTED for the ALLOCATION
+    that produced this session, and its presence is not conditioned on ``model``.
+    The caller resolves that value once, hands it to the provider and retains it
+    with the slot, because the turn that observes a session is not always the one
+    that allocated it: an eager allocation can outlive a config change, and
+    re-resolving at the first turn would record a model that session never used.
+    Selection is not transmission either: the withhold happens inside the
+    provider, so this field names the choice rather than a message the backend
+    received. The pair is the record -- ``model`` states what serves the session,
+    ``model_requested`` what was chosen -- and the entry infers nothing from the
+    two. A difference between them is not by itself a refusal, because the backend
+    serves the spelling it resolved; whether a choice was APPLIED is not something
+    this entry knows, and a reader that needs it reads the provider's own outcome
+    rather than comparing these strings. Absent ``model_requested`` means no tier
+    resolved one, OR that this process did not observe the allocation (a re-attach
+    carries provenance from a process that is gone) -- and on an entry written
+    before the field existed it means nothing at all.
 
     ``parent_slot`` names the session that made this one through
     ``session_create`` (the slot's ``_created_by``), and ``parent_sid`` the
@@ -2618,6 +2645,18 @@ def on_session_opened(
             "owner": owner or "default",
             "resumed": bool(resumed),
         }
+        if model_requested:
+            # Written whenever the gateway resolved one, and never conditioned on
+            # ``model``. Both guards tried before this inferred the application
+            # outcome from the two ids and both lost the record: suppressing on a
+            # DIFFERENCE reported an honoured request as unconfirmed, because the
+            # backend serves the spelling it resolved; suppressing on a KNOWN
+            # ``model`` dropped the request whenever a refused pin left the session
+            # on a concrete backend default rather than the auto sentinel, which is
+            # ordinary operation. Recording the request outright costs one short
+            # string and cannot lose the requested/served pair. The entry states two
+            # facts and infers nothing: what the gateway asked for, and what serves.
+            data["model_requested"] = model_requested
         if parent_slot:
             # Written only when there IS a creator, and ``sid`` only when the
             # creator still had a live handle: an empty string in either place

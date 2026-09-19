@@ -165,6 +165,67 @@ def test_an_agentless_call_site_still_produces_a_valid_header():
     assert _entries()[0]["agent"] == "kirocrew"
 
 
+# --- the model: what serves, and what was asked for ------------------------
+
+
+def test_the_request_is_recorded_when_the_backend_confirmed_nothing():
+    # The dispatched-worker shape: the gateway resolved a model (a crew pin) and
+    # the backend confirmed none. Without the request the entry is
+    # indistinguishable from a session deliberately left on the backend default.
+    emit.on_session_opened(
+        SESSION,
+        agent="kirocrew-worker",
+        slot="chat-42",
+        model="",
+        model_requested="claude-opus-5",
+    )
+    data = _opened_data()
+    assert data["model"] == ""
+    assert data["model_requested"] == "claude-opus-5"
+
+
+def test_a_concrete_served_default_does_not_hide_the_request():
+    # A refused pin does not have to leave `model` empty: the backend can report
+    # a concrete default of its own instead of the auto sentinel. Conditioning
+    # the request on an unknown `model` dropped exactly this case, and the entry
+    # is append-only, so the requested/served pair was lost with no way back.
+    emit.on_session_opened(
+        SESSION,
+        agent="kirocrew-worker",
+        slot="chat-42",
+        model="backend-default-7",
+        model_requested="claude-opus-5",
+    )
+    data = _opened_data()
+    assert data["model"] == "backend-default-7"
+    assert data["model_requested"] == "claude-opus-5"
+
+
+def test_a_request_served_under_another_spelling_keeps_both_ids():
+    # The backend serves the spelling IT resolved, so an APPLIED request can come
+    # back as a different string. The entry records both and claims nothing about
+    # which happened -- a reader must not read the difference as a refusal.
+    emit.on_session_opened(
+        SESSION,
+        agent="kirocrew",
+        slot="chat-7",
+        model="kiro::claude-opus-5-v1",
+        model_requested="claude-opus-5",
+    )
+    data = _opened_data()
+    assert data["model"] == "kiro::claude-opus-5-v1"
+    assert data["model_requested"] == "claude-opus-5"
+
+
+def test_asking_for_nothing_writes_no_request_field():
+    # Every tier deferred to the backend, so there is no request to record and an
+    # empty field would read as a resolved model of "".
+    emit.on_session_opened(SESSION, agent="kirocrew", slot="chat-7", model="")
+    data = _opened_data()
+    assert data["model"] == ""
+    assert "model_requested" not in data
+
+
 # --- lineage: who made this session ----------------------------------------
 
 

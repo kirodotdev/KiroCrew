@@ -162,7 +162,24 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
                 "model",
                 JSON_STRING,
                 required=True,
-                note="Configured model; empty when the backend serves its own default.",
+                note=(
+                    "Model the backend confirmed is serving this session; empty when "
+                    "that id is not known, which covers both the backend's own default "
+                    "and a configured model that was never applied."
+                ),
+            ),
+            Field(
+                "model_requested",
+                JSON_STRING,
+                note=(
+                    "Model the gateway SELECTED for the allocation that produced this "
+                    "session, before the provider decides whether to send it -- a model "
+                    "this account cannot run is withheld rather than requested. Absent "
+                    "when no tier resolved one, and also when this gateway process did "
+                    "not observe the allocation, as on a re-attach. A difference from "
+                    "model is not by itself a refusal: the backend serves the spelling "
+                    "it resolved."
+                ),
             ),
             Field("cwd", JSON_STRING, required=True, note="Working directory; may be empty."),
             Field("owner", JSON_STRING, required=True, note="Owner."),

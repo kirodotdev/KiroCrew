@@ -2049,6 +2049,7 @@ class _ChatSlot:
         "_model_withheld",
         "_model_withheld_for",
         "served_model",
+        "_session_requested_model",
         "reasoning_effort",
         "autocompact_pct",
         "mode",
@@ -2274,6 +2275,12 @@ class _ChatSlot:
         # when any of slot.model's writers re-pins the slot.
         self._model_withheld: bool = False
         self._model_withheld_for: str = ""
+        # The model selection handed to the provider allocation that produced
+        # the live session. None means this process did not observe that
+        # allocation; "" means every selection tier deferred to the backend.
+        # Session/opened reads this instead of re-resolving at first turn, since
+        # an eager allocation can outlive a config change.
+        self._session_requested_model: str | None = None
         # The model id the live session resolved to, for a slot that is
         # inheriting rather than pinning. "" = unknown. Written through
         # `record_served_model`.
@@ -3815,6 +3822,7 @@ class _ChatSlot:
         site added later cannot drop half the pair.
         """
         self.record_model_withheld(None)
+        self._session_requested_model = None
         self.record_served_model(None)
 
     @property

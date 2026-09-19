@@ -5715,6 +5715,7 @@ async def _spawn_admitted_prefetch(
         # which case the speculative session/load runs here and the
         # resumed=True observation is armed for the real turn. See
         # get_or_create's docstring.
+        _requested_model = slot.model or agent_model or default_model or ""
         _, is_new, resumed = await sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -5724,7 +5725,7 @@ async def _spawn_admitted_prefetch(
             # cross-namespace name match. "" is authoritative: no
             # alias applied, so no override applies.
             crew_agent=crew_alias,
-            model=slot.model or agent_model or default_model or None,
+            model=_requested_model or None,
             cwd=slot.project or None,
             speculative=True,
             speculative_resume=allow_resume,
@@ -5772,6 +5773,8 @@ async def _spawn_admitted_prefetch(
         )
         await sessions.remove(session_key)
         return
+    if not resumed:
+        slot._session_requested_model = _requested_model
     logger.info(
         "Eager spawn: session ready for %s in %.0fms (new=%s resumed=%s)",
         session_key,
@@ -9051,6 +9054,15 @@ async def _run_chat(
             if _mirror_link is not None and _mirror_resumes
             else ""
         )
+        # The model this turn SELECTS for the session, resolved through the same
+        # tiers the composer chip reads: the slot's own pin, then the crew's pin,
+        # then the resolved default. Selection is not transmission -- the provider
+        # withholds a model this account cannot run rather than sending it -- so
+        # this names what was chosen, not what reached the backend. Bound to a
+        # local because two consumers must not diverge: the provider call below,
+        # which decides whether to send it, and the crew log's `session/opened`,
+        # which records the choice.
+        _requested_model = slot.model or agent_model or default_model or ""
         client, is_new, resumed = await state.sessions.get_or_create(
             session_key,
             agent=kiro_agent or slot.agent or None,
@@ -9058,7 +9070,7 @@ async def _run_chat(
             # must agree or an eager session and its real first turn would
             # carry different watchdog windows.
             crew_agent=crew_alias,
-            model=slot.model or agent_model or default_model or None,
+            model=_requested_model or None,
             cwd=slot.project or None,
             # The persisted channel stays separate from the dashboard-owned key
             # so provider startup can distinguish a linked dispatcher from a
@@ -9066,6 +9078,14 @@ async def _run_chat(
             channel_id=_provider_channel_id or None,
             reasoning_effort_override=slot.reasoning_effort or None,
         )
+        if is_new and not resumed:
+            # This call allocated the live session, so its own selection is the
+            # provenance -- overwriting whatever a previous session left behind.
+            # The prewarm case does not reach here: an eager allocation arms a
+            # `resumed=True` observation for the real turn, so the value the
+            # eager path stored survives rather than being replaced by this
+            # turn's fresh resolution.
+            slot._session_requested_model = _requested_model
         _acquired = True
         # A fresh provider can still owe Kiro Crew history after its one-shot
         # ``is_new`` observation was consumed by a slash command. Keep that debt
@@ -9297,6 +9317,11 @@ async def _run_chat(
             agent=slot.agent or "",
             slot=slot.key,
             model=_crew_log_model(slot),
+            # What the allocation that produced this live session ASKED for.
+            # A pre-warmed session can survive a config change before its first
+            # turn, so the turn's freshly resolved request is not evidence about
+            # that allocation. Unknown allocation provenance stays absent.
+            model_requested=slot._session_requested_model or "",
             cwd=slot.project or "",
             resumed=bool(resumed),
             parent_slot=_creator_key,
