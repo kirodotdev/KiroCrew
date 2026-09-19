@@ -1131,6 +1131,198 @@ class TestBackfill:
             "m5",
         ]
 
+    async def test_the_adopt_stamps_one_slot_level_peer_watermark(self, tmp_path, no_mint):
+        """The pointer lands on the SLOT, beside the binding — not on the rows.
+
+        Both halves are asserted together because the design is the pair: one
+        slot-level pointer at the newest peer row, and copied historical rows
+        remaining id-less after the peer's ids are stripped.
+        """
+        mgr = _manager(
+            slots=[_peer_row()],
+            transcript=_msgs(
+                _row("user", "what broke?", meta={"mid": "m-peer-1"}),
+                _row("assistant", "the loader", meta={"mid": "m-peer-2"}),
+            ),
+        )
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        slot = state._slots[body["key"]]
+        assert slot.peer_row_watermark == "m-peer-2"
+        # The first row is the locally-created boundary notice. The two copied
+        # historical rows remain id-less: neither the peer's delivery id nor a new
+        # local one is attached during replay.
+        copied_mids = [(m.get("meta") or {}).get("mid") for m in slot.messages[1:]]
+        assert copied_mids == [None, None]
+
+    async def test_a_failed_transcript_read_leaves_no_watermark(self, tmp_path, no_mint):
+        """A failed copy imported nothing, so there is no peer row to point at.
+
+        The alternative is worse than useless: a pointer left over from a read that
+        failed would tell a resumer this session already holds rows it never saw.
+        """
+        mgr = _manager(slots=[_peer_row()], transcript_status=500)
+        state = _bound_state(tmp_path, mgr)
+
+        status, body = await _post(
+            state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"}
+        )
+
+        assert status == 200
+        assert state._slots[body["key"]].peer_row_watermark == ""
+
+    async def test_an_empty_peer_session_leaves_no_watermark(self, tmp_path, no_mint):
+        mgr = _manager(slots=[_peer_row()], transcript=_msgs())
+        state = _bound_state(tmp_path, mgr)
+
+        _, body = await _post(state, {"instance_id": "nobita", "adopt_remote_slot": "peer-chat-9"})
+
+        assert state._slots[body["key"]].peer_row_watermark == ""
+
+
+# ── B3. the watermark on disk ─────────────────────────────────────────────────
+
+
+class TestPeerWatermarkPersistence:
+    """The pointer is slot metadata, so it rides the binding's metadata line.
+
+    Nested inside the same completeness guard as ``executor``/``instance_id``/
+    ``remote_slot``: a pointer into a peer transcript needs the peer and the slot it
+    points into, so a half-binding must never persist one.
+    """
+
+    def _bound(self, tmp_path, *, watermark="m-peer-2", remote_slot="peer-chat-9"):
+        state = _make_state(tmp_path)
+        slot = state.get_or_create_slot("chat-1")
+        slot.executor = "remote"
+        slot.instance_id = "nobita"
+        slot.remote_slot = remote_slot
+        slot.peer_row_watermark = watermark
+        slot.append("assistant", "hello", "msg msg-a")
+        return state, slot
+
+    def test_the_watermark_survives_a_save_and_rehydrate(self, tmp_path):
+        from kiro_crew.dashboard.chat_persistence import (
+            _rehydrate_slot_from_history,
+            _save_slot_to_history,
+        )
+
+        state, slot = self._bound(tmp_path)
+        _save_slot_to_history(state, slot, force=True)
+
+        del state._slots["chat-1"]
+        restored = _rehydrate_slot_from_history(state, "chat-1")
+
+        assert restored is not None
+        assert restored.is_remote is True
+        assert restored.peer_row_watermark == "m-peer-2"
+
+    def test_the_empty_window_merge_persists_the_watermark(self, tmp_path):
+        """Isolates the MERGE writer: the line is materialized WITHOUT the pointer,
+        which then appears while the window is empty.
+
+        The obvious shape -- write it on the full save, clear the window, merge, then
+        re-assert -- proves nothing, because a merge never DELETES a key: the value
+        would survive whether or not this path writes it. (The sibling binding test
+        in ``test_remote_crew_execution.py`` has exactly that shape and passes
+        vacuously for the same reason.) So the full save is made to write no pointer
+        and the merge is left as the only writer that could have produced one.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        state, slot = self._bound(tmp_path, watermark="")
+        _save_slot_to_history(state, slot, force=True)
+        assert "peer_row_watermark" not in state.conversation_log.get_metadata("dashboard:chat-1")
+
+        slot.messages.clear()
+        slot.peer_row_watermark = "m-peer-2"
+        _save_slot_to_history(state, slot, force=True)
+
+        meta = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert meta.get("peer_row_watermark") == "m-peer-2"
+
+    def test_an_incomplete_binding_persists_no_watermark(self, tmp_path):
+        """The negative half of the guard: no ``remote_slot``, so no pointer.
+
+        A watermark written beside a marker with no target names a row in a
+        transcript nothing can identify — and the rehydrate would then restore a
+        pointer for a link that never completed.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        state, slot = self._bound(tmp_path, remote_slot="")
+        _save_slot_to_history(state, slot, force=True)
+
+        meta = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert "peer_row_watermark" not in meta
+        assert "remote_slot" not in meta
+
+    def test_the_empty_window_merge_writes_no_watermark_for_a_half_binding(self, tmp_path):
+        """The merge site needs its OWN negative, because the two save paths are
+        chosen by the window: a slot with messages takes the full save (covered by
+        the test above) and an empty-windowed one takes the metadata merge, so the
+        full save's guard cannot cover the merge's. A merge also never DELETES a
+        key, which is precisely why writing one it should not have is unrecoverable
+        by any later save on this path.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        # Half-bound from the start: the peer open never landed, so no save on any
+        # path may write the pointer.
+        state, slot = self._bound(tmp_path, remote_slot="")
+        _save_slot_to_history(state, slot, force=True)
+
+        slot.messages.clear()
+        _save_slot_to_history(state, slot, force=True)
+
+        meta = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert "peer_row_watermark" not in meta
+        assert "remote_slot" not in meta
+
+    def test_an_empty_watermark_writes_no_key(self, tmp_path):
+        """Absence, not an empty string: a local or minted slot has nothing to say
+        here, and writing ``""`` would make every non-adopted bound slot carry the
+        field."""
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+
+        state, slot = self._bound(tmp_path, watermark="")
+        _save_slot_to_history(state, slot, force=True)
+
+        meta = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert meta.get("remote_slot") == "peer-chat-9"
+        assert "peer_row_watermark" not in meta
+
+    def test_the_watermark_is_slot_owned_so_a_rebind_can_clear_it(self, tmp_path):
+        """The ownership claim, exercised rather than asserted about the constant.
+
+        An UNOWNED key is carried forward forever by ``carry_unowned_metadata``, so
+        an unbind or a re-adopt could never erase a stale pointer and the session
+        would keep claiming a peer row it never imported — from a conversation it is
+        not even linked to anymore. Owned, so absence in memory retracts it on disk.
+        """
+        from kiro_crew.dashboard.chat_persistence import _save_slot_to_history
+        from kiro_crew.history import SLOT_OWNED_META_KEYS
+
+        assert "peer_row_watermark" in SLOT_OWNED_META_KEYS
+
+        state, slot = self._bound(tmp_path)
+        _save_slot_to_history(state, slot, force=True)
+        assert (
+            state.conversation_log.get_metadata("dashboard:chat-1").get("peer_row_watermark")
+            == "m-peer-2"
+        )
+
+        # Re-adopted onto a different peer session: the old pointer must go.
+        slot.peer_row_watermark = ""
+        slot.remote_slot = "peer-chat-3"
+        _save_slot_to_history(state, slot, force=True)
+
+        meta = state.conversation_log.get_metadata("dashboard:chat-1")
+        assert meta.get("remote_slot") == "peer-chat-3"
+        assert "peer_row_watermark" not in meta
+
 
 class TestRowMapping:
     """``prepare_backfill_rows`` is pure, so its edges are pinned directly."""
@@ -1143,7 +1335,7 @@ class TestRowMapping:
         ``404 no pending approval`` on a card the user cannot dismiss. The record
         of the approval survives as the ``tool_call``/``tool_result`` pair it gated.
         """
-        rows, dropped, _in_flight = ra.prepare_backfill_rows(
+        rows, dropped, _in_flight, _wm = ra.prepare_backfill_rows(
             [
                 _row("chunk", "par"),
                 _row("done", ""),
@@ -1167,14 +1359,14 @@ class TestRowMapping:
         one, permanently. Dropped instead, with the flag that turns it into a
         visible notice.
         """
-        rows, _, in_flight = ra.prepare_backfill_rows([_row("streaming", "half a thought")])
+        rows, _, in_flight, _wm = ra.prepare_backfill_rows([_row("streaming", "half a thought")])
 
         assert rows == []
         assert in_flight is True
 
     def test_a_settled_transcript_reports_no_in_flight_reply(self):
         """The flag is about the PEER still answering, not about adopt in general."""
-        rows, _, in_flight = ra.prepare_backfill_rows(
+        rows, _, in_flight, _wm = ra.prepare_backfill_rows(
             [_row("user", "hi"), _row("assistant", "all done")]
         )
 
@@ -1185,21 +1377,23 @@ class TestRowMapping:
         """The local window is re-serialized into a real transcript file, so a role
         a peer on another build invented would be PERSISTED as one — with nothing
         local able to render it."""
-        rows, _, _in_flight = ra.prepare_backfill_rows([_row("hologram", "?"), _row("user", "hi")])
+        rows, _, _in_flight, _wm = ra.prepare_backfill_rows(
+            [_row("hologram", "?"), _row("user", "hi")]
+        )
 
         assert [r["role"] for r in rows] == ["user"]
 
     def test_the_peers_row_delivery_id_is_not_adopted(self):
         """``mid`` is a per-gateway delivery id; taking the peer's would collide
         with the local mid space. The durable tool correlation is kept."""
-        rows, _, _in_flight = ra.prepare_backfill_rows(
+        rows, _, _in_flight, _wm = ra.prepare_backfill_rows(
             [_row("tool_call", "fs_read", meta={"mid": "peer-77", "tool_name": "fs_read"})]
         )
 
         assert rows[0]["meta"] == {"tool_name": "fs_read"}
 
     def test_meta_is_redacted(self):
-        rows, _, _in_flight = ra.prepare_backfill_rows(
+        rows, _, _in_flight, _wm = ra.prepare_backfill_rows(
             [_row("tool_result", "done", meta={"tool_output": f"got {_SECRET}"})]
         )
 
@@ -1208,16 +1402,170 @@ class TestRowMapping:
     def test_a_non_string_content_is_not_dropped_silently(self):
         """A peer field that is not a string is still conversation. Serialized
         rather than discarded, the same fallback ``_apply_row`` uses."""
-        rows, _, _in_flight = ra.prepare_backfill_rows([_row("assistant", {"parts": ["a"]})])
+        rows, _, _in_flight, _wm = ra.prepare_backfill_rows([_row("assistant", {"parts": ["a"]})])
 
         assert rows[0]["content"] == '{"parts": ["a"]}'
 
     def test_a_non_dict_or_roleless_row_is_ignored(self):
-        rows, _, _in_flight = ra.prepare_backfill_rows(
+        rows, _, _in_flight, _wm = ra.prepare_backfill_rows(
             [{"content": "no role"}, _row("", "empty role")]
         )
 
         assert rows == []
+
+
+# ── B2. the peer-row watermark ────────────────────────────────────────────────
+
+
+class TestPeerRowWatermark:
+    """One slot-level pointer at the newest peer row the copy saw.
+
+    Neither cheaper answer to "which peer rows do I already have" survives this
+    path, which is why a pointer exists at all — both alternatives are asserted
+    dead here rather than only argued for in a comment.
+    """
+
+    def test_the_watermark_is_the_last_peer_mid(self):
+        rows, _, _in_flight, watermark = ra.prepare_backfill_rows(
+            [
+                _row("user", "first", meta={"mid": "m-aaa"}),
+                _row("assistant", "second", meta={"mid": "m-bbb"}),
+                _row("assistant", "third", meta={"mid": "m-ccc"}),
+            ]
+        )
+
+        assert watermark == "m-ccc"
+        assert len(rows) == 3
+
+    def test_the_watermark_survives_the_head_drop(self):
+        """The row cap discards the OLDEST rows, so a truncated copy must still
+        point at the newest peer row rather than at the oldest kept one."""
+        rows, dropped, _in_flight, watermark = ra.prepare_backfill_rows(
+            [_row("assistant", f"m{i}", meta={"mid": f"m-{i}"}) for i in range(6)],
+        )
+        assert dropped == 0  # baseline: the real cap is 4000
+
+        capped_rows, capped_dropped, _in_flight, capped_watermark = _with_row_cap(
+            3, [_row("assistant", f"m{i}", meta={"mid": f"m-{i}"}) for i in range(6)]
+        )
+
+        assert capped_dropped == 3
+        assert [r["content"] for r in capped_rows] == ["m3", "m4", "m5"]
+        # Same pointer either way: the cap cut the head, and the watermark names
+        # the tail.
+        assert capped_watermark == watermark == "m-5"
+
+    def test_a_row_the_filters_drop_still_moves_the_watermark(self):
+        """The watermark records how far into the peer's transcript THIS READ
+        looked, not which rows it chose to copy.
+
+        A transcript whose tail is a ``permission`` row (dropped: an adopted
+        approval bar has no local future to resolve) would otherwise watermark a
+        position the read had already moved past — so a resumer would treat that
+        row as new on every pass, forever.
+        """
+        rows, _, _in_flight, watermark = ra.prepare_backfill_rows(
+            [
+                _row("assistant", "copied", meta={"mid": "m-kept"}),
+                _row("permission", "approve rm?", meta={"mid": "m-skipped"}),
+            ]
+        )
+
+        assert [r["role"] for r in rows] == ["assistant"]
+        assert watermark == "m-skipped"
+
+    def test_an_empty_transcript_has_no_watermark(self):
+        rows, _, _in_flight, watermark = ra.prepare_backfill_rows([])
+
+        assert rows == []
+        assert watermark == ""
+
+    def test_a_peer_that_sends_no_mid_has_no_watermark(self):
+        """Absence is honest: there is no row id to point at, and inventing a local
+        one would name a row the peer has never heard of."""
+        _rows, _, _in_flight, watermark = ra.prepare_backfill_rows(
+            [_row("user", "hi"), _row("assistant", "hello", meta={"tool_name": "x"})]
+        )
+
+        assert watermark == ""
+
+    def test_a_non_string_mid_is_not_adopted_as_a_watermark(self):
+        """The peer's row is untrusted JSON, so the shape is checked rather than
+        assumed — a non-string mid must not become the pointer."""
+        _rows, _, _in_flight, watermark = ra.prepare_backfill_rows(
+            [
+                _row("assistant", "a", meta={"mid": "m-good"}),
+                _row("assistant", "b", meta={"mid": 7}),
+            ]
+        )
+
+        assert watermark == "m-good"
+
+    def test_the_watermark_is_clamped(self):
+        _rows, _, _in_flight, watermark = ra.prepare_backfill_rows(
+            [_row("assistant", "a", meta={"mid": "m" * 500})]
+        )
+
+        assert len(watermark) == 128
+
+    def test_the_watermark_does_not_reintroduce_the_per_row_mid(self):
+        """The pointer is slot-level. Reading the value on the way past must not
+        stop the strip: a peer mid on a stored row would collide with the local mid
+        space, which is what ``_apply_row`` avoids for a relayed row too.
+        """
+        rows, _, _in_flight, watermark = ra.prepare_backfill_rows(
+            [_row("tool_call", "fs_read", meta={"mid": "m-peer", "tool_name": "fs_read"})]
+        )
+
+        assert watermark == "m-peer"
+        assert rows[0]["meta"] == {"tool_name": "fs_read"}
+        assert "mid" not in json.dumps(rows[0]["meta"])
+
+    def test_content_matching_could_not_have_replaced_the_pointer(self):
+        """Why a pointer, half one: the stored text is deliberately NOT the peer's.
+
+        Every row is redacted before storage (``redact_peer_text`` on content and
+        ``cls``, ``_redact_deep`` on meta), so a resumer comparing local text to a
+        re-read of the peer's would find no match on exactly the rows that carried a
+        credential.
+        """
+        rows, _, _in_flight, _wm = ra.prepare_backfill_rows(
+            [_row("assistant", f"key is {_SECRET}", meta={"mid": "m-1"})]
+        )
+
+        assert rows[0]["content"] != f"key is {_SECRET}"
+        assert _SECRET not in rows[0]["content"]
+
+    def test_row_counting_could_not_have_replaced_the_pointer(self):
+        """Why a pointer, other half: the copy is CAPPED and keeps the tail.
+
+        A local row count is therefore a lower bound on the peer's, so "the peer has
+        more rows than I do" cannot distinguish new turns from the head this copy
+        deliberately dropped.
+        """
+        rows, dropped, _in_flight, _wm = _with_row_cap(
+            2, [_row("assistant", f"m{i}", meta={"mid": f"m-{i}"}) for i in range(5)]
+        )
+
+        assert len(rows) == 2
+        assert dropped == 3
+        assert ra.PEER_TRANSCRIPT_MAX_ROWS == 4000
+
+
+def _with_row_cap(cap, messages):
+    """``prepare_backfill_rows`` under a lowered row cap.
+
+    The real cap is 4000; a test that built 4001 rows would spend the whole suite's
+    time budget proving an arithmetic edge, so the constant is lowered around the
+    call. Done through a helper rather than ``monkeypatch`` because these are sync
+    tests and the module constant is read at call time.
+    """
+    original = ra.PEER_TRANSCRIPT_MAX_ROWS
+    ra.PEER_TRANSCRIPT_MAX_ROWS = cap
+    try:
+        return ra.prepare_backfill_rows(messages)
+    finally:
+        ra.PEER_TRANSCRIPT_MAX_ROWS = original
 
 
 # ── C. the duplicate-row question ─────────────────────────────────────────────
