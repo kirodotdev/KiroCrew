@@ -71,6 +71,7 @@ from kiro_crew.hooks import (
     safe_read_file_bytes_nolink,
     unc_probe_allowed,
 )
+from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform_compat import (
     IS_WINDOWS,
     first_linked_ancestor,
@@ -555,14 +556,6 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
         # first (bounded, symlink-safe), then validate THAT snapshot — which
         # nothing else can touch — and promote only the validated bytes.
         _themes_dir().mkdir(parents=True, exist_ok=True)
-        # Staging lives INSIDE _themes_dir(), so a source that equals or
-        # contains it would make os.walk recursively copy the staging dir's
-        # own output (unbounded nesting → ENAMETOOLONG → residue). Reject by
-        # resolved-path containment before creating the snapshot.
-        themes_root = _themes_dir().resolve()
-        src_resolved = src.resolve()
-        if src_resolved == themes_root or src_resolved in themes_root.parents:
-            return None, "source directory must not contain the themes directory", 400
         if stype == "local":
             try:
                 source_fd = pin_directory(src)
@@ -572,6 +565,31 @@ def _do_install(stype: Any, source: dict[str, Any]) -> tuple[dict[str, Any] | No
             # The held handle blocks the rename the race needs on Windows; on
             # POSIX its fstat identity stays authoritative regardless of
             # pathname games.
+            #
+            # Walk the source by the kernel's spelling of the pinned directory,
+            # not the caller's. ``realpath`` follows links but keeps the case
+            # the caller typed, and on a case-insensitive filesystem (macOS
+            # APFS, Windows NTFS) that spelling can differ from the on-disk
+            # name. The staging read below checks each opened file's real path
+            # against the name it was opened by, so a source given as
+            # ``themes/LCARS/pack`` for a directory stored as ``themes/lcars/pack``
+            # is refused as unsafe before any later guard can name the real
+            # problem. The descriptor's own path is the one spelling every
+            # later comparison agrees on; when the kernel cannot report it,
+            # the caller's spelling stands and the read-side check still
+            # decides.
+            pinned_real = fd_real_path(source_fd)
+            if pinned_real is not None:
+                src = Path(pinned_real)
+        # Staging lives INSIDE _themes_dir(), so a source that equals or
+        # contains it would make os.walk recursively copy the staging dir's
+        # own output (unbounded nesting → ENAMETOOLONG → residue). Reject by
+        # containment before creating the snapshot -- judged on the spelling
+        # the walk below uses, after the pin, and by inode identity as well as
+        # by resolved path, so a case-variant spelling of the themes directory
+        # on a case-insensitive filesystem is caught too.
+        if _path_is_at_or_under(_themes_dir(), src):
+            return None, "source directory must not contain the themes directory", 400
         token = uuid.uuid4().hex[:12]
         stage = _themes_dir() / f".install-staging-{token}"
         try:

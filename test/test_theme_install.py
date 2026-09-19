@@ -861,6 +861,97 @@ class TestCopyInstalledTheme:
         assert sibling.is_file(), "install deleted an unrelated sibling"
         assert not any(p.name.startswith(".install-staging-") for p in themes_root.iterdir())
 
+    def test_staging_walks_the_pinned_directory_by_its_kernel_spelling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The staging read compares each opened file's real path with the name
+        # it was opened by. ``resolve()`` follows links but keeps the caller's
+        # case, so on a case-insensitive filesystem a source typed as
+        # ``themes/LCARS/pack`` for a directory stored as ``themes/lcars/pack``
+        # is refused as unsafe before any later guard runs
+        # (test_dest_case_variant_ancestor_rejected_on_case_insensitive_fs is
+        # that case, on such a filesystem). The install must therefore walk the
+        # source by the spelling the kernel reports for the pinned descriptor.
+        # A case-sensitive filesystem cannot spell one directory two ways, so
+        # the kernel's answer is stood in for by a second directory: the walk
+        # must follow the answer, not the path the caller supplied.
+        import kiro_crew.dashboard.handlers.themes as th_mod
+        import kiro_crew.dashboard.theme_validate as tv_mod
+
+        monkeypatch.setattr(tv_mod, "config_dir", lambda: tmp_path / "cfg")
+        supplied = _make_theme(tmp_path / "typed")
+        kernel = _make_theme(tmp_path / "on-disk", name="On Disk")
+        pinned: list[int] = []
+
+        def _fake_real_path(fd: int) -> str:
+            pinned.append(fd)
+            return str(kernel)
+
+        monkeypatch.setattr(th_mod, "fd_real_path", _fake_real_path)
+
+        walked: list[Path] = []
+        real_copy = th_mod._copy_installed_theme
+
+        def _spy(source: Path, dst: Path) -> None:
+            walked.append(Path(source))
+            real_copy(source, dst)
+
+        monkeypatch.setattr(th_mod, "_copy_installed_theme", _spy)
+        theme, err, status = th_mod._do_install("local", {"path": str(supplied)})
+        assert err is None and status == 200 and theme is not None
+        assert walked == [kernel]
+        assert theme["name"] == "On Disk"
+        # Asked about the descriptor pin_directory opened, not any pathname.
+        assert len(pinned) == 1 and pinned[0] >= 0
+
+    def test_themes_dir_containment_is_judged_on_the_pinned_spelling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The "source must not contain the themes directory" guard protects
+        # the staging walk from copying its own output. It must judge the
+        # spelling that walk uses -- the pinned descriptor's -- not the one the
+        # caller supplied, or a source the kernel reports as the themes
+        # directory itself would pass the guard and be walked.
+        import kiro_crew.dashboard.handlers.themes as th_mod
+        import kiro_crew.dashboard.theme_validate as tv_mod
+
+        monkeypatch.setattr(tv_mod, "config_dir", lambda: tmp_path / "cfg")
+        supplied = _make_theme(tmp_path)
+        themes_root = tv_mod._themes_dir()
+        themes_root.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setattr(th_mod, "fd_real_path", lambda fd: str(themes_root))
+
+        theme, err, status = th_mod._do_install("local", {"path": str(supplied)})
+        assert theme is None and status == 400, (theme, err, status)
+        assert err is not None and "must not contain the themes directory" in err
+        assert not any(p.name.startswith(".install-staging-") for p in themes_root.iterdir())
+
+    def test_staging_keeps_the_caller_spelling_when_the_kernel_has_none(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A host that cannot report the descriptor's path gives the install
+        # nothing better than the caller's spelling; the read-side check on
+        # every file still decides, so the install proceeds rather than
+        # refusing every local source on such a host.
+        import kiro_crew.dashboard.handlers.themes as th_mod
+        import kiro_crew.dashboard.theme_validate as tv_mod
+
+        monkeypatch.setattr(tv_mod, "config_dir", lambda: tmp_path / "cfg")
+        src = _make_theme(tmp_path)
+        monkeypatch.setattr(th_mod, "fd_real_path", lambda fd: None)
+
+        walked: list[Path] = []
+        real_copy = th_mod._copy_installed_theme
+
+        def _spy(source: Path, dst: Path) -> None:
+            walked.append(Path(source))
+            real_copy(source, dst)
+
+        monkeypatch.setattr(th_mod, "_copy_installed_theme", _spy)
+        theme, err, status = th_mod._do_install("local", {"path": str(src)})
+        assert err is None and status == 200 and theme is not None
+        assert walked == [src]
+
     def test_install_validates_the_staging_snapshot_not_the_source(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
