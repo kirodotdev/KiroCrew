@@ -300,8 +300,12 @@ and transcripts remain unchanged.
 
 `persist_member_config` publishes the member and store under `update_config_locked`,
 rechecking duplicate creation, immutable member ID, expected binding, and exclusive
-store ownership while preserving unrelated concurrent edits. A failed publication
-may leave an unreferenced allocation; it does not delete or retire that data.
+store ownership while preserving unrelated concurrent edits. When creation fails
+or is cancelled after allocating a store, the creation paths call
+`retire_unpublished_allocation`: it re-reads `config.json` under the same lock and
+removes the fresh directory only when no member and no store entry references it,
+then restores the in-memory binding so a retry allocates fresh. A publication that
+landed is kept; pre-existing bindings and stores are never deleted or retired.
 Degraded or unreadable configuration refuses creation instead of guessing defaults.
 Non-string `member_id` or `owner_member_id` values refuse allocation with
 `UnknownMemoryStore` before forming the reserved-ID set, preserving the raw values,
