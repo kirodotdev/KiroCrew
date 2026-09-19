@@ -6509,6 +6509,152 @@ class TestSsmExitErrorClassification:
         assert "ssh auth failed" in t._exit_error(255)
 
 
+# ── SSM mint error tail: same scrub as the SSH transport's ───────────
+
+
+class TestSsmMintErrorTailRedaction:
+    """The SSM mint's error tail must scrub exactly what the SSH transport's does.
+
+    ``ssm_token_mint._redacted_tail`` re-implemented
+    ``token_mint._redacted_output_tail`` with ``redact()`` alone, leaving out that
+    helper's two token-specific passes -- the ``?token=`` URL-param pass and the
+    wider bare-token shape pass. Three shapes those passes exist to catch
+    therefore reached a raised ``TokenMintError`` on the SSM path, whose message
+    lands in the operator's own log where nothing later scrubs it.
+
+    Every token here is SYNTHETIC. The two bare shapes sit deliberately under the
+    generic redactor's link-token bounds (a payload floor and an exact signature
+    length), because an SSM mint runs ``kirocrew token`` on a REMOTE host whose
+    Kiro Crew version is independent of the local one, so the local mint's claim
+    set does not bound what that remote prints.
+    """
+
+    # Synthetic, under the generic link-token pattern's payload floor.
+    FAKE_SHORT_PAYLOAD_TOKEN = "eyJ" + "0123456789abcdef" * 2 + "." + "a" * 43
+    # Synthetic, clears the payload floor but its signature is truncated.
+    FAKE_TRUNCATED_SIG_TOKEN = "eyJ" + "0123456789abcdef" * 8 + ".abcdefghij"
+    # Synthetic opaque value: nothing about `?token=` is tied to a token shape.
+    FAKE_OPAQUE_PARAM_VALUE = "OPAQUEsecretVALUE0123456789"
+
+    def _fake_send(self, monkeypatch, *, stdout="", stderr="", status="Failed", exit_code=1):
+        """Patch the module's single SSM dispatch point. No AWS call is made."""
+        from kiro_crew.cloud import ssm as cloud_ssm
+        from kiro_crew.instances import ssm_token_mint as sm
+
+        async def fake(*_a, **_k):
+            return cloud_ssm.CommandResult(
+                status=status, stdout=stdout, stderr=stderr, exit_code=exit_code
+            )
+
+        monkeypatch.setattr(sm, "_send_over_ssm", fake)
+
+    def _mint(self):
+        from kiro_crew.instances import ssm_token_mint as sm
+
+        return sm.mint_remote_token_ssm("i-0123456789abcdef0", ttl="20h")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "shape",
+        ["bare_under_payload_floor", "bare_truncated_signature", "token_url_param"],
+    )
+    async def test_nonzero_exit_tail_scrubs_shapes_redact_alone_misses(self, monkeypatch, shape):
+        """A partially-successful mint (URL printed, then non-zero exit) leaks none of them.
+
+        This is the exact case the SSH helper was written for, and the SSM path's
+        non-zero-exit branch builds its message from BOTH streams.
+        """
+        from kiro_crew.instances import token_mint as tm
+
+        if shape == "bare_under_payload_floor":
+            secret = self.FAKE_SHORT_PAYLOAD_TOKEN
+            stdout = f"Dashboard ready: {secret}\nREMOTE-REASON\n"
+        elif shape == "bare_truncated_signature":
+            secret = self.FAKE_TRUNCATED_SIG_TOKEN
+            stdout = f"Dashboard ready: {secret}\nREMOTE-REASON\n"
+        else:
+            secret = self.FAKE_OPAQUE_PARAM_VALUE
+            stdout = f"Open http://127.0.0.1:7777/?token={secret}\nREMOTE-REASON\n"
+
+        self._fake_send(monkeypatch, stdout=stdout, stderr="exit 1")
+        with pytest.raises(tm.TokenMintError) as excinfo:
+            await self._mint()
+        msg = str(excinfo.value)
+
+        assert secret not in msg
+        # No FRAGMENT survives either: a pattern matching only part of a token
+        # would leave the remaining segment behind, which is still a credential.
+        for segment in secret.split("."):
+            assert segment not in msg
+        # The operator still learns why the remote died.
+        assert "REMOTE-REASON" in msg
+
+    @pytest.mark.asyncio
+    async def test_stderr_borne_token_scrubbed_on_the_unparseable_branch(self, monkeypatch):
+        """The parse-failure branch builds its message from stderr, so it scrubs too."""
+        from kiro_crew.instances import token_mint as tm
+
+        secret = self.FAKE_SHORT_PAYLOAD_TOKEN
+        self._fake_send(
+            monkeypatch,
+            stdout="no token here",
+            stderr=f"warning: reusing {secret}\nWHY-IT-DIED\n",
+            status="Success",
+            exit_code=0,
+        )
+        with pytest.raises(tm.TokenMintError) as excinfo:
+            await self._mint()
+        msg = str(excinfo.value)
+
+        assert secret not in msg
+        for segment in secret.split("."):
+            assert segment not in msg
+        assert "WHY-IT-DIED" in msg
+
+    @pytest.mark.asyncio
+    async def test_run_remote_kirocrew_ssm_returns_a_scrubbed_tail(self, monkeypatch):
+        """The fourth call site RETURNS the tail to its caller rather than raising it.
+
+        Its value reaches the same logs, so it carries the same obligation.
+        """
+        from kiro_crew.instances import ssm_token_mint as sm
+
+        secret = self.FAKE_TRUNCATED_SIG_TOKEN
+        self._fake_send(
+            monkeypatch, stderr=f"restart printed {secret}\nSTDERR-REASON\n", exit_code=7
+        )
+        code, tail = await sm.run_remote_kirocrew_ssm("i-0123456789abcdef0", "restart")
+
+        assert code == 7
+        assert secret not in tail
+        for segment in secret.split("."):
+            assert segment not in tail
+        assert "STDERR-REASON" in tail
+
+    def test_tail_is_the_ssh_transport_helper_and_cannot_drift(self):
+        """Anti-drift ratchet: same scrub, same carried size, one implementation.
+
+        A second copy of either can only ever drift into a weaker bound, which is
+        exactly how the three shapes above came to be scrubbed on one transport
+        and not the other.
+        """
+        from kiro_crew.instances import ssm_token_mint as sm
+        from kiro_crew.instances import token_mint as tm
+
+        assert sm._OUTPUT_TAIL_CHARS == tm._OUTPUT_TAIL_CHARS
+
+        samples = [
+            "",
+            "plain failure text",
+            f"Dashboard ready: {self.FAKE_SHORT_PAYLOAD_TOKEN}\nreason\n",
+            f"Dashboard ready: {self.FAKE_TRUNCATED_SIG_TOKEN}\nreason\n",
+            f"http://127.0.0.1:7777/?token={self.FAKE_OPAQUE_PARAM_VALUE}\nreason\n",
+            "x" * 5000 + "\nTAIL-REASON\n",
+        ]
+        for sample in samples:
+            assert sm._redacted_tail(sample) == tm._redacted_output_tail(sample)
+
+
 # ── hard-kill-orphaned forwarder reclaim (pid + exact-argv guard) ────
 
 

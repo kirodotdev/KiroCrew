@@ -10,6 +10,10 @@ Security (standard practices, mirrors ``token_mint.py``):
 
 * The minted token is a short-lived (≤20h) bearer credential. It is **never
   logged** and is returned only to the in-memory caller.
+* A raised ``TokenMintError``'s stdout/stderr tail goes through the SSH
+  transport's own scrubber (``token_mint._redacted_output_tail``), not a local
+  copy of it, so both transports strip the same token shapes from the message
+  an operator ends up with in a log file.
 * ``aws ssm send-command`` is invoked via ``cloud.ssm.run_command``, itself
   routed through the ``cloud.aws.run_aws`` chokepoint — a fixed argv list, no
   shell on the local side. ``ssm_target``/``aws_profile``/``aws_region`` are
@@ -33,11 +37,14 @@ import logging
 from kiro_crew.cloud import ssm as cloud_ssm
 from kiro_crew.instances.constants import DEFAULT_SSM_MINT_TIMEOUT_SECS
 
-# The subcommand builder and the ttl/port bounds are SHARED with the SSH
-# transport on purpose: both transports hand the same string to the same remote
-# shell, so a second copy of either could only ever drift into a weaker bound.
+# The subcommand builder, the ttl/port bounds, and the error-tail scrubber are
+# SHARED with the SSH transport on purpose: both transports hand the same string
+# to the same remote shell and surface the same failure text, so a second copy of
+# any of them could only ever drift into a weaker bound.
 from kiro_crew.instances.token_mint import (
+    _OUTPUT_TAIL_CHARS,
     TokenMintError,
+    _redacted_output_tail,
     _token_subcommand,
     _validate_port,
     _validate_ttl,
@@ -51,7 +58,6 @@ from kiro_crew.instances.validation import (
     validate_ssm_run_as,
     validate_ssm_target,
 )
-from kiro_crew.security import redact
 
 logger = logging.getLogger(__name__)
 
@@ -62,24 +68,48 @@ logger = logging.getLogger(__name__)
 # ``instances.mint_timeout_secs`` wins for both transports.
 _DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_SSM_MINT_TIMEOUT_SECS
 
-# How much of a failing remote's stdout/stderr to carry in an error message.
-_OUTPUT_TAIL_CHARS = 300
+# The carried tail size is ``_OUTPUT_TAIL_CHARS``, imported from the SSH
+# transport above rather than respelled here: the size travels with the scrub
+# that produces it.
 
 
 def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     """Credential/exfil-redact *text* and return its last *limit* chars.
 
-    Mirrors :func:`kiro_crew.instances.token_mint._redacted_output_tail`'s
-    intent (never let a token or credential-looking string reach a raised
-    exception's message) but is not called on an unbounded remote payload here:
-    :func:`cloud.ssm.run_command`'s ``CommandResult.stdout``/``stderr`` are
-    already SSM-invocation-output-sized (not a giant blind stream), so no
-    scan-window bounding is needed.
+    Delegates to :func:`kiro_crew.instances.token_mint._redacted_output_tail`
+    rather than keeping a second copy. This module once re-implemented it with
+    the generic ``redact`` alone, which left out that helper's two
+    token-specific passes -- a ``?token=`` URL-param substitution and a wider
+    bare-token shape substitution. Shapes those passes exist to catch therefore
+    reached a raised :class:`TokenMintError` here: a bare two-segment token under
+    the generic redactor's link-token payload floor, one with a truncated
+    signature, and any opaque ``?token=`` value. All three matter because an SSM
+    mint runs ``kirocrew token`` on a REMOTE host whose Kiro Crew version is
+    independent of the local one, so the local mint's claim set does not bound
+    what that remote prints -- and nothing about ``?token=`` is tied to a token
+    shape at all.
+
+    The wider pass is borrowed at this call site rather than pushed down into
+    ``redact``: over-matching costs one masked word in an error string here,
+    whereas ``redact``'s patterns also gate request-blocking decisions, where the
+    same widening measurably flags ordinary dotted identifiers and filenames.
+
+    The delegate also bounds its scan to the last ``_OUTPUT_SCAN_CHARS`` (2,400)
+    of the text, and that bound CAN engage on this path: ``GetCommandInvocation``
+    caps ``StandardOutputContent`` / ``StandardErrorContent`` at 24,000 chars,
+    which is what :func:`cloud.ssm.run_command` copies into ``CommandResult``.
+    Engaging it only ever scrubs MORE of what reaches the raised error, never
+    less. Text before the window is dropped outright, so it cannot reach the
+    carried tail at all -- strictly stronger than leaving it unredacted. The
+    credential-charset run touching the window's left edge is replaced with
+    ``<clipped>`` when it is at least ``_CLIPPED_RUN_MIN`` chars, which is what
+    stops a secret sliced by the boundary from surviving as a suffix the token
+    patterns cannot recognise. Inside the window the delegate runs ``redact``
+    plus the two token-specific passes, so it is a strict superset of the
+    generic pass alone. Sharing one implementation is what keeps the two
+    transports' scrubs from drifting apart again.
     """
-    if not text:
-        return ""
-    safe = redact(text)
-    return safe.strip()[-limit:]
+    return _redacted_output_tail(text, limit)
 
 
 async def _send_over_ssm(
