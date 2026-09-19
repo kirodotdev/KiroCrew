@@ -3153,8 +3153,8 @@ def test_member_ownership_without_folder_provenance_does_not_cross_workspace(tmp
 
 def test_folder_authority_lapses_when_the_child_leaves_its_birth_workspace(tmp_path, monkeypatch):
     """The marker names the workspace the child was BORN into and is never
-    updated, so a child that has since moved (an agent switch) no longer matches
-    its own record and the exception lapses.
+    updated, so only a child still in that workspace matches its own record and
+    retains the exception.
     """
     state = _make_state(tmp_path)
     caller = _member_slot(state)
