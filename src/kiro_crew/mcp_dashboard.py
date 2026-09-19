@@ -499,15 +499,16 @@ def _tool_definitions() -> list[dict[str, Any]]:
         {
             "name": "session_send",
             "description": (
-                "Send a message into another session as its next agent turn — the "
-                "way to seed a session you just created with session_create, answer "
-                "a question it raised, or steer it mid-run. If the target is idle "
-                "the turn starts immediately; if it is busy the message queues and "
-                "runs when its current turn ends — the result says which happened. "
-                "The message lands in the target's transcript tagged as sent by "
-                "your session, so the person reading it can tell it from their own "
-                "typing. Use session_read_message afterwards to watch what the "
-                "target did with it."
+                "Send a message into another session — the way to seed a session "
+                "you just created with session_create, answer a question it "
+                "raised, or correct it while it works. An idle target starts a "
+                "turn on your message straight away. A BUSY target queues it for "
+                "its next turn, unless you pass steer=true, which injects it into "
+                "the turn already running so the target reads it mid-work; the "
+                "result says which happened. The message lands in the target's "
+                "transcript tagged as sent by your session, so the person reading "
+                "it can tell it from their own typing. Use session_read_message "
+                "afterwards to watch what the target did with it."
             ),
             "inputSchema": {
                 "type": "object",
@@ -522,6 +523,19 @@ def _tool_definitions() -> list[dict[str, Any]]:
                             "The message to deliver. It becomes the target's next "
                             "user-role turn, so write it as you would type into "
                             "that session's composer."
+                        ),
+                    },
+                    "steer": {
+                        "type": "boolean",
+                        "description": (
+                            "Cut into the target's RUNNING turn instead of waiting "
+                            "for it to end. Use it when waiting wastes the work in "
+                            "flight — the target is heading the wrong way, or the "
+                            "thing it is working on is already done. Ignored when "
+                            "the target is idle (the message starts a turn either "
+                            "way), and when mid-turn injection is unavailable the "
+                            "message falls back to the queue rather than being "
+                            "dropped. Default false."
                         ),
                     },
                 },
@@ -1533,22 +1547,37 @@ def _call_tool_inner(name: str, args: dict[str, Any]) -> str:
 
     if name == "session_send":
         args = validate_tool_args(args, SESSION_SEND_SCHEMA)
+        steer = bool(args.get("steer"))
         resp = _post(
             "/api/session-control/send",
-            {"target": args["target"], "message": args["message"]},
+            {"target": args["target"], "message": args["message"], "steer": steer},
             session_key=caller_key,
         )
         if resp.get("error"):
             return f"Error: could not send to that session: {resp['error']}"
         target = resp.get("target", args["target"])
+        if resp.get("steered"):
+            return (
+                f"\U0001f4e8 Steered `{target}` — your message went into the turn it "
+                "is running, so it reads it mid-work. Watch what it does with it "
+                "with session_read_message."
+            )
         if resp.get("started"):
             return (
                 f"\U0001f4e8 Delivered to `{target}` — it started a turn on your message. "
                 "Watch the result with session_read_message."
             )
+        # A steer that could not be injected lands here, on the queue: say so, or
+        # the caller reads "queued" as "the target was busy" and never learns its
+        # steer did not cut anything.
+        queued_note = (
+            " Your steer could not go into the running turn, so it was queued instead."
+            if steer
+            else ""
+        )
         return (
             f"\U0001f4e8 Queued for `{target}` — it is mid-turn, so your message runs "
-            "when the current turn ends. Poll with session_read_message."
+            f"when the current turn ends.{queued_note} Poll with session_read_message."
         )
 
     if name == "session_read_message":

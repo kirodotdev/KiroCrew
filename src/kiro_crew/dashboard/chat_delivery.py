@@ -238,6 +238,8 @@ async def steer_into_running_turn(
     message: str,
     *,
     send_id: str | None = None,
+    user_origin: bool = False,
+    admission: dict | None = None,
 ) -> str:
     """Inject *message* into the slot's RUNNING turn; return a ``STEER_*`` outcome.
 
@@ -253,6 +255,33 @@ async def steer_into_running_turn(
     and additive: a send without one keeps the exact prior row/payload shape.
     Normalized at entry (``normalize_send_id``) so the type/length bound holds
     for every caller, not just the current one.
+
+    ``user_origin`` says whether this text was typed by the session's OWN human.
+    The composer passes True and the ``session_send`` peer path passes False. The
+    requeue is what needs it: ``directive_user_origin`` on the queue entry exempts
+    it from the drain's LINKED drop, and that exemption is justified by the author
+    having typed into the session's own surface. A peer's steer has no such author,
+    so the flag has to be told apart per caller rather than read off the slot, which
+    cannot distinguish the two.
+
+    Defaults to FALSE so the human's exemption is the one thing a caller cannot
+    acquire by saying nothing. A default of True would put the same trap one layer
+    down: correct for whichever callers exist, wrong for the next one.
+
+    ``admission`` is the containment that held when the caller's gate cleared this
+    send (``session_control.containment_meta``). It is recorded for the REQUEUE,
+    which runs in the turn's teardown -- on the far side of this function's
+    suspension -- and would otherwise read the slot again and fold a mirror linked
+    during that suspension into the entry's admission baseline, after which the
+    drain reads the widened audience as one the authorization saw.
+
+    Both callers pass it, and the requeue reads NOTHING else: a slot read there is
+    not a fallback, so there is one baseline rather than two. An absent stamp
+    therefore means the entry carries no containment key at all, which puts it on the
+    drain's documented fail-closed floor (checked against every currently held
+    constraint) rather than on the slot read this exists to remove. That matters
+    because the LINKED exemption does not cover the case: a new outbound mirror is
+    never exempt, since the author does not control mirror links.
     """
     send_id = normalize_send_id(send_id)
     client = getattr(slot, "_acp_client", None)
@@ -320,6 +349,13 @@ async def steer_into_running_turn(
     # requeued entry's meta unchanged.
     if send_id:
         slot._steer_send_ids[message] = send_id
+    # Recorded unconditionally, unlike ``send_id``: absent must mean "not the
+    # session's own human", and a map that only stores True cannot distinguish
+    # that from "nobody told us". The requeue's fail-closed floor depends on
+    # reading a definite False here for a peer's steer.
+    slot._steer_user_origin[message] = bool(user_origin)
+    if admission is not None:
+        slot._steer_admissions[message] = admission
     slot._pending_steers.append(message)
     try:
         steered = await client.steer(message)
@@ -386,6 +422,8 @@ async def steer_into_running_turn(
         # every intermediate transition, including a merged row.
         slot._steer_delivery_ids.pop(message, None)
         slot._steer_send_ids.pop(message, None)
+        slot._steer_user_origin.pop(message, None)
+        slot._steer_admissions.pop(message, None)
         logger.info(
             "steer for slot %s was requeued and drained during the RPC; row already " "persisted",
             slot.key,
@@ -413,6 +451,8 @@ async def steer_into_running_turn(
             slot._pending_steers.remove(message)
             slot._steer_delivery_ids.pop(message, None)
             slot._steer_send_ids.pop(message, None)
+            slot._steer_user_origin.pop(message, None)
+            slot._steer_admissions.pop(message, None)
             return STEER_UNAVAILABLE
         if stopped:
             # Still registered means the teardown has not run yet and will
@@ -498,6 +538,8 @@ async def steer_into_running_turn(
     # few lines below, so nothing will read the map entry again and leaving it
     # would hold a full message string for the slot's lifetime.
     slot._steer_send_ids.pop(message, None)
+    slot._steer_user_origin.pop(message, None)
+    slot._steer_admissions.pop(message, None)
     # No ledger entry from here either. Reaching this point rules out every requeue
     # and discard KNOWN SO FAR, which is what entitles this path to persist a
     # transcript row -- but that row is mutable and starts as `written`, promoted to

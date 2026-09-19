@@ -707,11 +707,26 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
             # Raw client input — the sink (`normalize_send_id` at the top of
             # `steer_into_running_turn`) type-checks and length-bounds it,
             # treating anything unusable as absent (the old-client shape).
+            # circular import: session_control imports this package's modules at module level.
+            from kiro_crew.dashboard.session_control import containment_meta as _containment_meta
+
             outcome = await steer_into_running_turn(
                 state,
                 slot,
                 message,
                 send_id=user_meta.get("sendId") if user_meta else None,
+                # This branch IS the composer: the text was typed into this
+                # session's own surface by its authenticated human, which is what
+                # earns a requeued entry the exemption from the drain's LINKED drop.
+                # Stated rather than defaulted, because the default fails closed.
+                user_origin=not bool(request_app),
+                # Captured HERE, before the RPC suspends, for the same reason the peer
+                # path captures it: the requeue runs in the turn's teardown and a slot
+                # read there folds a mirror linked during the suspension into the
+                # entry's own admission baseline. The LINKED exemption does not cover
+                # that -- a new outbound mirror is never exempt, because the author
+                # does not control mirror links -- so the composer needs the stamp too.
+                admission=_containment_meta(state, slot),
             )
             if outcome == STEER_STEERED:
                 return web.json_response({"ok": True, "steered": True})
@@ -4449,6 +4464,8 @@ async def stop_slot_turn(
             # kill discards the text, so there is no requeued entry left to carry
             # the client's send id onto.
             slot._steer_send_ids.pop(_discarded, None)
+            slot._steer_user_origin.pop(_discarded, None)
+            slot._steer_admissions.pop(_discarded, None)
         slot._pending_steers.clear()
         state.push_slots_update()
         logger.info("Stop (force): hard-killing session for slot %s", name)
