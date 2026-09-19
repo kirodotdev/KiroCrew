@@ -30,7 +30,7 @@ import { useQueuedMessageActions, queuedSendStash } from '../hooks/useQueuedMess
 import { useChatPopouts } from '../hooks/useChatPopouts'
 import {
   switchSlot, createSlot, deleteSlot, loadOlderMessages, abortActiveOlderFetch, isSupersededPagingRejection, clearSwitchSlotGone,
-  appendMessage, appendSlotMessage, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
+  appendMessage, appendSlotMessage, recordSendAttempt, transferSendAttempt, endLocalTurn, clearUnresumableResume, clearUndeletableHistory, forkSlot,
   setSlotRunning, startLocalTurn, syncSlotRunningFromServer, setPendingInput, setAgentSwitchNotice, resolveByApprovalId, clearPendingPermissions,
   selectComposerBusy, selectSendConfirmed,
   selectContinuable,
@@ -63,6 +63,7 @@ import { drainPendingChunks } from '../lib/pendingChunkDrain'
 import { performAgentSlotSwitch } from '../lib/agentSwitch'
 import { api } from '../api/client'
 import { resolveAskAfterSend } from '../lib/resolveAskAfterSend'
+import { useRecallHistory } from '../hooks/useRecallHistory'
 import type { PlanStepInput } from '../api/client'
 import { useProvider } from '../providers'
 import {
@@ -630,13 +631,6 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   const knowledgeFetch = useKnowledgeFetch(activeSlot)
   const knowledgeFetchRef = useRef(knowledgeFetch)
   knowledgeFetchRef.current = knowledgeFetch
-  // User-sent messages (oldest → newest) for ↑/↓ prompt history in the input.
-  // Deduplicate consecutive identical prompts to match shell/REPL behavior.
-  // `messages` gets a new reference on every streaming chunk; preserve the
-  // previous array when user-message content is unchanged so `sentMessages`
-  // stays referentially stable and doesn't re-run downstream effects.
-  const sentMessagesRef = useRef<string[]>([])
-  const sentMessagesSlotRef = useRef<string | null>(null)
   // Per-slot timestamp (ms) of the last soft-stop press, used to arm the
   // force-kill. A force press (second click while soft_pending) arriving
   // within FORCE_KILL_ARMING_MS of that slot's soft stop is treated as an
@@ -644,29 +638,9 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
   // mashing Stop. Keyed by slot so switching slots can't measure one slot's
   // press against another slot's timestamp.
   const softStopAtMapRef = useRef<Map<string, number>>(new Map())
-  const sentMessages = useMemo(() => {
-    const out: string[] = []
-    for (const m of messages) {
-      if (m.role !== 'user') continue
-      const text = m.rawText ?? m.content
-      if (!text || text === out[out.length - 1]) continue
-      out.push(text)
-    }
-    // Reset the cached reference when switching slots — otherwise two
-    // conversations with matching length+tail would share the prior array.
-    if (sentMessagesSlotRef.current !== activeSlot) {
-      sentMessagesSlotRef.current = activeSlot ?? null
-      sentMessagesRef.current = out
-      return out
-    }
-    // Append-only within a slot — full element-wise compare (array is small).
-    const prev = sentMessagesRef.current
-    if (prev.length === out.length && prev.every((v, i) => v === out[i])) {
-      return prev
-    }
-    sentMessagesRef.current = out
-    return out
-  }, [messages, activeSlot])
+  // Prompts this slot submitted, whatever became of them (see `attemptedSends`).
+  const attemptedSends = useAppSelector(s => (activeSlot ? s.chat.attemptedSends?.[activeSlot] : undefined))
+  const sentMessages = useRecallHistory(messages, activeSlot, attemptedSends)
   const slotRunning = useAppSelector(s => s.chat.slotRunning)
   // Live mirror for `autoFollowAllowed`, a stable callback several effects
   // depend on: taking `slotRunning` as a dependency would re-attach those
@@ -2447,6 +2421,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     const bubblePastes = pruneBlocksUtil(displayTxt, activePastes)
     if (bubblePastes.length) saveStoredPaste(llmTxt, displayTxt, bubblePastes, filePaths)
 
+    // Minted here rather than beside the POST below because the recall record
+    // needs it: an attempt is matched to its transcript row by this id alone.
+    const sendId = mintSendId()
+
     if (!isolated) setPrefillHint(false)
     if (!isolated && !optionText) {
       setInput(''); setPendingFiles([]); pickedFileTokens.current = {}; setPasteBlocks([]); setPendingSessions([]); if (uiSlot) { delete drafts.current[uiSlot]; delete fileDrafts.current[uiSlot]; delete pasteDrafts.current[uiSlot]; delete sessionRefDrafts.current[uiSlot]; saveDrafts() }
@@ -2467,6 +2445,10 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
       forceNew = newSessionRef.current
       newSessionRef.current = false
     }
+    // Before the create is awaited, not after: a rejection unwinds send() with the
+    // composer already cleared, and ↑ is the only net left. Transferred below.
+    const originSlot = slot
+    if (slot && !optionText) dispatch(recordSendAttempt({ slot, text: displayTxt, sendId }))
     if (!slot || forceNew) {
       sendingRef.current = true;
       // The composer was cleared above, so a create failure here would destroy
@@ -2645,6 +2627,12 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
         })
       }
     }
+    // The record follows the prompt: left under the slot a new-session send has
+    // left behind, that slot's ↑ would offer a prompt it never saw.
+    if (slot && !optionText && slot !== originSlot) {
+      if (originSlot) dispatch(transferSendAttempt({ from: originSlot, to: slot, sendId }))
+      else dispatch(recordSendAttempt({ slot, text: displayTxt, sendId }))
+    }
     setPendingAgent(''); setPendingModel(''); setPendingProject('')
     // Build meta for persistence (knowledge, files, pastes)
     const meta: Record<string, unknown> = {}
@@ -2657,7 +2645,7 @@ export default function ChatPage({ mode, embedded, embedMode, popout, noUrlSync 
     // to this exact optimistic bubble without relying on content equality.
     // The server preserves meta fields on the user row it appends, so the
     // echo carries both this sendId AND the server-minted `mid` (#2845).
-    const sendId = mintSendId()
+    // Minted at the recall record above, so both name the same send.
     meta.sendId = sendId
     const metaPayload = meta
     // A busy snapshot may be stale. The server's user event supplies the

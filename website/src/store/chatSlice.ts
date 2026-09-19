@@ -324,6 +324,20 @@ export const mcpAppKey = (sessionKey: string, toolCallId: string): string =>
  *  oldest are evicted past this bound. */
 const MCP_APPS_PER_SLOT_MAX = 24
 
+/** Max prompts retained per slot in `attemptedSends`. Bounds a slot whose sends
+ *  keep failing; ↑ recall never needs more depth than a shell's history page. */
+const ATTEMPTED_SENDS_PER_SLOT_MAX = 50
+
+/** One submitted prompt, with the id of the send that submitted it.
+ *
+ *  `sendId` is how the recall merge decides whether this prompt is already in
+ *  the transcript. It is minted client-side per send and the backend stores the
+ *  client meta opaquely, so the server's copy of the row carries it back — one
+ *  value on one clock, with no spelling to reconcile. Matching on text instead
+ *  cannot work (the wire form differs from the composer's) and matching on time
+ *  cannot either (row and submission are stamped by different machines). */
+export type SendAttempt = { text: string; sendId: string }
+
 /** Per-entry ceiling on a tool result, and on its input, held in the live
  *  tool log. The server caps either at 1 MB (`_redact_tool_field`), and the
  *  log keeps 100 entries per open pane until the next user message — which in
@@ -413,6 +427,8 @@ const slotKeyedMaps = (state: ChatState) => [
   state.slotPaneHasMore, state.slotPaneBounded, state.slotServerTotal,
   state.slotServerTotalSeq,
   state.thinkingOrphans,
+  // Recall entries describe one conversation's prompts, so they die with it.
+  state.attemptedSends,
 ].filter(Boolean)
 
 /** Every slot key that still has residue anywhere in chat state.
@@ -865,6 +881,17 @@ interface ChatState {
   slotStopping: boolean
   slotState: SlotState
   slotStatusDetail: Record<string, { kind: string; text: string; ts: number; toolName?: string; derivedTitle?: string; derivedAction?: ToolAction; derivedMore?: number; toolCallId?: string }>
+  /** Prompts the user SUBMITTED, per slot, oldest → newest — recorded when the
+   *  composer is cleared, not when the transcript accepts the message.
+   *
+   *  ↑/↓ recall is otherwise derived purely from `messages`, so it can only
+   *  offer prompts that reached the transcript. Every way a send is lost —
+   *  a POST that never arrived, an optimistic bubble dropped by a wholesale
+   *  refresh, a bubble appended to a slot the user is not looking at — also
+   *  erases the recall entry, and the composer was cleared before any of them
+   *  could be known. The user is then left with no copy of their own text
+   *  anywhere in the UI. Keyed on submission so recall survives all of them. */
+  attemptedSends: Record<string, SendAttempt[]>
   slotHasMore: boolean
   slotOldestIndex: number
   /** Slot the cursor above describes. A switch moves activeSlot first, so
@@ -1195,6 +1222,7 @@ const initialState: ChatState = {
   slotStopping: false,
   slotState: 'idle',
   slotStatusDetail: {},
+  attemptedSends: {},
   slotHasMore: false,
   slotOldestIndex: 0,
   slotCursorKey: null,
@@ -1310,6 +1338,21 @@ function loadSlotActivity(state: ChatState, key: string): void {
  * (zero blast radius on the main chat); this mirrors the slotActivity tool
  * pattern already used for tool/subagent events on non-active slots.
  */
+/** Append one submitted prompt to a slot's record under the retention policy.
+ *
+ *  Shared by the record and transfer reducers so a prompt that arrives by either
+ *  route obeys one collapse rule and one bound. Collapsing a consecutive
+ *  duplicate adopts the NEWER send's id: the older send may already be on
+ *  screen, and an entry carrying its id reads as landed and is withheld. */
+function pushSendAttempt(state: ChatState, slot: string, text: string, sendId: string): void {
+  if (!state.attemptedSends) state.attemptedSends = {}
+  const list = (state.attemptedSends[safeKey(slot)] ??= [])
+  const last = list[list.length - 1]
+  if (last?.text === text) { last.sendId = sendId; return }
+  list.push({ text, sendId })
+  if (list.length > ATTEMPTED_SENDS_PER_SLOT_MAX) list.splice(0, list.length - ATTEMPTED_SENDS_PER_SLOT_MAX)
+}
+
 function applyNonActiveFrame(
   state: ChatState,
   p: { slot: string; role: string; content: string; ts?: string; seq?: number; gen?: string; cls?: string; meta?: Record<string, unknown>; kind?: string; batched?: boolean; parts?: BatchedChunkPart[] },
@@ -4358,6 +4401,43 @@ const chatSlice = createSlice({
       }
       state.messages.push(ensureMsgId(m))
     },
+    /** Record a submitted prompt for ↑/↓ recall. Called where the composer is
+     *  cleared, so it runs for every send regardless of what becomes of it.
+     *
+     *  Consecutive duplicates collapse as a shell's history does, but the kept
+     *  entry adopts the NEWER id: that entry is what later answers "did this
+     *  prompt land?", and a resend of a landed prompt is where the two ids
+     *  diverge. Retention is bounded per slot; `slotKeyedMaps` evicts the whole
+     *  entry when the slot goes.
+     *
+     *  `text` is the composer's own spelling and is never compared against the
+     *  transcript: `sendId` answers "is this prompt already on screen?" on its
+     *  own, so the wire form the server persists need not match. */
+    recordSendAttempt(state, action: PayloadAction<{ slot: string; text: string; sendId: string }>) {
+      const { slot, text, sendId } = action.payload
+      if (!slot || isUnsafeKey(slot) || !text) return
+      pushSendAttempt(state, slot, text, sendId)
+    },
+    /** Move one recorded prompt to the slot its send actually reached.
+     *
+     *  A session-creating send is recorded BEFORE the create is awaited, because a
+     *  rejection there unwinds the send with the composer already cleared. The
+     *  origin slot holds it meanwhile, so once the create names the real slot the
+     *  record has to follow, or the origin offers a prompt it never saw. A missing
+     *  origin entry is not an error: it may have been cleared mid-flight. */
+    transferSendAttempt(state, action: PayloadAction<{ from: string; to: string; sendId: string }>) {
+      const { from, to, sendId } = action.payload
+      if (!from || !to || from === to || !sendId) return
+      if (isUnsafeKey(from) || isUnsafeKey(to)) return
+      const map = state.attemptedSends
+      if (!map) return
+      const fromKey = safeKey(from)
+      const list = map[fromKey]
+      const moved = list?.find(a => a.sendId === sendId)
+      if (!moved) return
+      map[fromKey] = list!.filter(a => a.sendId !== sendId)
+      pushSendAttempt(state, to, moved.text, sendId)
+    },
     /** Optimistically append a message to a specific slot's store — global
      *  `messages` when it's the active slot, else `slotMessages[slot]`. Lets a
      *  grid pane show a just-sent user message immediately in the right place. */
@@ -4766,7 +4846,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       state.slotStatusDetail[safeKey(slot)] = detail
     },
-    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false) },
+    clearMessages(state) { state.messages = []; setPagingCursor(state, false, 0); state.voiceAudio = null; state.voicePlaying = false; if (state.activeSlot) delete state.thinkingOrphans?.[safeKey(state.activeSlot)]; if (state.activeSlot) delete state.attemptedSends?.[safeKey(state.activeSlot)]; if (state.activeSlot) evictMcpApps(state, state.activeSlot); if (state.activeSlot) writeSlotPage(state, state.activeSlot, [], false) },
     /** A server-confirmed clear for a slot that is NOT the active view. The
      *  active-slot case routes through `clearMessages`; this one exists so a
      *  background slot's cached page cannot outlive its authoritative clear --
@@ -4778,6 +4858,7 @@ const chatSlice = createSlice({
       if (isUnsafeKey(slot)) return
       writeSlotPage(state, slot, [], false)
       delete state.thinkingOrphans?.[safeKey(slot)]
+      delete state.attemptedSends?.[safeKey(slot)]
       evictMcpApps(state, slot)
     },
     truncateAfterIndex(state, action: PayloadAction<number>) { state.messages = state.messages.slice(0, action.payload) },
@@ -7040,7 +7121,7 @@ const chatSlice = createSlice({
 })
 
 export const {
-  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, updateStreamingMessage, finalizeAssistant,
+  setActiveSlot, clearSlotState, setPendingInput, setAgentSwitchNotice, clearSwitchSlotGone, clearUnresumableResume, clearUndeletableHistory, setQuestionCard, retireStatelessQuestion, clearQuestionCard, setQuestionDraft, resolveQuestionCard, setFollowupCard, clearFollowupCard, dismissFollowupItem, setFolderSuggestion, clearFolderSuggestion, ageFolderSuggestion, appendMessage, appendSlotMessage, recordSendAttempt, transferSendAttempt, updateStreamingMessage, finalizeAssistant,
   removeThinking, confirmOptimisticSend, resolveOptimisticSteer, removeByApprovalId, resolveByApprovalId, clearPendingPermissions, setSlotRunning, setSlotStopping, settleStopNotRunning, startLocalTurn, endLocalTurn, syncSlotRunningFromServer, setSlotState, setSlotStatusDetail, setStopPressedAt, clearMessages, clearSlotCache, truncateAfterIndex, replaceMessages, hydrateSlotMessages, sseChatMessage, sseChatMessageUpdate, sseChatMessagePatchByTs, sseThinkingChunk, removeQueuedMessage, appendQueuedMessage, cancelQueuedMessage, editQueuedMessage, reorderQueuedMessages,
   sseContextUsage, setVoicePlaying, setVoiceAudio,
   toggleActivity, openActivityToTab, openActivityPanel, openActivityToTool, clearFocusToolCallId, requestSlotReveal, clearSlotReveal, requestFolderReveal, clearSubagentsForSnapshot, sseSubagentPending, markSubagentApproving, sseSubagentSpawn, sseSubagentTool, sseSubagentStalled, sseSubagentRetrying, sseSubagentDone, sseSubagentQueued,

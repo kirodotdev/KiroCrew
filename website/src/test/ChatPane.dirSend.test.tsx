@@ -8,7 +8,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { configureStore } from '@reduxjs/toolkit'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { ThemeProvider } from '../hooks/useTheme'
-import chatReducer, { setQuestionCard, sseChatMessage, selectComposerBusy, selectSlotMessages } from '../store/chatSlice'
+import chatReducer, { setQuestionCard, sseChatMessage, selectComposerBusy, selectSlotMessages, recordSendAttempt } from '../store/chatSlice'
 import dashboardReducer from '../store/dashboardSlice'
 import notificationsReducer from '../store/notificationsSlice'
 import { store as appStore } from '../store'
@@ -433,6 +433,37 @@ describe('ChatPane send — a failed send is reported on the pane', () => {
     // so the answer survives a reload via the composer and the user is told.
     await waitFor(() => expect(noticesIn(store, 'pane-ask-late')).toHaveLength(1))
     expect(errorsIn(store, 'pane-ask-late')).toHaveLength(0)
+  })
+
+  /** The pane's own restore declines this case by design: a `response-late` whose
+   *  optimistic bubble was minted stays pending rather than restoring, to avoid a
+   *  duplicate row. So the record is the only copy once a wholesale page write
+   *  drops that bubble. */
+  it('records a pane prompt, so a late receipt that keeps its bubble still leaves it recoverable', async () => {
+    ;(api.sendChat as ReturnType<typeof vi.fn>).mockRejectedValueOnce(
+      new DOMException('The operation was aborted.', 'AbortError'),
+    )
+    const { store } = renderPane('pane-record')
+    const box = (await screen.findAllByRole('textbox'))[0]
+    fireEvent.change(box, { target: { value: 'pane prompt at risk' } })
+    fireEvent.keyDown(box, { key: 'Enter', code: 'Enter' })
+
+    await waitFor(() => expect(api.sendChat).toHaveBeenCalledTimes(1))
+    await waitFor(() => {
+      expect(store.getState().chat.attemptedSends?.['pane-record']?.map(a => a.text))
+        .toContain('pane prompt at risk')
+    })
+  })
+
+  /** The record above was unreachable from the pane that wrote it: the pane's
+   *  ChatInput was passed no recall list at all, so ↑ had nothing to offer once a
+   *  page write left no transcript row carrying the prompt. */
+  it('offers a recorded pane prompt to ArrowUp when no transcript row carries it', async () => {
+    const { store } = renderPane('pane-recall')
+    const box = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement
+    act(() => { store.dispatch(recordSendAttempt({ slot: 'pane-recall', text: 'prompt with no row', sendId: 's-lost' })) })
+    fireEvent.keyDown(box, { key: 'ArrowUp', code: 'ArrowUp' })
+    await waitFor(() => expect(box.value).toBe('prompt with no row'))
   })
 
   it('passes an abort signal so a hung send cannot sit silent', async () => {
