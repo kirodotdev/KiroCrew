@@ -513,6 +513,13 @@ def _create_release_dir_held(root: Path, release: str) -> int:
     point), verified the same way, and the release folder is created by name UNDER
     that held handle — the root cannot be swapped while it is open — then pinned
     and refused if it is a link, junction or file.
+
+    Creating the folder and opening it are two calls, so a removal can land between
+    them. It is REPORTED, not re-attempted: the actor that removes a release folder
+    here is the cache's own eviction, and re-creating what it just cleaned would
+    fight it. On POSIX the report carries the whole path, because the relative
+    ``openat`` name on its own reads as a working-directory bug (GH-12043); the
+    Windows branch opens by path and so already names it.
     """
     what_root = "feature-video cache root"
     if pinned_fs.supports_pinned_walk():
@@ -539,9 +546,37 @@ def _create_release_dir_held(root: Path, release: str) -> int:
                 os.mkdir(release, 0o700, dir_fd=root_fd)
             except FileExistsError:
                 pass
+            except FileNotFoundError as exc:
+                # The pinned ROOT is gone, so there is nothing to create the release
+                # folder in. Reported with the whole path: the errno carries only the
+                # relative name the syscall was given.
+                raise FileNotFoundError(
+                    errno.ENOENT,
+                    "the feature-video cache root was removed while the release folder "
+                    "was being created in it",
+                    str(root / release),
+                ) from exc
             try:
                 return os.open(release, pinned_fs.dir_flags(), dir_fd=root_fd)
             except OSError as exc:
+                if exc.errno == errno.ENOENT:
+                    # The folder existed a syscall ago and is gone now: the mirror of
+                    # the ``FileExistsError`` tolerated above, which was handled while
+                    # this was not (GH-12043). Reported rather than re-created, because
+                    # the actor that removes a release folder here is the cache's own
+                    # eviction (:func:`kiro_crew.feature_videos_cache.evict` deletes
+                    # whole release folders), and re-making what an eviction just
+                    # cleaned would fight it. Every caller already contains an
+                    # ``OSError`` as "the cache is unavailable" and asks again on its
+                    # next pass, which re-creates the folder if it is still wanted --
+                    # so the retry lives there, where it can see that intent, rather
+                    # than here.
+                    raise FileNotFoundError(
+                        errno.ENOENT,
+                        "the feature-video release folder was removed between its "
+                        "creation and its open",
+                        str(root / release),
+                    ) from exc
                 if exc.errno in (errno.ELOOP, errno.ENOTDIR):
                     raise CacheDirRefused(
                         "refusing to write through a symlinked feature-video release "
