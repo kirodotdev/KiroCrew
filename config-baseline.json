@@ -4230,7 +4230,8 @@
         "max_cpu_percent": null,
         "max_total_memory_mb": null,
         "max_total_processes": null,
-        "xdist_auto_cap": null
+        "xdist_auto_cap": null,
+        "kiro_cli_worker_threads": null
       }
     },
     {
@@ -4363,6 +4364,21 @@
       "tags": [],
       "label": "pytest-xdist worker cap",
       "help": "Ceiling for auto-computed pytest-xdist worker counts. -1 (the default) computes it from available memory, 0 disables the injection entirely and defers to xdist, and N > 0 pins a fixed cap.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": null,
+      "nullable": true
+    },
+    {
+      "path": "resource_limits.kiro_cli_worker_threads",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "kiro-cli Tokio worker threads",
+      "help": "OPT-IN cap on kiro-cli's Tokio worker pool. When set, TOKIO_WORKER_THREADS is pinned to this value in the agent spawn environment; N > 0 pins the worker count, and 0/junk/unset means no cap (no env change, the default). Inherited tree-wide, so an opted-in value also caps any Tokio program the agent runs (a user's own service/benchmark included). An operator-set TOKIO_WORKER_THREADS in the environment overrides this. Not a kernel ceiling -- an env var read by kiro-cli; the underlying per-agent thread cost is fixed process-scoped inside kiro-cli.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": null,

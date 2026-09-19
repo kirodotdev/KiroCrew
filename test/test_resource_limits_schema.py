@@ -37,6 +37,7 @@ _ALL_KEYS = (
     "max_total_memory_mb",
     "max_total_processes",
     "xdist_auto_cap",
+    "kiro_cli_worker_threads",
 )
 
 

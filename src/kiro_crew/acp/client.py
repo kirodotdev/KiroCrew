@@ -228,6 +228,7 @@ from kiro_crew.sandbox import (
     cgroup_scope_argv,
     create_subprocess_limited,
     delegated_workspace_exposes_agents_dir,
+    kiro_cli_worker_thread_env,
     release_bound_agent_workspace,
     resolve_bound_session_workspace,
     scrub_agent_subprocess_env,
@@ -7639,6 +7640,10 @@ class AcpClient:
         # server it spawns inherit this, so escaped launcher trees (``npx
         # @playwright/mcp`` -> node) are identifiable as ours.
         env[KIROCREW_SPAWNED_ENV] = KIROCREW_SPAWNED_VALUE
+        # Opt-in cap on kiro-cli's core-scaled Tokio worker pool: no-op unless
+        # the operator set resource_limits.kiro_cli_worker_threads (or
+        # TOKIO_WORKER_THREADS directly). Off-loop: the helper reads config.
+        env.update(await self._to_thread_guarding_sandbox(kiro_cli_worker_thread_env, env))
         # Own browser session per agent process: the CLI resolves a nameless
         # command to one shared ``default`` browser, so without this two agents
         # navigate and close each other's pages (see browser_session_env).
