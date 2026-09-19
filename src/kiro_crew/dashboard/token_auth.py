@@ -1678,6 +1678,13 @@ async def _verify_unix_peer(
 ) -> web.StreamResponse | None:
     """Kernel-verify the declared ``X-Session-Key`` of an AF_UNIX peer.
 
+    The header is an ASSERTION checked against the kernel, never a source of
+    truth. What decides identity is the peer pid the kernel reports for the
+    connection, resolved against a binding kept in a directory no sandboxed
+    process can write. A caller that declares another session's key is refused
+    rather than believed, which is what stops a same-uid process in the sandbox
+    from presenting itself as the owner's live dashboard tab.
+
     Verify-when-resolvable, deny-on-mismatch, degrade-to-status-quo when
     unresolvable — strictly monotonic hardening over the TCP-era behavior
     (where the header was accepted entirely on the caller's word):
@@ -1732,10 +1739,14 @@ async def _verify_unix_peer(
     if peer_pid is None:
         return None
     try:
-        # signed_only: authorization decisions must not trust the bare
-        # same-uid-writable .txt mapping — require the HMAC sidecar (pid
-        # bound into the MAC, keyed by the agent-unreadable SEL trust root),
-        # or the walk yields "" and this check degrades to status quo.
+        # signed_only: authorization decisions must not trust the attribution
+        # copy in the data-home root, which is same-uid agent-writable. It reads
+        # the FENCED binding instead, in a directory masked from every sandboxed
+        # process and signed by an identity root kept there with it. The
+        # signature alone could never carry this: verifying an HMAC needs the
+        # same bytes as signing one, so a key any in-sandbox process can read
+        # cannot bind anything against it. The directory fence is the control.
+        # An unresolvable walk yields "" and this check degrades to status quo.
         peer_key, _chain = await asyncio.get_running_loop().run_in_executor(
             subprocess_executor(),
             partial(resolve_peer_identity, peer_pid, signed_only=True),

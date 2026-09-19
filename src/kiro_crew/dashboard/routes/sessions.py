@@ -16,6 +16,10 @@ from kiro_crew.dashboard import chat, chat_voice, handlers, openai_compat
 
 def register(app: web.Application) -> None:
     """Register the sessions routes on *app*."""
+    # Which session is the calling process, answered from the kernel-attested peer
+    # pid of an AF_UNIX connection rather than from anything the caller asserts.
+    # A literal path, so it cannot be swallowed by the patterns below.
+    app.router.add_get("/api/session/peer-identity", handlers.api_session_peer_identity)
     # Session workspace (Orchestrated Chat)
     app.router.add_get("/api/sessions/{id}/agents", handlers.api_session_agents_list)
     app.router.add_get("/api/sessions/{id}/agents/{agent_id}", handlers.api_session_agent_result)

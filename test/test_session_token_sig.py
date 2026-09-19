@@ -201,11 +201,13 @@ class TestDomainSeparation:
     def test_pid_sidecar_mac_never_verifies_as_a_token_sidecar(self, cfg):
         """A pid sidecar's MAC, re-presented as a token record, must be refused.
 
-        Both protocols sign ``"<identifier>:<session_key>"`` under a subkey of the
-        SAME root, so the ONLY thing standing between them is the domain label.
-        This drives that: a pid mapping is published for pid ``P``, its MAC is
-        lifted into a token record for a token spelled ``P``, and verification
-        must refuse.
+        Both protocols sign ``"<identifier>:<session_key>"``, so the cross-replay
+        this drives is the shape that would work if nothing kept them apart. Two
+        things now do: identity signs under its own root
+        (``session-identity/identity_hmac.key``) while this protocol signs under
+        the audit root, and the derived subkeys carry different domain labels. The
+        label alone is isolated by ``test_the_two_subkeys_differ`` below; this test
+        asserts the end-to-end refusal.
         """
         pid_as_token = "4242"
         with (
@@ -215,7 +217,11 @@ class TestDomainSeparation:
             ),
         ):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        pid_mac = (cfg / "session_pid_4242.sig").read_text(encoding="utf-8").strip()
+        pid_mac = (
+            (session_pid_sig.identity_dir(cfg) / "session_pid_4242.sig")
+            .read_text(encoding="utf-8")
+            .strip()
+        )
         _path_for(cfg, pid_as_token).write_text(f"{pid_mac}\n{SESSION_KEY}", encoding="utf-8")
         assert session_token_sig.verify_session_token(pid_as_token) == ""
 

@@ -133,15 +133,158 @@ def test_signed_only_refuses_forged_unsigned_mapping(
     assert key == ""
 
 
+def test_gateway_peer_lookup_names_no_pid(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The lookup asks who it is and names nothing, so it cannot pick an ancestor.
+
+    A caller-supplied pid would let the caller choose WHICH process the gateway
+    judges it as, and a shared process tree means an ancestor can belong to
+    another session. So the request carries no pid, and it is made even when
+    ``KIROCREW_HOST_PID`` is absent: the gateway reads the pid from the kernel.
+    """
+    from kiro_crew import mcp_core
+
+    monkeypatch.setattr(mcp_core, "_GATEWAY_PEER_SESSION_KEY", None)
+    monkeypatch.delenv("KIROCREW_HOST_PID", raising=False)
+
+    seen: dict[str, str] = {}
+
+    class _Resp:
+        status = 200
+
+        def read(self):
+            return b'{"session_key": "dashboard:chat-7"}'
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    def _capture(req, **_k):
+        seen["url"] = req.full_url
+        return _Resp()
+
+    monkeypatch.setattr(mcp_core, "_api_unix_socket", lambda: __file__)
+    monkeypatch.setattr(mcp_core, "_internal_secret", lambda: "s")
+    monkeypatch.setattr(mcp_core, "_caller_header", lambda: {})
+    monkeypatch.setattr(mcp_core, "_api_urlopen", _capture)
+    assert mcp_core._session_key_from_gateway_peer() == "dashboard:chat-7"
+    assert seen["url"].endswith("/api/session/peer-identity")
+    assert "pid" not in seen["url"]
+
+
+@pytest.mark.asyncio
+async def test_the_route_ignores_a_caller_named_ancestor(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A ``?pid=`` naming a farther bound ancestor cannot change the answer.
+
+    This is the impersonation shape the route must refuse. A process whose own
+    runtime is bound to one session sits in a tree that can contain another
+    session's runtime, so letting it name which ancestor is consulted would let
+    it be judged as that other session. The answer is the walk's nearest bound
+    ancestor, computed from the kernel-reported peer pid, and the query string is
+    not read at all.
+    """
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew import peer_resolve, session_pid_sig
+    from kiro_crew.dashboard.handlers import sessions as sessions_handlers
+
+    peer_pid = 4242
+    own_runtime, other_runtime = 4200, 9001
+    calls: list[int] = []
+
+    def _walk(pid: int, **kwargs):
+        calls.append(pid)
+        assert kwargs.get("signed_only") is True
+        # Nearest bound ancestor first: the peer's OWN runtime. The other
+        # session's runtime is farther up the same chain.
+        return "dashboard:own", [peer_pid, own_runtime, other_runtime, 1]
+
+    def _must_not_be_called(*_a, **_k):  # pragma: no cover - guard
+        raise AssertionError("no direct lookup on a caller-named pid")
+
+    monkeypatch.setattr(peer_resolve, "resolve_peer_identity", _walk)
+    monkeypatch.setattr(session_pid_sig, "verify_session_pid", _must_not_be_called)
+    monkeypatch.setattr(ta, "_unix_request_socket", lambda _req: object())
+    monkeypatch.setattr(
+        "kiro_crew.mcp_gateway.socketsec.check_peer_is_self",
+        lambda _sock: PeerCredResult.MATCH,
+    )
+    monkeypatch.setattr("kiro_crew.mcp_gateway.socketsec.get_peer_pid", lambda _sock: peer_pid)
+
+    request = make_mocked_request("GET", f"/api/session/peer-identity?pid={other_runtime}")
+    response = await sessions_handlers.api_session_peer_identity(request)
+
+    assert json.loads(response.text)["session_key"] == "dashboard:own"
+    # The walk saw the KERNEL's pid, never the one the caller named.
+    assert calls == [peer_pid]
+
+
+@pytest.mark.asyncio
+async def test_the_route_audits_both_refusals(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A refusal on this route reaches SEL, like token_auth's sibling denial.
+
+    Both refusals are peer-credential denials on the surface that answers "which
+    session is calling", which is the surface an impersonation attempt probes. An
+    unaudited 403 leaves no record that anyone tried, so the denial is logged
+    before it is returned, and the audit is best effort so a logging failure
+    cannot turn a denial into an answer.
+    """
+    from aiohttp.test_utils import make_mocked_request
+
+    from kiro_crew.dashboard.handlers import sessions as sessions_handlers
+
+    logged: list[dict] = []
+
+    class _Sel:
+        def log_api_access(self, **kw):
+            logged.append(kw)
+
+    monkeypatch.setattr("kiro_crew.sel.sel", lambda: _Sel())
+
+    # A TCP request: no unix socket behind it at all.
+    monkeypatch.setattr(ta, "_unix_request_socket", lambda _req: None)
+    tcp = await sessions_handlers.api_session_peer_identity(
+        make_mocked_request("GET", "/api/session/peer-identity")
+    )
+    assert tcp.status == 403
+    assert json.loads(tcp.text)["code"] == "unix_socket_required"
+
+    # A unix peer whose principal is not positively ours.
+    monkeypatch.setattr(ta, "_unix_request_socket", lambda _req: object())
+    monkeypatch.setattr(
+        "kiro_crew.mcp_gateway.socketsec.check_peer_is_self",
+        lambda _sock: PeerCredResult.MISMATCH,
+    )
+    foreign = await sessions_handlers.api_session_peer_identity(
+        make_mocked_request("GET", "/api/session/peer-identity")
+    )
+    assert foreign.status == 403
+    assert json.loads(foreign.text)["code"] == "peer_unverified"
+
+    assert len(logged) == 2
+    assert {entry["outcome"] for entry in logged} == {"denied"}
+    assert {entry["operation"] for entry in logged} == {"dashboard.peer-identity-refused"}
+    # Each refusal says WHICH check refused, so the two are distinguishable.
+    assert len({entry["error"] for entry in logged}) == 2
+
+
 def test_signed_only_accepts_gateway_signed_mapping(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from kiro_crew import session_pid_sig as sps
 
     _hmac_key = b"K" * 32
-    monkeypatch.setattr(sps, "_load_hmac_key", lambda: _hmac_key)
-    (tmp_path / "session_pid_50.txt").write_text("dashboard:chat-1", encoding="utf-8")
-    (tmp_path / "session_pid_50.sig").write_text(
+    monkeypatch.setattr(sps, "_load_identity_key", lambda cfg, create=False: _hmac_key)
+    # The FENCED copy is the only one an authorization read consults. Writing it
+    # to the data-home root instead is the forgery this discipline refuses, and
+    # the sibling test above pins that refusal.
+    ident = tmp_path / "session-identity"
+    ident.mkdir()
+    (ident / "session_pid_50.txt").write_text("dashboard:chat-1", encoding="utf-8")
+    (ident / "session_pid_50.sig").write_text(
         sps._compute_sig(_hmac_key, 50, "dashboard:chat-1"), encoding="utf-8"
     )
     key, chain = resolve_peer_identity(
@@ -436,6 +579,69 @@ def _unix_http_request(
 
 @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="AF_UNIX transport is POSIX-only")
 @pytest.mark.asyncio
+async def test_the_gateway_peer_lookup_resolves_over_a_real_socket(
+    tmp_path: Path, short_sock_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The client and the route resolve an identity over a REAL AF_UNIX connection.
+
+    Every other test here fakes one side. This one wires the real client to the
+    real handler over a real socket, so the kernel supplies the peer pid and the
+    request travels the transport it will use in production. Without it a wiring
+    break between the two - a header the route rejects, a transport the client
+    never reaches, an argument the handler does not read - passes every unit test
+    and fails only in a sandboxed session, where the symptom is silent: strict
+    identity resolves empty and the tools that need it refuse.
+    """
+    import os
+
+    from kiro_crew import mcp_core, peer_resolve
+    from kiro_crew import session_pid_sig as sps
+    from kiro_crew.dashboard.handlers import sessions as sessions_handlers
+
+    _hmac_key = b"K" * 32
+    monkeypatch.setattr(sps, "_load_identity_key", lambda cfg, create=False: _hmac_key)
+    pid = os.getpid()
+    ident = tmp_path / "session-identity"
+    ident.mkdir(exist_ok=True)
+    (ident / f"session_pid_{pid}.txt").write_text("dashboard:chat-real", encoding="utf-8")
+    (ident / f"session_pid_{pid}.sig").write_text(
+        sps._compute_sig(_hmac_key, pid, "dashboard:chat-real"), encoding="utf-8"
+    )
+    real_walk = peer_resolve.resolve_peer_identity
+    monkeypatch.setattr(
+        peer_resolve,
+        "resolve_peer_identity",
+        lambda p, **kw: real_walk(p, config_dir_fn=lambda: tmp_path, **kw),
+    )
+
+    app = web.Application()
+    app.middlewares.append(
+        ta.token_auth_middleware(
+            internal_paths=frozenset({"/api/session/peer-identity"}),
+            internal_secret=SECRET,
+        )
+    )
+    app.router.add_get("/api/session/peer-identity", sessions_handlers.api_session_peer_identity)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    sock_path = str(short_sock_dir / "peer-identity.sock")
+    site = web.UnixSite(runner, sock_path)
+    await site.start()
+    try:
+        monkeypatch.setattr(mcp_core, "_GATEWAY_PEER_SESSION_KEY", None)
+        monkeypatch.setattr(mcp_core, "_api_unix_socket", lambda: sock_path)
+        monkeypatch.setattr(mcp_core, "_api_base", lambda: "http://localhost")
+        monkeypatch.setattr(mcp_core, "_internal_secret", lambda: SECRET)
+        monkeypatch.setattr(mcp_core, "_caller_header", lambda: {})
+        loop = asyncio.get_running_loop()
+        resolved = await loop.run_in_executor(None, mcp_core._session_key_from_gateway_peer)
+        assert resolved == "dashboard:chat-real"
+    finally:
+        await runner.cleanup()
+
+
+@pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="AF_UNIX transport is POSIX-only")
+@pytest.mark.asyncio
 async def test_unix_site_end_to_end_peer_verification(
     tmp_path: Path, short_sock_dir: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -448,13 +654,16 @@ async def test_unix_site_end_to_end_peer_verification(
 
     # Publish a SIGNED pidfile for THIS process so the ancestry walk (starting
     # at the kernel-reported peer pid == our pid) resolves immediately under
-    # the middleware's signed_only=True discipline. The HMAC trust root is
-    # pinned so the sidecar can be computed against the tmp config dir.
+    # the middleware's signed_only=True discipline. It goes in the FENCED
+    # directory, the only place an authorization read looks, and the identity
+    # root is pinned so the sidecar can be computed against the tmp config dir.
     _hmac_key = b"K" * 32
-    monkeypatch.setattr(sps, "_load_hmac_key", lambda: _hmac_key)
+    monkeypatch.setattr(sps, "_load_identity_key", lambda cfg, create=False: _hmac_key)
     pid = os.getpid()
-    (tmp_path / f"session_pid_{pid}.txt").write_text("dashboard:chat-e2e", encoding="utf-8")
-    (tmp_path / f"session_pid_{pid}.sig").write_text(
+    ident = tmp_path / "session-identity"
+    ident.mkdir(exist_ok=True)
+    (ident / f"session_pid_{pid}.txt").write_text("dashboard:chat-e2e", encoding="utf-8")
+    (ident / f"session_pid_{pid}.sig").write_text(
         sps._compute_sig(_hmac_key, pid, "dashboard:chat-e2e"), encoding="utf-8"
     )
     monkeypatch.setattr(

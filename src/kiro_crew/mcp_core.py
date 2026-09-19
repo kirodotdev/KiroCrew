@@ -145,6 +145,11 @@ _API_PORT: int | None = None
 _API: str | None = None
 _API_UNIX_SOCKET: str | None = None
 
+# A peer identity is stable for this MCP process once the gateway has resolved it.
+# Empty answers are deliberately not cached: a session may not be claimed yet when
+# its first tool call arrives, and a later call must retry the gateway lookup.
+_GATEWAY_PEER_SESSION_KEY: str | None = None
+
 
 def _api_port() -> int:
     """Gateway API port, resolved on first use; pinned only on stable evidence.
@@ -811,6 +816,40 @@ def _resolve_session_key() -> str:
     return ""
 
 
+def _session_key_from_gateway_peer() -> str:
+    """Return the gateway-resolved peer identity, or ``""`` on any failure.
+
+    The dashboard AF_UNIX socket lets the gateway obtain the caller's pid from
+    the kernel and resolve it against the fenced session binding. The request
+    deliberately carries no pid and no ``X-Session-Key``: it asks the gateway to
+    identify this process, and naming an ancestor would hand this process the
+    choice of which session it is judged as.
+    """
+    global _GATEWAY_PEER_SESSION_KEY
+    if _GATEWAY_PEER_SESSION_KEY:
+        return _GATEWAY_PEER_SESSION_KEY
+    try:
+        socket_path = _api_unix_socket()
+        if not socket_path or not os.path.exists(socket_path):
+            return ""
+        req = urllib.request.Request(
+            f"{_api_base()}/api/session/peer-identity",
+            headers={"X-Internal-Secret": _internal_secret(), **_caller_header()},
+            method="GET",
+        )
+        with _api_urlopen(req, timeout=2, unix_socket_path=socket_path) as resp:
+            if resp.status != 200:
+                return ""
+            payload = json.loads(resp.read())
+        session_key = payload.get("session_key") if isinstance(payload, dict) else ""
+        if not isinstance(session_key, str) or not session_key:
+            return ""
+        _GATEWAY_PEER_SESSION_KEY = session_key
+        return session_key
+    except Exception:
+        return ""
+
+
 def _resolve_session_key_strict() -> str:
     """Resolve the session key, refusing PID-walked and unsigned identities.
 
@@ -827,27 +866,26 @@ def _resolve_session_key_strict() -> str:
        var: where the two disagree, a warm-pool rekey has made the env stale and
        the file is current.
     2. The gateway-injected ``KIROCREW_SESSION_KEY`` env var.
-    3. The direct ``KIROCREW_HOST_PID`` -> ``session_pid_<pid>.txt``
-       lookup, but ONLY when the HMAC sidecar written by the gateway
-       verifies (:func:`kiro_crew.session_pid_sig.verify_session_pid`).
-       PID-namespace sandboxing strips ``KIROCREW_SESSION_KEY`` from the
-       sandboxed env, but the sandbox launcher exports its OWN host pid
-       (``sandbox.py``) — exactly the pid the gateway keys
-       ``session_pid_<pid>.txt`` by on session claim. The bare ``.txt``
-       file is agent-writable and therefore forgeable; the sidecar is
-       signed with the SEL trust root (``sel_hmac.key``), which agents
-       cannot read, and binds the pid into the MAC so another pid's
-       pair cannot be replayed. Without this branch,
-       ``monitor_start``/``monitor_update``/``autonudge_stop``/``set_project``
-       fail closed
-       in every sandboxed dashboard session even though the session is
-       fully identified.
+    3. The gateway peer-identity lookup over the dashboard AF_UNIX socket. The
+       gateway resolves the session from the kernel-attested peer pid against
+       the authoritative binding in a directory the sandbox cannot write,
+       signed by an identity root it cannot read. This preserves strict identity
+       for sandboxed dashboard sessions without putting a signing key in the
+       sandbox. ``sel_hmac.key`` remains readable in the sandbox and signs the
+       audit chain only, and moving that writer behind the gateway is tracked
+       separately.
+    4. A direct read of that same fenced binding, for the hosts where the socket
+       in 3 does not exist: it is an optional transport, skipped on Windows and
+       degraded away on any bind failure. The sandbox gains nothing from this
+       branch, because the fence is what denies it -- the binding and its signing
+       root are both unreadable in the sandbox, so the read returns "" there. See
+       :func:`_session_key_from_fenced_binding`.
 
     Returns ``""`` when only the ``/proc`` ancestor WALK would have
-    matched, or when the sidecar is missing/invalid. The walk stays
-    excluded: a subagent spawned via ``spawn_run`` lives under the
-    parent slot's process tree, so walking ancestors from its MCP-core
-    child silently resolves to the parent — which would let the
+    matched, or when neither the gateway nor the fenced binding can name this
+    process. The walk stays excluded: a subagent spawned via ``spawn_run``
+    lives under the parent slot's process tree, so walking ancestors from its
+    MCP-core child silently resolves to the parent — which would let the
     subagent mutate state on the wrong slot. Read-only callers (audit,
     telemetry) keep the lenient resolver where misattribution is
     harmless.
@@ -875,15 +913,41 @@ def _resolve_session_key_strict() -> str:
     sk = os.environ.get("KIROCREW_SESSION_KEY", "")
     if sk:
         return sk
+    from_gateway = _session_key_from_gateway_peer()
+    if from_gateway:
+        return from_gateway
+    return _session_key_from_fenced_binding()
+
+
+def _session_key_from_fenced_binding() -> str:
+    """Read the fenced binding directly, for callers the gateway socket cannot serve.
+
+    The LAST channel, below the gateway peer lookup, because the unix socket the
+    peer lookup needs is an optional transport: ``dashboard/server.py`` skips it
+    entirely on Windows and degrades to TCP-only on any bind or permission
+    failure. Without this branch a socketless gateway has no strict-identity
+    channel at all, and ``monitor_start``, ``set_project``, memory writes and the
+    workflow tools fail closed in every sandboxed session on those hosts -- the
+    exact failure the branch this replaces existed to prevent.
+
+    Reading the binding here is safe for a reason that did not hold before the
+    fence: what denies the sandbox is the DIRECTORY, not the absence of this code.
+    ``session-identity`` is masked by ``sandbox.py`` and precreated so the mask is
+    never vacuous, so an in-sandbox caller cannot read the binding or the identity
+    root that signs it, and this call returns "" there however it is reached. A
+    caller that is NOT in the sandbox is not the threat this fix addresses: it
+    already runs with the user's own file access, so refusing it buys nothing and
+    costs it its identity.
+    """
     try:
         host_pid = os.environ.get("KIROCREW_HOST_PID", "")
-        if host_pid.isdigit():
-            from kiro_crew.session_pid_sig import verify_session_pid
+        if not host_pid.isdigit():
+            return ""
+        from kiro_crew.session_pid_sig import verify_session_pid
 
-            return verify_session_pid(host_pid)
+        return verify_session_pid(host_pid)
     except Exception:
-        pass
-    return ""
+        return ""
 
 
 def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
@@ -925,12 +989,14 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
             f"(SEL trust root) — {server} needs no routing when this channel works."
         )
     if os.environ.get("KIROCREW_HOST_PID", "").isdigit():
-        # The sandbox launcher declared a host pid, so the channel exists and
-        # the sidecar is what failed — a signing/trust-root problem, not routing.
+        # The sandbox launcher declared a host pid, so the gateway peer lookup
+        # should be available. A failure is an identity-binding problem, not
+        # missing gateway routing.
         return (
-            f" No identity channel: the signed pid mapping for this session did not "
-            f"verify. Check `kirocrew doctor` (trust root) — {server} does not need "
-            f"routing when this channel works."
+            f" No identity channel: the gateway could not resolve this sandbox "
+            f"caller from its kernel-attested peer pid. Check `kirocrew doctor` "
+            f"(identity binding). {server} does not need routing when this "
+            f"channel works."
         )
     return (
         f" No identity channel on this install: {server}'s MCP element carries "

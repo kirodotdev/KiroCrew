@@ -824,6 +824,67 @@ class TestCleanupOrphanedSessions:
         assert not (tmp_path / "session_pid_99999.txt").exists()
         assert session_pid_file.read_text() == "111:222\n"
 
+    def test_the_fenced_binding_is_pruned_with_its_attribution_copy(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A dead session's AUTHORITATIVE binding goes too, not just the root copy.
+
+        The fenced copy is what strict resolvers authorize on, so a surviving one
+        outlives its process and a pid the OS later hands to something unrelated
+        can be resolved against a dead session's identity. The start-token guard
+        narrows that for token-bearing mappings but has nothing to compare on a
+        legacy token-less one, which is the gap this sweep closes for the root
+        copy and must close here for the same reason.
+        """
+        from kiro_crew.session_pid import _prune_stale_session_pid_files
+        from kiro_crew.session_pid_sig import identity_dir
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        session_pid_file.write_text("111:222\n")
+        (tmp_path / "session_pid_99999.txt").write_text("sess-dead")
+        ident = identity_dir(tmp_path)
+        ident.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (ident / "session_pid_99999.txt").write_text("sess-dead")
+        (ident / "session_pid_99999.sig").write_text("0" * 64)
+
+        with patch("os.kill", side_effect=ProcessLookupError):
+            removed = _prune_stale_session_pid_files()
+
+        assert removed == 1
+        assert not (tmp_path / "session_pid_99999.txt").exists()
+        assert not (ident / "session_pid_99999.txt").exists()
+        assert not (ident / "session_pid_99999.sig").exists()
+
+    def test_a_fenced_binding_alone_is_still_pruned(
+        self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sweep enumerates the fenced root too, not only the writable copy.
+
+        The attribution copy is agent-writable, so an agent can delete its own. If
+        the pass were driven off that glob alone, the pid would drop out of it and
+        the AUTHORITATIVE pair would survive every sweep for the life of the host.
+        That is the worse half of the pair to lose: a token-less survivor resolves
+        a recycled pid to the dead session, and deleting one file is all it takes.
+        """
+        from kiro_crew.session_pid import _prune_stale_session_pid_files
+        from kiro_crew.session_pid_sig import identity_dir
+
+        monkeypatch.setattr("kiro_crew.session_pid.config_dir", lambda: tmp_path)
+        session_pid_file.write_text("111:222\n")
+        ident = identity_dir(tmp_path)
+        ident.mkdir(mode=0o700, parents=True, exist_ok=True)
+        # No attribution copy at all: the agent removed the one file it can write.
+        (ident / "session_pid_99999.txt").write_text("sess-dead")
+        (ident / "session_pid_99999.sig").write_text("0" * 64)
+        assert not (tmp_path / "session_pid_99999.txt").exists()
+
+        with patch("os.kill", side_effect=ProcessLookupError):
+            removed = _prune_stale_session_pid_files()
+
+        assert removed == 1
+        assert not (ident / "session_pid_99999.txt").exists()
+        assert not (ident / "session_pid_99999.sig").exists()
+
     def test_stale_snapshot_does_not_delete_a_live_mapping(
         self, tmp_path: Path, session_pid_file: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

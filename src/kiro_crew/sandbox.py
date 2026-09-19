@@ -353,6 +353,20 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     # creates LAZILY, and nothing creates this one any more, so there is no writer to
     # race. Precreating it would re-materialise the retired name on every machine.
     "ledgers",
+    # The AUTHORITATIVE pid -> session-key bindings the strict resolvers authorize on
+    # (``session_pid_sig``). The bare ``session_pid_<pid>.txt`` in the data-home root
+    # stays where it is and stays agent-writable: it is an ATTRIBUTION record for the
+    # lenient resolvers, where a wrong answer only mislabels an audit line. This root
+    # is the other half, and it is a trust boundary -- an in-sandbox process able to
+    # write here names ITSELF as any session, and every consumer of
+    # ``require_strict_session_key`` then admits it as that session's live owner tab.
+    # HIDDEN, not READONLY: the only writer is the gateway on session claim, and the
+    # only reader that matters is the gateway resolving a kernel-attested peer pid, so
+    # nothing in-sandbox needs either disposition. This is what makes the binding
+    # unforgeable WITHOUT resting on the secrecy of a signing key -- the reason a
+    # signature alone could never do it is that verifying an HMAC needs the same bytes
+    # as signing one, so an in-sandbox verifier is also an in-sandbox forger.
+    "session-identity",
     "cron-history",
     # The single-use step-up nonce that authorizes recording a flagged-file
     # delivery grant. Whole DIRECTORY (arm renames a sibling ``.tmp`` into place),
@@ -1084,6 +1098,16 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # otherwise the first sandbox spawned before the first grant write sees an
     # unmasked leaf appear later.
     "tag-grants",
+    # The strict-identity bindings, and the hazard is the same one ``crew-log``
+    # carries: the gateway creates this root on the first session claim, so a sandbox
+    # spawned before any claim finds the name absent, the ``isdir``-guarded
+    # ``SENSITIVE_DIRS`` loop skips it, and the mask is vacuous for the life of that
+    # sandbox -- which can then create the directory itself and plant a binding naming
+    # any session as its own. Materialising it empty at 0700 gives the bind a name to
+    # cover before anything can write one. A direct child of the data home, as this
+    # set requires: a nested leaf under the agent-writable ``trust`` directory would
+    # have an ancestor a rename could swap out from under the mask.
+    "session-identity",
 )
 
 #: The masked md-notebook leaves materialised before a namespace spawn, and what each

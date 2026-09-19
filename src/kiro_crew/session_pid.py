@@ -1557,6 +1557,21 @@ def cleanup_orphaned_sessions(*, narrow_with_leaders: bool = True) -> None:
         logger.info("Cleaned up %d empty session workspace dirs", empty_dirs)
 
 
+def _identity_root_or_none() -> Path | None:
+    """The fenced identity root, or ``None`` when it cannot be resolved.
+
+    Resolution can fail on a host whose config dir is unreadable. The sweep
+    treats that as "cannot enumerate this root" and still processes the other,
+    which is why the answer is optional rather than an exception.
+    """
+    try:
+        from kiro_crew.session_pid_sig import identity_dir
+
+        return identity_dir(config_dir())
+    except Exception:
+        return None
+
+
 def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
     """Remove ``session_pid_<pid>.txt`` mappings whose pid is not that session.
 
@@ -1575,6 +1590,25 @@ def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
     """
     stale_pid_files = 0
     pid_files = list(config_dir().glob("session_pid_*.txt"))
+    # The fenced root is enumerated SEPARATELY, not inferred from the attribution
+    # copies. The attribution copy is agent-writable, so an agent can delete its
+    # own: driving the sweep off that glob alone would drop the pid from the pass
+    # entirely and leave the AUTHORITATIVE pair behind forever. A token-less
+    # survivor then resolves a recycled pid to the dead session, which is the
+    # opposite of what splitting the copies was for -- the fenced root is the one
+    # that authorizes, so it is the one that must not be missed.
+    ident_root = _identity_root_or_none()
+    if ident_root is not None:
+        seen = {path.name for path in pid_files}
+        try:
+            for path in ident_root.glob("session_pid_*.txt"):
+                if path.name not in seen:
+                    pid_files.append(path)
+                    seen.add(path.name)
+        except OSError:
+            # Best effort, like the unlinks below: an unreadable trust root is a
+            # host problem, not a reason to skip the attribution copies as well.
+            pass
     # Snapshot the host's thread-group leaders ONCE for the whole sweep — one
     # directory read instead of a synchronous /proc read per mapping.
     #
@@ -1626,11 +1660,20 @@ def _prune_stale_session_pid_files(*, narrow_with_leaders: bool = True) -> int:
             # few candidates rather than for every mapping.
             if platform_compat.is_thread_group_leader(pid) is not False:
                 continue
-        pid_file.unlink(missing_ok=True)
-        # Remove the HMAC sidecar (session_pid_<pid>.sig) alongside its
-        # .txt — a dangling sidecar is harmless (verification requires
-        # both) but would accumulate forever.
-        pid_file.with_suffix(".sig").unlink(missing_ok=True)
+        # Both roots, keyed by PID rather than by whichever glob produced this
+        # entry: the pass is driven by the union, so the deletion must not assume
+        # the attribution copy is the one that was found.
+        for root_fn in (config_dir, _identity_root_or_none):
+            root = root_fn()
+            if root is None:
+                continue
+            for suffix in (".txt", ".sig"):
+                try:
+                    (root / f"{pid_file.stem}{suffix}").unlink(missing_ok=True)
+                except OSError:
+                    # Best effort, as before: an unreadable root is a host problem,
+                    # not a reason to abandon the sweep.
+                    pass
         stale_pid_files += 1
     if stale_pid_files:
         logger.info("Cleaned up %d stale session PID files", stale_pid_files)

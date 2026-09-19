@@ -535,6 +535,34 @@ browser CSRF reach `127.0.0.1`).
 
 #### Unix-socket transport: kernel-attested `X-Session-Key` (POSIX)
 
+##### Routes on this transport
+
+`GET /api/session/peer-identity` answers "which session is the calling
+process". It is listed in `_STRICT_INTERNAL_API_PATHS`, so it authenticates on
+loopback plus `X-Internal-Secret`; it is refused with 403 on TCP, because peer
+credentials are what TCP cannot supply; and it requires NO declared
+`X-Session-Key`, since a caller asking this question does not yet know its own
+key. Its only caller is an in-sandbox MCP server resolving its own identity
+(`mcp_core._session_key_from_gateway_peer`).
+
+The request carries no pid and no session. The answer is the nearest bound
+ancestor of the kernel-reported peer pid, walked server-side against the fenced
+mapping, so the caller chooses nothing. Letting it name an ancestor would be the
+hole: a process sits in a tree that can contain another session's runtime, so
+naming which ancestor is consulted is choosing which session it is judged as,
+and the nearest-bound answer is the only one it cannot reach past. The local
+walk in `mcp_core` stays excluded for the opposite reason — there the ancestry is
+read by the caller, in the caller's own pid view, so it is forgeable.
+
+This route is listed in `docs/feature-map/README.md` under Chat and sessions,
+with no page and no **Reach it** path, because nothing a user clicks reaches it:
+its only caller is an in-sandbox MCP server resolving its own identity. The row
+exists so that "which handler owns this?" is a lookup, which is what that map is
+for. The mechanical checker does not require the row, since it fires only when a
+file is added or deleted under `dashboard/handlers/`, so the row is there by
+review judgment rather than by the gate.
+
+
 TCP loopback + `X-Internal-Secret` authenticates the *installation* (any
 same-uid process can read `.local_secret`), but the session identity in
 `X-Session-Key` is entirely client-declared — a same-uid process could claim

@@ -65,14 +65,20 @@ def resolve_peer_identity(
     the caller is a trusted process reading a predictable, agent-writable
     path, the exact symlink-planting surface that hardened reader closes.
 
-    ``signed_only=True`` additionally requires each mapping's HMAC sidecar to
-    verify (:func:`~kiro_crew.session_pid_sig.verify_session_pid`, pid bound
-    into the MAC, keyed by the agent-unreadable SEL trust root). REQUIRED for
-    any AUTHORIZATION use of the result: the bare ``.txt`` is same-uid
-    agent-writable, so an unsigned mapping proves only what a local process
-    chose to write — an attacker planting ``session_pid_<own_pid>.txt`` with
-    a victim's key would otherwise turn kernel peer attestation into a
-    self-serve identity oracle. gatewayd's stub-registration walk stays
+    ``signed_only=True`` reads the AUTHORITATIVE mapping only -- the one in the
+    masked ``session-identity`` root, whose HMAC sidecar must also verify
+    (:func:`~kiro_crew.session_pid_sig.verify_session_pid`, pid bound into the
+    MAC). REQUIRED for any AUTHORIZATION use of the result: the attribution copy
+    in the data-home root is same-uid agent-writable, so a mapping read from
+    there proves only what a local process chose to write, and an attacker
+    planting ``session_pid_<own_pid>.txt`` with a victim's key would otherwise
+    turn kernel peer attestation into a self-serve identity oracle.
+
+    What carries that guarantee is the DIRECTORY FENCE, not the signature. The
+    sidecar is keyed by the SEL trust root, which ``sandbox.py`` exposes to the
+    sandbox so the in-sandbox audit writer can chain entries, and an HMAC
+    verifier necessarily holds enough to forge -- so a signature check alone
+    would leave the oracle open. The masked root is what an agent cannot write. gatewayd's stub-registration walk stays
     lenient (``False``): there the result only ATTRIBUTES a stub for
     claim-indexing, and warm-pool mappings may legitimately predate the SEL
     key.

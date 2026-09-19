@@ -1,10 +1,17 @@
 """Tests for :mod:`kiro_crew.session_pid_sig` — signed session_pid publication.
 
-The ``session_pid_<pid>.txt`` file is same-uid agent-writable, so the strict
-identity path must not trust it bare. These tests lock in the sidecar
-contract: publish writes ``.txt`` + HMAC ``.sig`` (keyed by the SEL trust
-root); verify accepts only a matching pair and fails closed on every
-tamper/degradation path.
+Publication writes the mapping TWICE, and the two copies have different jobs.
+The copy in the data-home root is same-uid agent-writable and attribution only:
+the lenient resolvers read it, and a wrong answer there mislabels an audit line.
+The copy under ``session-identity/`` is the one the strict resolvers authorize
+on, in a directory ``sandbox.py`` masks from every sandboxed process, signed by
+an identity root kept in there with it.
+
+These tests lock in that split: publish writes both copies plus the HMAC sidecar
+beside the authoritative one; verify reads the fenced copy alone and fails closed
+on every tamper/degradation path; and the operator-facing reports name the root
+that actually failed, because the audit root and the identity root now break
+independently.
 """
 
 from __future__ import annotations
@@ -39,21 +46,41 @@ def records_from_this_module(caplog, level="ERROR"):
     assertions still require an exact count, they just do not count other
     people's records as ours.
     """
-    return [
-        r for r in caplog.records if r.levelname == level and r.name == LOGGER_NAME
-    ]
+    return [r for r in caplog.records if r.levelname == level and r.name == LOGGER_NAME]
+
+
+def break_identity_root(cfg):
+    """Leave the identity root present but too short to sign with.
+
+    TRUNCATION, not deletion, because deletion is not a reachable
+    cannot-sign state: publication mints the root with an exclusive create, so an
+    absent file is created rather than refused. A file that exists and is short
+    survives that create (``FileExistsError`` → re-read → still short), which is
+    what the degrade paths below have to exercise.
+    """
+    ident = session_pid_sig.identity_dir(cfg)
+    ident.mkdir(mode=0o700, parents=True, exist_ok=True)
+    (ident / session_pid_sig._IDENTITY_KEY_FILE).write_bytes(b"\x01" * 8)
+
+
+def identity_key_bytes(cfg):
+    """The identity root's bytes as publication minted them."""
+    return (session_pid_sig.identity_dir(cfg) / session_pid_sig._IDENTITY_KEY_FILE).read_bytes()
 
 
 @pytest.fixture
 def cfg(tmp_path):
-    """Isolated config dir with a valid SEL trust-root key. Patches both the
-    mapping-file dir (config_dir) and the canonical trust-root path accessor
-    (sel_hmac_key_path — single source of truth owned by sel.py).
+    """Isolated data home. ``ident`` is the fenced subdirectory inside it.
 
-    ``_sel_hmac_key_bytes`` is stubbed to ``None`` so these tests exercise the
-    FILE path in isolation: the in-memory recovery fallback depends on a live
-    ``SecurityEventLog`` singleton, which other tests in the same process may
-    or may not have initialized. Its own behavior is covered by
+    A valid SEL trust-root key is written, and ``sel_hmac_key_path`` patched,
+    because the SIBLING protocol in ``session_token_sig`` signs with that
+    root and this module owns its loader. Identity signing does not touch it:
+    publication mints ``session-identity/identity_hmac.key`` on first claim.
+
+    ``_sel_hmac_key_bytes`` is stubbed to ``None`` so the SEL-root tests exercise
+    the FILE path in isolation: the in-memory recovery fallback depends on a live
+    ``SecurityEventLog`` singleton, which other tests in the same process may or
+    may not have initialized. Its own behavior is covered by
     ``TestTrustRootRecovery``.
 
     ``platform_compat.get_process_start_id`` is pinned to ``None`` (no start
@@ -65,59 +92,144 @@ def cfg(tmp_path):
     values.
     """
     (tmp_path / "sel_hmac.key").write_bytes(b"\x01" * 32)
-    with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
-         patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None), \
-         patch.object(platform_compat, "get_process_start_id", return_value=None), \
-         patch.object(
-             session_pid_sig,
-             "sel_hmac_key_path",
-             return_value=tmp_path / "sel_hmac.key",
-         ):
+    with (
+        patch.object(session_pid_sig, "config_dir", return_value=tmp_path),
+        patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None),
+        patch.object(platform_compat, "get_process_start_id", return_value=None),
+        patch.object(
+            session_pid_sig,
+            "sel_hmac_key_path",
+            return_value=tmp_path / "sel_hmac.key",
+        ),
+    ):
         session_pid_sig._reported.clear()
         yield tmp_path
         session_pid_sig._reported.clear()
 
 
-class TestPublish:
-    def test_writes_txt_and_sig(self, cfg):
-        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        assert (cfg / "session_pid_4242.txt").read_text(encoding="utf-8") == SESSION_KEY
-        sig = (cfg / "session_pid_4242.sig").read_text(encoding="utf-8")
-        assert len(sig) == 64 and all(c in "0123456789abcdef" for c in sig)
+@pytest.fixture
+def ident(cfg):
+    """The fenced directory holding the authoritative bindings and their root."""
+    return session_pid_sig.identity_dir(cfg)
 
-    def test_publish_without_key_writes_unsigned_and_drops_stale_sig(self, cfg):
-        """SEL key missing: txt still published (lenient readers keep
-        working) but any stale sidecar is removed so a rekeyed mapping can
-        never verify against an old signature."""
-        session_pid_sig.publish_session_pid(4242, SESSION_KEY)  # signed
-        (cfg / "sel_hmac.key").unlink()
-        session_pid_sig.publish_session_pid(4242, "dashboard:rekeyed")
-        assert (
-            cfg / "session_pid_4242.txt"
-        ).read_text(encoding="utf-8") == "dashboard:rekeyed"
+
+class TestPublish:
+    def test_writes_both_copies_and_the_sig(self, cfg, ident):
+        """The authoritative copy carries the sidecar; the attribution copy does not.
+
+        A sidecar beside the attribution copy would be the wrong shape twice over:
+        nothing reads it, and its presence would suggest that the agent-writable
+        copy is something a caller may authorize on.
+        """
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        assert (ident / "session_pid_4242.txt").read_text(encoding="utf-8") == SESSION_KEY
+        sig = (ident / "session_pid_4242.sig").read_text(encoding="utf-8")
+        assert len(sig) == 64 and all(c in "0123456789abcdef" for c in sig)
+        # The lenient readers' copy, in the root, where it has always been.
+        assert (cfg / "session_pid_4242.txt").read_text(encoding="utf-8") == SESSION_KEY
         assert not (cfg / "session_pid_4242.sig").exists()
 
-    def test_rekey_overwrites_both_files(self, cfg):
+    @pytest.mark.skipif(
+        platform_compat.IS_WINDOWS,
+        reason="POSIX permission bits; Windows reports 0o777 for a directory",
+    )
+    def test_the_fenced_directory_is_owner_only(self, cfg, ident):
+        """0700. The mask is the control, but a permission bit costs nothing and
+        covers the host where the namespace mask could not be applied at all.
+
+        POSIX only, and nothing is lost by that: both halves of this pairing are
+        POSIX mechanisms. Windows carries no namespace mask and no mode bits, so
+        the fence there rests on the agent file-tool registry alone, which
+        ``test_sandbox_governance_mask`` covers on every platform.
+        """
+        import stat
+
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        assert stat.S_IMODE(ident.stat().st_mode) == 0o700
+        key = ident / session_pid_sig._IDENTITY_KEY_FILE
+        assert stat.S_IMODE(key.stat().st_mode) == 0o600
+
+    def test_a_failed_mint_leaves_no_key_behind(self, cfg, ident, monkeypatch):
+        """A partial write is unlinked, so the next attempt can still mint.
+
+        The create is exclusive, so a short or failed write that left the file in
+        place would be seen by every later attempt as "already there", re-read as
+        too short, and refused. Strict identity would then fail closed for the life
+        of the host with no path back except deleting the file by hand, which is a
+        worse outcome than the write error that started it.
+        """
+        import os as _os
+
+        fail = {"now": True}
+
+        def _maybe_fail_write(fd, data):
+            if fail["now"]:
+                _os.write(fd, data[:4])
+                raise OSError("disk full")
+            _os.write(fd, data)
+
+        monkeypatch.setattr(session_pid_sig, "_write_all", _maybe_fail_write)
+        assert session_pid_sig._load_identity_key(cfg, create=True) is None
+        assert not (ident / session_pid_sig._IDENTITY_KEY_FILE).exists()
+
+        fail["now"] = False
+        key = session_pid_sig._load_identity_key(cfg, create=True)
+        assert key is not None and len(key) >= session_pid_sig._IDENTITY_KEY_BYTES
+
+    def test_identity_root_is_minted_on_first_claim_and_then_reused(self, cfg, ident):
+        """Minted by the publisher, never by a verifier: a first-touch create on
+        the verify side would mint a key the publisher never signed with, turning
+        a trust-root problem into a silent accept."""
+        assert not (ident / session_pid_sig._IDENTITY_KEY_FILE).exists()
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        first = identity_key_bytes(cfg)
+        assert len(first) == session_pid_sig._IDENTITY_KEY_BYTES
+        session_pid_sig.publish_session_pid(4243, SESSION_KEY)
+        assert identity_key_bytes(cfg) == first
+
+    def test_identity_root_is_not_the_audit_root(self, cfg):
+        """Separate roots, so a key the sandbox can read cannot sign an identity."""
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        assert identity_key_bytes(cfg) != (cfg / "sel_hmac.key").read_bytes()
+
+    def test_publish_without_key_writes_unsigned_and_drops_stale_sig(self, cfg, ident):
+        """Identity root unsignable: both txt copies still published (lenient
+        readers keep working) but any stale sidecar is removed so a rekeyed
+        mapping can never verify against an old signature."""
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)  # signed
+        break_identity_root(cfg)
+        session_pid_sig.publish_session_pid(4242, "dashboard:rekeyed")
+        assert (ident / "session_pid_4242.txt").read_text(encoding="utf-8") == "dashboard:rekeyed"
+        assert not (ident / "session_pid_4242.sig").exists()
+        assert (cfg / "session_pid_4242.txt").read_text(encoding="utf-8") == "dashboard:rekeyed"
+
+    def test_rekey_overwrites_both_files(self, cfg, ident):
         session_pid_sig.publish_session_pid(4242, "dashboard:old")
-        old_sig = (cfg / "session_pid_4242.sig").read_text(encoding="utf-8")
+        old_sig = (ident / "session_pid_4242.sig").read_text(encoding="utf-8")
         session_pid_sig.publish_session_pid(4242, "dashboard:new")
         assert session_pid_sig.verify_session_pid(4242) == "dashboard:new"
-        assert (cfg / "session_pid_4242.sig").read_text(encoding="utf-8") != old_sig
+        assert (ident / "session_pid_4242.sig").read_text(encoding="utf-8") != old_sig
 
-    def test_preplanted_symlink_not_followed(self, cfg):
-        """SYMLINK ATTACK: an agent plants symlinks at the predictable
-        mapping paths pointing at another writable file. Publication must
-        replace the symlink (os.replace semantics), never follow it and
-        truncate the target."""
+    def test_preplanted_symlink_not_followed(self, cfg, ident):
+        """SYMLINK ATTACK: symlinks planted at the predictable mapping paths
+        pointing at another writable file. Publication must replace the symlink
+        (os.replace semantics), never follow it and truncate the target.
+
+        Still asserted inside the fenced directory even though the mask is what
+        keeps an agent out of it: the hardening is what holds on a host where the
+        namespace mask could not be applied, and removing it would make the fence
+        the only control.
+        """
+        ident.mkdir(mode=0o700, parents=True, exist_ok=True)
         victim = cfg / "victim.dat"
         victim.write_text("precious", encoding="utf-8")
         for name in ("session_pid_4242.txt", "session_pid_4242.sig"):
-            (cfg / name).symlink_to(victim)
+            (ident / name).symlink_to(victim)
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         # Victim untouched; both paths are now regular files, not symlinks.
         assert victim.read_text(encoding="utf-8") == "precious"
-        assert not (cfg / "session_pid_4242.txt").is_symlink()
-        assert not (cfg / "session_pid_4242.sig").is_symlink()
+        assert not (ident / "session_pid_4242.txt").is_symlink()
+        assert not (ident / "session_pid_4242.sig").is_symlink()
         assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
 
 
@@ -131,75 +243,106 @@ class TestVerify:
     def test_missing_files_refused(self, cfg):
         assert session_pid_sig.verify_session_pid(9999) == ""
 
-    def test_unsigned_txt_refused(self, cfg):
-        """FORGERY: bare .txt written without the SEL key."""
-        (cfg / "session_pid_4242.txt").write_text(
-            "dashboard:victim", encoding="utf-8"
+    def test_unsigned_txt_refused(self, cfg, ident):
+        """FORGERY: bare .txt written without the identity root."""
+        ident.mkdir(mode=0o700, parents=True, exist_ok=True)
+        (ident / "session_pid_4242.txt").write_text("dashboard:victim", encoding="utf-8")
+        assert session_pid_sig.verify_session_pid(4242) == ""
+
+    def test_a_binding_at_the_attribution_path_authorizes_nothing(self, cfg):
+        """THE PROPERTY THIS FIX ADDS. The copy an agent can write is not read by
+        the resolver that authorizes, so writing one there buys no identity — and
+        this holds for a WELL-FORMED binding, not only a malformed one, because a
+        malformed one would be refused by parsing and prove nothing."""
+        (cfg / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
+        assert session_pid_sig.verify_session_pid(4242) == ""
+        # The lenient reader does see it: that is the copy's whole purpose.
+        assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
+
+    def test_a_binding_signed_with_the_audit_key_is_refused(self, cfg, ident):
+        """The audit root stays readable in the sandbox, so the refusal must NOT
+        depend on an attacker being unable to sign. Here it signs a correct
+        binding with the key it can read, at the path that authorizes, and is
+        still refused — because that key does not sign identities."""
+        ident.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stolen = (cfg / "sel_hmac.key").read_bytes()
+        (ident / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
+        (ident / "session_pid_4242.sig").write_text(
+            session_pid_sig._compute_sig(stolen, 4242, SESSION_KEY), encoding="utf-8"
         )
         assert session_pid_sig.verify_session_pid(4242) == ""
 
-    def test_tampered_txt_refused(self, cfg):
+    def test_tampered_txt_refused(self, cfg, ident):
         """FORGERY: legitimate pair, then the .txt is redirected at another
         slot — the old signature does not match."""
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        (cfg / "session_pid_4242.txt").write_text(
-            "dashboard:victim", encoding="utf-8"
-        )
+        (ident / "session_pid_4242.txt").write_text("dashboard:victim", encoding="utf-8")
         assert session_pid_sig.verify_session_pid(4242) == ""
 
-    def test_replayed_pair_under_other_pid_refused(self, cfg):
+    def test_replayed_pair_under_other_pid_refused(self, cfg, ident):
         """REPLAY: parent's .txt/.sig copied under a different pid — the pid
         is bound into the MAC."""
         session_pid_sig.publish_session_pid(1000, "dashboard:parent")
         for ext in ("txt", "sig"):
-            (cfg / f"session_pid_2000.{ext}").write_text(
-                (cfg / f"session_pid_1000.{ext}").read_text(encoding="utf-8"),
+            (ident / f"session_pid_2000.{ext}").write_text(
+                (ident / f"session_pid_1000.{ext}").read_text(encoding="utf-8"),
                 encoding="utf-8",
             )
         assert session_pid_sig.verify_session_pid(2000) == ""
 
     def test_short_key_refused(self, cfg):
-        """A truncated/corrupted trust-root key must not verify anything."""
+        """A truncated/corrupted identity root must not verify anything."""
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        (cfg / "sel_hmac.key").write_bytes(b"\x01" * 8)
+        break_identity_root(cfg)
         assert session_pid_sig.verify_session_pid(4242) == ""
 
     def test_missing_key_refused(self, cfg, caplog):
-        """Missing trust root refuses AND emits the trust-root diagnostic —
-        distinguishable from the forgery (MAC-mismatch) warning so a
-        publisher/verifier trust-root split doesn't silently reproduce the
-        original sandboxed-session bug while looking like forgery refusal."""
+        """An unsignable identity root refuses AND emits the trust-root
+        diagnostic — distinguishable from the forgery (MAC-mismatch) warning so a
+        publisher/verifier root split doesn't silently reproduce the original
+        sandboxed-session bug while looking like forgery refusal."""
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        (cfg / "sel_hmac.key").unlink()
+        break_identity_root(cfg)
         with caplog.at_level("WARNING", logger=session_pid_sig.logger.name):
             assert session_pid_sig.verify_session_pid(4242) == ""
-        assert any(
-            "trust-root key absent/short" in r.getMessage() for r in caplog.records
-        )
+        assert any("identity root absent/short" in r.getMessage() for r in caplog.records)
 
-    def test_symlinked_mapping_files_refused_on_read(self, cfg):
-        """READ-SIDE SYMLINK ATTACK: after a legitimate publish, an agent
-        swaps a mapping file for a symlink to a sensitive target. The
-        trusted verifier must refuse (O_NOFOLLOW) — never follow the link
-        and read the target."""
+    def test_the_refusal_names_the_identity_root_not_the_audit_root(self, cfg, caplog):
+        """An operator sent to the audit key would find it intact and be stuck.
+        The two roots fail independently now, so the message names the one that
+        did."""
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        break_identity_root(cfg)
+        with caplog.at_level("WARNING", logger=session_pid_sig.logger.name):
+            session_pid_sig.verify_session_pid(4242)
+        messages = [r.getMessage() for r in caplog.records]
+        assert any(session_pid_sig._IDENTITY_KEY_FILE in m for m in messages), messages
+        assert not any("sel_hmac.key" in m for m in messages), messages
+
+    def test_symlinked_mapping_files_refused_on_read(self, cfg, ident):
+        """READ-SIDE SYMLINK ATTACK: a mapping file swapped for a symlink to a
+        sensitive target. The verifier must refuse (O_NOFOLLOW) — never follow
+        the link and read the target. Asserted inside the fenced directory so the
+        hardening still holds on a host where the namespace mask could not be
+        applied, rather than leaving the fence as the only control."""
         secret = cfg / "secret.dat"
         secret.write_text("sensitive-content", encoding="utf-8")
         # Symlinked .txt refused.
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        (cfg / "session_pid_4242.txt").unlink()
-        (cfg / "session_pid_4242.txt").symlink_to(secret)
+        (ident / "session_pid_4242.txt").unlink()
+        (ident / "session_pid_4242.txt").symlink_to(secret)
         assert session_pid_sig.verify_session_pid(4242) == ""
         # Symlinked .sig refused (fresh legitimate pair first).
         session_pid_sig.publish_session_pid(5555, SESSION_KEY)
-        (cfg / "session_pid_5555.sig").unlink()
-        (cfg / "session_pid_5555.sig").symlink_to(secret)
+        (ident / "session_pid_5555.sig").unlink()
+        (ident / "session_pid_5555.sig").symlink_to(secret)
         assert session_pid_sig.verify_session_pid(5555) == ""
 
-    def test_oversized_mapping_file_refused(self, cfg):
-        """RESOURCE ATTACK: an agent swaps a mapping file for a huge one.
+    def test_oversized_mapping_file_refused(self, cfg, ident):
+        """RESOURCE ATTACK: a mapping file swapped for a huge one.
         Verification must reject it from fstat size, never buffer it."""
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        (cfg / "session_pid_4242.txt").write_text(
+        (ident / "session_pid_4242.txt").write_text(
             "x" * (session_pid_sig._MAX_MAPPING_FILE_BYTES + 1), encoding="utf-8"
         )
         assert session_pid_sig.verify_session_pid(4242) == ""
@@ -253,9 +396,7 @@ class TestPidRecycleGuard:
 
     @staticmethod
     def _live_token(value):
-        return patch.object(
-            platform_compat, "get_process_start_id", return_value=value
-        )
+        return patch.object(platform_compat, "get_process_start_id", return_value=value)
 
     def test_recycled_pid_refused_by_strict_resolver(self, cfg):
         """HEADLINE (red against pre-fix main): publish under one process
@@ -282,16 +423,18 @@ class TestPidRecycleGuard:
             assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
             assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
 
-    def test_legacy_tokenless_file_still_resolves(self, cfg):
+    def test_legacy_tokenless_file_still_resolves(self, cfg, ident):
         """BACKWARD COMPATIBILITY: a signed mapping written before the
         format change (no token line, MAC over ``"<pid>:<session_key>"``)
         must not read as tampered or as a mismatch, even when the live
         token IS readable (absent recorded token = unknown, not mismatch)."""
-        key = b"\x01" * 32
-        (cfg / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
-        (cfg / "session_pid_4242.sig").write_text(
+        session_pid_sig.publish_session_pid(4242, "dashboard:seed")  # mints the root
+        key = identity_key_bytes(cfg)
+        (ident / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
+        (ident / "session_pid_4242.sig").write_text(
             session_pid_sig._compute_sig(key, 4242, SESSION_KEY), encoding="utf-8"
         )
+        (cfg / "session_pid_4242.txt").write_text(SESSION_KEY, encoding="utf-8")
         with self._live_token("222"):
             assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
             assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
@@ -306,54 +449,54 @@ class TestPidRecycleGuard:
             assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
             assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
 
-    def test_publish_records_the_token_as_a_second_line(self, cfg):
+    def test_publish_records_the_token_as_a_second_line(self, cfg, ident):
         """The on-disk form: ``<session_key>\\n<start_token>``. A second
         LINE, not a colon field like session_pid.py's integer records,
-        because the session key itself contains colons."""
+        because the session key itself contains colons. Both copies carry it:
+        the recycle guard runs on the lenient path too."""
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        assert (
-            cfg / "session_pid_4242.txt"
-        ).read_text(encoding="utf-8") == f"{SESSION_KEY}\n111"
+        assert (ident / "session_pid_4242.txt").read_text(encoding="utf-8") == f"{SESSION_KEY}\n111"
+        assert (cfg / "session_pid_4242.txt").read_text(encoding="utf-8") == f"{SESSION_KEY}\n111"
 
-    def test_signature_covers_the_token(self, cfg):
+    def test_signature_covers_the_token(self, cfg, ident):
         """Flipping ONLY the token line invalidates the MAC — even when the
         rewritten token matches the live process, so the refusal proven
         here is the signature's, not the recycle check's."""
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        (cfg / "session_pid_4242.txt").write_text(
-            f"{SESSION_KEY}\n222", encoding="utf-8"
-        )
+        (ident / "session_pid_4242.txt").write_text(f"{SESSION_KEY}\n222", encoding="utf-8")
         with self._live_token("222"):
             assert session_pid_sig.verify_session_pid(4242) == ""
 
-    def test_unsigned_publish_with_token_still_degrades(self, cfg):
+    def test_unsigned_publish_with_token_still_degrades(self, cfg, ident):
         """The documented unsigned-publish degrade path survives the token:
-        SEL key unavailable → token-bearing ``.txt`` still published (the
+        identity root unsignable → token-bearing ``.txt`` still published (the
         lenient reader keeps working, recycle guard included), stale sidecar
         removed, strict resolvers fail closed."""
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)  # signed
-        (cfg / "sel_hmac.key").unlink()
+        break_identity_root(cfg)
         with self._live_token("111"):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-            assert not (cfg / "session_pid_4242.sig").exists()
+            assert not (ident / "session_pid_4242.sig").exists()
             assert session_pid_sig.verify_session_pid(4242) == ""
             assert session_pid_sig.read_session_pid_txt(4242) == SESSION_KEY
         with self._live_token("222"):
             assert session_pid_sig.read_session_pid_txt(4242) == ""
 
-    def test_malformed_multiline_body_refused(self, cfg):
+    def test_malformed_multiline_body_refused(self, cfg, ident):
         """Three-plus lines were never written by publish_session_pid —
         refuse on both paths rather than guess a parse, even under a valid
         MAC over the raw body."""
-        key = b"\x01" * 32
+        session_pid_sig.publish_session_pid(4242, "dashboard:seed")  # mints the root
+        key = identity_key_bytes(cfg)
         body = f"{SESSION_KEY}\n111\nextra"
-        (cfg / "session_pid_4242.txt").write_text(body, encoding="utf-8")
-        (cfg / "session_pid_4242.sig").write_text(
+        (ident / "session_pid_4242.txt").write_text(body, encoding="utf-8")
+        (ident / "session_pid_4242.sig").write_text(
             session_pid_sig._compute_sig(key, 4242, body), encoding="utf-8"
         )
+        (cfg / "session_pid_4242.txt").write_text(body, encoding="utf-8")
         with self._live_token("111"):
             assert session_pid_sig.verify_session_pid(4242) == ""
             assert session_pid_sig.read_session_pid_txt(4242) == ""
@@ -384,9 +527,7 @@ class TestNoNofollowPlatform:
         decoy = tmp_path / "vetted-then-swapped"
         decoy.write_text("x", encoding="utf-8")
         real_lstat = _os.lstat
-        monkeypatch.setattr(
-            "os.lstat", lambda p, *a, **k: real_lstat(decoy)
-        )
+        monkeypatch.setattr("os.lstat", lambda p, *a, **k: real_lstat(decoy))
         assert session_pid_sig.read_session_pid_txt(4242) == ""
 
     def test_symlink_present_at_lstat_refused(self, cfg, monkeypatch, tmp_path):
@@ -399,56 +540,70 @@ class TestNoNofollowPlatform:
 
 
 class TestDomainSeparation:
-    """The sidecar and the SEL audit chain share one on-disk trust-root key
-    (``sel_hmac.key``) but MUST NOT share a signing key: the sidecar signs
-    with a subkey *derived* from the root via a domain-separation label, so a
-    MAC from one protocol can never be presented as a valid MAC for the
-    other."""
+    """The sidecar signs with a subkey *derived* from its root via a
+    domain-separation label, so a MAC from one protocol can never be presented
+    as a valid MAC for the other.
 
-    def test_sig_is_not_signed_with_raw_root_key(self, cfg):
+    Two independent controls now, not one: identity signs with its OWN root
+    (``session-identity/identity_hmac.key``), and even within a root the derived
+    subkey keeps the schemes apart. The derivation is still asserted because the
+    sibling token protocol continues to share the audit root, so the label is
+    what separates those two.
+    """
+
+    def test_sig_is_not_signed_with_the_raw_identity_root(self, cfg, ident):
         import hashlib
         import hmac
 
-        root = b"\x01" * 32
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        stored = (cfg / "session_pid_4242.sig").read_text(encoding="utf-8")
+        root = identity_key_bytes(cfg)
+        stored = (ident / "session_pid_4242.sig").read_text(encoding="utf-8")
 
         # A MAC computed with the RAW root key (the SEL scheme) must differ
         # from the stored sidecar MAC — proving the root key is not used
         # directly to sign the sidecar.
-        raw_mac = hmac.new(
-            root, f"4242:{SESSION_KEY}".encode("utf-8"), hashlib.sha256
-        ).hexdigest()
+        raw_mac = hmac.new(root, f"4242:{SESSION_KEY}".encode("utf-8"), hashlib.sha256).hexdigest()
         assert stored != raw_mac
 
         # The stored MAC matches the DERIVED-subkey scheme.
-        subkey = hmac.new(
-            root, session_pid_sig._SUBKEY_DOMAIN, hashlib.sha256
-        ).digest()
+        subkey = hmac.new(root, session_pid_sig._SUBKEY_DOMAIN, hashlib.sha256).digest()
         derived_mac = hmac.new(
             subkey, f"4242:{SESSION_KEY}".encode("utf-8"), hashlib.sha256
         ).hexdigest()
         assert stored == derived_mac
 
+    def test_the_audit_root_cannot_sign_an_identity(self, cfg, ident):
+        """The root split, stated as a MAC comparison: the key the sandbox can
+        read produces a different signature from the one the verifier accepts."""
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        stored = (ident / "session_pid_4242.sig").read_text(encoding="utf-8")
+        audit = (cfg / "sel_hmac.key").read_bytes()
+        assert stored != session_pid_sig._compute_sig(audit, 4242, SESSION_KEY)
+
 
 class TestTrustRootRecovery:
-    """SEL signs from key bytes it cached at init, while this protocol re-reads
-    the file on every call. The shared accessor re-resolves a key that MOVED
-    (a concurrent legacy -> ``trust/`` migration), so what reaches
-    recovery is the residue no path can resolve: a key deleted, unreadable,
-    truncated, or replaced by bytes that are not the anchor. Those would
-    otherwise take this protocol down for the life of the process — with a
-    healthy audit chain giving no hint. Recovery reads the same bytes SEL
-    validated at init.
+    """The AUDIT root's recovery path, which the sibling token protocol in
+    ``session_token_sig`` signs with: it imports ``_load_hmac_key`` from here
+    rather than copying it, so this module owns the loader's behaviour.
+
+    SEL signs from key bytes it cached at init, while this loader re-reads the
+    file on every call. The shared accessor re-resolves a key that MOVED (a
+    concurrent legacy -> ``trust/`` migration), so what reaches recovery is the
+    residue no path can resolve: a key deleted, unreadable, truncated, or
+    replaced by bytes that are not the anchor. Those would otherwise take the
+    dependent protocol down for the life of the process — with a healthy audit
+    chain giving no hint. Recovery reads the same bytes SEL validated at init.
+
+    Driven through ``_load_hmac_key`` directly rather than through
+    ``publish_session_pid``: identity publication signs with the identity root
+    and does not reach this loader at all, so routing these assertions through
+    it would exercise a path that cannot fail for this reason.
     """
 
     def test_missing_file_recovers_from_live_sel_key(self, cfg):
         (cfg / "sel_hmac.key").unlink()
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ):
-            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-            assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
+        with patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32):
+            assert session_pid_sig._load_hmac_key() == b"\x01" * 32
 
     def test_recovery_still_announces_the_broken_file(self, cfg, caplog):
         """Recovering from memory must NOT go quiet: signing works HERE, but the
@@ -456,10 +611,11 @@ class TestTrustRootRecovery:
         these bytes still fails closed. Silence would move the original silent
         failure one layer over instead of removing it."""
         (cfg / "sel_hmac.key").unlink()
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ), caplog.at_level("ERROR", logger=LOGGER_NAME):
-            session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        with (
+            patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32),
+            caplog.at_level("ERROR", logger=LOGGER_NAME),
+        ):
+            session_pid_sig._load_hmac_key()
         errors = records_from_this_module(caplog)
         assert len(errors) == 1
         message = errors[0].getMessage()
@@ -469,12 +625,13 @@ class TestTrustRootRecovery:
 
     def test_broken_file_report_is_throttled_per_path(self, cfg, caplog):
         (cfg / "sel_hmac.key").unlink()
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ), caplog.at_level("DEBUG", logger=LOGGER_NAME):
-            session_pid_sig.publish_session_pid(1, SESSION_KEY)
-            session_pid_sig.publish_session_pid(2, SESSION_KEY)
-            session_pid_sig.publish_session_pid(3, SESSION_KEY)
+        with (
+            patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32),
+            caplog.at_level("DEBUG", logger=LOGGER_NAME),
+        ):
+            session_pid_sig._load_hmac_key()
+            session_pid_sig._load_hmac_key()
+            session_pid_sig._load_hmac_key()
         assert len(records_from_this_module(caplog)) == 1
         assert (
             len(
@@ -488,28 +645,30 @@ class TestTrustRootRecovery:
         )
 
     def test_truncated_file_recovers_from_live_sel_key(self, cfg):
-        """SEL validates the length only at init, this protocol on every call —
+        """SEL validates the length only at init, this loader on every call —
         so a post-init truncation is exactly the asymmetry to recover from."""
         (cfg / "sel_hmac.key").write_bytes(b"\x01" * 8)
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-        ):
+        with patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32):
             assert session_pid_sig._load_hmac_key() == b"\x01" * 32
 
     def test_readable_file_wins_over_live_sel_key(self, cfg):
         """The file is the anchor every OTHER process resolves independently, so
         a readable file must never be overridden by this process's memory —
         otherwise a publisher signs with bytes its verifier does not have."""
-        with patch.object(
-            session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x02" * 32
-        ):
+        with patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x02" * 32):
             assert session_pid_sig._load_hmac_key() == b"\x01" * 32
 
     def test_no_file_and_no_live_key_still_fails_closed(self, cfg):
         (cfg / "sel_hmac.key").unlink()
+        assert session_pid_sig._load_hmac_key() is None
+
+    def test_a_broken_audit_root_does_not_break_identity(self, cfg):
+        """The roots are independent in BOTH directions. An audit root that
+        cannot be read at all leaves identity signing and verification intact,
+        which is the property that let the audit writer stay in the sandbox."""
+        (cfg / "sel_hmac.key").unlink()
         session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        assert not (cfg / "session_pid_4242.sig").exists()
-        assert session_pid_sig.verify_session_pid(4242) == ""
+        assert session_pid_sig.verify_session_pid(4242) == SESSION_KEY
 
 
 class TestTrustRootRelocationIsFollowed:
@@ -538,10 +697,9 @@ class TestTrustRootRelocationIsFollowed:
             log._hmac_key_file = tmp_path / "sel_hmac.key"
             assert not (tmp_path / "sel_hmac.key").exists()
 
-            with patch.object(
-                session_pid_sig, "config_dir", return_value=tmp_path
-            ), patch.object(
-                session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\xfe" * 32
+            with (
+                patch.object(session_pid_sig, "config_dir", return_value=tmp_path),
+                patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\xfe" * 32),
             ):
                 session_pid_sig._reported.clear()
                 loaded = session_pid_sig._load_hmac_key()
@@ -557,20 +715,23 @@ class TestTrustRootRelocationIsFollowed:
 class TestSigningUnavailableReport:
     """Publication happens on every session claim, so the operator-facing
     message must not be emitted per publish, and must name what stops working
-    rather than only the mechanism."""
+    rather than only the mechanism.
+
+    Every case here breaks the IDENTITY root, because that is the root identity
+    signs with. A report keyed or worded on the audit root would send an operator
+    to a file that is intact.
+    """
 
     def test_the_two_reports_do_not_suppress_each_other(self, cfg, caplog):
-        """The broken-file notice and the cannot-sign notice tell an operator
-        different things (signing survives here vs signing is gone), so they are
-        throttled independently. Sharing one key would let whichever fired first
-        silence the other for the rest of the process."""
+        """The broken-audit-file notice and the cannot-sign-identities notice tell
+        an operator different things, about different roots, so they are throttled
+        independently. Sharing one entry would let whichever fired first silence
+        the other for the rest of the process."""
         (cfg / "sel_hmac.key").unlink()
+        break_identity_root(cfg)
         with caplog.at_level("ERROR", logger=LOGGER_NAME):
-            with patch.object(
-                session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32
-            ):
-                session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-            # Same path, but the in-memory fallback is gone now.
+            with patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=b"\x01" * 32):
+                session_pid_sig._load_hmac_key()
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         messages = [r.getMessage() for r in records_from_this_module(caplog)]
         assert len(messages) == 2, messages
@@ -578,7 +739,7 @@ class TestSigningUnavailableReport:
         assert "cannot sign session identities" in messages[1]
 
     def test_reported_once_per_process_then_debug(self, cfg, caplog):
-        (cfg / "sel_hmac.key").unlink()
+        break_identity_root(cfg)
         with caplog.at_level("DEBUG", logger=LOGGER_NAME):
             session_pid_sig.publish_session_pid(1, SESSION_KEY)
             session_pid_sig.publish_session_pid(2, SESSION_KEY)
@@ -592,26 +753,42 @@ class TestSigningUnavailableReport:
         ]
         assert len(debugs) == 2
 
-    def test_message_names_the_consequence_and_the_path(self, cfg, caplog):
-        (cfg / "sel_hmac.key").unlink()
-        with caplog.at_level("ERROR", logger=LOGGER_NAME):
+    def test_message_names_the_consequence_and_the_path(self, cfg):
+        """The path has to be the identity root. Naming the audit root would be a
+        true sentence about the wrong file: it is readable, intact, and not what
+        failed."""
+        import logging as _logging
+
+        break_identity_root(cfg)
+        records: list[_logging.LogRecord] = []
+        handler = _logging.Handler()
+        handler.emit = records.append  # type: ignore[method-assign]
+        logger = _logging.getLogger(LOGGER_NAME)
+        logger.addHandler(handler)
+        try:
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-        message = records_from_this_module(caplog)[0].getMessage()
-        assert str(cfg / "sel_hmac.key") in message
+        finally:
+            logger.removeHandler(handler)
+        errors = [r for r in records if r.levelname == "ERROR"]
+        assert len(errors) == 1, [r.getMessage() for r in records]
+        message = errors[0].getMessage()
+        assert str(session_pid_sig._identity_key_path(cfg)) in message
+        assert str(cfg / "sel_hmac.key") not in message
         assert "sub-agent dispatch" in message
         assert "memory writes" in message
 
     def test_relocated_path_is_reported_again(self, cfg, caplog):
         """Suppression is keyed on the resolved path, so a genuine relocation
         is not swallowed by the first failure's entry."""
-        (cfg / "sel_hmac.key").unlink()
+        break_identity_root(cfg)
         with caplog.at_level("ERROR", logger=LOGGER_NAME):
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
             with patch.object(
                 session_pid_sig,
-                "sel_hmac_key_path",
-                return_value=cfg / "trust" / "sel_hmac.key",
+                "_IDENTITY_SUBDIR",
+                "session-identity-relocated",
             ):
+                break_identity_root(cfg)
                 session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         assert len(records_from_this_module(caplog)) == 2
 
@@ -620,17 +797,15 @@ class TestSigningUnavailableReport:
         ERROR: on a long-lived gateway that is never restarted, the log is the
         only signal the operator gets."""
         with caplog.at_level("ERROR", logger=LOGGER_NAME):
-            (cfg / "sel_hmac.key").unlink()
+            break_identity_root(cfg)
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-            (cfg / "sel_hmac.key").write_bytes(b"\x01" * 32)
+            session_pid_sig._identity_key_path(cfg).write_bytes(b"\x02" * 32)
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
-            (cfg / "sel_hmac.key").unlink()
+            break_identity_root(cfg)
             session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         assert len(records_from_this_module(caplog)) == 2
 
-    def test_a_stray_error_from_another_logger_is_not_counted_as_ours(
-        self, cfg, caplog
-    ):
+    def test_a_stray_error_from_another_logger_is_not_counted_as_ours(self, cfg, caplog):
         """Guards `records_from_this_module` against being narrowed back to a
         level-only filter.
 
@@ -640,7 +815,7 @@ class TestSigningUnavailableReport:
         counted as one of our reports, or these assertions fail for a reason
         that has nothing to do with the code under test.
         """
-        (cfg / "sel_hmac.key").unlink()
+        break_identity_root(cfg)
         with caplog.at_level("ERROR", logger=LOGGER_NAME):
             logging.getLogger("asyncio").error(
                 "Task was destroyed but it is pending!\n"
@@ -650,28 +825,41 @@ class TestSigningUnavailableReport:
 
         ours = records_from_this_module(caplog)
         assert len(ours) == 1
-        assert str(cfg / "sel_hmac.key") in ours[0].getMessage()
+        assert str(session_pid_sig._identity_key_path(cfg)) in ours[0].getMessage()
         # The stray record really was captured — this test would be vacuous if
         # caplog had filtered it out for us.
-        assert any(
-            r.name == "asyncio" and r.levelname == "ERROR" for r in caplog.records
-        )
+        assert any(r.name == "asyncio" and r.levelname == "ERROR" for r in caplog.records)
 
 
 class TestSigningHealth:
     """The diagnostic surface (`kirocrew doctor`) asks proactively; publication
-    only reports once a session is claimed."""
+    only reports once a session is claimed.
 
-    def test_reports_healthy_with_the_resolved_path(self, cfg):
+    Health is reported for the IDENTITY root, which is what signs identities.
+    Before the gateway's first session claim that root does not exist yet, so the
+    honest answer then is unhealthy: nothing can be signed until it is minted.
+    """
+
+    def test_reports_healthy_once_the_root_is_minted(self, cfg):
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
         ok, path = session_pid_sig.signing_health()
         assert ok is True
-        assert path == cfg / "sel_hmac.key"
+        assert path == session_pid_sig._identity_key_path(cfg)
 
-    def test_reports_unhealthy_when_the_trust_root_is_gone(self, cfg):
-        (cfg / "sel_hmac.key").unlink()
+    def test_reports_unhealthy_before_the_first_claim(self, cfg):
+        """And does NOT mint the root to answer: a read-only diagnostic that
+        creates a trust root reports on a state it just produced."""
         ok, path = session_pid_sig.signing_health()
         assert ok is False
-        assert path == cfg / "sel_hmac.key"
+        assert path == session_pid_sig._identity_key_path(cfg)
+        assert not path.exists()
+
+    def test_reports_unhealthy_when_the_trust_root_is_gone(self, cfg):
+        session_pid_sig.publish_session_pid(4242, SESSION_KEY)
+        session_pid_sig._identity_key_path(cfg).unlink()
+        ok, path = session_pid_sig.signing_health()
+        assert ok is False
+        assert path == session_pid_sig._identity_key_path(cfg)
 
     def test_never_constructs_the_sel_singleton(self, cfg):
         """Asking the question must not create the trust root it asks about,
@@ -687,6 +875,4 @@ class TestSigningHealth:
 
         from kiro_crew.dashboard import token_auth
 
-        assert "signing_health" not in inspect.getsource(
-            token_auth.warm_auth_singletons
-        )
+        assert "signing_health" not in inspect.getsource(token_auth.warm_auth_singletons)
