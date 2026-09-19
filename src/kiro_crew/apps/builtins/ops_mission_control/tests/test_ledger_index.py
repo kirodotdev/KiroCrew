@@ -368,6 +368,7 @@ class TestSemanticRecallWiring(_Env):
         from kiro_crew.embeddings import PRIORITY_INTERACTIVE, embedding_work
 
         store, _literal, semantic = self._real_store_with_semantic_pair()
+        self.assertEqual(dispatch._SIMILAR_QUERY_TIMEOUT_SECS, 5.0)
 
         def _query_vector(text: str, priority: int) -> list[float]:
             work = embedding_work.get()
@@ -552,13 +553,8 @@ class TestLedgerMutationsAreLocked(_Env):
 
         from kiro_crew.apps.builtins.ops_mission_control.backend import ledger
 
-        for fn in (
-            ledger.upsert,
-            ledger.record_use,
-            ledger.record_miss,
-            ledger.remove,
-            ledger.hygiene,
-        ):
+        for fn in (ledger.upsert, ledger.record_use, ledger.record_miss, ledger.remove,
+                   ledger.hygiene):
             src = inspect.getsource(fn)
             self.assertIn(
                 "_LedgerLock()",

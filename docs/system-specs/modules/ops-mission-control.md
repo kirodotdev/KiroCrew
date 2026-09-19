@@ -286,8 +286,9 @@ otherwise.
 
 Dispatch prepares the other half of semantic retrieval: after claiming an incident it
 binds the process-wide cached embed callable to its short-lived store, attempts one
-interactive query embedding under a shared five-second deadline, and passes that vector
-explicitly into `ledger_index.search_similar`. `VectorMemoryStore.search_episodic` does
+interactive query embedding with a five-second queue/admission budget, and passes that
+vector explicitly into `ledger_index.search_similar`. Native inference already running
+cannot be interrupted and may finish after that budget. `VectorMemoryStore.search_episodic` does
 not embed `query_text`; without that boundary the advertised semantic leads are only FTS5
 keyword matches. A cold, unavailable, stale-space, busy, or failing embedder yields no
 query vector and dispatch immediately retains the same tag-scoped keyword search. The
