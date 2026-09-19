@@ -38,7 +38,7 @@ import { useKiroUsageReadout, kiroUsageSegment } from './shell/topbar/kiroUsageR
 import { safeSetItem } from './utils/safeStorage'
 import { gcOrphanedStorage } from './utils/storageGc'
 import { useMetricsReadout, metricsSegment, MetricsCard, MetricsErrorNotice } from './shell/topbar/metricsReadout'
-import { Rocket, Bell, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, X, Coins, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon, Plug, Unplug } from 'lucide-react'
+import { Rocket, Bell, Code, RefreshCw, Package, Download, Hammer, XCircle, Check, AlertTriangle, Coins, Compass, LayoutGrid, Fullscreen, Menu, SquareTerminal, Bot, Smartphone, Search as SearchIcon, Plug, Unplug } from 'lucide-react'
 import { useFirstRunChapters, FirstRunChapters } from './shell/boot/firstRun'
 import AgentSwitchNotice from './components/AgentSwitchNotice'
 import ErrorNotice from './components/ErrorNotice'
