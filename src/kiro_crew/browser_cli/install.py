@@ -182,6 +182,25 @@ def _managed_node_path() -> Path:
     return _managed_cli_root() / name
 
 
+def _staged_node_runs(candidate: Path) -> str | None:
+    """Reason the staged Node copy cannot run standalone, or ``None`` if it can.
+
+    Runs the copy exactly as the gateway will run it -- by absolute path, from
+    the managed leaf, under :func:`cli_env` -- and asks for its version. One
+    probe covers every way a copy can be dead: a launcher script whose relative
+    targets are not in the leaf, a binary that only links under a wrapper's
+    ``LD_LIBRARY_PATH``, a build for another architecture. The reason names the
+    failure so ``stage-node`` reports it instead of a later call.
+    """
+    code, out, err = _run([str(candidate), "--version"], _PROBE_TIMEOUT_S)
+    if code != 0:
+        detail = (err or out).strip().splitlines()
+        return f"exit {code}" + (f": {detail[-1]}" if detail else "")
+    if _first_version(out) is None:
+        return f"did not report a version (stdout: {out.strip()[:80]!r})"
+    return None
+
+
 def _stage_managed_node(source: str) -> Path:
     """Copy the installer-selected Node into the managed leaf atomically.
 
@@ -189,6 +208,16 @@ def _stage_managed_node(source: str) -> Path:
     entrypoint directly. That keeps both executable choices inside the read-only
     leaf instead of letting ``#!/usr/bin/env node`` or a generated wrapper select
     a version-manager binary from the gateway's broad PATH.
+
+    The copy is run before it becomes ``gateway-node``. Being a regular,
+    executable file is not enough: a launcher script locates the binary it
+    starts relative to its own path, and a binary from a wrapped distribution
+    may link only under the wrapper's ``LD_LIBRARY_PATH``. Either copies
+    cleanly, passes the mode checks, and then fails on the first CLI call with
+    an error naming a path under the leaf, while the status probe, which checks
+    that the staged file exists rather than that it runs, keeps reporting the
+    CLI as installed. Running the staged copy once, from the leaf, under the
+    gateway's own environment, fails at ``stage-node`` with the cause named.
     """
     source_path = Path(source).resolve(strict=True)
     try:
@@ -212,6 +241,12 @@ def _stage_managed_node(source: str) -> Path:
         shutil.copyfile(source_path, incoming)
         if not platform_compat.IS_WINDOWS:
             os.chmod(incoming, 0o500)
+        reason = _staged_node_runs(Path(incoming))
+        if reason is not None:
+            raise OSError(
+                f"Node copied from {source_path} does not run from the managed leaf "
+                f"({reason}). Install Node as a self-contained binary."
+            )
         os.replace(incoming, destination)
     finally:
         with contextlib.suppress(OSError):
@@ -447,11 +482,23 @@ def _node_major(version: str | None) -> int | None:
     return int(m.group(1)) if m else None
 
 
+# Ask the kernel which file is executing, not Node. ``process.execPath`` is argv[0]
+# made absolute, and a launcher script that starts the binary with ``exec -a
+# <script>`` sets argv[0] to itself -- Node then reports the script as its own
+# executable. ``/proc/self/exe`` is the link the kernel keeps to the running
+# image; no argv trick reaches it. Linux only: macOS and Windows have no procfs,
+# and there ``process.execPath`` is the best answer available.
+_NODE_EXECUTABLE_PROBE = (
+    "(function(){try{return require('fs').realpathSync('/proc/self/exe')}"
+    "catch(e){return process.execPath}})()"
+)
+
+
 def _node_runtime_executable(node: str) -> str | None:
-    """Native executable behind a version-manager shim, if Node can name it."""
-    rc, out, err = _run([node, "-p", "process.execPath"], _PROBE_TIMEOUT_S)
+    """Native executable behind a version-manager shim, if the host can name it."""
+    rc, out, err = _run([node, "-p", _NODE_EXECUTABLE_PROBE], _PROBE_TIMEOUT_S)
     if rc != 0:
-        logger.debug("node process.execPath failed (rc=%d): %s", rc, err.strip())
+        logger.debug("node executable probe failed (rc=%d): %s", rc, err.strip())
         return None
     raw = out.strip()
     if not raw or "\n" in raw or "\0" in raw or not os.path.isabs(raw):
