@@ -17,6 +17,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { Provider } from 'react-redux'
 import { MemoryRouter } from 'react-router-dom'
 import { createTestStore } from './helpers'
+import { ApiError } from '../api/apiError'
 import { syncSlotRunningFromServer } from '../store/chatSlice'
 import { ThemeProvider } from '../hooks/useTheme'
 import type { ChatSlot } from '../types'
@@ -199,7 +200,7 @@ describe('/side while a turn is running', () => {
     fireEvent.change(input, { target: { value: '/side what is this error about' } })
     await armRunning(store)
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about'))
+    await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about', undefined))
   })
 
   it('/btw <message> rides the same interception — side turn, not steer', async () => {
@@ -210,12 +211,12 @@ describe('/side while a turn is running', () => {
     fireEvent.change(input, { target: { value: '/btw what is this error about' } })
     await armRunning(store)
     fireEvent.keyDown(input, { key: 'Enter' })
-    await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about'))
+    await waitFor(() => expect(mockSideTurn).toHaveBeenCalledWith(SLOT, 'what is this error about', undefined))
     expect(mockSendChat).not.toHaveBeenCalled()
   })
 
   it('restores the composer text when the side turn is rejected', async () => {
-    mockSideTurn.mockRejectedValueOnce(new Error('409: side turn already in flight'))
+    mockSideTurn.mockRejectedValueOnce(new ApiError(409, '409: side turn already in flight'))
     const store = renderRunningChatPage()
     const input = await screen.findByLabelText('Message input')
     fireEvent.change(input, { target: { value: '/side my precious question' } })
@@ -238,7 +239,7 @@ describe('/side while a turn is running', () => {
     await waitFor(() => expect(mockSideTurn).toHaveBeenCalled())
     // User starts typing something new before the 409 lands.
     fireEvent.change(input, { target: { value: 'fresh thought' } })
-    act(() => rejectTurn(new Error('409: side turn already in flight')))
+    act(() => rejectTurn(new ApiError(409, '409: side turn already in flight')))
     // mergeIntoDraft contract: new typing survives on top, the recovered
     // question appends after a paragraph break — nothing is lost.
     await waitFor(() =>

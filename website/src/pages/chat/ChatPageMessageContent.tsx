@@ -146,10 +146,10 @@ export function ChatHeaderMenu({ activeSlot, agent, onReveal, onRename, mode }: 
  *  The server preserves meta fields on the user row it appends, so an echo or
  *  transcript page carries this id back and the bubble is matchable without
  *  relying on content equality (#2845). Shared by the plain send path and the
- *  mid-turn steer path (#6075) so the two cannot drift in id shape. */
-export function mintSendId(): string {
-  return `s-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
-}
+ *  mid-turn steer path (#6075) so the two cannot drift in id shape. Owned once
+ *  by `chat-core/transport` (ChatEmbed and ChatPane mint through the same
+ *  function) and re-exported here for ChatPage's importers. */
+export { mintSendId } from '../../chat-core/transport/sendTurn'
 
 /** Row-identity builders live in chat-core (P5-e); re-exported here so the
  *  page, the store, and the tests keep their import path. */

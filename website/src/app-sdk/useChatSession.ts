@@ -11,6 +11,8 @@
 import { useCallback, useEffect, useRef } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useAppApi, useNavigate } from './index'
+import { sendTurn } from '../chat-core/transport/sendTurn'
+import { appApiSendWire } from './appSendWire'
 
 export function hashStr(s: string): string {
   let h = 0
@@ -109,11 +111,14 @@ export function useChatSession(opts: ChatSessionOptions): ChatSessionState {
       const slot = await api.post<ChatSlot>('/api/chat/slots', { name: slotName, agent })
       const isPackage = workspacePath.includes('/src/')
       const seedMsg = seed({ label, path: workspacePath, isPackage })
-      try {
-        await api.post('/api/chat', { message: seedMsg, slot: slot.key, agent })
-      } catch {
-        // Seed send may fail (SSE response parsed as JSON) — slot still created
-      }
+      // The seed rides the same transport as every other send (JSON receipt,
+      // shared classification) instead of the bare SSE endpoint whose parse
+      // failure used to be swallowed as success. Fire-and-forget: the slot is
+      // the deliverable, `sendTurn` never rejects, and the receipt is
+      // deliberately not acted on -- a seed that did not go out is a session
+      // that starts empty, not a lost user message -- so creation must not
+      // wait out the transport deadline for an answer it will ignore.
+      void sendTurn({ message: seedMsg, slot: slot.key, wire: appApiSendWire(api, agent) })
       folderAssignedRef.current = slot.key
       await assignFolder(slot.key)
       return slot

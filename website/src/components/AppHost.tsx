@@ -301,6 +301,7 @@ function AppHostInner({ app, entry: entryOverride, active = true, sessionKey }: 
     <AppErrorBoundary appName={app.name} onReset={() => setResetKey(k => k + 1)}>
       <AppApiProvider
         appName={app.name}
+        appDisplayName={appDisplayName(app)}
         appVersion={app.manifest?.version || app.version}
         // Provenance verbatim from `GET /api/apps`, which is the one claim an app
         // cannot forge: `builtin` is assigned only by register_builtin_apps() and

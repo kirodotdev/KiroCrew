@@ -397,31 +397,70 @@ describe('createChatSlot', () => {
   })
 })
 
-describe('sendChatMessage', () => {
-  it('POSTs to /api/chat?ws=1 with message, slot, and agent', async () => {
+describe('sendChatMessage — resolves only on a CONFIRMED acceptance', () => {
+  // The caller marks the request delivered on resolution, and `deliveredAt`
+  // permanently short-circuits verification, so anything short of a confirmed
+  // acceptance must reject and leave the request for `verifyDelivery`.
+
+  it('POSTs to /api/chat?ws=1 with message and slot over the dashboard wire, and resolves on dispatch', async () => {
     const fetchMock = vi.fn(async () => jsonResponse({ ok: true }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await sendChatMessage('apply edits', 'dt-slot')
+    await expect(sendChatMessage('apply edits', 'dt-slot')).resolves.toBeUndefined()
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/chat?ws=1')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(String(init.body))).toEqual({
-      message: 'apply edits',
-      slot: 'dt-slot',
-      agent: '',
-    })
+    // `agent` is no longer spelled out: the server default IS the empty agent.
+    expect(JSON.parse(String(init.body))).toEqual({ message: 'apply edits', slot: 'dt-slot' })
   })
 
-  it('tolerates non-JSON response bodies from SSE fallback', async () => {
-    // Without ?ws=1 the host returns SSE — the chatApi helper must not throw.
-    const fetchMock = vi.fn(async () => new Response('data: {"ok":true}', { status: 200 }))
-    vi.stubGlobal('fetch', fetchMock)
+  it('resolves `queued` — the server took custody', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ ok: true, queued: true })))
+    await expect(sendChatMessage('apply edits', 'dt-slot')).resolves.toBeUndefined()
+  })
 
-    const result = await sendChatMessage('test', 'slot')
-    // Falls through JSON.parse catch to a fallback object.
-    expect(result).toHaveProperty('ok', true)
-    expect(result).toHaveProperty('raw', 'data: {"ok":true}')
+  it('rejects a {ok:false} refusal inside a 200 with the server reason', async () => {
+    // The old helper only threw on a non-2xx, so this shape was marked delivered.
+    vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({ ok: false, error: 'slot agent mismatch' })))
+    // Flagged so the page can say "send failed" rather than "delivery unconfirmed".
+    await expect(sendChatMessage('apply edits', 'dt-slot')).rejects.toMatchObject({ name: 'send-refused', message: 'slot agent mismatch' })
+  })
+
+  it('an unconfirmed outcome is NOT flagged as a refusal', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('data: {"ok":true}', { status: 200 })))
+    await expect(sendChatMessage('test', 'slot')).rejects.not.toMatchObject({ name: 'send-refused' })
+  })
+
+  it('rejects a non-2xx status, as before', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('gateway down', { status: 503 })))
+    await expect(sendChatMessage('apply edits', 'dt-slot')).rejects.toThrow()
+  })
+
+  it('rejects when the fetch itself fails, as before', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('Failed to fetch') }))
+    await expect(sendChatMessage('apply edits', 'dt-slot')).rejects.toThrow()
+  })
+
+  it('rejects an accepted 2xx whose body is not JSON — accepted but NOT confirmed', async () => {
+    // The old helper resolved this by a parse fallback and the request was
+    // marked delivered on a receipt nobody could read.
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('data: {"ok":true}', { status: 200 })))
+    await expect(sendChatMessage('test', 'slot')).rejects.toThrow()
+  })
+
+  it('rejects when the deadline passes with no receipt — never marked delivered on a stall', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.stubGlobal('fetch', vi.fn((_url: string, init?: RequestInit) => new Promise<Response>((_res, rej) => {
+        init?.signal?.addEventListener('abort', () => rej(new DOMException('aborted', 'AbortError')))
+      })))
+      const outcome = sendChatMessage('apply edits', 'dt-slot')
+      const assertion = expect(outcome).rejects.toThrow()
+      await vi.advanceTimersByTimeAsync(10_500)
+      await assertion
+    } finally {
+      vi.useRealTimers()
+    }
   })
 })
 

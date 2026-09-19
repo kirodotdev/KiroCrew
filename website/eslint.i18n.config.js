@@ -1300,13 +1300,18 @@ export default [
   // into the calls to earn the callee exemption would duplicate its branch logic
   // three times — a worse module for a lint technicality.
   //
-  // Scoped to this one file for the same reason as the two above: the module is the
-  // SDK's protocol surface (event tables, hooks, provider) and holds no other prose.
-  // The pieces that DO render copy — `ChatEmbed`, `ChatPanel`, `ChatMessageList` —
-  // are separate files and stay covered. Copy added here later belongs in the
-  // catalog, not under this exemption; keep this module protocol-and-diagnostics.
+  // Scoped to these two files for the same reason as the two above: they are the
+  // SDK's protocol surface (event tables, hooks, provider, the permission-fenced
+  // client) and hold no other prose. `scopedApi.ts` is the half the barrel split
+  // out; its one flagged literal is the permission-denied diagnostic that quotes the
+  // API path the author must add to `permissions.api`, passed to
+  // `AppApiPermissionError` (a typed `Error` the send wire matches by class, so the
+  // `^(Type)?Error$` callee exemption does not reach it). The pieces that DO render
+  // copy — `ChatEmbed`, `ChatPanel`, `ChatMessageList` — are separate files and stay
+  // covered. Copy added here later belongs in the catalog, not under this
+  // exemption; keep these modules protocol-and-diagnostics.
   {
-    files: ['src/app-sdk/index.ts'],
+    files: ['src/app-sdk/index.ts', 'src/app-sdk/scopedApi.ts'],
     rules: {
       'i18next/no-literal-string': 'off',
     },
