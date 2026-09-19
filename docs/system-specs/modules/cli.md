@@ -242,7 +242,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew restart` | Restart a running gateway (service-aware: restarts the systemd/launchd service if active, otherwise terminates the foreground gateway and respawns it detached). Pass `--port N` to bypass the service short-circuit and target a specific gateway. |
 | `kirocrew service install` | Install gateway as a system-level systemd service (Linux, requires sudo for `tee` + `systemctl` only) or launchd LaunchAgent (macOS, no sudo). Auto-restarts on crash, auto-starts on boot. |
 | `kirocrew service uninstall` | Stop and remove the systemd unit / launchd plist. |
-| `kirocrew service status` | Show service status (`systemctl status` or `launchctl list`). No sudo required. |
+| `kirocrew service status` | Show service status (`systemctl status` or `launchctl print gui/<uid>/<label>`, summarised to state/pid/plist on macOS, plus the last exit code when non-zero). No sudo required. |
 | `kirocrew logs` | Tail gateway logs from the systemd journal, launchd stdout file, or `~/.kiro/crew/gateway.log`. Hosts without systemd/launchd, including Windows, read the UTF-8 fallback file in Python without requiring `tail`. Read failures exit with file-access/retry guidance instead of an exception traceback. |
 | `kirocrew logs -f` | Follow logs live. The Python fallback reopens the log by name on each poll, permits Windows rename-based rotation even during reads, streams appended UTF-8 text, and stops on Ctrl+C. A replacement file or detected truncation resets the read offset; a temporary missing path during rotation is retried on the next poll. Rotated backup files are not replayed. |
 | `kirocrew cloud launch/list/status/connect/stop/start/destroy/iam-policy/doctor` | Provision, connect to, and manage a KiroCrew EC2 instance in the user's AWS account. |
@@ -1273,8 +1273,10 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
    `sudo systemctl restart kirocrew.service` (single
    atomic operation, smaller down-window than stop+start, and the
    supervisor stays in charge of the lifecycle the whole time). On
-   macOS: `launchctl unload <plist>` + `launchctl load <plist>` (no
-   `-w`, so persistent enable state is unchanged). The deprecated
+   macOS: `launchctl kickstart -k gui/<uid>/<label>`, so launchd
+   performs the kill and respawn itself (an `unload` + `load` pair
+   cannot be issued from inside the gateway: the unload SIGTERMs the
+   caller and the load never runs). The deprecated
    `launchctl restart` is avoided because under `KeepAlive` it behaves
    like `stop` (SIGTERM + immediate respawn) and never re-reads the plist.
 2. Otherwise (foreground gateway, no service, or `--port` passed
@@ -1387,6 +1389,14 @@ on crash, and starts on boot. Implemented in `src/kiro_crew/service/`.
   - Plist: `~/Library/LaunchAgents/dev.kirocrew.gateway.plist`
   - Install: `launchctl load -w <plist>`. `RunAtLoad=true` and
     `KeepAlive` ensure auto-start and crash recovery.
+  - Liveness: `launchctl print gui/<uid>/<label>`; rc 0 counts as
+    active, including loaded-but-not-running, so callers do not take
+    the no-service path between `KeepAlive` respawns. The legacy
+    `launchctl list <label>` spelling is not used for probing: it fails
+    for a gui-domain agent. The probe assumes the gui domain that
+    `launchctl load` yields from a GUI login session; an agent
+    bootstrapped from a non-GUI session lands in `user/<uid>` and is
+    not seen (domain fallback tracked in #11017).
   - Stdout and stderr are written to
     `~/Library/Logs/KiroCrew/gateway.{log,err}`.
 - **Other platforms**: install/uninstall return exit code 2 with a
