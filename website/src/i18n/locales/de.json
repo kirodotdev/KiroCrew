@@ -13464,6 +13464,8 @@
         "single_line": "Einzeilig",
         "spellcheck_input": "Nachrichteneingabe auf Rechtschreibung prüfen",
         "spellcheck_input_desc": "Unterstreicht falsch geschriebene Wörter im Nachrichtenfeld mit einer roten Wellenlinie. Schalte es aus, um die roten Unterstreichungen beim Tippen zu stoppen.",
+        "show_pasted_text_in_full": "Eingefügten Text vollständig anzeigen",
+        "show_pasted_text_in_full_desc": "Langen eingefügten Text im Nachrichtenfeld als bearbeitbaren Text behalten, statt ihn zu einem Einfüge-Chip zusammenzufalten. {{chord}} macht das weiterhin für einen einzelnen Einfügevorgang. Bei sehr großem eingefügtem Text kann die Eingabe langsam werden.",
         "smooth": "Geglättet",
         "soft_stop_budget_seconds": "Zeitbudget für sanftes Stoppen (Sekunden)",
         "somewhat": "Etwas",

@@ -13648,6 +13648,8 @@
         "single_line": "Une seule ligne",
         "spellcheck_input": "Vérifier l'orthographe dans la zone de message",
         "spellcheck_input_desc": "Souligne les mots mal orthographiés dans la zone de message d'un trait rouge ondulé. Désactive-le pour arrêter les soulignements rouges pendant que tu écris.",
+        "show_pasted_text_in_full": "Afficher le texte collé en entier",
+        "show_pasted_text_in_full_desc": "Conserver un collage long comme texte modifiable dans le champ de message, au lieu de le replier en pastille de collage. {{chord}} le fait toujours pour un seul collage. Un collage très volumineux peut ralentir la saisie.",
         "smooth": "Fluide",
         "soft_stop_budget_seconds": "Budget d'arrêt souple (secondes)",
         "somewhat": "Un peu",

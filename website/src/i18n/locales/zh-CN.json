@@ -13281,6 +13281,8 @@
         "single_line": "单行",
         "spellcheck_input": "检查消息输入的拼写",
         "spellcheck_input_desc": "在消息输入框中用红色波浪线标出拼写有误的词。想在输入时去掉红色下划线就把它关掉。",
+        "show_pasted_text_in_full": "完整显示粘贴内容",
+        "show_pasted_text_in_full_desc": "在消息输入框中把长内容保持为可编辑的文本，而不是折叠成一个粘贴块。关闭时 {{chord}} 仍可对单次粘贴这样做。粘贴内容非常大时输入可能变慢。",
         "smooth": "平滑",
         "soft_stop_budget_seconds": "软停止预算（秒）",
         "somewhat": "略懂",

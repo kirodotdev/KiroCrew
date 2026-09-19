@@ -13281,6 +13281,8 @@
         "single_line": "한 줄",
         "spellcheck_input": "메시지 입력 맞춤법 검사",
         "spellcheck_input_desc": "메시지 입력란에서 맞춤법이 틀린 단어를 빨간 물결선으로 표시합니다. 입력하는 동안 빨간 밑줄을 없애려면 끄세요.",
+        "show_pasted_text_in_full": "붙여넣은 텍스트를 전체로 표시",
+        "show_pasted_text_in_full_desc": "긴 붙여넣기를 붙여넣기 칩으로 접지 않고 메시지 입력란에서 편집할 수 있는 텍스트로 유지합니다. 꺼져 있어도 {{chord}} 로 한 번만 같게 붙여넣을 수 있습니다. 붙여넣기가 매우 크면 입력이 느려질 수 있습니다.",
         "smooth": "부드럽게",
         "soft_stop_budget_seconds": "소프트 중지 예산(초)",
         "somewhat": "보통",

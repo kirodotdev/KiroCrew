@@ -13647,6 +13647,8 @@
         "single_line": "Linha única",
         "spellcheck_input": "Verificar a ortografia na entrada de mensagens",
         "spellcheck_input_desc": "Sublinha as palavras com erros de ortografia no campo de mensagem com um traço vermelho ondulado. Desative para parar os sublinhados vermelhos enquanto você digita.",
+        "show_pasted_text_in_full": "Mostrar o texto colado por completo",
+        "show_pasted_text_in_full_desc": "Manter uma colagem longa como texto editável no campo de mensagem, em vez de dobrá-la em um chip de colagem. {{chord}} continua fazendo isso para uma única colagem. Uma colagem muito grande pode deixar a digitação lenta.",
         "smooth": "Suave",
         "soft_stop_budget_seconds": "Orçamento de parada suave (segundos)",
         "somewhat": "Um pouco",

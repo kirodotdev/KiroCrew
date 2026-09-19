@@ -244,6 +244,58 @@ describe('ChatInput optimize: promptOptimizer capability gates the keyboard shor
   })
 })
 
+describe('ChatInput paste: showFullPastes', () => {
+  const pasteText = (textarea: HTMLElement, text: string) =>
+    fireEvent.paste(textarea, {
+      clipboardData: { types: ['text/plain'], items: [], getData: () => text },
+    })
+
+  beforeEach(() => {
+    ;(document as unknown as { execCommand: (...a: unknown[]) => boolean }).execCommand = vi.fn(() => false)
+  })
+
+  // The payload is over both collapse thresholds (4 lines, >200 chars), so the
+  // only thing deciding chip-vs-text here is the setting.
+  const big = `${'x'.repeat(250)}\nsecond\nthird\nfourth`
+
+  it('collapses a large paste into a chip by default', () => {
+    const onChange = vi.fn()
+    const onPasteBlocksChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={onPasteBlocksChange} />,
+    )
+    pasteText(screen.getByRole('textbox'), big)
+    expect(onChange).toHaveBeenCalledWith('[ Paste #1 · 4 lines ]')
+    expect(onPasteBlocksChange).toHaveBeenCalledWith([expect.objectContaining({ seq: 1, lines: 4, content: big })])
+  })
+
+  it('keeps a large paste as plain text when showFullPastes is on', () => {
+    const onChange = vi.fn()
+    const onPasteBlocksChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={onPasteBlocksChange} showFullPastes />,
+    )
+    // Trailing blank lines make handlePaste take its own insert path, so the
+    // full text is observable here rather than being left to the browser.
+    pasteText(screen.getByRole('textbox'), `${big}\n\n`)
+    expect(onChange).toHaveBeenCalledWith(big)
+    expect(onPasteBlocksChange).not.toHaveBeenCalled()
+  })
+
+  it('leaves a clean large paste entirely to the browser when showFullPastes is on', () => {
+    const onChange = vi.fn()
+    const onPasteBlocksChange = vi.fn()
+    renderWithProviders(
+      <ChatInput value="" onChange={onChange} onSend={vi.fn()} onPasteBlocksChange={onPasteBlocksChange} showFullPastes />,
+    )
+    pasteText(screen.getByRole('textbox'), big)
+    // Nothing to clean and nothing to collapse — the handler must not
+    // preventDefault, or the paste becomes a silent no-op.
+    expect(onChange).not.toHaveBeenCalled()
+    expect(onPasteBlocksChange).not.toHaveBeenCalled()
+  })
+})
+
 describe('ChatInput paste: strip trailing blank lines', () => {
   const pasteText = (textarea: HTMLElement, text: string) =>
     fireEvent.paste(textarea, {

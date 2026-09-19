@@ -13281,6 +13281,8 @@
         "single_line": "単一行",
         "spellcheck_input": "メッセージ入力のスペルチェック",
         "spellcheck_input_desc": "メッセージ入力欄で、スペルミスのある単語を赤い波線で示します。入力中に赤い下線を消すにはオフにします。",
+        "show_pasted_text_in_full": "貼り付けたテキストをそのまま表示",
+        "show_pasted_text_in_full_desc": "長い貼り付けを貼り付けチップに折りたたまず、メッセージ入力欄で編集できるテキストのまま保ちます。オフでも {{chord}} なら 1 回分だけ同じことができます。非常に大きな貼り付けでは入力が遅くなることがあります。",
         "smooth": "スムーズ",
         "soft_stop_budget_seconds": "ソフトストップ予算（秒）",
         "somewhat": "やや",

@@ -68,6 +68,10 @@ interface LexicalComposerInputProps {
   blocks: PasteBlock[]
   onChange: (value: string) => void
   onBlocksChange?: (blocks: PasteBlock[]) => void
+  /** Leave a long paste as full editable text instead of collapsing it into a
+   *  paste-token chip. Defaults false; Cmd/Ctrl+Shift+V is the per-paste
+   *  equivalent when it is off. */
+  showFullPastes?: boolean
   onSend: () => void
   ariaLabel: string
   placeholder: string
@@ -299,7 +303,8 @@ function InteractionPlugin({
   disabled,
   readOnly,
   sendOnEnter,
-}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'disabled' | 'readOnly' | 'sendOnEnter'>) {
+  showFullPastes,
+}: Pick<LexicalComposerInputProps, 'blocks' | 'onBlocksChange' | 'onChange' | 'onSend' | 'onUploadFiles' | 'sentMessages' | 'disabled' | 'readOnly' | 'sendOnEnter' | 'showFullPastes'>) {
   const [editor] = useLexicalComposerContext()
   const blocksRef = useRef(blocks)
   const rawPasteRef = useRef(false)
@@ -369,7 +374,7 @@ function InteractionPlugin({
         const selection = $getSelection()
         if (!$isRangeSelection(selection)) return false
         event.preventDefault()
-        if (onBlocksChange && !forceRaw && shouldCollapse(cleaned)) {
+        if (onBlocksChange && !forceRaw && !showFullPastes && shouldCollapse(cleaned)) {
           const block: PasteBlock = {
             id: makePasteId(),
             seq: nextSeq(blocksRef.current),
@@ -531,7 +536,7 @@ function InteractionPlugin({
       // timer cannot write to the latch after teardown (useImeGuard contract).
       latch.reset()
     }
-  }, [disabled, editor, onBlocksChange, onChange, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages])
+  }, [disabled, editor, onBlocksChange, onChange, onSend, onUploadFiles, readOnly, sendOnEnter, sentMessages, showFullPastes])
 
   return null
 }
@@ -541,6 +546,7 @@ export default function LexicalComposerInput({
   blocks,
   onChange,
   onBlocksChange,
+  showFullPastes = false,
   onSend,
   ariaLabel,
   placeholder,
@@ -611,6 +617,7 @@ export default function LexicalComposerInput({
         <InteractionPlugin
           blocks={blocks}
           onBlocksChange={onBlocksChange}
+          showFullPastes={showFullPastes}
           onChange={onChange}
           onSend={onSend}
           onUploadFiles={onUploadFiles}

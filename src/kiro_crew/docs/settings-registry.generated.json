@@ -684,6 +684,12 @@
       "description": "Display used and total tokens next to the context progress bar"
     },
     {
+      "id": "chat.show-pasted-text-in-full",
+      "label": "Show Pasted Text in Full",
+      "tab": "chat",
+      "route": "/settings/chat?highlight=chat.show-pasted-text-in-full"
+    },
+    {
       "id": "chat.show-thinking-inline",
       "label": "Show Thinking Inline",
       "tab": "chat",

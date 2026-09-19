@@ -1127,6 +1127,14 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "chat.show-pasted-text-in-full",
+    "label": "Show Pasted Text in Full",
+    "labelKey": "pages.settings.chatPanel.show_pasted_text_in_full",
+    "tab": "chat",
+    "type": "toggle",
+    "occurrence": 1
+  },
+  {
     "id": "chat.show-thinking-inline",
     "label": "Show Thinking Inline",
     "labelKey": "pages.settings.chatPanel.show_thinking_inline",

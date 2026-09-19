@@ -97,4 +97,23 @@ describe('loadChatConfig', () => {
     localStorage.setItem('mc-chat-config', JSON.stringify({ hideEmptyFolderBody: 'yes' }))
     expect(loadChatConfig().hideEmptyFolderBody).toBe(false)
   })
+
+  it('keeps collapsing long pastes until the user opts out', () => {
+    // OFF is the contract: the chip is what keeps a very large paste from being
+    // laid out in the composer and the sent bubble, so a client with no stored
+    // config must never inherit the full-text shape.
+    expect(loadChatConfig().showFullPastes).toBe(false)
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showTimestamps: false }))
+    expect(loadChatConfig().showFullPastes).toBe(false)
+  })
+
+  it('respects stored showFullPastes=true', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showFullPastes: true }))
+    expect(loadChatConfig().showFullPastes).toBe(true)
+  })
+
+  it('repairs a non-boolean showFullPastes value to the collapsing default', () => {
+    localStorage.setItem('mc-chat-config', JSON.stringify({ showFullPastes: 'yes' }))
+    expect(loadChatConfig().showFullPastes).toBe(false)
+  })
 })

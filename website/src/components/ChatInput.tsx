@@ -642,6 +642,11 @@ interface ChatInputProps {
   pasteBlocks?: PasteBlock[]
   /** Replace the current list of paste blocks (add/remove). */
   onPasteBlocksChange?: (next: PasteBlock[]) => void
+  /** Leave a long paste as full editable text instead of collapsing it into a
+   *  `[ Paste #N · M lines ]` chip. Defaults false — the chip is the established
+   *  behaviour, and it is what keeps a very large paste off the main thread.
+   *  Cmd/Ctrl+Shift+V still forces one raw paste when this is off. */
+  showFullPastes?: boolean
   /** Opt into the first Lexical composer migration slice. Defaults off so the
    *  established textarea path remains the production fallback until parity is complete. */
   lexicalComposer?: boolean
@@ -961,6 +966,7 @@ function ChatInput({
   followUpSourceKey,
   pasteBlocks = [],
   onPasteBlocksChange,
+  showFullPastes = false,
   lexicalComposer = false,
   knowledgeChip,
   autoFocusKey,
@@ -2938,7 +2944,9 @@ function ChatInput({
 
     // Big paste → collapse into a `[ Paste #N ]` chip. Uses the cleaned text so
     // the chip's line count and stored content exclude the stripped blanks.
-    if (onPasteBlocksChange && !forceRaw && shouldCollapsePaste(cleaned)) {
+    // `showFullPastes` opts out for every paste, the same way forceRaw opts out
+    // for one; the paste then falls through to the plain-insert path below.
+    if (onPasteBlocksChange && !forceRaw && !showFullPastes && shouldCollapsePaste(cleaned)) {
       e.preventDefault()
       const block: PasteBlock = { id: makePasteId(), seq: nextSeq(pasteBlocks), lines: countLines(cleaned), content: cleaned }
       const token = formatToken(block)
@@ -3001,7 +3009,7 @@ function ChatInput({
         }
       })
     }
-  }, [onUploadFiles, onPasteBlocksChange, pasteBlocks, value, onChange])
+  }, [onUploadFiles, onPasteBlocksChange, pasteBlocks, value, onChange, showFullPastes])
 
   /** Replace a collapsed-paste token with its full content in the textarea and
    *  drop the backing block. The caret lands just past the inserted content. */
@@ -4086,6 +4094,7 @@ function ChatInput({
                 blocks={pasteBlocks}
                 onChange={handleLexicalChange}
                 onBlocksChange={onPasteBlocksChange}
+                showFullPastes={showFullPastes}
                 onSend={fireComposer}
                 onUploadFiles={onUploadFiles}
                 controlRef={lexicalControlRef}
