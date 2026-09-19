@@ -62,20 +62,101 @@ def exfil_query_min_len() -> int:
 # a ``.<letters>`` TLD, so ``http://169.254.169.254/latest/…/<secret>`` never
 # matched _URL_RE and its path/query was never scanned. Group 3 stays the
 # path+query so the scan/redact call sites are unchanged.
-_URL_RE = re.compile(
-    r"https?://"
-    r"("
+_URL_HOST = (
     r"[a-zA-Z0-9._-]+\.[a-zA-Z]{2,}"  # DNS name with a letter TLD
     r"|\d{1,3}(?:\.\d{1,3}){3}"  # raw IPv4 literal
     r"|\[[0-9A-Fa-f:.]+\]"  # bracketed IPv6 literal (incl. IPv4-mapped ::ffff:d.d.d.d)
+)
+_URL_RE = re.compile(
+    r"https?://" r"(" + _URL_HOST + r")"
     # Group 3 = path AND/OR query. It must start with ``/`` (path) OR ``?``
     # (a query attached directly to the host, no path segment). The prior
     # ``/[...]*`` required a leading slash, so ``https://host?leak=<secret>``
     # yielded group(3)=None and both scan/redact bailed on ``qmark == -1``,
     # never inspecting the query — a real exfil bypass. ``[/?]`` admits both;
     # the ``path_and_query.find("?")`` split at the call sites is unchanged.
-    r")(:\d+)?([/?][^\s)\"'>]*)?"
+    #
+    # The scanner has only two hard terminators: whitespace and ``"``.
+    # Whitespace cannot belong to an unencoded URL. The double quote remains a
+    # hard boundary for quoted HTML attributes and compact structured fields.
+    # Every other punctuation byte is content here, including ``'()``, ``<>``,
+    # and backtick. A renderer may treat some of those bytes as delimiters, but
+    # stopping on them would let a later path or query payload escape scanning.
+    # ``_url_scan_span`` removes a delimiter only through the terminal
+    # wrapper-pair proof. Ambiguous bytes remain scanned, so the only error
+    # direction is bounded over-scanning.
+    #
+    # ``(?!https?://<host>)`` splits back-to-back URLs only where a real host
+    # follows the inner scheme. Requiring the host guarantees the split tail is
+    # scanned by a second match. The lookahead mirrors ``_URL_HOST``.
+    #
+    # ``re.IGNORECASE`` follows RFC 3986 scheme matching. ``re.ASCII`` keeps
+    # case folding ASCII-only, so Unicode folds cannot widen the scheme or TLD.
+    r"(:\d+)?([/?](?:(?!https?://(?:" + _URL_HOST + r"))[^\s\"])*)?",
+    re.IGNORECASE | re.ASCII,
 )
+
+
+_URL_WRAPPER_PAIRS = {"(": ")", "'": "'", "<": ">", "`": "`"}
+_URL_WRAPPER_PUNCTUATION = frozenset(".,;:!?")
+_URL_QUOTE_WRAPPER_SUFFIX = frozenset(")]},.;:!?")
+
+
+def _url_scan_span(match: re.Match[str]) -> tuple[str, str]:
+    """Return the URL and payload span for one maximal ``_URL_RE`` match.
+
+    The regex stops only at whitespace and a double quote. Every other
+    punctuation byte can be URL content, so delimiter truncation cannot hide a
+    later path or query payload. Emission wrappers are removed only when the
+    byte immediately before the match proves one of these pairs: ``(...)``,
+    ``'...'``, ``<...>``, or ```...```. At most one matching closer is removed.
+
+    A distinct closer must outnumber its opener inside the match. This keeps
+    balanced URL content while trimming the closer supplied by the external
+    opener. A closer may sit before trailing prose punctuation. The single-quote
+    pair also retains the established field-boundary rule and can stop before a
+    suffix made only from ``)]},.;:!?``. Ambiguous bytes stay in the span, which
+    accepts bounded over-scanning rather than an unscanned payload.
+    """
+    url = match.group(0)
+    path_and_query = match.group(3) or ""
+    if not path_and_query:
+        return url, path_and_query
+
+    preceding = match.string[match.start() - 1] if match.start() > 0 else ""
+    closer = _URL_WRAPPER_PAIRS.get(preceding)
+    if closer is None:
+        return url, path_and_query
+
+    end = len(path_and_query)
+    if preceding == "'":
+        structural_suffix_start = end
+        while (
+            structural_suffix_start > 0
+            and path_and_query[structural_suffix_start - 1] in _URL_QUOTE_WRAPPER_SUFFIX
+        ):
+            structural_suffix_start -= 1
+        for quote_end, char in enumerate(path_and_query):
+            following = path_and_query[quote_end + 1 : quote_end + 2]
+            if char == closer and (
+                not following or following in ",}]:" or quote_end + 1 == structural_suffix_start
+            ):
+                end = quote_end
+                break
+    else:
+        wrapper_end = end
+        while wrapper_end > 0 and path_and_query[wrapper_end - 1] in _URL_WRAPPER_PUNCTUATION:
+            wrapper_end -= 1
+        if wrapper_end > 0 and path_and_query[wrapper_end - 1] == closer:
+            candidate = path_and_query[:wrapper_end]
+            if preceding == closer or candidate.count(closer) > candidate.count(preceding):
+                end = wrapper_end - 1
+
+    trimmed = path_and_query[:end]
+    if end != len(path_and_query):
+        url = url[: len(url) - (len(path_and_query) - end)]
+    return url, trimmed
+
 
 # Query string length threshold — normal URLs rarely exceed this
 _EXFIL_QUERY_MIN_LEN = 200
@@ -1038,18 +1119,38 @@ def scan_exfiltration_urls(text: str) -> list[str]:
     Flags the PAYLOAD, not the destination: fixed credentials and the
     base64/length heuristics inspect the URL path+query regardless of host. Only
     companion-supplied exact tenant hosts skip the base64/length heuristics here;
-    the OAuth-param carve-out is disabled for this general text scanner. Returns
+    the OAuth-param carve-out is disabled for this general text scanner. A match
+    that starts exactly where the previous match ended (one unbroken URL-legal
+    run split by the boundary lookahead) receives NO host-based exemption — its
+    bytes may physically travel to the preceding host. Returns
     list of warning strings, empty if clean.
     """
     exempt_hosts = _exfil_exempt_hosts()
     warnings: list[str] = []
+    prev_end = -1
     for match in _URL_RE.finditer(text):
+        # A match that starts exactly where the previous one ended exists only
+        # because the boundary lookahead SPLIT one unbroken run of URL-legal
+        # text. In channels where ``)``/``'`` do not terminate a URL (raw href
+        # attributes, plain tokens) those bytes physically travel to the FIRST
+        # host, so a glued span must not claim its own host's trust: no
+        # exact-host exemption, no presigned exemption — full heuristics
+        # always. Without this, suffixing a trusted URL exfiltrates past the
+        # scan: ``https://evil.tld/?q=)https://tenant.tld/?nav=<base64>`` hands
+        # the payload span to the exempt tenant host while the whole run is
+        # fetched from evil.tld. Over-scanning a genuinely separate glued URL
+        # is the safe direction (bounded false positive, never an unscanned
+        # byte). Shared shape with redact_exfiltration_urls — keep in sync.
+        glued = match.start() == prev_end
+        prev_end = match.end()
+        _, path_and_query = _url_scan_span(match)
         warning = _exfil_url_warning(
             match.group(1),
-            match.group(3) or "",
-            exempt_hosts,
+            path_and_query,
+            frozenset() if glued else exempt_hosts,
             port=match.group(2) or "",
             is_https=match.group(0).lower().startswith("https://"),
+            allow_safe_presigned=not glued,
         )
         if warning:
             warnings.append(warning)
@@ -1079,17 +1180,36 @@ def redact_exfiltration_urls(text: str) -> tuple[str, list[str]]:
         return text, []
 
     exempt_hosts = _exfil_exempt_hosts()
-    result = text
+    # Redact by MATCH SPAN, right-to-left, not by ``str.replace(url, …)``. A
+    # global replace substitutes EVERY occurrence of the matched substring, so
+    # when one flagged URL's text is a prefix of a later, longer flagged URL,
+    # redacting the first rewrites the second's bytes and the second's span no
+    # longer exists to be redacted — its tail (which can carry the payload)
+    # survives. Splicing each span in reverse keeps earlier offsets valid and
+    # redacts exactly the classified URL, once.
+    spans: list[tuple[int, int, str]] = []
+    prev_end = -1
     for match in _URL_RE.finditer(text):
+        # Glued-span rule — same as scan_exfiltration_urls (keep in sync): a
+        # span abutting the previous match never gets host/presigned trust.
+        glued = match.start() == prev_end
+        prev_end = match.end()
         domain = match.group(1)
+        url, path_and_query = _url_scan_span(match)
         if _exfil_url_warning(
             domain,
-            match.group(3) or "",
-            exempt_hosts,
+            path_and_query,
+            frozenset() if glued else exempt_hosts,
             port=match.group(2) or "",
             is_https=match.group(0).lower().startswith("https://"),
+            allow_safe_presigned=not glued,
         ):
-            result = result.replace(match.group(0), f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]")
+            start = match.start()
+            spans.append((start, start + len(url), f"{EXFILTRATION_REDACTION_TAG_PREFIX}{domain}]"))
+
+    result = text
+    for start, stop, replacement in reversed(spans):
+        result = result[:start] + replacement + result[stop:]
     return result, warnings
 
 
