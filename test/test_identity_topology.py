@@ -495,7 +495,20 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
     "sandbox.py": (
         "writer-adjacent: launcher exports KIROCREW_HOST_PID (its own HOST pid — "
         "the exact pid the gateway keys the file by) before fork/namespace work, "
-        "so in-namespace readers can look the file up directly without a /proc walk"
+        "so a reader outside the namespace can look the file up directly without "
+        "a /proc walk. ALSO the enforcement point for the split: it masks the "
+        "session-identity root holding the AUTHORITATIVE binding, so an "
+        "in-namespace reader resolves nothing there and the attribution copy in "
+        "the data-home root is all it can see"
+    ),
+    "security/paths.py": (
+        "fence registry, not a reader: names the session-identity root in "
+        "_CREW_SECRET_LEAVES so the agent's own file tools are refused the "
+        "authoritative binding, and states in the same entry why the bare "
+        "session_pid_<pid>.txt in the data-home root is deliberately NOT fenced "
+        "(attribution only — the lenient resolvers read it and a wrong answer "
+        "mislabels an audit line rather than authorizing anything). Reads and "
+        "writes no session_pid file and does no /proc walk"
     ),
     "mcp_gateway/claim.py": "docstring reference to the contract (no code reads)",
     "session_pid.py": (
@@ -521,9 +534,11 @@ _REGISTERED_CALL_SITES: dict[str, str] = {
     "mcp_computer.py": (
         "comment reference only (no code reads): the computer-use stdio shim "
         "explains why it resolves identity with mcp_core._resolve_session_key_strict "
-        "(HMAC-verified, direct KIROCREW_HOST_PID lookup) rather than the lenient "
-        "walk — an unresolved key is treated as an unattended surface and refused "
-        "before anything reaches the wire"
+        "rather than the lenient walk — an unresolved key is treated as an "
+        "unattended surface and refused before anything reaches the wire. That "
+        "resolver no longer verifies a mapping in-process where it can be "
+        "forged: it asks the gateway for the kernel-attested peer identity, and "
+        "falls back to the fenced binding only where that channel is absent"
     ),
 }
 

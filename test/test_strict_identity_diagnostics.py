@@ -45,10 +45,10 @@ class TestStrictIdentityDiagnosis:
         assert "session-unbound" in out
         assert "doctor" in out
 
-    def test_a_declared_host_pid_points_at_signing_not_routing(self, monkeypatch) -> None:
+    def test_a_declared_host_pid_points_at_identity_not_routing(self, monkeypatch) -> None:
         """When the launcher DID declare a host pid the channel exists and the
-        sidecar is what failed, so advising the operator to route the server
-        would send them to the wrong place."""
+        identity binding is what failed, so advising the operator to route the
+        server would send them to the wrong place."""
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         monkeypatch.setenv("KIROCREW_HOST_PID", "4242")
         with (
@@ -56,8 +56,8 @@ class TestStrictIdentityDiagnosis:
             patch.object(mcp_core, "_resolve_session_key_strict", return_value=""),
         ):
             out = mcp_core.strict_identity_diagnosis()
-        assert "did not verify" in out
-        assert "trust root" in out
+        assert "could not resolve" in out
+        assert "identity binding" in out
         assert "mcp_gateway.stub_servers" not in out
 
 

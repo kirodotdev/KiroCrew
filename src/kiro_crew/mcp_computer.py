@@ -37,9 +37,10 @@ Identity is resolved with :func:`mcp_core._resolve_session_key_strict` — the
 gateway-injected per-call caller block first (this server advertises
 ``kirocrew.caller-identity``, so gatewayd injects one whenever it can name the
 caller — the only identity source that works on a pooled backend serving many
-sessions), then the env var, then ``KIROCREW_HOST_PID`` plus the HMAC sidecar
-signed with the keystone-protected ``sel_hmac.key``. The lenient resolver is
-deliberately NOT used: it walks ``/proc`` ancestors over
+sessions), then the env var, then the gateway peer-identity lookup over the
+dashboard AF_UNIX socket. Identity rests on the fenced binding directory and
+its own root, resolved by the gateway from the kernel-attested peer pid. The
+lenient resolver is deliberately NOT used: it walks ``/proc`` ancestors over
 ``session_pid_<pid>.txt``, which ``mcp_core`` itself documents as
 "agent-writable and therefore forgeable".
 

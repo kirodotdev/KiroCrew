@@ -108,9 +108,11 @@ Detail and rationale: [security](docs/system-specs/modules/security.md),
   `pushd`) narrows an unbounded set by exactly one. `test_sandbox_governance_mask.py`
   pins the union of the three dispositions equal to the crew-home half of
   `security.sensitive_home_dirs()`, so a new leaf cannot land in none of them — that
-  pin, not a regex, is what keeps the ceiling un-disableable. One residual worth
-  carrying: `sel_hmac.key` is `VISIBLE`, so the SEL audit key has no OS fence; closing
-  that means moving its in-sandbox reader behind the gateway, never another matcher.
+  pin, not a regex, is what keeps the ceiling un-disableable. The identity protocol
+  no longer depends on `sel_hmac.key`: the authoritative binding sits in a masked
+  directory with its own root, and the gateway resolves identity from the
+  kernel-attested peer pid. `sel_hmac.key` stays `VISIBLE` and signs the audit chain
+  only; issue #12025 tracks moving that writer behind the gateway.
 - **Governance is `POLICY ∩ PROFILE`, tightest-wins**, enforced at Kiro Crew's OWN
   PreToolUse gate even when the kiro agent config granted the call. The evaluator
   is scope-name-agnostic, so adding a scope is a `SCOPE_CATALOG` data change, never

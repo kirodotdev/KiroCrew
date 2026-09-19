@@ -331,6 +331,76 @@ class TestTheReconciliationIsComplete:
         for path in _expected_exceptions():
             assert path in fenced, f"{path} is exempted from a gate that never covered it"
 
+    def test_the_identity_binding_is_fenced_at_both_layers(self) -> None:
+        """The binding that decides WHICH SESSION a process is must be out of
+        reach of the agent's own tools AND of a subprocess calling ``open()``.
+
+        Two layers, because each answers a different caller and neither covers
+        the other: the read-gate floor answers the agent's file tools, the
+        sandbox mask answers a spawned interpreter. A binding an agent can write
+        names its own session as any other, and every consumer of
+        ``require_strict_session_key`` then admits it as that session's owner.
+
+        The signature cannot carry this alone, which is why the fence is pinned
+        rather than assumed: verifying an HMAC needs the same bytes as signing
+        one, so a key readable in the sandbox cannot bind anything against it.
+        """
+        # ``sensitive_home_dirs`` returns each leaf expanded across both
+        # data-home spellings, so match the suffix rather than the bare name.
+        floor = security.sensitive_home_dirs()
+        assert [rel for rel in floor if rel.endswith("/session-identity")]
+        assert "session-identity" in sandbox._CREW_HIDDEN_LEAVES
+        # ``mount(2)`` cannot mask an absent path, and the gateway creates this
+        # root only on its first session claim, so without the precreate entry a
+        # sandbox spawned before any claim gets a vacuous mask for its whole life.
+        assert "session-identity" in sandbox._CREW_PRECREATE_HIDDEN_DIR_LEAVES
+        assert "session-identity" not in sandbox._CREW_SANDBOX_VISIBLE_LEAVES
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason=(
+            "The endpoint the gateway peer-identity channel is reached through "
+            "resolves into the data-home root, which is a writable location, so "
+            "the channel's posture does not yet match the posture of the binding "
+            "it reads. Both candidate remedies require this property: giving the "
+            "endpoint a fenced parent makes it pass, and deferring the move keeps "
+            "it recorded here instead of in review memory. Whichever is chosen "
+            "flips this to pass. Tracked for a maintainer decision on PR #12031."
+        ),
+    )
+    def test_the_identity_channel_endpoint_has_a_fenced_parent(self) -> None:
+        """The channel's endpoint carries the same posture as what it answers about.
+
+        The fenced root above is what makes the binding unforgeable. The channel
+        that reports it is reached through a path of its own, and that path's
+        parent currently carries no posture at all, so the two halves of one
+        guarantee are held to different standards. This pins the weaker half
+        rather than describing it, so the gap is a failing assertion a fix
+        clears instead of a paragraph someone has to find.
+        """
+        from kiro_crew.config.loader import config_dir
+        from kiro_crew.dashboard.urls import dashboard_socket_path
+
+        home = config_dir().resolve()
+        parent = dashboard_socket_path(8765).resolve().parent
+        assert parent != home, "the endpoint resolves straight into the writable root"
+        leaf = parent.relative_to(home).parts[0]
+        assert (
+            leaf in sandbox._CREW_HIDDEN_LEAVES or leaf in sandbox._CREW_READONLY_LEAVES
+        ), f"{leaf!r} carries neither a hidden nor a read-only posture"
+
+    def test_the_attribution_copy_stays_reachable(self) -> None:
+        """The data-home root copy is deliberately NOT fenced.
+
+        Lenient resolvers run in-sandbox (audit attribution, telemetry) and a
+        wrong answer there mislabels a log line rather than granting anything.
+        Fencing it would break that attribution for no gain, because nothing
+        that authorizes reads it. If a future change makes an authorization path
+        read this copy, that is the bug this test is here to make visible.
+        """
+        floor = set(security.sensitive_home_dirs())
+        assert not any(leaf.startswith("session_pid_") for leaf in floor)
+
     def test_the_three_dispositions_do_not_overlap(self) -> None:
         hidden = set(sandbox._CREW_HIDDEN_LEAVES)
         readonly = set(sandbox._CREW_READONLY_LEAVES)

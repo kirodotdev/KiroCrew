@@ -294,10 +294,11 @@ def dispatch_tool(
     a refusal that omitted it would be audited as a success.
 
     *session_key* is the identity the shim resolved with
-    ``mcp_core._resolve_session_key_strict`` (env var, or ``KIROCREW_HOST_PID``
-    plus the HMAC sidecar signed with the keystone-protected ``sel_hmac.key``). It
-    is used for the AUDIT RECORD, not for authorization: an empty value does not
-    refuse, because a cron job driving the
+    ``mcp_core._resolve_session_key_strict`` (env var, or the gateway
+    peer-identity lookup over the dashboard AF_UNIX socket). Identity rests on
+    the fenced binding directory and its own root, resolved by the gateway
+    from the kernel-attested peer pid. It is used for the AUDIT RECORD, not
+    for authorization: an empty value does not refuse, because a cron job
     desktop is a supported flow. It is still never inferred here — the lenient
     resolver walks a file mcp_core itself documents as "agent-writable and therefore
     forgeable", so a guess would put a forgeable identity in the audit trail.

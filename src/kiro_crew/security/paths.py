@@ -364,6 +364,21 @@ _CREW_SECRET_LEAVES: list[str] = [
     # transcript root. The store opens these paths directly rather than through
     # this gate, so nothing breaks.
     "crew-log",
+    # The authoritative pid -> session bindings the strict resolvers authorize on
+    # (``session_pid_sig``), and the identity root that signs them. A file tool
+    # able to WRITE here names its own session as any other, and every consumer of
+    # ``require_strict_session_key`` then admits it as that session's live owner
+    # tab; able to READ the root, it forges the signature instead. This entry is
+    # what keeps the agent's own tools out, and the sandbox mask on the same leaf
+    # is what keeps a spawned subprocess calling ``open()`` out too -- the pairing
+    # matters here more than usual, because the signature cannot carry the
+    # guarantee alone: verifying an HMAC needs the same bytes as signing one.
+    # NOT the bare ``session_pid_<pid>.txt`` in the data-home root, which stays
+    # readable on purpose: it is the ATTRIBUTION copy the lenient resolvers use,
+    # where a wrong answer mislabels an audit line and authorizes nothing. The
+    # gateway opens these paths directly rather than through this gate, so
+    # nothing legitimate breaks.
+    "session-identity",
     # The RETIRED root the same store used before it was renamed. Kept because this
     # rename ships no migration: a machine that ran the old build with the feature
     # flag on still has real entries under ``<home>/ledgers``, and dropping the leaf

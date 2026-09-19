@@ -37,11 +37,20 @@ records) and BOTH readers refuse on a proven mismatch, while an absent
 mismatch. Same-uid only: this is a robustness/misattribution guard, not a
 privilege boundary — the recycled process already runs as the same user.
 
-Why forgery dies: an agent cannot read ``sel_hmac.key`` (deny-listed), so it
-cannot produce a valid sidecar for a forged ``.txt``. Replaying another pid's
+Why forgery dies: the authoritative mapping lives in a directory the sandbox
+cannot write (``session-identity``, masked by ``sandbox.py``), so an agent has
+nowhere to put a binding a strict resolver will read. Replaying another pid's
 ``.txt``/``.sig`` pair under its own pid fails because the pid is bound into
-the MAC. Residual risk (an agent evading the deny-list to read the key) is
-identical to the existing SEL tamper-evidence threat model.
+the MAC.
+
+What the signature does NOT do: it does not make the binding unforgeable by
+itself. Verifying an HMAC needs the same bytes as signing one, so any process
+that can verify locally can also sign, and ``sandbox.py`` exposes
+``sel_hmac.key`` to the sandbox so the in-sandbox audit writer can chain
+entries. The sidecar is therefore tamper-EVIDENCE for the unsandboxed readers,
+and the directory fence is what authorizes. A strict resolver does not run
+in-sandbox: it asks the gateway, which answers from the kernel-attested peer pid
+of the connection.
 
 Lenient resolvers (read-only callers where misattribution is harmless) keep
 reading the ``.txt`` without a signature check, but through
@@ -51,8 +60,9 @@ sidecar is additive, no format break.
 Threat model — what the sidecar does and does NOT defend against:
 
 * IN SCOPE (blocked): file forgery (agent writes a bare ``.txt`` mapping its
-  own pid to another slot's key — no valid sidecar can be produced without
-  the deny-listed root key), cross-pid replay (copying another pid's
+  own pid to another slot's key -- the authoritative copy lives in the masked
+  ``session-identity`` root, so a binding written anywhere an agent can reach
+  is not read by anything that authorizes), cross-pid replay (copying another pid's
   ``.txt``/``.sig`` pair — the pid is bound into the MAC), tampering
   (redirecting a signed ``.txt`` — the MAC does not match the new bytes), and
   symlink planting at the predictable paths on BOTH sides: publication uses
@@ -89,6 +99,7 @@ import hashlib
 import hmac
 import logging
 import os
+import secrets
 import stat
 import threading
 from pathlib import Path
@@ -126,12 +137,120 @@ _HMAC_KEY_MIN_BYTES = 32
 _SUBKEY_DOMAIN = b"kirocrew.session_pid.sig.v1"
 
 
-def _txt_path(pid: int | str, cfg: Path) -> Path:
+#: The fenced root holding the AUTHORITATIVE bindings. A direct child of the data
+#: home so ``sandbox.py`` can mask it with a plain ``mkdir`` (a nested leaf would have
+#: an agent-writable ancestor a rename could swap out from under the mask), and listed
+#: in both ``_CREW_HIDDEN_LEAVES`` and ``_CREW_PRECREATE_HIDDEN_DIR_LEAVES`` there.
+_IDENTITY_SUBDIR = "session-identity"
+
+
+def identity_dir(cfg: Path) -> Path:
+    """The directory holding the authoritative pid -> session bindings."""
+    return cfg / _IDENTITY_SUBDIR
+
+
+#: The identity protocol's OWN signing root, inside the masked directory. Separate
+#: from the SEL chain key on purpose: that key stays readable in the sandbox so the
+#: in-sandbox audit writer can chain entries, and a key the sandbox can read cannot
+#: bind anything against a caller in the sandbox. Keeping identity on its own root
+#: makes the two controls independent -- the directory mask stops a binding being
+#: WRITTEN, this key stops one being SIGNED -- so neither is load-bearing alone.
+_IDENTITY_KEY_FILE = "identity_hmac.key"
+_IDENTITY_KEY_BYTES = 32
+
+
+def _identity_key_path(cfg: Path) -> Path:
+    return identity_dir(cfg) / _IDENTITY_KEY_FILE
+
+
+def _write_all(fd: int, data: bytes) -> None:
+    """Write every byte of *data* to *fd*.
+
+    A short write would leave the identity root too short to load, and because the
+    create is exclusive the next attempt sees the file already there, re-reads
+    those same short bytes, and refuses: strict identity fails closed for the life
+    of the host with no path back except deleting the file by hand. Named so a test
+    can fail it without patching the ``os`` module for the whole process.
+    """
+    written = 0
+    while written < len(data):
+        written += os.write(fd, data[written:])
+
+
+def _load_identity_key(cfg: Path, *, create: bool = False) -> bytes | None:
+    """Load the identity signing root; ``None`` when absent, short, or unreadable.
+
+    *create* is passed ONLY by :func:`publish_session_pid`, which runs in the
+    gateway on session claim. A verifier never creates: a first-touch create on the
+    verify side would mint a key the publisher never signed with, turning a
+    trust-root problem into a silent accept. Absent means fail closed.
+
+    The read is deliberately plain. Unlike the attribution copy in the data-home
+    root, this path is inside a directory no sandboxed process can open, so there is
+    no symlink-planting surface here to harden against.
+    """
+    path = _identity_key_path(cfg)
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        raw = b""
+    if len(raw) >= _IDENTITY_KEY_BYTES:
+        # Re-arm this root's report, for the same reason the audit root re-arms its
+        # own: on a gateway that is never restarted the log is the only signal an
+        # operator gets, so a root that breaks, is restored, then breaks again must
+        # produce a second ERROR rather than the debug line a retained entry gives.
+        _clear_reports_for(str(path))
+        return raw
+    if not create:
+        return None
+    try:
+        identity_dir(cfg).mkdir(mode=0o700, parents=True, exist_ok=True)
+        fresh = secrets.token_bytes(_IDENTITY_KEY_BYTES)
+        # Exclusive create, so two gateways racing on first claim cannot each
+        # believe they minted the root: the loser re-reads the winner's bytes.
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            _write_all(fd, fresh)
+        except BaseException:
+            # Close BEFORE unlinking: Windows refuses to remove a file that still
+            # has an open handle, so unlinking first would leave exactly the
+            # partial key this cleanup exists to remove.
+            os.close(fd)
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+            raise
+        os.close(fd)
+        return fresh
+    except FileExistsError:
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            return None
+        return raw if len(raw) >= _IDENTITY_KEY_BYTES else None
+    except OSError:
+        return None
+
+
+def _attribution_txt_path(pid: int | str, cfg: Path) -> Path:
+    """The lenient resolvers' ATTRIBUTION copy: agent-writable, never authorizing.
+
+    Deliberately left in the data-home root where it has always been. Lenient
+    readers run in-sandbox (audit attribution, telemetry), so this copy has to stay
+    reachable from there, and a wrong answer only mislabels a log line. Nothing that
+    authorizes reads it: :func:`verify_session_pid` reads
+    :func:`identity_dir` alone.
+    """
     return cfg / f"session_pid_{pid}.txt"
 
 
+def _txt_path(pid: int | str, cfg: Path) -> Path:
+    return identity_dir(cfg) / f"session_pid_{pid}.txt"
+
+
 def _sig_path(pid: int | str, cfg: Path) -> Path:
-    return cfg / f"session_pid_{pid}.sig"
+    return identity_dir(cfg) / f"session_pid_{pid}.sig"
 
 
 def _load_hmac_key() -> bytes | None:
@@ -184,15 +303,21 @@ _report_lock = threading.Lock()
 _reported: set[tuple[str, str]] = set()
 
 
-def _report_once(kind: str) -> tuple[bool, str]:
-    """Claim the first report of *kind* for the current resolved path.
+def _report_once(kind: str, path: str | None = None) -> tuple[bool, str]:
+    """Claim the first report of *kind* for a resolved path.
 
     Returns ``(is_first, path)``. Keyed on the path so a genuine relocation is
     reported again rather than suppressed by the previous location's entry, and
     on the KIND so the two messages below — which tell an operator different
     things — never silence each other.
+
+    *path* defaults to the SEL trust root, which is what the audit-chain reports
+    resolve. The identity root passes its own, because the two roots now fail
+    independently: keying an identity failure on the audit path would name an
+    intact file in the message and let a healthy audit read re-arm a report about
+    a root it says nothing about.
     """
-    path = str(sel_hmac_key_path())
+    path = path if path is not None else str(sel_hmac_key_path())
     key = (kind, path)
     with _report_lock:
         first = key not in _reported
@@ -200,11 +325,15 @@ def _report_once(kind: str) -> tuple[bool, str]:
     return first, path
 
 
-def _clear_trust_root_reports() -> None:
-    """Re-arm every report for the current resolved path."""
-    path = str(sel_hmac_key_path())
+def _clear_reports_for(path: str) -> None:
+    """Re-arm every report keyed on *path*."""
     with _report_lock:
         _reported.difference_update({k for k in _reported if k[1] == path})
+
+
+def _clear_trust_root_reports() -> None:
+    """Re-arm every report for the currently resolved SEL trust root."""
+    _clear_reports_for(str(sel_hmac_key_path()))
 
 
 def _report_trust_root_broken() -> None:
@@ -234,30 +363,34 @@ def _report_trust_root_broken() -> None:
     )
 
 
-def _report_signing_unavailable() -> None:
-    """Report a trust root this process cannot sign with at all, once per path.
+def _report_signing_unavailable(path: str | None = None) -> None:
+    """Report an identity root this process cannot sign with at all, once per path.
 
     Publication happens on every session claim, so an unthrottled log drowns
     the file (observed at several lines a minute) — and a message that names
     only the mechanism ("published unsigned") leaves an operator with no way to
     connect it to the capabilities that just disappeared. This names the
     consequence and the path to fix.
+
+    *path* is the identity root, passed by the caller because that is the root
+    identity signs with. Defaulting it to the audit root would send an operator
+    to repair a file that is intact.
     """
-    first, path = _report_once("unsignable")
+    first, path = _report_once("unsignable", path)
     if not first:
-        logger.debug("session identity signing still unavailable (trust root %s)", path)
+        logger.debug("session identity signing still unavailable (identity root %s)", path)
         return
     logger.error(
-        "cannot sign session identities: SEL trust root %s is unreadable or "
+        "cannot sign session identities: identity root %s is unreadable or "
         "shorter than %d bytes, so every session_pid mapping is published "
         "unsigned. Strict identity resolvers refuse an unsigned mapping, which "
         "means the MCP tools that require a verified session — sub-agent "
         "dispatch and memory writes among them — are refused in sandboxed "
         "sessions until this is fixed. Restore the key file at that path, or "
-        "restart the gateway if another process relocated it. Repeat "
+        "restart the gateway so the next session claim mints it. Repeat "
         "occurrences log at debug.",
         path,
-        _HMAC_KEY_MIN_BYTES,
+        _IDENTITY_KEY_BYTES,
     )
 
 
@@ -276,7 +409,7 @@ def signing_health() -> tuple[bool, Path]:
 
     Blocking file I/O: callers on an event loop must offload it.
     """
-    return _load_hmac_key() is not None, sel_hmac_key_path()
+    return _load_identity_key(config_dir()) is not None, _identity_key_path(config_dir())
 
 
 def _derive_subkey(root: bytes) -> bytes:
@@ -385,10 +518,23 @@ def publish_session_pid(pid: int, session_key: str) -> None:
         body = f"{session_key}\n{token}"
     else:
         body = session_key
+    atomic_write(_attribution_txt_path(pid, cfg), body)
+    # The authoritative copy, in the masked root. Created 0700 here rather than left
+    # to the first write: the gateway is the only writer, and a missing directory
+    # would make every strict resolver fail closed for want of a parent.
+    ident = identity_dir(cfg)
+    try:
+        ident.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except OSError:
+        # Nothing to authorize on is the correct outcome for an unwritable trust
+        # root: strict resolvers fail closed, which is what they did before this
+        # directory existed. The attribution copy above still lands.
+        _report_signing_unavailable(str(_identity_key_path(cfg)))
+        return
     atomic_write(_txt_path(pid, cfg), body)
-    key = _load_hmac_key()
+    key = _load_identity_key(cfg, create=True)
     if key is None:
-        _report_signing_unavailable()
+        _report_signing_unavailable(str(_identity_key_path(cfg)))
         try:
             _sig_path(pid, cfg).unlink(missing_ok=True)
         except OSError:
@@ -495,7 +641,14 @@ def read_session_pid_txt(pid: int | str, cfg: Path | None = None) -> str:
     positive evidence of a wrong owner — unlike an absent or unreadable
     token, which is merely unknown and resolves as before.
     """
-    txt = _read_regular_nofollow(_txt_path(pid, cfg if cfg is not None else config_dir()))
+    cfg = cfg if cfg is not None else config_dir()
+    # Attribution copy first: it is the one an in-sandbox lenient caller can still
+    # read. The authoritative copy is a fallback for UNSANDBOXED lenient callers, so
+    # a data home whose root copy was swept still attributes; in-sandbox that read
+    # simply fails against the mask and the caller degrades as it did before.
+    txt = _read_regular_nofollow(_attribution_txt_path(pid, cfg))
+    if txt is None:
+        txt = _read_regular_nofollow(_txt_path(pid, cfg))
     if txt is None:
         return ""
     parsed = _parse_mapping_body(txt)
@@ -528,22 +681,22 @@ def verify_session_pid(pid: int | str, cfg: Path | None = None) -> str:
     if parsed is None or not sig:
         return ""
     session_key, token = parsed
-    key = _load_hmac_key()
+    key = _load_identity_key(cfg)
     if key is None:
         # Distinguishable from the MAC-mismatch warning below: this branch
-        # means the trust root itself is absent/short ON THE VERIFY SIDE —
-        # the signature of a publisher/verifier trust-root split (e.g. SEL
-        # initialized with a custom base_dir in one process only) or a
+        # means the identity root itself is absent/short ON THE VERIFY SIDE.
+        # Absent is the normal state before the gateway's first session claim
+        # mints it, so strict resolvers fail closed until then; a root that
+        # disappears later is a host problem worth surfacing rather than a
         # missing key, NOT forgery. Without this log, a trust-root drift
         # silently reproduces the original sandboxed-session bug
         # (strict resolvers fail closed everywhere) while looking
         # identical to a forgery refusal.
         logger.warning(
-            "SEL trust-root key absent/short at %s — refusing session_pid_%s "
-            "identity (strict resolvers fail closed; if monitoring is broken "
-            "in sandboxed sessions, check for a publisher/verifier trust-root "
-            "split)",
-            sel_hmac_key_path(),
+            "identity root absent/short at %s - refusing session_pid_%s "
+            "identity (strict resolvers fail closed until the gateway's next "
+            "session claim mints it)",
+            _identity_key_path(cfg),
             pid,
         )
         return ""

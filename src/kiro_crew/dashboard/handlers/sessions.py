@@ -3616,3 +3616,110 @@ guard_owner_surface_routes(
         {"api_session_directive", "api_session_keepalive", "api_session_tool_policy"}
     ),
 )
+
+
+async def api_session_peer_identity(request: web.Request) -> web.Response:
+    """GET /api/session/peer-identity - which session is the process calling me.
+
+    **Why this exists.** An in-sandbox MCP server has to know which session it
+    belongs to before it can act on that session's behalf, and until now it worked
+    that out LOCALLY: it read a signed pid-to-session mapping and verified the
+    signature itself. That cannot be made safe. Verifying an HMAC needs the same
+    bytes as signing one, so a process able to verify locally is also able to forge,
+    and the sandbox holds the key precisely so its audit writer can chain entries.
+    The answer therefore has to come from a process the agent does not control.
+
+    **What makes the answer trustworthy.** Not a header, not a signature the
+    caller checked, and not a pid the caller names. The kernel reports the peer's
+    pid for an ``AF_UNIX`` connection, the caller cannot lie about it, and the
+    mapping this walk reads lives in a directory masked from every sandboxed
+    process. So both halves of "which session is this" are outside the caller's
+    reach: the kernel supplies the pid, and the gateway supplies the binding.
+
+    The request carries no pid and no session, by design. A caller-named ancestor
+    would hand the caller the choice of WHICH process it is judged as, and a
+    shared process tree means an ancestor can belong to another session. The walk
+    resolves the nearest bound ancestor instead, so the peer's own runtime answers
+    whenever it is bound and nothing farther can be reached past it.
+
+    Deliberately requires NO ``X-Session-Key``. Demanding one would be circular:
+    the caller is asking because it does not yet know its own key. Authentication
+    is still enforced by the middleware ahead of this handler - the question here
+    is only WHO the authenticated caller is, never WHETHER it may call.
+
+    ``AF_UNIX`` only. A TCP request is refused rather than answered from a weaker
+    channel, because peer credentials are exactly what TCP cannot supply.
+
+    An unresolvable peer is ``200`` with an empty string, not an error: warm-pool
+    runtimes before claim, cron scripts and pooled MCP backends legitimately have
+    no binding, and their callers already treat an empty key as fail-closed. A 4xx
+    here would make "no identity yet" indistinguishable from "this route is
+    broken".
+    """
+    from functools import partial
+
+    from kiro_crew.dashboard.token_auth import _unix_request_socket
+    from kiro_crew.mcp_gateway.socketsec import PeerCredResult, check_peer_is_self, get_peer_pid
+    from kiro_crew.peer_resolve import resolve_peer_identity
+    from kiro_crew.sel import sel
+
+    def _refuse(code: str, error: str, reason: str) -> web.Response:
+        """Audit the denial, then refuse.
+
+        Both refusals on this route are peer-credential denials on the surface
+        that answers "which session is calling", so they belong in SEL for the
+        same reason ``token_auth``'s sibling denial does: a caller probing this
+        route from the wrong transport or the wrong principal is the shape an
+        impersonation attempt takes, and an unaudited 403 leaves no record of it.
+        Best effort, like every audit beside a refusal: an audit failure must not
+        turn a denial into an answer.
+        """
+        try:
+            sel().log_api_access(
+                caller="unknown",
+                operation="dashboard.peer-identity-refused",
+                outcome="denied",
+                source="session_peer_identity",
+                resources=request.path,
+                error=reason,
+            )
+        except Exception:
+            logger.debug("peer identity denial audit failed", exc_info=True)
+        return web.json_response({"error": error, "code": code}, status=403)
+
+    sock = _unix_request_socket(request)
+    if sock is None:
+        return _refuse(
+            "unix_socket_required",
+            "unix socket required",
+            "request did not arrive on the unix socket",
+        )
+    if check_peer_is_self(sock) is not PeerCredResult.MATCH:
+        # Same deny-by-default as the token-auth peer check: a peer whose
+        # principal cannot be POSITIVELY confirmed as ours gets no identity.
+        return _refuse(
+            "peer_unverified", "peer credentials unverified", "unix peer principal not confirmed"
+        )
+    peer_pid = get_peer_pid(sock)
+    if peer_pid is None:
+        return web.json_response({"session_key": ""})
+    try:
+        # The answer comes from the kernel-attested peer pid walked SERVER-side
+        # against the fenced mapping. The caller supplies nothing: it names
+        # neither a pid nor a session, so it cannot select which ancestor is
+        # consulted. The walk returns the NEAREST bound ancestor, which is the
+        # peer's own runtime whenever that runtime is bound, so a caller cannot
+        # reach past it to a farther one.
+        #
+        # The local walk in ``mcp_core`` stays excluded for the opposite reason:
+        # there the ancestry is read by the caller, in the caller's own pid view,
+        # so it is forgeable. Here both the pid and the mapping are outside the
+        # caller's reach.
+        session_key, _chain = await asyncio.get_running_loop().run_in_executor(
+            subprocess_executor(),
+            partial(resolve_peer_identity, peer_pid, signed_only=True),
+        )
+    except Exception:
+        logger.debug("peer identity resolution failed", exc_info=True)
+        return web.json_response({"session_key": ""})
+    return web.json_response({"session_key": session_key or ""})

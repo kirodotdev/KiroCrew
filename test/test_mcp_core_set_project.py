@@ -27,26 +27,20 @@ from kiro_crew.dashboard.session_directive_apply import apply_session_directive
 
 
 class TestResolveSessionKeyStrict:
-    """Strict resolver: the ``KIROCREW_SESSION_KEY`` env var, or the direct
-    ``KIROCREW_HOST_PID`` -> ``session_pid_<pid>.txt`` lookup — the latter
-    ONLY when the gateway-written HMAC sidecar verifies. The /proc ancestor
-    WALK the lenient resolver uses is dropped, and an unsigned or forged
-    file is refused."""
+    """Strict resolver: the ``KIROCREW_SESSION_KEY`` env var, or the gateway's
+    answer to "which session is this process", resolved there from the
+    kernel-attested peer pid. The /proc ancestor WALK the lenient resolver uses
+    is dropped, and NO identity is established from a file this process can
+    reach -- not an unsigned one, and not a correctly signed one either."""
 
     def _signed_env(self, monkeypatch, tmp_path, pid: str, session_key: str):
-        """Simulate the sandbox: env key stripped, HOST_PID set, and a
-        gateway-published (signed) mapping on disk."""
+        """Simulate the sandbox: env key stripped, HOST_PID set, and a genuine
+        gateway-published binding in the fenced directory."""
         from kiro_crew import session_pid_sig
 
         monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
         monkeypatch.setenv("KIROCREW_HOST_PID", pid)
-        (tmp_path / "sel_hmac.key").write_bytes(b"k" * 32)
-        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
-             patch.object(
-                 session_pid_sig,
-                 "sel_hmac_key_path",
-                 return_value=tmp_path / "sel_hmac.key",
-             ):
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path):
             session_pid_sig.publish_session_pid(int(pid), session_key)
 
     def test_env_var_used(self, monkeypatch):
@@ -74,24 +68,29 @@ class TestResolveSessionKeyStrict:
              ):
             assert mcp_core._resolve_session_key_strict() == "dashboard:env-slot"
 
-    def test_signed_host_pid_mapping_accepted(self, monkeypatch, tmp_path):
-        """Sandboxed session: env key stripped, launcher-declared HOST_PID
-        maps to a gateway-published signed mapping — accepted."""
-        from kiro_crew import session_pid_sig
-
-        self._signed_env(
-            monkeypatch, tmp_path, "4242", "dashboard:chat-32-1784855955"
+    def test_gateway_peer_identity_accepted(self, monkeypatch, tmp_path):
+        """Sandboxed session: env key stripped, so identity comes from the
+        GATEWAY, which resolves it from the kernel-attested peer pid."""
+        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+        monkeypatch.setattr(
+            mcp_core,
+            "_session_key_from_gateway_peer",
+            lambda: "dashboard:chat-32-1784855955",
         )
-        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
-             patch.object(
-                 session_pid_sig,
-                 "sel_hmac_key_path",
-                 return_value=tmp_path / "sel_hmac.key",
-             ):
-            assert (
-                mcp_core._resolve_session_key_strict()
-                == "dashboard:chat-32-1784855955"
-            )
+        assert mcp_core._resolve_session_key_strict() == "dashboard:chat-32-1784855955"
+
+    def test_signed_mapping_on_disk_does_not_self_resolve(self, monkeypatch, tmp_path):
+        """A process cannot establish its own identity from a file.
+
+        ``publish_session_pid`` here writes a genuine, verifying binding. The
+        strict resolver still returns "" because it does not read one locally: it
+        asks the gateway, and the gateway answers from a pid the kernel reports
+        rather than from anything this process can write. Without this test, a
+        local read would look like a harmless fallback.
+        """
+        self._signed_env(monkeypatch, tmp_path, "4242", "dashboard:victim-slot")
+        monkeypatch.setattr(mcp_core, "_session_key_from_gateway_peer", lambda: "")
+        assert mcp_core._resolve_session_key_strict() == ""
 
     def test_unsigned_host_pid_file_refused(self, monkeypatch, tmp_path):
         """FORGERY: an agent writes a bare session_pid_<pid>.txt pointing at
@@ -113,35 +112,59 @@ class TestResolveSessionKeyStrict:
              ):
             assert mcp_core._resolve_session_key_strict() == ""
 
+    def test_forged_binding_at_attribution_path_is_not_read(self, tmp_path):
+        """A binding at the agent-writable path cannot change an authorization.
+
+        An agent writes ``session_pid_<own pid>.txt`` naming a victim session, at
+        the one path it can write, and signs it with whatever key it can read.
+        ``verify_session_pid`` does not look there, so that file's content
+        decides nothing.
+
+        The forgery carries a VALID signature over the victim body, from the same
+        helper the gateway signs with. That is the point: the refusal does not
+        depend on an attacker being unable to sign, because the key that signs
+        the audit chain is readable in the sandbox.
+        """
+        from kiro_crew import session_pid_sig as sps
+
+        with patch.object(sps, "config_dir", return_value=tmp_path):
+            sps.publish_session_pid(4242, "dashboard:real-owner")
+            stolen = sps._load_identity_key(tmp_path)
+            assert stolen is not None
+            body = "dashboard:victim-slot"
+            (tmp_path / "session_pid_4242.txt").write_text(body, encoding="utf-8")
+            (tmp_path / "session_pid_4242.sig").write_text(
+                sps._compute_sig(stolen, 4242, body), encoding="utf-8"
+            )
+            assert sps.verify_session_pid(4242, tmp_path) == "dashboard:real-owner"
+
     def test_replayed_sidecar_for_other_pid_refused(self, monkeypatch, tmp_path):
         """REPLAY: a subagent copies the parent's .txt/.sig pair under its own
-        pid. The pid is bound into the MAC, so verification must fail."""
+        pid. The pid is bound into the MAC, so verification must fail.
+
+        Asserted against ``verify_session_pid`` directly, because that is where
+        this check now runs: the GATEWAY verifies, resolving the caller from a
+        kernel-reported pid, and no in-sandbox process verifies anything.
+        """
         from kiro_crew import session_pid_sig
 
-        (tmp_path / "sel_hmac.key").write_bytes(b"k" * 32)
-        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
-             patch.object(
-                 session_pid_sig,
-                 "sel_hmac_key_path",
-                 return_value=tmp_path / "sel_hmac.key",
-             ):
+        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path):
             # Gateway legitimately publishes the PARENT's mapping (pid 1000).
             session_pid_sig.publish_session_pid(1000, "dashboard:parent-slot")
-        # Subagent (host pid 2000) replays the parent's pair under its own pid.
-        for ext in ("txt", "sig"):
-            (tmp_path / f"session_pid_2000.{ext}").write_text(
-                (tmp_path / f"session_pid_1000.{ext}").read_text(encoding="utf-8"),
-                encoding="utf-8",
+            ident = session_pid_sig.identity_dir(tmp_path)
+            # Positive control: the parent's own binding does verify, so a refusal
+            # below is the pid binding working rather than a broken fixture.
+            assert (
+                session_pid_sig.verify_session_pid(1000, tmp_path)
+                == "dashboard:parent-slot"
             )
-        monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
-        monkeypatch.setenv("KIROCREW_HOST_PID", "2000")
-        with patch.object(session_pid_sig, "config_dir", return_value=tmp_path), \
-             patch.object(
-                 session_pid_sig,
-                 "sel_hmac_key_path",
-                 return_value=tmp_path / "sel_hmac.key",
-             ):
-            assert mcp_core._resolve_session_key_strict() == ""
+            # Subagent (host pid 2000) replays the parent's pair under its own pid.
+            for ext in ("txt", "sig"):
+                (ident / f"session_pid_2000.{ext}").write_text(
+                    (ident / f"session_pid_1000.{ext}").read_text(encoding="utf-8"),
+                    encoding="utf-8",
+                )
+            assert session_pid_sig.verify_session_pid(2000, tmp_path) == ""
 
     def test_host_pid_without_file_returns_empty(self, monkeypatch, tmp_path):
         """A subagent sandbox exports its own HOST_PID, but the gateway never

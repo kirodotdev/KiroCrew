@@ -396,6 +396,14 @@ _STRICT_INTERNAL_API_PATHS = frozenset(
         # ``local_only=False`` deployment reclassifies strict paths as mixed.
         "/api/computer-use/frame",
         "/api/session-keepalive",
+        # Which session is the calling process, answered from the kernel-attested
+        # peer pid. STRICT: the only caller is an in-sandbox MCP server that has
+        # no cookie and presents the internal secret, and no browser has any use
+        # for it. Without this entry the route falls through to cookie auth, the
+        # secret-authenticated call is refused, and strict identity resolves empty
+        # in every sandboxed session -- a silent failure, because the client
+        # treats an unreachable answer as "no identity" and fails closed.
+        "/api/session/peer-identity",
         # Session directives: the provider-neutral leg of the directive
         # protocol. STRICT for the same reasons as its sibling above — the
         # only legitimate caller is a Kiro Crew directive tool in an MCP

@@ -436,6 +436,7 @@ from kiro_crew.dashboard.handlers.sessions import (  # noqa: E402, F401
     api_session_detail,
     api_session_directive,
     api_session_keepalive,
+    api_session_peer_identity,
     api_session_tool_policy,
     api_sessions,
     api_sessions_clear,
