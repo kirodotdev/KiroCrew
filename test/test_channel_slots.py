@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from types import SimpleNamespace
 from typing import Any
@@ -843,8 +844,9 @@ class TestClosedAtStamp:
         assert meta["closed"] is True
         assert before <= float(meta["closed_at"]) <= after
 
+    @pytest.mark.parametrize("activity_offset", [-1.0, 0.0, 1.0])
     def test_the_close_write_does_not_outrun_its_own_close_instant(
-        self, tmp_path: Any, monkeypatch: Any
+        self, tmp_path: Any, monkeypatch: Any, activity_offset: float
     ) -> None:
         """Closing a tab must not immediately reopen it.
 
@@ -859,20 +861,28 @@ class TestClosedAtStamp:
         state, slot = self._bound_slot(tmp_path, monkeypatch)
         path = tmp_path / "slack_1.1.jsonl"
         _save_slot_to_history(state, slot)  # a normal save: real activity
+        # Filesystem and wall-clock samples need not order the same way within
+        # one Windows clock tick. Establish the activity/click relationship on
+        # the real file with exactly representable timestamps instead of sleeps.
+        click_instant = 1_700_000_000.0
+        activity_instant = click_instant + activity_offset
+        os.utime(path, (activity_instant, activity_instant))
         mtime_before = path.stat().st_mtime
+        assert mtime_before == activity_instant
 
-        click_instant = time.time()
         _save_slot_to_history(state, slot, closed=True, closed_at=click_instant)
 
         meta = self._channel_meta(tmp_path)
         assert meta["closed"] is True
-        assert path.stat().st_mtime == pytest.approx(mtime_before)
-        # The rule the reconciler applies: the close stands.
+        assert meta["closed_at"] == click_instant
+        assert path.stat().st_mtime == mtime_before
+        # Only genuinely newer activity can outrun the click; equality keeps
+        # the close standing. The metadata write must not change either verdict.
         assert channel_slots._close_stands(
             _session("slack_1.1", modified=path.stat().st_mtime),
             meta,
             {},
-        )
+        ) is (activity_offset <= 0)
 
     def test_caller_supplied_close_instant_is_persisted_verbatim(
         self, tmp_path: Any, monkeypatch: Any
