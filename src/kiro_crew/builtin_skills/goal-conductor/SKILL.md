@@ -162,6 +162,13 @@ For each item in the round, in **exactly this order**:
 
 **A `pr_checks` seed says how the pull request is opened.** Tell the worker to open it non-draft — `gh pr create` without `--draft` — or to run `gh pr ready` before it reports done. A completion claim that arrives on a draft costs a whole verify cycle that can only answer `pending`.
 
+**A `pr_checks` seed may name the PR procedure.** The worker is a custom agent
+and sees no skill catalog, so nothing auto-loads `prepare-pr` for it. If the
+worker will open a pull request, you can add one line to the seed: it may
+read `<crew-home>/skills/kirocrew-dev/prepare-pr/SKILL.md` (`<crew-home>` is
+`KIROCREW_HOME` when set, else `~/.kiro/crew`) and follow its loop to drive
+the PR to review-ready. Optional — the worker's own method is fine too.
+
 **Bind BEFORE you seed.** The opposite order — seed first, record after —
 protects against a ledger row with no session behind it. This one protects
 against a running worker with no binding, and that is the failure the worker can

@@ -884,6 +884,24 @@ class TestConductorInstaller:
         # ``folder`` argument, never a second move step.
         assert "2. `session_create`" in dispatch
 
+    def test_pr_checks_seed_may_name_the_prepare_pr_skill_by_path(self):
+        """A ``pr_checks`` seed can point the worker at prepare-pr's SKILL.md.
+
+        ``kirocrew-worker`` is a custom agent: ``_skills_injection_plan`` gives it
+        no catalog and no trigger matching, so however a seed is worded nothing
+        auto-loads ``prepare-pr`` in the worker session. The conductor naming the
+        file is the only route. Pinned as an OPTIONAL hint, not a mandate: a user
+        who does not want prepare-pr must not have it forced on every worker.
+        """
+        text = (SKILL_DIR / "SKILL.md").read_text(encoding="utf-8")
+        dispatch = text.split("### Dispatch a round")[1].split("### Patrol")[0]
+        flat = " ".join(dispatch.split())
+        assert "`<crew-home>/skills/kirocrew-dev/prepare-pr/SKILL.md`" in flat
+        assert "may name the PR procedure" in flat
+        # Optional, by design.
+        assert "Optional" in flat
+        assert "must read" not in flat and "MUST read" not in flat
+
 
 class _proc:
     """Minimal ``CompletedProcess`` stand-in for the exec seam's two callers.
