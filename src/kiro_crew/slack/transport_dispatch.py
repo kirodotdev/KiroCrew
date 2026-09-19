@@ -1007,6 +1007,13 @@ async def handle_message_transport(
         # throttled, replaced wholesale, or truncated. Slack is the one renderer
         # that keeps a per-append record of what the API acknowledged, so it is
         # the one place a rescue can persist shown text rather than produced text.
+        # A throttled flush can be holding a trailing word back so a timer tick
+        # cannot tear one in half. That hold is released by ``on_done`` or at a
+        # ``wait`` boundary -- neither of which a dying turn reaches -- so it is
+        # released here, before the ledger is read, or the rescued transcript
+        # would end one word short of what the model established.
+        if renderer is not None:
+            await renderer.release_held_word()
         _shown = renderer.delivered_text if renderer is not None else ""
         # ``strip`` decides EMPTINESS only. What gets persisted is ``_shown``
         # verbatim: leading indentation is content in a transcript — a fenced block
