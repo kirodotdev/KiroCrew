@@ -35,6 +35,7 @@ const { identityFamily } = require("./instance-guard");
 const { initNativeLogging } = require("./native-logging");
 const { armCrashCollector, collectCrashReports } = require("./crash-collector");
 const { initGpuPolicy } = require("./disable-gpu");
+const { initGpuCrashFallback } = require("./gpu-crash-fallback");
 const { cancelPendingTrayHide } = require("./hide-to-tray");
 const { exitImmersiveModes } = require("./blocking-prompt");
 const { createMetricsRecorder } = require("./perf-metrics");
@@ -99,6 +100,9 @@ const store = new Store({
     autoDownloadUpdates: true,
     runLocalGateway: true,
     linuxFrameless: null,
+    // Written by gpu-crash-fallback.js when the GPU process dies at startup;
+    // read before Chromium initializes on the next launch.
+    gpuSoftwareFallback: null,
   },
 });
 
@@ -331,6 +335,20 @@ if (!app.requestSingleInstanceLock()) {
     appendSwitch: (name) => app.commandLine.appendSwitch(name),
     env: process.env,
     argv: process.argv,
+    log: glog,
+  });
+
+  // Same timing constraint as the opt-in above: a persisted software-rendering
+  // decision has to reach Chromium before it initializes. Also arms the
+  // `child-process-gone` listener that makes that decision, so a GPU process
+  // that dies before the dashboard loads relaunches the app once in software
+  // mode instead of letting Chromium abort it with no window and no log.
+  initGpuCrashFallback({
+    app,
+    store,
+    backendUrl: BACKEND_URL,
+    isQuitting: () => isQuitting,
+    requestQuit,
     log: glog,
   });
 

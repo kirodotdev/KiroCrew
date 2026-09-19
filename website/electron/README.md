@@ -255,6 +255,16 @@ Open via **Tab menu → Open Config File** or tray menu.
   gateway and authentication origin, but does not copy the current session,
   project, draft, or context.
 - Closing the window hides to tray — right-click the tray icon or Cmd+Q to quit
+- **GPU rendering.** Hardware acceleration is on by default.
+  `KIROCREW_DISABLE_GPU=1` or `--disable-gpu` turns it off for a launch
+  (`disable-gpu.js`). On Windows, if the GPU process dies before the dashboard
+  has loaded, the app relaunches itself once with software rendering
+  (`--in-process-gpu --use-angle=swiftshader`, never `--no-sandbox`) and keeps
+  that setting for the current app version under `gpuSoftwareFallback` in
+  `config.json`; a new version tries hardware rendering again once
+  (`gpu-crash-fallback.js`). The software-mode boot drops the opt-in's
+  `--disable-software-rasterizer` so `KIROCREW_DISABLE_GPU=1` cannot veto
+  SwiftShader. Remove the key to retry hardware rendering sooner.
 - External links open in your default browser
 - Desktop leaves the child `PATH` unchanged; the gateway-side prerequisite
   service independently probes Kiro CLI's supported user-local, Homebrew,
