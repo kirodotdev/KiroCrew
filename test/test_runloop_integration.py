@@ -286,6 +286,12 @@ _PARKED_CEILING_SECS = 30.0
 #: under the suite's own ``--timeout=120``.
 _LOST_RUN_CEILING_SECS = 30.0
 
+#: Backoff of a park a test HOLDS until it has observed it and signals recovery
+#: itself. Longer than every barrier ceiling above so the schedule's own timer
+#: can never be what wakes the waiters: the parked state has to be a state the
+#: test can read, not a window it has to catch.
+_HELD_PARK_SECS = 600.0
+
 #: Ceiling a re-arm pin parks a run on when NOTHING can wake it: every issuer of
 #: its wake is accounted for before it parks (the pump popped its queue entry,
 #: the re-arm handle is held un-fired), so this bounds no barrier and races no
@@ -595,8 +601,19 @@ async def test_throttle_parks_two_runs_on_one_scope_and_wakes_by_capacity(monkey
         wake_order.append((task_id, len(coordinator_ref["c"].waiters("provider:acp"))))
         return orig_wake_through(task_id, generation)
 
-    # A 0.3s backoff keeps the parked state observable before the wake.
-    coordinator = _fast_coordinator(mgr, backoff=backoff(0.3, 0.3), wake_through=_wake_through)
+    # The park is HELD, not timed: the backoff is longer than any barrier below,
+    # so nothing wakes a waiter until this test has observed both parked and
+    # signals the scope recovered itself. A short real-time backoff made the
+    # parked state a window -- the probe for the first waiter fired the moment its
+    # backoff elapsed, whether or not the second run had reached its own park by
+    # then, and on a loaded Windows worker the two spawns' park instants drift
+    # apart by more than a few hundred milliseconds, so the barrier watched two
+    # rows go straight to ``done`` without ever seeing them parked together.
+    coordinator = _fast_coordinator(
+        mgr,
+        backoff=backoff(_HELD_PARK_SECS, _HELD_PARK_SECS),
+        wake_through=_wake_through,
+    )
     coordinator_ref["c"] = coordinator
     controller = _FakeController()
     monkeypatch.setattr("kiro_crew.adaptive.controller.current", lambda: controller)
@@ -613,6 +630,13 @@ async def test_throttle_parks_two_runs_on_one_scope_and_wakes_by_capacity(monkey
         assert _row(mgr, a.id).state == WAITING_DEPENDENCY
         assert _row(mgr, b.id).state == WAITING_DEPENDENCY
         assert _row(mgr, a.id).wait["dependency_scope"] == "provider:acp"
+        # The provider "recovers": the production recovery signal moves the
+        # scope's retry instant to now, and the pump pass that would otherwise
+        # run at the held deadline is taken here. From this point the wakes are
+        # the coordinator's own -- one probe, then the ramp -- exactly as a timed
+        # backoff would have produced them.
+        assert coordinator.recovered("provider:acp")
+        mgr._taskq_pump()
         await asyncio.wait_for(asyncio.gather(mgr._tasks[a.id], mgr._tasks[b.id]), timeout=20.0)
 
     assert a.outcome == "completed" and b.outcome == "completed"
