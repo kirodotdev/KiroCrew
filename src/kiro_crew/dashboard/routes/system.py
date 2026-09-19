@@ -142,6 +142,12 @@ def register(app: web.Application) -> None:
     app.router.add_get("/api/aws/consent", handlers.api_aws_consent_get)
     app.router.add_post("/api/aws/consent", handlers.api_aws_consent_post)
     app.router.add_delete("/api/aws/consent", handlers.api_aws_consent_delete)
+    # Decision-seam consent (Settings > Developer > Feature Previews). Owner-gated
+    # in the handler and browser-called like the AWS pair above, for the same
+    # reason: it is the operator's out-of-band surface for an egress
+    # authorization the agent must not be able to grant itself.
+    app.router.add_get("/api/decisions/consent", handlers.api_decisions_consent_get)
+    app.router.add_put("/api/decisions/consent", handlers.api_decisions_consent_put)
     # Flagged-file delivery consent. Owner-gated in the handler; deliberately NOT
     # on the strict-internal list in server.py, because unlike the file_send legs
     # its only legitimate caller IS the owner's browser.

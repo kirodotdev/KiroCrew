@@ -2,19 +2,21 @@
  * The Decisions (Jev) card in Settings > Developer > Feature Previews.
  *
  * What is under test is the one thing this card does differently from every
- * other preview in that section: its switch is a `config.json` value written
- * through `PATCH /api/config/kirocrew`, not a per-device localStorage flag. So
- * the cases are the states a backend-backed switch can be in — read pending,
- * read failed, section absent, section present, write failed — and the claim in
- * each is the same one: the card never offers a write it cannot make, and never
- * stays silent about why.
+ * other preview in that section: its switch is the KEYSTONE
+ * `decisions_consent.json`, read and written through `/api/decisions/consent`,
+ * not a per-device localStorage flag and not a `config.json` value. So the cases
+ * are the states a backend-backed switch can be in — read pending, read failed,
+ * gateway too old (404), consent off, consent on, write failed — and the claim
+ * in each is the same one: the card never offers a write it cannot make, and
+ * never stays silent about why. The sampling share still comes from
+ * `config.json`, so the two reads are stubbed separately.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { render, screen, cleanup, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { MemoryRouter } from 'react-router-dom'
 
-import { api } from '../../api/client'
+import { api, type DecisionsConsentData } from '../../api/client'
 import { PREVIEW_FLAG_PREFIX } from '../../utils/previewFlags'
 import { FeaturePreviewsSection } from './FeaturePreviewsSection'
 
@@ -31,6 +33,34 @@ function renderSection() {
 /** The card's own switch. Named in full so "Decisions" cannot match another row. */
 const decisionsSwitch = () => screen.getByRole('switch', { name: 'Decisions (Jev)' })
 
+/** An older gateway has no consent route: the client rejects with a 404. */
+const notFound = () => Object.assign(new Error('Not Found'), { status: 404 })
+
+const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
+
+/** A consent payload as the gateway returns it, bound to the default endpoint. */
+const consentOf = (enabled: boolean, overrides: Partial<DecisionsConsentData> = {}): DecisionsConsentData => ({
+  enabled,
+  endpoint: enabled ? ENDPOINT : '',
+  configured_endpoint: ENDPOINT,
+  permits: enabled,
+  ...overrides,
+})
+
+/** Stub both reads: the keystone (or a rejection) and the config's bucket. */
+function stubGateway(
+  consent: DecisionsConsentData | { enabled: boolean } | Error,
+  config: unknown = { decisions: { bucket: 100 } },
+) {
+  vi.spyOn(api, 'kirocrewConfig').mockResolvedValue(config as never)
+  if (consent instanceof Error) {
+    vi.spyOn(api, 'getDecisionsConsent').mockRejectedValue(consent)
+  } else {
+    const full = 'permits' in consent ? consent : consentOf(consent.enabled)
+    vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue(full)
+  }
+}
+
 describe('Decisions (Jev) preview card', () => {
   beforeEach(() => {
     localStorage.clear()
@@ -41,39 +71,60 @@ describe('Decisions (Jev) preview card', () => {
     vi.restoreAllMocks()
   })
 
-  it('offers no write while the config has not been read', () => {
+  it('offers no write while the keystone has not been read', () => {
     // A never-resolving read: the switch has no basis for the state it would
     // show, so it must not be clickable in the meantime.
-    vi.spyOn(api, 'kirocrewConfig').mockReturnValue(new Promise(() => {}) as never)
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+    vi.spyOn(api, 'getDecisionsConsent').mockReturnValue(new Promise(() => {}) as never)
     renderSection()
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
   })
 
-  it('disables itself and names the gateway when the config carries no decisions section', async () => {
-    // The state on `main` today: the frontend ships before the backend field.
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ telemetry: {} } as never)
+  it('disables itself and names the gateway when the consent route is missing', async () => {
+    // The frontend ships before the backend whenever a user updates one half
+    // first: an older gateway answers the consent GET with 404.
+    stubGateway(notFound(), { telemetry: {} })
+    const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
     renderSection()
     await waitFor(() => {
-      expect(screen.getByText(/older than this switch/i)).toBeInTheDocument()
+      expect(screen.getByText(/older than this feature/i)).toBeInTheDocument()
     })
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
+    expect(decisionsSwitch().getAttribute('aria-checked')).toBe('false')
+    decisionsSwitch().click()
+    expect(save).not.toHaveBeenCalled()
+  })
+
+  it('never reads consent out of config.json, whatever it carries', async () => {
+    // A shadow-era gateway has a `decisions` section with `preview: true`, and a
+    // hand-edited one might carry `enabled: true`. Neither is consent: the file is
+    // agent-writable, which is the whole reason the switch is a keystone. With no
+    // consent route, both render as an old gateway.
+    stubGateway(notFound(), {
+      decisions: { preview: true, enabled: true, points: { 'skills.select': { arm: 'live' } } },
+    })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/older than this feature/i)).toBeInTheDocument()
+    })
     expect(decisionsSwitch().getAttribute('aria-checked')).toBe('false')
   })
 
   it('says the read failed rather than blaming the gateway version', async () => {
     // Two different facts, two different fixes: an old gateway needs an update,
     // a failed read needs a retry. Neither may be reported as the other.
-    vi.spyOn(api, 'kirocrewConfig').mockRejectedValue(new Error('offline'))
+    stubGateway(new Error('offline'))
     renderSection()
     await waitFor(() => {
       expect(screen.getByText(/could not read the settings/i)).toBeInTheDocument()
     })
-    expect(screen.queryByText(/older than this switch/i)).toBeNull()
+    expect(screen.queryByText(/older than this feature/i)).toBeNull()
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
   })
 
-  it('reflects the stored flag and writes the config path when flipped', async () => {
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { preview: false } } as never)
+  it('reflects the keystone and writes it through the consent route when flipped', async () => {
+    stubGateway({ enabled: false })
+    const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
     const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
     renderSection()
     await waitFor(() => {
@@ -81,39 +132,43 @@ describe('Decisions (Jev) preview card', () => {
     })
     decisionsSwitch().click()
     await waitFor(() => {
-      // The path matters more than the click: a localStorage key here would look
-      // identical on screen and be invisible to the gate that reads it.
-      expect(patch).toHaveBeenCalledWith('decisions.preview', true)
+      // The reviewed address rides along, so the gateway binds consent to it.
+      expect(save).toHaveBeenCalledWith(true, ENDPOINT)
     })
+    // Never the config route: a `decisions.enabled` PATCH is refused by the
+    // backend and, were it accepted, would be the agent-writable switch this
+    // design removes.
+    expect(patch).not.toHaveBeenCalled()
   })
 
-  it('shows the stored flag as on, and offers turning it back off', async () => {
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { preview: true } } as never)
-    const patch = vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+  it('shows consent as on, and offers withdrawing it', async () => {
+    stubGateway({ enabled: true })
+    const save = vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(false))
     renderSection()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-checked')).toBe('true')
     })
     decisionsSwitch().click()
     await waitFor(() => {
-      expect(patch).toHaveBeenCalledWith('decisions.preview', false)
+      expect(save).toHaveBeenCalledWith(false, ENDPOINT)
     })
   })
 
   it('stays closed to input until the write is reflected in a fresh read', async () => {
     // The window this closes: react-query holds a mutation pending only while
     // `onSettled` has an unresolved promise outstanding. Started-but-not-returned,
-    // the switch came back to life the instant the PATCH resolved and still showed
+    // the switch came back to life the instant the PUT resolved and still showed
     // the pre-flip value — so the flip read as having failed, and a second click
     // wrote it again. The second read is held open here to sit inside that window.
     let releaseRefetch: (value: unknown) => void = () => {}
     let reads = 0
-    vi.spyOn(api, 'kirocrewConfig').mockImplementation((() => {
+    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { bucket: 100 } } as never)
+    vi.spyOn(api, 'getDecisionsConsent').mockImplementation((() => {
       reads += 1
-      if (reads === 1) return Promise.resolve({ decisions: { preview: false } })
+      if (reads === 1) return Promise.resolve(consentOf(false))
       return new Promise(resolve => { releaseRefetch = resolve })
     }) as never)
-    vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
 
     renderSection()
     await waitFor(() => {
@@ -121,14 +176,14 @@ describe('Decisions (Jev) preview card', () => {
     })
     decisionsSwitch().click()
     await waitFor(() => {
-      expect(api.patchConfig).toHaveBeenCalledWith('decisions.preview', true)
+      expect(api.saveDecisionsConsent).toHaveBeenCalledWith(true, ENDPOINT)
     })
-    // The PATCH has resolved and the refetch has not. The switch still shows the
+    // The PUT has resolved and the refetch has not. The switch still shows the
     // stored value, so it must not accept another click against it.
     expect(decisionsSwitch().getAttribute('aria-checked')).toBe('false')
     expect(decisionsSwitch().getAttribute('aria-disabled')).toBe('true')
 
-    releaseRefetch({ decisions: { preview: true } })
+    releaseRefetch(consentOf(true))
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-checked')).toBe('true')
     })
@@ -136,8 +191,8 @@ describe('Decisions (Jev) preview card', () => {
   })
 
   it('reports a refused write instead of leaving the switch looking flipped', async () => {
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { preview: false } } as never)
-    vi.spyOn(api, 'patchConfig').mockRejectedValue(new Error('field not editable'))
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'saveDecisionsConsent').mockRejectedValue(new Error('dashboard owner required'))
     renderSection()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
@@ -146,7 +201,7 @@ describe('Decisions (Jev) preview card', () => {
     await waitFor(() => {
       expect(screen.getByText(/could not save this setting/i)).toBeInTheDocument()
     })
-    // The switch shows the config's value, not the click's, so a refused write
+    // The switch shows the keystone's value, not the click's, so a refused write
     // cannot leave the card claiming the preview is on.
     expect(decisionsSwitch().getAttribute('aria-checked')).toBe('false')
   })
@@ -155,52 +210,163 @@ describe('Decisions (Jev) preview card', () => {
     // The egress sentence is the consent this card asks for. It renders in every
     // state — including the disabled ones — because a reader who cannot flip the
     // switch yet is still deciding whether they ever will.
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ telemetry: {} } as never)
+    stubGateway(notFound(), { telemetry: {} })
     renderSection()
     await waitFor(() => {
       expect(screen.getByText(/leave this machine.*sent over the internet/i)).toBeInTheDocument()
     })
   })
 
-  it('lists the arms the config exposes, and nothing when it exposes none', async () => {
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({
-      decisions: {
-        preview: true,
-        points: { 'skills.select': { arm: 'shadow' }, 'cron.novelty': { arm: 'off' } },
-      },
-    } as never)
+  it('names Jev as the recipient and the fallback as the shipped rule', async () => {
+    // The two things the shadow-only copy did not have to say, now that the
+    // answer is acted on: where the data goes, and what happens when the answer
+    // does not arrive.
+    stubGateway({ enabled: true })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/sent over the internet to Jev/i)).toBeInTheDocument()
+    })
+    expect(screen.getByText(/falls back to the same rule/i)).toBeInTheDocument()
+  })
+
+  it('names the one live point in plain words beside its identifier, with no state of its own', async () => {
+    stubGateway({ enabled: true }, { decisions: { bucket: 100 } })
     renderSection()
     await waitFor(() => {
       expect(screen.getByText('skills.select')).toBeInTheDocument()
     })
-    expect(screen.getByText('cron.novelty')).toBeInTheDocument()
-    // The point with no arm in the config gets no row: there is nothing true to
-    // print in it.
+    // Read off the ROW: the gloss a reader understands, then the identifier they
+    // grep the log for, introduced as such — and nothing else. The switch is the
+    // card's one on/off, so an "Enabled"/"Off" word here would read as a second
+    // control.
+    expect(screen.getByText('skills.select').parentElement?.parentElement?.textContent)
+      .toBe('Automatic skill choicelogged as skills.select')
+    expect(screen.getByText(/what Jev decides while this is on/i)).toBeInTheDocument()
+    // Nothing consumes the answers of any other point, so no other row exists.
     expect(screen.queryByText('skills.dedupe')).toBeNull()
+    expect(screen.queryByText('cron.novelty')).toBeNull()
+    // 100 is the shipped default, and it is said out loud: "a sample" would
+    // understate what a default enable sends.
+    expect(screen.getByText(/Jev answers for all of your sessions/i)).toBeInTheDocument()
+    expect(screen.getByText(/set decisions\.bucket in config\.json/i)).toBeInTheDocument()
   })
 
-  it('carries no point rows at all when the config has no arms to show', async () => {
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { preview: false } } as never)
+  it('keeps the row and the share while the switch is off, phrased for the on state', async () => {
+    stubGateway({ enabled: false }, { decisions: { bucket: 25 } })
     renderSection()
     await waitFor(() => {
-      expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
+      expect(screen.getByText('skills.select')).toBeInTheDocument()
     })
-    expect(screen.queryByText(/each check below shows the mode/i)).toBeNull()
+    // Same row either way: it says what turning the switch on does, not whether
+    // it is on. The header already scopes it to "while this is on".
+    expect(screen.getByText('skills.select').parentElement?.parentElement?.textContent)
+      .toBe('Automatic skill choicelogged as skills.select')
+    // The share is what the reader is consenting to, so it is shown BEFORE the
+    // switch goes on -- as a statement about the on state, not a claim that
+    // anything is being sampled now.
+    expect(screen.getByText(/While this is on, Jev answers for 25% of your sessions/i))
+      .toBeInTheDocument()
+  })
+
+  it('fades the egress note only when the gateway cannot run this at all', async () => {
+    stubGateway(notFound(), { decisions: { preview: true } })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/older than this feature/i)).toBeInTheDocument()
+    })
+    // Nothing can leave the machine on this gateway, so the warning fades with
+    // the rest of the card instead of shouting beside a switch that cannot move.
+    // Same opacity as the disabled row: a muted colour alone still reads darker
+    // than a row at 40%, which is the fade "just missing".
+    expect(screen.getByText(/leave this machine/i).className).toContain('opacity-40')
+    // And the notice says WHERE to act, not just that something must be updated.
+    expect(screen.getByText(/Settings › Releases/)).toBeInTheDocument()
+  })
+
+  it('prints the sampling rate when the config narrows it, and names the knob', async () => {
+    stubGateway({ enabled: true }, { decisions: { bucket: 25 } })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/25% of your sessions/i)).toBeInTheDocument()
+    })
+    // The rate is not something this card lets you move, so the line has to say
+    // where it IS moved — otherwise it reads as a number from nowhere.
+    expect(screen.getByText(/set decisions\.bucket in config\.json/i)).toBeInTheDocument()
+    // Zero is a state worth printing too: on, and deciding for nobody.
+    cleanup()
+    vi.restoreAllMocks()
+    stubGateway({ enabled: true }, { decisions: { bucket: 0 } })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/0% of your sessions/i)).toBeInTheDocument()
+    })
+  })
+
+  it('carries no point row at all against a gateway without the consent route', async () => {
+    // An older gateway has no point wired, so a row reading "off" would describe
+    // a check that does not exist rather than one that is switched off.
+    stubGateway(notFound(), { telemetry: {} })
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/older than this feature/i)).toBeInTheDocument()
+    })
+    expect(screen.queryByText('skills.select')).toBeNull()
+    expect(screen.queryByText(/what Jev decides while this is on/i)).toBeNull()
+  })
+
+  it('names the address consent is given for', async () => {
+    // Consent is to an ADDRESS, not to "sending": the reader must see where.
+    stubGateway(consentOf(false, { configured_endpoint: 'https://proxy.example/v1/systemone' }))
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText('https://proxy.example/v1/systemone')).toBeInTheDocument()
+    })
+    expect(screen.getByText(/^Sent to$/)).toBeInTheDocument()
+  })
+
+  it('says nothing is sent when the config moved the address out from under consent', async () => {
+    // The redirected-config state: the switch reads on, the gate refuses, and
+    // the card must not let those two disagree silently.
+    stubGateway(consentOf(true, {
+      endpoint: ENDPOINT,
+      configured_endpoint: 'https://attacker.example/v1/systemone',
+      permits: false,
+    }))
+    renderSection()
+    await waitFor(() => {
+      expect(screen.getByText(/nothing is being sent/i)).toBeInTheDocument()
+    })
+    expect(decisionsSwitch().getAttribute('aria-checked')).toBe('true')
+    expect(screen.getByText(/Turn this off and on again/i)).toBeInTheDocument()
+    // Styled as a warning, not a paragraph: the switch is on and the truth is
+    // "nothing is sent", so the state must read as wrong before it is read.
+    const alert = screen.getByRole('alert')
+    expect(alert).toHaveTextContent(/nothing is being sent/i)
+    expect(alert.className).toContain('text-warn')
+  })
+
+  it('shows no moved-address notice while consent is off or matches', async () => {
+    stubGateway(consentOf(true))
+    renderSection()
+    await waitFor(() => {
+      expect(decisionsSwitch().getAttribute('aria-checked')).toBe('true')
+    })
+    expect(screen.queryByText(/nothing is being sent/i)).toBeNull()
   })
 
   it('leaves the four localStorage previews alone', async () => {
     // The section mixes two kinds of switch now. Flipping the backend one must
     // not write a preview flag — a stray one would turn an unrelated unreleased
     // page on for this device.
-    vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({ decisions: { preview: false } } as never)
-    vi.spyOn(api, 'patchConfig').mockResolvedValue({} as never)
+    stubGateway({ enabled: false })
+    vi.spyOn(api, 'saveDecisionsConsent').mockResolvedValue(consentOf(true))
     renderSection()
     await waitFor(() => {
       expect(decisionsSwitch().getAttribute('aria-disabled')).not.toBe('true')
     })
     decisionsSwitch().click()
     await waitFor(() => {
-      expect(api.patchConfig).toHaveBeenCalled()
+      expect(api.saveDecisionsConsent).toHaveBeenCalled()
     })
     expect(Object.keys(localStorage).filter(k => k.startsWith(PREVIEW_FLAG_PREFIX))).toEqual([])
   })

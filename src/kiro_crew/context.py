@@ -3085,6 +3085,19 @@ class ContextBuilder:
         self.lessons = lessons or LessonStore()
         self.conversation_log = conversation_log
         self.channel_history = channel_history
+        # Captured for the Jev decision point at `skills.select`. Production
+        # reaches `build_message` only through `run_in_embed_pool`, a thread
+        # executor with no running loop, so the point cannot obtain one where it
+        # fires; every ContextBuilder construction site runs inside `async def`,
+        # so this is where a loop exists to capture. Same shape and same reason
+        # as `HistoryConsolidator._event_loop`. `None` outside a loop -- a sync
+        # test, a script -- means the point simply does not run and trigger
+        # matching's own selection ships, which is the seam's normal refusal
+        # rather than an error.
+        try:
+            self._decisions_loop: "asyncio.AbstractEventLoop | None" = asyncio.get_running_loop()
+        except RuntimeError:
+            self._decisions_loop = None
         self.memory_mode_for_session: Callable[[str], Awaitable[str]] | None = None
         self._session_memory_modes: dict[str, str] = {}
         if bot_name:
@@ -4816,7 +4829,28 @@ class ContextBuilder:
         # history so a body already sent earlier in the conversation is still
         # in the window.
         if not is_custom and not minimal_context:
-            triggered = self.skills.get_triggered_skills(text, project_dir=project)
+            # Jev (skills.select): when the point is on for this session, one
+            # pick REPLACES what trigger matching chose. It is handed to the
+            # loader rather than applied here so the loader's single SEL row
+            # records the set actually injected -- including an empty pick --
+            # and never a superseded lexical match. The pick then travels the
+            # same body/pointer, confinement and audit path as any matched
+            # skill. The wait is bounded and paid on THIS thread: production
+            # reaches `build_message` only through `run_in_embed_pool`, so the
+            # loop captured at construction runs only the `decide` await.
+            def select() -> list[str] | None:
+                from kiro_crew.decisions.points.skills_select import selected_skills
+
+                return selected_skills(
+                    self.skills,
+                    text,
+                    project,
+                    session_key=session_key,
+                    loop=self._decisions_loop,
+                )
+
+            triggered = self.skills.get_triggered_skills(text, project_dir=project, select=select)
+
             if triggered:
                 enforced, pointer_only = self.skills.split_triggered(triggered, project)
                 # Log the split, not just the match: a pointed-at skill the

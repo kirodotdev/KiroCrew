@@ -214,6 +214,7 @@ from kiro_crew.config.sections import (  # noqa: F401
     ComputerUseConfig,
     CronHistoryConfig,
     DashboardConfig,
+    DecisionsConfig,
     DiscordConfig,
     ExternalRegistryConfig,
     FeishuConfig,
@@ -1134,6 +1135,30 @@ def aws_consent_path() -> Path:
     than through this gate. Respects ``KIROCREW_HOME``.
     """
     return config_dir() / "aws_service_consent.json"
+
+
+def decisions_consent_path() -> Path:
+    """Return path to decisions_consent.json — consent to send conversation state to Jev.
+
+    Same KEYSTONE reasoning as :func:`aws_consent_path`, and the leaf is on
+    ``security._CREW_SECRET_LEAVES`` for the same reason: enabling the decision
+    seam sends message text and skill descriptions to an external, paid provider,
+    which is an egress authorization, not a preference. Kept out of the
+    agent-writable ``config.json`` so a prompt-injected shell cannot flip it and
+    have the live config watcher start the egress; ``is_sensitive_path`` blocks
+    the tool path and the OS sandbox mounts the keystone read-only for the shell.
+
+    Holds ``{"enabled": bool, "endpoint": str}`` -- the switch and the provider
+    address the owner consented to; every read fails soft to NOT CONSENTED (see
+    ``decisions.consent``). The only writer is the authenticated, browser-only
+    dashboard ``PUT /api/decisions/consent`` handler, which opens the path
+    directly rather than through this gate. Respects ``KIROCREW_HOME``.
+
+    The ``decisions`` section of ``config.json`` deliberately carries NO
+    ``enabled`` field: sampling share and provider knobs only, so there is exactly
+    one place the seam can be switched on and it is not one the agent can reach.
+    """
+    return config_dir() / "decisions_consent.json"
 
 
 def file_delivery_consent_path() -> Path:
@@ -3717,6 +3742,17 @@ class KiroCrewConfig:
             "its default.",
         ),
     )
+    decisions: DecisionsConfig = field(
+        default_factory=DecisionsConfig,
+        metadata=_meta(
+            "Decisions",
+            "Decision seam — typed decisions asked of a System One model at "
+            "named points. Off until the dashboard owner consents in Settings > "
+            "Developer > Feature Previews (the keystone decisions_consent.json, "
+            "not a key here); until then every point returns None with no "
+            "network call and no log write.",
+        ),
+    )
     watchdog: WatchdogConfig = field(
         default_factory=WatchdogConfig,
         metadata=_meta("Watchdog", "ACP per-session watchdog / liveness-oracle windows."),
@@ -4376,6 +4412,7 @@ class KiroCrewConfig:
         telemetry_data = _coerced_section(data, "telemetry", _degraded)
         orchestrator_data = _coerced_section(data, "orchestrator", _degraded)
         watchdog_data = _coerced_section(data, "watchdog", _degraded)
+        decisions_data = _coerced_section(data, "decisions", _degraded)
         resource_limits_data = _coerced_section(data, "resource_limits", _degraded)
 
         # Parse agents section into dict[str, KiroCrewAgentConfig]
@@ -4609,6 +4646,7 @@ class KiroCrewConfig:
             monitoring=MonitoringConfig(
                 prefer_structured_arming=monitoring_prefer_structured_arming
             ),
+            decisions=DecisionsConfig.from_raw(decisions_data),
             skills=_build_skills_config(skills_data),
             session_summary=_build_session_summary_config(session_summary_data),
             slack_channels={
@@ -4860,6 +4898,7 @@ class KiroCrewConfig:
             "knowledge": asdict(self.knowledge),
             "heartbeat": asdict(self.heartbeat),
             "monitoring": asdict(self.monitoring),
+            "decisions": asdict(self.decisions),
             "skills": asdict(self.skills),
             "session_summary": asdict(self.session_summary),
             "telemetry": asdict(self.telemetry),

@@ -4948,7 +4948,13 @@ class SkillsLoader:
         """
         _ensure_builtin_skills(self._dir)
 
-    def get_triggered_skills(self, text: str, project_dir: str | Path | None = None) -> list[str]:
+    def get_triggered_skills(
+        self,
+        text: str,
+        project_dir: str | Path | None = None,
+        *,
+        select: Callable[[], list[str] | None] | None = None,
+    ) -> list[str]:
         """Return names of skills whose triggers match the given text.
 
         Uses word-overlap matching with multi-word trigger phrases and
@@ -4959,6 +4965,10 @@ class SkillsLoader:
 
         *project_dir* is the session's active project, used only by the
         ``repo_scope`` gate; omitting it suppresses every repo-scoped skill.
+
+        *select*, when given, may replace the matched set before the audit row
+        is written; it returns ``None`` to keep the match. It is a callable, not
+        a list, so the caller pays for it only when the match is being audited.
 
         Returns up to ``max_triggered`` skills sorted by best overlap score.
         """
@@ -5001,17 +5011,30 @@ class SkillsLoader:
         scored.sort(key=lambda x: x[1], reverse=True)
         triggered = [name for name, _ in scored[: self._max_triggered_now()]]
 
+        # An external *select* runs BEFORE the audit below so the one row records
+        # what is actually injected. Its three readings: a list replaces the
+        # trigger match, ``[]`` is a real "no skill applies" that empties it, and
+        # ``None`` (off, unusable answer, failure, expired budget) keeps it.
+        selected = None
+        if select is not None:
+            try:
+                selected = select()
+            except Exception as exc:
+                logger.debug("skills.select: selection failed (%s)", type(exc).__name__)
+            if selected is not None:
+                triggered = list(selected)
+
         # Emit ONE audit event for the matched + denied sets rather than one per
         # skill. A SEL entry per skill (incl. every non-match) on every message
         # would be N synchronous writes that dominate the per-message cost.
         # The security-relevant signals are which
         # skills were injected (permission grant) and which were excluded by a
         # negative trigger (permission deny); both are captured here. Skipped
-        # entirely only when nothing triggered and nothing was denied (the
-        # common case).
-        if triggered or negated_skills:
+        # entirely only when nothing triggered or was denied and no selection
+        # ran (the common case): a selection that emptied the match is a row.
+        if triggered or negated_skills or selected is not None:
             metadata = {"text_hash": hashlib.sha256(text.encode()).hexdigest()[:16]}
-            if triggered:
+            if triggered or selected is not None:
                 metadata["skills"] = ",".join(triggered)
                 # Record HOW each match was delivered, not just that it matched.
                 # A pointer is an offer the agent may decline, so an auditor
@@ -5020,6 +5043,10 @@ class SkillsLoader:
                 bodies, pointers = self.split_triggered(triggered, project_dir)
                 metadata["bodies"] = ",".join(bodies)
                 metadata["pointers"] = ",".join(pointers)
+            if selected is not None:
+                # Which mechanism chose: an auditor reading an empty or widened
+                # set needs to know it was a selection, not a matcher change.
+                metadata["selected"] = "true"
             if negated_skills:
                 metadata["negated"] = ",".join(negated_skills)
             sel().log_tool_invocation(

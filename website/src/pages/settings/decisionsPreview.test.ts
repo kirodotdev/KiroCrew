@@ -1,81 +1,126 @@
 /**
- * `readDecisionsPreview` — the config shapes the card has to survive.
+ * `readDecisions` and its two halves — the consent body and the config's bucket —
+ * plus the two constants the card and the backend must agree on.
  *
- * The reader is a pure function precisely so these cases cost nothing to pin:
- * the interesting states are all "the config is not what this build expects",
- * and each one has a different correct answer.
+ * Consent is a KEYSTONE, not a config path: nothing in `config.json` may read as
+ * "on", and the toggle that writes it carries no `configKey` because there is no
+ * config path for it to name.
  */
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
+
 import { describe, it, expect } from 'vitest'
 
-import { DECISION_POINTS, readDecisionsPreview } from './decisionsPreview'
+import { SETTINGS_REGISTRY } from '../../components/commandPalette/settingsRegistry.gen'
+import {
+  DECISIONS_BUCKET_PATH,
+  DECISIONS_LIVE_POINT,
+  readBucket,
+  readConsent,
+  readDecisions,
+} from './decisionsPreview'
 
-describe('readDecisionsPreview', () => {
-  it('reads a config with no decisions section as unsupported, never as off', () => {
-    // The distinction is the whole point: "off" invites a click, "unsupported"
-    // means the write would come back 400 from a gateway that has no such field.
-    const view = readDecisionsPreview({ telemetry: { enabled: true } })
-    expect(view.supported).toBe(false)
-    expect(view.preview).toBe(false)
-    expect(view.arms).toEqual([])
-  })
+const ENDPOINT = 'https://api.typesafe.ai/v1/systemone'
+const OFF = { supported: false, enabled: false, configuredEndpoint: '', endpointMoved: false }
 
-  it('reads an unresolved or failed config query as unsupported', () => {
-    for (const value of [undefined, null, 'nope', 42, []]) {
-      expect(readDecisionsPreview(value).supported).toBe(false)
+describe('readConsent', () => {
+  it('reads an absent or unresolved body as unsupported', () => {
+    for (const value of [undefined, null, 'x', 7, [], {}]) {
+      expect(readConsent(value)).toEqual(OFF)
     }
   })
 
-  it('reads a present section with the flag off as supported', () => {
-    const view = readDecisionsPreview({ decisions: { preview: false } })
-    expect(view.supported).toBe(true)
-    expect(view.preview).toBe(false)
-  })
-
-  it('reads an absent flag inside a present section as off', () => {
-    // The backend default is false, so a section that omits the key IS that
-    // default — not an unsupported build.
-    const view = readDecisionsPreview({ decisions: { points: {} } })
-    expect(view.supported).toBe(true)
-    expect(view.preview).toBe(false)
-  })
-
-  it('turns on for an exact true only', () => {
-    expect(readDecisionsPreview({ decisions: { preview: true } }).preview).toBe(true)
-    // A hand-edited truthy value is not consent to send message text off the
-    // machine, so it reads as off rather than as "they probably meant yes".
-    for (const sloppy of ['true', 1, 'yes', {}]) {
-      expect(readDecisionsPreview({ decisions: { preview: sloppy } }).preview).toBe(false)
+  it('reads a literal true as on and anything else as off', () => {
+    expect(readConsent({ enabled: true, configured_endpoint: ENDPOINT, permits: true }))
+      .toEqual({ supported: true, enabled: true, configuredEndpoint: ENDPOINT, endpointMoved: false })
+    for (const sloppy of [false, 'true', 1, null]) {
+      expect(readConsent({ enabled: sloppy, configured_endpoint: ENDPOINT, permits: false }).enabled).toBe(false)
     }
   })
 
-  it("lists the arms it finds in the card's order, and skips the ones it cannot print", () => {
-    const view = readDecisionsPreview({
-      decisions: {
-        preview: true,
-        points: {
-          'cron.novelty': { arm: 'off' },
-          'skills.select': { arm: 'shadow' },
-          // No `arm` key at all: nothing to print as the arm this point is on,
-          // so no row rather than a row reading "undefined".
-          'skills.dedupe': { impl: 'llm' },
-          // Not one of the three this release explains, so not listed.
-          'skills.unknown': { arm: 'shadow' },
-        },
-      },
-    })
-    expect(view.arms).toEqual([
-      { point: 'skills.select', arm: 'shadow' },
-      { point: 'cron.novelty', arm: 'off' },
-    ])
+  it('flags a moved address from the server verdict, only while on', () => {
+    // On, but the gate refuses: config.json names another address than consent was given for.
+    expect(readConsent({ enabled: true, configured_endpoint: 'https://x.example', permits: false }).endpointMoved)
+      .toBe(true)
+    // Off is off; a stale recorded address is not a warning.
+    expect(readConsent({ enabled: false, configured_endpoint: ENDPOINT, permits: false }).endpointMoved)
+      .toBe(false)
+  })
+})
+
+describe('readBucket', () => {
+  it('keeps every whole number in range, 0 and 100 included', () => {
+    expect(readBucket({ decisions: { bucket: 25 } })).toBe(25)
+    // "On, and sampling nobody" is a state worth printing.
+    expect(readBucket({ decisions: { bucket: 0 } })).toBe(0)
+    // 100 is the shipped default and the share consent most needs to see.
+    expect(readBucket({ decisions: { bucket: 100 } })).toBe(100)
   })
 
-  it('lists no arms when the section carries no points map', () => {
-    expect(readDecisionsPreview({ decisions: { preview: true } }).arms).toEqual([])
+  it('reports nothing for an absent rate', () => {
+    // Absent: an older section, or one an operator trimmed. The backend's
+    // default decides, and this reader must not print a number it invented.
+    expect(readBucket({ decisions: {} })).toBeNull()
+    expect(readBucket({})).toBeNull()
+    expect(readBucket(undefined)).toBeNull()
   })
 
-  it('names the three points this release reads at', () => {
-    // Hard-coded on purpose — the shipped copy names exactly these three, so a
-    // fourth arriving in config must not grow a row nothing explains.
-    expect([...DECISION_POINTS]).toEqual(['skills.select', 'skills.dedupe', 'cron.novelty'])
+  it('reports nothing for a rate the backend would clamp or refuse', () => {
+    for (const bad of [-1, 101, 12.5, '25', null, true]) {
+      expect(readBucket({ decisions: { bucket: bad } })).toBeNull()
+    }
+  })
+})
+
+describe('readDecisions', () => {
+  it('is unsupported whenever consent is, whatever the config says', () => {
+    // A shadow-era `preview: true`, or a hand-edited `enabled: true` in
+    // config.json, is NOT consent: that file is agent-writable.
+    const config = { decisions: { preview: true, enabled: true, bucket: 25 } }
+    expect(readDecisions(undefined, config)).toEqual({ ...OFF, bucket: null })
+  })
+
+  it('combines the keystone and the config bucket', () => {
+    const on = { enabled: true, configured_endpoint: ENDPOINT, permits: true }
+    const off = { enabled: false, configured_endpoint: ENDPOINT, permits: false }
+    expect(readDecisions(on, { decisions: { bucket: 25 } }))
+      .toEqual({ supported: true, enabled: true, configuredEndpoint: ENDPOINT, endpointMoved: false, bucket: 25 })
+    expect(readDecisions(off, { decisions: { bucket: 100 } }).bucket).toBe(100)
+    expect(readDecisions(off, undefined).bucket).toBeNull()
+  })
+
+  it('spells the constants the backend spells', () => {
+    expect(DECISIONS_BUCKET_PATH).toBe('decisions.bucket')
+    // Singular on purpose: `skills.dedupe` and `cron.novelty` shipped as rows in
+    // the shadow release and are retired here, because a row for an answer
+    // nothing consumes described a comparison rather than a thing being on.
+    expect(DECISIONS_LIVE_POINT).toBe('skills.select')
+  })
+})
+
+/**
+ * The toggle writes a keystone, not a config path, so it must NOT carry a
+ * `configKey`: one would name a config path nothing reads, which is exactly the
+ * drift `test/test_settingref_schema_fixture.py` exists to catch. The registry
+ * entry still exists (search deep-links reach the toggle by id + label) and
+ * simply has no config key.
+ */
+describe('the Decisions toggle has no configKey', () => {
+  // `__dirname`, not `import.meta.url`: under vitest the module URL is not a
+  // file: URL, so `readFileSync` on it throws before any assertion runs.
+  const source = readFileSync(resolve(__dirname, 'FeaturePreviewsSection.tsx'), 'utf-8')
+
+  it('names no config path for the consent switch', () => {
+    expect(source).not.toContain('configKey="decisions.enabled"')
+    expect(source).not.toContain('configKey={DECISIONS_ENABLED_PATH}')
+    expect(source).toContain('api.saveDecisionsConsent(')
+  })
+
+  it('reaches the generated registry without a config key', () => {
+    const entry = SETTINGS_REGISTRY.find(
+      e => e.labelKey === 'pages.developer.featurePreviewsTab.decisions',
+    )
+    expect(entry).toBeDefined()
+    expect(entry?.configKey).toBeUndefined()
   })
 })

@@ -876,7 +876,7 @@
       "label": "Decisions (Jev)",
       "tab": "developer",
       "route": "/settings/developer?highlight=developer.decisions-jev",
-      "description": "Jev is a small, cheap decision model. This preview lets Kiro Crew ask it one yes-or-no or pick-one question at three moments: which skills to load for your message, whether a skill it has just learned repeats one you already have, and whether a scheduled job's result says anything new. Shadow-only in this release — nothing Jev answers changes what Kiro Crew does; each answer is written to a log on this machine so the two can be compared. This switch is saved on the machine that runs Kiro Crew, not in this browser, so it applies on every device you open it from."
+      "description": "Jev is a small, fast decision model. With this on, Kiro Crew asks Jev which one of your skills fits the message you just sent — or that none does — and uses Jev's pick for the share of your sessions shown under the switch; the rest keep the word-matching rule this build ships with. If Jev is slow, unreachable or answers with nothing usable, that message falls back to the same rule, so a decision never holds up your reply. Each call is also recorded in a log on the machine that runs Kiro Crew, for diagnostics. This switch is saved on the machine that runs Kiro Crew, not in this browser, so it applies on every device you open it from."
     },
     {
       "id": "developer.developer-mode",

@@ -1427,6 +1427,17 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # consent card and the tool's own error string are the surfaces that
         # show a refusal, and those are owned by their registered sinks.
         "file_delivery_consent.py",
+        # Detector, not redactor: the decision seam runs redact_credentials
+        # AND redact_exfiltration_urls over the state it is about to send to a
+        # third-party judge, then DISCARDS both cleaned strings and refuses the
+        # whole call on any warning. So the module sits on an egress path but
+        # never emits redacted bytes -- a hit means nothing is sent at all, and
+        # the row records which scanner refused. Registering it as a redaction
+        # sink would make the panel claim this path is covered BY redaction,
+        # when what covers it is refusal; a partially redacted payload is still
+        # derived from a credential, and a judge's answer over redacted state
+        # would be logged as if it had judged the real thing.
+        "decisions/gate.py",
         # Capture-side, not egress: the opt-in frame recorder scrubs a raw ACP
         # frame as it WRITES it to a local file, so a credential never lands in
         # a recording the operator may later commit to the replay corpus. There

@@ -97,6 +97,47 @@ boundaries. It includes resident runtime workers such as
 parent-policy decision. Adding one requires routing it through the helper and adding it
 to that inventory, so a later spawn cannot silently return to the user-site-dependent
 behavior.
+## Confined decision-log append
+
+`platform_log_append.append_line` owns the decision log's filesystem transaction.
+The configured home is resolved once as the trusted anchor; the immediate log
+subdirectory and daily file are never resolved through links. POSIX pins the
+anchor with `pinned_fs.pin_parent`, creates the directory relative to that pin,
+and opens the directory and leaf with no-follow flags. Windows opens the resolved
+anchor and the log directory with `FILE_LIST_DIRECTORY` access and read-only
+sharing (attribute-only access takes no part in Windows sharing, so it would pin
+nothing), rejecting reparse attributes on both, so a data-write or delete open of
+either directory is a sharing violation while the append runs. The leaf uses
+`CreateFileW` read/write, open-or-create, without following reparse points, and
+its `GetFinalPathNameByHandleW` path must equal the pinned directory plus the
+leaf name; a swap that landed before the pins is refused rather than written
+through. Every native handle or descriptor is closed on failure as well as success.
+
+Fresh POSIX directories/files request 0700/0600; existing modes are untouched.
+Windows uses inherited ACLs, not a claim that POSIX mode bits enforce privacy.
+The open file must be regular and have exactly one hard link. The existing
+cross-platform file lock spans EOF validation, short-write/EINTR retries and
+rollback. File offsets are explicitly reset inside the lock, including on Windows.
+Lock acquisition and retries share a finite deadline. No additional worker is
+spawned; a stalled filesystem syscall itself is not cancellable by that deadline.
+
+On write failure, rollback removes only the bytes counted for that append when
+the file has exactly the expected size. Existing bytes or unrelated growth are
+never truncated. A pre-existing torn tail, including one left by failed rollback
+or process death, is terminated with a newline before the next record is written,
+so one torn row costs one unparseable line and never joins the record after it.
+This is best-effort observation, not a
+durable journal: no fsync or crash-atomic publication is promised. POSIX locks
+serialize cooperating writers, not arbitrary same-user mutations or hostile
+filesystem mounts. Descriptor pinning prevents redirected opens, not POSIX rename
+of an already-open inode outside its original directory.
+
+The retention sweep reuses the same pin: `pinned_log_dir` yields the no-follow directory descriptor on POSIX (names are listed with `scandir(fd)` and removed with `unlink(name, dir_fd=...)`) and holds the directory handle on Windows, so a swapped directory link cannot redirect a deletion. The decision caller catches append failures and warns without failing its turn.
+`test/test_platform_log_append.py` exercises ordinary appends on every platform,
+link refusal, short writes, rollback, concurrent writers, deadlines and cleanup.
+Native Windows cases also require rename and directory-write-handle exclusion,
+refusal of a redirected leaf handle, and release after failed CRT handle
+conversion; Linux simulations do not verify these.
 
 ## Embedding threading and cancellation
 

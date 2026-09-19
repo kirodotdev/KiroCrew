@@ -1,49 +1,75 @@
 /**
- * The `decisions.preview` flag — read side, as a pure function over the config.
+ * The Decisions (Jev) card's read model.
  *
- * Unlike the other Feature Previews in `FeaturePreviewsSection.tsx`, this one is
- * NOT a per-device `previewFlags.ts` key. The gate that will act on it runs in the
- * backend, which cannot read this browser's localStorage — so the flag has to be a
- * `config.json` value, written through `PATCH /api/config/kirocrew` like the
- * telemetry switch on the Privacy panel. That backend is not on `main` yet: today
- * nothing reads this value, and this module's whole job is to notice that and say
- * so rather than offer a switch against a field the gateway does not have.
+ * Two sources, deliberately, because the two values live in two different
+ * places on the gateway and the split IS the security design:
  *
- * A backend that predates the `decisions` section answers the config GET without
- * one, and its PATCH allowlist would refuse the write. That is a real state of
- * this dashboard — the frontend ships ahead of the gateway it talks to whenever a
- * user updates one half first — so `supported` is derived rather than assumed,
- * and the card disables its switch instead of offering a write that returns 400.
+ * - **Consent** — whether Jev may be asked at all — is the KEYSTONE
+ *   `decisions_consent.json`, read and written through `/api/decisions/consent`.
+ *   It is not a config path: `config.json` is writable by an auto-approved agent
+ *   shell, so a switch there could be flipped by a prompt-injected agent and the
+ *   live config watcher would start sending message text off the machine. The
+ *   keystone is mounted read-only in every sandbox and its only writer is the
+ *   owner-only dashboard handler behind this card.
+ * - **The sampling share** — `decisions.bucket` — comes from `config.json` through
+ *   the ordinary config GET. It grants nothing on its own (it can only narrow what
+ *   consent allows), so it stays a config value.
+ *
+ * Nothing is inferred from a legacy `decisions.preview` / `points.*.arm` section:
+ * that experiment sampled for COMPARISON and is retired; reading its values as
+ * consent would turn on egress from a value nobody wrote for it.
  */
 
-/** The config path the card's switch writes. */
-export const DECISIONS_PREVIEW_PATH = 'decisions.preview'
+/** The one point this build consumes an answer for. */
+export const DECISIONS_LIVE_POINT = 'skills.select'
 
-/**
- * The three seams the preview reads at, in the order the card lists them.
- *
- * Hard-coded rather than enumerated from the config: these are the points the
- * shipped copy names, and a config that grows a fourth must not silently add a
- * row whose meaning this release's copy never explained.
- */
-export const DECISION_POINTS = ['skills.select', 'skills.dedupe', 'cron.novelty'] as const
+/** Config path of the sampling share; the only decisions value the config PATCH accepts. */
+export const DECISIONS_BUCKET_PATH = 'decisions.bucket'
 
-/** One read-only row: a point and the arm the config has it on. */
-export interface DecisionPointArm {
-  point: string
-  arm: string
-}
+/** Bounds the backend clamps the sampling bucket to, restated for the reader. */
+const BUCKET_MIN = 0
+const BUCKET_MAX = 100
 
-export interface DecisionsPreviewView {
-  /** Whether this gateway's config carries a `decisions` section at all. */
+export interface DecisionsView {
+  /**
+   * Whether this gateway has the consent endpoint at all. An older gateway
+   * (404 on the consent GET, or a config carrying only the retired `preview`
+   * section) renders the switch disabled with the update notice.
+   */
   supported: boolean
-  /** The stored flag. Only an exact `true` reads as on. */
-  preview: boolean
-  /** Points whose arm the config actually exposes; empty means render no rows. */
-  arms: DecisionPointArm[]
+  /** The keystone's answer. Only an exact `true` reads as on. */
+  enabled: boolean
+  /**
+   * Where a decision would be sent: the endpoint `config.json` names now. Shown
+   * so the reader consents to an ADDRESS, not just to "sending".
+   */
+  configuredEndpoint: string
+  /**
+   * Consent was given, but for a different address than the config names now
+   * (`provider.endpoint` was edited afterwards). Nothing is sent in this state;
+   * the card says so and asks the owner to consent again.
+   */
+  endpointMoved: boolean
+  /**
+   * Sampling percentage worth PRINTING, or `null` when there is nothing to say.
+   *
+   * `null` covers the configs that mean "do not print a rate": the section or
+   * field is absent (an older or hand-trimmed config), or it is not a whole
+   * number in 0–100 (so the backend's own clamp decides, and this reader must not
+   * guess which way). 100 IS printed: it is the shipped default, and "every
+   * session" is the one share a reader deciding whether to consent most needs to
+   * see.
+   */
+  bucket: number | null
 }
 
-const UNSUPPORTED: DecisionsPreviewView = { supported: false, preview: false, arms: [] }
+const UNSUPPORTED: DecisionsView = {
+  supported: false,
+  enabled: false,
+  configuredEndpoint: '',
+  endpointMoved: false,
+  bucket: null,
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -52,29 +78,52 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * Read the flag and the point arms out of a `GET /api/config/kirocrew` body.
+ * The sampling rate out of a `GET /api/config/kirocrew` body, or `null` when the
+ * config gives nothing printable.
  *
- * `undefined` — the query has not resolved, or it failed — reads as unsupported,
- * which is also how the card renders it: a switch offered against a config the
- * dashboard has not read yet would be guessing at its own current state.
- *
- * Only an exact `true` turns the preview on. A hand-edited `"true"` or `1` reads
- * as off, because this is an opt-in that sends message text off the machine and a
- * sloppy value is not consent.
+ * A percentage of 0 IS printable and is kept: "on, and sampling nobody" is a
+ * state an operator can otherwise only discover by waiting for a log line that
+ * never comes.
  */
-export function readDecisionsPreview(config: unknown): DecisionsPreviewView {
+export function readBucket(config: unknown): number | null {
   const root = asRecord(config)
-  if (!root) return UNSUPPORTED
-  const decisions = asRecord(root.decisions)
-  if (!decisions) return UNSUPPORTED
+  const decisions = root ? asRecord(root.decisions) : null
+  const raw = decisions?.bucket
+  if (typeof raw !== 'number' || !Number.isInteger(raw)) return null
+  if (raw < BUCKET_MIN || raw > BUCKET_MAX) return null
+  return raw
+}
 
-  const points = asRecord(decisions.points)
-  const arms: DecisionPointArm[] = []
-  for (const point of DECISION_POINTS) {
-    const entry = points ? asRecord(points[point]) : null
-    const arm = entry?.arm
-    if (typeof arm === 'string' && arm) arms.push({ point, arm })
+/**
+ * Read consent out of a `GET /api/decisions/consent` body.
+ *
+ * `undefined` — the query has not resolved, or it failed (a 404 on an older
+ * gateway included) — reads as unsupported, which is also how the card renders
+ * it: a switch offered against a keystone the dashboard has not read yet would
+ * be guessing at its own current state.
+ *
+ * Only an exact `true` turns the preview on. The backend writes nothing else,
+ * and a hand-edited `"true"` or `1` in the keystone is refused there too; this
+ * reader mirrors that so the card never shows "on" for a value the gate reads
+ * as off.
+ */
+export function readConsent(body: unknown): Omit<DecisionsView, 'bucket'> {
+  const root = asRecord(body)
+  if (!root || !('enabled' in root)) {
+    return { supported: false, enabled: false, configuredEndpoint: '', endpointMoved: false }
   }
+  const enabled = root.enabled === true
+  const configuredEndpoint = typeof root.configured_endpoint === 'string' ? root.configured_endpoint : ''
+  // `permits` is the server's own verdict (enabled AND same address). Read it
+  // rather than re-deriving equality here, so the card and the gate cannot
+  // disagree about whether anything is being sent.
+  const endpointMoved = enabled && root.permits !== true
+  return { supported: true, enabled, configuredEndpoint, endpointMoved }
+}
 
-  return { supported: true, preview: decisions.preview === true, arms }
+/** Combine the two reads into the card's one view. */
+export function readDecisions(consentBody: unknown, config: unknown): DecisionsView {
+  const consent = readConsent(consentBody)
+  if (!consent.supported) return UNSUPPORTED
+  return { ...consent, bucket: readBucket(config) }
 }

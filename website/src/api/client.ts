@@ -412,6 +412,17 @@ export interface ComputerUsePermissions {
   responsible_hint: string
 }
 
+/** Decision-seam consent as returned by GET/PUT /api/decisions/consent.
+ *  `enabled` is the keystone; `endpoint` is the address it was given for;
+ *  `configured_endpoint` is where config.json points now; `permits` is whether a
+ *  decision would actually be sent (both true and equal). */
+export interface DecisionsConsentData {
+  enabled: boolean
+  endpoint: string
+  configured_endpoint: string
+  permits: boolean
+}
+
 /** Computer-use config as returned by GET /api/computer-use/config.
  *
  * `enabled` comes from the keystone `computer_use.json`, not `config.json`; the
@@ -4746,6 +4757,14 @@ export const api = {
   getComputerUseConfig: () => get('/api/computer-use/config').then(j) as Promise<ComputerUseConfigData>,
   saveComputerUseConfig: (body: Partial<ComputerUseConfigSave>) =>
     put('/api/computer-use/config', body).then(j) as Promise<ComputerUseConfigData>,
+  // Decision-seam consent (Settings > Developer > Feature Previews). The switch
+  // is a KEYSTONE, not a config path: see decisionsPreview.ts. The PUT returns
+  // the state written so the card re-renders from server truth.
+  getDecisionsConsent: () => get('/api/decisions/consent').then(j) as Promise<DecisionsConsentData>,
+  // Enabling echoes the endpoint the card showed: the gateway binds consent to
+  // that address and answers 409 if config.json moved it since the read.
+  saveDecisionsConsent: (enabled: boolean, endpoint?: string) =>
+    put('/api/decisions/consent', enabled ? { enabled, endpoint } : { enabled }).then(j) as Promise<DecisionsConsentData>,
   // Slack integration config
   getSlackConfig: () => get('/api/slack/config').then(j) as Promise<SlackConfigData>,
   getSlackManifest: () => get('/api/slack/manifest').then(j) as Promise<{ alias: string; manifest: string; create_url: string }>,

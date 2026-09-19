@@ -589,6 +589,14 @@ _CREW_SECRET_LEAVES: list[str] = [
     # and the ``kirocrew aws-consent`` CLI are the only writers and open the
     # path directly, not through this gate, so both keep working.
     "aws_service_consent.json",
+    # Recorded consent to send conversation state to the external decision
+    # provider (Jev). Same class of control as ``aws_service_consent.json``
+    # above: the record is what AUTHORIZES message text and skill descriptions
+    # to leave the machine, so an agent that could write it would consent on the
+    # owner's behalf to its own egress. The authenticated, browser-only dashboard
+    # ``/api/decisions/consent`` handler is the only writer and opens the path
+    # directly, not through this gate.
+    "decisions_consent.json",
     # Recorded consent to deliver a file whose contents the credential scanner
     # flagged. Same class of control as ``aws_service_consent.json`` above: the
     # record is what AUTHORIZES a flagged file past four independent content

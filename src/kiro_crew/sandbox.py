@@ -460,6 +460,12 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    # Recorded consent to send conversation state to the external decision
+    # provider. Same class as ``aws_service_consent.json``: a writable grant lets
+    # an auto-approved agent switch on, for itself, the egress of the messages it
+    # is being prompt-injected through. The read-only mount is the load-bearing
+    # half; the shell gate matches no paths.
+    "decisions_consent.json",
     # Recorded consent to deliver a scanner-flagged file. Same class as
     # ``aws_service_consent.json``: a writable grant lets an auto-approved agent
     # consent, on the owner's behalf, to shipping the owner's secrets. This seal is
@@ -922,6 +928,8 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 #:      extends trust by nothing for ``{}``;
 #:    * ``aws_service_consent.json`` — ``aws_consent._read_all`` returns ``{}`` for
 #:      both absent and empty, so every service stays unconfirmed;
+#:    * ``decisions_consent.json`` — ``decisions.consent.load_state`` reads ``{}``
+#:      as NOT CONSENTED, which is what an absent keystone means;
 #:    * ``settings_seeds.json`` — ``acp.seed_provenance._load`` finds no ``seeds``
 #:      mapping in ``{}`` and returns having recorded nothing, so every settings
 #:      path reads as unowned. Identical to absent, and the leaf that most needs
@@ -975,6 +983,7 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
+    "decisions_consent.json",
     # ``file_delivery_consent._read_all`` returns ``{}`` for both absent and
     # unreadable, and ``is_granted`` then reports no consent -- so an EMPTY
     # document means exactly what an ABSENT one means (criterion 1). A stale

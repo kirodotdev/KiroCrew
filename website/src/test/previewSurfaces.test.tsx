@@ -344,13 +344,18 @@ describe('usePreviewFlagRevision', () => {
 })
 
 describe('Settings > Developer > Feature Previews', () => {
-  // One card in this section — Decisions — is backed by `config.json` rather
-  // than a `previewFlags.ts` key, so the section reads `['kirocrewConfig']`.
-  // Stubbed here rather than left to reach the network: every case below is
-  // about the four localStorage previews, and a real read cannot succeed under
-  // vitest. `decisionsCard.test.tsx` owns that card's own states.
+  // One card in this section — Decisions — is backed by gateway state rather
+  // than a `previewFlags.ts` key: its switch reads the consent keystone and its
+  // share reads `['kirocrewConfig']`. Both stubbed here rather than left to reach
+  // the network: every case below is about the four localStorage previews, and a
+  // real read cannot succeed under vitest (a failed one would render an
+  // ErrorNotice with its own "Ask the agent" link and pollute the link census).
+  // `decisionsCard.test.tsx` owns that card's own states.
   beforeEach(() => {
     vi.spyOn(api, 'kirocrewConfig').mockResolvedValue({} as never)
+    vi.spyOn(api, 'getDecisionsConsent').mockResolvedValue({
+      enabled: false, endpoint: '', configured_endpoint: 'https://api.typesafe.ai/v1/systemone', permits: false,
+    })
   })
   afterEach(() => {
     vi.restoreAllMocks()

@@ -5656,6 +5656,169 @@ class InstancesConfig:
             object.__setattr__(self, "probe_failure_threshold", _DEFAULT_PROBE_FAILS)
 
 
+# Sampling bucket bounds, as a percentage of sessions. 0 admits nothing, 100
+# admits everything; both the parse below and the gate clamp to this range rather
+# than treating an out-of-range value as a second way to disable the seam.
+DECISION_BUCKET_MIN = 0
+DECISION_BUCKET_MAX = 100
+
+DECISION_PROVIDER_ENDPOINT_DEFAULT = "https://api.typesafe.ai/v1/systemone"
+DECISION_PROVIDER_MODEL_DEFAULT = "jev-latest"
+
+
+@dataclass
+class DecisionProviderConfig:
+    """Where the System One provider lives and what one call may cost."""
+
+    endpoint: str = field(
+        default=DECISION_PROVIDER_ENDPOINT_DEFAULT,
+        metadata=_meta(
+            "Endpoint",
+            "Full URL of the evaluation endpoint. Override only to point at a "
+            "compatible proxy — the request and response field names are fixed by "
+            "the TypeSafe API, not by this setting.",
+        ),
+    )
+    api_key: str = field(
+        default="secret://TYPESAFE_API_KEY",
+        metadata=_meta(
+            "API Key",
+            "The provider credential reference. Only 'secret://TYPESAFE_API_KEY' is "
+            "honoured: it reads that one entry from the dashboard secrets vault "
+            "(Settings › Secrets), so no key is ever stored in config.json. A literal "
+            "key here is NOT used, and no other vault entry is readable through this "
+            "field, because config.json is agent-writable. With no usable key the "
+            "seam logs a row saying so and returns None — it never sends an empty "
+            "bearer credential.",
+            sensitive=True,
+        ),
+    )
+    model: str = field(
+        default=DECISION_PROVIDER_MODEL_DEFAULT,
+        metadata=_meta(
+            "Model",
+            "Provider model id. 'jev-latest' is TypeSafe's flagship System One model. "
+            "Letters, digits, dots, dashes and underscores, up to 64 characters; "
+            "anything else is refused before a request is sent, because this field "
+            "travels in the request and config.json is agent-writable.",
+        ),
+    )
+    timeout_ms: int = field(
+        default=1000,
+        metadata=_meta(
+            "Timeout (ms)",
+            "Total budget for one decision, in milliseconds. Exceeding it logs "
+            "error='timeout' and returns None, so this is the ceiling the seam "
+            "adds to the path it sits in — not a target. Values at or below zero "
+            "are floored to 1ms rather than disabling the timeout.",
+        ),
+    )
+
+
+@dataclass
+class DecisionsConfig:
+    """Decision seam (``src/kiro_crew/decisions/``). Off by default.
+
+    There is deliberately NO ``enabled`` field here. The switch that lets
+    conversation state leave the machine is an authorization, not a preference,
+    and ``config.json`` is writable by an auto-approved agent shell -- so it lives
+    on the KEYSTONE leaf ``decisions_consent.json`` (``decisions.consent``), the
+    same placement as ``computer_use.json`` and ``aws_service_consent.json``. This
+    section carries only the knobs that grant nothing on their own: the sampling
+    share and the provider. There is no per-point arm and no shadow mode: one
+    point ships (``skills.select``).
+
+    Every field is hot-applied (no ``restart=True`` anywhere): the gate reads the
+    live snapshot per call, so a bucket change takes effect on the next decision
+    without a gateway restart.
+    """
+
+    bucket: int = field(
+        default=DECISION_BUCKET_MAX,
+        metadata=_meta(
+            "Bucket (%)",
+            "Percentage of sessions the seam fires for, 0-100, decided by a hash "
+            "of the session key so a session is consistently in or out. 0 fires "
+            "for nobody, 100 for everybody. Out-of-range numbers are clamped; a "
+            "value that is not a whole number reads as 0 (nobody sampled), never "
+            "as everybody. To switch the seam off, withdraw consent in Settings > "
+            "Developer > Feature Previews, not a zero bucket.",
+        ),
+    )
+    provider: DecisionProviderConfig = field(
+        default_factory=DecisionProviderConfig,
+        metadata=_meta("Provider", "Where decisions are sent and what they may cost."),
+    )
+
+    @classmethod
+    def from_raw(cls, section: object) -> "DecisionsConfig":
+        """Build from a raw ``decisions`` dict -- the ONE parse site.
+
+        Lives here rather than in the loader because the bucket bounds are
+        declared a few lines above, and a normalizer that read them from another
+        module would need those names re-exported across a frozen module boundary
+        (``test_config_module_boundaries``).
+
+        Every value is NORMALIZED rather than validated-and-rejected: this
+        section gates a seam that is off by default, so the fail-closed reading
+        of any unreadable value is the default, and a hand-edited config.json
+        must not stop the gateway booting.
+
+        Accepts whatever ``json.loads`` produced, including ``None`` and a
+        non-dict, for the same reason ``ResourceLimitsConfig.from_raw`` does. A
+        config carrying the earlier ``preview``/``points``/``enabled`` spelling
+        is read for its bucket and provider only: consent is never inferred from
+        ``config.json``, whatever key it carries, because that file is what the
+        keystone exists to keep the decision out of.
+        """
+        if not isinstance(section, dict):
+            return cls()
+
+        raw_provider = section.get("provider")
+        raw_provider = raw_provider if isinstance(raw_provider, dict) else {}
+
+        def _text(key: str, default: str) -> str:
+            """A non-empty stripped string, else *default*.
+
+            An empty or blank value resolves to the DEFAULT rather than to ``""``:
+            the implementation falls back to the documented endpoint and model
+            anyway, so storing ``""`` would leave the saved config disagreeing
+            with what is in force -- the same reason ``bucket`` is clamped here.
+            """
+            raw = raw_provider.get(key)
+            return raw.strip() if isinstance(raw, str) and raw.strip() else default
+
+        provider = DecisionProviderConfig(
+            endpoint=_text("endpoint", DecisionProviderConfig.endpoint),
+            api_key=_text("api_key", DecisionProviderConfig.api_key),
+            model=_text("model", DecisionProviderConfig.model),
+            timeout_ms=_safe_int(
+                raw_provider.get("timeout_ms", DecisionProviderConfig.timeout_ms),
+                DecisionProviderConfig.timeout_ms,
+            ),
+        )
+
+        return cls(
+            # Clamped here as well as in the gate. The gate clamps because it
+            # must never trust a value it did not parse; clamping here is what
+            # makes the SAVED config say what is in force, so an operator who
+            # wrote 500 sees 100 come back rather than a number that behaves as
+            # 100 while reading as 500.
+            #
+            # ABSENT reads as the default (every session); MALFORMED reads as 0.
+            # The two must not share a fallback: this number decides how much
+            # conversation state leaves the machine, so a hand-edit that fails to
+            # parse must fail closed to "nobody", never open to "everybody".
+            bucket=_safe_int(
+                section.get("bucket", DECISION_BUCKET_MAX),
+                DECISION_BUCKET_MIN,
+                DECISION_BUCKET_MIN,
+                DECISION_BUCKET_MAX,
+            ),
+            provider=provider,
+        )
+
+
 @dataclass
 class MonitoringConfig:
     """Which side justifies itself when a session picks a monitoring path.

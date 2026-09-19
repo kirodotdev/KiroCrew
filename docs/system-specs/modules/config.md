@@ -2188,6 +2188,33 @@ use is SEL-audited under its own `tool_kind`. Do not re-document the flag withou
 re-implementing it. See [security.md](security.md), [governance.md](governance.md)
 and [computer-use.md](computer-use.md).
 
+### Decisions: no `enabled` field here either
+
+`DecisionsConfig` carries the sampling share (`bucket`) and the provider block only.
+Consent to send message text and skill descriptions to Jev lives **outside
+`config.json`**, on the keystone `~/.kiro/crew/decisions_consent.json` (path via
+`config.loader.decisions_consent_path()`, module `decisions.consent`, leaf on
+`security._CREW_SECRET_LEAVES` and `sandbox._CREW_READONLY_LEAVES`):
+
+```json
+{
+  "enabled": false,
+  "endpoint": ""
+}
+```
+
+`endpoint` is the `provider.endpoint` the owner consented to; the gate sends only
+while the configured endpoint still equals it, because that field is in this
+agent-writable file too. Same reasoning as `computer_use.json` above: `config.json` is a `VISIBLE` leaf the
+agent's shell can write, and every `decisions.*` field is hot-applied by the live
+watcher, so an `enabled` toggle here would let a prompt-injected agent start the
+egress of its own conversation without a restart. Reads fail soft to `{}` → **not
+consented**, and only a literal `true` consents. The only writer is the owner-only,
+browser-called `PUT /api/decisions/consent` (`dashboard/handlers/decisions.py`);
+`PATCH /api/config/kirocrew` refuses `decisions.enabled`, and an `enabled` key written
+into the section by hand is inert — the parsed dataclass has no such attribute. See
+[decisions.md](decisions.md).
+
 #### `computer_use.cursor_motion` — the one new `config.json` flag
 
 Cursor Motion (the cosmetic fake-cursor desktop overlay) is the exception that

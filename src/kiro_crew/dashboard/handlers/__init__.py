@@ -978,6 +978,13 @@ from kiro_crew.dashboard.handlers.core import (  # noqa: E402, F401
     pwa_file,
 )
 
+# Decision-seam consent — the operator's switch for sending conversation state
+# to Jev. Sole writer of the ``decisions_consent.json`` keystone.
+from kiro_crew.dashboard.handlers.decisions import (  # noqa: E402, F401
+    api_decisions_consent_get,
+    api_decisions_consent_put,
+)
+
 # Flagged-file delivery consent — owner-gated, and the ONLY writer of
 # ``file_delivery_consent.json``. Recording is arm (owner POST) + approve
 # (host-only ``kirocrew file-delivery approve``, which consumes the nonce).

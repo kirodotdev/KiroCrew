@@ -4009,6 +4009,117 @@
       "defaultValue": false
     },
     {
+      "path": "decisions",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Decisions",
+      "help": "Decision seam — typed decisions asked of a System One model at named points. Off until the dashboard owner consents in Settings > Developer > Feature Previews (the keystone decisions_consent.json, not a key here); until then every point returns None with no network call and no log write.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "bucket": 100,
+        "provider": {
+          "endpoint": "https://api.typesafe.ai/v1/systemone",
+          "api_key": "secret://TYPESAFE_API_KEY",
+          "model": "jev-latest",
+          "timeout_ms": 1000
+        }
+      }
+    },
+    {
+      "path": "decisions.bucket",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Bucket (%)",
+      "help": "Percentage of sessions the seam fires for, 0-100, decided by a hash of the session key so a session is consistently in or out. 0 fires for nobody, 100 for everybody. Out-of-range numbers are clamped; a value that is not a whole number reads as 0 (nobody sampled), never as everybody. To switch the seam off, withdraw consent in Settings > Developer > Feature Previews, not a zero bucket.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 100
+    },
+    {
+      "path": "decisions.provider",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Provider",
+      "help": "Where decisions are sent and what they may cost.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "endpoint": "https://api.typesafe.ai/v1/systemone",
+        "api_key": "secret://TYPESAFE_API_KEY",
+        "model": "jev-latest",
+        "timeout_ms": 1000
+      }
+    },
+    {
+      "path": "decisions.provider.endpoint",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Endpoint",
+      "help": "Full URL of the evaluation endpoint. Override only to point at a compatible proxy — the request and response field names are fixed by the TypeSafe API, not by this setting.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "https://api.typesafe.ai/v1/systemone"
+    },
+    {
+      "path": "decisions.provider.api_key",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": true,
+      "tags": [],
+      "label": "API Key",
+      "help": "The provider credential reference. Only 'secret://TYPESAFE_API_KEY' is honoured: it reads that one entry from the dashboard secrets vault (Settings › Secrets), so no key is ever stored in config.json. A literal key here is NOT used, and no other vault entry is readable through this field, because config.json is agent-writable. With no usable key the seam logs a row saying so and returns None — it never sends an empty bearer credential.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "secret://TYPESAFE_API_KEY"
+    },
+    {
+      "path": "decisions.provider.model",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Model",
+      "help": "Provider model id. 'jev-latest' is TypeSafe's flagship System One model. Letters, digits, dots, dashes and underscores, up to 64 characters; anything else is refused before a request is sent, because this field travels in the request and config.json is agent-writable.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": "jev-latest"
+    },
+    {
+      "path": "decisions.provider.timeout_ms",
+      "kind": "core",
+      "type": "integer",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Timeout (ms)",
+      "help": "Total budget for one decision, in milliseconds. Exceeding it logs error='timeout' and returns None, so this is the ceiling the seam adds to the path it sits in — not a target. Values at or below zero are floored to 1ms rather than disabling the timeout.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": 1000
+    },
+    {
       "path": "watchdog",
       "kind": "core",
       "type": "object",

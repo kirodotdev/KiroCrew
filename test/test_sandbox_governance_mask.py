@@ -92,6 +92,10 @@ class TestKeystonesAreSealedInEveryMode:
         "computer_use.json",
         "oauth_endpoints.json",
         "aws_service_consent.json",
+        # Recorded consent to send conversation state to the external decision
+        # provider. Same class: the seal is what makes "the owner consents to
+        # the egress, never the agent" true.
+        "decisions_consent.json",
         # Recorded consent to deliver a scanner-flagged file. Sealing it
         # is the load-bearing half of the whole design: the deny-list tiers can
         # be evaded by runtime path construction, so only a kernel write denial
