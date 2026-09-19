@@ -10855,7 +10855,7 @@ async def _run_chat(
                 # the marker from the transcript text (cosmetic, like redaction).
                 # Awaited: the spool read inside is thread-offloaded (multi-MB
                 # records must not stall this event loop).
-                _out = await mcp_apps_render.handle_tool_result(
+                _render = await mcp_apps_render.handle_tool_result(
                     state,
                     slot_key=slot.key,
                     tool_call_id=_tcid,
@@ -10866,6 +10866,20 @@ async def _run_chat(
                     # bare-vs-prefixed mismatch (silent no-render).
                     producing_session_key=effective_session_key(slot),
                 )
+                _out = _render.text
+                # Rows this frame flags, by their own `ts`. A slot's timestamps
+                # are strictly increasing (`monotonic_transcript_ts` advances by
+                # a microsecond when the clock does not), so a ts names exactly
+                # one row -- which a tool_call_id does not: an auto-approved call
+                # has a pre- and a post-approval row sharing the id, and the
+                # client's patch reducer takes only the newest of those.
+                _app_flag_rows: list[str] = []
+                # The render payload is LIVE-ONLY by design (owner-scoped WS, a
+                # callback capability, and a record that expires), so a reload
+                # has nothing to rebuild the frame from. Remember that this call
+                # produced an app and persist it on the row below, so a reader
+                # is told the app exists instead of seeing nothing at all.
+                _app_claimed = _render.app_claimed
                 # Session directive: a stateless session-bound tool
                 # (monitor_start / monitor_update / autonudge_stop / set_project
                 # / suggest_followup / ask_question) returns a directive marker
@@ -11274,6 +11288,20 @@ async def _run_chat(
                         ):
                             _meta = m.setdefault("meta", {})
                             _meta["done"] = True
+                            # Written only when this call consumed an app
+                            # record's one render, and never written False:
+                            # absent means "no app", which is also what every
+                            # row predating this field says. The frontend
+                            # renders its there-is-an-app-here notice from this
+                            # alone, so a flag on a row that produced no app
+                            # would point at nothing. `_app_claimed` is THIS
+                            # frame's: it is assigned unconditionally at the top
+                            # of this same EVENT_TOOL_RESULT branch, which is
+                            # what keeps one tool call's app off another call's
+                            # row.
+                            if _app_claimed:
+                                _meta["mcp_app"] = True
+                                _app_flag_rows.append(str(m.get("ts") or ""))
                             # A terminal frame carrying no renderable output states a
                             # STATUS, not an empty output, so it must not overwrite an
                             # output an earlier frame for this same call already
@@ -11282,6 +11310,38 @@ async def _run_chat(
                             # a first terminal frame with no output still reads as one.
                             if _out or "output" not in _meta:
                                 _meta["output"] = _out
+                    # Tell open clients about the app flag as well as storing it.
+                    # `chat.mcpApps` is a BOUNDED cache, so a session that opens
+                    # many apps evicts the oldest payload while its row is still
+                    # on screen; without this the row goes blank there and only
+                    # names the app after a reload. The reducer MERGES meta, so
+                    # the patch carries that one key and nothing else -- notably
+                    # not the row's output, which is capped at 1 MB and already
+                    # delivered.
+                    #
+                    # One patch per flagged row, addressed by that row's own
+                    # `ts`. `monotonic_transcript_ts` advances a row by a
+                    # microsecond when the clock has not moved, so a slot's
+                    # timestamps are strictly increasing and a `ts` names exactly
+                    # one row -- where a tool_call_id names TWO for an
+                    # auto-approved call. Both rows are therefore correct live,
+                    # as well as after a reload from the persisted write above.
+                    for _flag_ts in _app_flag_rows:
+                        if not _flag_ts:
+                            continue
+                        try:
+                            state.broadcast_ws(
+                                "chat_message_update",
+                                {
+                                    "slot": slot.key,
+                                    "ts": _flag_ts,
+                                    "meta": {"mcp_app": True},
+                                },
+                            )
+                        except Exception:
+                            # The stored rows are already correct; a client
+                            # reconciles from slot detail on its next fetch.
+                            logger.debug("mcp-app flag broadcast failed", exc_info=True)
                 # Fire PostToolUse hooks
                 _tool_name = _pending_tools.pop(event.tool_call_id, "")
                 try:

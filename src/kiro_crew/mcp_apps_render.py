@@ -34,12 +34,48 @@ import os
 import re
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from kiro_crew import security
 from kiro_crew.config.paths import config_dir
 
 logger = logging.getLogger(__name__)
+
+
+class ToolResultRender(NamedTuple):
+    """What this seam did with one tool result.
+
+    ``text`` is the transcript text with the marker stripped, which is what
+    every caller needs.
+
+    ``app_claimed`` is true when the spool record loaded, passed its
+    session-binding check, and had its SINGLE-USE render claim consumed for
+    this tool call. That is the fact a transcript needs, and the claim being
+    spent is exactly why the app can never appear for this call again.
+
+    It deliberately does NOT assert that a browser received the frame.
+    ``broadcast_ws_owners`` drops the payload when no owner socket is attached,
+    and an unattended run has no viewer at all -- which is precisely the case
+    where the transcript must still be able to say this call produced an app.
+    Gating on a delivered count would record nothing there, so a reader opening
+    that session later would be told nothing, which is the gap this exists to
+    close. Nor does it wait on the dispatch succeeding: the claim is spent
+    before the send, so a send that raises leaves an app that can never be
+    shown, which the reader still needs to know about.
+
+    It is also the one fact a caller cannot work out for itself. A marker's
+    PRESENCE does not mean a record was claimed: a replayed marker is inert, a
+    record can be expired or unreadable, and a cross-session marker is refused,
+    and every one of those returns stripped text that looks identical.
+
+    A return value rather than an optional callback, because mypy then makes
+    every caller confront the flag. A hook defaulting to ``None`` can be
+    dropped by the next call site, and the durable flag would quietly stop
+    being written with nothing failing.
+    """
+
+    text: str
+    app_claimed: bool
 
 
 def _redact_leaves(obj: Any) -> Any:
@@ -179,15 +215,15 @@ def load_spool(spool_id: str) -> dict[str, Any] | None:
         # not understand instead of silently mis-reading it.
         logger.warning(
             "mcp-apps spool %s has unsupported schema %r; refusing",
-            spool_id, data.get("schema"),
+            spool_id,
+            data.get("schema"),
         )
         return None
     return data
 
 
-def _claim_render(spool_id: str, producing_session_key: str) -> dict[str, Any] | None:
-    """Load the spool record, validate its session binding, THEN atomically
-    claim its one render.
+def _load_bound(spool_id: str, producing_session_key: str) -> dict[str, Any] | None:
+    """Load the spool record and validate its session binding. Takes NO claim.
 
     ``producing_session_key`` is the CANONICAL producing-session key (e.g.
     ``"dashboard:<slot>"``) that the gateway recorded on the spool — NOT the
@@ -196,22 +232,14 @@ def _claim_render(spool_id: str, producing_session_key: str) -> dict[str, Any] |
     bare), so the binding check MUST compare against the canonical form or every
     real render is refused as a mismatch.
 
-    ORDER MATTERS: the binding check runs BEFORE the claim. A marker echoed
-    into the WRONG session must not consume the record's single render —
-    otherwise a replay racing ahead of the legitimate slot would burn the
-    claim and permanently suppress the real render (a cheap denial). Only a
-    caller that passes the binding check may take the claim.
+    ORDER MATTERS: the binding check runs BEFORE the claim (``_take_claim``,
+    which a caller reaches only after this returns). A marker echoed into the
+    WRONG session must not consume the record's single render, because a replay
+    racing ahead of the legitimate slot would burn the claim and permanently
+    suppress the real render (a cheap denial). Only a caller that passes the
+    binding check may take the claim.
 
-    A record renders at most ONCE: markers travel in tool-result text, which
-    the LLM (and any server) can echo into later turns and which persists in
-    transcripts — without a consume gate, a replayed marker would re-render
-    the app wherever the text lands. The claim is an ``O_CREAT|O_EXCL`` sidecar
-    (``<id>.rendered``) next to the record: atomic on POSIX, so exactly one
-    caller wins even under concurrent replays. The record itself stays on
-    disk — the app-call capability path deliberately remains valid for the
-    rendered app's lifetime (until the TTL sweep reaps both files).
-
-    Runs blocking filesystem work — call via ``asyncio.to_thread``.
+    Runs blocking filesystem work, so call via ``asyncio.to_thread``.
     """
     data = load_spool(spool_id)
     if data is None:
@@ -225,25 +253,125 @@ def _claim_render(spool_id: str, producing_session_key: str) -> dict[str, Any] |
     if record_session and record_session != producing_session_key:
         logger.warning(
             "mcp-apps marker %s bound to session %r arrived in %r; refusing render",
-            spool_id, record_session, producing_session_key,
+            spool_id,
+            record_session,
+            producing_session_key,
         )
         return None
     if not record_session:
         logger.info(
             "mcp-apps marker %s has no session binding; rendering in %r",
-            spool_id, producing_session_key,
+            spool_id,
+            producing_session_key,
         )
+    return data
+
+
+def _take_claim(spool_id: str) -> bool:
+    """Atomically take the record's ONE render for this caller.
+
+    A record renders at most ONCE: markers travel in tool-result text, which
+    the LLM (and any server) can echo into later turns and which persists in
+    transcripts, so without a consume gate a replayed marker would re-render
+    the app wherever the text lands. The claim is an ``O_CREAT|O_EXCL`` sidecar
+    (``<id>.rendered``) next to the record: atomic on POSIX, so exactly one
+    caller wins even under concurrent replays. The record itself stays on disk,
+    because the app-call capability path deliberately remains valid for the
+    rendered app's lifetime (until the TTL sweep reaps both files).
+
+    Separate from ``_load_bound`` so a caller can finish every CANCELLABLE step
+    before taking it. Claiming is irreversible and makes every later replay
+    inert, so a cancellation landing after the claim but before the caller
+    records the app loses that app with nothing left to say it existed. Taking
+    the claim LAST means a cancellation instead leaves the record unclaimed and
+    a later replay can still render it.
+
+    OFFLOAD this, never call it on the event loop. ``os.close()`` on a file
+    descriptor is named in the ``no-blocking-call-on-event-loop`` rule
+    (``AUTOSDE.yaml``), which carries ``blocking: true``: the gateway runs every
+    task on one loop, so a syscall that stalls there -- a spool on network or
+    FUSE storage is enough -- freezes the user's turn AND the liveness
+    heartbeat until the watchdog kills the process and the supervisor respawns
+    into the same condition. That the syscalls here are cheap on a local path is
+    not a judgement this code gets to make; the rule's own closing line is "when
+    in doubt, offload", and a frozen loop outranks the cost below.
+
+    The cost the offload reintroduces, and how the caller pays it: an executor
+    thread runs to completion whatever happens to the awaiting coroutine, so a
+    cancellation delivered mid-``os.open`` creates the sidecar while the caller
+    raises and records nothing. ``handle_tool_result`` closes that by shielding
+    the call AND draining it through any further cancellation
+    (``_drain_shielded``), because a shield protects the inner future rather than
+    the awaiting coroutine; it then calls ``_release_claim`` when it cannot
+    record the app after all.
+
+    ``_load_bound`` is offloaded for the ordinary reason instead: it reads and
+    parses a record up to ``MAX_SPOOL_BYTES``.
+    """
     sentinel = _spool_dir() / f"{spool_id}.rendered"
     try:
         fd = os.open(sentinel, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
         os.close(fd)
     except FileExistsError:
         logger.info("mcp-apps marker %s already rendered; replay is inert", spool_id)
-        return None
+        return False
     except OSError:
         logger.warning("mcp-apps render claim failed for %s", spool_id, exc_info=True)
-        return None
-    return data
+        return False
+    return True
+
+
+def _release_claim(spool_id: str) -> None:
+    """Give a claim back, for a caller torn down before it could record the app.
+
+    Only ``handle_tool_result``'s cancellation path calls this, and only for a
+    claim IT won. A claim nobody can record is worse than no claim: it makes
+    every later replay inert, so the app is gone with nothing left to say it
+    existed. Releasing it puts the record back where a later replay renders it.
+
+    Offloaded for the same reason as ``_take_claim`` -- ``unlink`` is a metadata
+    syscall on the same possibly-stalled filesystem.
+
+    One residue, bounded to the interval between the claim and this unlink: a
+    concurrent replay arriving inside it sees the sidecar and is told the record
+    is already rendered, so that replay shows the absence notice for an app that
+    becomes renderable again a moment later. The window is two metadata syscalls
+    wide and the next replay renders for real, which is why this is the accepted
+    side of the trade against a claim that can never be given back.
+    """
+    try:
+        (_spool_dir() / f"{spool_id}.rendered").unlink()
+    except OSError:
+        logger.warning("mcp-apps claim release failed for %s", spool_id, exc_info=True)
+
+
+async def _drain_shielded(aw: Any) -> Any:
+    """Await ``aw`` to completion even if THIS task is cancelled repeatedly.
+
+    ``asyncio.shield`` protects the inner future, not the awaiting coroutine: a
+    second ``.cancel()`` on this task raises ``CancelledError`` out of the
+    ``await`` itself, so any cleanup that followed it is skipped. A plain shield
+    is therefore not enough to make the claim's outcome reachable -- and a
+    double cancellation is ordinary operation here, not a contrived one, since a
+    turn deadline and a slot deletion can both fire on the same task.
+
+    The loop cannot spin: each iteration either suspends on a pending inner
+    future or, once that future is done, returns without a suspension point --
+    so an iteration is only ever driven by a further ``.cancel()``, and the
+    count of those is bounded by the callers that issue them.
+
+    The caller re-raises the cancellation itself; absorbing it here would
+    silently un-cancel the turn.
+    """
+    inner = asyncio.ensure_future(aw)
+    while True:
+        try:
+            return await asyncio.shield(inner)
+        except asyncio.CancelledError:
+            if inner.done():
+                # Cancellation and completion raced. The worker's outcome is
+                # already here, so read it rather than re-entering the await.
+                return inner.result()
 
 
 async def handle_tool_result(
@@ -253,7 +381,7 @@ async def handle_tool_result(
     tool_call_id: str,
     text: str,
     producing_session_key: str | None = None,
-) -> str:
+) -> ToolResultRender:
     """Interception seam for the ``EVENT_TOOL_RESULT`` handler.
 
     ``slot_key`` is the bare frontend slot key used for WS routing (every other
@@ -269,14 +397,26 @@ async def handle_tool_result(
     with the marker stripped. When there is no marker — the overwhelming common
     case — return *text* unchanged after a single cheap check.
 
-    The spool read is offloaded via ``asyncio.to_thread``. Never raises.
+    Returns a ``ToolResultRender``: the transcript text, and whether this call
+    consumed the record's one render. See that type for what the second field
+    does and does not assert, and why a caller cannot derive it.
+
+    The spool read is offloaded via ``asyncio.to_thread``. Never raises for a
+    failure of its own: every error path logs and returns the stripped text. It
+    DOES propagate ``asyncio.CancelledError``, which is a ``BaseException`` and
+    is not a failure of this seam but the caller's turn being torn down. The one
+    thing that propagation must not do is leave a claimed record behind, so the
+    claim is shielded and given back on that path.
     """
     spool_id = find_marker(text)
     if not spool_id:
-        return text
+        return ToolResultRender(text, False)
     binding_key = producing_session_key if producing_session_key is not None else slot_key
+    # Set on the CLAIM, which is the irreversible half: past that point the
+    # record's one render belongs to this call and no later frame can use it.
+    claimed = False
     try:
-        data = await asyncio.to_thread(_claim_render, spool_id, binding_key)
+        data = await asyncio.to_thread(_load_bound, spool_id, binding_key)
         if data is not None:
             # OWNER-scoped delivery: the frame carries the ``callback_secret``
             # — the capability that authorizes app→gateway callbacks —
@@ -286,6 +426,16 @@ async def handle_tool_result(
             send = getattr(state, "broadcast_ws_owners", None) or state.broadcast_ws
             # Offload redaction: the passes recurse over payloads that can be
             # multi-MB, and this seam runs on the dashboard event loop.
+            #
+            # BEFORE the claim, deliberately. This await is cancellable, and
+            # `CancelledError` is a BaseException that the `except Exception`
+            # below does not catch, so a turn cancelled here returns nothing to
+            # the caller at all. With the claim already taken, that would leave
+            # an app no replay can ever render and no row recording that it
+            # existed, which is the exact silence this seam's caller exists to
+            # remove. Redacting first costs one wasted pass in the rare case a
+            # concurrent replay wins the claim, and buys a cancellation window
+            # in which the record is still claimable.
             red_structured, red_input, red_result = await asyncio.to_thread(
                 lambda: (
                     _redact_leaves(data.get("structured_content")),
@@ -293,6 +443,34 @@ async def handle_tool_result(
                     _redact_leaves(data.get("result_content")),
                 )
             )
+            # OFFLOADED, and DRAINED so the offload cannot lose the app.
+            # `os.close` on the loop is forbidden by the `blocking: true`
+            # `no-blocking-call-on-event-loop` rule; see `_take_claim`. The bare
+            # offload would reopen the loss window one step narrower -- the
+            # executor thread creating the sidecar after the awaiting coroutine
+            # has already raised -- so the claim is shielded to keep the worker's
+            # outcome knowable, and the cancellation path drains that outcome
+            # through any FURTHER cancellation before giving the claim back.
+            claim = asyncio.ensure_future(asyncio.to_thread(_take_claim, spool_id))
+            try:
+                took_claim = await asyncio.shield(claim)
+            except asyncio.CancelledError:
+                # A shield keeps the WORKER alive; it does not keep THIS
+                # coroutine from being cancelled again at the awaits below. A
+                # second cancellation landing here would leave the sidecar taken
+                # and the release skipped -- an app no replay can render, which
+                # is the exact silence this seam exists to remove. So both awaits
+                # DRAIN through repeated cancellation, and the original
+                # cancellation propagates afterwards.
+                try:
+                    if await _drain_shielded(claim):
+                        await _drain_shielded(asyncio.to_thread(_release_claim, spool_id))
+                except Exception:
+                    logger.warning("mcp-apps claim release skipped for %s", spool_id, exc_info=True)
+                raise
+            if not took_claim:
+                return ToolResultRender(strip_marker(text), False)
+            claimed = True
             send(
                 "mcp_app_render",
                 {
@@ -320,4 +498,4 @@ async def handle_tool_result(
             logger.info("mcp-apps marker %s had no loadable spool payload", spool_id)
     except Exception:
         logger.warning("mcp-apps render broadcast failed for %s", spool_id, exc_info=True)
-    return strip_marker(text)
+    return ToolResultRender(strip_marker(text), claimed)
