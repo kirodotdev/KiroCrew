@@ -166,6 +166,26 @@ def _describe_next_wake(loop: Any, *, verb: str = "first wake") -> str:
     return f"{verb} in ~{remaining}s ({stamp})"
 
 
+# ``ask_question`` is EXCLUDED: two shipped conductor charters grant it by name
+# so an unattended patrol cycle can still put a decision to its operator.
+_USER_ORIGIN_DIRECTIVES = _USER_SURFACE_DIRECTIVES | frozenset({"suggest_followup"})
+
+
+def _user_origin_refusal(kind: str, session_key: str, middle: str) -> str:
+    """Build the shared human-provenance refusal, varying only ``middle``.
+
+    Both refusals share this head and tail so neither can drift.
+    ``set_project``/``reset_conversation``/``chat_tag`` name the surfaces that
+    would have worked, while ``suggest_followup`` has to say the refusal stands
+    even with a tab open — the counter-intuitive case, because the dashboard-only
+    rule it is documented under asks only whether a tab exists.
+    """
+    return (
+        f"Error: {kind} only works from a user-facing session{middle} "
+        f"(this turn is {session_key!r}). Nothing was changed."
+    )
+
+
 def _has_user_surface(session_key: str) -> bool:
     """Return whether *session_key* names a user-facing conversation."""
     return has_dashboard_surface(session_key) or is_channel_session_key(session_key)
@@ -247,18 +267,36 @@ async def apply_session_directive(
             f"Error: {kind} targets this turn's chat slot, and this turn "
             f"holds none (this turn is {session_key!r}). Nothing was changed."
         )
-    if kind in _USER_SURFACE_DIRECTIVES and (
+    if kind in _USER_ORIGIN_DIRECTIVES and (
         not producer_is_user_facing or not _has_user_surface(session_key)
     ):
         # A cron turn can run on a user's slot and a sub-agent can share its
-        # parent's slot. Positive admission prevents either from silently
-        # retargeting the user's project/CWD.
+        # parent's slot, so both inherit a surface they never opened.
         _audit(session_key, kind, "denied")
-        return (
-            f"Error: {kind} only works from a user-facing session (dashboard "
-            f"or a messaging channel); headless callers such as cron jobs and "
-            f"sub-agents are refused (this turn is {session_key!r}). "
-            "Nothing was changed."
+        logger.warning(
+            "session-directive %s REFUSED on human-provenance grounds "
+            "(session_key=%s, producer_is_user_facing=%s, has_user_surface=%s): an "
+            "injected cron, sub-agent or task-runner turn cannot drive this tool, "
+            "even on a slot whose dashboard tab is open. Nothing was changed.",
+            kind,
+            session_key,
+            producer_is_user_facing,
+            _has_user_surface(session_key),
+        )
+        if kind in _USER_SURFACE_DIRECTIVES:
+            # Unchanged wording: extending the set must not silently reword an
+            # unrelated tool's refusal.
+            return _user_origin_refusal(
+                kind,
+                session_key,
+                " (dashboard or a messaging channel); headless callers such as "
+                "cron jobs and sub-agents are refused",
+            )
+        return _user_origin_refusal(
+            kind,
+            session_key,
+            "; headless callers such as cron jobs, sub-agents and taskrunner "
+            "turns are refused even when this session has an open dashboard tab",
         )
     # SELF-ARM PROVENANCE: which turns count as "the session's own" for the
     # crew/member rule. Two producers, each named explicitly: a turn a HUMAN
