@@ -17,6 +17,7 @@ from kiro_crew.dashboard.chat_utils import (
     slot_history_key,
 )
 from kiro_crew.dashboard.state import (
+    _MAX_SLOT_MESSAGES,
     MAX_LIVE_SLOTS,
     VALID_MEMORY_MODES,
     DashboardState,
@@ -887,6 +888,22 @@ async def api_chat_slot_fork(request: web.Request) -> web.Response:
             )
     elif at_index is not None:
         visible = visible[: at_index + 1]
+
+    # The destination's append trims from the FRONT at capacity, and nothing has
+    # reached disk during the copy, so those evicted rows are unrecoverable.
+    if len(visible) > _MAX_SLOT_MESSAGES:
+        return web.json_response(
+            {
+                # No count and no ceiling: a row number is not an affordance in a
+                # transcript that numbers nothing, so the text names the ACTION.
+                "error": (
+                    "conversation too large to fork. Fork at a message "
+                    "(at_message_index or at_message_id) to copy a smaller slice."
+                ),
+                "code": "fork_corpus_too_large",
+            },
+            status=400,
+        )
 
     # A fork of a member DM thread is an ordinary chat, never a second "member"
     # slot: the fork mints a chat-* key, so member mode would make it invisible
