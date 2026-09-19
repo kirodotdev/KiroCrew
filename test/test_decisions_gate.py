@@ -23,6 +23,7 @@ from types import SimpleNamespace
 import pytest
 
 from kiro_crew import credential_patterns as _cred
+from kiro_crew import platform_log_append as log_append_mod
 from kiro_crew.config.sections import (
     DECISION_PROVIDER_ENDPOINT_DEFAULT,
     DecisionProviderConfig,
@@ -163,11 +164,30 @@ def install_impl(monkeypatch):
     return _install
 
 
+#: Row-write budget while a test READS ROWS BACK. Production bounds the write at
+#: ``gate._LOG_BUDGET_SECS`` (50 ms) on top of ``platform_log_append``'s own 0.5s
+#: append deadline, and both are best effort by contract: a slow filesystem costs
+#: the row, never the turn. A test asserting the row's CONTENT is not measuring
+#: that budget, so it must not inherit it -- on a loaded Windows CI worker the
+#: pinned-descriptor open alone has exceeded both, and the row the test then
+#: reads is missing for a reason the test is not about. The budget's own
+#: property keeps its own test (``test_a_stalled_append_gives_up_on_its_own_budget``),
+#: which sets the value it measures explicitly.
+_ROW_LANDS_BUDGET_SECS = 30.0
+
+
 @pytest.fixture
 def log_home(tmp_path, monkeypatch):
-    """Point the log at *tmp_path* and return a reader for the rows written."""
+    """Point the log at *tmp_path* and return a reader for the rows written.
+
+    A test that takes this fixture is going to read rows, so the write budgets
+    are widened to :data:`_ROW_LANDS_BUDGET_SECS` here, in the one place every
+    row reader passes through.
+    """
     directory = tmp_path / "decisions"
     monkeypatch.setattr(log_mod, "log_dir", lambda: directory)
+    monkeypatch.setattr(gate_mod, "_LOG_BUDGET_SECS", _ROW_LANDS_BUDGET_SECS)
+    monkeypatch.setattr(log_append_mod, "_APPEND_TIMEOUT_SECONDS", _ROW_LANDS_BUDGET_SECS)
 
     def _rows():
         if not directory.exists():
