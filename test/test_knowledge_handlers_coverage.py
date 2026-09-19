@@ -24,6 +24,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.dashboard.handlers import knowledge as kh
 from kiro_crew.embeddings import PRIORITY_NORMAL
+from kiro_crew.knowledge.connectors.github_structured import GithubStructuredConnector
 from kiro_crew.knowledge.embedder import embedder_signature
 from kiro_crew.knowledge.ingestion import IngestionPipeline
 from kiro_crew.knowledge.store import KnowledgeStore
@@ -1811,6 +1812,12 @@ class TestSetupKnowledgeRoutes:
             # them and the Default contributes nothing.
             assert sync.get_connector("local_folder") is not None
             assert sync.get_connector("obsidian_vault") is not None
+            # The GitHub structured connector resolves through the real factory
+            # path (fresh KnowledgeStore, clean config_dir, real SyncScheduler) —
+            # not a hand-built map.
+            gh_connector = sync.get_connector("github")
+            assert isinstance(gh_connector, GithubStructuredConnector)
+            assert gh_connector.source_type() == "github"
             assert sync.get_connector("nope") is None
             # Both startup hooks are registered (watcher + artifact ingest).
             # aiohttp seeds on_startup with its own cleanup-ctx hook, so compare
@@ -1828,6 +1835,68 @@ class TestSetupKnowledgeRoutes:
         finally:
             for callback in list(app.on_cleanup):
                 await callback(app)
+
+    @pytest.mark.asyncio
+    async def test_github_connector_composition_and_edition_override(
+            self, store, monkeypatch, tmp_path):
+        """The assembled map resolves 'github', and an edition still overrides it.
+
+        Drives the real factory (no pre-set pipeline, so the connector-assembly
+        block actually runs). First asserts the built-in map resolves 'github'
+        to GithubStructuredConnector. Then, with a KnowledgeProvider whose
+        extra_connectors contributes its own 'github', asserts the edition entry
+        WINS — proving the built-ins are set BEFORE the edition merge, so the
+        seam is neither shadowed nor overridden by the core entry.
+        """
+        import dataclasses
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.platform import build_default_context, set_context
+        from kiro_crew.platform.context import current_context
+
+        monkeypatch.setattr(f"{MODULE}.config_dir", lambda: tmp_path)
+
+        def _fresh_app():
+            app = web.Application()
+            state = MagicMock()
+            state.knowledge_store = store
+            app["state"] = state
+            return app
+
+        async def _cleanup(app):
+            for callback in list(app.on_cleanup):
+                await callback(app)
+
+        # 1) Built-in composition: the real factory resolves 'github'.
+        app = _fresh_app()
+        kh.setup_knowledge_routes(app)
+        try:
+            assert isinstance(
+                app["knowledge_sync"].get_connector("github"),
+                GithubStructuredConnector)
+        finally:
+            await _cleanup(app)
+
+        # 2) Edition override: an extra_connectors 'github' replaces the built-in
+        #    (built-ins set first, edition merged on top).
+        edition_github = GithubStructuredConnector()
+
+        class _GithubOverrideProvider:
+            def extra_connectors(self, cfg):
+                return {"github": edition_github}
+
+        base = build_default_context(KiroCrewConfig())
+        set_context(dataclasses.replace(base, knowledge=_GithubOverrideProvider()))
+        # Confirm the overlay is the one setup_knowledge_routes will read.
+        assert current_context().knowledge.extra_connectors(None)["github"] is \
+            edition_github
+
+        app2 = _fresh_app()
+        kh.setup_knowledge_routes(app2)
+        try:
+            assert app2["knowledge_sync"].get_connector("github") is edition_github
+        finally:
+            await _cleanup(app2)
 
     @pytest.mark.asyncio
     async def test_second_call_keeps_the_existing_pipeline(self, store, monkeypatch,

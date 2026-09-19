@@ -34,6 +34,7 @@ from kiro_crew.knowledge.agent_source import add_agent_document
 from kiro_crew.knowledge.artifact_ingest import ArtifactKnowledgeSync
 from kiro_crew.knowledge.chunker import HeadingAwareChunker
 from kiro_crew.knowledge.connectors.base import BaseConnector
+from kiro_crew.knowledge.connectors.github_structured import GithubStructuredConnector
 from kiro_crew.knowledge.connectors.local_folder import LocalFolderConnector
 from kiro_crew.knowledge.embedder import (
     create_embedder_from_config,
@@ -2915,6 +2916,12 @@ def setup_knowledge_routes(app: web.Application) -> None:
         # Local folder connector (always available)
         connectors["local_folder"] = LocalFolderConnector()
         connectors["obsidian_vault"] = LocalFolderConnector()
+        # GitHub structured source (issues/PRs/commits/check-runs). No-arg
+        # construct; its live fetch stays UNVERIFIED until the connections
+        # transport executor lands, so the connector refuses fetch/detect_changes
+        # rather than syncing. Set alongside the other built-ins, still BEFORE the
+        # edition merge so an edition can override it.
+        connectors["github"] = GithubStructuredConnector()
         # Edition-contributed connectors (CPP KnowledgeProvider seam). Built-ins
         # are set FIRST so an edition can both ADD a new source_type and, if it
         # ever needs to, override a built-in. The Default returns {} → standalone

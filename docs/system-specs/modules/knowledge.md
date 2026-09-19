@@ -110,7 +110,7 @@ The remaining gap is therefore an **A/B task-lift harness** (Tier 2), plus a flo
 | `knowledge/retrieval.py` | `HybridRetriever` — FTS5 + graph + vector search fused with RRF |
 | `knowledge/ingestion.py` | `IngestionPipeline` — read → chunk → extract → store orchestration |
 | `knowledge/dedup.py` | Cross-source deduplication |
-| `knowledge/connectors/` | `BaseConnector`, `local_folder` source connectors |
+| `knowledge/connectors/` | `BaseConnector`, `local_folder` and `github_structured` source connectors |
 | `mcp_core.py` | `local_knowledge_search` MCP tool + cached store/embedder |
 | `dashboard/handlers/knowledge.py` | Dashboard Knowledge-tab API (sources, ingest, search, source-scoped list + `/source-counts`) |
 | `agent.py:_install_knowledge_agent` | Installs the `kirocrew-knowledge` kiro-cli agent used by the pool |
@@ -381,6 +381,114 @@ filter set the sweep applies, so the count describes the files that would actual
 ingested. The chunk figure is derived from the chunker's target size and file bytes
 (`_estimated_chunks`), never measured: it exists to show order of magnitude before the
 user confirms, and no code path treats it as a bound.
+
+## 2c. GitHub structured source (`connectors/github_structured.py`)
+
+GitHub's issues, pull requests, commits and check-runs are records, not prose:
+each has a stable identity and typed fields. `GithubStructuredConnector` makes
+them one refreshable source inside this same Library — it is a `BaseConnector`
+(`source_type="github"`), driven by the same `SyncScheduler` as `local_folder`.
+It adds no second knowledge base, registry, ACL, auth or sync engine, and no new
+table.
+
+**Typed rows, keyed by a full-domain identity.** The connector's domain model is
+three frozen dataclasses with real fields, never opaque blobs. Every row's
+primary key spans the **whole domain** — `source_id | instance | repo_full_name
+| entity_type | <entity-key>` — so two records that share an entity key never
+collapse across knowledge sources, GitHub hosts, repositories or kinds:
+
+| Row | Entity key (appended to the domain) | Why |
+|---|---|---|
+| `IssueOrPullRow` | `number` | GitHub numbers issues and PRs in one shared per-repo sequence; a `pull_request` sub-object (or the pulls API's own shape) marks a PR |
+| `CommitRow` | `sha` | unique within a repo |
+| `CheckRunRow` | `id` | the numeric check-run id |
+
+`primary_key_for` composes those five segments with a `|` separator that no
+segment may contain (checked at construction), so one repo's issue #1 and
+another repo's issue #1, or the same `owner/repo/number` on github.com and a
+GitHub Enterprise host, or one repo mirrored under two sources, all key apart.
+The key is the dedup/idempotency key across refreshes. The title is a mutable
+field and is **never** part of any key, so a renamed issue keeps its identity and
+re-refreshes as an upsert, not a duplicate. Conversion
+(`issue_or_pull_from_payload` / `commit_from_payload` / `check_run_from_payload`)
+turns one GitHub API payload into one typed row and **raises** rather than
+storing a row it cannot key or trace.
+
+**Per-row lineage is mandatory.** Every row carries a `RowLineage` — source id,
+instance, repo full name, entity type, primary key, source API URL, and read
+timestamp. `validate()` raises `LineageError` when any is missing or malformed
+(including a domain segment carrying the key separator), so a row a search could
+surface without being able to say where it came from is refused at conversion
+time, not stored.
+
+**Incremental refresh = `since` + primary-key diff.** GitHub exposes no single
+delta token, so a refresh asks only for records changed since the last watermark
+and `diff_rows` diffs the returned keys against the stored keys: every fetched
+row is an upsert (it changed). `diff_rows` takes a `full_listing` flag that
+decides `disappeared`: on the incremental (`since`) path it is always empty,
+because a window carries only changes and nearly every stored key is absent from
+it without being gone; only a **full listing** (no `since`) proves a stored key
+is genuinely gone and reports it for the caller to retire. The connector never
+deletes on its own. A primary-key collision inside a fetched set (a record
+re-listed across a page boundary) collapses last-writer-wins, so overlapping
+windows and page boundaries are idempotent. The watermark (`next_since`) is the
+max `updated_at`/`committed_date`/`completed_date` seen and is **monotonic** — a
+clock-skewed or re-listed older stamp never moves it backwards.
+
+**Resumable checkpoint in the existing per-source state.** The `Checkpoint`
+(watermark plus the entity-order index and page cursor of an in-progress walk)
+lives under a reserved key in the source's existing `properties` blob — the same
+per-source state the scheduler already round-trips for `last_synced` /
+`consecutive_failures`. `read_checkpoint` / `write_checkpoint` are pure and touch
+no store; a persisted index that no longer names a valid entity clamps to the
+start rather than resuming out of range. **No new table.**
+
+**Rendering to the pipeline's shape, and how a row will flow in.** `render_row_text`
+/ `render_row_metadata` project a typed row into the prose-shaped `(text,
+metadata)` the ingestion pipeline consumes, with the primary key and the full
+lineage domain in the metadata so the stored item stays traceable through the
+existing citation path. When the live path is wired, each typed row is one
+independently-replaceable document keyed by its primary key: the connector
+upserts it through the pipeline's existing per-group replace path —
+`ingest_text(..., source_id=<source>, old_item_ids=<group for this PK>)`, the
+same mechanism the aggregate artifact and agent sources use to hold many
+documents in one source (§2b, `artifact_item_state` / `agent_item_state`). That
+is why `RefreshPlan.upserts` is keyed per primary key and needs no new store
+path; the plan names one replace-group per row. The seam change this requires on
+the scheduler side (today `sync.py` does a single `fetch()` → whole-source
+replace) is the registration/wiring follow-up below, tracked as the conductor's
+decision — not invented here.
+
+**UNVERIFIED, deliberately parked.** `fetch` and `detect_changes` raise
+`NotImplementedError`: a live read needs the connections transport executor,
+which is not on `main` yet, so there is no live path to exercise and none is
+faked. When multi-page extraction is added it consumes the stabilized
+`connections.vendors.github` pagination as a normal dependency rather than
+growing a second copy of paging. Refusing is fail-closed — a first-page-only or
+mocked payload is not a live dataset and is never stored as one. The typed rows,
+keys, conversion, incremental diff, checkpoint, lineage and registration are the
+surface this change verifies (in the pull request that adds it, not yet on
+`main`).
+
+**Registration, and creation refused until a runner exists.** The core connector
+map is assembled by hand in `dashboard/handlers/knowledge.py`;
+`connectors["github"] = GithubStructuredConnector()` is set alongside
+`local_folder` / `obsidian_vault`, **before** the
+`platform.interfaces.KnowledgeProvider.extra_connectors` edition merge, so an
+edition can still override `github` (built-ins first, edition on top). Mapping
+the `source_type` does **not** make the source syncable, and it does **not** make
+it creatable either: the add-source POST path (`dashboard/handlers/knowledge.py`)
+calls `connector.validate_config({**properties, "url": uri})`, and this
+connector's `validate_config` — after passing the `owner/name` shape check,
+reading the location from `url` (falling back to `uri`, exactly as `local_folder`
+does) so the value is actually seen — **refuses creation** with a specific reason:
+the live runtime (the connections transport executor and sync runner) is not
+assembled on `main`, so admitting a source now would create a row the scheduler
+could never sync. `fetch` / `detect_changes` likewise still refuse. This is honest
+fail-closed behaviour, not a feature flag or env switch, and no transport is
+faked. **PR-3 flips creation to allowed** when it wires the real runner, and lands
+the creation + sync tests that a syncable source needs. The registration wiring
+itself is one import plus one map entry; nothing else in that handler changes.
 
 ## 3. LLMPool workers (`llm_pool.py`)
 
