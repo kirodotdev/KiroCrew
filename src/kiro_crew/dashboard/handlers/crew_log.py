@@ -175,7 +175,15 @@ async def api_session_crew_log(request: web.Request) -> web.Response:
 
 
 async def api_session_crew_log_projection(request: web.Request) -> web.Response:
-    """GET /api/sessions/{id}/crew-log/projection/{name} -- one fold and its seq."""
+    """GET /api/sessions/{id}/crew-log/projection/{name} -- one fold and its seq.
+
+    Serves the slot-keyed folds (:data:`projection.SLOT_PROJECTION_NAMES`) from the
+    same route, addressed the same way. A caller holds a SESSION id, so the slot is
+    resolved from that session's own header and the fold then joins every unit the
+    slot ran under -- which is what makes the answer the slot's whole record rather
+    than the part of it that happened to land in this session. A session whose slot
+    cannot be proved gets the empty fold, never another slot's.
+    """
     denied = await require_owner_dashboard_request(request, "session_crew_log.projection")
     if denied is not None:
         return denied
@@ -188,11 +196,22 @@ async def api_session_crew_log_projection(request: web.Request) -> web.Response:
         projections.require_name(name)
     except CrewLogError as exc:
         return _bad_request(exc.message, "unknown_projection")
+    reader = (
+        _read_slot_fold
+        if name in projections.SLOT_PROJECTION_NAMES
+        else projections.read_projection
+    )
     try:
-        result = await asyncio.to_thread(projections.read_projection, session_id, name)
+        result = await asyncio.to_thread(reader, session_id, name)
     except CrewLogError as exc:
         return _crew_log_refusal(exc)
     return web.json_response({"session_id": session_id, **result.to_dict()})
+
+
+def _read_slot_fold(session_id: str, name: str) -> Any:
+    """One slot-keyed fold for the slot *session_id* belongs to. Blocking."""
+    projections = _crew_log()
+    return projections.read_slot_projection(projections.slot_of_session(session_id), name)
 
 
 def _crew_log_refusal(exc: "CrewLogError") -> web.Response:

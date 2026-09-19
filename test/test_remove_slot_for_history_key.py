@@ -955,6 +955,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
             *,
             skip_pinned=False,
             exact_owner_keys=(),
+            exclude=None,
         ):
             # The seam itself: the add commits after the sweep has read the store
             # and before the unlink retires the key.
@@ -967,6 +968,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
                 claim,
                 skip_pinned=skip_pinned,
                 exact_owner_keys=exact_owner_keys,
+                exclude=exclude,
             )
 
         monkeypatch.setattr(sessions_module, "_delete_history_session", _add_then_delete)
@@ -1036,6 +1038,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
             *,
             skip_pinned=False,
             exact_owner_keys=(),
+            exclude=None,
         ):
             # The seam itself: the batch sweep has read the store; the unlink has
             # not yet retired this row. Same interleaving as the single delete.
@@ -1048,6 +1051,7 @@ class TestAJobBornDuringTheDeleteIsNotStranded:
                 claim,
                 skip_pinned=skip_pinned,
                 exact_owner_keys=exact_owner_keys,
+                exclude=exclude,
             )
 
         monkeypatch.setattr(sessions_module, "_delete_history_session", _add_then_delete)

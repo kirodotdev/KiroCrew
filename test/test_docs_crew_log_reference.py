@@ -63,7 +63,7 @@ _JSON_BLOCK_RE = re.compile(r"^```json\n(.*?)\n```$", re.MULTILINE | re.DOTALL)
 
 #: The count the page's own prose claims. Pinned so adding a subsection without
 #: updating the page's opening line fails here rather than misleading a reader.
-EXPECTED_LIVE_TYPES = 26
+EXPECTED_LIVE_TYPES = 27
 
 #: The only two emitters that write a session entry. Kept as a literal rather than
 #: read from ``FIXED_SOURCES``, which holds the crew-side values too.

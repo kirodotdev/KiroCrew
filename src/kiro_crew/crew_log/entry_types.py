@@ -52,6 +52,15 @@ from typing import Any
 from kiro_crew.crew_log.errors import CODE_BAD_DATA_FIELD, CrewLogError
 from kiro_crew.crew_log.schema import KIND_SESSION
 
+# The ledger subsystem owns the event vocabulary its own writer clamps to, so the
+# declaration below reads it from there instead of restating it. Importing the
+# producer is what this module already does for every other type -- the difference
+# is only that this producer's vocabulary is a named constant. The import is safe
+# in this direction: ``session_ledger`` reaches the crew log lazily, inside the
+# functions that need it, so nothing here pulls the storage package onto the
+# gateway's boot path.
+from kiro_crew.session_ledger import EVENT_KINDS as _LEDGER_EVENT_KINDS
+
 #: JSON types a declared field may hold. ``int`` and ``float`` are separate
 #: because the wire format's numbers are separate to a reader: a count is not a
 #: measurement. ``float`` accepts an int, since JSON has one number type and 0 is
@@ -149,6 +158,10 @@ ACTOR_VALUES: tuple[str, ...] = (
     "gateway",
     "other",
 )
+
+#: The ledger's event kinds, in a stable order for the reference tables. Derived
+#: from the writer's own set so the two cannot drift.
+_EVENT_KIND_VALUES: tuple[str, ...] = tuple(sorted(_LEDGER_EVENT_KINDS))
 
 _SESSION_TYPES: tuple[EntryType, ...] = (
     # -- session, turn ------------------------------------------------------ #
@@ -585,6 +598,72 @@ _SESSION_TYPES: tuple[EntryType, ...] = (
             ),
         ),
         note="No turn: the deferred verdict can settle turns later than the compaction.",
+    ),
+    # -- ledger ------------------------------------------------------------- #
+    EntryType(
+        "ledger/recorded",
+        "One session-ledger update: the fields it set, and the event explaining them.",
+        (
+            Field(
+                "slot",
+                JSON_STRING,
+                required=True,
+                note=(
+                    "The ledger's key -- the slot this update belongs to. Carried on the "
+                    "entry as well as in the header so a reader of one entry can say "
+                    "which slot it belongs to; selecting a slot's units is done from "
+                    "their headers."
+                ),
+            ),
+            Field("goal", JSON_STRING, note="The workstream's objective, when this call set one."),
+            Field(
+                "phase",
+                JSON_STRING,
+                note=(
+                    "The new phase. Never written without event and event_kind, which is "
+                    "what makes the phase-requires-a-reason rule a property of ONE entry."
+                ),
+            ),
+            Field("next", JSON_STRING, note="The resumable intent -- the concrete next step."),
+            Field(
+                "tried",
+                JSON_OBJECT,
+                fields=(
+                    Field("approach", JSON_STRING, required=True, note="What was tried."),
+                    Field("rejected_because", JSON_STRING, note="Why it was rejected."),
+                ),
+                note="One rejected approach, appended to the fold's list.",
+            ),
+            Field(
+                "artifacts",
+                JSON_OBJECT,
+                note=(
+                    "String-to-string pointers merged into the fold's map. The MEMBERS are "
+                    "the caller's own keys -- worktree, branch, pr -- so they are "
+                    "deliberately not declared and are checked for shape by the fold."
+                ),
+            ),
+            Field("event", JSON_STRING, note="One-line progress note appended to the event tail."),
+            Field(
+                "event_kind",
+                JSON_STRING,
+                enum=_EVENT_KIND_VALUES,
+                enum_closed=True,
+                note=(
+                    "Which kind of step this records. Closed: the writer coerces an "
+                    "unrecognized kind to note before it builds the entry."
+                ),
+            ),
+        ),
+        note=(
+            "One entry per ``session_ledger_record`` call, carrying only the fields that "
+            "call set -- an omitted field means 'unchanged', which is what lets a partial "
+            "update be one line. A phase change carries its event in the SAME entry, so "
+            "no reader can observe a phase that moved without its logged reason. The "
+            "ledger therefore DEPENDS on this log: a gateway started without "
+            "``KIROCREW_CREW_LOG=1`` records none, and the tool refuses rather than "
+            "keeping a document of its own."
+        ),
     ),
 )
 
