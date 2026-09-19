@@ -9,12 +9,16 @@ implements the ``SkillProvider`` protocol and registers itself in the
 from kiro_crew.skill_providers.base import (
     ProviderRegistry,
     SkillProvider,
+    SkillProviderOutcome,
+    SkillSearchResponse,
     SkillSearchResult,
 )
 from kiro_crew.skill_providers.skillsh import SkillsShProvider
 
 __all__ = [
     "SkillProvider",
+    "SkillProviderOutcome",
+    "SkillSearchResponse",
     "SkillSearchResult",
     "ProviderRegistry",
     "SkillsShProvider",

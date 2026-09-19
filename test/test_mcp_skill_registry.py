@@ -140,6 +140,36 @@ class TestSkillDiscover:
         assert "No registry skills matched" in out
         assert "skill_search" in out
 
+    def test_all_provider_failures_do_not_claim_zero_matches(self, fake_get):
+        calls, responses = fake_get
+        responses["/discover?"] = {
+            "results": [],
+            "providers": ["skillsh"],
+            "provider_outcomes": [{"name": "skillsh", "status": "timeout"}],
+        }
+
+        out = mcp_core._call_tool_inner("skill_discover", {"query": "nope"})
+
+        assert out.startswith("Error:")
+        assert "incomplete" in out
+        assert "No registry skills matched" not in out
+
+    def test_partial_provider_failure_warns_that_results_are_incomplete(self, fake_get):
+        calls, responses = fake_get
+        responses["/discover?"] = {
+            "results": [_result()],
+            "providers": ["skillsh", "other"],
+            "provider_outcomes": [
+                {"name": "skillsh", "status": "ok"},
+                {"name": "other", "status": "error"},
+            ],
+        }
+
+        out = mcp_core._call_tool_inner("skill_discover", {"query": "react"})
+
+        assert "Warning: registry search is incomplete" in out
+        assert "react-perf" in out
+
     def test_gateway_error_is_surfaced_not_swallowed(self, fake_get):
         calls, responses = fake_get
         responses["/discover?"] = {"error": "auth rejected by middleware"}
