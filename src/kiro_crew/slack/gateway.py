@@ -7798,14 +7798,24 @@ class GatewayOrchestrator:
                     "cycle_count": loop.cycle_count,
                     "active": loop.active,
                     "last_fire_ts": loop.last_fire_ts,
+                    # On EVERY loop, not only a structured monitor's. The goal
+                    # popover tells a PAUSED loop (``"manual"``, resumable in
+                    # place) from a stopped one on ``stopped_reason``, and reads
+                    # its countdown off ``next_due_ts`` -- and the dashboard
+                    # caches the frame's record over the REST read. A frame
+                    # without them would downgrade a just-paused loop to
+                    # "Stopped" the moment it arrives (and tell a second tab the
+                    # same), and would blank the deadline a resume or an arm just
+                    # published. Both are already public on the ungated REST
+                    # list; neither is a path or a secret.
+                    "next_due_ts": loop.next_due_ts,
+                    "stopped_reason": loop.stopped_reason,
                 }
                 if is_structured_monitor_loop(loop):
                     assert loop.monitor is not None
                     loop_payload["monitor"] = _redact_monitor_value(
                         monitor_state_public_dict(loop.monitor)
                     )
-                    loop_payload["next_due_ts"] = loop.next_due_ts
-                    loop_payload["stopped_reason"] = loop.stopped_reason
                 broadcast = (
                     self.dashboard_state.broadcast_ws_owners
                     if is_structured_monitor_loop(loop)

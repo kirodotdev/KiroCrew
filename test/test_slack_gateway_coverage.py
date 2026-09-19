@@ -34,7 +34,7 @@ import pytest
 from kiro_crew import session_directive
 from kiro_crew import subagent as _sa
 from kiro_crew.acp.types import EVENT_COMPLETE, EVENT_TOOL_CALL, EVENT_TOOL_RESULT, AcpEvent
-from kiro_crew.autonudge import AutoNudgeService, NudgeLoop
+from kiro_crew.autonudge import MANUAL_STOP_REASON, AutoNudgeService, NudgeLoop
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.monitoring import models as monitor_models
 from kiro_crew.monitoring.completion import MonitorCompletionHook
@@ -1131,6 +1131,38 @@ class TestAutonudgeRouterAndObserver:
         assert payload["slot"] == "chat-1-1721"
         assert payload["loop"]["id"] == "loop-1"
         assert payload["loop"]["cycle_count"] == 2
+
+    @pytest.mark.asyncio
+    async def test_observer_frame_carries_stopped_reason_and_deadline_for_a_plain_loop(self):
+        """A paused goal loop must not read as stopped once its frame lands, and a
+        running one must not lose its countdown to the frame.
+
+        The goal popover tells ``"manual"`` (paused, resumable in place) from
+        every other inactive reason on ``stopped_reason`` and reads its countdown
+        off ``next_due_ts``; the dashboard caches the frame's record over its
+        REST read. A frame that carries either field only for a structured
+        monitor lets the ``updated`` frame a pause itself emits downgrade the
+        just-paused loop to "Stopped", and the frame after a resume or an arm
+        blank the deadline it just published.
+        """
+        orch = _make_orchestrator()
+        orch.dashboard_state = _mock_dashboard_state()
+        _on_fire, observer, _inst = await self._wire(orch)
+
+        running = _loop("chat-1-1721", next_due_ts=1_800_000_300.0)
+        observer("armed", running)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["stopped_reason"] == ""
+        assert payload["loop"]["next_due_ts"] == 1_800_000_300.0
+
+        paused = _loop("chat-1-1721", active=False, stopped_reason=MANUAL_STOP_REASON)
+        observer("updated", paused)
+        _topic, payload = orch.dashboard_state.broadcast_ws.call_args.args
+        assert payload["loop"]["active"] is False
+        assert payload["loop"]["stopped_reason"] == MANUAL_STOP_REASON
+        assert payload["loop"]["next_due_ts"] == 0.0
+        # Still the plain-loop shape: no monitor block was invented for it.
+        assert "monitor" not in payload["loop"]
 
     @pytest.mark.asyncio
     async def test_observer_broadcasts_structured_state_to_owners_only(self):

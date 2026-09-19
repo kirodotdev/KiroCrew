@@ -196,6 +196,24 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByText(/Next cycle in/)).toBeInTheDocument()
   })
 
+  it('carries the stop reason through the compatibility bridge, so a manual pause reads Paused and a bound stop reads Stopped', () => {
+    // The goal editor tells the two apart on `stopped_reason === 'manual'`
+    // alone. A bridge that drops the field makes every inactive loop --
+    // including one the user has just paused -- render as Stopped with an
+    // erase control and no Resume.
+    renderPopover({ ...activeLegacyLoop, active: false, nextDueAt: 0, stoppedReason: 'manual' })
+    expect(screen.getByRole('button', { name: 'Resume loop and nudge now' })).toBeInTheDocument()
+    expect(screen.getByTestId('auto-nudge-loop-paused-manually')).toHaveTextContent('Paused')
+    expect(screen.queryByRole('button', { name: 'Clear stopped goal' })).toBeNull()
+  })
+
+  it('keeps a bound-stopped legacy loop on the Stopped path through the bridge', () => {
+    renderPopover({ ...activeLegacyLoop, active: false, nextDueAt: 0, stoppedReason: 'cycle_cap' })
+    expect(screen.getByTestId('auto-nudge-loop-paused')).toHaveTextContent('Stopped')
+    expect(screen.getByRole('button', { name: 'Clear stopped goal' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Resume loop and nudge now' })).toBeNull()
+  })
+
   it('centres the radar glyph and its count in the composer trigger', () => {
     // IconButton is a plain block button: without a flex row the inline glyph
     // sits on the text baseline of the 32px box instead of at its centre.
@@ -706,11 +724,13 @@ describe('SessionAutomationPopover', () => {
     expect(screen.getByRole('spinbutton', { name: 'Max cycles (0 = infinite)' })).toHaveValue(24)
 
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+    // No `active` on a running loop's save: the field would be a no-op while
+    // the loop runs and a silent revive if it stopped between render and press.
     await waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/autonudge/legacy-1', {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        message: 'Keep checking.', idle_secs: 300, max_cycles: 24, active: true,
+        message: 'Keep checking.', idle_secs: 300, max_cycles: 24,
       }),
     }))
   })
