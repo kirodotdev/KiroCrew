@@ -14221,6 +14221,7 @@
         "third_party_apps_state_unknown": "Non disponibile",
         "third_party_apps_unavailable": "Non è stato possibile leggere l’impostazione attuale, quindi qui non può essere mostrata né modificata. Se era già attiva, le app di terze parti restano consentite — ricarica la pagina per riprovare.",
         "tool_approval": "Approvazione degli strumenti",
+        "rules_read_the_command_line_not_the_program_body": "Queste regole leggono solo la riga di comando stessa. Un comando infilato in un programma che la riga esegue non viene mai letto, quindi non viene rilevato. Aggiungere un pattern qui aumenta l’attrito su una riga di comando diretta; il sandbox a livello di sistema operativo è lo strato che sbarra l’azione.",
         "turn_off_every_rule": "Disattiva in un colpo solo tutte le regole integrate sui comandi bloccati. I controlli indipendenti di difesa in profondità (percorsi sensibili, IMDS, git-publish) restano attivi.",
         "turn_off_every_rule_governance_locked": "Disattiva in un colpo solo tutte le regole integrate sui comandi bloccati. I controlli indipendenti di difesa in profondità (percorsi sensibili, IMDS, git-publish) restano attivi, e le regole fissate dalla policy della tua organizzazione restano attive.",
         "yolo_active_expires_at": "L’approvazione automatica è attiva fino alle {{time}}.",

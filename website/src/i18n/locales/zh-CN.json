@@ -13855,6 +13855,7 @@
         "third_party_apps_state_unknown": "读取失败",
         "third_party_apps_unavailable": "读取不到当前设置，因此这里无法显示也无法修改。如果它原本是开启的，第三方应用仍被允许运行 —— 请刷新页面重试。",
         "tool_approval": "工具审批",
+        "rules_read_the_command_line_not_the_program_body": "这些规则只读取命令行本身。藏在命令行所运行程序里的命令不会被读取，因此也不会被匹配。在这里添加模式，只是给直接输入的命令行增加阻力；真正围住这个动作的是操作系统级沙箱。",
         "turn_off_every_rule": "一次性关闭所有内置的拒绝命令规则。独立的纵深防御控制项（敏感路径、IMDS、git 发布）仍会强制执行。",
         "turn_off_every_rule_governance_locked": "一次性关闭所有内置的拒绝命令规则。独立的纵深防御控制项（敏感路径、IMDS、git 发布）仍会强制执行，以及由组织策略固定的规则仍会保持启用。",
         "yolo_active_expires_at": "自动批准已开启，会一直保持到 {{time}}。",

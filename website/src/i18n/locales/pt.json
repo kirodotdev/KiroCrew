@@ -14221,6 +14221,7 @@
         "third_party_apps_state_unknown": "Indisponível",
         "third_party_apps_unavailable": "Não foi possível ler a configuração atual, então ela não pode ser exibida nem alterada aqui. Se já estava ativada, os apps de terceiros continuam permitidos — recarregue a página para tentar de novo.",
         "tool_approval": "Aprovação de ferramentas",
+        "rules_read_the_command_line_not_the_program_body": "Estas regras leem apenas a própria linha de comando. Um comando guardado dentro de um programa que a linha executa nunca é lido, então não é detectado. Adicionar um padrão aqui soma atrito a uma linha de comando direta; o sandbox em nível de sistema operacional é a camada que barra a ação.",
         "turn_off_every_rule": "Desativar de uma vez todas as regras integradas de comandos negados. Os controles independentes de defesa em profundidade (caminhos sensíveis, IMDS, git-publish) continuam sendo aplicados.",
         "turn_off_every_rule_governance_locked": "Desativar de uma vez todas as regras integradas de comandos negados. Os controles independentes de defesa em profundidade (caminhos sensíveis, IMDS, git-publish) continuam sendo aplicados, e as regras fixadas pela política da sua organização permanecem ativas.",
         "yolo_active_expires_at": "A aprovação automática está ativa até {{time}}.",

@@ -14222,6 +14222,7 @@
         "third_party_apps_state_unknown": "Indisponible",
         "third_party_apps_unavailable": "Impossible de lire le paramètre actuel, il ne peut donc pas être affiché ni modifié ici. S’il était déjà activé, les applications tierces restent autorisées — recharge la page pour réessayer.",
         "tool_approval": "Approbation des outils",
+        "rules_read_the_command_line_not_the_program_body": "Ces règles lisent seulement la ligne de commande elle-même. Une commande glissée dans un programme que la ligne exécute n’est jamais lue, donc jamais détectée. Ajouter un motif ici ajoute de la friction sur une ligne de commande directe, et c’est le sandbox au niveau du système d’exploitation qui barre vraiment la route.",
         "turn_off_every_rule": "Désactiver d'un seul coup toutes les règles intégrées de commandes refusées. Les contrôles indépendants de défense en profondeur (chemins sensibles, IMDS, publication git) restent appliqués.",
         "turn_off_every_rule_governance_locked": "Désactiver d'un seul coup toutes les règles intégrées de commandes refusées. Les contrôles indépendants de défense en profondeur (chemins sensibles, IMDS, publication git) restent appliqués, et les règles épinglées par la politique de ton organisation restent actives.",
         "yolo_active_expires_at": "L’approbation automatique est activée jusqu’à {{time}}.",

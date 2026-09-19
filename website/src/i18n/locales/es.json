@@ -14222,6 +14222,7 @@
         "third_party_apps_state_unknown": "No disponible",
         "third_party_apps_unavailable": "No se pudo leer la configuración actual, así que aquí no se puede mostrar ni cambiar. Si ya estaba activada, las aplicaciones de terceros siguen permitidas: recarga la página para volver a intentarlo.",
         "tool_approval": "Aprobación de herramientas",
+        "rules_read_the_command_line_not_the_program_body": "Estas reglas solo leen la línea de comandos en sí. Un comando metido dentro de un programa que la línea ejecuta nunca se lee, así que no se detecta. Añadir un patrón aquí suma fricción a una línea de comandos directa; el sandbox a nivel del sistema operativo es la capa que cierra el paso.",
         "turn_off_every_rule": "Desactiva de golpe todas las reglas integradas de comandos denegados. Los controles independientes de defensa en profundidad (rutas sensibles, IMDS, git-publish) siguen aplicándose.",
         "turn_off_every_rule_governance_locked": "Desactiva de golpe todas las reglas integradas de comandos denegados. Los controles independientes de defensa en profundidad (rutas sensibles, IMDS, git-publish) siguen aplicándose, y las reglas fijadas por la política de tu organización siguen activas.",
         "yolo_active_expires_at": "La aprobación automática está activada hasta {{time}}.",

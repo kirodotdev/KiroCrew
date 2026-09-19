@@ -13874,6 +13874,7 @@
           "trusted_badge": "신뢰됨",
           "unknown_error": "알 수 없는 오류"
         },
+        "rules_read_the_command_line_not_the_program_body": "이 규칙은 명령줄 자체만 읽습니다. 그 줄이 실행하는 프로그램 안에 넣어 둔 명령은 결코 읽지 않으므로 일치 검사도 되지 않습니다. 여기에 패턴을 추가하면 직접 입력한 명령줄에 마찰이 늘어납니다. 동작 자체를 막는 것은 운영체제 수준의 샌드박스입니다.",
         "turn_off_every_rule": "내장된 모든 명령 차단 규칙을 한 번에 끕니다. 독립적인 다층 방어 제어(민감한 경로, IMDS, git 공개)는 계속 적용됩니다.",
         "turn_off_every_rule_governance_locked": "내장된 모든 명령 차단 규칙을 한 번에 끕니다. 독립적인 다층 방어 제어(민감한 경로, IMDS, git 공개)는 계속 적용되며, 조직 정책으로 고정된 규칙은 켜진 상태로 유지됩니다.",
         "yolo_active_expires_at": "자동 승인이 {{time}}까지 켜져 있습니다.",

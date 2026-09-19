@@ -5839,6 +5839,7 @@
         "security_module_spec": "Security Module Spec",
         "show_pattern": "Show pattern",
         "standard": "Standard",
+        "rules_read_the_command_line_not_the_program_body": "These rules only read the command line itself. A command tucked inside a program that the line runs is never read, so it is not matched. A pattern here adds friction to a direct command line; the OS-level sandbox is the layer that fences the action off.",
         "turn_off_every_rule": "Turn off every built-in denied-command rule at once. Independent defense-in-depth controls (sensitive paths, IMDS, git-publish) stay enforced.",
         "turn_off_every_rule_governance_locked": "Turn off every built-in denied-command rule at once. Independent defense-in-depth controls (sensitive paths, IMDS, git-publish) stay enforced, and rules pinned by your organization’s policy remain on.",
         "yolo_auto_approve": "YOLO (auto-approve)",

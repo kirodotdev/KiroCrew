@@ -2146,6 +2146,17 @@ function DeniedCommandsSection({ draft, onDraftChange, noteDraft, onNoteDraftCha
           testId="denied-rule-error-hidden-row"
         />
       )}
+      {/* The tier's REACH, above BOTH cards: these rules read the command line
+        * a tool call carries and not the body of a program that line runs, so an
+        * operator reading either the built-in list or their own patterns as a
+        * fence over-trusts it. Card B is where a pattern is authored, so the note
+        * cannot live inside Card A. Same disclosure as the "What this tier cannot
+        * see" section of `src/kiro_crew/docs/blocked-commands.md`, which is where
+        * the closure mechanism (the OS-level sandbox) is explained. */}
+      <div className="text-[12px] text-muted mb-2 leading-relaxed" data-testid="denied-indirection-limit">
+        {i18nT('pages.settings.securityPanel.rules_read_the_command_line_not_the_program_body')}
+      </div>
+
       {/* Card A — Built-in denies */}
       <SettingsCard>
         {/* data-setting-label: deep-link anchor for the manual registry entry
