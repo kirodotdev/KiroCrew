@@ -146,7 +146,12 @@ predate this subsystem and remain the color-theme surface.)
   `fcntl.F_GETPATH` on macOS, and `GetFinalPathNameByHandleW` on Windows. The
   resolved path must remain inside the pack root; an unavailable or failed
   resolution rejects the read rather than falling back to a pathname-only
-  check.
+  check. On macOS, a case-only spelling mismatch is accepted by the shared
+  reader only after a no-follow walk proves identity with the held descriptor;
+  containment compares kernel spellings of the file and pinned root, never a
+  globally case-folded prefix. This lets legitimate APFS aliases reach the
+  install destination guard, which still refuses a source inside its own
+  destination before promotion and preserves source and sibling contents.
 - **postMessage allowlist** — the parent (`ThemeExperienceLayer.tsx`) accepts
   only `theme:resize`, `theme:sound`, `theme:visibility`, and `theme:state`
   messages from a pack iframe; all others are dropped.

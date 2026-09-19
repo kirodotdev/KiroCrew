@@ -393,7 +393,12 @@ Where the coverage went:
 | Real gateway boot on macOS | `ci.yml`'s `e2e-boot-matrix`, push-to-main leg; `nightly.yml`'s `pod-scenarios` | Blocking on main / holds nothing in the nightly |
 
 `test/test_macos_platform_tests_gate.py` pins all of it, including the property that
-nothing on the `pull_request` path may instantiate a macOS runner.
+nothing on the required `pull_request` path may instantiate a macOS runner.
+The on-demand Darwin path list includes the shared hooks, pinned filesystem
+primitives, outbox handlers, descriptor regression suite and theme-install suite.
+Changes to any of them select the native macOS suite on each push without
+requiring a label or a sample hit. The lane remains advisory; a Linux simulation
+is not evidence of native APFS behavior.
 
 Details worth knowing:
 

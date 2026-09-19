@@ -19,6 +19,10 @@ from kiro_crew.monitoring.models import (
     MonitorState,
 )
 
+# Bound a broken handshake below pytest's 120s worker-kill timeout, not the
+# throughput of the real fsync/replace and credential writes between barriers.
+_CONCURRENCY_WATCHDOG_SECS = 30
+
 
 @pytest.fixture(autouse=True)
 def _home(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
@@ -788,15 +792,19 @@ async def test_failed_restart_activation_preserves_a_concurrent_committed_patch(
         "sel",
         lambda: SimpleNamespace(log_tool_invocation=lambda **_kwargs: None),
     )
-    activation_entered = threading.Event()
+    activation_entered = asyncio.Event()
     continue_activation = threading.Event()
+    event_loop = asyncio.get_running_loop()
+    write_record = trust._write_record
 
-    def fail_activation(_monitor_id: str) -> None:
-        activation_entered.set()
-        assert continue_activation.wait(timeout=1)
-        raise OSError("transient vault failure")
+    def fail_activation_write(entries: dict[str, dict[str, Any]]) -> None:
+        if any(entry["active"] for key, entry in entries.items() if key != prior.id):
+            event_loop.call_soon_threadsafe(activation_entered.set)
+            assert continue_activation.wait(timeout=_CONCURRENCY_WATCHDOG_SECS)
+            raise OSError("transient vault failure")
+        write_record(entries)
 
-    monkeypatch.setattr(trust, "activate_monitor_owner_credentials", fail_activation)
+    monkeypatch.setattr(trust, "_write_record", fail_activation_write)
     state = SimpleNamespace(
         _slots={"chat-1": SimpleNamespace(mode="chat", memory_mode="persistent")},
         sessions=None,
@@ -816,17 +824,28 @@ async def test_failed_restart_activation_preserves_a_concurrent_committed_patch(
             grant_owner_provider_credentials=True,
         )
     )
-    assert await asyncio.to_thread(activation_entered.wait, 1)
-    replacement = svc.get_by_slot(prior.slot_key)
-    assert replacement is not None and replacement.id != prior.id
-    concurrent = await svc.update_monitor(
-        replacement.id,
-        wake_instructions="Keep the committed edit.",
-    )
-    assert concurrent is replacement
-    continue_activation.set()
+    try:
+        await asyncio.wait_for(activation_entered.wait(), timeout=_CONCURRENCY_WATCHDOG_SECS)
+        replacement = svc.get_by_slot(prior.slot_key)
+        assert replacement is not None and replacement.id != prior.id
+        concurrent = await svc.update_monitor(
+            replacement.id,
+            wake_instructions="Keep the committed edit.",
+        )
+        assert concurrent is replacement
+        continue_activation.set()
 
-    restarted, error, status = await asyncio.wait_for(restart, timeout=1)
+        restarted, error, status = await asyncio.wait_for(
+            restart, timeout=_CONCURRENCY_WATCHDOG_SECS
+        )
+    finally:
+        continue_activation.set()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(restart, return_exceptions=True), timeout=_CONCURRENCY_WATCHDOG_SECS
+            )
+        finally:
+            svc.stop()
 
     assert restarted is None and status == 409
     assert error == "monitor changed while credential authorization failed"
@@ -845,7 +864,12 @@ async def test_failed_restart_activation_preserves_a_concurrent_committed_patch(
     assert persisted is not None and persisted.monitor is not None
     assert persisted.id == replacement.id
     assert persisted.monitor.wake_instructions == "Keep the committed edit."
-    svc.stop()
+    assert not trust.is_monitor_owner_credentials_recorded(
+        replacement.id,
+        replacement.slot_key,
+        persisted.monitor.kind,
+        persisted.monitor.target,
+    )
 
 
 @pytest.mark.asyncio
@@ -987,10 +1011,14 @@ async def test_failed_update_grant_preserves_a_concurrent_committed_patch(
         lambda: SimpleNamespace(log_tool_invocation=lambda **_kwargs: None),
     )
 
-    def fail_record(*_args: Any) -> None:
-        raise OSError("transient vault failure")
+    write_record = trust._write_record
 
-    monkeypatch.setattr(trust, "record_monitor_owner_credentials", fail_record)
+    def fail_target_write(entries: dict[str, dict[str, Any]]) -> None:
+        if entries[loop.id]["target"] == "bitbucket.org/acme/widgets#11":
+            raise OSError("transient vault failure")
+        write_record(entries)
+
+    monkeypatch.setattr(trust, "_write_record", fail_target_write)
     state = SimpleNamespace(
         _slots={"chat-1": SimpleNamespace(mode="chat", memory_mode="persistent")},
         sessions=None,
@@ -1003,7 +1031,7 @@ async def test_failed_update_grant_preserves_a_concurrent_committed_patch(
     async def delay_target_update(*args: Any, **kwargs: Any) -> Any:
         if kwargs.get("target") == "bitbucket.org/acme/widgets#11":
             update_entered.set()
-            await continue_update.wait()
+            await asyncio.wait_for(continue_update.wait(), timeout=_CONCURRENCY_WATCHDOG_SECS)
         return await update_monitor(*args, **kwargs)
 
     monkeypatch.setattr(svc, "update_monitor", delay_target_update)
@@ -1018,12 +1046,24 @@ async def test_failed_update_grant_preserves_a_concurrent_committed_patch(
             grant_owner_provider_credentials=True,
         )
     )
-    await asyncio.wait_for(update_entered.wait(), timeout=1)
-    concurrent = await update_monitor(loop.id, wake_instructions="Keep the committed edit.")
-    assert concurrent is loop
-    continue_update.set()
+    try:
+        await asyncio.wait_for(update_entered.wait(), timeout=_CONCURRENCY_WATCHDOG_SECS)
+        concurrent = await update_monitor(loop.id, wake_instructions="Keep the committed edit.")
+        assert concurrent is loop
+        continue_update.set()
 
-    updated, error, status = await asyncio.wait_for(failing_update, timeout=1)
+        updated, error, status = await asyncio.wait_for(
+            failing_update, timeout=_CONCURRENCY_WATCHDOG_SECS
+        )
+    finally:
+        continue_update.set()
+        try:
+            await asyncio.wait_for(
+                asyncio.gather(failing_update, return_exceptions=True),
+                timeout=_CONCURRENCY_WATCHDOG_SECS,
+            )
+        finally:
+            svc.stop()
 
     assert updated is None and status == 503
     assert error == "monitor credential authorization unavailable — prior monitor restored"
@@ -1037,7 +1077,12 @@ async def test_failed_update_grant_preserves_a_concurrent_committed_patch(
     assert persisted is not None and persisted.monitor is not None
     assert persisted.monitor.target == "bitbucket.org/acme/widgets#10"
     assert persisted.monitor.wake_instructions == "Keep the committed edit."
-    svc.stop()
+    assert trust.is_monitor_owner_credentials_recorded(
+        loop.id, loop.slot_key, persisted.monitor.kind, "bitbucket.org/acme/widgets#10"
+    )
+    assert not trust.is_monitor_owner_credentials_recorded(
+        loop.id, loop.slot_key, persisted.monitor.kind, "bitbucket.org/acme/widgets#11"
+    )
 
 
 @pytest.mark.asyncio

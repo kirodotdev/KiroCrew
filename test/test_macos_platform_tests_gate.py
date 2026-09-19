@@ -268,3 +268,16 @@ class TestTheOnDemandLaneCannotBecomeAGate:
         # must grant at least that and nothing this lane does not need.
         assert mac["permissions"] == {"contents": "read"}
         assert _load("platform-tests.yml")["permissions"] == {"contents": "read"}
+
+    def test_descriptor_security_paths_always_select_native_macos(self) -> None:
+        steps = _load("macos-on-demand.yml")["jobs"]["decide"]["steps"]
+        filters = next(step["with"]["filters"] for step in steps if step.get("id") == "filter")
+        darwin = yaml.safe_load(filters)["darwin"]
+        for path in (
+            "src/kiro_crew/hooks.py",
+            "src/kiro_crew/pinned_fs.py",
+            "src/kiro_crew/dashboard/handlers/files.py",
+            "test/test_safe_read_file_bytes_descriptor.py",
+            "test/test_theme_install.py",
+        ):
+            assert path in darwin, f"{path} must select the native macOS suite"

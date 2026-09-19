@@ -574,6 +574,42 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 
 ### XPIA Hardening (`security.py` + `hooks.py`)
 
+The shared file readers authorize the opened regular-file descriptor before
+consuming bytes. Its kernel path must match the validated name and pass the
+sensitive-path gate. On macOS only, a case-only mismatch may pass when a
+component-by-component no-follow walk of the already validated name opens the
+same `(st_dev, st_ino)` as the held descriptor. Case folding selects a candidate;
+it never grants access on its own. Different inodes on case-sensitive volumes,
+missing names, swapped links and unavailable identity witnesses refuse the read.
+The original descriptor supplies the bytes; the comparison descriptor is closed.
+The candidate test is `str.casefold` equality of the two spellings, nothing
+wider: a spelling that differs only by Unicode normalization (an NFC name whose
+kernel witness reads back NFD, or the reverse) is not a candidate and stays
+refused, because normalization equivalence is a filesystem property the reader
+does not model and admitting it would widen the exception beyond exact case.
+Windows keeps its existing `os.path.normcase` lexical comparison, which folds
+case before this branch, so the macOS walk is never reached there.
+For bounded no-hardlink reads and both containment checks of pinned replacement
+(the source file and its staging parent), a macOS containment mismatch pins
+the resolved root without following links and compares its kernel pathname with
+the opened descriptor's kernel pathname. No folded-prefix containment is used.
+Hardlink, regular-file, sensitive-path, byte-limit and staged-rename identity
+checks retain their existing contracts. Linux and Windows retain their existing
+pathname and no-reparse checks. SEL event schemas are unchanged.
+
+The outbox notify and download handlers run path resolution, containment and
+the complete descriptor read on the existing bounded path-transfer pool. Pool
+admission exhaustion returns the shared audited `503 path_probe_busy` response.
+Cancellation does not transfer an open descriptor to the coroutine: the worker
+closes it even if its waiter has left. A wedged syscall can occupy that worker
+until the kernel returns, but cannot occupy the event loop or the default pool.
+Other path-resolution and read failures retain their existing refusal contracts.
+
+This alias repair covers the shared readers and pinned replacement only.
+Cron script vetting, workflow inventory, private-memory reads, feature-video
+cache paths and spec-builder directory writes have separate authorization
+contracts and retain their existing lexical descriptor checks.
+
 **Sensitive path protection** — blocks at the hook layer before tool execution:
 - `is_sensitive_path(path)` — checks `fs_read`/`ReadFile` targets against sensitive dirs
 - `is_sensitive_resolved_path(resolved)` — the same decision for a path the CALLER has already canonicalised (`os.path.realpath` on its own worker thread). Same targets and the same TTL target cache, with no `mc-pathres` submission on either half: the candidate is matched lexically, and the anchors are resolved inline on the calling thread (`_home_dir_targets(inline=True)`, the stance `sandbox_credential_targets` already takes off the loop) — still fresh on every call and still keying the cache, so a repointed root still invalidates. A wedged mount blocks that thread instead of raising a stall, which is what its own `os.walk` on the mount does anyway; nothing is admitted while it blocks. **For one shape of caller only**: a bulk walk on a worker thread that already resolves every entry to detect link loops and prove containment (`skills._iter_skill_files`, one call per directory and per `SKILL.md`). Why it exists: the pool is sized for the event loop (two workers, FIFO), and the walk issued ~1.4k calls per scan on an install with a few provider packages, each a candidate resolution the walk had already performed plus an anchor resolution; every one queued ahead of the loop's own latency-critical resolutions, and eight of eight loop-stall dumps on one host showed the loop parked in `Future.result` behind that backlog — none of the individual waits crossed the 2 s budget, so the stall breaker never tripped. Handing this gate an unresolved spelling is a link bypass, and calling it from the loop forfeits the bound, which is why it is a separate name and not a flag on `is_sensitive_path`; `test_pathres_loop_starvation.py` pins that the walk passes only `realpath` output and that neither half reaches `_run_resolution_bounded`

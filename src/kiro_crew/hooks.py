@@ -28,7 +28,7 @@ from dataclasses import replace as dataclasses_replace
 from pathlib import Path
 from typing import Any
 
-from kiro_crew import platform_compat, security, webhooks
+from kiro_crew import pinned_fs, platform_compat, security, webhooks
 
 # The xattr ACL-carry policy is shared with atomic_write.atomic_write: both
 # install a fresh inode and must reproduce the source's access controls or
@@ -2781,16 +2781,70 @@ def validate_file_path(raw: str) -> str | None:
     return path
 
 
+def _darwin_case_alias_matches(fd: int, path: str, opened_path: str) -> bool:
+    """Prove a case-only spelling difference without following a swapped link.
+
+    Case folding selects candidates, never authorizes them: case-sensitive
+    volumes can hold distinct inodes at those names. Walk the validated name
+    without resolving it again, then compare against the descriptor we READ.
+    """
+    if (
+        sys.platform != "darwin"
+        or path.casefold() != opened_path.casefold()
+        or not pinned_fs.supports_pinned_walk()
+    ):
+        return False
+    try:
+        witness = pinned_fs.open_in_pinned_parent(
+            os.path.dirname(path),
+            os.path.basename(path),
+            flags=os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0),
+            mode=0o600,
+            what="validated file",
+            refusal=OSError,
+        )
+        try:
+            return os.path.samestat(os.fstat(fd), os.fstat(witness))
+        finally:
+            os.close(witness)
+    except OSError:
+        return False
+
+
 def _opened_file_matches_validated_path(fd: int, path: str) -> bool:
-    """Check the opened regular file without resolving its original name again."""
+    """Check the opened regular file against its validated, symlink-free name."""
     if not _stat.S_ISREG(os.fstat(fd).st_mode):
         return False
     opened_path = _fd_real_path(fd)
-    return (
-        opened_path is not None
-        and os.path.normcase(os.path.normpath(opened_path)) == os.path.normcase(path)
-        and not is_sensitive_path(opened_path)
-    )
+    if opened_path is None:
+        return False
+    matches = os.path.normcase(os.path.normpath(opened_path)) == os.path.normcase(path)
+    if not matches:
+        matches = _darwin_case_alias_matches(fd, path, os.path.normpath(opened_path))
+    return matches and not is_sensitive_path(opened_path)
+
+
+def _opened_path_within_root(opened_path: str, within_root: str) -> bool:
+    """Compare kernel spellings on macOS without case-folding containment."""
+    root_real = os.path.realpath(within_root)
+    try:
+        if os.path.commonpath([opened_path, root_real]) == root_real:
+            return True
+    except ValueError:
+        return False
+    if sys.platform != "darwin" or not pinned_fs.supports_pinned_walk():
+        return False
+    # realpath can preserve an APFS alias. Pin that resolved root without
+    # following links, then compare kernel paths, never a folded prefix.
+    root_fd = pinned_fs.pin_parent(root_real, what="read root", refusal=OSError)
+    try:
+        root_witness = _fd_real_path(root_fd)
+        return (
+            root_witness is not None
+            and os.path.commonpath([opened_path, root_witness]) == root_witness
+        )
+    finally:
+        os.close(root_fd)
 
 
 def safe_read_file(path: str) -> str:
@@ -2860,8 +2914,9 @@ def safe_read_file_bytes(raw: str) -> bytes | None:
 
     Before reading, the opened descriptor must be a regular file whose kernel
     path still matches the canonical name validated above and is not sensitive.
-    This also refuses an ancestor-directory swap. The comparison is lexical:
-    resolving the original name again could authorize the swapped destination.
+    This also refuses an ancestor-directory swap. Comparison is lexical except
+    for a macOS case-only mismatch, which requires a no-follow walk back to the
+    held inode. Resolving the original name again could authorize a swap.
 
     Returns file content as bytes, or None if path is rejected or unreadable.
     """
@@ -3020,12 +3075,7 @@ def safe_read_file_bytes_nolink(
             fd_real = _fd_real_path(fd)
             if fd_real is None:
                 return None  # cannot verify containment -> fail closed
-            root_real = os.path.realpath(within_root)
-            try:
-                contained = os.path.commonpath([fd_real, root_real]) == root_real
-            except ValueError:
-                contained = False
-            if not contained:
+            if not _opened_path_within_root(fd_real, within_root):
                 return None  # opened inode escapes the approved tree
             if is_sensitive_path(fd_real):
                 return None
@@ -3134,12 +3184,7 @@ def _pinned_replace(
             fd_real = _fd_real_path(fd)
             if fd_real is None:
                 return None  # cannot verify containment -> fail closed
-            root_real = os.path.realpath(within_root)
-            try:
-                contained = os.path.commonpath([fd_real, root_real]) == root_real
-            except ValueError:
-                contained = False
-            if not contained:
+            if not _opened_path_within_root(fd_real, within_root):
                 return None  # opened inode escapes the approved tree
             if is_sensitive_path(fd_real):
                 return None
@@ -3321,12 +3366,7 @@ def _pinned_replace(
             dir_real = _fd_real_path(dfd)
             if dir_real is None:
                 return "refused"  # cannot verify containment -> fail closed
-            root_real = os.path.realpath(within_root)
-            try:
-                contained = os.path.commonpath([dir_real, root_real]) == root_real
-            except ValueError:
-                contained = False
-            if not contained or is_sensitive_path(dir_real):
+            if not _opened_path_within_root(dir_real, within_root) or is_sensitive_path(dir_real):
                 return "refused"
         elif within_root is not None:
             # No directory handle to interrogate, so the parent is verified by

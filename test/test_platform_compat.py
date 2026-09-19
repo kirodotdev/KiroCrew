@@ -831,6 +831,30 @@ class TestUtf8Console:
         assert errors == []
 
 
+def _measure_rss_release():
+    """Sample one real mapping's lifetime in the calling process."""
+    chunk = 128 * 1024 * 1024
+    page = 4096
+    baseline = pc.proc_rss_bytes()
+    buf = mmap.mmap(-1, chunk)
+    try:
+        for offset in range(0, chunk, page):  # fault the pages in
+            buf[offset] = 1
+        while_held = pc.proc_rss_bytes()
+        peak_while_held = pc.proc_peak_rss_bytes()
+    finally:
+        buf.close()
+    after_free = pc.proc_rss_bytes()
+    peak_after = pc.proc_peak_rss_bytes()
+    return {
+        "baseline": baseline,
+        "while_held": while_held,
+        "peak_while_held": peak_while_held,
+        "after_free": after_free,
+        "peak_after": peak_after,
+    }
+
+
 class TestResourceShims:
     def test_proc_rss_bytes_nonnegative(self):
         # Returns this process's RSS (>0 normally) or 0 on failure — never raises.
@@ -843,7 +867,7 @@ class TestResourceShims:
         # watchdog's RSS ceiling.
         assert pc.proc_rss_bytes() > 0
 
-    def test_proc_rss_bytes_falls_back_down_when_memory_is_released(self):
+    def test_proc_rss_bytes_falls_back_down_when_memory_is_released(self, tmp_path):
         """The reading must be CURRENT residency, not the high-water mark.
 
         Reported symptom: the dashboard's per-process memory figure only ever
@@ -860,22 +884,53 @@ class TestResourceShims:
         agreeing exactly with ``ps -o rss=`` — a correct reading judged against an
         allocator's discretion rather than against the property under test.
         Closing a mapping unmaps immediately on Linux, macOS and Windows alike.
+
+        RSS covers the whole process: unrelated allocations released by a prior
+        test's threads or finalizers can cancel out this mapping's growth.
+        A fresh interpreter removes that inherited state, not OS variability.
         """
+        import kiro_crew
+
+        root = Path(__file__).resolve().parents[1]
+        source_root = root / "src"
+        assert Path(kiro_crew.__file__).resolve().parent == source_root / "kiro_crew"
+        assert Path(pc.__file__).resolve() == source_root / "kiro_crew" / "platform_compat.py"
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-c",
+                "import json, sys; from pathlib import Path; "
+                "sys.path[:0] = sys.argv[1:]; "
+                "import kiro_crew, test_platform_compat as probe; "
+                "assert Path(kiro_crew.__file__).resolve().parent "
+                "== Path(sys.argv[1]) / 'kiro_crew'; "
+                "assert Path(probe.pc.__file__).resolve() "
+                "== Path(sys.argv[1]) / 'kiro_crew' / 'platform_compat.py'; "
+                "assert Path(probe.__file__).resolve() "
+                "== Path(sys.argv[2]) / 'test_platform_compat.py'; "
+                "print(json.dumps(probe._measure_rss_release()))",
+                str(source_root),
+                str(root / "test"),
+                str(root),
+            ],
+            cwd=tmp_path,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, (result.stdout, result.stderr)
+        samples = json.loads(result.stdout)
+        baseline = samples["baseline"]
+        while_held = samples["while_held"]
+        peak_while_held = samples["peak_while_held"]
+        after_free = samples["after_free"]
         chunk = 128 * 1024 * 1024
-        page = 4096
-        baseline = pc.proc_rss_bytes()
-        buf = mmap.mmap(-1, chunk)
-        try:
-            for offset in range(0, chunk, page):  # fault the pages in
-                buf[offset] = 1
-            while_held = pc.proc_rss_bytes()
-            peak_while_held = pc.proc_peak_rss_bytes()
-        finally:
-            buf.close()
-        after_free = pc.proc_rss_bytes()
 
         # Rose by most of the buffer while it was resident.
-        assert while_held - baseline > chunk // 2
+        assert while_held - baseline > chunk // 2, samples
         # And gave a real part of it back. Deliberately relative to `while_held`
         # rather than an absolute `baseline + chunk // 2` ceiling: how much the
         # OS actually returns on free is its decision, not ours. Windows keeps
@@ -884,13 +939,13 @@ class TestResourceShims:
         # absolute ceiling failed there on a reading that was behaving correctly.
         # A peak-based implementation cannot pass this at any tolerance, because
         # it returns a number that has not moved at all.
-        assert after_free < while_held - chunk // 8
+        assert after_free < while_held - chunk // 8, samples
         # The decisive property, and the one the bug got wrong: after a free the
         # CURRENT reading must be strictly below the peak. `ru_maxrss` returns
         # exactly the peak here, so this is the assertion that fails for it.
-        assert after_free < peak_while_held
+        assert after_free < peak_while_held, samples
         # The peak, by contrast, is not allowed to fall.
-        assert pc.proc_peak_rss_bytes() >= peak_while_held
+        assert samples["peak_after"] >= peak_while_held, samples
 
     def test_proc_peak_rss_bytes_reads_the_same_unit_as_the_current_reading(self):
         # The property under test is the UNIT, not the ordering: ru_maxrss is KiB on

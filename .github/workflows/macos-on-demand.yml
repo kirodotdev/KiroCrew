@@ -113,6 +113,12 @@ jobs:
               - "src/kiro_crew/mcp_gateway/socketsec.py"
               - "src/kiro_crew/peer_resolve.py"
               - "src/kiro_crew/platform_compat.py"
+              # Descriptor identity and containment depend on native APFS spelling.
+              - "src/kiro_crew/hooks.py"
+              - "src/kiro_crew/pinned_fs.py"
+              - "src/kiro_crew/dashboard/handlers/files.py"
+              - "test/test_safe_read_file_bytes_descriptor.py"
+              - "test/test_theme_install.py"
               # The singleton home lock: its durable anchor is POSIX-only, and
               # its guard tests skip themselves where a directory cannot be
               # locked, so a darwin regression would read as green without this

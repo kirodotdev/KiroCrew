@@ -349,6 +349,21 @@ async def api_reveal_path(request: web.Request) -> web.Response:
     return web.json_response({"ok": True})
 
 
+def _read_outbox_file(raw_path: str, relative: bool = False) -> tuple[Path | None, bytes | None]:
+    """Resolve, authorize, read and close on one bounded transfer worker.
+
+    Only bytes and a path leave the worker, so cancelling its waiter never
+    transfers descriptor cleanup to a cancelled coroutine.
+    """
+    from kiro_crew.hooks import safe_read_file_bytes  # noqa: F811
+
+    outbox = config_loader.outbox_dir()
+    path = ((outbox / raw_path) if relative else Path(raw_path)).resolve()
+    if not path.is_relative_to(outbox.resolve()):
+        return None, None
+    return path, safe_read_file_bytes(str(path))
+
+
 async def api_outbox_notify(request: web.Request) -> web.Response:
     """POST /api/outbox/notify — agent sent a file, notify the user."""
     state: DashboardState = request.app["state"]
@@ -391,26 +406,23 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
         "size": body.get("size", 0),
         "content_type": mimetypes.guess_type(raw_filename)[0] or "application/octet-stream",
     }
-    # Validate file is readable + UTF-8 before creating a persistent card
-    from pathlib import Path  # noqa: F811
-
-    from kiro_crew.config.loader import outbox_dir  # noqa: F811
-    from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes  # noqa: F811
-
-    resolved = Path(file_data["path"]).resolve()
-    if not resolved.is_relative_to(outbox_dir().resolve()):
-
-        _sel().log_tool_invocation(
-            session_key="api",
-            source="api",
-            tool_name="file_send",
-            tool_kind="notify",
-            outcome="denied",
-            error="path_outside_outbox",
-        )
-        return web.json_response({"error": "path must be inside outbox"}, status=403)
+    # Validate file is readable + UTF-8 before creating a persistent card.
     try:
-        raw = safe_read_file_bytes(str(resolved))
+        resolved, raw = await _run_path_probe(_read_outbox_file, raw_path, transfer=True)
+        if resolved is None:
+            _sel().log_tool_invocation(
+                session_key="api",
+                source="api",
+                tool_name="file_send",
+                tool_kind="notify",
+                outcome="denied",
+                error="path_outside_outbox",
+            )
+            return web.json_response({"error": "path must be inside outbox"}, status=403)
+    except _PathProbeBusy:
+        return _probe_busy_response(
+            resource=raw_path, tool_name="file_send", session_key="api", source="api"
+        )
     except FileTooLargeError as e:
 
         _sel().log_tool_invocation(
@@ -579,23 +591,23 @@ async def api_outbox_notify(request: web.Request) -> web.Response:
 
 async def api_outbox_download(request: web.Request) -> web.StreamResponse:
     """GET /api/outbox/{filename} — download a file from the outbox."""
-    from kiro_crew.config.loader import outbox_dir  # noqa: F811
-    from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes  # noqa: F811
-
     filename = request.match_info["filename"]
-    path = (outbox_dir() / filename).resolve()
-    if not path.is_relative_to(outbox_dir().resolve()):
-        _sel().log_tool_invocation(
-            session_key="api",
-            source="api",
-            tool_name="file_send",
-            tool_kind="download",
-            outcome="denied",
-            error=f"path_traversal: {filename}",
-        )
-        return web.json_response({"error": "forbidden"}, status=403)
     try:
-        raw = safe_read_file_bytes(str(path))
+        path, raw = await _run_path_probe(_read_outbox_file, filename, True, transfer=True)
+        if path is None:
+            _sel().log_tool_invocation(
+                session_key="api",
+                source="api",
+                tool_name="file_send",
+                tool_kind="download",
+                outcome="denied",
+                error=f"path_traversal: {filename}",
+            )
+            return web.json_response({"error": "forbidden"}, status=403)
+    except _PathProbeBusy:
+        return _probe_busy_response(
+            resource=filename, tool_name="file_send", session_key="api", source="api"
+        )
     except FileTooLargeError as e:
         _sel().log_tool_invocation(
             session_key="api",
