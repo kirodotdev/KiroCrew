@@ -658,6 +658,33 @@ class AcpRequestTimeout(AcpRuntimeError):
     transient = True
 
 
+class AcpRuntimeOverloaded(AcpRequestTimeout):
+    """``initialize`` went unanswered while the agents slice was being throttled.
+
+    A cold start under the aggregate memory ceiling is slow, not broken: the
+    kernel is throttling every process in ``kirocrew-agents.slice``, so a
+    healthy kiro-cli can take longer than any fixed handshake budget to answer
+    ``initialize``. Raised only when the process was still ALIVE at the
+    deadline and the slice was throttling -- a process that exited, or a stall
+    on an unthrottled host, stays a plain :class:`AcpRequestTimeout`.
+
+    Subclasses the timeout so every ``except AcpRequestTimeout`` /
+    ``except AcpRuntimeError`` handler keeps working. What the subclass
+    changes is the retry verdict: ``transient = False``. The parent's
+    ``True`` says "host weather, try again", and every retry layer reads it
+    structurally (``llm_helpers.acp_error_is_transient``, the taskq
+    ``acp_provider`` classifier), so an inherited ``True`` would respawn a
+    fresh kiro-cli straight back into the same throttled slice -- each retry
+    pays the whole startup again and deepens the throttle it is waiting on.
+    Overload is the one timeout where the remedy is NOT to retry: it is to
+    reduce concurrent agent memory (close idle sessions, fewer parallel
+    subagents), and the message names that remedy so the failure surfaces as
+    overload rather than as a crash to debug.
+    """
+
+    transient = False
+
+
 class AcpRuntimeProtocol(Protocol):
     """Minimal interface that AcpSessionHandle needs from AcpRuntime."""
 

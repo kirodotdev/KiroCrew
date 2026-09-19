@@ -182,7 +182,13 @@ host memory and CPU, clamped to `[3, agent.subagent_auto_max]`. The
 available-memory term is read by `_available_memory_gb()`, which is dispatched
 per operating system (see `dynamic-subagent-sizing.md`):
 
-- **Linux** — `/proc/meminfo` `MemAvailable`, then clamped by cgroup headroom.
+- **Linux** — `/proc/meminfo` `MemAvailable`, then clamped by cgroup headroom:
+  the tighter of the container root's `memory.max` (when the gateway runs in a
+  memory-limited container) and the agents slice's own ceiling
+  (`min(memory.high, memory.max) - memory.current` on `kirocrew-agents.slice`,
+  read via `_agents_slice_available_gb()`). The slice term is what lets the
+  posture go `critical` on a bare host whose `MemAvailable` is still large while
+  the kernel is already throttling every agent at the slice's `memory.high`.
 - **macOS** — reclaimable memory (free + inactive + speculative + purgeable
   pages) via the Mach `host_statistics64` syscall through `ctypes`/`libSystem`
   (`_macos_vm_reclaimable_pages`), combined with the `os.sysconf` page size.

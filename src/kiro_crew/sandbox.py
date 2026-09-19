@@ -11852,6 +11852,62 @@ def _read_cgroup_counters(path: Path) -> dict[str, int]:
     return counters
 
 
+def read_cgroup_int(path: str | Path) -> int | None:
+    """Read a single-value cgroup file (``memory.high``, ``memory.max`` and kin).
+
+    The one reader for every single-integer cgroup file the product consults,
+    here and in ``subagent``'s memory probe. ``None`` when the file is absent,
+    unparseable, or holds the ``max`` sentinel the kernel writes for "no
+    limit" -- every caller treats all three the same way, as "this bound does
+    not constrain".
+    """
+    try:
+        text = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not text.isdigit():
+        return None
+    return int(text)
+
+
+# Last ``memory.events`` ``high`` counter seen by ``agents_slice_throttling``.
+# Separate from ``_SLICE_MEMHIGH_EVENTS_SEEN``: that one paces a once-per-episode
+# WARNING from the reconcile worker, this one answers a yes/no question for a
+# caller that is about to commit a cold start. Sharing the baseline would let
+# either reader consume the other's climb.
+_SLICE_THROTTLE_PROBE_SEEN: int | None = None
+
+
+def agents_slice_throttling() -> bool:
+    """Whether the kernel is throttling the agents slice right now.
+
+    Two signals, either suffices. ``memory.current >= memory.high`` is the
+    kernel's own definition of "over the soft ceiling"; under sustained
+    pressure reclaim holds usage AT the ceiling rather than above it, so the
+    equality is the steady state, not an edge. The ``memory.events`` ``high``
+    counter climbing since this function's previous read is the second signal:
+    the kernel increments it every time it throttles, so during an episode it
+    advances between any two probes even when reclaim has momentarily pushed
+    usage under the line. The first read only baselines the counter.
+
+    ``False`` whenever there is nothing to read (not Linux, no slice); an
+    unmeasurable host is never reported as throttled.
+    """
+    global _SLICE_THROTTLE_PROBE_SEEN
+    slice_dir = _agents_slice_cgroup_dir()
+    if slice_dir is None:
+        return False
+    counter = _read_cgroup_counters(slice_dir / "memory.events").get("high")
+    previous = _SLICE_THROTTLE_PROBE_SEEN
+    if counter is not None:
+        _SLICE_THROTTLE_PROBE_SEEN = counter
+    high = read_cgroup_int(slice_dir / "memory.high")
+    current = read_cgroup_int(slice_dir / "memory.current")
+    if high is not None and current is not None and current >= high:
+        return True
+    return counter is not None and previous is not None and counter > previous
+
+
 # Last-seen slice-level OOM counters, so only NEW kills are reported. Seeded
 # lazily from the current values on first read: kills that predate this
 # process must not fire a spurious warning at boot.

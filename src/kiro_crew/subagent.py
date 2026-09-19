@@ -101,6 +101,8 @@ from kiro_crew.providers.base import (
     LLMEvent,
 )
 from kiro_crew.resource_status import cached_admission_check
+from kiro_crew.sandbox import _agents_slice_cgroup_dir
+from kiro_crew.sandbox import read_cgroup_int as _read_int_file
 from kiro_crew.security import (
     redact_and_truncate,
     redact_credentials,
@@ -939,7 +941,8 @@ def _available_memory_gb() -> float:
     (``compute_max_subagents``) fails open to the legacy default cap.
 
         • Linux  — ``/proc/meminfo`` ``MemAvailable`` (via ``check_memory_available``),
-                   then clamped by cgroup headroom so a container's limit binds.
+                   then clamped by cgroup headroom so the tighter of a
+                   container's limit and the agents slice's ceiling binds.
         • macOS  — reclaimable memory via Mach ``host_statistics64`` (ctypes,
                    in-process, no subprocess); see ``_macos_available_memory_gb``.
                    No cgroups.
@@ -1040,29 +1043,47 @@ def _macos_available_memory_gb() -> float:
 # Values at/above this are the kernel's "no limit" sentinel (PAGE_COUNTER_MAX).
 _CGROUP_UNLIMITED = 1 << 62
 
-
-def _read_int_file(path: str) -> int | None:
-    """Read a single integer from *path*; None on absence/garbage. 'max' → None."""
-    try:
-        with open(path, encoding="ascii") as fh:
-            txt = fh.read().strip()
-    except OSError:
-        return None
-    if txt == "max":  # cgroup v2 unlimited sentinel
-        return None
-    try:
-        return int(txt)
-    except ValueError:
-        return None
+# The cgroup file reader is ``sandbox.read_cgroup_int``, bound at import above
+# under this module's historical name so the probes below (and the tests that
+# patch them) address one reader; ``sandbox`` owns it because it also owns the
+# slice that reader is most often pointed at.
 
 
 def _cgroup_available_gb() -> float:
+    """Cgroup memory headroom (GB) from whichever ceiling binds, or -1.0 if none.
+
+    Two cgroups can bound the agents this host runs, and either may be the
+    binding one:
+
+    * the **container root** (``/sys/fs/cgroup/memory.max``), when the gateway
+      itself runs inside a memory-limited container -- see
+      :func:`_container_cgroup_available_gb`;
+    * the **agents slice** (``kirocrew-agents.slice``), the aggregate ceiling
+      the sandbox itself places on every agent process on a bare Linux host --
+      see :func:`_agents_slice_available_gb`.
+
+    On a bare host the container root does not exist, so before the slice was
+    consulted this returned -1.0 there and the caller fell back to host
+    ``MemAvailable``: a host with tens of GB free read as "ample" while the
+    kernel was already throttling the whole agent subtree at the slice's
+    ``memory.high``, so admission kept admitting into the throttle. The
+    tighter of the two readings is returned; -1.0 only when neither
+    constrains (``dynamic-subagent-sizing.md`` §9).
+    """
+    readings = [
+        gb for gb in (_container_cgroup_available_gb(), _agents_slice_available_gb()) if gb >= 0
+    ]
+    return min(readings) if readings else -1.0
+
+
+def _container_cgroup_available_gb() -> float:
     """Container memory headroom (GB) = limit − current, or -1.0 if unlimited/unknown.
 
     Reads cgroup v2 (``memory.max``/``memory.current``) then v1
-    (``memory.limit_in_bytes``/``memory.usage_in_bytes``). A sentinel-large
-    limit means unlimited. Returns -1.0 on unconstrained / non-Linux hosts so
-    the caller ignores the clamp (``dynamic-subagent-sizing.md`` §9).
+    (``memory.limit_in_bytes``/``memory.usage_in_bytes``) at the cgroup ROOT
+    the process sees -- the container's limit when there is one. A
+    sentinel-large limit means unlimited. Returns -1.0 on unconstrained /
+    non-Linux hosts so the caller ignores the clamp.
     """
     # cgroup v2
     limit = _read_int_file("/sys/fs/cgroup/memory.max")
@@ -1079,6 +1100,39 @@ def _cgroup_available_gb() -> float:
         current = _read_int_file("/sys/fs/cgroup/memory/memory.usage_in_bytes") or 0
         return max(0.0, (limit - current) / (1024**3))
     return -1.0  # no cgroup memory controller
+
+
+def _agents_slice_available_gb() -> float:
+    """Headroom (GB) under the agents slice's own ceiling, or -1.0 if none applies.
+
+    The slice carries two ceilings: ``memory.high`` (past it the kernel
+    throttles-and-reclaims the whole subtree) and ``memory.max`` (past it the
+    kernel OOM-kills a scope). The lower one binds, so headroom is
+    ``min(high, max) - current``, floored at zero: usage can sit ABOVE
+    ``memory.high`` while the kernel reclaims, and a negative figure would
+    mislead every threshold comparison downstream.
+
+    The slice directory comes from ``sandbox._agents_slice_cgroup_dir`` (which
+    knows systemd's dash-hierarchy); the files are read through the same
+    ``_read_int_file`` as the container probe so ``max`` and an absent file
+    both mean "does not constrain". -1.0 when not Linux, the slice is not
+    materialized, or neither ceiling is set.
+    """
+    slice_dir = _agents_slice_cgroup_dir()
+    if slice_dir is None:
+        return -1.0
+    ceilings = [
+        limit
+        for limit in (
+            _read_int_file(str(slice_dir / "memory.high")),
+            _read_int_file(str(slice_dir / "memory.max")),
+        )
+        if limit is not None and limit < _CGROUP_UNLIMITED
+    ]
+    if not ceilings:
+        return -1.0
+    current = _read_int_file(str(slice_dir / "memory.current")) or 0
+    return max(0.0, (min(ceilings) - current) / (1024**3))
 
 
 def compute_max_subagents(cfg: KiroCrewConfig) -> int:
