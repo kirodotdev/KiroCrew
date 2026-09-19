@@ -50,13 +50,14 @@ export type RootRowKind =
  * over a static app catalogue cannot produce. It is built from the store the
  * dashboard already keeps live, so leading with it costs the root no request.
  *
- * `folders` holds the sidebar's own folders, so typing a folder's name lands on
- * that folder. It belongs in the root rather than behind a `view` row because it
- * is not a corpus search: the folder list is already in memory on the shared
- * `['chat-folders']` key, read cache-only, so matching it is a synchronous filter
- * over a list of tens and the root still issues no request.
+ * There is deliberately no `folders` group: the sidebar's folders are a CORPUS, and
+ * a corpus is reached here the way sessions are — one `view` row under `commands`
+ * that the reader enters. Flattening the folder list into this index made the same
+ * collection behave unlike every other corpus the surface holds, and cost it two
+ * mechanisms (an idle demotion and a group cap) to keep tens of the user's own
+ * folders from filling a page they had not typed into.
  */
-export const ROOT_GROUPS = ['attention', 'commands', 'apps', 'folders', 'settings'] as const
+export const ROOT_GROUPS = ['attention', 'commands', 'apps', 'settings'] as const
 
 export type RootGroup = (typeof ROOT_GROUPS)[number]
 
@@ -195,20 +196,6 @@ const IDLE_DEMOTION = 1
 const SETTINGS_IDLE_LIMIT = 2
 
 /**
- * Tighter cap for the folders group on an EMPTY query, for the same reason as the
- * settings one above and sized to match it.
- *
- * A folder list is the user's own filing, so it grows with how much they organise —
- * and none of it is what a launcher opens on. Uncapped, a heavy folder user's
- * opening page led with six alphabetical folders before they had typed anything,
- * which is the cold-state failure `IDLE_DEMOTION` exists to prevent, arriving
- * through the cap instead of through the score. Folder rows carry `idleDemote` as
- * well, so the two folders that survive this cap are the ones the user actually
- * reaches for rather than the two nearest the front of the alphabet.
- */
-const FOLDERS_IDLE_LIMIT = 2
-
-/**
  * Score of a match on a field the row does not lead with, relative to a title hit.
  *
  * A subtitle or alias hit is weaker evidence of intent than the name the user is
@@ -312,11 +299,7 @@ export function rankRootRows(
   const perGroup = new Map<RootGroup, number>()
   const capped: RankedRow[] = []
   for (const row of ranked) {
-    const limit = !q
-      ? row.group === 'settings' ? SETTINGS_IDLE_LIMIT
-        : row.group === 'folders' ? FOLDERS_IDLE_LIMIT
-          : PER_GROUP_LIMIT
-      : PER_GROUP_LIMIT
+    const limit = !q && row.group === 'settings' ? SETTINGS_IDLE_LIMIT : PER_GROUP_LIMIT
     const seen = perGroup.get(row.group) ?? 0
     if (seen >= limit) continue
     perGroup.set(row.group, seen + 1)

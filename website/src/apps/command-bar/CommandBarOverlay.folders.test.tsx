@@ -1,20 +1,25 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ChatFolder } from '../../types'
 
 import CommandBarOverlay from './CommandBarOverlay'
 
 /**
- * Folder rows in the Command Bar launcher.
+ * The Command Bar's FOLDERS VIEW.
  *
- * The bar is the DEFAULT Cmd+K surface (`command-bar` ships `defaultEnabled: true`
+ * The bar is the default Cmd+K surface (`command-bar` ships `defaultEnabled: true`
  * and its manifest overlay claims the host's `quick-search` slot), so the palette's
- * Folders tab is unreachable for anyone who has not disabled the app. These tests
- * pin the behaviour on the surface the user actually opens:
+ * Folders tab is unreachable for anyone who has not disabled the app. Folders are
+ * reached here the way sessions are, and these tests pin that shape:
  *
- *  - a folder is reachable by typing its name,
- *  - activating it asks the sidebar to reveal that folder and lands on `/chat`,
- *  - the root still issues NO request to build the rows, which is the invariant
- *    the whole launcher design rests on.
+ *  - the ROOT holds one row per corpus — `Search Folders` — and never the folder
+ *    list itself, which is what keeps the first page from filling with the user's
+ *    own filing before they have typed,
+ *  - entering the view lands on the whole list, narrows as the user types, and
+ *    reaches a child by an ancestor's name,
+ *  - activating a row asks the sidebar to reveal that folder and lands on `/chat`,
+ *  - the root issues NO request; entering the view is the activation event that may
+ *    pay for one.
  */
 
 const dispatch = vi.fn()
@@ -60,7 +65,7 @@ vi.mock('../../hooks/useTheme', () => ({ useTheme: () => ({ cycle: vi.fn() }) })
 
 /** Every network call the overlay could make, so a request is observable. */
 const listApps = vi.fn(async () => [])
-const chatFolders = vi.fn(async () => [])
+const chatFolders = vi.fn(async () => [] as unknown[])
 vi.mock('../../api/client', () => ({
   api: {
     listApps: (...a: unknown[]) => listApps(...(a as [])),
@@ -79,11 +84,16 @@ const FOLDERS = [
   { id: 'f-trade', name: 'Trading Desk', parent_id: '', order: 2, collapsed: false, hidden: false },
 ]
 
-function mount(folders: unknown[] = FOLDERS) {
+/**
+ * Mount the bar with the folder list already in the shared cache, which is where
+ * the sidebar's own read (or the WebSocket) leaves it in production.
+ *
+ * Pass `seed: false` for the cold-cache case: nothing is in the key, so the view's
+ * own fetch is what produces the list.
+ */
+function mount(folders: unknown[] = FOLDERS, opts: { seed?: boolean } = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-  // Seeded, not fetched: the overlay's folders query is `enabled: false`, so this
-  // mirrors production where the sidebar's own read (or the WebSocket) fills the key.
-  client.setQueryData(['chat-folders'], folders)
+  if (opts.seed !== false) client.setQueryData(['chat-folders'], folders)
   const onClose = vi.fn()
   render(
     <QueryClientProvider client={client}>
@@ -122,25 +132,112 @@ const rowByText = (text: string): HTMLElement => {
 const hasRow = (text: string): boolean =>
   screen.queryAllByRole('option').some(r => (r.textContent || '').includes(text))
 
+/**
+ * Mount the bar and enter the folders view the way a user does — the root's own
+ * row, with no query typed, which is how the view's listing state is reached.
+ *
+ * The scope is confirmed by the PLACEHOLDER rather than by a row: the error and
+ * cold-cache cases legitimately have no rows yet, and a helper that waited for one
+ * would hang on exactly the states those tests exist to pin.
+ */
+const openFoldersView = async (folders: unknown[] = FOLDERS, opts: { seed?: boolean } = {}) => {
+  const mounted = mount(folders, opts)
+  await waitFor(() => expect(hasRow('Search Folders')).toBe(true))
+  fireEvent.mouseDown(rowByText('Search Folders'))
+  await waitFor(() => expect(screen.getByPlaceholderText('Search all folders…')).toBeTruthy())
+  return mounted
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
+  chatFolders.mockResolvedValue([])
   dispatch.mockReturnValue({ unwrap: () => Promise.resolve('slot-1') })
   storeState.dashboard = { slots: [], unreadSlots: [] }
   storeState.chat = { slotStatusDetail: {}, activeSlot: null }
 })
 
-describe('command bar — folder rows', () => {
-  it('finds a folder by name and files it under the Folders group', async () => {
+describe('command bar — the root', () => {
+  it('offers one row for the folders corpus and never the folder list itself', async () => {
     mount()
     type('sydney')
+    // `Sydney Property` is in the cache and matches the query — and still must not
+    // be a root row. A corpus is entered here, not flattened into the first page.
+    await waitFor(() => expect(screen.getByRole('combobox')).toBeTruthy())
+    expect(hasRow('Sydney Property')).toBe(false)
+    expect(hasRow('Inspections')).toBe(false)
+  })
+
+  it('lists Search Folders as a view row on an empty query', async () => {
+    mount()
+    await waitFor(() => expect(hasRow('Search Folders')).toBe(true))
+    // A `view` row states that it opens a surface rather than acting.
+    expect(rowByText('Search Folders').textContent).toContain('View')
+  })
+
+  it('keeps one row per corpus — sessions, artifacts and folders — and one tail row each', async () => {
+    // Three corpora now share this surface, each reached the same way, and the row
+    // that carries a typed query into one of them must not have displaced another's.
+    // The folders rows were added last, so this is the assertion that would catch
+    // them landing on top of a row that was already there.
+    mount()
+    await waitFor(() => expect(hasRow('Search Folders')).toBe(true))
+    expect(hasRow('Search Sessions')).toBe(true)
+    expect(hasRow('Search Artifacts')).toBe(true)
+    type('sydney')
+    await waitFor(() => expect(hasRow('Search folders for')).toBe(true))
+    expect(hasRow('Search sessions for')).toBe(true)
+    expect(hasRow('Search artifacts for')).toBe(true)
+  })
+
+  it('carries a typed query into the folders view instead of dead-ending', async () => {
+    mount()
+    type('sydney')
+    // The tail row for the corpus the typed word did not reach in the root.
+    await waitFor(() => expect(hasRow('Search folders for')).toBe(true))
+    fireEvent.mouseDown(rowByText('Search folders for'))
+    // The query survives the hand-off: the view opens already narrowed, so the
+    // reader does not retype what they just typed.
     await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
-    expect(screen.getByText('Folders')).toBeTruthy() // the group header, never highlighted
-    // The row names its own kind, so a reader can tell it from a command.
-    expect(rowByText('Sydney Property').textContent).toContain('Folder')
+    expect(hasRow('Trading Desk')).toBe(false)
+  })
+
+  it('builds the root WITHOUT issuing a request, which is the launcher invariant', async () => {
+    mount()
+    await waitFor(() => expect(hasRow('Search Folders')).toBe(true))
+    type('sydney')
+    await waitFor(() => expect(hasRow('Search folders for')).toBe(true))
+    // Cache-only, and not even that: the root builds no folder row at all, so the
+    // endpoint's synchronous on-disk session walk is never paid for a keystroke.
+    expect(chatFolders).not.toHaveBeenCalled()
+    expect(listApps).not.toHaveBeenCalled()
+  })
+})
+
+describe('command bar — folders view', () => {
+  it('opens on the whole folder list, not on an empty screen', async () => {
+    await openFoldersView()
+    // The listing IS the view's empty state, so Enter always has a row to act on.
+    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
+    expect(hasRow('Inspections')).toBe(true)
+    expect(hasRow('Trading Desk')).toBe(true)
+  })
+
+  it('narrows on one character, since the corpus is already local', async () => {
+    await openFoldersView()
+    await waitFor(() => expect(hasRow('Trading Desk')).toBe(true))
+    // `y` is in `Sydney Property` and in no other folder's name, so one keystroke
+    // is enough to separate them. There is no minimum query length here: the
+    // sessions view has one because its engine is a backend, and this one's corpus
+    // is a cached list.
+    type('y')
+    await waitFor(() => expect(hasRow('Trading Desk')).toBe(false))
+    // Awaited separately: a new query drops the previous result set for a tick, so
+    // reading the positive too early sees the gap rather than the answer.
+    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
   })
 
   it('shows a nested folder with its ancestry path, not a bare name', async () => {
-    mount()
+    await openFoldersView()
     type('inspections')
     await waitFor(() => expect(hasRow('Inspections')).toBe(true))
     // The breadcrumb is what tells two same-named leaves apart.
@@ -148,21 +245,14 @@ describe('command bar — folder rows', () => {
   })
 
   it('reaches a folder by an ANCESTOR name, which its own title does not contain', async () => {
-    mount()
+    await openFoldersView()
     type('sydney')
     // `Inspections` matches nothing in "sydney" itself; the path carries it.
     await waitFor(() => expect(hasRow('Inspections')).toBe(true))
   })
 
-  it('does not surface an unrelated folder', async () => {
-    mount()
-    type('sydney')
-    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
-    expect(hasRow('Trading Desk')).toBe(false)
-  })
-
   it('asks the sidebar to reveal the folder, then lands on the chat surface', async () => {
-    const { onClose } = mount()
+    const { onClose } = await openFoldersView()
     type('trading')
     await waitFor(() => expect(hasRow('Trading Desk')).toBe(true))
     fireEvent.mouseDown(rowByText('Trading Desk'))
@@ -176,44 +266,98 @@ describe('command bar — folder rows', () => {
   })
 
   it('dispatches the reveal BEFORE navigating, so an unmounted sidebar replays it', async () => {
-    mount()
+    await openFoldersView()
     type('trading')
     await waitFor(() => expect(hasRow('Trading Desk')).toBe(true))
+    dispatch.mockClear()
+    navigate.mockClear()
     fireEvent.mouseDown(rowByText('Trading Desk'))
     await waitFor(() => expect(navigate).toHaveBeenCalled())
     // Ordering is the guarantee: the store holds the request precisely because the
     // sidebar may mount only as a result of the navigate.
-    const revealOrder = dispatch.mock.invocationCallOrder[0]
-    expect(revealOrder).toBeLessThan(navigate.mock.invocationCallOrder[0])
+    expect(dispatch.mock.invocationCallOrder[0]).toBeLessThan(
+      navigate.mock.invocationCallOrder[0],
+    )
   })
 
-  it('builds the rows WITHOUT issuing a request, which is the launcher invariant', async () => {
-    mount()
-    type('sydney')
+  it('names the Enter action "Open" on a folder row, not "Open Session"', async () => {
+    // The footer's job is to say what Enter does, and what it does here is reveal a
+    // folder. The sessions view's own verb would promise a conversation.
+    await openFoldersView()
     await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
-    // Cache-only. A folder fetch here would pay for the endpoint's synchronous
-    // on-disk session walk on every keystroke in the root.
-    expect(chatFolders).not.toHaveBeenCalled()
-    expect(listApps).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.queryByText('Open')).not.toBeNull())
+    expect(screen.queryByText('Open Session')).toBeNull()
   })
 
-  it('renders no folder rows on a cold cache instead of fetching', async () => {
-    mount([])
-    type('sydney')
-    await waitFor(() => expect(hasRow('Sydney Property')).toBe(false))
-    expect(chatFolders).not.toHaveBeenCalled()
+  it('offers the full list when a query matches nothing, instead of bottoming out', async () => {
+    await openFoldersView()
+    type('zzzznope')
+    // A dead end is a ROW, so the keyboard can act on it without leaving the list.
+    await waitFor(() => expect(hasRow('No folders match')).toBe(true))
+    fireEvent.mouseDown(rowByText('No folders match'))
+    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
+  })
+
+  it('names the Enter action on that row for the list it returns to, not recency', async () => {
+    // The sessions view's own verb is "Show Recent", which the folder listing is
+    // not: it is every folder in sidebar order, and a folder has no recency for the
+    // word to stand for. The row and the footer are keyed off the same slot tag, so
+    // neither can name a destination the other does not.
+    await openFoldersView()
+    type('zzzznope')
+    await waitFor(() => expect(hasRow('No folders match')).toBe(true))
+    await waitFor(() => expect(screen.queryByText('Show All Folders')).not.toBeNull())
+    expect(screen.queryByText('Show Recent')).toBeNull()
+  })
+
+  it('tells a reader with no folders that they have none, not that no sessions matched', async () => {
+    // The one way to reach the empty state in this view: a failure pushes the retry
+    // row, a query that matched nothing pushes the row above, and a load in flight
+    // draws the skeleton. So an empty list here is an empty corpus, and the copy has
+    // to be the folders one — the sessions string reports a match that was never
+    // attempted against a query the reader never typed.
+    await openFoldersView([])
+    await waitFor(() => expect(screen.queryByText(/No folders yet/)).not.toBeNull())
+    expect(screen.queryByText('No sessions match')).toBeNull()
+  })
+
+  it('fetches the list once on a cold cache — entering the view is what pays', async () => {
+    chatFolders.mockResolvedValue(FOLDERS)
+    await openFoldersView(FOLDERS, { seed: false })
+    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
+    expect(chatFolders).toHaveBeenCalledTimes(1)
+  })
+
+  it('reports a failed folder read through ErrorNotice, with Retry still in the list', async () => {
+    chatFolders.mockRejectedValue(new Error('gateway down'))
+    await openFoldersView(FOLDERS, { seed: false })
+    // WHAT failed is said ABOVE the list by the shared error surface. An error shown
+    // to the reader renders through `ErrorNotice`, never as a hand-written red row
+    // inside an option (AUTOSDE `errors-use-error-notice`), so the row below carries
+    // the action only.
+    const failure = await screen.findByRole('alert')
+    expect(failure.textContent).toContain('Search failed')
+    // The raw rejection is not user-facing here either.
+    expect(failure.textContent).not.toContain('gateway down')
+    // Outside the listbox, so no option ever owns two competing interactions, and
+    // the failure text is not re-added as a row by a later change.
+    expect(failure.closest('[role="option"]')).toBeNull()
+    expect(hasRow('Search failed')).toBe(false)
+    // A failure is not an empty corpus, and the way out is reachable by keyboard.
+    chatFolders.mockResolvedValue(FOLDERS)
+    fireEvent.mouseDown(rowByText('Retry'))
+    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
   })
 
   it('survives a folders cache holding a non-array', async () => {
     // The key is shared, and a bad payload must not take the whole launcher down.
-    mount({ not: 'an array' } as unknown as unknown[])
-    type('sydney')
-    await waitFor(() => expect(screen.getByRole('combobox')).toBeTruthy())
+    await openFoldersView({ not: 'an array' } as unknown as unknown[])
+    expect(screen.getByRole('combobox')).toBeTruthy()
     expect(hasRow('Sydney Property')).toBe(false)
   })
 
-  it('ignores a folder whose parent_id names a folder that does not exist', async () => {
-    mount([
+  it('keeps a folder whose parent_id names a folder that does not exist', async () => {
+    await openFoldersView([
       { id: 'f-orphan', name: 'Orphan Desk', parent_id: 'f-gone', order: 0, collapsed: false, hidden: false },
     ])
     type('orphan')
@@ -223,38 +367,21 @@ describe('command bar — folder rows', () => {
   })
 
   it('survives a corrupt PARENT name on a query that misses every folder title', async () => {
-    // The crash Opus found, reproduced from its own chain: a folder row's `keywords`
-    // carry its ancestor names, and `rankRootRows` hands each keyword to `fuzzyMatch`,
-    // which calls `.toLowerCase()` on the candidate. A non-string PARENT name therefore
-    // only throws on a query that misses the child's title AND its subtitle, so the
-    // ranker falls through to the keyword field -- which is why guarding title and
-    // subtitle alone left the launcher crashing in render.
-    mount([
+    // A folder's ancestry is matched as a string, and a non-string name off disk
+    // reaches `.toLowerCase()` inside the matcher. `folderTree` guards it at the
+    // source; this holds that guarantee from the surface the user opens.
+    await openFoldersView([
       { id: 'f-bad', name: 42, order: 0, collapsed: false, hidden: false },
       { id: 'f-kid', name: 'Quarterly', order: 0, parent_id: 'f-bad', collapsed: false, hidden: false },
     ] as unknown as ChatFolder[])
-    // `zzz` is a subsequence of neither `Quarterly` nor its breadcrumb, so the keyword
+    // `zzz` is a subsequence of neither `Quarterly` nor its breadcrumb, so the path
     // field is reached.
     type('zzz')
-    await waitFor(() => expect(screen.getByRole('combobox')).toBeTruthy())
-    // Still standing, and the corrupt name is not findable as text either.
-    expect(hasRow('Quarterly')).toBe(false)
+    await waitFor(() => expect(hasRow('Quarterly')).toBe(false))
+    // And the corrupt name is not findable as the literal text either: a non-string
+    // name reads as EMPTY rather than being stringified into `42`.
     type('42')
-    await waitFor(() => expect(screen.getByRole('combobox')).toBeTruthy())
+    await waitFor(() => expect(hasRow('No folders match')).toBe(true))
     expect(hasRow('Quarterly')).toBe(false)
-  })
-
-  it('names the Enter action "Open", not "Run", while a folder row is highlighted', async () => {
-    // The footer's job is to say what Enter does. "Run" is the strongest verb it
-    // has — it is what the rows that approve or merge carry — so on a folder it
-    // invites the reader to stop and check before pressing Enter. A folder row is
-    // wired as an `invoke` (landing on one is a reveal, not only a route change),
-    // which is why the verb is chosen by the row's GROUP and not by its handler.
-    mount()
-    type('sydney')
-    await waitFor(() => expect(hasRow('Sydney Property')).toBe(true))
-    // The first row is pre-highlighted, and with this query it is the folder.
-    await waitFor(() => expect(screen.queryByText('Open')).not.toBeNull())
-    expect(screen.queryByText('Run')).toBeNull()
   })
 })

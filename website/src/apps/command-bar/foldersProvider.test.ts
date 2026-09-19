@@ -1,8 +1,8 @@
 /**
- * Folders command-palette provider.
+ * Folders corpus for the Command Bar's Search Folders view.
  *
- * Exercises `createFoldersProvider` directly (no hooks) with a mock fetch + reveal
- * callback, which is the whole reason the provider is split from its hook.
+ * Exercises `createFoldersProvider` directly with a mock fetch + reveal callback,
+ * which is the whole reason the corpus is a plain function rather than a hook.
  *
  * Assertions are on ORDER and MEMBERSHIP, never on a literal fuzzy score: the
  * scores come from the shared `fuzzyMatch`, so pinning a number here would make
@@ -12,7 +12,7 @@
  */
 import { describe, it, expect, vi } from 'vitest'
 import { createFoldersProvider } from './foldersProvider'
-import type { ChatFolder } from '../../../types'
+import type { ChatFolder } from '../../types'
 
 /**
  * `oss` appears twice: once as a root folder and once nested under `kirocrew`.

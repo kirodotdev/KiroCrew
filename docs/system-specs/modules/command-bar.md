@@ -29,10 +29,29 @@ keystroke, so fast typing could stall unrelated streaming. Command Bar's root ca
 locally-known rows — commands, app destinations, system settings — and every corpus search is a
 view the reader ENTERS, so the expensive work is explicit and chosen.
 
-Two such views exist: session search, and artifact search. The artifacts view asks
-`GET /api/artifacts?q=<query>` and nothing else — no `content=1`, no `snippet=1` — so the server
-matches NAMES only (`name_contains` in `api_artifacts_list`) and never opens a stored body.
-Searching what is INSIDE an artifact is a later change, and it is a change to that one request.
+Three such views exist: session search, artifact search, and folder search. The artifacts view
+asks `GET /api/artifacts?q=<query>` and nothing else — no `content=1`, no `snippet=1` — so the
+server matches NAMES only (`name_contains` in `api_artifacts_list`) and never opens a stored
+body. Searching what is INSIDE an artifact is a later change, and it is a change to that one
+request.
+
+The folders view is the cheapest of the three, and its shape follows from that. Its corpus is
+the folder tree the sidebar already holds under `['chat-folders']`, so a keystroke costs a local
+filter rather than a request: it has no minimum query length, where the two views above each
+hold their first characters back, and no row cap, because the count is the reader's own filing
+rather than a corpus that grows on its own. Entering the view pays for at most one folder read,
+on a cold cache. The folder list used to be spread through the root as its own group instead —
+demoted and capped while the query was empty, so the feature read as missing, and competing with
+commands once it was not.
+
+That corpus lives in THIS app (`apps/command-bar/foldersProvider.ts`), and the host palette
+carries no Folders tab. Reaching a folder by name is a launcher capability, so the launcher owns
+it: the alternative is two implementations of the same gesture, one in the app and one in the
+surface the app replaces, differing over ranking and reveal and answering to nobody. The corpus
+is hook-free for the same reason the session and artifact engines are — the React-Query fetch and
+the `usePaletteActions` route change are wired in `CommandBarOverlay`, which is the only thing
+holding this app's seams. It still renders the host's `Result` row contract, because forking the
+row shape would fork the Enter matrix with it.
 
 ## Responsibilities
 
@@ -42,8 +61,8 @@ Searching what is INSIDE an artifact is a later change, and it is a change to th
    and cap each group
 3. **Ranking** — fuzzy match against the live query plus a frecency boost, so habit surfaces
    without out-ranking a clearly better string match
-4. **Scopes** — enter a sub-surface (today: session search, and artifact name search) as a
-   navigation state, with its own engine loaded on entry
+4. **Scopes** — enter a sub-surface (today: session search, artifact name search, and folder
+   search) as a navigation state, with its own engine loaded on entry
 5. **Fallback** — when the root cannot answer, offer the rows that carry the query into the
    sessions view and the artifacts view rather than reporting "no results"
 

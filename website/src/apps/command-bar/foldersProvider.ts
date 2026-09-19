@@ -1,31 +1,32 @@
 import { createElement } from 'react'
 import { Folder } from 'lucide-react'
-import { useMemo } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { useQueryClient } from '@tanstack/react-query'
 
-import { api } from '../../../api/client'
-import { useAppDispatch } from '../../../store'
-import { requestFolderReveal } from '../../../store/chatSlice'
-import { fuzzyMatch, substringIndices } from '../../../utils/fuzzyMatch'
-import { orderFoldersWithPaths, FOLDER_PATH_SEP, folderNameText } from '../../../utils/folderTree'
-import { i18nT } from '../../../i18n/t'
-import type { ChatFolder } from '../../../types'
-import type { Result, ResourceProvider } from '../types'
+import { fuzzyMatch, substringIndices } from '../../utils/fuzzyMatch'
+import { orderFoldersWithPaths, FOLDER_PATH_SEP, folderNameText } from '../../utils/folderTree'
+import { i18nT } from '../../i18n/t'
+import type { ChatFolder } from '../../types'
+import type { Result, ResourceProvider } from '../../components/commandPalette/types'
 
 /**
- * Folders provider for the Search Everywhere command palette.
+ * Folders corpus for the Command Bar's **Search Folders** view.
  *
- * Backs the **Folders** tab: type a sidebar folder's name and land ON that folder
- * — the palette closes, the chat surface takes over, and the sidebar un-hides the
- * folder, expands it and every collapsed ancestor, scrolls it into view and
- * flashes it. That reveal already existed for SESSION rows (`requestSlotReveal`);
- * this provider is what points it at a folder.
+ * This lives in the app, not in the host's quick-search, and that placement is the
+ * feature rather than a filing choice. Reaching a session folder by name is a
+ * Command Bar capability: you enter one row and get a list that narrows, the same
+ * shape session search and artifact search have here. The host palette
+ * deliberately carries no Folders tab, so there is exactly one implementation of
+ * "find a folder and land on it" and no second copy to drift from it.
+ *
+ * Type a folder's name and land ON that folder — the launcher closes, the chat
+ * surface takes over, and the sidebar un-hides the folder, expands it and every
+ * collapsed ancestor, scrolls it into view and flashes it. That reveal already
+ * existed for SESSION rows (`requestSlotReveal`); this provider is what points it
+ * at a folder.
  *
  * The corpus is the folder list the sidebar itself renders, read through the
  * SHARED `['chat-folders']` React-Query key, so a search is normally a cache hit
- * with no request at all. Matching is therefore entirely client-side (unlike the
- * Sessions tab, whose backend does the ranking): {@link fuzzyMatch} supplies both
+ * with no request at all. Matching is therefore entirely client-side (unlike
+ * session search, whose backend does the ranking): {@link fuzzyMatch} supplies both
  * the score and the highlight indices, over two fields —
  *
  *  - the folder's own NAME, which is what the user typed at, and
@@ -36,19 +37,24 @@ import type { Result, ResourceProvider } from '../types'
  * the folder the user named outranks its own children.
  *
  * Ordering and the breadcrumb both come from `utils/folderTree`, the same module
- * the sidebar's folder pickers use, so the palette lists folders in the order the
+ * the sidebar's folder pickers use, so the view lists folders in the order the
  * sidebar draws them and spells a path the way the server's `folder_breadcrumb`
  * does. Re-deriving either here would be a second answer to a settled question.
+ *
+ * `Result` / `ResourceProvider` still come from the host's palette types: that is
+ * the row contract the launcher renders and the Enter matrix dispatches, shared by
+ * every corpus view in this app. Copying the shape into the app would fork the
+ * contract, which is the opposite of what moving this file was for.
  */
 
 const PROVIDER_ID = 'folders'
 
 /**
- * Catalog KEY for the palette scope tab, resolved where the provider object is
- * BUILT (never at module scope, which would freeze the boot language).
+ * Catalog KEY for the view's label, resolved where the provider object is BUILT
+ * (never at module scope, which would freeze the boot language).
  *
  * Reuses `pages.chatSidebar.folders` — the sidebar's own "Folders" heading — rather
- * than adding a second entry: the tab and that heading name the same collection of
+ * than adding a second entry: the view and that heading name the same collection of
  * the same objects, so a locale rendering one differently from the other would be
  * inconsistent, not nuanced.
  */
@@ -56,8 +62,12 @@ const PROVIDER_LABEL_KEY = 'pages.chatSidebar.folders'
 
 /** Cache the folder list briefly so retyping the same query is free. Matches the
  *  staleTime the sessions provider uses for its own `['chat-folders']` reads, so
- *  the two share cache entries instead of invalidating each other. */
-const FOLDERS_STALE_MS = 30_000
+ *  the two share cache entries instead of invalidating each other.
+ *
+ *  Exported because the launcher builds this provider through
+ *  {@link createFoldersProvider} with its own React-Query fetcher, and a
+ *  hand-copied window there would be a second answer that drifts. */
+export const FOLDERS_STALE_MS = 30_000
 
 /**
  * Score subtracted when the query matched only the ancestry PATH and not the
@@ -68,12 +78,13 @@ const FOLDERS_STALE_MS = 30_000
 const PATH_MATCH_PENALTY = 1_000_000
 
 /**
- * Injectable dependencies for {@link createFoldersProvider}. Keeping the provider
+ * Injectable dependencies for {@link createFoldersProvider}. Keeping the corpus
  * free of React hooks makes it unit-testable with a plain mock fetch + reveal
- * callback; {@link useFoldersProvider} wires the real React-Query + Redux ones.
+ * callback, and leaves the real React-Query + Redux wiring in the one component
+ * that owns this app's seams (`CommandBarOverlay`).
  */
 export interface FoldersProviderDeps {
-  /** Fetch the sidebar folder list (React-Query-cached in the hook). */
+  /** Fetch the sidebar folder list (React-Query-cached by the caller). */
   fetchFolders: () => Promise<ChatFolder[]>
   /** Land on a folder: show the chat surface and reveal the folder row. */
   revealFolder: (folderId: string) => void
@@ -105,7 +116,7 @@ export function createFoldersProvider(deps: FoldersProviderDeps): ResourceProvid
       const folders = await fetchFolders()
       // Pre-order (tree) sequence with ancestors + full path already derived, and
       // orphans/cycles already handled. Its order is the ORDER OF THE RESULT LIST
-      // for an empty query and the stable tiebreak for a scored one, so the tab
+      // for an empty query and the stable tiebreak for a scored one, so the view
       // mirrors the sidebar instead of inventing an alphabetical view of it.
       const ordered = orderFoldersWithPaths(folders)
       // Sidebar tree position per row id, used as the sort tiebreak below. Kept in
@@ -159,47 +170,4 @@ export function createFoldersProvider(deps: FoldersProviderDeps): ResourceProvid
       return results
     },
   }
-}
-
-/**
- * React hook returning a live Folders provider wired to React-Query and the chat
- * store.
- *
- * Per the `use-react-query` lint rule the fetch goes through React-Query on the
- * shared `['chat-folders']` key (the sidebar and the recents provider read the
- * same entry). `queryClient.fetchQuery` rather than `useQuery` because a
- * {@link ResourceProvider}'s `search` is an imperative call from the palette, not
- * a render-time subscription — merely building the provider issues no request,
- * which is what keeps a request-free host (a launcher whose first page must not
- * hit the backend) request-free without needing an `active` flag.
- */
-export function useFoldersProvider(): ResourceProvider {
-  const dispatch = useAppDispatch()
-  const navigate = useNavigate()
-  const queryClient = useQueryClient()
-
-  return useMemo(
-    () =>
-      createFoldersProvider({
-        fetchFolders: () =>
-          queryClient.fetchQuery<ChatFolder[]>({
-            queryKey: ['chat-folders'],
-            queryFn: () => api.chatFolders(),
-            staleTime: FOLDERS_STALE_MS,
-          }),
-        revealFolder: (folderId) => {
-          // Store write BEFORE the route change, and deliberately so: the request
-          // is held in the store precisely because the sidebar may not be mounted
-          // yet (collapsed drawer, or the palette opened from Settings). Its
-          // consuming effect runs on mount as well as on change, so an early
-          // request is picked up rather than dropped — the same replay guarantee
-          // `requestSlotReveal` relies on.
-          dispatch(requestFolderReveal(folderId))
-          // The palette opens from ANY page, so land the user on the surface the
-          // sidebar actually renders on.
-          navigate('/chat')
-        },
-      }),
-    [dispatch, navigate, queryClient],
-  )
 }

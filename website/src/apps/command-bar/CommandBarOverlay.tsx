@@ -30,7 +30,6 @@ import type { ChatFolder } from '../../types'
 import { appNavTargets } from '../../appNav'
 import { useAppDispatch, useAppSelector } from '../../store'
 import { createSlot, setPendingInput, switchSlot, requestFolderReveal } from '../../store/chatSlice'
-import { orderFoldersWithPaths, FOLDER_PATH_SEP, folderNameText } from '../../utils/folderTree'
 import { findReport } from '../../utils/errorReport'
 import { errMessage } from '../../utils/thunkError'
 import ErrorNotice from '../../components/ErrorNotice'
@@ -44,6 +43,7 @@ import { appIcon } from '../../components/commandPalette/providers/appsProvider'
 import { sessionStatus, useRecentsProvider } from '../../components/commandPalette/providers/recentsProvider'
 import { createArtifactsProvider } from '../../components/commandPalette/providers/artifactsProvider'
 import type { ArtifactsResponse } from '../../components/commandPalette/providers/artifactsProvider'
+import { createFoldersProvider, FOLDERS_STALE_MS } from './foldersProvider'
 import { useSessionsProvider } from '../../components/commandPalette/providers/sessionsProvider'
 import type { Result } from '../../components/commandPalette/types'
 import { useSimplifiedToolNames } from '../../hooks/useSimplifiedToolNames'
@@ -82,7 +82,7 @@ import { useImeGuard } from '../../hooks/useImeGuard'
  */
 
 /** Scoped views the bar can enter. Each one owns its own engine. */
-type Scope = null | 'sessions' | 'artifacts'
+type Scope = null | 'sessions' | 'artifacts' | 'folders'
 
 const SESSIONS_MIN_CHARS = 2
 /**
@@ -116,8 +116,6 @@ function groupLabel(group: RootGroup): string {
       return i18nT('apps.commandBar.group_commands')
     case 'apps':
       return i18nT('apps.commandBar.group_apps')
-    case 'folders':
-      return i18nT('apps.commandBar.group_folders')
     case 'settings':
       return i18nT('apps.commandBar.group_settings')
   }
@@ -138,7 +136,6 @@ function kindLabel(row: { kind: RootRowKind; group: RootGroup; appLabel?: string
   if (row.group === 'attention') return null
   if (row.kind === 'view') return i18nT('apps.commandBar.kind.view')
   if (row.group === 'apps') return i18nT('apps.commandBar.kind.app')
-  if (row.group === 'folders') return i18nT('apps.commandBar.kind.folder')
   if (row.group === 'settings') return i18nT('apps.commandBar.kind.setting')
   const kind = i18nT('apps.commandBar.kind.command')
   // Provenance ahead of the kind for a contributed row. Composed with the separator this
@@ -155,8 +152,6 @@ function groupIcon(group: RootGroup) {
       return <Terminal size={14} className="lucide-inline" />
     case 'apps':
       return <Package size={14} className="lucide-inline" />
-    case 'folders':
-      return <Folder size={14} className="lucide-inline" />
     case 'settings':
       return <Cog size={14} className="lucide-inline" />
   }
@@ -236,6 +231,14 @@ type Slot =
    * disagree about which corpus the Enter reaches.
    */
   | { key: string; tag: 'fallback-artifacts' }
+  /**
+   * Carry the typed text into the folders view.
+   *
+   * Its own tag for the reason the artifacts tag above gives: the footer's action
+   * name, the rendered row and the activation all switch on the tag, so none of
+   * them can disagree about which corpus the Enter reaches.
+   */
+  | { key: string; tag: 'fallback-folders' }
   /** Hand the typed text to an agent — the active session, or a new one. */
   | { key: string; tag: 'ask' }
   /** The dead end's way out: the corpora this surface does not reach. */
@@ -244,8 +247,19 @@ type Slot =
   | { key: string; tag: 'retry' }
   /** Re-run an artifact search that failed. */
   | { key: string; tag: 'retry-artifacts' }
+  /** Re-run a folder listing that failed. */
+  | { key: string; tag: 'retry-folders' }
   /** Drop the query and fall back to the recent sessions listing. */
   | { key: string; tag: 'clear-query' }
+  /**
+   * Drop the query and fall back to the whole folder list.
+   *
+   * Separate from `clear-query` because the two rows name different destinations:
+   * a session listing is the RECENT ones, while the folder listing is all of them
+   * in sidebar order. One tag would have to read the live scope to pick the verb,
+   * and `actionLabel` is pure over the slot precisely so it cannot.
+   */
+  | { key: string; tag: 'clear-query-folders' }
 
 /**
  * What Enter on this slot will do, named for the footer.
@@ -268,37 +282,38 @@ function actionLabel(slot: Slot): string {
       // the next step does not do.
       if (slot.row.kind === 'prompt') return i18nT('apps.commandBar.action_continue')
       if (slot.row.kind === 'navigate') return i18nT('apps.commandBar.action_open')
-      // A folder row is an `invoke` because landing on one is a reveal and not only
-      // a route change, but "Run" is the wrong promise for it: it is the strongest
-      // verb this footer has, reserved for the rows that approve or merge, and on a
-      // folder it invites a reader to double-check before pressing Enter. What the
-      // row does is open a folder, and `action_open` already says that in every
-      // catalog. Keyed on the GROUP rather than the kind because the verb describes
-      // what the row is, not how its handler is wired.
-      if (slot.row.group === 'folders') return i18nT('apps.commandBar.action_open')
       return i18nT('apps.commandBar.action_run')
     case 'result':
-      // An artifact row and a session row are the same SHAPE and a different
-      // promise, and the footer names the promise. Keyed off the producing provider
-      // rather than the live scope because this function is pure over the slot — and
-      // because the row carries where it came from, while the scope is state next to
-      // it that a future view could disagree with.
-      return slot.row.providerId === 'artifacts'
-        ? i18nT('apps.commandBar.action_open_artifact')
-        : i18nT('apps.commandBar.action_open_session')
+      // An artifact row, a folder row and a session row are the same SHAPE and three
+      // different promises, and the footer names the promise. Keyed off the producing
+      // provider rather than the live scope because this function is pure over the
+      // slot — and because the row carries where it came from, while the scope is
+      // state next to it that a future view could disagree with.
+      //
+      // A folder gets `action_open` rather than "Run": pressing Enter reveals it in
+      // the sidebar, and "Run" is the strongest verb this footer has, reserved for
+      // the rows that approve or merge.
+      if (slot.row.providerId === 'artifacts') return i18nT('apps.commandBar.action_open_artifact')
+      if (slot.row.providerId === 'folders') return i18nT('apps.commandBar.action_open')
+      return i18nT('apps.commandBar.action_open_session')
     case 'fallback':
       return i18nT('apps.commandBar.action_search_sessions')
     case 'fallback-artifacts':
       return i18nT('apps.commandBar.action_search_artifacts')
+    case 'fallback-folders':
+      return i18nT('apps.commandBar.action_search_folders')
     case 'ask':
       return i18nT('apps.commandBar.action_ask')
     case 'recovery':
       return i18nT('apps.commandBar.action_open_app')
     case 'retry':
     case 'retry-artifacts':
+    case 'retry-folders':
       return i18nT('apps.commandBar.retry')
     case 'clear-query':
       return i18nT('apps.commandBar.action_show_recent')
+    case 'clear-query-folders':
+      return i18nT('apps.commandBar.action_show_all_folders')
   }
 }
 
@@ -543,6 +558,50 @@ export default function CommandBarOverlay({
     [navigate, queryClient],
   )
 
+  /**
+   * The folders view's engine — this app's own folders corpus
+   * (`./foldersProvider`), wired to THIS surface's seams.
+   *
+   * It lives beside this file rather than under the host palette's providers, and
+   * that is the point: the host carries no Folders tab, so there is one
+   * implementation of "find a folder and land on it" and the app owns it. The
+   * corpus itself is hook-free precisely so the wiring stays here — React-Query for
+   * the fetch, `usePaletteActions` for the route change. Every route change in this
+   * overlay goes through that hook, and one component holding two navigation
+   * mechanisms is how one of them ends up unexercised.
+   *
+   * Inert on construction, like the two engines above: the fetch runs from
+   * `search()`, and the only call site is gated on the folders scope.
+   */
+  const folders = useMemo(
+    () =>
+      createFoldersProvider({
+        fetchFolders: async () => {
+          const rows = await queryClient.fetchQuery<ChatFolder[]>({
+            // The SHARED key the sidebar and the filing path below read, so entering
+            // the view on a warm cache costs nothing and a cold one pays once.
+            queryKey: ['chat-folders'],
+            queryFn: () => api.chatFolders(),
+            staleTime: FOLDERS_STALE_MS,
+          })
+          // The key is shared, so what comes back is whatever the last writer put
+          // there. A non-array reaches `folders.map` inside the ordering helper and
+          // throws in render, which would take the whole launcher down over a bad
+          // payload that only this one view needs.
+          return Array.isArray(rows) ? rows : []
+        },
+        revealFolder: folderId => {
+          // Store write BEFORE the route change: the request is held in the store
+          // precisely because the sidebar may not be mounted yet, and its consuming
+          // effect runs on mount as well as on change, so an early request is
+          // replayed rather than dropped.
+          dispatch(requestFolderReveal(folderId))
+          navigate('/chat')
+        },
+      }),
+    [dispatch, navigate, queryClient],
+  )
+
   useEffect(() => {
     if (!open) return
     setQuery('')
@@ -723,6 +782,23 @@ export default function CommandBarOverlay({
         // artifact list itself is filed under.
         keywords: ['widget', 'html', 'saved', 'document', 'chart'],
       },
+      {
+        // The sidebar's own folders, reached the way sessions and artifacts are: ONE
+        // row that opens a view, not the folder list flattened into the first page.
+        // A folder list is a corpus, and the reader has already learned from the two
+        // rows above what a corpus costs them here — press Enter, then type.
+        // Spreading tens of folder rows through the root instead made the same
+        // collection behave unlike every other corpus this surface holds: demoted and
+        // capped while the query was empty, so the feature read as missing, and
+        // competing with commands once it was not.
+        id: 'command:search-folders',
+        title: i18nT('apps.commandBar.cmd_search_folders'),
+        group: 'commands',
+        kind: 'view',
+        view: 'folders',
+        icon: <Folder size={14} className="lucide-inline" />,
+        keywords: ['sidebar', 'tree', 'group'],
+      },
     )
     // Commands contributed by installed apps. This is the seam that lets a row live
     // outside this repository: the app declares the row and what it does, and the
@@ -763,51 +839,6 @@ export default function CommandBarOverlay({
         icon: appIcon(target),
       })
     }
-    // The sidebar's own folders, so typing a folder's name lands on it. Read
-    // cache-only from the same `['chat-folders']` entry the filing code above
-    // reads — the query that owns it is `enabled: false` — so these rows cost the
-    // root nothing and simply do not appear on a cold cache, which is the same
-    // degradation `fileSessionInCommandFolder` already accepts.
-    //
-    // `orderFoldersWithPaths` rather than a local walk: it is the module the
-    // sidebar's own pickers use, so the launcher lists folders in the order the
-    // sidebar draws them and spells an ancestry path the way the server does.
-    // Re-deriving either here would be a second answer to a settled question.
-    for (const { folder, ancestors } of orderFoldersWithPaths(
-      Array.isArray(chatFolders) ? (chatFolders as ChatFolder[]) : [],
-    )) {
-      rows.push({
-        id: `folder:${folder.id}`,
-        title: folderNameText(folder),
-        // The ancestry path, so two folders that share a leaf name are still
-        // distinguishable. Absent for a top-level folder rather than rendered as
-        // an empty breadcrumb.
-        subtitle: ancestors.length ? ancestors.join(FOLDER_PATH_SEP) : undefined,
-        group: 'folders',
-        // `invoke`, not `navigate`: landing on a folder is a route change AND a
-        // store write (the reveal request the sidebar consumes), so it cannot be
-        // expressed as a route alone.
-        kind: 'invoke',
-        // A folder list is the user's own filing, so on an EMPTY query it is a tail
-        // to search, not what the launcher should open on. `idleDemote` makes an
-        // untouched folder lose to any row with one real use while the query is
-        // empty, and `FOLDERS_IDLE_LIMIT` bounds the block regardless -- the same
-        // treatment, for the same reason, as the settings tail.
-        idleDemote: true,
-        icon: <Folder size={14} className="lucide-inline" />,
-        run: async () => {
-          // Store write BEFORE the route change: the request is held in the store
-          // precisely because the sidebar may not be mounted yet, and its consuming
-          // effect runs on mount as well as on change, so an early request is
-          // replayed rather than dropped.
-          dispatch(requestFolderReveal(folder.id))
-          navigate('/chat')
-        },
-        // The path segments as keywords, so "kirocrew oss" reaches a folder whose
-        // own name is neither word. The name itself is already the title.
-        keywords: [...ancestors],
-      })
-    }
     for (const entry of SETTINGS_REGISTRY) {
       rows.push({
         id: `setting:${entry.id}`,
@@ -827,7 +858,7 @@ export default function CommandBarOverlay({
     // the tree without remounting it, which does not recompute a memo. Omitting it
     // would freeze these rows in whichever language the surface first resolved.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [apps, chatFolders, commandById, cycleTheme, dispatch, liveSlots, navigate, resolved, simplifiedToolNames, slotStatusDetail, unreadSlots])
+  }, [apps, commandById, cycleTheme, dispatch, liveSlots, navigate, resolved, simplifiedToolNames, slotStatusDetail, unreadSlots])
 
   // The root ranks from the LIVE query, not the debounced one. Ranking is pure and
   // local, so there is nothing to throttle, and debouncing it would let a fast Enter
@@ -923,6 +954,38 @@ export default function CommandBarOverlay({
       .map(row => (artifactsQuery ? row : { ...row, groupLabel: i18nT('apps.commandBar.group_recent') })),
     [artifactRows, artifactsQuery],
   )
+
+  /**
+   * Folders view — the same two states the sessions view has, from ONE engine, for
+   * the reason the artifacts view has one.
+   *
+   * The provider answers an empty query with every folder in the order the sidebar
+   * draws them, so the listing the view lands on and the filtered list a query
+   * produces are the same call with a different argument. There is deliberately no
+   * {@link SESSIONS_MIN_CHARS} or {@link ARTIFACTS_MIN_CHARS} equivalent: the corpus
+   * is the folder list already cached under `['chat-folders']`, so one character
+   * costs a local filter rather than a round trip, and a view that refused to narrow
+   * on one character would make the shortest names the hardest to reach. There is no
+   * row cap either, for the same reason the sidebar draws every folder: the count is
+   * the user's own filing, not a corpus that grows on its own.
+   *
+   * `enabled` on the scope is what keeps the root request-free. Entering the view is
+   * the activation event that may pay for one folder fetch on a cold cache — the
+   * same bargain the two views above make.
+   */
+  const folderQuery = scope === 'folders' ? debounced.trim() : ''
+  const {
+    data: folderRows,
+    isFetching: foldersFetching,
+    isError: foldersError,
+    error: foldersSearchError,
+    refetch: refetchFolders,
+  } = useQuery({
+    queryKey: ['command-bar', 'folders', folderQuery],
+    queryFn: () => Promise.resolve(folders.search(folderQuery)) as Promise<Result[]>,
+    enabled: scope === 'folders',
+    staleTime: 15_000,
+  })
 
   const use = useCallback((id: string) => setUsage(prev => recordUse(id, Date.now(), prev)), [])
 
@@ -1164,6 +1227,21 @@ export default function CommandBarOverlay({
       }
       return out
     }
+    if (scope === 'folders') {
+      const out: Slot[] = (folderRows ?? []).map(row => ({ key: row.id, tag: 'result' as const, row }))
+      // The same two dead ends the views above have, told apart the same way: a
+      // folder list that could not be read is a failure to retry, an empty result for
+      // a query the user typed is a filter to drop. Both are ROWS so the keyboard can
+      // reach them without leaving the list. The drop row is gated on there BEING a
+      // query for the same reason it is above — a reader with no folders at all has no
+      // listing to return to.
+      if (foldersError) {
+        out.push({ key: 'slot:retry', tag: 'retry-folders' })
+      } else if (!foldersFetching && out.length === 0 && folderQuery) {
+        out.push({ key: 'slot:clear-query', tag: 'clear-query-folders' })
+      }
+      return out
+    }
     const out: Slot[] = ranked.map(row => ({ key: row.id, tag: 'root' as const, row }))
     if (query.trim().length > 0) {
       // The agent goes FIRST among the tail rows. Every other surface in this
@@ -1179,6 +1257,12 @@ export default function CommandBarOverlay({
       // than before so the row the sessions fallback has always occupied does not
       // move under a reader who navigates by position.
       out.push({ key: 'slot:fallback-artifacts', tag: 'fallback-artifacts' })
+      // And the same way out for the folders corpus, for the same reason: the root
+      // holds ONE row per corpus, so a typed folder name would otherwise reach
+      // nothing until the reader thought to enter the view first and retype it. Last
+      // of the three because a typed word is a session title or an artifact name far
+      // more often than a folder name.
+      out.push({ key: 'slot:fallback-folders', tag: 'fallback-folders' })
       // The recovery row exists for the dead end — a typed query that matched
       // nothing — not for every keystroke. Riding the fallback's own condition put a
       // row about switching the feature off under every successful search, and
@@ -1186,7 +1270,7 @@ export default function CommandBarOverlay({
       if (ranked.length === 0) out.push({ key: 'slot:recovery', tag: 'recovery' })
     }
     return out
-  }, [argCommand, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed, artifactSlotRows, artifactsError, artifactsFetching, artifactsQuery])
+  }, [argCommand, isError, isFetching, query, ranked, recentRows, scope, scopedResults, searchArmed, artifactSlotRows, artifactsError, artifactsFetching, artifactsQuery, folderQuery, folderRows, foldersError, foldersFetching])
 
   const rowCount = slots.length
   /**
@@ -1200,7 +1284,8 @@ export default function CommandBarOverlay({
   const scopeLoading =
     rowCount === 0 &&
     ((scope === 'sessions' && (isFetching || (listingArmed && recentRows === undefined))) ||
-      (scope === 'artifacts' && (artifactsFetching || artifactRows === undefined)))
+      (scope === 'artifacts' && (artifactsFetching || artifactRows === undefined)) ||
+      (scope === 'folders' && (foldersFetching || folderRows === undefined)))
 
   useEffect(() => {
     if (selected >= rowCount) setSelected(Math.max(0, rowCount - 1))
@@ -1223,6 +1308,9 @@ export default function CommandBarOverlay({
           return
         case 'fallback-artifacts':
           enterScope('artifacts', query)
+          return
+        case 'fallback-folders':
+          enterScope('folders', query)
           return
         case 'ask': {
           // Stops at a FILLED composer rather than sending: the user wrote this
@@ -1247,7 +1335,11 @@ export default function CommandBarOverlay({
         case 'retry-artifacts':
           void refetchArtifacts()
           return
+        case 'retry-folders':
+          void refetchFolders()
+          return
         case 'clear-query':
+        case 'clear-query-folders':
           // Emptying the query is what re-arms the listing; the debounced copy has to
           // go with it or the view stays on the failed search for one more tick.
           setQuery('')
@@ -1257,7 +1349,7 @@ export default function CommandBarOverlay({
           return
       }
     },
-    [activateRoot, enterScope, navigate, onClose, pendingRow, query, refetchArtifacts, refetchSessions, seedNewSession, slots],
+    [activateRoot, enterScope, navigate, onClose, pendingRow, query, refetchArtifacts, refetchFolders, refetchSessions, seedNewSession, slots],
   )
 
   /**
@@ -1407,7 +1499,9 @@ export default function CommandBarOverlay({
       ? i18nT('apps.commandBar.cmd_search_sessions')
       : scope === 'artifacts'
         ? i18nT('apps.commandBar.cmd_search_artifacts')
-        : ''
+        : scope === 'folders'
+          ? i18nT('apps.commandBar.cmd_search_folders')
+          : ''
   /**
    * The failure this change is responsible for, and the only one that gets a notice.
    *
@@ -1416,17 +1510,20 @@ export default function CommandBarOverlay({
    * the artifacts scope alone.
    */
   const artifactsFailed = scope === 'artifacts' && !!artifactsError
+  const foldersFailed = scope === 'folders' && !!foldersError
   const searchError =
     scope === 'sessions'
       ? sessionsSearchError
       : scope === 'artifacts'
         ? artifactsSearchError
-        : undefined
+        : scope === 'folders'
+          ? foldersSearchError
+          : undefined
   /**
    * What the failure SAYS, for the scope this change adds.
    *
-   * ARTIFACTS ONLY. The sessions scope keeps the failure row it already had: its
-   * text was the static `search_failed`, never a backend string, so nothing about
+   * ARTIFACTS AND FOLDERS. The sessions scope keeps the failure row it already had:
+   * its text was the static `search_failed`, never a backend string, so nothing about
    * it misled the reader whose report motivated the wording here -- that reader met
    * this view. Reshaping it would have been this PR changing a surface it does not
    * own, on a symmetry argument.
@@ -1441,7 +1538,11 @@ export default function CommandBarOverlay({
    * code without exposing backend wording in visible text, a tooltip, or an aria
    * label.
    */
-  const searchFailedText = artifactsFailed ? i18nT('apps.commandBar.artifact_search_failed') : ''
+  const searchFailedText = artifactsFailed
+    ? i18nT('apps.commandBar.artifact_search_failed')
+    : foldersFailed
+      ? i18nT('apps.commandBar.search_failed')
+      : ''
   /**
    * How many name matches the cap is hiding.
    *
@@ -1575,6 +1676,16 @@ export default function CommandBarOverlay({
           arrow: true,
           dim: true,
         }
+      case 'fallback-folders':
+        // Named with the query, dim, and arrowed like the two rows above it, for the
+        // same reasons. No subtitle: "folder" is the reader's own word for the thing
+        // the sidebar already shows them, so there is nothing to gloss.
+        return {
+          icon: <Folder size={14} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.fallback_folders', { query }),
+          arrow: true,
+          dim: true,
+        }
       case 'recovery':
         // Naming the corpora this surface does NOT reach -- at the moment the user is
         // looking for them -- is what keeps a typed knowledge or skill name from being
@@ -1614,6 +1725,16 @@ export default function CommandBarOverlay({
           icon: <RotateCcw size={14} className="lucide-inline" />,
           title: i18nT('apps.commandBar.retry'),
         }
+      case 'retry-folders':
+        // Plain Retry, like the artifacts row above: WHAT failed is said by the
+        // `ErrorNotice` above the list, which is where an error surfaced to the user
+        // belongs (AUTOSDE `errors-use-error-notice`). Its own tag keeps the sessions
+        // row below byte-identical to main, whose hand-written text this change does
+        // not own and does not touch.
+        return {
+          icon: <RotateCcw size={14} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.retry'),
+        }
       case 'retry':
         return {
           icon: <RotateCcw size={14} className="lucide-inline" />,
@@ -1629,6 +1750,15 @@ export default function CommandBarOverlay({
             scope === 'artifacts'
               ? i18nT('apps.commandBar.no_artifact_match_show_recent', { query: artifactsQuery })
               : i18nT('apps.commandBar.no_match_show_recent', { query: scopedQuery }),
+          dim: true,
+        }
+      case 'clear-query-folders':
+        // The same row for the folders view, with the folder glyph rather than the
+        // clock: what it returns to is the whole list in sidebar order, which has no
+        // recency for a clock to stand for.
+        return {
+          icon: <Folder size={14} className="lucide-inline" />,
+          title: i18nT('apps.commandBar.no_match_show_all_folders', { query: folderQuery }),
           dim: true,
         }
     }
@@ -1780,9 +1910,11 @@ export default function CommandBarOverlay({
                 ? argCommand.argument?.placeholder || i18nT('apps.commandBar.placeholder_argument')
                 : scope === 'artifacts'
                   ? i18nT('apps.commandBar.placeholder_artifacts')
-                  : scope
-                    ? i18nT('apps.commandBar.placeholder_sessions')
-                    : i18nT('apps.commandBar.placeholder')
+                  : scope === 'folders'
+                    ? i18nT('apps.commandBar.placeholder_folders')
+                    : scope
+                      ? i18nT('apps.commandBar.placeholder_sessions')
+                      : i18nT('apps.commandBar.placeholder')
             }
             aria-label={i18nT('apps.commandBar.title')}
             // Selection stays on the input and is announced through
@@ -1822,13 +1954,14 @@ export default function CommandBarOverlay({
           </div>
         )}
 
-        {/* ARTIFACTS ONLY: the sessions scope keeps the failure row it already had.
+        {/* ARTIFACTS AND FOLDERS: the sessions scope keeps the failure row it
+            already had.
             No hand-off: the combobox query is unsaved local state, and the
             hand-off navigation would unmount the command bar and discard it.
             Keep the notice outside the listbox so ErrorNotice can never put an
             interactive control inside an option; Retry remains a separate option
             on the combobox's Arrow/Enter path. */}
-        {artifactsFailed && (
+        {(artifactsFailed || foldersFailed) && (
           <div className="px-3 py-2 border-b border-border">
             <ErrorNotice
               message={searchFailedText}
@@ -1938,12 +2071,18 @@ export default function CommandBarOverlay({
               // flight renders the skeleton above. So an empty list here means the
               // user has saved nothing yet, and the string says that instead of
               // reporting a failed match against a query they never typed.
+              //
+              // The folders view reaches it the same way and for the same reason, so
+              // it gets the same treatment: a reader with no folders is told they
+              // have none, not that no sessions matched.
               <div role="status" className="px-3 py-6 text-center text-[12px] text-muted">
                 {scope === 'artifacts'
                   ? i18nT('apps.commandBar.no_artifacts_yet')
-                  : scope
-                    ? i18nT('apps.commandBar.no_sessions')
-                    : i18nT('apps.commandBar.no_matches')}
+                  : scope === 'folders'
+                    ? i18nT('apps.commandBar.no_folders_yet')
+                    : scope
+                      ? i18nT('apps.commandBar.no_sessions')
+                      : i18nT('apps.commandBar.no_matches')}
               </div>
             )
           ) : (
