@@ -318,7 +318,8 @@ Every job here is blocking. Every job that costs real runner time also `needs:`
 | `linux-packaging` | "Linux Packaging (build + smoke-install)". Builds all three Linux desktop formats from one backend tree through `packaging/build-desktop.sh`, then installs them in their target distros with `scripts/smoke-linux-packages.sh`. Path-filtered on the packaging surface |
 | `lockfile-engines-floor` | "Lockfile Installs On Declared Node Floor". Runs a real `npm ci` in `website/` on the LOWEST Node version `engines.node` declares, so a lockfile that only resolves under the newer npm major cannot land. The version is a literal pinned to that floor by `test_the_engines_floor_job_pins_the_declared_floor` rather than a range, because resolving a range picks the newest match and makes the job vacuous |
 | `bundle-size` | "Bundle Size Gate". Builds the frontend with `--mode analyze` (which is the only build that emits `dist/bundle-report.json`) and then runs TWO checks over that one build: per-chunk ceilings from `website/scripts/check-bundle-size.mjs`, with a 500 KB default for any chunk not named there, and an acyclic-graph check from `website/scripts/check-chunk-cycles.mjs`. The job name is narrower than its scope on purpose — it is a required check, so renaming it would silently stop satisfying branch protection. **An acyclic chunk graph is a deliberate invariant and the cycle check has no allowlist**, unlike the size ceilings: a chunk cycle has no valid initialization order, so a body can run against a binding that is still uninitialized and blank the page before React mounts, and whether a given cycle does that is not decidable from the chunk graph. Fix the chunking rather than waiving it. Skipped on a backend-only diff, which cannot change the bundle |
-| `e2e` | The i18n render-time gate, then `python setup.py test_e2e` |
+| `e2e` | The i18n render-time gate, then `python setup.py test_e2e`. **CodeBuild-hosted runner, `instance-size:large`**, behind the same `run-as-runner` boundary as the backend shards. The suite's disposable gateway takes `agent.sandbox_allow_unsandboxed_exec` (seeded in `test/test_playwright_e2e.py`) because the fleet container refuses `CLONE_NEWUSER` at the runtime policy level and the agent binary is a stdlib echo stub; a sandboxed spawn doing real work stays proven by `e2e-private-namespace` and `e2e-boot-matrix` |
+| `e2e-private-namespace` | "E2E (private member namespace, hosted)". The one E2E step the fleet cannot host: `test/e2e/test_private_workflow_memory.py` runs a Crew Member's private workflow MCP inside the member sandbox, which needs `unshare --map-root-user`. Hosted `ubuntu-latest`, clears the AppArmor userns restriction first, no SPA or browser |
 
 ### Backend file sharding
 
@@ -834,8 +835,9 @@ Details worth knowing:
     it back. Migrating the feasible jobs together in one PR does not waive this
     queue-retention criterion. Record Linux and Windows startup evidence separately;
     a running job or a successful test result does not establish acceptable queue
-    latency. Namespace-dependent jobs, Task Scheduler pod boot and Linux packaging
-    retain hosted runners.
+    latency. Namespace-dependent jobs (`backend-test-sandbox`,
+    `e2e-private-namespace`), the Task Scheduler pod boot canary, the IPv6 and
+    strict kernel-lock legs, Linux packaging and macOS retain hosted runners.
     Record the measured outcome so this entry does not become a permanent one-off.
 
 - **The macOS peer-identity canary is asserted by name.** `pytest -q` does not name

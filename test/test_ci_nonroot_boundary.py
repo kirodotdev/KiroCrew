@@ -166,7 +166,7 @@ def test_action_shell_parses_without_running_host_mutations(action, tmp_path):
     "workflow,name",
     [
         ("ci.yml", "backend-test-sandbox"),
-        ("ci.yml", "e2e"),
+        ("ci.yml", "e2e-private-namespace"),
         ("release.yml", "release-candidate-tests"),
         ("gui-user-test.yml", "gui-user-test"),
         ("ci.yml", "pod-boot-windows"),
@@ -178,6 +178,95 @@ def test_unproved_namespace_gui_and_task_scheduler_jobs_stay_hosted(workflow, na
     ][name]
     assert "codebuild" not in job["runs-on"]
     assert "linux_runner" not in job["runs-on"] and "windows_runner" not in job["runs-on"]
+
+
+def test_private_namespace_lane_is_the_only_e2e_step_left_hosted(jobs):
+    """`e2e` runs on the fleet; the hosted lane owns namespace-only setup.
+
+    `e2e-private-namespace` owns the AppArmor sysctl and private-workflow test.
+    """
+    hosted = jobs["e2e-private-namespace"]
+    assert hosted["runs-on"] == "ubuntu-latest"
+    assert "changes" not in hosted["needs"]
+    runs = [step.get("run", "") for step in hosted["steps"]]
+    assert "sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0" in runs
+    assert "unshare --mount --map-root-user true" in runs
+    private = next(
+        step for step in hosted["steps"] if "test_private_workflow_memory.py" in step.get("run", "")
+    )
+    assert private["run"].splitlines() == [
+        'echo "::remove-matcher owner=python::"',
+        "python -m pytest -q -n0 --no-cov --timeout=300 test/e2e/test_private_workflow_memory.py",
+    ]
+    assert private["env"] == {
+        "KIROCREW_E2E": "1",
+        "KIROCREW_E2E_REQUIRE": "1",
+        "KIROCREW_STRICT_ON_LOOP_PERSIST": "1",
+    }
+    assert "if" not in private and "continue-on-error" not in private
+    e2e_text = "\n".join(str(step) for step in jobs["e2e"]["steps"])
+    assert "test_private_workflow_memory" not in e2e_text
+    assert "apparmor_restrict_unprivileged_userns" not in e2e_text
+    assert "unshare" not in e2e_text
+
+
+def test_e2e_runs_on_the_fleet_behind_the_boundary(jobs):
+    """Setup writes file commands as the runner identity; tests run through ci-shell."""
+    job = jobs["e2e"]
+    assert job["runs-on"] == _LARGE
+    assert "changes" in job["needs"]
+    assert job["defaults"]["run"]["shell"] == _CI_SHELL
+    assert "env" not in job  # job-level env cannot read runner.temp
+    steps = job["steps"]
+    version = next(step for step in steps if step.get("id") == "playwright-version")
+    assert 'echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"' in (
+        version["run"]
+    )
+    provision = next(i for i, step in enumerate(steps) if step.get("uses") == _ACTION_REF)
+    setups = [
+        i
+        for i, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith(
+            ("actions/setup-", "astral-sh/setup-", "actions/cache@")
+        )
+    ]
+    assert setups and provision > max(setups)
+    for step in steps[:provision]:
+        if "run" in step:
+            assert step["shell"] == "bash", step.get("name")
+    file_commands = [
+        i
+        for i, step in enumerate(steps)
+        if "$GITHUB_OUTPUT" in step.get("run", "") or "$GITHUB_ENV" in step.get("run", "")
+    ]
+    assert file_commands and max(file_commands) < provision
+    cache = next(step for step in steps if str(step.get("uses", "")).startswith("actions/cache@"))
+    assert cache["with"]["path"] == "${{ runner.temp }}/ms-playwright"
+    consumers = [
+        (i, step)
+        for i, step in enumerate(steps)
+        if "pytest" in step.get("run", "") or "ci_e2e_parallel" in step.get("run", "")
+    ]
+    assert consumers
+    for index, step in consumers:
+        assert provision < index
+        assert "shell" not in step
+
+
+def test_real_adapter_contract_runs_on_the_fleet_behind_the_boundary(jobs):
+    job = jobs["real-adapter-contract"]
+    assert job["runs-on"] == "${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}"
+    steps = job["steps"]
+    provision = next(i for i, step in enumerate(steps) if step.get("uses") == _ACTION_REF)
+    setups = [
+        i
+        for i, step in enumerate(steps)
+        if str(step.get("uses", "")).startswith(("actions/setup-", "astral-sh/setup-"))
+    ]
+    assert setups and provision > max(setups)
+    tests = next(i for i, step in enumerate(steps) if "pytest " in step.get("run", ""))
+    assert provision < tests
+    assert steps[tests]["shell"] == _CI_SHELL
 
 
 @pytest.mark.parametrize(

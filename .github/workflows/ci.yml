@@ -1126,6 +1126,12 @@ jobs:
   pod-boot-windows:
     name: Pod Boot Canary (Windows)
     needs: [await-fast-gate]
+    # Hosted, and it cannot move. The Windows fleet is a CONTAINER
+    # (`ContainerAdministrator`), where `schtasks /Create` exits 1 on its own
+    # `/ST is earlier than current time` warning -- so the runner user cannot
+    # create a scheduled task, which is the single fact this canary exists to
+    # establish. Measured there: all 3 tests fail at the probe with
+    # `WindowsTaskError ... schtasks /Create rc=1`, before any pod boots.
     runs-on: windows-latest
     # A cold boot pays for the venv build, interpreter start, config seeding and
     # the health wait. The test's own bound is 180s; this is the job's. The
@@ -1736,7 +1742,11 @@ jobs:
     # narrower path filter -- what makes these facts load-bearing is any change to
     # Crew's projection, and the selector cannot prove which backend file that is.
     if: needs.changes.outputs.only_frontend != 'true'
-    runs-on: ubuntu-24.04
+    # On the fleet, under the same non-root boundary as the backend shards: the
+    # adapters are spawned through Crew's own session code, which refuses
+    # provider execution as root. Setup runs as the runner identity; the
+    # contract tests and the junit read-back run through ci-shell.
+    runs-on: ${{ needs.changes.outputs.linux_runner || 'ubuntu-latest' }}
     timeout-minutes: 30
     env:
       # THE point of this job. Every guarded test skips where its adapter is absent
@@ -1835,7 +1845,10 @@ jobs:
           print(f"codex-acp {codex}, opencode {opencode}: both the pinned release")
           PY
 
+      - uses: ./.github/actions/run-as-runner
+
       - name: Run the real-adapter contract tests
+        shell: /usr/local/bin/ci-shell {0}
         # Both resolution ladders read an explicit override first, so the lane
         # names the entry it installed instead of measuring whatever else a runner
         # image happens to ship.
@@ -2844,11 +2857,36 @@ jobs:
         # with every other gate green, which is what this closes.
         run: node scripts/check-chunk-cycles.mjs
 
+  # The browser gate runs on the CodeBuild fleet. The one step that needed a
+  # user namespace -- the real private-workflow MCP run -- moved to
+  # `e2e-private-namespace` below, the only piece of this lane the fleet cannot
+  # host (`unshare --map-root-user` is EPERM there). Everything left here needs
+  # a gateway, a Node toolchain and a Chromium, all of which the fleet has.
+  #
+  # The suite's own gateway takes unsandboxed consent for its disposable config
+  # (`test/test_playwright_e2e.py`, `sandbox_allow_unsandboxed_exec`): the agent
+  # binary is a stdlib echo stub, and the container refuses `CLONE_NEWUSER` at
+  # the runtime policy level rather than through a sysctl this job could clear.
+  # A sandboxed spawn doing real work stays proven by `e2e-private-namespace`
+  # and by `e2e-boot-matrix`, which asserts both sandbox tiers.
+  #
+  # Same non-root boundary as `e2e-boot-matrix`: the gateway refuses provider
+  # execution under euid 0, so the tests run through ci-shell as `runner`.
+  # Setup (installs, the SPA build, the browser download) runs before the
+  # boundary under the runner identity and writes GITHUB_OUTPUT / GITHUB_ENV,
+  # which the boundary then makes read-only; the test steps after it write only
+  # the workspace and RUNNER_TEMP. `PLAYWRIGHT_BROWSERS_PATH` pins the browser
+  # to RUNNER_TEMP (written to GITHUB_ENV by the version step, since job-level
+  # env cannot read the runner context) so the cache restore (root, HOME=/root)
+  # and the specs (runner, HOME=/home/runner) resolve the same directory.
   e2e:
     name: E2E (stub ACP backend, offline)
-    needs: [await-fast-gate]
-    runs-on: ubuntu-latest
+    needs: [changes, await-fast-gate]
+    runs-on: ${{ needs.changes.outputs.linux_runner_large || 'ubuntu-latest' }}
     timeout-minutes: 25
+    defaults:
+      run:
+        shell: /usr/local/bin/ci-shell {0}
     steps:
       # persist-credentials retained: e2e/Scan the rendered dashboard runs `git fetch origin`
       # against the same remote, through the shared diff-base resolver script.
@@ -2869,25 +2907,23 @@ jobs:
         # setuptools is explicit: Python 3.12 no longer bundles it, and an
         # editable install doesn't add it to the runtime venv -- but
         # `setup.py test_e2e` imports setuptools.Command, so it must be present.
+        shell: bash
         run: |
           python -m pip install --upgrade pip setuptools
           pip install -e ".[voice,desktop]" --group dev
 
-      - name: Enable private member namespace isolation
-        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-
-      - name: Verify private member namespace isolation
-        run: unshare --mount --map-root-user true
-
       - name: Install frontend deps
+        shell: bash
         working-directory: website
         run: npm ci --no-audit --no-fund
 
       - name: Build frontend
+        shell: bash
         working-directory: website
         run: npm run build
 
       - name: Stage frontend into package
+        shell: bash
         # The dashboard Playwright specs render the bundled UI the harness
         # gateway serves from src/kiro_crew/static/dist. Mirror nightly.yml's
         # build-wheel staging so the specs hit a real dashboard, not a 404.
@@ -2921,16 +2957,18 @@ jobs:
       # different Chromium revision than @playwright/test expects.
       - name: Resolve Playwright version
         id: playwright-version
+        shell: bash
         working-directory: website
         run: |
           version="$(node -p \
             "require('./package-lock.json').packages['node_modules/@playwright/test'].version")"
           echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "PLAYWRIGHT_BROWSERS_PATH=$RUNNER_TEMP/ms-playwright" >> "$GITHUB_ENV"
 
       - name: Cache Playwright browsers
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.cache/ms-playwright
+          path: ${{ runner.temp }}/ms-playwright
           key: ms-playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}-chromium
 
       # Runs unconditionally rather than behind `cache-hit != 'true'`: on a hit it
@@ -2941,6 +2979,7 @@ jobs:
         # this is a stalled mirror or CDN -- fail here with budget left for the
         # specs instead of consuming the job's 25min and reporting nothing.
         timeout-minutes: 6
+        shell: bash
         working-directory: website
         run: npx playwright install chromium
 
@@ -2973,6 +3012,7 @@ jobs:
         # The base must be fetched first because this checkout is shallow; the script
         # EXITS NON-ZERO if a configured ref cannot be resolved rather than skipping
         # itself green, for the reason the frontend-lint job documents.
+        shell: bash
         working-directory: website
         env:
           I18N_BASE_REF: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
@@ -2980,6 +3020,11 @@ jobs:
           I18N_BASE_REF="$(bash "$GITHUB_WORKSPACE/.github/scripts/resolve-i18n-base.sh" \
             "$I18N_BASE_REF" 'the diff-scoped render gate')" || exit 1
           printf 'I18N_BASE_REF=%s\n' "$I18N_BASE_REF" >> "$GITHUB_ENV"
+
+      # Every step below runs as `runner` through ci-shell (the job default).
+      # Nothing after this point writes a GitHub file command; the i18n base ref
+      # above is the last one.
+      - uses: ./.github/actions/run-as-runner
 
       # The SkillForm block-scalar parity guard (issue #7763). It runs the REAL
       # TypeScript mirror (backendReadsValue -> backendFoldsLiteral, transpiled
@@ -3021,15 +3066,7 @@ jobs:
             exit 1
           }
 
-      - name: Require real private workflow MCP execution
-        env:
-          KIROCREW_E2E: "1"
-          KIROCREW_E2E_REQUIRE: "1"
-          KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
-        run: python -m pytest -q -n0 --no-cov --timeout=300 test/e2e/test_private_workflow_memory.py
-
       - name: Run E2E and dedicated memory UI evidence in parallel
-        # Default success() keeps real private workflow MCP execution mandatory.
         # Smoke and UI read the staged production bundle; i18n builds a separate
         # dist-dev and a temporary base tree. All three share only read-only
         # dependency/browser installs, with separate homes, ports and outputs.
@@ -3092,6 +3129,45 @@ jobs:
             website/playwright-report/
           if-no-files-found: ignore
           retention-days: 7
+
+  # The one E2E step the fleet cannot host. test_private_workflow_memory.py boots
+  # a real gateway and runs a Crew Member's private workflow MCP inside the
+  # member sandbox, which needs an unprivileged user namespace
+  # (`unshare --mount --map-root-user`); the CodeBuild container answers EPERM.
+  # Keeping it separate limits hosted runner use to its ~3.5-minute run. No SPA,
+  # no Node, no browser: the test drives the gateway over HTTP, like the boot matrix.
+  e2e-private-namespace:
+    name: E2E (private member namespace, hosted)
+    needs: [await-fast-gate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            setup.cfg
+      - name: Install dependencies
+        run: uv pip install --system -e ".[voice,desktop]" --group dev
+      - name: Enable private member namespace isolation
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+      - name: Verify private member namespace isolation
+        run: unshare --mount --map-root-user true
+      - name: Require real private workflow MCP execution
+        env:
+          KIROCREW_E2E: "1"
+          KIROCREW_E2E_REQUIRE: "1"
+          KIROCREW_STRICT_ON_LOOP_PERSIST: "1"
+        run: |
+          echo "::remove-matcher owner=python::"
+          python -m pytest -q -n0 --no-cov --timeout=300 test/e2e/test_private_workflow_memory.py
 
   # The only job that BOOTS A GATEWAY on macOS and Windows.
   #

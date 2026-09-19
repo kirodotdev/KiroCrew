@@ -145,7 +145,9 @@ _EXPECTED_RESOLVER_CONSUMER_JOBS = {
     ("ci.yml", "frontend-test"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "frontend-coverage-merge"): _CANONICAL_CONSUMER_EXPR,
     ("ci.yml", "bundle-size"): _CANONICAL_CONSUMER_EXPR_LARGE,
+    ("ci.yml", "e2e"): _CANONICAL_CONSUMER_EXPR_LARGE,
     ("ci.yml", "e2e-boot-matrix"): _CANONICAL_BOOT_MATRIX_EXPR,
+    ("ci.yml", "real-adapter-contract"): _CANONICAL_CONSUMER_EXPR,
 }
 
 

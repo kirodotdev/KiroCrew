@@ -403,15 +403,22 @@ raise SystemExit(m['main']())
     def test_workflow_keeps_private_gate_and_original_commands(self):
         import yaml
 
-        job = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]["e2e"]
+        jobs = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text())["jobs"]
+        job = jobs["e2e"]
         self.assertEqual(job["timeout-minutes"], 25)
         steps = job["steps"]
         parallel = next(
             s for s in steps if s.get("run") == "exec python scripts/ci_e2e_parallel.py"
         )
-        private = steps[steps.index(parallel) - 1]
+        # The real private workflow MCP run needs a user namespace the fleet
+        # cannot give, so it is its own hosted job; the command is unchanged.
+        private = next(
+            s
+            for s in jobs["e2e-private-namespace"]["steps"]
+            if "test_private_workflow_memory.py" in s.get("run", "")
+        )
         self.assertEqual(
-            private["run"],
+            private["run"].splitlines()[-1],
             "python -m pytest -q -n0 --no-cov --timeout=300 "
             "test/e2e/test_private_workflow_memory.py",
         )
@@ -446,7 +453,7 @@ raise SystemExit(m['main']())
             for s in steps
             if s.get("name") == "Resolve base for the parallel i18n render-time gate"
         )
-        self.assertLess(steps.index(base), steps.index(private))
+        self.assertLess(steps.index(base), steps.index(parallel))
         self.assertIn("resolve-i18n-base.sh", base["run"])
         self.assertIn('"$GITHUB_ENV"', base["run"])
         self.assertIn("I18N_BASE_REF", base["env"])
