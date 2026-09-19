@@ -3,9 +3,9 @@
 **Local page, not a mirror.** Part of the [crew log reference](README.md), which is
 marked as a named exception in [the Reference index](../README.md).
 
-Everything here is kind-independent: it holds for a session's log and a crew's
-log alike. What differs between the two kinds is which `type` domains and which
-`src` values are allowed, which [session-types.md](session-types.md) and
+Everything here is kind-independent: it holds for a session's log, a crew's log
+and a member's log alike. What differs between kinds is which `type` domains and
+which `src` values are allowed, which [session-types.md](session-types.md) and
 [crew-types.md](crew-types.md) cover.
 
 ## File layout
@@ -13,6 +13,7 @@ log alike. What differs between the two kinds is which `type` domains and which
 ```
 <data home>/crew-log/crews/<store name>/log.jsonl
 <data home>/crew-log/sessions/<store name>/log.jsonl
+<data home>/crew-log/members/<store name>/log.jsonl
 ```
 
 `crew-log` is one shared root for both kinds, which is what lets a single fence

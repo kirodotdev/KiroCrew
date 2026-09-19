@@ -1669,6 +1669,9 @@ class TestMemberActivityRoute:
 
         assert record_activity(CREW, "dashboard_chat-1", "persistent", via="chat")
         path = member_dir("code-reviewer") / ACTIVITY_FILE_NAME
+        # Only the LEGACY file lives in the member directory now -- the log moved
+        # under the fenced crew-log tree -- so nothing has created it yet.
+        path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(f'\n{{"ts": "not-a-date", "member": "{CREW}", "via": "chat"}}\n')
             fh.write(f'\n{{"ts": 1735689600, "member": "{CREW}", "via": "chat"}}\n')

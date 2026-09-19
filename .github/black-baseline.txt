@@ -139,7 +139,6 @@ src/kiro_crew/apps/permissions.py
 src/kiro_crew/apps/registry.py
 src/kiro_crew/apps/route_registry.py
 src/kiro_crew/apps/scaffold.py
-src/kiro_crew/apps/teardown.py
 src/kiro_crew/artifact_source.py
 src/kiro_crew/artifacts.py
 src/kiro_crew/beacon.py
