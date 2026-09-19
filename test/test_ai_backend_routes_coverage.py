@@ -269,7 +269,13 @@ def recipe(monkeypatch: pytest.MonkeyPatch) -> type[FakeRecipe]:
     FakeRecipe.instances = []
     FakeRecipe.raises = None
     FakeRecipe.ref = "https://github.com/owner/repo/pull/9"
-    monkeypatch.setattr(routes, "GitHubPRRecipe", FakeRecipe)
+
+    def _fake_factory(config: dict[str, Any] | None, **kwargs: Any) -> FakeRecipe:
+        # Mirrors the real factory's GitHub branch: `user` is derived from config
+        # inside the factory, not passed by routes.
+        return FakeRecipe(user=str((config or {}).get("githubUser") or ""), **kwargs)
+
+    monkeypatch.setattr(routes, "build_pr_recipe", _fake_factory)
     return FakeRecipe
 
 
