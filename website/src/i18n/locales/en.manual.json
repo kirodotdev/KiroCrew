@@ -2063,6 +2063,7 @@
       "icon": "Icon",
       "icon_cleared_hint": "Empty keeps the default folder icon — Auto-generate picks a new one.",
       "icon_default_hint": "Leave empty to keep the default folder icon.",
+      "icon_invalid_hint": "Use a single emoji, or leave the field empty for the default folder icon.",
       "icon_placeholder": "One emoji",
       "icon_regenerate": "Auto-generate",
       "icon_regenerate_pending": "An icon will be picked from the folder name after you save, when possible.",

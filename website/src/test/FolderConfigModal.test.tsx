@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react'
 import FolderConfigModal from '../components/FolderConfigModal'
+import { ApiError } from '../api/apiError'
 import { ChatFolder } from '../types'
 
 vi.mock('../api/client', () => ({
@@ -360,6 +361,76 @@ describe('FolderConfigModal', () => {
       await screen.findByTestId('folder-config-error')
       fireEvent.click(screen.getByTestId('folder-config-submit'))
       await waitFor(() => expect(screen.queryByTestId('folder-config-error')).toBeNull())
+    })
+  })
+
+  describe('icon rejection is field-anchored (issue #7992)', () => {
+    // The server 400s a non-single-emoji icon with code `icon_invalid`. That
+    // used to render as the raw English server text in the modal's TOP alert,
+    // naming no field. It now renders localized, AT the Icon field.
+    const iconReject = () => vi.fn().mockRejectedValue(
+      new ApiError(400, 'icon must be a single emoji',
+        '{"error": "icon must be a single emoji", "code": "icon_invalid"}'))
+
+    it('renders the localized error at the Icon field, not the top alert', async () => {
+      render(
+        <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={iconReject()} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: 'abc' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      const fieldErr = await screen.findByTestId('folder-config-icon-error')
+      // The localized catalog string, not the server's raw body text.
+      expect(fieldErr.textContent).toContain('Use a single emoji, or leave the field empty for the default folder icon.')
+      // The generic top alert stays down: this failure has a field to point at.
+      expect(screen.queryByTestId('folder-config-error')).toBeNull()
+    })
+
+    it('clears the field error as soon as the user edits the icon', async () => {
+      render(
+        <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={iconReject()} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: 'abc' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await screen.findByTestId('folder-config-icon-error')
+      fireEvent.change(screen.getByTestId('folder-config-icon'), { target: { value: '🚀' } })
+      expect(screen.queryByTestId('folder-config-icon-error')).toBeNull()
+    })
+
+    it('routes regenerate_icon_invalid to the top alert, not the field', async () => {
+      // A request-shape error (non-boolean `regenerate_icon`) the modal can
+      // never produce — but if it ever arrives, the field hint "must be a
+      // single emoji" would misdescribe an empty field the user never typed
+      // in. It stays in the generic top alert.
+      const onSubmit = vi.fn().mockRejectedValue(
+        new ApiError(400, 'regenerate_icon must be a boolean',
+          '{"error": "regenerate_icon must be a boolean", "code": "regenerate_icon_invalid"}'))
+      const f = folder('f1', { name: 'Payments' })
+      render(
+        <FolderConfigModal open={true} mode="edit" folder={f} folders={[f]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      fireEvent.click(screen.getByTestId('folder-config-icon-regenerate'))
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await screen.findByTestId('folder-config-error')
+      expect(screen.queryByTestId('folder-config-icon-error')).toBeNull()
+    })
+
+    it('keeps every other failure in the top alert with no field error', async () => {
+      const onSubmit = vi.fn().mockRejectedValue(
+        new ApiError(400, 'project_dir must be an existing directory',
+          '{"error": "project_dir must be an existing directory", "code": "project_dir_invalid"}'))
+      render(
+        <FolderConfigModal open={true} mode="create" parentId="" folders={[]}
+          installedAgents={AGENTS} onClose={vi.fn()} onSubmit={onSubmit} />
+      )
+      fireEvent.change(screen.getByTestId('folder-config-name'), { target: { value: 'Payments' } })
+      fireEvent.click(screen.getByTestId('folder-config-submit'))
+      await screen.findByTestId('folder-config-error')
+      expect(screen.queryByTestId('folder-config-icon-error')).toBeNull()
     })
   })
 

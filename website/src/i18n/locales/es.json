@@ -6548,6 +6548,7 @@
       "icon": "Icono",
       "icon_cleared_hint": "Vacío mantiene el icono de carpeta predeterminado; Generar automáticamente elige uno nuevo.",
       "icon_default_hint": "Déjalo vacío para mantener el icono de carpeta predeterminado.",
+      "icon_invalid_hint": "Usa un solo emoji, o deja el campo vacío para usar el icono de carpeta predeterminado.",
       "icon_placeholder": "Un emoji",
       "icon_regenerate": "Generar automáticamente",
       "icon_regenerate_pending": "Después de guardar, si es posible, se elegirá un icono a partir del nombre de la carpeta.",

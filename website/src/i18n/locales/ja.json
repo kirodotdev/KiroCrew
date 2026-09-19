@@ -6348,6 +6348,7 @@
       "icon": "アイコン",
       "icon_cleared_hint": "空のままにすると既定のフォルダーアイコンになります。自動生成で新しいアイコンを選びます。",
       "icon_default_hint": "空のままにすると既定のフォルダーアイコンのままになります。",
+      "icon_invalid_hint": "絵文字を1つ指定するか、空欄のままにすると既定のフォルダーアイコンになります。",
       "icon_placeholder": "絵文字1つ",
       "icon_regenerate": "自動生成",
       "icon_regenerate_pending": "保存後、可能な場合はフォルダー名からアイコンが選ばれます。",
