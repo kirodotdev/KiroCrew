@@ -75,8 +75,11 @@ jobs:
       # MUST be first: block egress except the endpoints the reviewer needs, so
       # an injection-driven exfil attempt fails at the network layer. UX/Fable
       # runs on Bedrock in us-west-2 (see the AWS_BEDROCK_ROLE_ARN region below).
-      # VERIFY before merge that this SHA resolves to the intended harden-runner
-      # release (authoring host had no network to confirm it).
+      # SHA verified against the upstream tag: `git/ref/tags/v2.21.1` on
+      # step-security/harden-runner resolves to e14015d583714f6e62063499dc959a02595150a1,
+      # the commit pinned below. Recorded here because a wrong pin reds every fork
+      # PR on the security surface fail-closed, so the next reader should not have
+      # to re-open the question -- re-verify only when the version comment moves.
       - name: Harden runner (egress allowlist)
         uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
