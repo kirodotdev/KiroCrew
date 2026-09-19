@@ -66,6 +66,7 @@ from kiro_crew.dashboard.handlers._shared import (
     guard_owner_surface_routes,
     owner_surface_guard,
     pip_extra_install_command,
+    require_owner_dashboard_request,
 )
 from kiro_crew.dashboard.origin import check_host, is_direct_local_request
 from kiro_crew.dashboard.state import DashboardState
@@ -1975,6 +1976,15 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.
     "dashboard.prevent_sleep": {"type": "bool"},
+    # Whether the credit pill may fall back to a BILLED `kiro-cli /usage` chat
+    # turn when the free usage API returns no plan. Read by
+    # ``handlers/sessions._text_scrape_enabled`` (fail-closed) and off by
+    # default, and the default is unchanged by being editable here: this entry
+    # only makes the value REACHABLE from the dashboard. Without it the schema
+    # published a label and help text for a setting whose PATCH was refused
+    # ``field not editable``, so the only way to opt in was to know the key
+    # name and edit config.json by hand.
+    "dashboard.usage_text_scrape_enabled": {"type": "bool"},
     # User profile (onboarding step 2 + Settings > General > About You).
     # Structured slugs, not free text: context.py maps them to prompt-ready
     # descriptions in its [USER PROFILE] block. "" = unspecified/cleared.
@@ -2322,6 +2332,26 @@ async def api_kirocrew_config_patch(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
+
+    # ── Enabling the billed credit-meter fallback is owner-only ──
+    # Every other path in the allowlist is a preference, so the route's "any
+    # authenticated caller" bar is the right one for them. It is not the right bar
+    # for this one: enabling it makes the credit pill fall back to a REAL billed
+    # `kiro-cli /usage` turn, and repeat it every refresh interval for as long as
+    # any tab is open. A dashboard token does not imply ownership -- an
+    # allow-listed messaging user holds one -- so without this gate a non-owner
+    # could start recurring spend on the owner's account, and nothing
+    # self-corrects an enabled state.
+    #
+    # Only the ENABLE is gated, exactly like the two telemetry writes below:
+    # turning billing OFF must never require authorization. Refusing that would
+    # leave someone able to see spend they cannot stop, and the narrower choice
+    # always composes.
+    if path_key == "dashboard.usage_text_scrape_enabled" and value is True:
+        denial = await require_owner_dashboard_request(request, "config.patch.usage_text_scrape")
+        if denial is not None:
+            _log_sel("denied", f"{path_key}={value}")
+            return denial
 
     # ── Governance: refuse a write an enterprise ceiling has pinned ──
     # Only re-ENABLING is refused. Writing `false` is always allowed even under a

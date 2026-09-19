@@ -13807,7 +13807,11 @@
         "zoom_level": "Nivel de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "No se pudieron cargar los ajustes de pantalla guardados. Los ajustes de shell, sesiones recientes y completado de comandos no están disponibles hasta que se carguen.",
-        "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas."
+        "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas.",
+        "credit_usage_scrape": "Gastar unos créditos para consultar tu saldo",
+        "credit_usage_scrape_desc": "Cuando tus datos de uso no están disponibles de forma gratuita, tu saldo se puede consultar enviando un mensaje facturado, aproximadamente cada 10 minutos mientras haya una pestaña del panel abierta. Cada consulta consume una pequeña cantidad de créditos.",
+        "credit_usage_scrape_save_failed": "No se pudo guardar esta opción. El interruptor muestra el valor guardado, así que puedes volver a intentarlo.",
+        "credit_usage_scrape_owner_only": "Solo la persona propietaria del panel puede activar esto."
       },
       "importPanel": {
         "agent_data": "Datos del agente",

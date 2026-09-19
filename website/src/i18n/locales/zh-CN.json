@@ -13440,7 +13440,11 @@
         "zoom_level": "缩放级别",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "无法加载已保存的显示设置。加载完成前，Shell、最近会话和命令补全设置不可用。",
-        "recent_tint_save_failed": "无法保存最近会话的高亮数量。"
+        "recent_tint_save_failed": "无法保存最近会话的高亮数量。",
+        "credit_usage_scrape": "花少量额度查看余额",
+        "credit_usage_scrape_desc": "当无法免费获取用量数据时，只要仪表板标签页保持打开，就会约每 10 分钟发送一条计费消息来查询余额。每次查询会消耗少量额度。",
+        "credit_usage_scrape_save_failed": "无法保存此设置。开关显示的是已保存的状态，可以再试一次。",
+        "credit_usage_scrape_owner_only": "只有仪表板所有者可以开启此项。"
       },
       "importPanel": {
         "agent_data": "代理数据",

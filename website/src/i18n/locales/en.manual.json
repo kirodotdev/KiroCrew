@@ -5703,7 +5703,11 @@
         "terminal_completion_desc": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
         "terminal_completion_save_failed": "Could not save the command completion setting",
         "config_load_failed": "Could not load the saved display settings. The shell, recent-session and command completion settings are unavailable until it loads.",
-        "recent_tint_save_failed": "Could not save the recent-session highlight count."
+        "recent_tint_save_failed": "Could not save the recent-session highlight count.",
+        "credit_usage_scrape": "Spend a few credits to check your balance",
+        "credit_usage_scrape_desc": "When your usage data is not available for free, your balance can still be checked by sending one billed message, about every 10 minutes while a dashboard tab is open. Each check spends a small number of credits.",
+        "credit_usage_scrape_save_failed": "Could not save this setting. The switch shows the setting that is saved, so you can try again.",
+        "credit_usage_scrape_owner_only": "Only the dashboard owner can turn this on."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote instance",

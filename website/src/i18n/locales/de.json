@@ -13623,7 +13623,11 @@
         "zoom_level": "Zoomstufe",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Die gespeicherten Anzeigeeinstellungen konnten nicht geladen werden. Die Einstellungen für Shell, letzte Sitzungen und Befehlsvervollständigung sind nicht verfügbar, bis sie geladen sind.",
-        "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden."
+        "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden.",
+        "credit_usage_scrape": "Ein paar Credits ausgeben, um den Stand zu prüfen",
+        "credit_usage_scrape_desc": "Wenn deine Nutzungsdaten nicht kostenlos verfügbar sind, kann dein Stand trotzdem geprüft werden, indem etwa alle 10 Minuten eine kostenpflichtige Nachricht gesendet wird, solange ein Dashboard-Tab offen ist. Jede Prüfung verbraucht eine kleine Anzahl von Credits.",
+        "credit_usage_scrape_save_failed": "Die Einstellung konnte nicht gespeichert werden. Der Schalter zeigt den gespeicherten Stand, du kannst es also erneut versuchen.",
+        "credit_usage_scrape_owner_only": "Nur der Dashboard-Besitzer kann das einschalten."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

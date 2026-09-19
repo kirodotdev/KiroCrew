@@ -13807,7 +13807,11 @@
         "zoom_level": "Niveau de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Impossible de charger les réglages d’affichage enregistrés. Les réglages du shell, des sessions récentes et de la complétion des commandes sont indisponibles jusqu’au chargement.",
-        "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence."
+        "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence.",
+        "credit_usage_scrape": "Dépenser quelques crédits pour consulter ton solde",
+        "credit_usage_scrape_desc": "Quand tes données d’utilisation ne sont pas disponibles gratuitement, ton solde peut quand même être consulté en envoyant un message facturé, environ toutes les 10 minutes tant qu’un onglet du tableau de bord est ouvert. Chaque consultation consomme un petit nombre de crédits.",
+        "credit_usage_scrape_save_failed": "Impossible d’enregistrer ce réglage. L’interrupteur affiche la valeur enregistrée : tu peux réessayer.",
+        "credit_usage_scrape_owner_only": "Seul le propriétaire du tableau de bord peut activer ceci."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

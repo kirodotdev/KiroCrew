@@ -13440,7 +13440,11 @@
         "zoom_level": "ズームレベル",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "保存された表示設定を読み込めませんでした。読み込まれるまで、シェル、最近のセッション、コマンド補完の設定は使用できません。",
-        "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。"
+        "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。",
+        "credit_usage_scrape": "クレジットを少し使って残量を確認する",
+        "credit_usage_scrape_desc": "使用状況のデータを無料で取得できないとき、ダッシュボードのタブを開いている間、約 10 分ごとに課金されるメッセージを送って残量を確認できます。確認のたびに少量のクレジットを消費します。",
+        "credit_usage_scrape_save_failed": "この設定を保存できませんでした。スイッチは保存されている状態を表示しているので、もう一度試せます。",
+        "credit_usage_scrape_owner_only": "これを有効にできるのはダッシュボードの所有者だけです。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

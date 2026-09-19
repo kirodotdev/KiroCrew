@@ -13806,7 +13806,11 @@
         "zoom_level": "Nível de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Não foi possível carregar as configurações de exibição salvas. As configurações de shell, sessões recentes e conclusão de comandos ficam indisponíveis até que elas carreguem.",
-        "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas."
+        "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas.",
+        "credit_usage_scrape": "Gastar alguns créditos para consultar seu saldo",
+        "credit_usage_scrape_desc": "Quando seus dados de uso não estão disponíveis gratuitamente, seu saldo ainda pode ser consultado enviando uma mensagem cobrada, a cada 10 minutos aproximadamente enquanto uma aba do painel estiver aberta. Cada consulta consome um pequeno número de créditos.",
+        "credit_usage_scrape_save_failed": "Não foi possível salvar esta configuração. A chave mostra o valor salvo, então você pode tentar de novo.",
+        "credit_usage_scrape_owner_only": "Somente a pessoa proprietária do painel pode ativar isso."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

@@ -1000,6 +1000,14 @@
       "description": "Choose a color palette for your sidebar sessions."
     },
     {
+      "id": "display.spend-a-few-credits-to-check-your-balance",
+      "label": "Spend a few credits to check your balance",
+      "tab": "display",
+      "route": "/settings/display?highlight=key%3Adashboard.usage_text_scrape_enabled",
+      "description": "When your usage data is not available for free, your balance can still be checked by sending one billed message, about every 10 minutes while a dashboard tab is open. Each check spends a small number of credits.",
+      "configKey": "dashboard.usage_text_scrape_enabled"
+    },
+    {
       "id": "display.theme",
       "label": "Theme",
       "tab": "display",
