@@ -50,7 +50,6 @@ from kiro_crew.messaging.outbound_files import (
 )
 from kiro_crew.messaging.renderer import (
     Renderer,
-    _default_redactor,
     apply_options_cap,
     new_approval_nonce,
     session_provenance_tag,
@@ -58,6 +57,7 @@ from kiro_crew.messaging.renderer import (
 )
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.sel import sel
 from kiro_crew.telegram.client import (
     TELEGRAM_MAX_MEDIA_GROUP,
@@ -179,11 +179,11 @@ def _display_safe(text: str) -> str:
     against the render cap. Losing formatting to keep a rendered secret redacted
     is the documented trade.
 
-    Runs the SHARED ``_default_redactor`` (exfil URLs then credentials), the same
+    Runs the SHARED ``redact_pako_via_context`` (exfil URLs then credentials), the same
     pair ``TurnDriver`` streams provider text through, so a display sink cannot end
     up scanning for less than the stream did.
     """
-    safe, _ = redact_for_display(text or "", _default_redactor)
+    safe, _ = redact_for_display(text or "", redact_pako_via_context)
     return safe
 
 
@@ -358,7 +358,7 @@ def build_inline_keyboard(options: list[str], session_key: str) -> dict | None:
     buttons: list[list[dict]] = []
     row: list[dict] = []
     for i, opt in enumerate(options):
-        safe, _ = redact_for_display(opt, _default_redactor)
+        safe, _ = redact_for_display(opt, redact_pako_via_context)
         row.append({"text": safe[:64], "callback_data": f"opt:{i}:{origin_tag}"})
         if len(row) == 2:
             buttons.append(row)
@@ -1110,7 +1110,12 @@ class TelegramRenderer(Renderer):
         # Trailing control-tag lines are protocol on either side of the trailer;
         # complete tags only -- a partial tail at the seal is prose.
         body_raw = strip_control_comments(body_raw)
-        body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
+        body_raw, opts = apply_options_cap(
+            body_raw,
+            opts,
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
         self._buf = [body_raw]
         # apply_options_cap may EXPAND the body (numbered overflow lines), and
         # the rotation above ran before that expansion -- re-check, or a
@@ -1943,7 +1948,12 @@ class TelegramRenderer(Renderer):
         # Trailing control-tag lines are protocol on either side of the trailer;
         # complete tags only -- a partial tail at the seal is prose.
         body_raw = strip_control_comments(body_raw)
-        body_raw, opts = apply_options_cap(body_raw, opts, self.capabilities)
+        body_raw, opts = apply_options_cap(
+            body_raw,
+            opts,
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
         self._buf = [body_raw]
         keyboard = build_inline_keyboard(opts, self._session_key) if opts else None
         # No-rotation fallback: steers were injected but kiro-cli emitted no

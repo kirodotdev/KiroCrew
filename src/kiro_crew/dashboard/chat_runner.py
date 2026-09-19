@@ -280,7 +280,11 @@ from kiro_crew.name_grant import (
     refusal_for_command_off_loop,
     shell_command_for_event,
 )
-from kiro_crew.platform import redact_via_context
+from kiro_crew.platform import (
+    redact_pako_via_context,
+    redact_via_context,
+    redact_with_findings_via_context,
+)
 from kiro_crew.providers.base import (
     EVENT_COMPLETE,
     EVENT_PERMISSION_REQUEST,
@@ -648,13 +652,14 @@ def _redact_display_text(text: str) -> str:
     ``event.title`` prefers the model's own ``description`` field
     (``_select_tool_title``), so any surface it reaches — a transcript row that
     is broadcast to the dashboard AND persisted to the ConversationLog, or a
-    SEL audit ``tool_name`` — must see it only through this helper. Both
-    redactors return their input unchanged when nothing matches, so clean
-    titles pass through byte-identical.
+    SEL audit ``tool_name`` — must see it only through this helper. The
+    baseline pair on the outer text, as always, with the active policy applied
+    to any pako link's DECODED state (``redact_pako_via_context``): a title is a
+    single-shot egress with no later replacement, so a link it carries must be
+    decided under the surface's policy before it is shown. Clean titles pass
+    through byte-identical.
     """
-    text, _ = redact_exfiltration_urls(text)
-    text, _ = redact_credentials(text)
-    return text
+    return redact_pako_via_context(text)
 
 
 async def _surface_agent_welcome(
@@ -4200,11 +4205,11 @@ def _flush_segment(
     # is labelled as the assistant's own output and the event is audited: a
     # model that later re-reads the line must not take it for an instruction.
     assistant_text = _reflow_label_and_audit(slot, assistant_text)
-    # Redact the accumulated text
-    redacted, exfil_warnings = redact_exfiltration_urls(assistant_text)
+    # Redact the accumulated text through one pako-aware boundary. Validated
+    # compressed bytes stay hidden until baseline and active host policies finish.
+    redacted, cred_warnings, exfil_warnings = redact_with_findings_via_context(assistant_text)
     for w in exfil_warnings:
         logger.warning("Exfiltration URL redacted in chat segment: %s", w)
-    redacted, cred_warnings = redact_credentials(redacted)
     for w in cred_warnings:
         logger.warning("Credential redacted in chat segment: %s", w)
     # Persist as assistant message. Broadcast is kept enabled so that
@@ -4231,7 +4236,7 @@ def _flush_segment(
         pending_list = [
             {
                 **v,
-                "content": redact_credentials(redact_exfiltration_urls(v.get("content", ""))[0])[0],
+                "content": redact_pako_via_context(v.get("content", "")),
             }
             for v in slot._pending_variants
             if isinstance(v, dict)
@@ -7831,7 +7836,13 @@ async def _run_chat(
     # so raw fragments never reach WS/SSE consumers. assistant_text (the source
     # for the final _flush_segment redaction) is accumulated independently and is
     # unaffected. Reset per segment via _flush_text_stream / _wsred.reset().
-    _wsred = StreamRedactor()
+    # The redactor is the narrow pako seam: ordinary text keeps the
+    # companion-blind baseline this wire always had, but a pako link the
+    # baseline now lets through whole is decided under the active policy first
+    # (``redact_pako_via_context``). The wire cannot rely on the host-aware
+    # segment flush replacing it later -- a link emitted to the client has
+    # already disclosed its decoded diagram.
+    _wsred = StreamRedactor(redact_pako_via_context)
 
     def _persist_partial_reply() -> None:
         """Persist the partial reply of a turn that is ending abnormally.
@@ -7855,7 +7866,16 @@ async def _run_chat(
         # same accumulated text, and it is rendered by the same grammar.
         body = _reflow_label_and_audit(slot, assistant_text)
         slot.purge_chunks()
-        _redacted = redact_credentials(redact_exfiltration_urls(body)[0])[0]
+        # Redact through the same host-aware egress policy the segment flush uses
+        # (``redact_with_findings_via_context``), so a valid pako diagram link
+        # in the partial survives instead of being shredded by a blind
+        # credential pass -- the defect this change exists to fix. The ledger copy
+        # below records the same redacted body that was appended.
+        _redacted, _cred_warnings, _exfil_warnings = redact_with_findings_via_context(body)
+        for _warning in _exfil_warnings:
+            logger.warning("Exfiltration URL redacted in terminal chat output: %s", _warning)
+        for _warning in _cred_warnings:
+            logger.warning("Output redaction applied in terminal chat output: %s", _warning)
         slot.append("assistant", _redacted, "msg msg-a")
         _append_redaction_notice(slot, _redacted)
         crew_log_emit.on_message_sent(
@@ -7889,8 +7909,10 @@ async def _run_chat(
         )
 
     # Same rolling-buffer protection for the separate chat_thinking wire stream
-    # (thinking is broadcast-only / ephemeral, but still real-time on the WS).
-    _thinkred = StreamRedactor()
+    # (thinking is broadcast-only / ephemeral, but still real-time on the WS),
+    # on the same narrow pako seam as ``_wsred``: thinking has NO later
+    # boundary at all, so a pako link here is decided once, on the wire.
+    _thinkred = StreamRedactor(redact_pako_via_context)
 
     def _flush_thinking_stream() -> None:
         """Emit the thinking redactor's withheld tail when the thinking phase
@@ -10364,16 +10386,12 @@ async def _run_chat(
                     _crew_log_step = crew_log_emit.on_step_started(_crew_log_sid, _crew_log_turn_no)
                     _crew_log_step_t0 = time.monotonic()
                 in_tool_group = False
-                # The streamed delta is NOT written to the ledger. Redacting each
-                # delta on its own cannot see a credential split across two of
-                # them, and token-by-token streaming makes that split the common
-                # case -- so the pieces would land in an append-only file that a
-                # reader can concatenate. The redacted whole body on
-                # ``message/sent`` carries the same content, redacted once over
-                # text where the credential is intact and therefore matchable.
-                safe_chunk, _ = redact_exfiltration_urls(event.text)
-                safe_chunk, _ = redact_credentials(safe_chunk)
-                assistant_text += safe_chunk
+                # Keep the authoritative segment byte-identical until its boundary.
+                # `_flush_segment` redacts the joined text before persistence, while
+                # `_wsred` below protects each live wire emission. Redacting each
+                # token chunk here destroyed valid compressed pako state before
+                # either boundary could validate the complete fragment.
+                assistant_text += event.text
                 if event.control_notice:
                     # A backend control notice that arrived as assistant text
                     # (the claude adapter's "Compacting..."). It accumulates,
@@ -10385,12 +10403,15 @@ async def _run_chat(
                     # counted as an answer would shadow the continuation branch
                     # and leave the request unanswered — the exact hang this PR
                     # exists to fix.
-                    _compaction_notice_chunks.append(safe_chunk)
+                    _compaction_notice_chunks.append(event.text)
                 # Mirror into the never-reset whole-turn buffer so a plan
                 # emitted before later tool calls survives the tool-boundary
-                # reset of assistant_text above (planning turn only).
+                # reset of assistant_text above (planning turn only). This buffer
+                # is internal; any metadata extracted from it is redacted at the
+                # owning extraction boundary, and test_raw_turn_egress.py refuses
+                # any other reader of it.
                 if _orch_planning:
-                    _orch_plan_buf += safe_chunk
+                    _orch_plan_buf += event.text
                 # Set BEFORE the `_turn_emitted` flip: the consumption report
                 # below must stay adjacent to that flip (pinned by
                 # test_subagent_delivery_ttl_anchor), so a diagnostic flag goes
@@ -13694,6 +13715,7 @@ async def _run_chat(
             # `_orch_planning` excludes stage-execution turns, so a stage turn
             # whose output contains plan-like text can never re-arm/re-count.
             if _orch_planning:
+                plan_rephrase_text = redact_via_context(assistant_text)
 
                 has_plan, valid, issues = validate_plan_format(assistant_text)
                 if not has_plan and looks_like_plan(assistant_text):
@@ -13708,7 +13730,7 @@ async def _run_chat(
                     ]
                     rephrased = await _rephrase_plan_lite(
                         state,
-                        assistant_text,
+                        plan_rephrase_text,
                         issues,
                         might_not_be_plan=True,
                     )
@@ -13720,7 +13742,7 @@ async def _run_chat(
                             assistant_text = rephrased
                 if has_plan and not valid:
                     logger.info("Plan format invalid (%s), attempting rephrase", issues)
-                    rephrased = await _rephrase_plan_lite(state, assistant_text, issues)
+                    rephrased = await _rephrase_plan_lite(state, plan_rephrase_text, issues)
                     if rephrased:
                         _, valid2, issues2 = validate_plan_format(rephrased)
                         if valid2:
@@ -13763,7 +13785,10 @@ async def _run_chat(
                         slot.key,
                         (_turn_refusal.category or "-") if _turn_refusal else "-",
                     )
-                    _refusal_card = refusal_card_text(_turn_refusal, streamed_text=assistant_text)
+                    _refusal_card = refusal_card_text(
+                        _turn_refusal,
+                        streamed_text=redact_with_findings_via_context(assistant_text)[0],
+                    )
                     if slot._refusal_fallback_attempted:
                         # This refusal came from the retry turn itself: the
                         # configured fallback also declined. Say so — the card
@@ -14769,7 +14794,7 @@ async def _run_chat(
         # env var (ARG_MAX safety). The full segment is passed (not sliced to
         # [:500]) so the tail — e.g. the harness [OPTIONS:] line — reaches both
         # the matcher and the hook body.
-        _final = redact_credentials(redact_exfiltration_urls(assistant_text)[0])[0]
+        _final, _, _ = redact_with_findings_via_context(assistant_text)
         # Report how deep this hook-continuation run is so a gate hook can
         # diagnose or apply a stricter limit than the configurable backstop.
         _stop_hook_out = await _fire(
@@ -14946,12 +14971,10 @@ async def _run_chat(
                     render_for_slack,
                 )
 
-                # Extract the OPTIONS tag from the RAW text, before rendering.
-                # It is a plain-text marker, so pulling it off after conversion
-                # means whatever conversion did to the tail decides whether the
-                # controls render at all -- and a >39,000-char turn loses the tag
-                # entirely to to_slack_mrkdwn's self-truncation.
-                _mirror_body, _mirror_options = extract_options(assistant_text)
+                # Extract controls before rendering, but only from the sanctioned
+                # host-redacted copy of the raw turn accumulator.
+                _mirror_safe, _, _ = redact_with_findings_via_context(assistant_text)
+                _mirror_body, _mirror_options = extract_options(_mirror_safe)
 
                 for _part in render_for_slack(_mirror_body):
                     await state.slack_client.post_message(_mirror_chan, _part, _mirror_thread)

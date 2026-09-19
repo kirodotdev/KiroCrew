@@ -123,7 +123,11 @@ def _redact_all(text: str) -> str:
     return out
 
 
-def display_safe_text(text: str) -> str:
+def display_safe_text(
+    text: str,
+    *,
+    redactor: Callable[[str], str] = _redact_all,
+) -> str:
     """*text* screened for what WhatsApp SHOWS, with no dialect conversion.
 
     For the sinks that put text on the wire without passing through
@@ -133,7 +137,7 @@ def display_safe_text(text: str) -> str:
     WhatsApp collapses the same emphasis, code-span and link markup in a caption
     as in a message body.
     """
-    safe, _ = redact_for_display(strip_ansi(text or ""), _redact_all)
+    safe, _ = redact_for_display(strip_ansi(text or ""), redactor)
     return safe
 
 
@@ -194,7 +198,11 @@ def _convert_line(line: str) -> str:
     return line
 
 
-def to_whatsapp_text(content: str) -> str:
+def to_whatsapp_text(
+    content: str,
+    *,
+    redactor: Callable[[str], str] = _redact_all,
+) -> str:
     """The text WhatsApp will show: dialect-converted and display-screened.
 
     Content inside a fenced block is passed through untouched; the delimiter
@@ -219,7 +227,7 @@ def to_whatsapp_text(content: str) -> str:
     # The belt half of the screen (see the module docstring): the only scan that
     # reads the authored text as one piece, before a reduction removes a span from
     # it. It also carries the normalisation the conversion below depends on.
-    text, _ = redact_for_display(text, _redact_all)
+    text, _ = redact_for_display(text, redactor)
     # No closing tag arrives mid-stream, so an opener owns the remainder: on this
     # channel a live frame is a real send, and its notification would carry the
     # model's scratchpad.
@@ -282,11 +290,16 @@ def to_whatsapp_text(content: str) -> str:
     # THE screen. Every reduction above deletes a span, and deleting a span joins
     # what sat on either side of it, so this is the only scan whose result does not
     # depend on which reductions ran -- and it reads the form the client renders.
-    text, _ = redact_for_display(text, _redact_all)
+    text, _ = redact_for_display(text, redactor)
     return text.strip()
 
 
-def render_chunks(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
+def render_chunks(
+    content: str,
+    limit: int = WHATSAPP_CHUNK_LIMIT,
+    *,
+    redactor: Callable[[str], str] = _redact_all,
+) -> list[str]:
     """Delivery-ready chunks of WhatsApp-dialect text (see module docstring).
 
     Every rewrite -- the display screen, the reductions, dialect conversion --
@@ -296,13 +309,18 @@ def render_chunks(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
     flattened table row carries its column labels, a diagram gains a heading, and
     a redacted credential becomes a marker longer than the key it replaces.
     """
-    text = to_whatsapp_text(content)
+    text = to_whatsapp_text(content, redactor=redactor)
     if not text:
         return []
     return split_markdown_safe(text, limit)
 
 
-async def render_chunks_off_loop(content: str, limit: int = WHATSAPP_CHUNK_LIMIT) -> list[str]:
+async def render_chunks_off_loop(
+    content: str,
+    limit: int = WHATSAPP_CHUNK_LIMIT,
+    *,
+    redactor: Callable[[str], str] = _redact_all,
+) -> list[str]:
     """:func:`render_chunks` on a worker thread.
 
     The shared splitter terminates on pathological delimiter input but its CPU
@@ -310,4 +328,4 @@ async def render_chunks_off_loop(content: str, limit: int = WHATSAPP_CHUNK_LIMIT
     every turn and the liveness heartbeat on one event loop. Discord offloads
     the same call for the same reason.
     """
-    return await asyncio.to_thread(render_chunks, content, limit)
+    return await asyncio.to_thread(render_chunks, content, limit, redactor=redactor)

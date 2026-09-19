@@ -124,7 +124,9 @@ On a planning turn, at end of turn (the plan-detector block in `dashboard/chat_r
    `[OPTION: Go | Go All | Cancel]`, `_reset_auto_run_for_new_plan` clears the
    previous tracker and deletes stale `stage_*_result.md` files, and
    `_extract_and_redact_plan_metadata` fills `_stage_titles` / `_plan_goal` /
-   `_stage_descriptions` (credential- and exfiltration-URL-redacted).
+   `_stage_descriptions` after scrubbing every returned field through the full
+   active credential policy (including baseline credential and exfiltration-URL
+   redaction).
 
 `_rephrase_plan_lite` (`dashboard/chat_title.py`) runs on the shared cheap background
 session rather than the slot's own, releases it in a `finally`, and calls

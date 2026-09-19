@@ -129,3 +129,35 @@ VENDOR_TOKEN_PATTERNS = (
     ("npm-token", NPM_TOKEN),
     ("pypi-token", PYPI_TOKEN),
 )
+
+
+#: Mermaid Live editor URL prefix, as a LITERAL (not pattern source). Editor
+#: state travels in the fragment as ``pako:`` + base64url(zlib(JSON)). The
+#: credential scrubber (``security/redaction.py``) validates a bounded fragment
+#: behind this prefix before its raw heuristics run; a display canonicalizer
+#: (``messaging/display_safety.py``) must treat the SAME exact token as opaque so a
+#: payload's ``_`` is not mistaken for emphasis; and the Slack pre-splitter
+#: (``slack/format.py``) must keep the SAME exact token atomic so a long link is not
+#: bisected into fragments the scrubber never validated. Three consumers, one
+#: token: a hand-spelled copy at any of them lets one layer protect, or pass as
+#: opaque, a string another layer never recognised -- so the spelling lives here.
+MERMAID_PAKO_URL_ORIGIN = "https://mermaid.live"
+MERMAID_PAKO_URL_PREFIX = f"{MERMAID_PAKO_URL_ORIGIN}/edit#pako:"
+
+#: The fragment payload class: unpadded base64url. ``=`` padding is deliberately
+#: NOT accepted -- the editor never emits it, and admitting it would widen every
+#: consumer's notion of "the exact token" at once.
+MERMAID_PAKO_PAYLOAD = "[A-Za-z0-9_-]+"
+
+#: :data:`MERMAID_PAKO_URL_PREFIX` as pattern SOURCE. URL schemes and hostnames
+#: are case-insensitive, while the reviewed ``/edit#pako:`` path and fragment
+#: spelling remain case-sensitive. The origin source is derived from the literal
+#: by escaping its only regex-special character; no consumer hand-spells either
+#: half of the token.
+_MERMAID_PAKO_URL_ORIGIN_SOURCE = MERMAID_PAKO_URL_ORIGIN.replace(".", "\\.")
+MERMAID_PAKO_URL_PREFIX_SOURCE = f"(?ai:{_MERMAID_PAKO_URL_ORIGIN_SOURCE})/edit#pako:"
+
+#: The complete exact pako URL token as pattern SOURCE: prefix + payload, no
+#: anchors, so each consumer adds its own container grammar (bare, Markdown
+#: destination, Slack mrkdwn) around the one shared token.
+MERMAID_PAKO_URL = f"{MERMAID_PAKO_URL_PREFIX_SOURCE}{MERMAID_PAKO_PAYLOAD}"

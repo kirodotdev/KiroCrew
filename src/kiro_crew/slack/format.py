@@ -7,6 +7,7 @@ import re
 from typing import Callable, NamedTuple
 
 from kiro_crew.constants import OPTIONS_RE_LINE
+from kiro_crew.credential_patterns import MERMAID_PAKO_URL
 from kiro_crew.messaging.display_safety import redact_for_display, strip_ansi
 from kiro_crew.messaging.renderer import cap_choices, format_overflow
 from kiro_crew.platform.context import redact_via_context
@@ -165,7 +166,11 @@ def build_options_blocks(
         # unbounded loop would make a pathological trailer delete the whole
         # footer. When even three blocks overflow, the tail is dropped with
         # a VISIBLE count marker; never silent.
-        lines = format_overflow(_redact_choices(overflow, redactor), start=len(safe)).split("\n")
+        lines = format_overflow(
+            _redact_choices(overflow, redactor),
+            start=len(safe),
+            redactor=redactor,
+        ).split("\n")
         packed: list[str] = []
         shown = 0
         for line in lines:
@@ -856,6 +861,51 @@ def _lossless_blocks(text: str, limit: int) -> list[str]:
     return blocks
 
 
+# The four container shapes the credential scrubber protects that a pre-split
+# could bisect: a complete ``[label](url)`` Markdown destination, complete
+# same-line Slack ``<url|label>`` and ``<url>`` angle links, and a bare token.
+# Composed from the shared spelling so this splitter keeps atomic exactly the
+# token the scrubber validates -- a fragment cut mid-payload is one the scrubber
+# never sees whole and redacts as unsupported.
+_SLACK_ATOMIC_PAKO_RE = re.compile(
+    rf"(?:\[[^\[\]\n]*\]\({MERMAID_PAKO_URL}\)|"
+    rf"<{MERMAID_PAKO_URL}\|[^>\r\n]*>|"
+    rf"<{MERMAID_PAKO_URL}>|"
+    rf"{MERMAID_PAKO_URL})"
+)
+
+
+def _lossless_blocks_preserving_pako_links(text: str, limit: int) -> list[str]:
+    """Split losslessly without bisecting a supported complete pako token."""
+    spans = [
+        match.span()
+        for match in _SLACK_ATOMIC_PAKO_RE.finditer(text)
+        if len(match.group(0)) <= SLACK_MAX_TEXT
+    ]
+    if not spans:
+        return _lossless_blocks(text, limit)
+
+    blocks: list[str] = []
+    start = 0
+    while len(text) - start > limit:
+        target = start + limit
+        crossing = next(
+            ((left, right) for left, right in spans if left < target < right),
+            None,
+        )
+        if crossing is not None:
+            left, right = crossing
+            cut = left if left > start else right
+        else:
+            newline = text.rfind("\n", start, target)
+            cut = newline + 1 if newline > start else target
+        blocks.append(text[start:cut])
+        start = cut
+    if start < len(text):
+        blocks.append(text[start:])
+    return blocks
+
+
 class SlackRender(NamedTuple):
     """One rendered Slack message, plus whether redaction changed anything.
 
@@ -920,7 +970,7 @@ def render_one_for_slack(
     # and no invented or swallowed newline at a boundary.
     converted_blocks, changed = _render_blocks(
         text,
-        presplit=_lossless_blocks,
+        presplit=_lossless_blocks_preserving_pako_links,
         keep_tables=keep_tables,
         redactor=redactor,
     )

@@ -22,6 +22,17 @@ import threading
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Optional, Tuple, TypeVar
 
+from kiro_crew.platform.defaults import DefaultCredentialPolicy
+
+# Module-scope on purpose. ``kiro_crew.platform`` already loads ``security`` at
+# package import (``bootstrap`` -> ``defaults`` -> ``from kiro_crew import
+# security``), so binding these names here adds nothing to the platform load
+# path; the happy path below composes the pako-aware baseline, so a deferred
+# import would only re-pay a function-local lookup on every egress call.
+from kiro_crew.security import _redact_with_policy_findings
+from kiro_crew.security import redact as _security_redact
+from kiro_crew.security import redact_with_findings as _security_redact_with_findings
+
 if TYPE_CHECKING:  # avoid import cycles — config.loader imports heavy modules
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.platform.governance import GovernanceCeiling
@@ -839,42 +850,161 @@ async def async_safe_context_call(
         return _context_degrade(fallback, fallback_factory, log_message)
 
 
-def redact_via_context(text: str) -> str:
-    """Redact credentials/exfil from *text* through the active PlatformContext.
+def _host_delta_redactor(policy: Any) -> "Callable[[str], str] | None":
+    """Return the redaction the active policy adds BEYOND the baseline, or None.
 
-    The single, canonical credential-redaction shim every egress site should
-    import — instead of hand-writing the ``try current_context().credentials
-    .redact / except PlatformCompositionError: raise / except Exception:
-    fallback`` idiom.
-
-    Routes through ``current_context().credentials.redact`` so a loaded Amazon
-    companion's extra credential/cookie regexes apply.  The Default
-    ``CredentialPolicy.redact`` delegates to ``security.redact``, so a standalone
-    process gets byte-for-byte today's redaction.  Recursion-safe: the Default
-    delegates to the bare ``security.redact``, which never calls back into the
-    context — only *callers* route through this shim.
-
-    Fail-closed: a :class:`PlatformCompositionError` (a non-standalone host that
-    could not compose its companion) is re-raised, never swallowed, so such a
-    host does NOT silently downgrade redaction to the OSS baseline.  Any other
-    (transient) adapter failure degrades to the bare ``security.redact`` so the
-    security pass never silently disappears.
-
-    No logging on the degrade path: this shim runs inside stdio MCP servers
-    (``mcp_core`` / ``mcp_cron``) whose stray writes would corrupt the JSON-RPC
-    stream.
+    The Default policy's ``redact`` is ``security.redact`` -- the very pipeline
+    :func:`~kiro_crew.security._redact_with_policy_findings` is about to run --
+    so threading it back in as ``final_redactor`` would run every exfil and
+    credential pass a second time on the product's hottest text path and change
+    nothing in the output. Only a policy whose ``redact`` is NOT the unmodified
+    Default method is a host delta worth running. The test is on the METHOD, not
+    the class, so a companion that subclasses the Default and overrides
+    ``redact`` keeps its extra patterns.
     """
-    # Deferred import: keep ``security`` (which pulls the redaction regex stack)
-    # off the platform module-load path; only the fallback path needs it, and
-    # the happy path never imports it.
+    if getattr(type(policy), "redact", None) is DefaultCredentialPolicy.redact:
+        return None
+    return policy.redact
+
+
+def _fail_closed_decoded_redactor(
+    redactor: "Callable[[str], str] | None",
+) -> "Callable[[str], str] | None":
+    """Wrap a host policy so an unverifiable decoded pako view is rejected."""
+    if redactor is None:
+        return None
+
+    def _redact(view: str) -> str:
+        try:
+            return redactor(view)
+        except PlatformCompositionError:
+            raise
+        except Exception:
+            # The security pipeline compares the return value with ``view``.
+            # Appending NUL guarantees a mismatch without exposing policy input
+            # or error details, so the opaque link is replaced rather than
+            # restored under the weaker public baseline.
+            return view + "\x00"
+
+    return _redact
+
+
+def _baseline_preserving_final_redactor(
+    redactor: "Callable[[str], str] | None",
+) -> "Callable[[str], str] | None":
+    """Degrade a transient outer-policy error to its already-safe input."""
+    if redactor is None:
+        return None
+
+    def _redact(text: str) -> str:
+        try:
+            return redactor(text)
+        except PlatformCompositionError:
+            raise
+        except Exception:
+            # ``text`` has already passed the baseline and decoded-pako policy.
+            # Returning it preserves any fail-closed pako marker instead of
+            # rescanning the original input under the weaker public baseline.
+            return text
+
+    return _redact
+
+
+def redact_with_findings_via_context(text: str) -> tuple[str, list[str], list[str]]:
+    """Redact through the active credential policy and return safe findings.
+
+    Returns ``(text, credential_warnings, url_warnings)`` in the same order as
+    :func:`kiro_crew.security.redact_with_findings`. The pako-aware baseline
+    owns protection, decoded-state validation, scan budgets, and restoration;
+    the active policy is threaded into that one composition boundary so callers
+    do not run a second outer redaction pipeline, and the baseline itself runs
+    exactly once per call: the Default policy adds no delta (see
+    :func:`_host_delta_redactor`), a companion's ``redact`` runs once after it.
+
+    A :class:`PlatformCompositionError` propagates so a non-standalone host
+    cannot silently downgrade to the public baseline. Other adapter failures
+    retain the standalone baseline and findings without logging from stdio MCP
+    processes.
+    """
     try:
-        return current_context().credentials.redact(text)
+        policy_redactor = _host_delta_redactor(current_context().credentials)
+        result, url_warnings, credential_warnings = _redact_with_policy_findings(
+            text,
+            decoded_redactor=_fail_closed_decoded_redactor(policy_redactor),
+            final_redactor=_baseline_preserving_final_redactor(policy_redactor),
+            pako_restoration_authorized=True,
+        )
+        return result, credential_warnings, url_warnings
     except PlatformCompositionError:
         raise
     except Exception:
-        from kiro_crew.security import redact as _security_redact
+        return _security_redact_with_findings(text)
 
-        return _security_redact(text)
+
+def redact_via_context(text: str) -> str:
+    """Redact credentials/exfil from *text* through the active PlatformContext.
+
+    This is the canonical text-only egress shim. It delegates to
+    :func:`redact_with_findings_via_context`, so findings and non-findings callers
+    share one pako-aware composition and one active-policy decision.
+    """
+    return redact_with_findings_via_context(text)[0]
+
+
+def redact_pako_with_findings_via_context(text: str) -> tuple[str, list[str], list[str]]:
+    """Baseline on the outer text; the active policy on DECODED pako state only.
+
+    The narrow seam for a site that was companion-blind on ordinary text before
+    the pako exemption and stays so -- the live wires, the side chat, Slack's
+    cursor edits and post-render passes, ``TurnDriver``'s per-field scrubs.
+    Their baseline treats pako payload windows as bare secrets unless the
+    exemption preserves one complete valid link. A preserved link is a carrier
+    for its decoded diagram. The client cannot un-see a link once a wire emitted
+    it, so a later host-aware replacement is not a defence: the decision to
+    preserve the link must already have been taken under the policy that
+    governs the surface. That policy is threaded in as ``decoded_redactor``
+    ONLY: on text with no pako link, or with a link whose decoded state the
+    companion leaves alone, the output is byte-identical to
+    ``security.redact_with_findings``; a link whose decoded state the companion
+    would redact fails closed as one encoded-credential marker. An ordinary
+    companion-only token in the outer text is deliberately NOT touched here --
+    that is the baseline these sites always had, and widening it is a separate
+    decision from the pako fix.
+
+    Returns ``(text, credential_warnings, url_warnings)`` like
+    :func:`redact_with_findings_via_context`. A
+    :class:`PlatformCompositionError` propagates so a non-standalone host cannot
+    fall to the public baseline silently. If the active policy raises any other
+    error while inspecting a decoded pako view, that view is treated as changed
+    and the whole link fails closed; ordinary non-pako text never calls the
+    policy and keeps the baseline. Failures before a policy is obtained retain
+    the standalone baseline and findings without logging from stdio MCP
+    processes.
+    """
+    try:
+        policy_redactor = _host_delta_redactor(current_context().credentials)
+        decoded_redactor = _fail_closed_decoded_redactor(policy_redactor)
+
+        result, url_warnings, credential_warnings = _redact_with_policy_findings(
+            text,
+            decoded_redactor=decoded_redactor,
+            pako_restoration_authorized=True,
+        )
+        return result, credential_warnings, url_warnings
+    except PlatformCompositionError:
+        raise
+    except Exception:
+        return _security_redact_with_findings(text)
+
+
+def redact_pako_via_context(text: str) -> str:
+    """Text-only projection of :func:`redact_pako_with_findings_via_context`.
+
+    Pass this to a ``StreamRedactor`` or call it on a field wherever the
+    companion-blind baseline is the intended policy for ordinary text but a
+    pako link may now survive whole.
+    """
+    return redact_pako_with_findings_via_context(text)[0]
 
 
 #: Substituted for a log line's text when redaction could not be composed. Names
@@ -939,8 +1069,6 @@ def redact_log_via_context(text: str) -> str:
     unmatchable fragment.
     """
     if installed_context() is None:
-        from kiro_crew.security import redact as _security_redact
-
         return _security_redact(text)
     try:
         return redact_via_context(text)

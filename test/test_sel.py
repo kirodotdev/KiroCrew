@@ -4660,6 +4660,38 @@ class TestMetadataRedaction:
         assert self.EXFIL_URL not in raw
         assert self.AKIA_TOKEN not in raw
 
+    def test_valid_pako_state_never_reaches_audit_disk_without_context_authorization(
+        self, log, sel_dir
+    ) -> None:
+        import base64
+        import zlib
+
+        companion_token = "COMPANION-COOKIE-SECRET"
+        state = json.dumps(
+            {"code": f"flowchart TD\n  A[{companion_token}] --> B"},
+            separators=(",", ":"),
+        )
+        payload = (
+            base64.urlsafe_b64encode(zlib.compress(state.encode(), 9))
+            .decode()
+            .rstrip("=")
+        )
+        url = f"https://mermaid.live/edit#pako:{payload}"
+
+        log.log_tool_invocation(
+            session_key="dashboard:slot1",
+            tool_name=url,
+            outcome="success",
+            resources=url,
+            error=url,
+            metadata={"query": url},
+        )
+
+        raw = self._disk_text(sel_dir)
+        assert url not in raw
+        assert payload not in raw
+        assert "[REDACTED: encoded credential]" in raw
+
     def test_nested_metadata_values_are_redacted(self, log, sel_dir):
         log.log(_make_event(
             event_id="nested1",

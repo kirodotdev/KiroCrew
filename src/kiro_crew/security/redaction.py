@@ -23,14 +23,24 @@ import base64
 import bisect
 import hashlib
 import hmac
+import json
 import math
 import posixpath
 import re
 import secrets
+import unicodedata
+import zlib
 from collections import Counter
 from collections.abc import Callable
+from html import unescape
 
-from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.credential_patterns import (
+    AWS_KEY_ID,
+    JWT_MULTI_SEGMENT,
+    MERMAID_PAKO_PAYLOAD,
+    MERMAID_PAKO_URL_PREFIX,
+    MERMAID_PAKO_URL_PREFIX_SOURCE,
+)
 
 # ── Credential Output Redaction ──
 # Catches raw credential patterns in LLM output / tool results,
@@ -413,6 +423,579 @@ _PREFILTER_MIN_LEN = 16
 
 # Base64 alphabet: at least 40 chars of [A-Za-z0-9+/] ending with optional =
 _B64_CHUNK_RE = re.compile(r"[A-Za-z0-9+/]{40,}={0,2}")
+
+
+# Mermaid Live stores editor state as bounded zlib-compressed JSON in a
+# base64url fragment. The raw credential scanner otherwise treats random windows
+# in a long payload as bare secret keys. Protection is intentionally narrow:
+# only an exact ASCII URL token in bare text, a Markdown destination, or Slack
+# mrkdwn is eligible. Raw HTML, encoded whitespace, CJK punctuation, malformed
+# state, nested state, alternate origins/paths, and embedding inside another URL
+# are unsupported and fail closed. The token spelling itself is shared with the
+# display canonicalizer and the Slack pre-splitter through ``credential_patterns``
+# so all three recognise exactly one grammar.
+_PAKO_FRAGMENT_PREFIX = MERMAID_PAKO_URL_PREFIX
+_PAKO_FRAGMENT_PREFIX_RE = re.compile(MERMAID_PAKO_URL_PREFIX_SOURCE)
+_PAKO_FRAGMENT_RE = re.compile(
+    rf"(?P<prefix>{MERMAID_PAKO_URL_PREFIX_SOURCE})(?P<payload>{MERMAID_PAKO_PAYLOAD})"
+)
+_PAKO_BARE_RIGHT_BOUNDARIES = frozenset(" \t\r\n.,;:!?")
+_PAKO_FRAGMENT_MAX_ENCODED_CHARS = 256 * 1024
+_PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES = 1024 * 1024
+_PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES = 2 * _PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES
+# zlib does not expose output produced by a call that raises. Start with one byte
+# and cap later calls so charging that call's allowance tightly bounds unobserved
+# work without making valid near-limit fragments require one call per byte.
+_PAKO_DECOMPRESSION_MAX_STEP_BYTES = 16 * 1024
+_PAKO_FRAGMENT_MAX_COUNT = 1024
+_PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS = 16 * 1024
+# This exact Mermaid Live state is a no-op: it re-selects the renderer's default
+# theme and cannot carry CSS, parser flags, or visibility controls. Every other
+# renderer configuration is outside the conservative visible-label model.
+_PAKO_ALLOWED_RENDERER_CONFIGURATION = '{"theme":"default"}'
+
+
+class _PakoScanState:
+    """Mutable work budgets shared by one batch redaction."""
+
+    __slots__ = (
+        "bare_secret_budget_exhausted",
+        "bare_secret_windows_remaining",
+        "decompression_budget_exhausted",
+        "decompressed_bytes_remaining",
+        "fragments_remaining",
+    )
+
+    def __init__(self) -> None:
+        self.bare_secret_windows_remaining = _PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS
+        self.bare_secret_budget_exhausted = False
+        self.decompressed_bytes_remaining = _PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES
+        self.decompression_budget_exhausted = False
+        self.fragments_remaining = _PAKO_FRAGMENT_MAX_COUNT
+
+
+def _pako_fragment_has_supported_boundary(text: str, start: int, end: int) -> bool:
+    """Recognize only the three declared lexical containers for a pako URL."""
+    before = text[start - 1] if start else ""
+    after = text[end] if end < len(text) else ""
+
+    # Markdown destination: ``[label](<exact URL>)``. The label is confined to
+    # one line and cannot contain a closing bracket, so this is not a general
+    # CommonMark parser and does not claim renderer equivalence.
+    if start >= 2 and text[start - 2 : start] == "](" and after == ")":
+        line_start = text.rfind("\n", 0, start - 2) + 1
+        label_start = text.rfind("[", line_start, start - 2)
+        if label_start >= 0 and "]" not in text[label_start + 1 : start - 2]:
+            return True
+
+    # Slack mrkdwn / angle autolink: ``<url|label>`` or ``<url>``. A label
+    # container is supported only when its closing angle is present on the same
+    # line; otherwise the encoded payload stays on the fail-closed scan path.
+    if before == "<":
+        if after == ">":
+            return True
+        if after != "|":
+            return False
+        close = text.find(">", end + 1)
+        if close < 0:
+            return False
+        carriage_return = text.find("\r", end + 1, close)
+        line_feed = text.find("\n", end + 1, close)
+        return carriage_return < 0 and line_feed < 0
+
+    # Bare token: start/ASCII whitespace on the left and end/ASCII whitespace or
+    # ordinary ASCII sentence punctuation on the right. Parentheses, quotes,
+    # equals signs, HTML entities, and non-ASCII punctuation are deliberately not
+    # inferred as boundaries.
+    if start == 0 or before in " \t\r\n":
+        return end == len(text) or after in _PAKO_BARE_RIGHT_BOUNDARIES
+    return False
+
+
+def _decode_pako_fragment(payload: str, output_budget: int) -> tuple[str | None, int]:
+    """Return decoded UTF-8 plus charged inflation bytes, or ``(None, charge)``."""
+    if len(payload) > _PAKO_FRAGMENT_MAX_ENCODED_CHARS or output_budget <= 0:
+        return None, 0
+    try:
+        compressed = base64.urlsafe_b64decode(payload + "=" * (-len(payload) % 4))
+    except ValueError:
+        return None, 0
+
+    decoder = zlib.decompressobj()
+    inflate_limit = min(_PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES, output_budget) + 1
+    inflated_parts: list[bytes] = []
+    inflated_bytes = 0
+    pending = compressed
+    step = 1
+    while True:
+        allowance = min(step, inflate_limit - inflated_bytes)
+        try:
+            inflated_part = decoder.decompress(pending, allowance)
+        except zlib.error:
+            # A raising call withholds any output it produced. Charging its full
+            # allowance is the tight upper bound available from the stdlib API.
+            return None, min(inflate_limit, inflated_bytes + allowance)
+        inflated_parts.append(inflated_part)
+        inflated_bytes += len(inflated_part)
+        if inflated_bytes >= inflate_limit:
+            return None, inflated_bytes
+        if decoder.eof:
+            break
+        if decoder.unconsumed_tail:
+            pending = decoder.unconsumed_tail
+        elif len(inflated_part) == allowance:
+            # The input may be consumed while output remains buffered internally.
+            pending = b""
+        else:
+            return None, inflated_bytes
+        step = min(step * 2, _PAKO_DECOMPRESSION_MAX_STEP_BYTES)
+
+    if decoder.unconsumed_tail or decoder.unused_data:
+        return None, inflated_bytes
+    inflated = b"".join(inflated_parts)
+    try:
+        return inflated.decode("utf-8"), inflated_bytes
+    except UnicodeDecodeError:
+        return None, inflated_bytes
+
+
+_MERMAID_HIDDEN_EMPHASIS = frozenset("*_~`")
+_COMMONMARK_ASCII_PUNCTUATION = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
+_MERMAID_ENTITY_RE = re.compile(r"#(?P<body>[A-Za-z0-9_]+);")
+# Mermaid hands every complete same-line ``$$...$$`` span to KaTeX. The body is
+# an open rendering language that can hide arbitrary source text, so the visible
+# model rejects the whole delimiter family rather than enumerating commands.
+# JavaScript ``.`` excludes these four line terminators; the negated class mirrors
+# that family without a wildcard or overlapping quantified alternatives.
+_MERMAID_KATEX_RE = re.compile(r"\$\$[^\n\r\u2028\u2029]*?\$\$")
+# The visible-view transform below is a CONSERVATIVE model of Mermaid's label
+# pipeline (``securityLevel: 'strict'``, ``htmlLabels`` at Mermaid's default). A
+# pako link is displayed by the Mermaid Live editor, not by this product, so no
+# manifest or lockfile here can pin the release that renders it. What the model
+# rests on instead is EVIDENCE: its families were checked against a real render
+# of the Mermaid release named below (the library under jsdom, node label
+# ``textContent``; the frontend suite re-runs those checks against the release
+# it installs): Mermaid's ``#word;`` entities decode exactly as modeled;
+# emphasis delimiters are applied only inside markdown-string labels
+# (``["`...`"]``) and displayed literally in plain labels, so removing them
+# everywhere joins at least as much text as the renderer does; CommonMark
+# backslash escapes in markdown-string labels drop the slash before ASCII
+# punctuation and display that punctuation literally, so the conservative view
+# resolves them in plain labels too; complete same-line double-dollar math is
+# rejected before its KaTeX body can hide text; HTML character references are
+# displayed with a literal ampersand (``&#69;`` renders ``&E``), so decoding them
+# once also joins at least as much as the renderer. Markup is the one family where
+# the renderer can show MORE contiguous text than a text model: its sanitizer removes
+# some elements together with their content (``<style>``, ``<script>``,
+# ``<iframe>``, ``<noscript>``, ``<template>``, ``<xmp>``, ``<plaintext>``) and
+# an attribute (``hidden``, ``style="display:none"``) hides displayed content, so
+# only content-free and attribute-free markup is modeled and every other tag-like
+# construct rejects the state. A newer release may change any of this; the
+# constant records the release the evidence was last gathered against so a
+# re-check has a baseline.
+#
+# ``None`` is the FAIL-CLOSED FALLBACK for when that evidence is withdrawn (a
+# family behaves differently in a newer release and nobody has re-derived the
+# model yet): with no evidenced release the visible view is not trusted, so
+# ``_protect_pako_fragments`` refuses every candidate (each becomes the encoded-
+# credential marker, exactly like malformed state). The exemption returns only
+# when the constant is set to the release the transform was re-checked against.
+# Nothing else reads this value: no grammar, budget or boundary rule depends on
+# which release is evidenced, only on whether one is.
+_PAKO_VISIBLE_VIEW_MERMAID_VERSION: str | None = "11.16.1"
+# ``records`` can repeat a string once as ``key:value`` and once as the value;
+# Mermaid entity promotion can add at most one character per three input
+# characters. Three times the decoded byte ceiling therefore bounds every
+# visible variant without rejecting a state that fits the existing JSON bound.
+_PAKO_VISIBLE_VIEW_MAX_CHARS = 3 * _PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES
+_HTML_TAG_NAME_START = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz")
+# The only markup the visible view omits: a content-free line break, and
+# attribute-free phrasing tags whose content the sanitizer keeps and the browser
+# always displays. No attributes are accepted on the phrasing tags because an
+# attribute is what hides content; ``<br>`` takes only its self-closing slash.
+_MERMAID_MODELED_TAG_RE = re.compile(
+    r"<(?:/?(?:b|i|u|em|strong|sub|sup|small|code|span)|br\s*/?)>", re.IGNORECASE
+)
+
+# Unicode 16.0.0 DerivedCoreProperties.txt defines this complete
+# Default_Ignorable_Code_Point range set. ``unicodedata`` exposes general
+# categories but not this derived property, and its database version follows the
+# interpreter; a local table keeps the policy identical across supported Python
+# builds. Unicode explicitly gives this property no stability guarantee, so a
+# newer Unicode range set requires a deliberate table update and renderer review.
+_DEFAULT_IGNORABLE_CODE_POINT_RANGES = (
+    (0x00AD, 0x00AD),
+    (0x034F, 0x034F),
+    (0x061C, 0x061C),
+    (0x115F, 0x1160),
+    (0x17B4, 0x17B5),
+    (0x180B, 0x180F),
+    (0x200B, 0x200F),
+    (0x202A, 0x202E),
+    (0x2060, 0x206F),
+    (0x3164, 0x3164),
+    (0xFE00, 0xFE0F),
+    (0xFEFF, 0xFEFF),
+    (0xFFA0, 0xFFA0),
+    (0xFFF0, 0xFFF8),
+    (0x1BCA0, 0x1BCA3),
+    (0x1D173, 0x1D17A),
+    (0xE0000, 0xE0FFF),
+)
+_DEFAULT_IGNORABLE_CODE_POINT_RANGE_STARTS = tuple(
+    start for start, _end in _DEFAULT_IGNORABLE_CODE_POINT_RANGES
+)
+
+
+def _is_renderer_ignored_code_point(char: str) -> bool:
+    """Return whether Mermaid can hide this code point as standalone text."""
+    code_point = ord(char)
+    # Mermaid 11.16.1 drops U+0000 from rendered label text. It is not a Unicode
+    # Default_Ignorable_Code_Point or ``Cf``, so keep this renderer rule explicit.
+    if code_point == 0:
+        return True
+    range_index = bisect.bisect_right(_DEFAULT_IGNORABLE_CODE_POINT_RANGE_STARTS, code_point) - 1
+    if range_index >= 0 and code_point <= _DEFAULT_IGNORABLE_CODE_POINT_RANGES[range_index][1]:
+        return True
+    # Preserve the existing fail-closed treatment of every format character,
+    # including exceptional ``Cf`` points excluded from the derived property.
+    return unicodedata.category(char) == "Cf"
+
+
+def _mermaid_visible_record(record: str) -> str | None:
+    """Approximate Mermaid's visible label text in one bounded forward pass.
+
+    The Mermaid release named by :data:`_PAKO_VISIBLE_VIEW_MERMAID_VERSION` first
+    hides ``#word;`` entities from its grammar, restores them as HTML references,
+    sanitizes HTML labels (``htmlLabels`` at its default), and lets the browser
+    decode character references once. This transform joins at least as much text
+    as that pipeline displays: it omits only the markup in
+    :data:`_MERMAID_MODELED_TAG_RE`, rejects Markdown link/image and complete
+    same-line double-dollar math syntax and CommonMark hard line breaks, resolves
+    CommonMark ASCII-punctuation backslash escapes, removes unescaped Markdown
+    emphasis delimiters, decodes HTML references once, then decodes every Mermaid
+    entity. It never loops over
+    its own output, so an emitted backslash cannot escape another character and
+    encoded ampersands cannot buy a second decode. Any other tag-like construct --
+    a comment, a tag with attributes, an unmodeled or unclosed tag -- fails closed,
+    because the sanitizer may drop its content or an attribute may hide it, and
+    neither can be reconstructed here. A decode that yields a Unicode
+    Default_Ignorable_Code_Point (such as U+034F COMBINING GRAPHEME JOINER or
+    U+FE0F VARIATION SELECTOR-16) also fails closed: the renderer gives it no
+    standalone glyph while it splits the text this view scans. Every ``Cf``
+    character retains the same fail-closed treatment.
+    """
+    # Links can hide delimiters and destinations, so their open language is not
+    # reconstructed by this model.
+    if "](" in record or "][" in record:
+        return None
+
+    parts: list[str] = []
+    literal_start = 0
+    cursor = 0
+    length = len(record)
+    while cursor < length:
+        char = record[cursor]
+        # CommonMark turns a terminal backslash before a line ending into a
+        # break with no visible separator. Refuse the family so a raw line ending
+        # cannot split a credential that the renderer joins.
+        if char == "\\" and cursor + 1 < length:
+            escaped = record[cursor + 1]
+            if escaped in "\r\n":
+                return None
+            # CommonMark consumes this pair atomically: the backslash disappears
+            # and the punctuation remains literal. Resolve it before emphasis and
+            # tags so ``\_`` keeps the credential's underscore and ``\<`` stays text.
+            if escaped in _COMMONMARK_ASCII_PUNCTUATION:
+                parts.extend((record[literal_start:cursor], escaped))
+                cursor += 2
+                literal_start = cursor
+                continue
+        # Two or more spaces before any CommonMark line ending form the other
+        # hard-break family and likewise leave no visible separator.
+        if char in "\r\n" and cursor >= 2 and record[cursor - 2 : cursor] == "  ":
+            return None
+        if char in _MERMAID_HIDDEN_EMPHASIS:
+            parts.append(record[literal_start:cursor])
+            cursor += 1
+            literal_start = cursor
+            continue
+        if char != "<":
+            cursor += 1
+            continue
+
+        marker = cursor + 1
+        tag_like = False
+        if marker < length:
+            first = record[marker]
+            if first in _HTML_TAG_NAME_START or first in "!?":
+                tag_like = True
+            elif (
+                first == "/" and marker + 1 < length and record[marker + 1] in _HTML_TAG_NAME_START
+            ):
+                tag_like = True
+        if not tag_like:
+            cursor += 1
+            continue
+
+        modeled = _MERMAID_MODELED_TAG_RE.match(record, cursor)
+        if modeled is None:
+            return None
+        parts.append(record[literal_start:cursor])
+        cursor = modeled.end()
+        literal_start = cursor
+
+    parts.append(record[literal_start:])
+    commonmark_visible = "".join(parts)
+    # Mermaid tests for KaTeX after its label parser has consumed CommonMark
+    # escapes. Search this one-pass output once: direct delimiters and ``\$\$``
+    # both reach the renderer family, while an entity-decoded dollar does not.
+    if _MERMAID_KATEX_RE.search(commonmark_visible):
+        return None
+    html_visible = unescape(commonmark_visible)
+
+    def _decode_mermaid_entity(match: re.Match[str]) -> str:
+        body = match.group("body")
+        reference = f"&#{body};" if body.isascii() and body.isdecimal() else f"&{body};"
+        return unescape(reference)
+
+    visible = _MERMAID_ENTITY_RE.sub(_decode_mermaid_entity, html_visible)
+    # The canonical view rejects renderer-ignored code points before any decode,
+    # but the one decode above can manufacture one: a Mermaid entity or HTML
+    # reference can emit U+200B ZERO WIDTH SPACE, U+034F COMBINING GRAPHEME
+    # JOINER, or a variation selector only after the literal and canonical views
+    # have kept the entity spelling. The renderer gives that emitted point no
+    # standalone glyph while it splits every contiguous credential detector
+    # scanning this view. Refuse beside the decode that creates the disagreement.
+    if any(_is_renderer_ignored_code_point(char) for char in visible):
+        return None
+    return visible
+
+
+def _canonicalize_pako_state(decoded: str) -> tuple[str, str, str] | None:
+    """Return canonical JSON plus literal and Mermaid-visible semantic records."""
+
+    def _reject_constant(value: str) -> None:
+        raise ValueError(f"non-finite JSON constant: {value}")
+
+    def _reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        result: dict[str, object] = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    try:
+        state = json.loads(
+            decoded,
+            parse_constant=_reject_constant,
+            object_pairs_hook=_reject_duplicate_keys,
+        )
+        if not isinstance(state, dict):
+            return None
+        code = state.get("code")
+        if not isinstance(code, str):
+            return None
+        if "mermaid" in state and state["mermaid"] != _PAKO_ALLOWED_RENDERER_CONFIGURATION:
+            return None
+
+        # Mermaid 11.16.1 accepts an indented YAML frontmatter opener and an
+        # open directive language beginning with ``%%{``; ``init`` and
+        # ``initialize`` directives can both merge arbitrary renderer config.
+        # Parsing only known YAML keys or directive names would leave aliases,
+        # alternate YAML spellings, and future directive types as bypasses.
+        # Reject each complete syntax family before trusting the visible-label
+        # model. An incomplete opener is rejected in the same fail-closed
+        # direction; ordinary code pays only these bounded forward scans.
+        frontmatter_start = 0
+        while (
+            frontmatter_start < len(code)
+            and code[frontmatter_start].isspace()
+            and code[frontmatter_start] not in "\r\n"
+        ):
+            frontmatter_start += 1
+        if (
+            code.startswith("---", frontmatter_start)
+            and (frontmatter_start + 3 == len(code) or code[frontmatter_start + 3].isspace())
+        ) or "%%{" in code:
+            return None
+        canonical = json.dumps(state, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
+    except (TypeError, ValueError, RecursionError):
+        return None
+    if len(canonical.encode("utf-8", "surrogatepass")) > _PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES:
+        return None
+    # Default-ignorable points and every ``Cf`` character can splice displayed
+    # text without adding a standalone glyph. Reject the bounded canonical view
+    # instead of guessing which Mermaid paths consume each code point.
+    if any(_is_renderer_ignored_code_point(char) for char in canonical):
+        return None
+
+    records: list[str] = []
+    pending: list[object] = [state]
+    while pending:
+        value = pending.pop()
+        if isinstance(value, str):
+            records.append(value)
+        elif isinstance(value, dict):
+            for key, nested in value.items():
+                records.append(key)
+                if isinstance(nested, str):
+                    records.append(f"{key}:{nested}")
+                pending.append(nested)
+        elif isinstance(value, list):
+            pending.extend(value)
+    literal_records = "\x00".join(records)
+    # Build each conservative renderer-visible variant independently. The NUL
+    # separators are retained so markup or entities in one JSON field cannot
+    # complete a credential in another.
+    visible: list[str] = []
+    visible_chars = 0
+    for record in records:
+        transformed = _mermaid_visible_record(record)
+        if transformed is None:
+            return None
+        visible_chars += len(transformed) + bool(visible)
+        if visible_chars > _PAKO_VISIBLE_VIEW_MAX_CHARS:
+            return None
+        visible.append(transformed)
+    visible_records = "\x00".join(visible)
+    return canonical, literal_records, visible_records
+
+
+def _pako_decoded_contains_exfiltration(text: str) -> bool:
+    """Apply the URL policy lazily without creating an import cycle."""
+    # circular import: exfil.py imports redaction.py for credential-shape
+    # predicates, so this policy callback can import exfil only after load.
+    from .exfil import scan_exfiltration_urls
+
+    return bool(scan_exfiltration_urls(text))
+
+
+def _protect_pako_fragments(
+    text: str,
+    warnings: list[str],
+    scan_state: _PakoScanState,
+    *,
+    decoded_text_is_unsafe: Callable[[str], bool] | None = None,
+    decoded_text_redactor: Callable[[str], str] | None = None,
+    restoration_authorized: bool = False,
+) -> tuple[str, list[tuple[str, str]]]:
+    """Hide policy-clean pako payloads; restore only after an explicit policy decision."""
+    if "#pako:" not in text:
+        return text, []
+
+    restorations: list[tuple[str, str]] = []
+    sentinel_prefix = f"\x00pako-fragment-{secrets.token_hex(16)}-"
+    while sentinel_prefix in text:
+        sentinel_prefix = f"\x00pako-fragment-{secrets.token_hex(16)}-"
+
+    def _redacted(match: re.Match[str], reason: str) -> str:
+        payload = match.group("payload")
+        warnings.append(f"Redacted {reason} compressed payload ({len(payload)} chars)")
+        return match.group("prefix") + _REDACTED_ENCODED_CREDENTIAL_TAG
+
+    def _sub(match: re.Match[str]) -> str:
+        payload = match.group("payload")
+        if _PAKO_VISIBLE_VIEW_MERMAID_VERSION is None:
+            # No Mermaid release is evidenced (the visible-view model awaits a
+            # re-check), so the view cannot be trusted and the exemption is off.
+            return _redacted(match, "unvalidated-renderer")
+        if not _pako_fragment_has_supported_boundary(text, match.start(), match.end()):
+            return _redacted(match, "unsupported-boundary")
+        if scan_state.fragments_remaining <= 0:
+            return _redacted(match, "over-budget")
+        scan_state.fragments_remaining -= 1
+        if scan_state.decompression_budget_exhausted:
+            return _redacted(match, "over-budget")
+
+        decoded, inflated_work = _decode_pako_fragment(
+            payload,
+            scan_state.decompressed_bytes_remaining,
+        )
+        if inflated_work > scan_state.decompressed_bytes_remaining:
+            scan_state.decompressed_bytes_remaining = 0
+            scan_state.decompression_budget_exhausted = True
+            return _redacted(match, "over-budget")
+        scan_state.decompressed_bytes_remaining -= inflated_work
+        if scan_state.decompressed_bytes_remaining == 0:
+            scan_state.decompression_budget_exhausted = True
+        if decoded is None:
+            return _redacted(match, "invalid")
+
+        semantic_state = _canonicalize_pako_state(decoded)
+        if semantic_state is None:
+            return _redacted(match, "invalid-state")
+        canonical, records, visible_records = semantic_state
+        policy_views: tuple[str, ...] = (canonical, records)
+        if visible_records != records:
+            policy_views += (visible_records,)
+        if any(_PAKO_FRAGMENT_PREFIX_RE.search(view) for view in policy_views):
+            return _redacted(match, "nested")
+        if scan_state.bare_secret_budget_exhausted:
+            return _redacted(match, "over-budget")
+        if any(_contains_fixed_credential(view) for view in policy_views):
+            return _redacted(match, "credential-bearing")
+        if decoded_text_redactor is not None and any(
+            decoded_text_redactor(view) != view for view in policy_views
+        ):
+            return _redacted(match, "credential-bearing")
+        if decoded_text_is_unsafe is not None and any(
+            decoded_text_is_unsafe(view) for view in policy_views
+        ):
+            return _redacted(match, "exfiltration-bearing")
+
+        bare_secret_views: tuple[str, ...] = (canonical,)
+        if visible_records != records:
+            bare_secret_views += (visible_records,)
+        for view in bare_secret_views:
+            if _pako_text_contains_bare_secret(view, scan_state):
+                return _redacted(match, "credential-bearing")
+            if scan_state.bare_secret_budget_exhausted:
+                return _redacted(match, "over-budget")
+
+        # A printable base64 blob is intentionally exempt from the global bare-
+        # secret heuristic. Inside decoded pako state it is safe to inspect one
+        # layer: policy views are already bounded, base64 matches are disjoint,
+        # and every decoded candidate window spends the same shared budget.
+        for view in policy_views:
+            if _pako_decoded_base64_contains_bare_secret(view, scan_state):
+                return _redacted(match, "credential-bearing")
+            if scan_state.bare_secret_budget_exhausted:
+                return _redacted(match, "over-budget")
+
+        if not restoration_authorized:
+            return _redacted(match, "policy-unverified")
+        sentinel = f"{sentinel_prefix}{len(restorations)}\x00"
+        restorations.append((sentinel, payload))
+        return match.group("prefix") + sentinel
+
+    return _PAKO_FRAGMENT_RE.sub(_sub, text), restorations
+
+
+def _restore_pako_fragments(text: str, restorations: list[tuple[str, str]]) -> str:
+    """Restore validated payload bytes in one forward pass."""
+    if not restorations:
+        return text
+    lookup = dict(restorations)
+    first = restorations[0][0]
+    digit_end = len(first) - 1
+    digit_start = digit_end
+    while digit_start > 0 and first[digit_start - 1].isdigit():
+        digit_start -= 1
+    pattern = re.compile(re.escape(first[:digit_start]) + r"[0-9]+\x00")
+    parts: list[str] = []
+    cursor = 0
+    restored: set[str] = set()
+    for match in pattern.finditer(text):
+        sentinel = match.group(0)
+        if sentinel not in lookup or sentinel in restored:
+            continue
+        parts.extend((text[cursor : match.start()], lookup[sentinel]))
+        cursor = match.end()
+        restored.add(sentinel)
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 # ── Label-independent bare-secret detection ──
@@ -814,6 +1397,47 @@ def _contains_bare_secret(run: str) -> bool:
     return False
 
 
+def _pako_text_contains_bare_secret(text: str, scan_state: _PakoScanState) -> bool:
+    """Scan direct bare-secret runs while charging the shared pako window budget."""
+    for match in _BARE_SECRET_RUN_RE.finditer(text):
+        run = match.group()
+        windows = len(run) - _SECRET_KEY_LEN + 1
+        if windows > scan_state.bare_secret_windows_remaining:
+            scan_state.bare_secret_budget_exhausted = True
+            return False
+        scan_state.bare_secret_windows_remaining -= windows
+        if _contains_bare_secret(run):
+            return True
+    return False
+
+
+def _pako_decoded_base64_contains_bare_secret(
+    text: str,
+    scan_state: _PakoScanState,
+) -> bool:
+    """Decode one base64 layer and scan bare secrets under the pako work budget."""
+    for match in _B64_CHUNK_RE.finditer(text):
+        candidate = match.group()
+        missing_padding = -len(candidate) % 4
+        # A canonical base64 value can omit zero, one, or two trailing padding
+        # characters. A residue that would need three is structurally invalid; do not
+        # hand it to a version-dependent permissive decoder.
+        if missing_padding == 3:
+            continue
+        try:
+            decoded = base64.b64decode(
+                candidate + "=" * missing_padding,
+                validate=True,
+            ).decode("utf-8", errors="ignore")
+        except Exception:
+            continue
+        if _pako_text_contains_bare_secret(decoded, scan_state):
+            return True
+        if scan_state.bare_secret_budget_exhausted:
+            return False
+    return False
+
+
 def _decode_b64_chunk(chunk: str) -> str:
     """Decode ONE `_B64_CHUNK_RE` match; return decoded credential text or ''.
 
@@ -982,7 +1606,11 @@ def _splice(text: str, spans: list[_RedactionSpan]) -> str:
     return "".join(parts)
 
 
-def redact_credentials(text: str) -> tuple[str, list[str]]:
+def redact_credentials(
+    text: str,
+    *,
+    _pako_already_protected: bool = False,
+) -> tuple[str, list[str]]:
     """Redact raw credential patterns from text, including base64-encoded.
 
     Returns (cleaned_text, list_of_warnings).
@@ -1000,8 +1628,24 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     span never rewrites text an earlier pass already claimed; it redacts only
     the part of its span still standing in plaintext, so no character is
     redacted twice and no character a pass flagged is left behind.
+
+    ``_pako_already_protected`` is private to the composition in
+    ``security.__init__``: it says the caller has already replaced every pako
+    payload with a sentinel and will restore them itself, so this pass must not
+    decode again. A direct call has no active-policy authorization and therefore
+    replaces even a validated pako candidate as one encoded-credential marker.
+    The pako work budgets are scoped to whichever call protects.
     """
     warnings: list[str] = []
+    if _pako_already_protected:
+        scan_text = text
+    else:
+        scan_text, _ = _protect_pako_fragments(
+            text,
+            warnings,
+            _PakoScanState(),
+            decoded_text_is_unsafe=_pako_decoded_contains_exfiltration,
+        )
 
     # 1. Plaintext credential patterns.
     #
@@ -1014,8 +1658,8 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # `taken` is every span an earlier pass has claimed, kept sorted and
     # disjoint; it is what the later passes subtract from.
     taken: list[_RedactionSpan] = []
-    if _might_contain_credential(text):
-        for m in _CREDENTIAL_PATTERNS.finditer(text):
+    if _might_contain_credential(scan_text):
+        for m in _CREDENTIAL_PATTERNS.finditer(scan_text):
             # Emit ONLY non-sensitive metadata (length). Do NOT slice any part of
             # the match into the warning: `_CREDENTIAL_PATTERNS` matches the raw
             # secret value itself (e.g. `ghp_…`, `sk-ant-…`), so even a short prefix
@@ -1039,7 +1683,7 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     # The two loops stay SEPARATE and in their original order: `warnings` is a
     # contract (all pass-2 warnings precede all pass-3 warnings), and pass 3
     # subtracts every pass-2 claim, so pass 2 must have finished first.
-    b64_matches = list(_B64_CHUNK_RE.finditer(text))
+    b64_matches = list(_B64_CHUNK_RE.finditer(scan_text))
 
     # 2. Base64-encoded credentials.
     #
@@ -1087,9 +1731,9 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
             pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
         warnings.append(f"Redacted bare secret key ({len(run)} chars)")
 
-    if not taken and not pass3:
-        return text, warnings
-    return _splice(text, sorted(taken + pass3)), warnings
+    spans = sorted(taken + pass3)
+    result = scan_text if not spans else _splice(scan_text, spans)
+    return result, warnings
 
 
 # Absolute filesystem paths, POSIX and Windows. Deliberately narrow: anchored to

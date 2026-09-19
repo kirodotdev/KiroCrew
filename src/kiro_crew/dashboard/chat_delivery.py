@@ -24,7 +24,8 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.dashboard.chat_utils import _redact_for_display, _redact_meta
 from kiro_crew.dashboard.slot_queue_repository import ATTACHMENT_META_KEYS, warn_if_not_durable
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.platform import redact_pako_via_context
+from kiro_crew.security import redact_credentials
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from kiro_crew.dashboard.state import DashboardState, _ChatSlot
@@ -110,10 +111,11 @@ def sanitize_outbound(text: str) -> str:
 
     The single sanitization chain every delivery path uses before a message is
     persisted or broadcast: raw content must never reach an external surface.
+    Ordinary outer text keeps the existing baseline policy, while every pako
+    link's decoded state is checked under the active credential policy before
+    the opaque payload can be restored.
     """
-    sanitized, _ = redact_exfiltration_urls(text)
-    sanitized, _ = redact_credentials(sanitized)
-    return sanitized
+    return redact_pako_via_context(text)
 
 
 def _row_has_delivery_id(slot: Any, delivery_id: str) -> bool:

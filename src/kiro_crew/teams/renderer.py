@@ -52,7 +52,6 @@ from kiro_crew.messaging.outbound_files import (
 )
 from kiro_crew.messaging.renderer import (
     Renderer,
-    _default_redactor,
     apply_options_cap,
     new_approval_nonce,
     split_options_trailer,
@@ -60,6 +59,7 @@ from kiro_crew.messaging.renderer import (
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.tables import TABLE_POLICY_CARDS
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.sel import sel
 from kiro_crew.teams.attachments import (
     REASON_INLINE_UNDELIVERED,
@@ -147,7 +147,7 @@ def _display_safe(text: str) -> str:
     purpose. Markup the platform renders away can reassemble a credential the
     driver's byte-level scan saw as broken, so the check belongs at each sink.
     """
-    safe, _ = redact_for_display(text or "", _default_redactor)
+    safe, _ = redact_for_display(text or "", redact_pako_via_context)
     return safe
 
 
@@ -376,7 +376,12 @@ class TeamsRenderer(Renderer):
             content = "…" if ok else _ERROR_TEXT
         # Overflow past max_buttons is appended to the body as a numbered list by
         # the shared cap, so the user still learns those choices exist.
-        content, kept = apply_options_cap(content, choices, self.capabilities)
+        content, kept = apply_options_cap(
+            content,
+            choices,
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
         chunks = await asyncio.to_thread(
             split_markdown_safe, content, self.capabilities.max_message_chars
         ) or ([] if (kept or files) else ["…"])
@@ -552,7 +557,7 @@ class TeamsRenderer(Renderer):
         (``AKIA**…**``) is broken to the byte-level scanner and whole on screen --
         the progress bubble would be the one hole in the chokepoint.
         """
-        body, redacted = await asyncio.to_thread(redact_for_display, body, _default_redactor)
+        body, redacted = await asyncio.to_thread(redact_for_display, body, redact_pako_via_context)
         if redacted:
             logger.warning("Teams: redacted credential material from a progress update")
         try:
@@ -691,7 +696,9 @@ class TeamsRenderer(Renderer):
         """
         failures: list[Rejection] = []
         for file in files:
-            caption, _ = await asyncio.to_thread(redact_for_display, file.alt, _default_redactor)
+            caption, _ = await asyncio.to_thread(
+                redact_for_display, file.alt, redact_pako_via_context
+            )
             attachment = await asyncio.to_thread(
                 inline_image_attachment, file, inline_image_name(caption, file)
             )
@@ -713,7 +720,7 @@ class TeamsRenderer(Renderer):
             error=REASON_INLINE_UNDELIVERED,
         )
         note = self._append_rejections("", failures)
-        safe, _ = await asyncio.to_thread(redact_for_display, note, _default_redactor)
+        safe, _ = await asyncio.to_thread(redact_for_display, note, redact_pako_via_context)
         # Chunked like any other text: a refusal line quotes an LLM-authored path,
         # so the note has no bound of its own and a single over-cap activity would
         # be refused whole -- losing the only record that the image went missing.
@@ -749,10 +756,12 @@ class TeamsRenderer(Renderer):
         # lookup nor the scan. Wrong only in the safe direction.
         if body and self.capabilities.files_outbound and _IMAGE_MARKER in body:
             body, files = await self._extract_uploads(body)
-        safe, redacted = await asyncio.to_thread(redact_for_display, body, _default_redactor)
+        safe, redacted = await asyncio.to_thread(redact_for_display, body, redact_pako_via_context)
         safe_choices: list[str] = []
         for choice in choices:
-            clean, hit = await asyncio.to_thread(redact_for_display, choice, _default_redactor)
+            clean, hit = await asyncio.to_thread(
+                redact_for_display, choice, redact_pako_via_context
+            )
             redacted = redacted or hit
             if clean.strip():
                 safe_choices.append(clean.strip())

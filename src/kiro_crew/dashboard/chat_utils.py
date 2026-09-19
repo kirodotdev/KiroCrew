@@ -46,6 +46,7 @@ from kiro_crew.dashboard.state import (
 from kiro_crew.history import transcript_sort_key
 from kiro_crew.hooks import safe_read_file
 from kiro_crew.messaging.link import canonical_key, is_channel_session_key
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.quick_prompts import QUICK_PROMPTS
 from kiro_crew.security import (
     oauth_url_contains_credential,
@@ -1747,22 +1748,25 @@ def redact_display_content(content: Any) -> str:
     row read-side redaction exists for. Both sites route through this ONE
     helper; do not add another copy of the guard.
 
-    Delegates to :func:`_redact_value`, the same recursive walker the meta
-    redaction uses: ``str`` leaves get ``redact_exfiltration_urls`` then
-    ``redact_credentials`` (the order the existing sites apply), dict VALUES
-    are recursed, and list/tuple elements are recursed into a new list. The
-    result is then passed through :func:`serialize_wire_content`, so a
-    non-string value leaves as JSON text — and that text gets one final
-    redaction pass: the recursive walker does not rewrite dict KEYS in place
-    (two distinct keys redacting to the same string would collapse into one
-    entry), but on the serialized wire string a key is plain content, so the
-    text pass closes the key channel with no entry loss. Never mutates the
-    input (rows are shared by reference and ``dict(m)`` is shallow) and
-    never raises for JSON-shaped input.
+    String rows have already crossed a context-aware write or stream boundary,
+    so their readback recheck uses ``redact_pako_via_context``: a clean pako
+    link survives while decoded state is decided again under the active policy.
+    Structured legacy/corrupt content has no equivalent provenance and stays on
+    :func:`_redact_value`'s companion-blind recursive baseline. That result is
+    serialized to text and scanned once more so dict keys cannot become an
+    unredacted wire channel. Never mutates the input and never raises for
+    JSON-shaped content.
     """
+    if isinstance(content, str):
+        # Message strings have already crossed a context-aware write/stream
+        # boundary. Rechecking through the same narrow seam preserves a clean
+        # pako link while revalidating decoded state under the active policy.
+        return redact_pako_via_context(content)
+
+    # Structured legacy/corrupt rows have no such provenance. Keep their
+    # recursive companion-blind baseline so an opaque pako value is never
+    # restored merely because readback encountered an old container shape.
     redacted = _redact_value(content)
-    if isinstance(redacted, str):
-        return redacted
     wire = serialize_wire_content(redacted)
     wire, _ = redact_exfiltration_urls(wire)
     wire, _ = redact_credentials(wire)

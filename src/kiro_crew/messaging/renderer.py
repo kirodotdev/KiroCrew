@@ -33,7 +33,7 @@ import hashlib
 import secrets
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
 
 from kiro_crew.constants import (
     MARKER_CLOSERS,
@@ -44,6 +44,7 @@ from kiro_crew.constants import (
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
 # Abstract output event kinds.
@@ -368,20 +369,35 @@ def redaction_notice(cred_count: int, url_count: int) -> str:
     )
 
 
-def _choice_display_safe(text: str, capabilities: TransportCapabilities | None) -> str:
+def _choice_display_safe(
+    text: str,
+    capabilities: TransportCapabilities | None,
+    redactor: Callable[[str], str] | None = None,
+) -> str:
     """The choice-label display sink, target-aware when the target is known.
 
-    ``None`` means "no declaration to consult", which defangs unconditionally --
-    the conservative direction, because a needless defang mangles text cosmetically
-    while a missing one lets a prompt-injected ``@everyone`` mass-notify.
+    ``None`` capabilities means "no declaration to consult", which defangs
+    unconditionally. ``None`` redactor keeps the fail-closed public baseline;
+    renderer callers may pass their already-authorized context redactor.
     """
-    if capabilities is None:
-        return display_safe(text)
-    return display_safe_for(text, capabilities)
+    if redactor is None:
+        if capabilities is None:
+            return display_safe(text)
+        return display_safe_for(text, capabilities)
+
+    text = strip_control_comments(text or "")
+    safe, _ = redact_for_display(text, redactor)
+    if capabilities is not None and not capabilities.mention_grammars:
+        return safe
+    return safe.replace("@", "@\u200b").replace("<!", "<\u200b!")
 
 
 def format_overflow(
-    overflow: list[str], start: int, capabilities: TransportCapabilities | None = None
+    overflow: list[str],
+    start: int,
+    capabilities: TransportCapabilities | None = None,
+    *,
+    redactor: Callable[[str], str] | None = None,
 ) -> str:
     """Number overflow choices continuing after ``start`` widget slots.
 
@@ -417,12 +433,17 @@ def format_overflow(
     unconditional either way -- no capability turns it off.
     """
     return "\n".join(
-        f"{start + i + 1}. {_choice_display_safe(c, capabilities)}" for i, c in enumerate(overflow)
+        f"{start + i + 1}. {_choice_display_safe(c, capabilities, redactor)}"
+        for i, c in enumerate(overflow)
     )
 
 
 def apply_options_cap(
-    body: str, choices: list[str], capabilities: TransportCapabilities
+    body: str,
+    choices: list[str],
+    capabilities: TransportCapabilities,
+    *,
+    redactor: Callable[[str], str] | None = None,
 ) -> tuple[str, list[str]]:
     """Enforce ``capabilities.max_buttons`` on a parsed ``[OPTIONS:]`` list.
 
@@ -462,10 +483,15 @@ def apply_options_cap(
     offers uncopyable, which is the cost the capability exists to avoid.
     """
     kept, overflow = cap_choices(choices, capabilities)
-    kept = [display_safe_for(c, capabilities) for c in kept]
+    kept = [_choice_display_safe(c, capabilities, redactor) for c in kept]
     if not overflow:
         return body, kept
-    lines = format_overflow(overflow, start=len(kept), capabilities=capabilities)
+    lines = format_overflow(
+        overflow,
+        start=len(kept),
+        capabilities=capabilities,
+        redactor=redactor,
+    )
     if not body:
         sep = ""
     elif body.endswith("\n"):
@@ -575,7 +601,12 @@ def split_options_trailer(text: str, *, hide_partial: bool = False) -> tuple[str
     return text, []
 
 
-def render_options_as_text(text: str, capabilities: TransportCapabilities) -> str:
+def render_options_as_text(
+    text: str,
+    capabilities: TransportCapabilities,
+    *,
+    redactor: Callable[[str], str] | None = None,
+) -> str:
     """Rewrite a trailing ``[OPTIONS:]`` trailer in *text* as numbered text.
 
     The whole trailer handling for a channel that renders no widget, so every
@@ -597,7 +628,7 @@ def render_options_as_text(text: str, capabilities: TransportCapabilities) -> st
     identity on an empty choice list, so one call covers all three cases.
     """
     body, choices = split_options_trailer(text)
-    return apply_options_cap(body, choices, capabilities)[0]
+    return apply_options_cap(body, choices, capabilities, redactor=redactor)[0]
 
 
 class Renderer(ABC):
@@ -616,8 +647,8 @@ class Renderer(ABC):
         self.capabilities = capabilities
 
     def redact_for_target(self, text: str) -> str:
-        """Redact text against the form a target will display."""
-        safe, _ = redact_for_display(text, _default_redactor)
+        """Recheck already-authorized turn text in its rendered form."""
+        safe, _ = redact_for_display(text, redact_pako_via_context)
         return safe
 
     def render_tables_for_target(

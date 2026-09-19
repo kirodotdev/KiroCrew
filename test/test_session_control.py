@@ -1932,6 +1932,118 @@ def test_expired_windows_are_swept_rather_than_accumulated():
 # ── session_send ──
 
 
+def _pako_url(code: str) -> tuple[str, str]:
+    """Build one supported Mermaid Live URL from a test-owned state."""
+    import base64
+    import json
+    import zlib
+
+    state = json.dumps({"code": code}, separators=(",", ":"))
+    payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+    return f"https://mermaid.live/edit#pako:{payload}", payload
+
+
+@pytest.fixture
+def _decoded_policy():
+    """Install a host policy with one marker the public baseline does not know."""
+    from kiro_crew import security
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.platform import build_default_context, reset_context, set_context
+
+    marker = "-".join(("host", "private", "value"))
+
+    class _Policy:
+        def redact(self, text: str) -> str:
+            return security.redact(text).replace(marker, "[REDACTED: host credential]")
+
+        def exempt_exact_hosts(self) -> frozenset[str]:
+            return frozenset()
+
+    base = build_default_context(KiroCrewConfig())
+    set_context(dataclasses.replace(base, credentials=_Policy()))
+    try:
+        yield marker
+    finally:
+        reset_context()
+
+
+def test_outbound_guard_decides_decoded_pako_under_the_active_policy(_decoded_policy):
+    """A policy-only marker cannot ride a validated link through direct egress."""
+    from kiro_crew import security
+
+    url, payload = _pako_url(f"flowchart TD\n  A[{_decoded_policy}] --> B")
+    baseline = security.redact(url)
+    assert payload not in baseline, "the public baseline must fail closed without authorization"
+    assert "[REDACTED: encoded credential]" in baseline
+
+    guarded = cd.sanitize_outbound(url)
+
+    assert payload not in guarded
+    assert "[REDACTED: encoded credential]" in guarded
+    assert (
+        cd.sanitize_outbound(f"outer {_decoded_policy}") == f"outer {_decoded_policy}"
+    ), "the narrow pako fix must not apply the host delta to unrelated outer text"
+
+
+def test_outbound_guard_preserves_safe_pako_and_baseline_credential_checks(_decoded_policy):
+    """Safe links remain byte-identical and the pre-existing outer checks still run."""
+    url, _payload = _pako_url("flowchart TD\n  A --> B")
+    key_id = "".join(("AKIA", "IOSFODNN7EXAMPLE"))
+
+    guarded = cd.sanitize_outbound(f"{url}\n{key_id}")
+
+    assert guarded.startswith(url)
+    assert key_id not in guarded
+    assert "[REDACTED: credential]" in guarded
+
+
+def test_outbound_guard_uses_one_shared_fragment_budget(monkeypatch):
+    """The direct wrapper keeps the pako seam's per-call fragment ceiling."""
+    from kiro_crew.security import redaction
+
+    monkeypatch.setattr(redaction, "_PAKO_FRAGMENT_MAX_COUNT", 2)
+    url, payload = _pako_url("flowchart TD\n  A --> B")
+
+    guarded = cd.sanitize_outbound(" ".join((url, url, url)))
+
+    assert guarded.count(payload) == 2
+    assert guarded.count("[REDACTED: encoded credential]") == 1
+
+
+def test_session_send_rejects_policy_only_credential_in_decoded_pako(
+    tmp_path, monkeypatch, _decoded_policy
+):
+    """The peer-session write path persists no active-policy credential carrier."""
+    state = _make_state(tmp_path)
+    caller = _slot(state, "chat-1")
+    target = _peer_target(state, "chat-2", caller)
+    url, payload = _pako_url(f"flowchart TD\n  A[{_decoded_policy}] --> B")
+    ran: dict[str, str] = {}
+
+    async def _fake_run_chat(_state, _slot, prompt):
+        ran["prompt"] = prompt
+
+    monkeypatch.setattr("kiro_crew.dashboard.chat_runner._run_chat", _fake_run_chat)
+
+    async def _drive():
+        await sc.send_to_target(
+            state,
+            caller_session_key=_key(caller),
+            target="chat-2",
+            message=url,
+        )
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(_drive())
+
+    assert payload not in ran["prompt"]
+    assert "[REDACTED: encoded credential]" in ran["prompt"]
+    persisted = [m.get("content", "") for m in target.messages if m.get("role") == "user"]
+    assert persisted
+    assert all(payload not in content for content in persisted)
+
+
 def test_send_to_an_idle_target_starts_a_turn_with_provenance(tmp_path, monkeypatch):
     """The delivered prompt carries the caller tag, and an idle target runs now.
 

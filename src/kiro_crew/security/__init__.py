@@ -32,7 +32,11 @@ from types import ModuleType
 from typing import TYPE_CHECKING, NamedTuple
 from urllib.parse import parse_qs, unquote, unquote_plus, urlparse
 
-from kiro_crew.credential_patterns import AWS_KEY_ID, JWT_MULTI_SEGMENT
+from kiro_crew.credential_patterns import (
+    AWS_KEY_ID,
+    JWT_MULTI_SEGMENT,
+    MERMAID_PAKO_URL_ORIGIN,
+)
 from kiro_crew.executors import (
     _MAX_PATH_RESOLVE_WORKERS,
     maintenance_executor,
@@ -386,6 +390,8 @@ from .redaction import (
     _HEX_ONLY_RE,
     _LOCAL_PATH_PLACEHOLDER,
     _LOCAL_PATH_RE,
+    _PAKO_FRAGMENT_MAX_ENCODED_CHARS,
+    _PAKO_FRAGMENT_PREFIX,
     _PREFILTER_MIN_LEN,
     _PRINTABLE_BYTES,
     _REDACTED_CREDENTIAL_TAG,
@@ -408,6 +414,9 @@ from .redaction import (
     _looks_like_secret_key,
     _lowercase_run_exceeds,
     _might_contain_credential,
+    _PakoScanState,
+    _protect_pako_fragments,
+    _restore_pako_fragments,
     _shannon_entropy,
     _text_contains_bare_secret,
     _vowel_ratio,
@@ -780,35 +789,81 @@ BINARY_MIME_ALLOWLIST: frozenset[str] = frozenset(
 )
 
 
-def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
-    """Apply all redaction passes, reporting what each one removed.
+def _redact_with_policy_findings(
+    text: str,
+    *,
+    decoded_redactor: "Callable[[str], str] | None" = None,
+    final_redactor: "Callable[[str], str] | None" = None,
+    pako_restoration_authorized: bool = False,
+) -> tuple[str, list[str], list[str]]:
+    """Return pako-aware text, URL warnings, then credential warnings.
 
-    The same passes in the same order as :func:`redact`, which is the point of
-    it living here: exfiltration URLs run FIRST because that pass matches whole
-    URLs, and a credential replaced ahead of it leaves a placeholder inside one,
-    which the URL matcher then fails to recognise as the shape it is there to
-    catch. A caller that wants the found lists would otherwise hand-sequence
-    the two calls and own that ordering separately -- which several already do,
-    in the reverse order.
+    Two independent policy seams, because they answer different questions:
 
-    Returns ``(text, credential_warnings, url_warnings)``. Both lists hold the
-    WARNING strings the underlying passes report (``"Redacted credential pattern
-    (20 chars)"``), never the removed values, so a caller can tell the user their
-    content was altered -- and log that fact -- without handling a secret.
+    * ``decoded_redactor`` is applied to every DECODED view of a pako candidate
+      (canonical JSON, literal records, Mermaid-visible records) while the
+      payload is still hidden. A view it changes marks the whole link
+      ``credential-bearing`` and the payload is replaced, never restored. This
+      is what makes an exemption safe on a host whose policy knows tokens the
+      baseline does not: a link is a carrier for its decoded state, so the
+      decision to preserve it must be taken under the policy that governs the
+      surface it reaches.
+    * ``final_redactor`` is applied to the OUTER text after the baseline passes,
+      the ordinary "companion adds its patterns" delta.
 
-    This is the companion-BLIND baseline, like every ``security.redact*`` entry
-    point: it consults no active :class:`CredentialPolicy`. An egress site must
-    finish the text through ``platform.context.redact_via_context`` so a loaded
-    companion's extra patterns apply; use this one for the warnings, or where the
-    baseline is deliberately the subject.
+    ``platform.redact_with_findings_via_context`` passes the host delta as both;
+    ``platform.redact_pako_via_context`` passes it as ``decoded_redactor`` only,
+    so a site that was companion-blind on ordinary text before the pako exemption
+    stays byte-identical there while its pako decisions follow the active policy.
+
+    ``pako_restoration_authorized`` is false for every public baseline facade.
+    Only the PlatformContext composition sets it after resolving the active
+    credential policy; absent that decision, a validated candidate remains one
+    fail-closed encoded-credential marker.
+
+    The pako work budgets (:class:`_PakoScanState`) are scoped to this ONE call:
+    every fragment of *text* is protected here, before either scan runs, so no
+    later pass in the composition decodes anything and nothing outside it
+    shares the budget.
     """
-    text, urls = redact_exfiltration_urls(text)
-    text, credentials = redact_credentials(text)
-    return text, list(credentials), list(urls)
+    pako_warnings: list[str] = []
+    protected, restorations = _protect_pako_fragments(
+        text,
+        pako_warnings,
+        _PakoScanState(),
+        decoded_text_is_unsafe=lambda decoded: bool(scan_exfiltration_urls(decoded)),
+        decoded_text_redactor=decoded_redactor,
+        restoration_authorized=pako_restoration_authorized,
+    )
+    result, url_warnings = redact_exfiltration_urls(protected)
+    if restorations:
+        result, credential_warnings = redact_credentials(result, _pako_already_protected=True)
+    else:
+        # Keep the public one-argument call contract for ordinary text. Tests,
+        # adapters, and facade patches replace this seam with compatible stubs;
+        # private pako kwargs belong only to the protected-sentinel path.
+        result, credential_warnings = redact_credentials(result)
+    if final_redactor is not None:
+        result = final_redactor(result)
+    return (
+        _restore_pako_fragments(result, restorations),
+        list(url_warnings),
+        pako_warnings + list(credential_warnings),
+    )
+
+
+def redact_with_findings(text: str) -> tuple[str, list[str], list[str]]:
+    """Apply the baseline policy through one bounded pako-aware boundary.
+
+    Returns ``(text, credential_warnings, url_warnings)``. This public facade is
+    companion-blind; host egress must finish through ``redact_via_context``.
+    """
+    result, url_warnings, credential_warnings = _redact_with_policy_findings(text)
+    return result, credential_warnings, url_warnings
 
 
 def redact(text: str) -> str:
-    """Apply all redaction passes (exfiltration URLs + credentials)."""
+    """Apply all baseline redaction passes through the shared policy boundary."""
     return redact_with_findings(text)[0]
 
 
@@ -858,6 +913,35 @@ _PEM_HOLD_RE = re.compile(
 # is rejoined before emission while still keeping the buffer bounded.
 _STREAM_HOLDBACK_JWT_MAX = 4096
 
+# A streaming Markdown destination may split before the URL prefix arrives. Keep
+# only the trailing same-line label candidate, under the same 1 KiB context
+# ceiling used once the exact pako prefix is present.
+_STREAM_PAKO_MARKDOWN_CONTEXT_MAX = 1024
+_STREAM_PAKO_ORIGIN_LEN = len(MERMAID_PAKO_URL_ORIGIN)
+_STREAM_PAKO_PREFIX_KEY = _PAKO_FRAGMENT_PREFIX
+
+
+def _stream_pako_prefix_key(value: str) -> str:
+    """Fold only the scheme/host portion of a full or partial pako prefix."""
+    origin_end = min(len(value), _STREAM_PAKO_ORIGIN_LEN)
+    return value[:origin_end].lower() + value[origin_end:]
+
+
+def _stream_pako_markdown_opener_start(text: str) -> int | None:
+    """Return a bounded trailing Markdown label that may still open a pako link."""
+    search_start = max(0, len(text) - _STREAM_PAKO_MARKDOWN_CONTEXT_MAX)
+    line_start = text.rfind("\n", search_start) + 1
+    search_start = max(search_start, line_start)
+    label_start = text.rfind("[", search_start)
+    if label_start < 0:
+        return None
+    label_tail = text[label_start + 1 :]
+    label_end = label_tail.find("]")
+    if label_end < 0 or label_end == len(label_tail) - 1:
+        return label_start
+    return None
+
+
 # The withheld tail is a partial JWT/JWE when it ends with the `eyJ` base64url
 # header prefix optionally followed by up to FOUR `.`-separated base64url segments
 # (the final segment may be empty mid-stream). Three segments = a JWS/JWT
@@ -900,84 +984,281 @@ _BEARER_ANCHOR_PARTIAL_RE = re.compile(
 
 
 class StreamRedactor:
-    """Rolling-buffer redactor for streamed LLM output.
+    """Rolling redactor with one bounded exception for an exact pako URL tail.
 
-    Feed raw chunks in order; ``feed`` returns the redacted, safe-to-broadcast
-    prefix (possibly empty while a partial credential is buffered). Call
-    ``flush`` when the stream/segment ends to redact and return the remainder.
-    Adds at most one chunk of latency. A credential is never split across a
-    commit boundary because commits only ever end at a non-credential-class
-    character, while a credential is a contiguous credential-class run.
+    Ordinary credential behavior is unchanged from the existing 512/4096-byte
+    holdback. Once the exact Mermaid editor prefix is complete, an incremental
+    state machine owns that candidate: payload and container bytes are visited
+    once and stored in an append-only bytearray until one terminal policy pass.
+    This keeps one-character provider chunks linear at the 256 KiB pako ceiling.
+
+    Each commit runs the supplied redactor exactly once. The redactor IS the
+    complete policy, and this class composes nothing itself (wrapping the
+    redactor in a second baseline pass would run every exfil and credential scan
+    twice per streamed chunk for no change in output). The default, when no
+    redactor is supplied, is the companion-blind baseline ``redact`` -- for
+    isolated callers and tests. Every PRODUCTION wire passes a platform seam:
+    ``platform.redact_pako_via_context`` where the wire was companion-blind on
+    ordinary text before the pako exemption (the dashboard chat and thinking
+    streams, the side chat, Slack's stream, ``TurnDriver``), because a pako link
+    this class now lets through whole is a carrier for its decoded state and
+    the client cannot un-see it once emitted; ``platform.redact_via_context``
+    where the whole active policy is wanted.
     """
 
-    __slots__ = ("_buf", "_redact")
+    __slots__ = (
+        "_buf",
+        "_pako_buffer",
+        "_pako_container",
+        "_pako_label_length",
+        "_pako_left_supported",
+        "_pako_materialized_chars",
+        "_pako_payload_length",
+        "_pako_payload_start",
+        "_pako_phase",
+        "_pako_scan_steps",
+        "_pako_storage_moves",
+        "_redact",
+    )
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
         self._buf = ""
+        self._pako_buffer: bytearray | None = None
+        self._pako_container = ""
+        self._pako_label_length = 0
+        self._pako_left_supported = False
+        self._pako_materialized_chars = 0
+        self._pako_payload_length = 0
+        self._pako_payload_start = 0
+        self._pako_phase = ""
+        self._pako_scan_steps = 0
+        self._pako_storage_moves = 0
         # Resolve at call time so module-load order is irrelevant.
         self._redact = redactor or redact
 
-    def feed(self, chunk: str) -> str:
-        """Accept a chunk; return the redacted prefix that is safe to emit now."""
-        if not chunk:
-            return ""
+    @staticmethod
+    def _is_pako_payload_char(char: str) -> bool:
+        return char.isascii() and (char.isalnum() or char in "_-")
+
+    def _append_pako(self, text: str) -> None:
+        assert self._pako_buffer is not None
+        self._pako_buffer.extend(text.encode("utf-8", errors="surrogatepass"))
+        self._pako_storage_moves += len(text)
+
+    def _materialize_pako(self) -> str:
+        assert self._pako_buffer is not None
+        text = self._pako_buffer.decode("utf-8", errors="surrogatepass")
+        self._pako_materialized_chars += len(text)
+        self._pako_storage_moves += len(text)
+        return text
+
+    def _clear_pako(self) -> None:
+        self._pako_buffer = None
+        self._pako_container = ""
+        self._pako_label_length = 0
+        self._pako_left_supported = False
+        self._pako_payload_length = 0
+        self._pako_payload_start = 0
+        self._pako_phase = ""
+
+    def _start_pako(
+        self,
+        leading: str,
+        *,
+        container: str,
+        left_supported: bool,
+    ) -> None:
+        self._pako_buffer = bytearray()
+        self._pako_container = container
+        self._pako_left_supported = left_supported
+        self._pako_phase = "payload"
+        self._append_pako(leading)
+        self._pako_payload_start = len(leading)
+
+    def _overflow_pako(self) -> str:
+        candidate = self._materialize_pako()
+        visible_prefix = candidate[: self._pako_payload_start]
+        self._pako_buffer = bytearray()
+        self._pako_phase = "discard-payload"
+        return self._redact(visible_prefix) + _REDACTED_ENCODED_CREDENTIAL_TAG
+
+    def _finish_pako(self) -> str:
+        candidate = self._materialize_pako()
+        left_supported = self._pako_left_supported
+        payload_start = self._pako_payload_start
+        payload_length = self._pako_payload_length
+        self._clear_pako()
+        if not left_supported and payload_length:
+            return self._redact(candidate[:payload_start]) + _REDACTED_ENCODED_CREDENTIAL_TAG
+        return self._redact(candidate)
+
+    def _release_pako_to_ordinary(self) -> str:
+        """Release a disqualified candidate through ordinary stream holdback."""
+        candidate = self._materialize_pako()
+        self._clear_pako()
+        return self._feed_ordinary(candidate)
+
+    def _feed_pako(self, text: str) -> tuple[str, int]:
+        """Consume candidate bytes once; return emitted text and input consumed."""
+        emitted: list[str] = []
+        for index, char in enumerate(text):
+            self._pako_scan_steps += 1
+            if self._pako_phase == "discard-payload":
+                if self._is_pako_payload_char(char):
+                    continue
+                self._clear_pako()
+                return "".join(emitted), index
+
+            if self._pako_phase == "payload":
+                if self._is_pako_payload_char(char):
+                    self._pako_payload_length += 1
+                    if self._pako_payload_length > _PAKO_FRAGMENT_MAX_ENCODED_CHARS:
+                        emitted.append(self._overflow_pako())
+                    else:
+                        self._append_pako(char)
+                    continue
+                if self._pako_container == "slack" and char == "|":
+                    self._pako_phase = "slack-label"
+                    self._append_pako(char)
+                    continue
+                if not self._pako_left_supported and self._pako_payload_length:
+                    emitted.append(self._finish_pako())
+                    return "".join(emitted), index
+                self._append_pako(char)
+                emitted.append(self._finish_pako())
+                return "".join(emitted), index + 1
+
+            self._pako_label_length += 1
+            self._append_pako(char)
+            if char in "\r\n>":
+                emitted.append(self._finish_pako())
+                return "".join(emitted), index + 1
+            if self._pako_label_length > _STREAM_PAKO_MARKDOWN_CONTEXT_MAX:
+                emitted.append(self._release_pako_to_ordinary())
+                return "".join(emitted), index + 1
+
+        return "".join(emitted), len(text)
+
+    def _candidate_context(self, text: str, start: int) -> tuple[int, str, bool]:
+        if start >= 2 and text[start - 2 : start] == "](":
+            line_start = text.rfind("\n", 0, start - 2) + 1
+            context_start = max(line_start, start - _STREAM_PAKO_MARKDOWN_CONTEXT_MAX)
+            label_start = text.rfind("[", context_start, start - 2)
+            if label_start >= 0 and "]" not in text[label_start + 1 : start - 2]:
+                return label_start, "markdown", True
+        if start > 0 and text[start - 1] == "<":
+            return start - 1, "slack", True
+        if start == 0 or text[start - 1] in " \t\r\n":
+            return start, "bare", True
+        return start, "bare", False
+
+    def _feed_ordinary(self, chunk: str) -> str:
+        """Run the established bounded credential holdback before pako starts."""
         self._buf += chunk
-        # Start of the maximal trailing credential-class run.
         i = len(self._buf)
         while i > 0 and self._buf[i - 1] in _CRED_CLASS:
             i -= 1
-        # PEM header hold-back (ported from the upstream project): the
-        # multi-word phrase "BEGIN RSA PRIVATE KEY" splits on whitespace.  If the
-        # tail of the commit window contains an in-progress PEM header prefix,
-        # refuse to commit at this boundary.
         if i > 0 and _PEM_HOLD_RE.search(self._buf[max(0, i - 50) : i]):
             i = 0
-        # Also withhold from the start of any trailing (possibly incomplete)
-        # `Authorization: Bearer <token>` anchor. Its embedded whitespace is not in
-        # _CRED_CLASS, so the run scan above would otherwise commit the anchor
-        # prefix and the opaque token in separate chunks — leaking the token, since
-        # the batch Bearer pattern only fires on the joined anchor.
         anchor = _BEARER_ANCHOR_PARTIAL_RE.search(self._buf)
         if anchor is not None:
             i = min(i, anchor.start())
-        # Escalate the holdback cap to the JWT ceiling when the withheld tail is
-        # (the start of) a credential that legitimately exceeds the 512-char DoS
-        # floor: a partial JWT/JWE (`eyJ…`) OR a trailing `Authorization: Bearer`
-        # anchor. Bearer must be included alongside JWT — an opaque OAuth/refresh/
-        # SSO Bearer token > 512 chars has no `eyJ` prefix, so keying escalation on
-        # `_PARTIAL_JWT_TAIL_RE` alone left its 512-char tail streaming raw. Still
-        # bounded: a run with no credential anchor stays on the 512 floor.
+        tail = self._buf[i:]
+        pako_tail_key = _stream_pako_prefix_key(tail)
+        pako_prefix_pending = _STREAM_PAKO_PREFIX_KEY.startswith(pako_tail_key)
+        if pako_prefix_pending and i:
+            prefix = self._buf[:i]
+            if prefix.endswith("]("):
+                line_start = self._buf.rfind("\n", 0, i - 2) + 1
+                label_start = self._buf.rfind(
+                    "[",
+                    max(line_start, i - _STREAM_PAKO_MARKDOWN_CONTEXT_MAX),
+                    i - 2,
+                )
+                if label_start >= 0 and "]" not in self._buf[label_start + 1 : i - 2]:
+                    i = label_start
+            elif prefix.endswith("<"):
+                i -= 1
+        markdown_opener_start = _stream_pako_markdown_opener_start(self._buf)
+        if markdown_opener_start is not None:
+            i = min(i, markdown_opener_start)
         cred_anchored = _PARTIAL_JWT_TAIL_RE.search(self._buf) is not None or anchor is not None
-        cap = _STREAM_HOLDBACK_MAX
-        if len(self._buf) - i > cap and cred_anchored:
-            cap = _STREAM_HOLDBACK_JWT_MAX
-        if len(self._buf) - i > cap:
+        cap = _STREAM_PAKO_MARKDOWN_CONTEXT_MAX if markdown_opener_start is not None else 0
+        if not cap:
+            cap = (
+                _STREAM_HOLDBACK_JWT_MAX
+                if len(tail) > _STREAM_HOLDBACK_MAX and cred_anchored
+                else _STREAM_HOLDBACK_MAX
+            )
+        if len(tail) > cap:
             if cred_anchored:
-                # Fail closed: a credential-anchored tail (JWT/JWE/Bearer) has blown
-                # past the 4096 ceiling. Bisecting here would emit the token's head
-                # raw, so instead redact+emit the safe prefix, append the tag, and
-                # DROP the oversized tail. A plain cred-class run with no credential
-                # anchor falls through to the bisect below and is committed
-                # (bisecting an opaque non-credential run cannot leak a structured
-                # secret and preserves the DoS bound with no data loss).
                 commit, self._buf = self._buf[:i], ""
                 out = self._redact(commit) if commit else ""
                 return out + _REDACTED_CREDENTIAL_TAG
             i = len(self._buf) - cap
         if i <= 0:
-            return ""  # whole buffer is a (possibly partial) credential run — hold
+            return ""
         commit, self._buf = self._buf[:i], self._buf[i:]
         return self._redact(commit)
 
+    def feed(self, chunk: str) -> str:
+        if not chunk:
+            return ""
+        emitted: list[str] = []
+        remaining = chunk
+        while remaining:
+            if self._pako_buffer is not None:
+                out, consumed = self._feed_pako(remaining)
+                if out:
+                    emitted.append(out)
+                remaining = remaining[consumed:]
+                continue
+
+            combined = self._buf + remaining
+            self._pako_scan_steps += len(combined)
+            match = redaction._PAKO_FRAGMENT_PREFIX_RE.search(combined)
+            if match is None:
+                emitted.append(self._feed_ordinary(remaining))
+                break
+
+            candidate_start, container, left_supported = self._candidate_context(
+                combined, match.start()
+            )
+            if not left_supported:
+                # The URL's leading ``https`` can complete a credential-class run
+                # immediately before an unsupported candidate. Keep the same bounded
+                # tail as ordinary streaming so the terminal policy pass sees the
+                # composed wire text instead of two independently safe pieces.
+                run_floor = max(0, candidate_start - _STREAM_HOLDBACK_MAX)
+                while candidate_start > run_floor and combined[candidate_start - 1] in _CRED_CLASS:
+                    candidate_start -= 1
+            before = combined[:candidate_start]
+            self._buf = ""
+            if before:
+                emitted.append(self._redact(before))
+            self._start_pako(
+                combined[candidate_start : match.end()],
+                container=container,
+                left_supported=left_supported,
+            )
+            remaining = combined[match.end() :]
+        return "".join(emitted)
+
     def flush(self) -> str:
-        """Redact and return the buffered remainder; clears the buffer."""
-        out = self._redact(self._buf) if self._buf else ""
-        self._buf = ""
-        return out
+        parts: list[str] = []
+        if self._pako_buffer is not None:
+            if self._pako_phase == "discard-payload":
+                self._clear_pako()
+            else:
+                parts.append(self._finish_pako())
+        if self._buf:
+            parts.append(self._redact(self._buf))
+            self._buf = ""
+        return "".join(parts)
 
     def reset(self) -> None:
-        """Discard the buffer without emitting (segment abandoned/cleared)."""
         self._buf = ""
+        self._clear_pako()
 
 
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:

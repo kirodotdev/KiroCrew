@@ -187,6 +187,12 @@ there is no build step at stable-tag time to add it.
    stable build must show `X.Y.Z` on the version chip, the Settings footer, the
    available-update line, AND the update popup); no existing bare
    `vX.Y.Z` tag. Then tag `vX.Y.Z-insider.N`.
+   - *Mermaid pako evidence*: run
+     `website/src/test/MarkdownRenderer.mermaidVisibleLabelModel.test.ts` and
+     compare every modeled family with the current Mermaid Live renderer. If the
+     comparison cannot be completed or a family no longer supports the backend
+     model, set `_PAKO_VISIBLE_VIEW_MERMAID_VERSION = None` before tagging so the
+     exemption remains disabled fail closed.
 3. **Soak.** Ship the RC on insider and let real users run it. **Do not push any
    change to the release branch between soak and release** — stable is rebuilt
    from this commit, so a commit that lands after the soak ships code nobody ran.

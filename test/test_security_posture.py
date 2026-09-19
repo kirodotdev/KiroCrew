@@ -281,7 +281,7 @@ _BASELINE_LOG_SITE_CENSUS: dict[str, int] = {
     "messaging/sessions_view.py": 1,
     "slack/events.py": 2,
     "slack/gateway.py": 7,
-    "slack/handler.py": 3,
+    "slack/handler.py": 1,
     "subagent_manager/admission/gate.py": 4,
     "voice_reply.py": 4,
 }
@@ -967,9 +967,11 @@ class TestRedactionSinkRegistry:
         # returning each one's warnings), redact_and_truncate() (redact-then-slice,
         # so a credential cannot
         # straddle the truncation boundary), redact_via_context() (routes to
-        # CredentialPolicy.redact, whose Default delegates to security.redact), and
-        # display_safe() (redact_for_display with the exfil+credential redactor,
-        # then the mention defang).
+        # CredentialPolicy.redact, whose Default delegates to security.redact),
+        # redact_pako_via_context() (the same baseline composition on outer text,
+        # with active policy scoped only to decoded pako state), and display_safe()
+        # (redact_for_display with the exfil+credential redactor, then the mention
+        # defang).
         dual_pass = (
             "StreamRedactor",
             "redact(",
@@ -977,6 +979,7 @@ class TestRedactionSinkRegistry:
             "redact_tree",
             "redact_and_truncate",
             "redact_via_context",
+            "redact_pako_via_context",
             "display_safe",
             # The shared dashboard memory helper recursively runs the exfil
             # scanner followed by the credential scanner for every text value.

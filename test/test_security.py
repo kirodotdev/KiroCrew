@@ -8797,3 +8797,1360 @@ class TestSubstitutionBodiesReadFoldedOpeners:
         """
         command = "echo bash -c $'g\\'it\\\n\\' push origin main'"
         assert security.is_denied(command) is None
+
+
+def _authorized_pako_redact(text: str) -> str:
+    """Apply the active PlatformContext policy before restoring valid pako state."""
+    from kiro_crew.platform.context import redact_pako_via_context
+
+    return redact_pako_via_context(text)
+
+
+class TestPakoFragmentRedaction:
+    """The exact declared pako boundary is preserved; adjacent syntax fails closed."""
+
+    @staticmethod
+    def _url(code: str = "flowchart TD\n  A --> B", **extra_state: object) -> tuple[str, str]:
+        import base64
+        import json
+        import zlib
+
+        state = json.dumps({"code": code, "autoSync": True, **extra_state}, separators=(",", ":"))
+        payload = base64.urlsafe_b64encode(zlib.compress(state.encode(), 9)).decode().rstrip("=")
+        return f"https://mermaid.live/edit#pako:{payload}", payload
+
+    def test_baseline_entry_points_cannot_restore_without_context_authorization(self) -> None:
+        url, payload = self._url("flowchart TD\n  A[Deploy] --> B[Ready]")
+        outputs = (
+            redact_credentials(url)[0],
+            redact_exfiltration_urls(url)[0],
+            security.redact_with_findings(url)[0],
+            security.redact(url),
+            redact_and_truncate(url, len(url) + 100),
+        )
+
+        for output in outputs:
+            assert url not in output
+            assert payload not in output
+            assert "[REDACTED: encoded credential]" in output
+
+        stream = security.StreamRedactor()
+        streamed = stream.feed(url + " ") + stream.flush()
+        assert url not in streamed
+        assert payload not in streamed
+        assert "[REDACTED: encoded credential]" in streamed
+
+    @staticmethod
+    def _assert_redacted(code: str) -> None:
+        url, payload = TestPakoFragmentRedaction._url(code)
+        result = _authorized_pako_redact(url)
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    def test_exact_bare_markdown_and_slack_tokens_are_byte_identical(self) -> None:
+        url, _ = self._url("flowchart TD\n" + "\n".join(f"  N{i} --> N{i + 1}" for i in range(400)))
+        for text in (url, f"Open\n{url}.", f"[Open]({url})", f"<{url}|Open>", f"<{url}>"):
+            assert _authorized_pako_redact(text) == text
+
+    @pytest.mark.parametrize("suffix", ["|Open", "|Open\n>", "|Open\r>"])
+    def test_incomplete_or_multiline_slack_container_fails_closed(self, suffix: str) -> None:
+        url, payload = self._url()
+        result = _authorized_pako_redact(f"<{url}{suffix}")
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    def test_safe_mermaid_emphasis_state_is_byte_identical(self) -> None:
+        url, _ = self._url("flowchart TD\n  A[**Deploy**] --> B[_ready_] --> C[`done`]")
+        for text in (url, f"[Open]({url})", f"<{url}|Open>"):
+            assert _authorized_pako_redact(text) == text
+
+    @pytest.mark.parametrize(
+        ("escaped", "visible"),
+        [
+            (
+                "ghp\\_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12",
+                "ghp_" + "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdef12",
+            ),
+            (
+                "xoxb\\-" + "1234567890-abcdefghijklmnop",
+                "xoxb-" + "1234567890-abcdefghijklmnop",
+            ),
+            (
+                "glpat\\-" + "xxxx1234xxxx5678xxxx",
+                "glpat-" + "xxxx1234xxxx5678xxxx",
+            ),
+        ],
+        ids=["escaped-emphasis", "escaped-slack-hyphen", "escaped-gitlab-hyphen"],
+    )
+    def test_commonmark_escaped_credential_punctuation_fails_closed(
+        self, escaped: str, visible: str
+    ) -> None:
+        """Only the renderer-visible view contains the provider token."""
+        from kiro_crew.security import redaction
+
+        assert security.redact_credentials(escaped) == (escaped, [])
+        assert redaction._mermaid_visible_record(escaped) == visible
+        for label in (f"A[{escaped}]", f'A["`{escaped}`"]'):
+            url, payload = self._url(f"flowchart TD\n  {label} --> B")
+            redacted, warnings = security.redact_credentials(url)
+            assert payload not in redacted
+            assert "[REDACTED: encoded credential]" in redacted
+            assert warnings == [
+                f"Redacted credential-bearing compressed payload ({len(payload)} chars)"
+            ]
+
+    def test_commonmark_escape_model_is_complete_and_one_pass(self) -> None:
+        """Every ASCII punctuation escape is atomic; other backslashes are data."""
+        from kiro_crew.security import redaction
+
+        punctuation = "!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~"
+        assert redaction._COMMONMARK_ASCII_PUNCTUATION == frozenset(punctuation)
+        for char in punctuation:
+            assert redaction._mermaid_visible_record(f"left\\{char}right") == f"left{char}right"
+
+        for text in (r"folder\name", r"space\ value", "trailing\\"):
+            assert redaction._mermaid_visible_record(text) == text
+        # The emitted slash is not scanned again; the following unescaped
+        # underscore remains an emphasis delimiter in the conservative view.
+        assert redaction._mermaid_visible_record(r"pair\\_tail") == r"pair\tail"
+
+    @pytest.mark.parametrize(
+        "body",
+        [r"\phantom{}", r"\hphantom{x}", "x", ""],
+        ids=["phantom", "different-hiding-command", "visible-math", "empty-math"],
+    )
+    def test_complete_renderer_math_family_fails_closed(self, body: str) -> None:
+        """Any complete same-line KaTeX span rejects, independent of its body."""
+        labels = []
+        for delimiter in ("$$", r"\$\$"):
+            math = f"{delimiter}{body}{delimiter}"
+            labels.extend((f"AKIAIOSF{math}ODNN7EXAMPLE", f"Deploy{math}ready"))
+
+        for label in labels:
+            assert security.redact_credentials(label) == (label, [])
+            url, payload = self._url(f'flowchart TD\n  A["{label}"] --> B')
+            redacted, warnings = security.redact_credentials(url)
+            assert payload not in redacted
+            assert "[REDACTED: encoded credential]" in redacted
+            assert warnings == [f"Redacted invalid-state compressed payload ({len(payload)} chars)"]
+
+    def test_math_family_keeps_clean_opposites_and_commonmark_one_pass(self) -> None:
+        """Single, incomplete, and multiline delimiters remain ordinary text."""
+        from kiro_crew.security import redaction
+
+        clean = {
+            "price $5": "price $5",
+            "left$$open": "left$$open",
+            "left$$across\nline$$right": "left$$across\nline$$right",
+        }
+        for record, visible in clean.items():
+            assert redaction._mermaid_visible_record(record) == visible
+            url, _ = self._url(f"flowchart TD\n  A[{record}] --> B")
+            assert _authorized_pako_redact(url) == url
+
+    def test_renderer_math_scan_stays_linear(self) -> None:
+        from conftest import assert_rejected_without_backtracking
+        from kiro_crew.security import redaction
+
+        def reject(text: str) -> None:
+            assert redaction._mermaid_visible_record(text) is None
+
+        def keep(text: str) -> None:
+            assert redaction._mermaid_visible_record(text) == text
+
+        assert_rejected_without_backtracking(reject, lambda n: "label $$" + "x" * n + "$$")
+        assert_rejected_without_backtracking(keep, lambda n: "label $$" + "x" * n)
+
+    def test_safe_backslash_state_is_byte_identical(self) -> None:
+        url, _ = self._url(
+            'flowchart TD\n  A[folder\\name] --> B["`\\*star \\~tilde \\!bang`"]',
+            note="trailing\\",
+        )
+        assert _authorized_pako_redact(url) == url
+
+    def test_mixed_case_origin_is_scanned_and_preserved_only_when_clean(self) -> None:
+        clean, _ = self._url("flowchart TD\n  A --> B")
+        clean_alias = clean.replace("https://mermaid.live", "HTTPS://MERMAID.LIVE")
+        assert _authorized_pako_redact(clean_alias) == clean_alias
+
+        unsafe, payload = self._url("flowchart TD\n  A[AKIAIOSFODNN7EXAMPLE] --> B")
+        unsafe_alias = unsafe.replace("https://mermaid.live", "HTTPS://MERMAID.LIVE")
+        result = _authorized_pako_redact(unsafe_alias)
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    @pytest.mark.parametrize("encoded_e", ["&#69;", "&#x45;", "#69;"])
+    def test_renderer_entity_cannot_complete_a_credential(self, encoded_e: str) -> None:
+        """Every entity spelling is decoded into one visible view before policy.
+
+        Against a real Mermaid 11.16.1 render, only the ``#69;`` family displays
+        the decoded ``E``; an HTML reference keeps a literal ampersand (``&#69;``
+        renders ``&E``). The model decodes all three so its view joins at least
+        as much text as the renderer shows -- the fail-closed direction."""
+        self._assert_redacted(f"flowchart TD\n  A[AKIAIOSFODNN7EXAMPL{encoded_e}] --> B")
+
+    @pytest.mark.parametrize("markup", ["<span>PL</span>", "<B>PL</B>", "<code>PL</code>"])
+    def test_renderer_markup_cannot_split_a_credential(self, markup: str) -> None:
+        """Attribute-free phrasing tags are omitted so their displayed content joins."""
+        self._assert_redacted(f"flowchart TD\n  A[AKIAIOSFODNN7EXAM{markup}E] --> B")
+
+    @pytest.mark.parametrize(
+        "markup",
+        [
+            # Mermaid 11.16.1's sanitizer removes these elements WITH their
+            # content, so the label displays the joined credential while the
+            # literal text never does: a real Mermaid 11.16.1 render of
+            # ``AKIAIOSF<style>-</style>ODNN7EXAMPLE`` shows ``AKIAIOSFODNN7EXAMPLE``.
+            "<style>-</style>",
+            "<script>-</script>",
+            "<iframe>-</iframe>",
+            "<template>-</template>",
+            # An attribute can hide displayed content; no text model sees CSS.
+            "<span hidden>-</span>",
+            "<span style='display:none'>-</span>",
+            "<span title='x'>-</span>",
+            # Comments and self-closing spellings outside the modeled set.
+            "<!-- - -->",
+            "<br class='x'>",
+            "<span/>-",
+        ],
+    )
+    def test_unmodeled_markup_fails_closed(self, markup: str) -> None:
+        """Any tag-like construct outside the modeled set rejects the state.
+
+        The ``-`` inside each construct breaks the credential's character run in
+        both the literal and the tag-omitting views, so only the fail-closed rule
+        catches these; a model that merely omitted the tags preserved them."""
+        self._assert_redacted(f"flowchart TD\n  A[AKIAIOSF{markup}ODNN7EXAMPLE] --> B")
+
+    @pytest.mark.parametrize("markdown", ["[](x)", "![hidden](x)", "[shown][ref]"])
+    def test_markdown_links_and_images_fail_closed(self, markdown: str) -> None:
+        """A renderer can hide link syntax and join the surrounding credential."""
+        self._assert_redacted(f'flowchart TD\n  A["`AKIAIOSFODNN7EXAMPL{markdown}E`"] --> B')
+
+    def test_hostile_renderer_configuration_fails_closed_batch_and_stream(self) -> None:
+        """Renderer CSS can hide markup content that the visible-text model retains."""
+        code = "flowchart TD\n  A[AKIAIOSF<strong>-</strong>ODNN7EXAMPLE] --> B"
+        renderer_configuration = '{"themeCSS":"strong{display:none}"}'
+        url, payload = self._url(code, mermaid=renderer_configuration)
+
+        # Without renderer configuration, the visible hyphen safely separates
+        # the access-key fragments; only the CSS can hide it and join the key.
+        config_free_url, _ = self._url(code)
+        assert _authorized_pako_redact(config_free_url) == config_free_url
+
+        redacted, warnings = security.redact_credentials(url)
+        assert payload not in redacted
+        assert "[REDACTED: encoded credential]" in redacted
+        assert warnings == [f"Redacted invalid-state compressed payload ({len(payload)} chars)"]
+
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        split = len(url) // 2
+        streamed = stream.feed(url[:split]) + stream.feed(url[split:] + " ") + stream.flush()
+        assert payload not in streamed
+        assert "[REDACTED: encoded credential]" in streamed
+
+    @pytest.mark.parametrize(
+        ("family", "renderer_configuration"),
+        [
+            (
+                "frontmatter-config",
+                "---\nconfig:\n  themeCSS: 'strong{display:none}'\n---\n",
+            ),
+            (
+                "indented-crlf-frontmatter",
+                "  ---\r\n  title: harmless metadata\r\n  ---\r\n",
+            ),
+            (
+                "init-directive",
+                '%%{init: {"themeCSS":"strong{display:none}"}}%%\n',
+            ),
+            (
+                "initialize-directive",
+                '%%{initialize {"themeCSS":"strong{display:none}"}}%%\n',
+            ),
+            (
+                "generic-config-directive",
+                '%%{config: {"themeCSS":"strong{display:none}"}}%%\n',
+            ),
+        ],
+    )
+    def test_code_level_renderer_configuration_fails_closed_batch_and_stream(
+        self,
+        family: str,
+        renderer_configuration: str,
+    ) -> None:
+        """Every renderer-control syntax family is outside the visible model."""
+        label = "AKIAIOSF<strong>-</strong>ODNN7EXAMPLE"
+        config_free_code = f"flowchart TD\n  A[{label}] --> B"
+        code = renderer_configuration + config_free_code
+        assert security.redact_credentials(code) == (code, [])
+
+        config_free_url, _ = self._url(config_free_code)
+        assert _authorized_pako_redact(config_free_url) == config_free_url
+
+        url, payload = self._url(code)
+        redacted, warnings = security.redact_credentials(url)
+        assert payload not in redacted, family
+        assert "[REDACTED: encoded credential]" in redacted, family
+        assert warnings == [f"Redacted invalid-state compressed payload ({len(payload)} chars)"]
+
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        split = len(url) // 2
+        streamed = stream.feed(url[:split]) + stream.feed(url[split:] + " ") + stream.flush()
+        assert payload not in streamed, family
+        assert "[REDACTED: encoded credential]" in streamed, family
+
+    @pytest.mark.parametrize(
+        "code",
+        ["---", "  ---", "%%{"],
+        ids=["bare-frontmatter", "indented-frontmatter", "directive"],
+    )
+    def test_incomplete_renderer_control_openers_fail_closed(self, code: str) -> None:
+        url, payload = self._url(code)
+        redacted, warnings = security.redact_credentials(url)
+        assert payload not in redacted
+        assert "[REDACTED: encoded credential]" in redacted
+        assert warnings == [f"Redacted invalid-state compressed payload ({len(payload)} chars)"]
+
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "flowchart TD\n  A[release --- ready] --> B",
+            "flowchart TD\n  %% {ordinary comment, not a directive}\n  A --> B",
+        ],
+        ids=["nonleading-dashes", "spaced-comment-brace"],
+    )
+    def test_renderer_control_safe_opposites_remain_byte_identical(self, code: str) -> None:
+        url, _ = self._url(code)
+        assert _authorized_pako_redact(url) == url
+
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        streamed = "".join(stream.feed(char) for char in url) + stream.flush()
+        assert streamed == url
+
+    @pytest.mark.parametrize(
+        ("decoded_suffix", "missing_padding"),
+        [("", 2), (":", 1)],
+        ids=["two-missing", "one-missing"],
+    )
+    def test_unpadded_base64_wrapped_aws_secret_fails_closed_batch_and_stream(
+        self,
+        decoded_suffix: str,
+        missing_padding: int,
+    ) -> None:
+        padded = base64.b64encode((_AWS_EXAMPLE_KEY + decoded_suffix).encode()).decode()
+        assert len(padded) - len(padded.rstrip("=")) == missing_padding
+        wrapped = padded.rstrip("=")
+        assert -len(wrapped) % 4 == missing_padding
+        # The padding repair is pako-only; the global policy stays unchanged.
+        assert security.redact_credentials(wrapped) == (wrapped, [])
+        url, payload = self._url(f"flowchart TD\n  A[{wrapped}] --> B")
+
+        redacted, warnings = security.redact_credentials(url)
+        assert payload not in redacted
+        assert "[REDACTED: encoded credential]" in redacted
+        assert warnings == [
+            f"Redacted credential-bearing compressed payload ({len(payload)} chars)"
+        ]
+
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        split = len(url) // 2
+        streamed = stream.feed(url[:split]) + stream.feed(url[split:] + " ") + stream.flush()
+        assert payload not in streamed
+        assert "[REDACTED: encoded credential]" in streamed
+
+    def test_benign_unpadded_printable_base64_remains_byte_identical(self) -> None:
+        padded = base64.b64encode(("a" * 46).encode()).decode()
+        assert padded.endswith("==")
+        wrapped = padded.removesuffix("==")
+        assert len(wrapped) % 4 == 2
+        assert security.redact_credentials(wrapped) == (wrapped, [])
+        url, _ = self._url(f"flowchart TD\n  A[{wrapped}] --> B")
+
+        assert _authorized_pako_redact(url) == url
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        streamed = "".join(stream.feed(char) for char in url) + stream.flush()
+        assert streamed == url
+
+    def test_invalid_base64_residue_is_not_padded_or_decoded(self, monkeypatch) -> None:
+        from kiro_crew.security import redaction
+
+        invalid = "Aa0/" * 10 + "A"
+        assert len(invalid) % 4 == 1
+        calls: list[str] = []
+
+        def unexpected_decode(candidate: str, **_kwargs: object) -> bytes:
+            calls.append(candidate)
+            raise AssertionError("a residue requiring three padding bytes is not base64")
+
+        scan_state = redaction._PakoScanState()
+        initial_budget = scan_state.bare_secret_windows_remaining
+        with monkeypatch.context() as patcher:
+            patcher.setattr(redaction.base64, "b64decode", unexpected_decode)
+            assert not redaction._pako_decoded_base64_contains_bare_secret(
+                invalid,
+                scan_state,
+            )
+        assert calls == []
+        assert scan_state.bare_secret_windows_remaining == initial_budget
+
+        url, _ = self._url(f"flowchart TD\n  A[{invalid}] --> B")
+        assert _authorized_pako_redact(url) == url
+
+    def test_unpadded_base64_scan_exhaustion_uses_the_shared_window_budget(
+        self,
+        monkeypatch,
+    ) -> None:
+        from kiro_crew.security import redaction
+
+        decoded = "A0" * 20
+        padded = base64.b64encode(decoded.encode()).decode()
+        assert padded.endswith("==")
+        wrapped = padded.removesuffix("==")
+        direct_windows = len(wrapped) - _SECRET_KEY_LEN + 1
+        calls: list[str] = []
+        real_contains = redaction._contains_bare_secret
+
+        def counting_contains(run: str) -> bool:
+            calls.append(run)
+            return real_contains(run)
+
+        monkeypatch.setattr(
+            redaction,
+            "_PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS",
+            direct_windows,
+        )
+        monkeypatch.setattr(redaction, "_contains_bare_secret", counting_contains)
+        url, payload = self._url(f"flowchart TD\n  A[{wrapped}] --> B")
+
+        redacted, warnings = security.redact_credentials(url)
+        assert payload not in redacted
+        assert warnings == [f"Redacted over-budget compressed payload ({len(payload)} chars)"]
+        assert calls == [wrapped]
+
+        calls.clear()
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        streamed = stream.feed(url + " ") + stream.flush()
+        assert payload not in streamed
+        assert "[REDACTED: encoded credential]" in streamed
+        assert calls == [wrapped]
+
+    def test_config_free_state_and_safe_metadata_remain_byte_identical(self) -> None:
+        url, _ = self._url(
+            "flowchart TD\n  A[Deploy] --> B[Ready]",
+            note={"owner": "docs", "revision": 2},
+        )
+        assert _authorized_pako_redact(url) == url
+
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        chunks = (url[:17], url[17 : len(url) // 2], url[len(url) // 2 :] + " ")
+        assert "".join(stream.feed(chunk) for chunk in chunks) + stream.flush() == url + " "
+
+    def test_exact_default_renderer_configuration_remains_byte_identical(self) -> None:
+        url, _ = self._url(
+            "flowchart TD\n  A[Deploy] --> B[Ready]",
+            mermaid='{"theme":"default"}',
+        )
+        assert _authorized_pako_redact(url) == url
+
+    def test_base64_wrapped_unlabeled_aws_secret_fails_closed_batch_and_stream(
+        self,
+    ) -> None:
+        assert len(_AWS_EXAMPLE_KEY) == _SECRET_KEY_LEN
+        assert security._contains_bare_secret(_AWS_EXAMPLE_KEY)
+        wrapped = base64.b64encode(_AWS_EXAMPLE_KEY.encode()).decode()
+        # The new decode is pako-only; global printable-base64 behavior stays unchanged.
+        assert security.redact_credentials(wrapped) == (wrapped, [])
+        url, payload = self._url(f"flowchart TD\n  A[{wrapped}] --> B")
+
+        redacted, warnings = security.redact_credentials(url)
+        assert payload not in redacted
+        assert "[REDACTED: encoded credential]" in redacted
+        assert warnings == [
+            f"Redacted credential-bearing compressed payload ({len(payload)} chars)"
+        ]
+
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        split = len(url) // 2
+        streamed = stream.feed(url[:split]) + stream.feed(url[split:] + " ") + stream.flush()
+        assert payload not in streamed
+        assert "[REDACTED: encoded credential]" in streamed
+
+    def test_benign_printable_base64_remains_byte_identical(self) -> None:
+        decoded = "ordinaryprintablebase64documentwithoutasecret"
+        assert len(decoded) > _SECRET_KEY_LEN
+        assert not security._contains_bare_secret(decoded)
+        wrapped = base64.b64encode(decoded.encode()).decode()
+        url, _ = self._url(f"flowchart TD\n  A[{wrapped}] --> B")
+
+        assert _authorized_pako_redact(url) == url
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        streamed = "".join(stream.feed(char) for char in url) + stream.flush()
+        assert streamed == url
+
+    def test_decoded_base64_scan_exhaustion_fails_closed_without_extra_window_work(
+        self, monkeypatch
+    ) -> None:
+        from kiro_crew.security import redaction
+
+        decoded = "A0" * 20
+        wrapped = base64.b64encode(decoded.encode()).decode()
+        bare_wrapper = wrapped.rstrip("=")
+        direct_windows = len(bare_wrapper) - _SECRET_KEY_LEN + 1
+        calls: list[str] = []
+        real_contains = redaction._contains_bare_secret
+
+        def counting_contains(run: str) -> bool:
+            calls.append(run)
+            return real_contains(run)
+
+        # The direct outer blob consumes the exact remaining budget. The decoded
+        # inner run must fail closed before another classifier call can exceed it.
+        monkeypatch.setattr(
+            redaction,
+            "_PAKO_FRAGMENT_MAX_BARE_SECRET_WINDOWS",
+            direct_windows,
+        )
+        monkeypatch.setattr(redaction, "_contains_bare_secret", counting_contains)
+        url, payload = self._url(f"flowchart TD\n  A[{wrapped}] --> B")
+
+        redacted, warnings = security.redact_credentials(url)
+        assert payload not in redacted
+        assert warnings == [f"Redacted over-budget compressed payload ({len(payload)} chars)"]
+        assert calls == [bare_wrapper]
+
+        calls.clear()
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        streamed = stream.feed(url + " ") + stream.flush()
+        assert payload not in streamed
+        assert "[REDACTED: encoded credential]" in streamed
+        assert calls == [bare_wrapper]
+
+    def test_modeled_markup_state_is_byte_identical(self) -> None:
+        url, _ = self._url("flowchart TD\n  A[<b>Deploy</b><br/>ready] --> B[Line 1<BR />Line 2]")
+        for text in (url, f"[Open]({url})", f"<{url}|Open>"):
+            assert _authorized_pako_redact(text) == text
+
+    def test_entity_transform_runs_once_and_safe_opposites_stay_byte_identical(self) -> None:
+        safe = [
+            "flowchart TD\n  A[Fish &amp; Chips] --> B",
+            # The one HTML pass exposes one ampersand; Mermaid then decodes the
+            # missing-ampersand entity beside it, leaving ``&E`` rather than
+            # recursively manufacturing the credential's final E.
+            "flowchart TD\n  A[AKIAIOSFODNN7EXAMPL&amp;#69;] --> B",
+            "flowchart TD\n  A[AKIAIOSFODNN7EXAMPL&#xZZ;] --> B",
+            "flowchart TD\n  A[2 < 3 and 5 > 4] --> B",
+            "flowchart TD\n  A[#notAnHtmlEntity;] --> B",
+            # Entities that decode to VISIBLE characters (no-break space, an
+            # ampersand, an em dash) are ordinary label text and stay intact:
+            # only a decode that manufactures a format control is rejected.
+            "flowchart TD\n  A[Fish#nbsp;#amp;#nbsp;Chips] --> B",
+            "flowchart TD\n  A[&#160;&#x2014;#8212;] --> B",
+        ]
+        for code in safe:
+            url, _ = self._url(code)
+            assert _authorized_pako_redact(url) == url
+
+    @pytest.mark.parametrize(
+        "splice",
+        [
+            "#8203;",  # Mermaid decimal entity -> U+200B ZERO WIDTH SPACE
+            "#zwj;",  # Mermaid named entity -> U+200D ZERO WIDTH JOINER
+            "&#8203;",  # HTML decimal reference -> U+200B
+            "&#x200B;",  # HTML hex reference -> U+200B
+            "&zwnj;",  # HTML named reference -> U+200C ZERO WIDTH NON-JOINER
+            "&shy;",  # HTML named reference -> U+00AD SOFT HYPHEN, also ``Cf``
+            "\u200b",  # raw U+200B, preserving the existing ``Cf`` rejection
+            "\u034f",  # raw U+034F COMBINING GRAPHEME JOINER (``Mn``)
+            "\ufe0f",  # raw U+FE0F VARIATION SELECTOR-16 (``Mn``)
+            "\U000e0100",  # raw U+E0100 VARIATION SELECTOR-17 (astral ``Mn``)
+            "&#x034F;",  # HTML-decoded U+034F
+            "#65039;",  # Mermaid-decoded U+FE0F
+            "#917760;",  # Mermaid-decoded U+E0100
+        ],
+    )
+    def test_default_ignorable_splice_fails_closed_before_any_credential_scan(
+        self, splice: str
+    ) -> None:
+        """Renderer-ignored code points reject whether raw or decode-manufactured.
+
+        A split AWS key id contains no contiguous credential in the literal or
+        canonical view, while Mermaid renders the splice with no standalone
+        glyph. The state must therefore fall to ``invalid-state`` before policy,
+        as must credential-free text carrying the same invisible splice."""
+        for label in (f"AKIA{splice}IOSFODNN7EXAMPLE", f"Deploy{splice}ready"):
+            url, payload = self._url(f"flowchart TD\n  A[{label}] --> B")
+            redacted, warnings = security.redact_credentials(url)
+            assert payload not in redacted
+            assert "[REDACTED: encoded credential]" in redacted
+            assert warnings == [f"Redacted invalid-state compressed payload ({len(payload)} chars)"]
+
+    def test_renderer_removed_nul_splice_fails_closed(self) -> None:
+        """Mermaid removes NUL, so it cannot split a credential in decoded state."""
+        url, payload = self._url("flowchart TD\n  A[AKIA\x00IOSFODNN7EXAMPLE] --> B")
+        redacted, warnings = security.redact_credentials(url)
+        assert payload not in redacted
+        assert "[REDACTED: encoded credential]" in redacted
+        assert warnings == [f"Redacted invalid-state compressed payload ({len(payload)} chars)"]
+
+    @staticmethod
+    def _unsupported_prefix_composition() -> tuple[str, str, str]:
+        joined_secret = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPhttps"
+        assert len(joined_secret) == 40
+        url, payload = TestPakoFragmentRedaction._url()
+        return joined_secret[: -len("https")] + url + " ", joined_secret, payload
+
+    def test_stream_unsupported_prefix_rescans_preceding_credential_run(self) -> None:
+        text, joined_secret, payload = self._unsupported_prefix_composition()
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        result = stream.feed(text) + stream.flush()
+        assert result == _authorized_pako_redact(text)
+        assert joined_secret not in result
+        assert payload not in result
+
+    def test_stream_unsupported_prefix_rescans_preceding_run_across_tiny_chunks(self) -> None:
+        text, joined_secret, payload = self._unsupported_prefix_composition()
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        result = "".join(stream.feed(char) for char in text) + stream.flush()
+        assert result == _authorized_pako_redact(text)
+        assert joined_secret not in result
+        assert payload not in result
+
+    def test_visible_non_default_ignorable_combining_mark_is_preserved(self) -> None:
+        """Visible combining marks are not rejected merely for category ``Mn``."""
+        url, _ = self._url("flowchart TD\n  A[Cafe\u0301] --> B")
+        assert _authorized_pako_redact(url) == url
+
+    def test_visible_view_rejects_a_format_control_the_decode_introduced(self) -> None:
+        """The invariant lives in the visible transform, beside the decode it guards."""
+        from kiro_crew.security import redaction
+
+        assert redaction._mermaid_visible_record("AKIA#8203;IOSFODNN7EXAMPLE") is None
+        assert redaction._mermaid_visible_record("Deploy&#x200B;ready") is None
+        assert redaction._mermaid_visible_record("soft&shy;hyphen") is None
+        # Entities decoding to displayed characters are still decoded, once.
+        assert redaction._mermaid_visible_record("Fish &amp; Chips") == "Fish & Chips"
+        assert redaction._mermaid_visible_record("A#nbsp;B") == "A\u00a0B"
+        # The HTML pass runs once: the hex reference it exposes is not decoded
+        # again (Mermaid's own family is decimal/named only), so no ``Cf`` is
+        # manufactured and the record is kept. The exposed DECIMAL spelling is
+        # a Mermaid entity the renderer does decode, so it is refused.
+        once = redaction._mermaid_visible_record("&amp;#x200B;")
+        assert once is not None
+        assert "\u200b" not in once
+        assert redaction._mermaid_visible_record("&amp;#8203;") is None
+
+    def test_visible_records_do_not_join_unrelated_json_fields(self) -> None:
+        url, _ = self._url("flowchart TD\n  A[AKIAIOSFODNN7EXAMPL] --> B", unrelated_completion="E")
+        assert _authorized_pako_redact(url) == url
+
+    def test_malformed_renderer_markup_fails_closed(self) -> None:
+        self._assert_redacted("flowchart TD\n  A[AKIAIOSFODNN7EXAMPL<span]")
+
+    def test_visible_view_has_its_own_output_bound(self, monkeypatch) -> None:
+        import json
+
+        from kiro_crew.security import redaction
+
+        monkeypatch.setattr(redaction, "_PAKO_VISIBLE_VIEW_MAX_CHARS", 64)
+        decoded = json.dumps(
+            {"code": "flowchart TD\n  A[" + "#notAnHtmlEntity;" * 8 + "]"},
+            separators=(",", ":"),
+        )
+        assert redaction._canonicalize_pako_state(decoded) is None
+
+    def test_unmodeled_mermaid_release_disables_the_exemption_fail_closed(
+        self, monkeypatch
+    ) -> None:
+        """``_PAKO_VISIBLE_VIEW_MERMAID_VERSION = None`` is the documented fallback
+        for when the visible-view evidence is withdrawn (a Mermaid release the
+        model's families have not been re-checked against): with no evidenced
+        release, every pako candidate -- including one that is clean under the
+        model -- becomes the encoded-credential marker, in every container, on
+        the batch and the streaming path alike. The link is lost, never a
+        credential."""
+        from kiro_crew.security import redaction
+
+        url, payload = self._url("flowchart TD\n  A[**Deploy**] --> B")
+        for text in (url, f"[Open]({url})", f"<{url}|Open>"):
+            assert _authorized_pako_redact(text) == text  # the model admits it today
+
+        monkeypatch.setattr(redaction, "_PAKO_VISIBLE_VIEW_MERMAID_VERSION", None)
+        for text in (url, f"[Open]({url})", f"<{url}|Open>"):
+            redacted, warnings = security.redact_credentials(text)
+            assert payload not in redacted
+            assert "[REDACTED: encoded credential]" in redacted
+            assert warnings == [
+                f"Redacted unvalidated-renderer compressed payload ({len(payload)} chars)"
+            ]
+            redacted, url_warnings = security.redact_exfiltration_urls(text)
+            assert payload not in redacted
+            assert url_warnings
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        streamed = stream.feed(url[: len(url) // 2]) + stream.feed(url[len(url) // 2 :] + " ")
+        streamed += stream.flush()
+        assert payload not in streamed
+        assert "[REDACTED: encoded credential]" in streamed
+        # Ordinary text is untouched by the fallback: only the exemption is off.
+        assert _authorized_pako_redact("plain prose with no link") == "plain prose with no link"
+
+    def test_malformed_markup_scan_stays_linear(self) -> None:
+        from conftest import assert_rejected_without_backtracking
+        from kiro_crew.security import redaction
+
+        def reject(text: str) -> None:
+            assert redaction._mermaid_visible_record(text) is None
+
+        assert_rejected_without_backtracking(reject, lambda n: "label " + "<span" * n)
+
+    @pytest.mark.parametrize(
+        "template",
+        [
+            "diagram={url}",
+            "（{url}）",
+            '<a href="{url}">open</a>',
+            '<a href="{url}&#32;">open</a>',
+            "https://evil.example/?next={url}",
+            "[outer](https://evil.example/(x){url})",
+        ],
+    )
+    def test_unsupported_outer_syntax_fails_closed(self, template: str) -> None:
+        url, payload = self._url()
+        result = _authorized_pako_redact(template.format(url=url))
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    def test_malformed_state_fails_closed(self) -> None:
+        url = "https://mermaid.live/edit#pako:not-a-complete-zlib-stream"
+        assert _authorized_pako_redact(url) == (
+            "https://mermaid.live/edit#pako:[REDACTED: encoded credential]"
+        )
+
+    def test_decoder_accounts_for_every_inflation_outcome(self) -> None:
+        import base64
+        import zlib
+
+        from kiro_crew.security import redaction
+
+        def encode(compressed: bytes) -> str:
+            return base64.urlsafe_b64encode(compressed).decode().rstrip("=")
+
+        raw = b"bounded pako state"
+        complete = zlib.compress(raw, 9)
+        cases = [
+            (complete, raw.decode(), len(raw)),
+            (complete[:-1], None, len(raw)),
+            (complete + b"trailing", None, len(raw)),
+            (zlib.compress(b"\xff", 9), None, 1),
+        ]
+        for compressed, expected, expected_work in cases:
+            decoded, inflated_work = redaction._decode_pako_fragment(
+                encode(compressed),
+                redaction._PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES,
+            )
+            assert decoded == expected
+            assert inflated_work == expected_work
+
+        exact_budget_raw = b"B" * 257
+        decoded, inflated_work = redaction._decode_pako_fragment(
+            encode(zlib.compress(exact_budget_raw, 9)),
+            len(exact_budget_raw),
+        )
+        assert decoded == exact_budget_raw.decode()
+        assert inflated_work == len(exact_budget_raw)
+        decoded, inflated_work = redaction._decode_pako_fragment(
+            encode(zlib.compress(exact_budget_raw, 9)),
+            len(exact_budget_raw) - 1,
+        )
+        assert decoded is None
+        assert inflated_work == len(exact_budget_raw)
+
+        over_limit_raw = b"C" * (redaction._PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES + 1)
+        decoded, inflated_work = redaction._decode_pako_fragment(
+            encode(zlib.compress(over_limit_raw, 9)),
+            redaction._PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES,
+        )
+        assert decoded is None
+        assert inflated_work == len(over_limit_raw)
+
+        decoded, inflated_work = redaction._decode_pako_fragment(
+            encode(b"not a zlib stream"),
+            redaction._PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES,
+        )
+        assert decoded is None
+        assert inflated_work == 1
+
+        late_error_raw = b"D" * (redaction._PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES // 2)
+        late_error = bytearray(zlib.compress(late_error_raw, 9))
+        late_error[-1] ^= 1
+        decoded, inflated_work = redaction._decode_pako_fragment(
+            encode(bytes(late_error)),
+            redaction._PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES,
+        )
+        assert decoded is None
+        assert len(late_error_raw) <= inflated_work
+        assert inflated_work <= len(late_error_raw) + redaction._PAKO_DECOMPRESSION_MAX_STEP_BYTES
+
+        assert redaction._decode_pako_fragment(
+            "A" * (redaction._PAKO_FRAGMENT_MAX_ENCODED_CHARS + 1),
+            redaction._PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES,
+        ) == (None, 0)
+
+    @pytest.mark.parametrize("failure_kind", ["over-limit", "late-zlib-error"])
+    def test_expensive_failed_inflations_exhaust_one_pass_budget_and_skip_later_decode(
+        self, monkeypatch, failure_kind: str
+    ) -> None:
+        import base64
+        import zlib
+
+        from kiro_crew.security import redaction
+
+        raw = b"A" * (
+            redaction._PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES + (failure_kind == "over-limit")
+        )
+        compressed = bytearray(zlib.compress(raw, 9))
+        if failure_kind == "late-zlib-error":
+            compressed[-1] ^= 1
+        payload = base64.urlsafe_b64encode(compressed).decode().rstrip("=")
+        failed_url = f"https://mermaid.live/edit#pako:{payload}"
+        clean_url, clean_payload = self._url()
+
+        output_budgets: list[int] = []
+        real_decode = redaction._decode_pako_fragment
+
+        def counting_decode(candidate: str, output_budget: int) -> tuple[str | None, int]:
+            output_budgets.append(output_budget)
+            return real_decode(candidate, output_budget)
+
+        monkeypatch.setattr(redaction, "_decode_pako_fragment", counting_decode)
+        result = _authorized_pako_redact("\n".join((failed_url, failed_url, clean_url)))
+
+        per_fragment = redaction._PAKO_FRAGMENT_MAX_DECOMPRESSED_BYTES
+        assert output_budgets == [2 * per_fragment, per_fragment - 1]
+        assert clean_payload not in result
+        assert result.count("[REDACTED: encoded credential]") == 3
+
+    def test_immediate_zlib_failure_leaves_budget_for_later_valid_link(self, monkeypatch) -> None:
+        from kiro_crew.security import redaction
+
+        malformed = "https://mermaid.live/edit#pako:not-a-complete-zlib-stream"
+        clean_url, _ = self._url()
+        output_budgets: list[int] = []
+        real_decode = redaction._decode_pako_fragment
+
+        def counting_decode(candidate: str, output_budget: int) -> tuple[str | None, int]:
+            output_budgets.append(output_budget)
+            return real_decode(candidate, output_budget)
+
+        monkeypatch.setattr(redaction, "_decode_pako_fragment", counting_decode)
+        result = _authorized_pako_redact(f"{malformed}\n{clean_url}")
+
+        total = redaction._PAKO_FRAGMENT_MAX_TOTAL_DECOMPRESSED_BYTES
+        assert output_budgets == [total, total - 1]
+        assert result == (
+            "https://mermaid.live/edit#pako:[REDACTED: encoded credential]\n" + clean_url
+        )
+
+    def test_decoded_credential_and_exfiltration_fail_closed(self) -> None:
+        unsafe = [
+            "flowchart TD\n  A[AKIAIOSFODNN7EXAMPLE] --> B",
+            "flowchart TD\n  A[AKIA**IOSF**ODNN7EXAMPLE] --> B",
+            "flowchart TD\n  A[AKIAIOSF_ODNN_7EXAMPLE] --> B",
+            "flowchart TD\n  A[AKIAIOSF`ODNN`7EXAMPLE] --> B",
+            'flowchart TD\n  click A "https://example.com/?data=' + "A" * 200 + '"',
+            'flowchart TD\n  click A "https://example.com/#63;data=' + "A" * 200 + '"',
+        ]
+        for code in unsafe:
+            url, payload = self._url(code)
+            result = _authorized_pako_redact(url)
+            assert payload not in result
+            assert "[REDACTED: encoded credential]" in result
+
+    @pytest.mark.parametrize(
+        "origin",
+        ["https://mermaid.live", "HTTPS://MERMAID.LIVE", "HtTpS://MeRmAiD.LiVe"],
+    )
+    def test_nested_pako_state_fails_closed_for_accepted_origin_casing(self, origin: str) -> None:
+        inner, _ = self._url("flowchart TD\n  A[AKIAIOSFODNN7EXAMPLE] --> B")
+        nested = inner.replace("https://mermaid.live", origin)
+        outer, payload = self._url(f"flowchart TD\n  A[{nested}] --> B")
+        result, warnings = security.redact_credentials(outer)
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+        assert warnings == [f"Redacted nested compressed payload ({len(payload)} chars)"]
+
+    @pytest.mark.parametrize(
+        "nested",
+        [
+            "https://mermaid.live/edit#pako:",
+            "HTTPS://MERMAID.LIVE/edit#pako:",
+            "HtTpS://MeRmAiD.LiVe/edit#pako:not-a-complete-zlib-stream",
+        ],
+    )
+    def test_nested_incomplete_or_malformed_pako_candidate_fails_closed(self, nested: str) -> None:
+        outer, payload = self._url(f"flowchart TD\n  A[{nested}] --> B")
+        result = _authorized_pako_redact(outer)
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    @pytest.mark.parametrize(
+        "ordinary",
+        [
+            "HTTPS://MERMAID.LIVE/EDIT#pako:not-a-complete-zlib-stream",
+            "HTTPS://MERMAID.LIVE/edit#PAKO:not-a-complete-zlib-stream",
+            "ordinary non-nested pako prose",
+        ],
+    )
+    def test_nested_guard_preserves_nonmatching_grammar_and_ordinary_text(
+        self, ordinary: str
+    ) -> None:
+        outer, _ = self._url(f"flowchart TD\n  A[{ordinary}] --> B")
+        assert _authorized_pako_redact(outer) == outer
+
+    @pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+    @pytest.mark.parametrize("hard_break", ["\\", "  "], ids=["backslash", "two-spaces"])
+    def test_commonmark_hard_break_credential_carriers_fail_closed(
+        self, hard_break: str, line_ending: str
+    ) -> None:
+        """Renderer-native hard breaks cannot separate a credential from policy."""
+        from kiro_crew.security import redaction
+
+        split = f"AKIAIOSF{hard_break}{line_ending}ODNN7EXAMPLE"
+        assert security.redact_credentials(split) == (split, [])
+        assert redaction._mermaid_visible_record(split) is None
+        self._assert_redacted(f"flowchart TD\n  A[{split}] --> B")
+
+    @pytest.mark.parametrize("line_ending", ["\n", "\r\n", "\r"], ids=["lf", "crlf", "cr"])
+    def test_commonmark_non_hard_break_line_endings_remain_modeled(self, line_ending: str) -> None:
+        """Soft line endings and an escaped backslash retain visible separators."""
+        from kiro_crew.security import redaction
+
+        ordinary = f"left{line_ending}right"
+        one_space = f"left {line_ending}right"
+        escaped_backslash = f"left\\\\{line_ending}right"
+        assert redaction._mermaid_visible_record(ordinary) == ordinary
+        assert redaction._mermaid_visible_record(one_space) == one_space
+        assert redaction._mermaid_visible_record(escaped_backslash) == (f"left\\{line_ending}right")
+
+    def test_stream_slack_label_ceiling_holds_a_split_credential(self) -> None:
+        from kiro_crew.security import _STREAM_PAKO_MARKDOWN_CONTEXT_MAX
+
+        url, payload = self._url()
+        credential_head = "AKIA"
+        safe_head = "a" * (_STREAM_PAKO_MARKDOWN_CONTEXT_MAX + 1 - len(credential_head))
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        emits = [
+            stream.feed(f"<{url}|"),
+            stream.feed(safe_head + credential_head),
+            stream.feed("IOSFODNN7EXAMPLE>"),
+            stream.flush(),
+        ]
+        result = "".join(emits)
+        assert all("AKIA" not in emitted for emitted in emits)
+        assert result == (
+            f"<{url[: -len(payload)]}[REDACTED: encoded credential]|"
+            f"{safe_head}[REDACTED: credential]>"
+        )
+
+    def test_stream_slack_label_ceiling_preserves_clean_label_without_rescan(self) -> None:
+        from kiro_crew.security import _STREAM_PAKO_MARKDOWN_CONTEXT_MAX
+
+        url, payload = self._url()
+        label = "label-" * ((_STREAM_PAKO_MARKDOWN_CONTEXT_MAX // len("label-")) + 2)
+        text = f"<{url}|{label}>"
+        scanned: list[str] = []
+
+        def counting_redactor(candidate: str) -> str:
+            scanned.append(candidate)
+            return _authorized_pako_redact(candidate)
+
+        stream = security.StreamRedactor(counting_redactor)
+        result = stream.feed(text) + stream.flush()
+        assert result == (f"<{url[: -len(payload)]}[REDACTED: encoded credential]|{label}>")
+        assert "".join(scanned) == text
+
+    def test_stream_holds_a_split_exact_link_until_the_declared_boundary(self) -> None:
+        url, _ = self._url("flowchart TD\n" + "\n".join(f"  N{i} --> N{i + 1}" for i in range(400)))
+        for split in (1, 17, len(url) // 2, len(url) - 1):
+            stream = security.StreamRedactor(_authorized_pako_redact)
+            result = stream.feed(url[:split]) + stream.feed(url[split:] + " ") + stream.flush()
+            assert result == url + " "
+
+    def test_stream_preserves_split_mixed_case_origin_in_every_container(self) -> None:
+        url, _ = self._url("flowchart TD\n" + "\n".join(f"  N{i} --> N{i + 1}" for i in range(400)))
+        alias = url.replace("https://mermaid.live", "HTTPS://MERMAID.LIVE")
+        assert len(alias) > 512
+        for text in (alias, f"[Open]({alias})", f"<{alias}|Open>"):
+            cuts = sorted({1, 8, len("HTTPS://MERMAID.LIVE") - 1, len(text) // 2, len(text) - 1})
+            for cut in cuts:
+                stream = security.StreamRedactor(_authorized_pako_redact)
+                result = stream.feed(text[:cut]) + stream.feed(text[cut:] + " ")
+                result += stream.flush()
+                assert result == text + " ", (text[:12], cut)
+
+    def test_stream_preserves_split_declared_containers(self) -> None:
+        url, _ = self._url("flowchart TD\n  A --> B")
+        prefix_end = url.index("pako:") + len("pako:")
+        url_chunks = [
+            url[:8],
+            url[8 : prefix_end - 1],
+            url[prefix_end - 1 : prefix_end + 17],
+            url[prefix_end + 17 :],
+        ]
+        cases = [
+            ("markdown", ["[", "Open", "]", "(", *url_chunks, ")"], f"[Open]({url})"),
+            ("slack-label", ["<", *url_chunks, "|", "Open", ">"], f"<{url}|Open>"),
+            ("slack-autolink", ["<", *url_chunks, ">"], f"<{url}>"),
+        ]
+        for name, chunks, expected in cases:
+            stream = security.StreamRedactor(_authorized_pako_redact)
+            result = "".join(stream.feed(chunk) for chunk in chunks) + stream.flush()
+            assert result == expected, name
+
+    def test_stream_retains_slack_label_until_same_line_close(self) -> None:
+        url, _ = self._url("flowchart TD\n  A --> B")
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        assert stream.feed(f"<{url}|") == ""
+        assert stream.feed("Open") == ""
+        result = stream.feed(">") + stream.flush()
+        assert result == f"<{url}|Open>"
+
+    @pytest.mark.parametrize("ending", ["", "\n>", "\r>"])
+    def test_stream_incomplete_or_multiline_slack_container_fails_closed(self, ending: str) -> None:
+        url, payload = self._url()
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        result = stream.feed(f"<{url}|")
+        result += stream.feed(f"Open{ending}")
+        result += stream.flush()
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    def test_stream_ordinary_angle_prose_is_not_held_as_a_pako_container(self) -> None:
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        emitted = stream.feed("ordinary <angle|label")
+        assert emitted
+        assert emitted + stream.flush() == "ordinary <angle|label"
+
+    def test_stream_slack_label_holdback_is_bounded_and_fails_closed(self) -> None:
+        from kiro_crew.security import _STREAM_PAKO_MARKDOWN_CONTEXT_MAX
+
+        url, payload = self._url()
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        result = stream.feed(f"<{url}|")
+        result += stream.feed("a" * (_STREAM_PAKO_MARKDOWN_CONTEXT_MAX + 1))
+        assert len(stream._buf) <= _STREAM_PAKO_MARKDOWN_CONTEXT_MAX
+        result += stream.flush()
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    def test_stream_releases_disqualified_markdown_opener_byte_identically(self) -> None:
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        result = stream.feed("ordinary [label]")
+        result += stream.feed(" prose.")
+        result += stream.flush()
+        assert result == "ordinary [label] prose."
+
+    def test_stream_flush_releases_incomplete_markdown_opener(self) -> None:
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        result = stream.feed("ordinary [label]") + stream.flush()
+        assert result == "ordinary [label]"
+
+    def test_stream_split_unsupported_container_stays_fail_closed(self) -> None:
+        url, payload = self._url()
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        result = stream.feed("diagram=")
+        result += stream.feed(url[: len(url) // 2])
+        result += stream.feed(url[len(url) // 2 :] + " ")
+        result += stream.flush()
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    def test_stream_split_supported_container_still_redacts_unsafe_state(self) -> None:
+        url, payload = self._url("flowchart TD\n  A[AKIAIOSFODNN7EXAMPLE] --> B")
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        chunks = ["[", "Open", "]", "(", url[:17], url[17:], ")"]
+        result = "".join(stream.feed(chunk) for chunk in chunks) + stream.flush()
+        assert payload not in result
+        assert "[REDACTED: encoded credential]" in result
+
+    def test_stream_markdown_opener_holdback_is_bounded(self) -> None:
+        from kiro_crew.security import _STREAM_PAKO_MARKDOWN_CONTEXT_MAX
+
+        candidate = "[" + "a" * (_STREAM_PAKO_MARKDOWN_CONTEXT_MAX - 2)
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        assert stream.feed(candidate) == ""
+        assert stream._buf == candidate
+        result = stream.feed("] prose.") + stream.flush()
+        assert result == candidate + "] prose."
+
+        overlong = "[" + "a" * (_STREAM_PAKO_MARKDOWN_CONTEXT_MAX + 100)
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        emitted = stream.feed(overlong)
+        assert emitted
+        assert len(stream._buf) <= _STREAM_PAKO_MARKDOWN_CONTEXT_MAX
+        assert emitted + stream.flush() == overlong
+
+    def test_stream_markdown_pako_opener_uses_the_exact_context_ceiling(self) -> None:
+        from kiro_crew.security import _STREAM_PAKO_MARKDOWN_CONTEXT_MAX
+
+        url, payload = self._url()
+        for label_length, survives in (
+            (_STREAM_PAKO_MARKDOWN_CONTEXT_MAX - len("[]("), True),
+            (_STREAM_PAKO_MARKDOWN_CONTEXT_MAX - len("[](") + 1, False),
+        ):
+            text = f"[{'a' * label_length}]({url})"
+            stream = security.StreamRedactor(_authorized_pako_redact)
+            result = "".join(stream.feed(char) for char in text) + stream.flush()
+            if survives:
+                assert result == text
+            else:
+                assert payload not in result
+                assert result.count("[REDACTED: encoded credential]") == 1
+
+    def test_near_limit_streaming_work_is_linear_in_every_container(self, monkeypatch) -> None:
+        """Tiny chunks visit and store a held pako candidate only a constant number of times."""
+        from kiro_crew.security import (
+            _PAKO_FRAGMENT_MAX_ENCODED_CHARS,
+            _PAKO_FRAGMENT_PREFIX,
+            _STREAM_PAKO_MARKDOWN_CONTEXT_MAX,
+        )
+
+        code = "\n".join(
+            ":".join(
+                hashlib.sha256(f"pako-linear-{index}".encode()).hexdigest()[offset : offset + 8]
+                for offset in range(0, 64, 8)
+            )
+            for index in range(4000)
+        )
+        url, payload = self._url(code)
+        assert 3 * _PAKO_FRAGMENT_MAX_ENCODED_CHARS // 4 < len(payload)
+        assert len(payload) <= _PAKO_FRAGMENT_MAX_ENCODED_CHARS
+        alias = url.replace("https://mermaid.live", "HtTpS://MeRmAiD.LiVe")
+        long_label = "Open-" * 180
+        cases = [
+            ("bare", alias, 1),
+            ("markdown", f"[{long_label}]({alias})", 2),
+            ("slack-label", f"<{alias}|{long_label}>", 3),
+            ("slack-autolink", f"<{alias}>", 5),
+        ]
+
+        markdown_helper_sizes: list[int] = []
+        real_markdown_helper = security._stream_pako_markdown_opener_start
+
+        def counting_markdown_helper(text: str) -> int | None:
+            markdown_helper_sizes.append(len(text))
+            return real_markdown_helper(text)
+
+        monkeypatch.setattr(
+            security, "_stream_pako_markdown_opener_start", counting_markdown_helper
+        )
+
+        for name, text, chunk_size in cases:
+            redactor_calls: list[int] = []
+
+            def counting_redactor(candidate: str) -> str:
+                redactor_calls.append(len(candidate))
+                return _authorized_pako_redact(candidate)
+
+            stream = security.StreamRedactor(counting_redactor)
+            parts: list[str] = []
+            for start in range(0, len(text), chunk_size):
+                emitted = stream.feed(text[start : start + chunk_size])
+                if emitted:
+                    parts.append(emitted)
+            parts.append(stream.flush())
+
+            assert "".join(parts) == text, name
+            assert redactor_calls == [len(text)], (name, redactor_calls)
+            assert stream._pako_scan_steps <= 2 * len(text), name
+            assert stream._pako_storage_moves <= 2 * len(text), name
+            assert stream._pako_materialized_chars == len(text), name
+
+        helper_ceiling = _STREAM_PAKO_MARKDOWN_CONTEXT_MAX + len(_PAKO_FRAGMENT_PREFIX)
+        assert markdown_helper_sizes
+        assert max(markdown_helper_sizes) <= helper_ceiling
+
+    def test_stream_pako_failure_paths_are_linear_and_emit_one_marker(self) -> None:
+        from kiro_crew.security import (
+            _PAKO_FRAGMENT_MAX_ENCODED_CHARS,
+            _PAKO_FRAGMENT_PREFIX,
+        )
+
+        over_limit = _PAKO_FRAGMENT_PREFIX + "A" * (_PAKO_FRAGMENT_MAX_ENCODED_CHARS + 257)
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        parts = [stream.feed(char) for char in over_limit]
+        parts.append(stream.flush())
+        result = "".join(parts)
+        assert result == _PAKO_FRAGMENT_PREFIX + "[REDACTED: encoded credential]"
+        assert result.count("[REDACTED: encoded credential]") == 1
+        assert stream._pako_scan_steps <= 2 * len(over_limit)
+        assert stream._pako_storage_moves <= 2 * (
+            len(_PAKO_FRAGMENT_PREFIX) + _PAKO_FRAGMENT_MAX_ENCODED_CHARS
+        )
+
+        url, payload = self._url()
+        for incomplete in (f"[Open]({url}", f"<{url}|Open"):
+            stream = security.StreamRedactor(_authorized_pako_redact)
+            result = "".join(stream.feed(char) for char in incomplete) + stream.flush()
+            assert payload not in result
+            assert result.count("[REDACTED: encoded credential]") == 1
+            assert stream._pako_scan_steps <= (
+                2 * len(incomplete) + len(_PAKO_FRAGMENT_PREFIX) ** 2
+            )
+            assert stream._pako_storage_moves <= 2 * len(incomplete)
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "eyJ" + "A" * 700 + ".eyJzdWIiOiIxIn0.SflKxwRJSMeKKF2Q",
+            "Authorization: Bearer " + "A1b2C3d4" * 100,
+            (
+                "-" * 5
+                + "BEGIN RSA "
+                + "PRIVATE KEY"
+                + "-" * 5
+                + "\n"
+                + "MIIEpAIBAAKCAQEA" * 30
+                + "\n-----END RSA PRIVATE KEY-----"
+            ),
+        ],
+        ids=["jwt", "bearer", "pem"],
+    )
+    def test_incremental_pako_state_does_not_change_ordinary_credential_policy(
+        self, text: str
+    ) -> None:
+        stream = security.StreamRedactor(_authorized_pako_redact)
+        streamed = stream.feed(text + " ") + stream.flush()
+        assert streamed == _authorized_pako_redact(text + " ")
+        assert "[REDACTED: credential]" in streamed
+        assert stream._pako_buffer is None
+
+    @staticmethod
+    def _install_companion(token: str):
+        """Install a context whose policy adds one companion-only pattern.
+
+        Mirrors the ``_Policy`` shape of ``test_platform_context.py``: the
+        baseline runs first, then the companion's own replacement. Returns the
+        ``reset_context`` callable the caller must run in ``finally``.
+        """
+        import dataclasses
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.platform import build_default_context, reset_context, set_context
+        from kiro_crew.platform.defaults import DefaultCredentialPolicy
+
+        class _Companion(DefaultCredentialPolicy):
+            def redact(self, text: str) -> str:
+                return super().redact(text).replace(token, "[REDACTED: companion credential]")
+
+        set_context(
+            dataclasses.replace(build_default_context(KiroCrewConfig()), credentials=_Companion())
+        )
+        return reset_context
+
+    def test_active_policy_scans_decoded_state(self) -> None:
+        """The host policy sees decoded pako state through the production seam.
+
+        ``redact_via_context`` threads the active ``CredentialPolicy`` into the
+        one pako-aware composition, so every host-aware egress (the dashboard
+        segment flush, Slack's joined boundary, linked-channel delivery) refuses
+        a link whose decoded state carries a companion-only token. The rolling
+        redactor composes nothing itself, so the seam is proved through a
+        ``StreamRedactor`` built on it rather than on a bare callable.
+        """
+        from kiro_crew.platform.context import redact_via_context
+
+        token = "COMPANION-COOKIE-SECRET"
+        url, payload = self._url(f"flowchart TD\n  A[{token}] --> B")
+        reset = self._install_companion(token)
+        try:
+            stream = security.StreamRedactor(redact_via_context)
+            result = stream.feed(url + " ") + stream.flush()
+            assert payload not in result
+            assert "[REDACTED: encoded credential]" in result
+            # Safe opposite: a clean diagram survives the companion policy too.
+            clean_url, _ = self._url("flowchart TD\n  A --> B")
+            stream = security.StreamRedactor(redact_via_context)
+            assert stream.feed(clean_url + " ") + stream.flush() == clean_url + " "
+        finally:
+            reset()
+
+    def test_stream_redactor_runs_its_redactor_exactly_once_per_commit(self, monkeypatch) -> None:
+        """The redactor IS the policy; the rolling buffer must not wrap it in a
+        second baseline pass, which would scan every streamed chunk twice."""
+        calls: list[str] = []
+        baseline_calls: list[str] = []
+        real = security.redact_credentials
+
+        def counting_baseline(text: str, **kwargs):
+            baseline_calls.append(text)
+            return real(text, **kwargs)
+
+        def counting(text: str) -> str:
+            calls.append(text)
+            return _authorized_pako_redact(text)
+
+        monkeypatch.setattr(security, "redact_credentials", counting_baseline)
+        stream = security.StreamRedactor(counting)
+        emitted = stream.feed("hello world ") + stream.feed("again ") + stream.flush()
+        assert emitted == "hello world again "
+        assert calls == ["hello world ", "again "]
+        # The redactor's own single baseline pass is the only one per commit.
+        assert baseline_calls == ["hello world ", "again "]
+
+    def test_standalone_baseline_runs_once_per_egress_call(self, monkeypatch) -> None:
+        """One pako-aware baseline per ``redact_via_context`` call on the Default.
+
+        The Default ``CredentialPolicy.redact`` is ``security.redact`` -- the same
+        pipeline the platform seam already runs -- so feeding it back in as the
+        final redactor would execute every exfil and credential pass twice on the
+        hottest text path. Count the credential pass through the facade seam the
+        composition calls.
+        """
+        from kiro_crew.platform import reset_context
+        from kiro_crew.platform.context import redact_via_context
+
+        reset_context()
+        real = security.redact_credentials
+        calls: list[str] = []
+
+        def counting(text: str, **kwargs):
+            calls.append(text)
+            return real(text, **kwargs)
+
+        monkeypatch.setattr(security, "redact_credentials", counting)
+        try:
+            assert redact_via_context("plain text AKIAIOSFODNN7EXAMPLE") == (
+                "plain text [REDACTED: credential]"
+            )
+            assert len(calls) == 1
+            calls.clear()
+            stream = security.StreamRedactor(redact_via_context)
+            stream.feed("streamed text ")
+            stream.flush()
+            assert len(calls) == 1
+        finally:
+            reset_context()
+
+    def test_companion_delta_runs_once_after_a_single_baseline(self, monkeypatch) -> None:
+        token = "COMPANION-COOKIE-SECRET"
+        from kiro_crew.platform.context import redact_via_context
+
+        reset = self._install_companion(token)
+        real = security.redact_credentials
+        calls: list[str] = []
+
+        def counting(text: str, **kwargs):
+            calls.append(text)
+            return real(text, **kwargs)
+
+        monkeypatch.setattr(security, "redact_credentials", counting)
+        try:
+            out = redact_via_context(f"{token} beside AKIAIOSFODNN7EXAMPLE")
+            assert out == "[REDACTED: companion credential] beside [REDACTED: credential]"
+            # The companion's own ``super().redact`` is its composition, not
+            # ours: the platform seam contributed exactly one baseline pass.
+            assert len(calls) == 2
+        finally:
+            reset()

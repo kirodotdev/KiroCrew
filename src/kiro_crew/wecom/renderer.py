@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any
 from kiro_crew.messaging.renderer import Renderer, format_overflow, split_options_trailer
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS, new_stream_id
 
 if TYPE_CHECKING:
@@ -91,7 +92,11 @@ def _render_options_as_text(text: str) -> str:
     body, choices = split_options_trailer(text, hide_partial=True)
     if not choices:
         return body
-    listing = format_overflow(choices, start=0)
+    listing = format_overflow(
+        choices,
+        start=0,
+        redactor=redact_pako_via_context,
+    )
     return f"{body}\n\n{listing}" if body else listing
 
 

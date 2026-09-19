@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING, Any
 
 from kiro_crew.messaging.renderer import Renderer, render_options_as_text
 from kiro_crew.messaging.transport import TransportCapabilities
+from kiro_crew.platform import redact_pako_via_context
 from kiro_crew.weixin.client import TYPING_START, TYPING_STOP
 from kiro_crew.weixin.renderer import render_chunks
 
@@ -168,7 +169,11 @@ class WeixinRenderer(Renderer):
     # -- helpers ------------------------------------------------------------
     def text(self) -> str:
         """The turn's answer, with ``[OPTIONS:]`` as numbered text. Also persisted."""
-        return render_options_as_text("".join(self._buf).strip(), self.capabilities)
+        return render_options_as_text(
+            "".join(self._buf).strip(),
+            self.capabilities,
+            redactor=redact_pako_via_context,
+        )
 
     async def _send(self, body: str) -> None:
         """Deliver the answer as one or more chat messages.
