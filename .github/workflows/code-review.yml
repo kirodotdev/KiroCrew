@@ -355,6 +355,13 @@ jobs:
   # ── PR Hygiene ───────────────────────────────────────────────────────
   # Enforces: (1) conventional commit message format on PR title,
   # (2) at most two commits per PR (squash review-round noise before merge).
+  #
+  # Every step assembles its `::error::` prefix at runtime through `err()` rather
+  # than writing it literally. Actions echoes each `run:` block's source into the
+  # log whether the branch executes or not, so a literal annotation string is
+  # printed by PASSING runs too, where it reads as a second, real failure. The
+  # annotation a failing run emits is identical either way; only the inert source
+  # line stops impersonating one.
   pr-hygiene:
     name: PR Hygiene
     runs-on: ${{ github.repository == 'kirodotdev/KiroCrew' && contains(fromJSON(vars.CODEBUILD_ACTOR_IDS || '[]'), github.actor_id) && (github.event_name == 'push' || (github.event_name == 'pull_request' && (github.event.action == 'opened' || github.event.action == 'synchronize') && github.event.pull_request.head.repo.full_name == github.repository)) && format('codebuild-kirocrew-gha-linux-{0}-{1}', github.run_id, github.run_attempt) || 'ubuntu-latest' }}
@@ -373,9 +380,10 @@ jobs:
         env:
           PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           PATTERN='^(feat|fix|docs|style|refactor|perf|test|chore|ci|build|revert)(\([a-z0-9_-]+\))?!?: .+'
           if ! echo "$PR_TITLE" | grep -qE "$PATTERN"; then
-            echo "::error::PR title must follow conventional commits format."
+            err "PR title must follow conventional commits format."
             echo ""
             echo "  Expected: type(scope): description"
             echo "  Examples:"
@@ -403,15 +411,25 @@ jobs:
           # merge-base fix (#4968), which deliberately left this site alone.
           BASE: ${{ github.event.pull_request.base.sha }}
           HEAD: ${{ github.event.pull_request.head.sha }}
+          # The branch NAME, for the remedy text. Spelling `origin/main` literally
+          # is the wrong command for a PR opened against any other base, and sends
+          # the contributor to rebase onto a branch they are not targeting.
+          BASE_REF: ${{ github.event.pull_request.base.ref }}
           MAX_COMMITS: "2"
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           COMMIT_COUNT=$(git rev-list --count "$BASE".."$HEAD")
           if [ "$COMMIT_COUNT" -lt 1 ] || [ "$COMMIT_COUNT" -gt "$MAX_COMMITS" ]; then
-            echo "::error::PR must contain 1 or $MAX_COMMITS commits (has $COMMIT_COUNT). Squash before pushing:"
+            err "PR must contain 1 or $MAX_COMMITS commits (has $COMMIT_COUNT). Rebase, do not merge:"
+            echo ""
+            echo "  Do NOT plain-click 'Update branch' on this page, and do not merge"
+            echo "  $BASE_REF into your branch. Both add a merge commit, which counts"
+            echo "  here and will re-trip this check. The button's dropdown carries an"
+            echo "  'Update with rebase' option that is safe; its default click is not."
             echo ""
             echo "  git fetch origin"
-            echo "  git rebase origin/main"
-            echo "  git reset --soft origin/main"
+            echo "  git rebase origin/$BASE_REF"
+            echo "  git reset --soft origin/$BASE_REF"
             echo "  git commit -m 'type(scope): description'"
             echo "  git push --force-with-lease"
             echo ""
@@ -430,12 +448,13 @@ jobs:
           PR_TITLE: ${{ github.event.pull_request.title }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          err() { printf '::%s::%s\n' error "$*"; }
           if ! echo "$PR_TITLE" | grep -qiE '^(fix|revert)([(!:]|$)'; then
             echo "Not a fix/revert PR; Pattern harvest section not required."
             exit 0
           fi
           if ! printf '%s' "$PR_BODY" | grep -qiE '^##+ *Pattern harvest'; then
-            echo "::error::Fix/revert PRs must carry a '## Pattern harvest' section."
+            err "Fix/revert PRs must carry a '## Pattern harvest' section."
             echo ""
             echo "  State either a rule candidate or why the defect is a one-off:"
             echo ""
@@ -451,7 +470,7 @@ jobs:
             exit 1
           fi
           if ! printf '%s' "$PR_BODY" | grep -qiE '^ *(Rule candidate|Not generalizable) *:'; then
-            echo "::error::The Pattern harvest section must contain a 'Rule candidate:' or 'Not generalizable:' line."
+            err "The Pattern harvest section must contain a 'Rule candidate:' or 'Not generalizable:' line."
             exit 1
           fi
           echo "Pattern harvest section present."

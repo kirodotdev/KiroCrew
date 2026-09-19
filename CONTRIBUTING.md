@@ -440,6 +440,19 @@ same route a maintainer would, which is why the process holds regardless of who 
 what wrote the code. If you are contributing with an agent, point it at that skill
 instead of describing the steps yourself.
 
+One thing the GitHub UI will get wrong for you: if your branch falls behind the
+base while the PR is open, **rebase it, do not merge**. Plain-clicking
+**Update branch**, like a local `git merge main`, adds a merge commit, which counts
+toward the one-or-two-commit limit above and fails `PR Hygiene` on a PR that was
+green a moment earlier. That button's dropdown does carry an **Update with rebase**
+option, which is safe; the default click is the trap. Pick that option, or run:
+
+```
+git fetch origin
+git rebase origin/<base branch>
+git push --force-with-lease
+```
+
 ## Pull Request Workflow
 
 1. **Fork** the repository on GitHub.
