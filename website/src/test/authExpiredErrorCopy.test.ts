@@ -10,6 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { api, ApiError, isAuthExpiredError, __resetAuthRecoveryStateForTests } from '../api/client'
+import { retryPolicy } from '../api/queryClient'
 
 const authDenial = (reason: string): Response =>
   new Response(JSON.stringify({ error: reason }), {
@@ -22,6 +23,26 @@ const plainForbidden = (reason: string): Response =>
     status: 403,
     headers: { 'content-type': 'application/json' },
   })
+
+/** A gate's sign-in page: HTML on a 403, and no `X-Auth-Required` anywhere on it. */
+const proxyChallenge = (): Response =>
+  new Response(
+    '<!DOCTYPE html><html><head><title>Access Required</title></head><body>'
+    + '<h1>Access Required</h1>'
+    + '<p><a href="https://dash.example/gate-auth?redirect=%2Fapi">Sign in</a></p>'
+    + '</body></html>',
+    { status: 403, headers: { 'content-type': 'text/html; charset=UTF-8' } },
+  )
+
+/** The same shape with nowhere to sign in -- a firewall block, not a lapse. */
+const proxyBlockPage = (): Response =>
+  new Response(
+    '<!DOCTYPE html><html><head><title>Access denied</title></head><body>'
+    + '<h1>Sorry, you have been blocked</h1>'
+    + '<p>Ray ID: 8f2a1c</p><footer><a href="/authors/jane">Authors</a></footer>'
+    + '</body></html>',
+    { status: 403, headers: { 'content-type': 'text/html; charset=UTF-8' } },
+  )
 
 describe('auth-expired error copy', () => {
   let fetchMock: ReturnType<typeof vi.fn>
@@ -83,4 +104,47 @@ describe('auth-expired error copy', () => {
     expect(isAuthExpiredError(new Error('boom'))).toBe(false)
     expect(isAuthExpiredError(undefined)).toBe(false)
   })
+
+  it('flags a lapsed PROXY session, which carries no gateway header at all', async () => {
+    // Routed through the real failure path, so deleting the wiring makes this fail --
+    // which a hand-built ApiError cannot.
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url === '/api/auth/refresh'
+          ? new Response('{}', { status: 401 })
+          : proxyChallenge(),
+      ),
+    )
+
+    const err = await api.listInstances().then(() => null, (e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect(isAuthExpiredError(err as ApiError)).toBe(true)
+    // The narrower flag is what withdraws the retry, and only the proxy case sets it.
+    expect(retryPolicy(0, err)).toBe(false)
+    expect((err as ApiError).message).toMatch(/access proxy/i)
+    // The HTML page must not reach the user as the message.
+    expect((err as ApiError).message).not.toMatch(/<!DOCTYPE/i)
+  })
+
+  it('treats a page with no way in exactly like one that offers one', async () => {
+    // The structural guard at the factory: telling the two apart is what review found
+    // misreading four classes of page.
+    fetchMock.mockImplementation((url: string) =>
+      Promise.resolve(
+        url === '/api/auth/refresh'
+          ? new Response('{}', { status: 401 })
+          : proxyBlockPage(),
+      ),
+    )
+
+    const err = await api.listInstances().then(() => null, (e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect(isAuthExpiredError(err as ApiError)).toBe(true)
+    // The gateway never saw the request, so a silent retry a second later reproduces it.
+    expect(retryPolicy(0, err)).toBe(false)
+    expect((err as ApiError).message).toMatch(/if a sign-in page appears/i)
+  })
+
 })
