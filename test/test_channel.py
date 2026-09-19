@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from kiro_crew.channel import (
@@ -188,6 +190,96 @@ class TestChannelRouting:
         # Human replies in thread without @mention — should go to orch (parent sender)
         await ch.post("human", "reply", from_role="Human", thread_id=msg.id)
         assert not orch.inbox.empty()
+
+    @pytest.mark.asyncio
+    async def test_a_threaded_reply_overlapping_a_clear_is_not_orphaned(self):
+        """A reply must never name a parent that vanished while it waited.
+
+        The production clear-all does NOT take `_log_lock`, so this test simulates a wipe that
+        serializes against the append -- the ordering a lock-taking clear would produce, and the
+        one a contended append reaches when the index changes under it. A send that resolved its
+        thread parent OUTSIDE the lock would capture a parent id, block, and then append a reply
+        pointing at a message that is gone -- having already incremented that parent's
+        reply_count. The orphan-thread suite pins the same invariant with no concurrency.
+        """
+        ch, orch, spec = self._make_channel_with_agents()
+        parent = await ch.post(orch.id, "initial", from_role="Orch")
+
+        await ch._log_lock.acquire()
+        reply_task = asyncio.create_task(
+            ch.post("human", "reply", from_role="Human", thread_id=parent.id)
+        )
+        for _ in range(5):
+            await asyncio.sleep(0)
+        ch.messages.clear()
+        ch._msg_index.clear()
+        ch._log_lock.release()
+        reply = await reply_task
+
+        assert (
+            reply.thread_id is None
+        ), "the reply names a thread parent the clear already wiped, so it is orphaned"
+        assert (
+            reply.reply_to is None
+        ), "the reply routes to a parent sender resolved from a message that is gone"
+
+    @pytest.mark.asyncio
+    async def test_a_delivered_message_is_never_absent_from_the_persisted_log(self):
+        """Delivery and persistence must not straddle the lock release.
+
+        Releasing `_log_lock` after the append lets a wipe persist before this post delivers:
+        the recipient then holds a message that no durable snapshot contains, and the post's own
+        `_save()` re-persists the wiped log over it. The `_clear_all` below takes the lock, which
+        the production handler does not yet do -- it stands in for a clear serialized against the
+        append, so this pins the post side of the window. A delivery await has to suspend for the
+        window to open, which a default unbounded inbox does not do, so the stub below makes that
+        existing suspension point deterministic.
+        """
+
+        class _YieldingInbox:
+            """An inbox whose put suspends, as a bounded or contended one does."""
+
+            def __init__(self) -> None:
+                self.items: list = []
+
+            async def put(self, item) -> None:
+                await asyncio.sleep(0)
+                self.items.append(item)
+
+        ch, orch, spec = self._make_channel_with_agents()
+        spec.inbox = _YieldingInbox()  # type: ignore[assignment]
+        saves: list[list[str]] = []
+        ch._save_fn = lambda c: saves.append([m.id for m in c.messages])
+
+        async def _clear_all() -> None:
+            async with ch._log_lock:
+                ch.messages.clear()
+                ch._msg_index.clear()
+                ch._save()
+
+        # Both queue behind a lock this test holds, so the clear is already waiting when the
+        # post releases it -- the ordering a concurrent clear reaches on its own.
+        await ch._log_lock.acquire()
+        post_task = asyncio.create_task(
+            ch.post(orch.id, "hello", from_role="Orch", mention=spec.id)
+        )
+        for _ in range(3):
+            await asyncio.sleep(0)
+        clear_task = asyncio.create_task(_clear_all())
+        for _ in range(3):
+            await asyncio.sleep(0)
+        ch._log_lock.release()
+
+        msg = await post_task
+        await clear_task
+
+        assert msg.id in [
+            m.id for m in spec.inbox.items
+        ], "the message was never delivered, so this test is not exercising the window"
+        assert any(msg.id in snap for snap in saves), (
+            "the message was delivered to a member but no persisted snapshot ever contained "
+            f"it, so it is lost on restart; snapshots={saves}"
+        )
 
     @pytest.mark.asyncio
     async def test_human_message_resets_exchange_counts(self):

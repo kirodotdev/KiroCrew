@@ -319,6 +319,9 @@ class Channel:
     _save_fn: Any = None  # set by ChannelManager
     _max_agents: int = _MAX_AGENTS
     max_exchanges: int = _MAX_A2A_EXCHANGES
+    # Serializes one append against another, resolution through persistence. The clear-all
+    # handler does not take it, so an append is NOT serialized against a clear.
+    _log_lock: asyncio.Lock = field(default_factory=asyncio.Lock, repr=False)
 
     def add_agent(
         self,
@@ -401,113 +404,125 @@ class Channel:
             mentions = {mention}
         mentions.discard(from_id)  # no self-mentions
 
-        # Resolve reply_to from thread parent
-        reply_to: str | None = None
-        if thread_id:
-            parent = self._msg_index.get(thread_id)
-            if parent:
-                reply_to = parent.from_id
-                parent.reply_count += 1
+        # Decided against the index this append writes to: the parent can be evicted by the
+        # rolloff below, or wiped by a clear.
+        async with self._log_lock:
+            reply_to: str | None = None
+            if thread_id:
+                parent = self._msg_index.get(thread_id)
+                if parent:
+                    reply_to = parent.from_id
+                    parent.reply_count += 1
+                else:
+                    thread_id = None
 
-        msg = ChannelMessage(
-            id=uuid.uuid4().hex[:8],
-            from_id=from_id,
-            from_role=from_role or from_id,
-            content=content,
-            mention=list(mentions) if mentions else None,
-            msg_type=msg_type,
-            thread_id=thread_id,
-            reply_to=reply_to,
-        )
-        self.messages.append(msg)
-        self._msg_index[msg.id] = msg
-        if len(self.messages) > _MAX_MESSAGES:
-            removed = self.messages.pop(0)
-            self._msg_index.pop(removed.id, None)
+            msg = ChannelMessage(
+                id=uuid.uuid4().hex[:8],
+                from_id=from_id,
+                from_role=from_role or from_id,
+                content=content,
+                mention=list(mentions) if mentions else None,
+                msg_type=msg_type,
+                thread_id=thread_id,
+                reply_to=reply_to,
+            )
+            self.messages.append(msg)
+            self._msg_index[msg.id] = msg
+            if len(self.messages) > _MAX_MESSAGES:
+                removed = self.messages.pop(0)
+                self._msg_index.pop(removed.id, None)
+                if removed.id == msg.thread_id:
+                    # Only the stored pair: delivery below routes on the resolved locals, and
+                    # clearing those leaves an unmentioned reply matching no arm but @mention.
+                    msg.thread_id = None
+                    msg.reply_to = None
 
-        # Human message resets A2A exchange budget — agents get fresh rounds
-        if from_id == "human":
-            self.exchange_counts.clear()
+            # Human message resets A2A exchange budget — agents get fresh rounds
+            if from_id == "human":
+                self.exchange_counts.clear()
 
-        for agent in self.members.values():
-            if agent.id == from_id or agent.state in ("done", "failed"):
-                continue
-            if agent.listen_mode == ListenMode.SILENT:
-                continue
-
-            is_human = from_id == "human"
-
-            # Thread routing: default listener = parent sender
-            if thread_id and reply_to == agent.id and not mentions:
-                await agent.inbox.put(msg)
-                continue
-
-            # Thread fallback: if reply_to doesn't match any agent (e.g. system message),
-            # route human thread replies to orchestrator
-            if (
-                thread_id
-                and is_human
-                and not mentions
-                and agent.is_orchestrator
-                and reply_to not in self.members
-            ):
-                await agent.inbox.put(msg)
-                continue
-
-            # Orchestrator gets all top-level human messages (no @mention needed)
-            if is_human and not mentions and not thread_id and agent.is_orchestrator:
-                await agent.inbox.put(msg)
-                continue
-
-            # Everyone else: strict @mention only
-            if agent.id not in mentions:
-                continue
-
-            # A2A exchange limit
-            if not is_human:
-                pair = (from_id, agent.id)
-                if self.exchange_counts.get(pair, 0) >= self.max_exchanges:
-                    logger.info(
-                        "A2A limit reached: %s → %s in channel %s",
-                        from_id,
-                        agent.id,
-                        self.id,
-                    )
+            # Delivery and persistence stay under the lock: releasing here let a clear
+            # wipe and persist between the append and this, delivering an unlogged message.
+            for agent in self.members.values():
+                if agent.id == from_id or agent.state in ("done", "failed"):
                     continue
-                self.exchange_counts[pair] = self.exchange_counts.get(pair, 0) + 1
+                if agent.listen_mode == ListenMode.SILENT:
+                    continue
 
-            await agent.inbox.put(msg)
+                is_human = from_id == "human"
 
-        # Dead agent bounce
-        for mid in mentions:
-            target = self.members.get(mid)
-            if target and target.state in ("done", "failed"):
-                bounce = ChannelMessage(
-                    id=uuid.uuid4().hex[:8],
-                    from_id="system",
-                    from_role="System",
-                    mention=None,
-                    msg_type="system",
-                    content=f"⚠️ @{target.role} is no longer active.",
-                )
-                self.messages.append(bounce)
-                self._msg_index[bounce.id] = bounce
-                if len(self.messages) > _MAX_MESSAGES:
-                    removed = self.messages.pop(0)
-                    self._msg_index.pop(removed.id, None)
-                self._broadcast(
-                    "channel_message", {"channel_id": self.id, "message": bounce.to_dict()}
-                )
+                # Thread routing: default listener = parent sender
+                if thread_id and reply_to == agent.id and not mentions:
+                    await agent.inbox.put(msg)
+                    continue
 
-        # Always broadcast to frontend
-        self._broadcast(
-            "channel_message",
-            {
-                "channel_id": self.id,
-                "message": msg.to_dict(),
-            },
-        )
-        self._save()
+                # Thread fallback: if reply_to doesn't match any agent (e.g. system message),
+                # route human thread replies to orchestrator
+                if (
+                    thread_id
+                    and is_human
+                    and not mentions
+                    and agent.is_orchestrator
+                    and reply_to not in self.members
+                ):
+                    await agent.inbox.put(msg)
+                    continue
+
+                # Orchestrator gets all top-level human messages (no @mention needed)
+                if is_human and not mentions and not thread_id and agent.is_orchestrator:
+                    await agent.inbox.put(msg)
+                    continue
+
+                # Everyone else: strict @mention only
+                if agent.id not in mentions:
+                    continue
+
+                # A2A exchange limit
+                if not is_human:
+                    pair = (from_id, agent.id)
+                    if self.exchange_counts.get(pair, 0) >= self.max_exchanges:
+                        logger.info(
+                            "A2A limit reached: %s → %s in channel %s",
+                            from_id,
+                            agent.id,
+                            self.id,
+                        )
+                        continue
+                    self.exchange_counts[pair] = self.exchange_counts.get(pair, 0) + 1
+
+                await agent.inbox.put(msg)
+
+            # Dead agent bounce
+            for mid in mentions:
+                target = self.members.get(mid)
+                if target and target.state in ("done", "failed"):
+                    bounce = ChannelMessage(
+                        id=uuid.uuid4().hex[:8],
+                        from_id="system",
+                        from_role="System",
+                        mention=None,
+                        msg_type="system",
+                        content=f"⚠️ @{target.role} is no longer active.",
+                    )
+                    self.messages.append(bounce)
+                    self._msg_index[bounce.id] = bounce
+                    if len(self.messages) > _MAX_MESSAGES:
+                        removed = self.messages.pop(0)
+                        self._msg_index.pop(removed.id, None)
+                    self._broadcast(
+                        "channel_message",
+                        {"channel_id": self.id, "message": bounce.to_dict()},
+                    )
+
+            # Always broadcast to frontend
+            self._broadcast(
+                "channel_message",
+                {
+                    "channel_id": self.id,
+                    "message": msg.to_dict(),
+                },
+            )
+            self._save()
         return msg
 
     async def subscribe(self, agent_id: str):
@@ -823,6 +838,22 @@ async def run_channel_agent(
             )
             orch_toplevel = agent.is_orchestrator and (is_toplevel_human or is_agent_report_back)
             tid = None if orch_toplevel else (msg.thread_id or msg.id)
+            if sessions.get_provider(agent.session_key) is not client:
+                # IDENTITY, not presence: a clear-context discard pops this key and shuts the
+                # cached provider down, and a later claim can re-register a DIFFERENT one under it.
+                replacement = await _reacquire_cleared_session(sessions, agent)
+                if replacement is None:
+                    await channel.post(
+                        agent.id,
+                        "❌ This agent's session could not be re-acquired after its context "
+                        "was cleared. Wake it to try again.",
+                        from_role=agent.role,
+                        msg_type="system",
+                        thread_id=tid,
+                    )
+                    agent.state = "failed"
+                    break
+                client = replacement
             busy = await _stream_task(
                 agent, channel, client, prompt, thread_id=tid, is_yolo=is_yolo
             )
@@ -874,6 +905,28 @@ async def run_channel_agent(
         )
         sessions.release(agent.session_key)
         logger.info("Channel agent %s (%s) finished: %s", agent.id, agent.role, agent.state)
+
+
+async def _reacquire_cleared_session(sessions: Any, agent: ChannelAgent) -> Any:
+    """Take a fresh lease after this member's session was discarded from under it.
+
+    A clear-context discard pops the registry entry and shuts the provider down, and the
+    provider this member cached at spawn is that same object -- so without this the member
+    streams a dead one for every later message and only a restart recovers it. No reset is
+    owed first, unlike :func:`_reset_busy_session`: the key is already cold, and the single
+    ``release`` in the listening lifecycle resolves the key at call time, so it balances
+    against the replacement.
+    """
+    try:
+        client, _is_new, _resumed = await sessions.get_or_create(
+            agent.session_key,
+            agent=agent.agent_name or None,
+            approval_policy=agent.approval_policy.value,
+        )
+    except Exception:
+        logger.exception("Failed to re-acquire session %s after a clear", agent.session_key)
+        return None
+    return client
 
 
 async def _reset_busy_session(sessions: Any, agent: ChannelAgent) -> Any | None:
