@@ -216,6 +216,68 @@ gate bypass. Its stdio shim answers an empty `tools/list` while the keystone
 enable is off — retained as defence in depth for a mid-session disable, on top of
 the `spec_gate` above that keeps the process from existing in the first place.
 
+### The final ref reconcile
+
+`tools` and `allowedTools` hold `@server` and `@server/tool` refs, and kiro-cli
+mounts only what `mcpServers` declares, so a ref naming a name absent from the
+final map mounts nothing. Several passes narrow that map without touching either
+list: the resolution pass replaces `mcpServers` wholesale and drops unresolvable
+servers by OMISSION, and the locked app re-merge deletes entries whose app is not
+confirmed enabled. Because the merge base is the previous rendered config, a ref
+outlives the server it named — across a rename, an uninstall or a disable.
+
+One `prune_dangling_tool_refs()` pass over the FINAL map therefore runs at the
+single funnel every write path goes through, after the passes that mutate
+`allowedTools` and before the auto-approve filter below. Reconciling the final
+map rather than each narrowing pass is what keeps a pass added later safe by
+default.
+
+**The two lists take separate exemption sets, because they fail in opposite
+directions.** `declared` names servers whose absence this rebuild EXPECTS a later
+pass to reverse and governs `tools`; `declared_grants` governs `allowedTools`.
+Keeping a mount ref too long costs one mount attempt against a name that holds
+nothing, while dropping one can unmount a server for good, since an existing
+config deliberately never re-adds a template ref. Keeping a GRANT too long hands
+the next server on that name an auto-approval nobody granted, on the one list
+that never reaches the PreToolUse gate, while dropping one costs an approval a
+human can give again. So a name this rebuild is UNSURE about is exempted as a
+mount and not as a grant: the mount survives the doubt and the grant does not. A
+caller with no such doubt passes one set and both lists read it.
+
+Three classes populate the mount set: a server whose `command` did not resolve on
+this pass, a gated-off shipped server whose entry is withheld while its ref is
+retained by design, and a name some readable source still declares. A `@` name in
+`RESERVED_TOOL_NAMESPACES` addresses a kiro namespace rather than a server —
+`@builtin` carries the whole built-in tool surface plus the `tool_search` loader
+— so it is never in the map and is never a leftover.
+
+**App-contributed names are read twice, before and after the rebuild's work.** A
+`{app}:{server}` key is minted by an app manifest, so a disabled app's grant must
+not outlive it; but an ownership read that FAILED cannot be told from one that
+found no owner, and only the second is safe to treat as unowned. An unclaimed name
+therefore keeps its mount unconditionally, because an unrelated app's unreadable
+manifest is doubt about that app and never a licence to unmount a server whose
+binary is merely off PATH this pass, and it keeps its grant only while a readable
+source still declares the name. An app's enablement is read as a tri-state so that
+a metadata read fault is not recorded as a deliberate disable. A name no source
+claims exactly is matched by alias family rather than by equality, because
+`mcp_server_alias()` is many-to-one and a collision is resolved by suffixing, so
+a `base-2` sibling with no claim of its own has only its base's answer to
+inherit. A name that IS claimed exactly answers to its own claimant on both
+lists, because widening that to the family lets a sibling's switched-off owner
+delete a server whose own app is running. A name a
+readable source still declares outranks a switched-off app's claim on it, since
+the rebuild's own ref sync would otherwise re-add the pruned per-tool grant as a
+WHOLE-server one.
+
+**Both outcomes are recorded where an operator can see them.** Revoking a grant
+emits `mcp_auto_approve_revoked` to SEL, the same feed as the withhold above,
+because it is a permission decision and no config delta records it. Dropping a
+mount ref is logged at WARNING, which the shipped `agent.log_level` default
+shows: the ref named nothing, so the tool was already unreachable, but a
+misclassified absence is unrecoverable and an operator debugging a tool that
+stopped being offered should not have to raise the log level first.
+
 ### The final auto-approve pass
 
 `allowedTools` is kiro-cli's blanket auto-approve list, and it is the one path

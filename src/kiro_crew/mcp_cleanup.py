@@ -15,8 +15,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Collection
 from pathlib import Path
 
+from kiro_crew.agent_sdk.mcp_refs import RESERVED_TOOL_NAMESPACES
 from kiro_crew.config.paths import kiro_home
 
 logger = logging.getLogger(__name__)
@@ -209,6 +211,123 @@ def clean_stale_managed_mcp() -> list[str]:
         logger.debug("Could not clean kiro mcp.json", exc_info=True)
         return []
     return removed
+
+
+def _ref_server(ref: str) -> str:
+    """The server name a ``@server`` / ``@server/tool`` ref addresses.
+
+    One spelling, matching ``agent_capabilities._materialize`` and
+    ``apps.bridges``: strip the sigil, then take everything before the first
+    ``/``. A second spelling would let the per-tool form (``@notion/search``,
+    ``@notion/*``) resolve to a different server here than it does there, and the
+    two would disagree about which refs are dangling.
+    """
+    return ref[1:].split("/", 1)[0]
+
+
+def prune_dangling_tool_refs(
+    config: dict,
+    *,
+    declared: Collection[str] = (),
+    declared_grants: Collection[str] | None = None,
+) -> list[str]:
+    """Drop ``tools``/``allowedTools`` refs naming a server the map does not hold.
+
+    ``kiro-cli`` mounts what ``mcpServers`` declares, so a ``@ref`` to a name
+    absent from that map mounts nothing. The invariant is stated twice elsewhere
+    in-tree -- :func:`purge_deleted_proxy_from_config` strips refs alongside its
+    own deletes so kiro-cli does not try to mount a server absent from the map,
+    and ``agent_capabilities._materialize`` filters ``allowedTools`` on exactly
+    this test -- and this is where it holds for the assembled agent config, whose
+    server map several passes narrow without touching the ref lists (the
+    resolution pass replaces ``mcpServers`` wholesale, dropping unresolvable
+    servers by OMISSION; the locked app re-merge ``del``\\ etes app entries whose
+    app is not confirmed enabled). One reconcile over the FINAL map covers every
+    such pass, including one added later.
+
+    A dangling ``allowedTools`` ref is the one that costs something: that list is
+    the path that never reaches the PreToolUse gate, so the grant sits on the NAME
+    and a server added under it inherits an auto-approval nobody granted for it.
+
+    *declared* names servers whose absence from the map this caller EXPECTS and a
+    later pass reverses, so they are not leftovers. Two such classes exist in the
+    rebuild, and both are unrecoverable if their refs are dropped, because an
+    existing config deliberately never re-adds a template ref: a server whose
+    command fails to resolve on this pass (a binary missing from this rebuild's
+    PATH), and a gated-off shipped server whose entry is withheld while its
+    ``tools`` ref is retained by design. The resolution case also reaches the
+    per-tool grant, which nothing re-emits -- the rebuild's ref sync only ever
+    writes whole-server ``@alias`` refs. Refs outlive one bad PATH; a lost grant
+    does not.
+
+    A ``@`` name in :data:`RESERVED_TOOL_NAMESPACES` addresses a kiro namespace
+    rather than a server, so it is never in the map and is never a leftover.
+    ``@builtin`` is the one kiro's configuration reference lists, and it carries
+    the whole built-in tool surface plus the ``tool_search`` loader, so reading it
+    as a dangling server ref would unmount all of that on every rebuild.
+
+    Fails safe in both directions: a ``mcpServers`` that is not a dict yields no
+    readable verdict, so nothing is dropped, and a non-string or sigil-less entry
+    is left for the passes that own it.
+
+    Mutates *config* in place. Returns the refs removed, first occurrence order.
+
+    *declared_grants* is the same kind of set for ``allowedTools`` alone, and it
+    exists because the two lists fail in opposite directions. Keeping a mount ref
+    too long costs a mount attempt against a name that holds nothing; dropping one
+    can unmount a server for good, since an existing config never re-adds a
+    template ref. Keeping a GRANT too long hands the next server on that name an
+    auto-approval nobody granted, on the one list that never reaches the
+    PreToolUse gate; dropping one costs an approval a human can give again. So a
+    caller that is UNSURE whether a name is still owned should name it in
+    *declared* and leave it out of *declared_grants*: the mount survives the doubt
+    and the grant does not. Defaults to *declared*, so a caller with no such
+    doubt passes one set and both lists read it.
+    """
+    servers = config.get("mcpServers")
+    if not isinstance(servers, dict):
+        return []
+    _base = set(servers) | RESERVED_TOOL_NAMESPACES
+    known = {
+        "tools": _base | set(declared),
+        "allowedTools": _base | set(declared if declared_grants is None else declared_grants),
+    }
+    dropped: list[str] = []
+    unmounted: list[str] = []
+    for key in ("tools", "allowedTools"):
+        lst = config.get(key)
+        if not isinstance(lst, list):
+            continue
+        kept = []
+        for ref in lst:
+            if (
+                not isinstance(ref, str)
+                or not ref.startswith("@")
+                or _ref_server(ref) in known[key]
+            ):
+                kept.append(ref)
+                continue
+            if key == "tools" and ref not in unmounted:
+                unmounted.append(ref)
+            if ref not in dropped:
+                dropped.append(ref)
+        config[key] = kept
+    if dropped:
+        # A ``tools`` removal takes a tool OUT of the agent's surface, and the
+        # shipped ``agent.log_level`` default is WARNING, so recording that at
+        # INFO hides it from the operator who then has to debug a tool that
+        # stopped being offered. The ref named a server the final map does not
+        # hold, so the tool was already unreachable -- but a MISREAD absence
+        # here is unrecoverable, because an existing config never re-adds a
+        # template ref, and that is the case worth seeing without first raising
+        # the log level. A grant-only removal is already in SEL as
+        # ``mcp_auto_approve_revoked``, so it stays at INFO.
+        logger.log(
+            logging.WARNING if unmounted else logging.INFO,
+            "Pruned dangling MCP refs from agent config (no such server in mcpServers): %s",
+            dropped,
+        )
+    return dropped
 
 
 def purge_deleted_proxy_from_config(config: dict) -> list[str]:
