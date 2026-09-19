@@ -114,6 +114,16 @@ leaf name; a swap that landed before the pins is refused rather than written
 through. Every native handle or descriptor is closed on failure as well as success.
 
 Fresh POSIX directories/files request 0700/0600; existing modes are untouched.
+The leaf is created with `O_CREAT | O_EXCL`. If another creator won or the file
+already exists, one non-creating open uses the same pinned directory and retains
+`O_NOFOLLOW`, `O_APPEND` and `O_NONBLOCK`. This avoids Darwin's concurrent
+nonexclusive-create `ENOENT` without re-resolving the parent or following a
+swapped link. A leaf that disappears between that `EEXIST` and the open is one
+more lost interleaving: the existing bounded create-directory retry runs the whole
+pinned sequence again, so the record is still written, through the same exclusive
+no-follow create, under the same resolved anchor. Each failed attempt closes its
+descriptors. Exhaustion raises `FileNotFoundError` naming the full path.
+Other open errors propagate. Windows keeps its native open-or-create path.
 Windows uses inherited ACLs, not a claim that POSIX mode bits enforce privacy.
 The open file must be regular and have exactly one hard link. The existing
 cross-platform file lock spans EOF validation, short-write/EINTR retries and

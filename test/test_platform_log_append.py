@@ -5,6 +5,7 @@ from __future__ import annotations
 import errno
 import json
 import os
+import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
 
@@ -533,18 +534,21 @@ def test_a_refusal_that_is_not_a_removal_is_not_re_attempted(path, tmp_path, mon
     path.parent.mkdir()
     make_dir_link(path, target)
     original = os.open
-    leaf_opens = 0
+    leaf_flags = []
 
     def counting(name, flags, mode=0o777, *, dir_fd=None):
-        nonlocal leaf_opens
         if name == path.name:
-            leaf_opens += 1
+            leaf_flags.append(flags)
         return original(name, flags, mode, dir_fd=dir_fd)
 
     monkeypatch.setattr(pla.os, "open", counting)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as caught:
         pla.append_line(path, b"{}\n")
-    assert leaf_opens == 1
+    assert caught.value.errno == errno.ELOOP
+    assert len(leaf_flags) == 2
+    assert leaf_flags[0] & os.O_EXCL
+    assert not leaf_flags[1] & os.O_CREAT
+    assert list(target.iterdir()) == []
 
 
 def test_the_retention_sweep_still_refuses_an_absent_log_directory(path):
@@ -589,3 +593,166 @@ def test_independent_process_lock_blocks_append(path, tmp_path, monkeypatch):
     assert result.returncode != 0
     assert "file lock" in result.stderr
     assert path.read_bytes() == b'{"keep":1}\n'
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX openat creation contract")
+def test_first_create_avoids_nonexclusive_create_race(path, monkeypatch):
+    """Model Darwin's losing O_CREAT open without depending on thread scheduling."""
+    original = os.open
+    leaf_opens = []
+
+    def open_leaf(name, flags, mode=0o777, *, dir_fd=None):
+        if name == path.name:
+            leaf_opens.append(flags)
+            if flags & os.O_CREAT and not flags & os.O_EXCL:
+                raise FileNotFoundError(errno.ENOENT, "concurrent first create", name)
+        return original(name, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pla.os, "open", open_leaf)
+    pla.append_line(path, b'{"first":1}\n')
+    pla.append_line(path, b'{"second":2}\n')
+    assert path.read_bytes() == b'{"first":1}\n{"second":2}\n'
+    assert leaf_opens
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX create/open handoff")
+@pytest.mark.parametrize("entry", ["file", "symlink", "hardlink", "missing"])
+def test_create_loser_opens_the_winner_once_and_redoes_only_a_vanished_leaf(
+    path, tmp_path, monkeypatch, entry
+):
+    """A competing creator's entry is still untrusted: a link is refused, never followed.
+
+    Only its absence -- the winner's leaf gone again before the open -- is retried,
+    and then through the bounded redo's own exclusive, pinned create.
+    """
+    original = os.open
+    target = tmp_path / "outside.jsonl"
+    saved = b'{"keep":1}\n'
+    target.write_bytes(saved)
+    leaf_opens = []
+
+    def compete(name, flags, mode=0o777, *, dir_fd=None):
+        if name == path.name:
+            leaf_opens.append((flags, dir_fd))
+            if len(leaf_opens) == 1:
+                if entry == "file":
+                    path.write_bytes(saved)
+                elif entry == "symlink":
+                    path.symlink_to(target)
+                elif entry == "hardlink":
+                    os.link(target, path)
+                # The missing case models removal after the competing create.
+                raise FileExistsError(errno.EEXIST, "another creator won", name)
+        return original(name, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pla.os, "open", compete)
+    if entry in ("file", "missing"):
+        pla.append_line(path, b'{"next":2}\n')
+        expected = saved + b'{"next":2}\n' if entry == "file" else b'{"next":2}\n'
+        assert path.read_bytes() == expected
+    else:
+        with pytest.raises(OSError):
+            pla.append_line(path, b'{"next":2}\n')
+    assert target.read_bytes() == saved
+    assert not leaf_opens[1][0] & (os.O_CREAT | os.O_EXCL)
+    assert leaf_opens[0][1] == leaf_opens[1][1] is not None
+    if entry == "missing":
+        # The lost handoff is redone once: a fresh exclusive create under a
+        # fresh pin, never a plain O_CREAT that could follow a planted link.
+        assert len(leaf_opens) == 3
+        assert leaf_opens[2][0] & os.O_CREAT and leaf_opens[2][0] & os.O_EXCL
+        assert leaf_opens[2][0] & os.O_NOFOLLOW
+        assert leaf_opens[2][1] is not None
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    else:
+        assert len(leaf_opens) == 2
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX pinned-directory handoff")
+def test_create_loser_keeps_the_original_directory_pin(path, tmp_path, monkeypatch):
+    original = os.open
+    target = tmp_path / "outside"
+    target.mkdir()
+    moved = tmp_path / "pinned"
+    leaf_opens = 0
+
+    def swap(name, flags, mode=0o777, *, dir_fd=None):
+        nonlocal leaf_opens
+        if name == path.name:
+            leaf_opens += 1
+            if leaf_opens == 1:
+                path.write_bytes(b'{"keep":1}\n')
+                path.parent.rename(moved)
+                make_dir_link(path.parent, target)
+                raise FileExistsError(errno.EEXIST, "another creator won", name)
+        return original(name, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(pla.os, "open", swap)
+    pla.append_line(path, b'{"next":2}\n')
+    assert leaf_opens == 2
+    assert list(target.iterdir()) == []
+    assert (moved / path.name).read_bytes() == b'{"keep":1}\n{"next":2}\n'
+
+
+@pytest.mark.parametrize("round_number", range(3))
+def test_native_concurrent_first_appends_keep_every_record(tmp_path, round_number):
+    """Fresh directory and file, real opens and writes; no precreated log or mocks."""
+    path = tmp_path / f"round-{round_number}" / "day.jsonl"
+    barrier = threading.Barrier(4, timeout=5)
+
+    def writer(index):
+        barrier.wait()
+        pla.append_line(path, json.dumps({"index": index}).encode() + b"\n")
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(writer, index) for index in range(4)]
+        for future in futures:
+            future.result(timeout=5)
+    assert sorted(json.loads(row)["index"] for row in path.read_bytes().splitlines()) == list(
+        range(4)
+    )
+
+
+@pytest.mark.skipif(os.name != "posix", reason="POSIX existing-leaf handoff")
+@pytest.mark.parametrize("remove_directory", [False, True])
+def test_existing_log_removed_during_handoff_is_recreated_exclusively(
+    path, monkeypatch, remove_directory
+):
+    """A real existing leaf deleted between EEXIST and the open still gets this row.
+
+    The bytes another actor deleted are gone by their hand, not ours; the record
+    being appended is the one thing this append can still keep. It lands through
+    the same exclusive, pinned, no-follow create as a first append, never a plain
+    ``O_CREAT`` retry, and the losing attempt's descriptors are released.
+    """
+    pla.append_line(path, b'{"keep":1}\n')
+    original_open, original_close = os.open, os.close
+    opened, closed, leaf_flags = [], [], []
+
+    def removing(name, flags, mode=0o777, *, dir_fd=None):
+        if name == path.name:
+            leaf_flags.append(flags)
+            if not flags & os.O_CREAT:
+                path.unlink()
+                if remove_directory:
+                    path.parent.rmdir()
+        fd = original_open(name, flags, mode, dir_fd=dir_fd)
+        opened.append(fd)
+        return fd
+
+    def close(fd):
+        closed.append(fd)
+        original_close(fd)
+
+    monkeypatch.setattr(pla.os, "open", removing)
+    monkeypatch.setattr(pla.os, "close", close)
+    pla.append_line(path, b'{"next":2}\n')
+    assert path.read_bytes() == b'{"next":2}\n'
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    assert leaf_flags[0] & os.O_EXCL
+    assert not leaf_flags[1] & (os.O_CREAT | os.O_EXCL)
+    assert leaf_flags[2] & os.O_CREAT and leaf_flags[2] & os.O_EXCL
+    assert all(flags & os.O_NOFOLLOW for flags in leaf_flags)
+    assert len(leaf_flags) == 3
+    assert opened
+    assert sorted(opened) == sorted(closed)
