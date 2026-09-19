@@ -26,6 +26,7 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import NoReturn
 from zoneinfo import ZoneInfo
 
 from kiro_crew import __version__, app_lifecycle_client, beacon, platform_compat
@@ -47,6 +48,7 @@ from kiro_crew.apps.manager import (
 )
 from kiro_crew.apps.scaffold import scaffold_app
 from kiro_crew.cli_server import _marker_port, resolve_client_port
+from kiro_crew.cloud.aws import _in_agent_session
 from kiro_crew.config import config_dir
 from kiro_crew.config.loader import (
     ConfigReadError,
@@ -123,7 +125,9 @@ from kiro_crew.security import (
     scan_memory,
 )
 from kiro_crew.sel import sel
-from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE
+from kiro_crew.skills import SkillsLoader
+from kiro_crew.skills_script_validator import validate_scripts
+from kiro_crew.terminal_safe import _TERMINAL_CTRL_RE, safe_terminal_line
 from kiro_crew.validation import (
     _AGENT_NAME_RE,
     CHANNEL_ID_RE,
@@ -2389,6 +2393,168 @@ _LEARN_EMBED_NOTE = (
     "  gateway's re-embed sweep after it next starts, once its embedding backend\n"
     "  is ready."
 )
+
+
+def _skills_fail(code: str, message: str) -> NoReturn:
+    print(f"{code}: {message}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _skills_mutation_audit(
+    action: str,
+    slug: str,
+    outcome: str,
+    *,
+    reason: str = "",
+    name: str = "",
+) -> None:
+    metadata = {"slug": slug}
+    if reason:
+        metadata["reason"] = reason
+    if name:
+        metadata["name"] = name
+    sel().log_tool_invocation(
+        session_key="skills",
+        agent="cli",
+        source="cli",
+        tool_name=f"cli_skill_pending_{action}",
+        tool_kind="permission",
+        outcome=outcome,
+        metadata=metadata,
+    )
+
+
+def _skills_mutation_fail(action: str, slug: str, code: str, message: str) -> NoReturn:
+    _skills_mutation_audit(action, slug, "rejected", reason=code)
+    _skills_fail(code, message)
+
+
+def _skills(args: argparse.Namespace) -> None:
+    """List and review pending skill candidates from the command line."""
+
+    action = getattr(args, "skills_action", None)
+    slug = getattr(args, "slug", "")
+    if action in {"approve", "dismiss"} and _in_agent_session():
+        _skills_mutation_fail(
+            action,
+            slug,
+            "agent_shell_denied",
+            "skill candidate mutations are refused from an agent session; "
+            "run this command yourself in a terminal",
+        )
+
+    loader = SkillsLoader(install_builtins=False)
+
+    if action == "list":
+        include_live = bool(getattr(args, "live", False) or getattr(args, "all", False))
+        include_pending = bool(
+            getattr(args, "pending", False) or getattr(args, "all", False) or not include_live
+        )
+        payload: dict[str, list[dict]] = {}
+        if include_pending:
+            payload["pending"] = loader.list_pending_skills()
+        if include_live:
+            try:
+                payload["live"] = loader.list_skills()
+            except UnicodeDecodeError:
+                _skills_fail(
+                    "invalid_skill_encoding",
+                    "a live SKILL.md is not valid UTF-8",
+                )
+        if getattr(args, "json", False):
+            print(json.dumps(payload, indent=2, sort_keys=True))
+            return
+        if include_pending:
+            pending = payload["pending"]
+            if not pending:
+                print("No pending skill candidates.")
+            else:
+                for row in pending:
+                    slug_text = safe_terminal_line(str(row["slug"]))
+                    description = safe_terminal_line(str(row.get("description", "")))
+                    kind = safe_terminal_line(str(row.get("kind", "new")))
+                    print(f"PENDING  {slug_text}  [{kind}]  {description}".rstrip())
+        if include_live:
+            live = payload["live"]
+            if not live:
+                print("No live skills.")
+            else:
+                for row in live:
+                    key = safe_terminal_line(str(row["key"]))
+                    description = safe_terminal_line(str(row.get("description", "")))
+                    print(f"LIVE     {key}  {description}".rstrip())
+        return
+
+    if action == "show":
+        try:
+            detail = loader.get_pending_skill(slug)
+        except UnicodeDecodeError:
+            _skills_fail(
+                "invalid_skill_encoding",
+                "the pending SKILL.md is not valid UTF-8",
+            )
+        if detail is None:
+            _skills_fail(
+                "not_found",
+                f"pending skill {slug!r} was not found or cannot be read",
+            )
+        scripts = detail.get("scripts")
+        valid, report = validate_scripts(scripts if isinstance(scripts, list) else [])
+        content = _TERMINAL_CTRL_RE.sub("", str(detail.get("content", ""))).rstrip()
+        meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
+        print("--- SKILL.md ---")
+        print(content)
+        print("\n--- .meta.json ---")
+        print(json.dumps(meta, indent=2, sort_keys=True))
+        print("\n--- validation ---")
+        print(json.dumps({"ok": valid, "scripts": report}, indent=2, sort_keys=True))
+        return
+
+    if action == "approve":
+        name, reason = loader.approve_pending_candidate(slug)
+        if not name:
+            messages = {
+                "not_found": f"pending skill {slug!r} was not found or cannot be read",
+                "invalid_skill_encoding": "the pending SKILL.md is not valid UTF-8",
+                "script_validation_failed": "candidate script validation failed",
+                "invalid_target": "the pending update target is invalid",
+                "stale_base": "the live skill changed after this update was staged",
+                "candidate_unreadable": "the pending candidate could not be read safely",
+                "approval_refused": (
+                    "the candidate failed a loader safety check or conflicts with a live skill"
+                ),
+            }
+            code = reason or "approval_refused"
+            _skills_mutation_fail(
+                "approve", slug, code, messages.get(code, messages["approval_refused"])
+            )
+        _skills_mutation_audit("approve", slug, "invoked", name=name)
+        print(f"Approved: {safe_terminal_line(name)}")
+        return
+
+    if action == "dismiss":
+        try:
+            dismissed = loader.dismiss_pending_skill(slug)
+        except OSError:
+            _skills_mutation_fail(
+                "dismiss",
+                slug,
+                "dismiss_failed",
+                f"pending skill {slug!r} could not be removed",
+            )
+        if not dismissed:
+            _skills_mutation_fail(
+                "dismiss",
+                slug,
+                "not_found",
+                f"pending skill {slug!r} was not found",
+            )
+        _skills_mutation_audit("dismiss", slug, "invoked")
+        print(f"Dismissed: {slug}")
+        return
+
+    _skills_fail("missing_action", "choose list, show, approve, or dismiss")
+
 
 # INSERTED only. An enrichment resolves against the ONE existing row it rewrites
 # (write_lesson pass 1 sets ``matched`` and pass 2's generic scan runs over

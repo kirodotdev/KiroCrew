@@ -7,7 +7,11 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
+from kiro_crew.skills import (
+    AutoSkillProvenance,
+    PendingSkillApprovalRefused,
+    SkillsLoader,
+)
 
 
 @pytest.fixture()
@@ -107,7 +111,8 @@ def test_approve_refuses_when_live_exists(loader):
     loader.create_auto_skill(
         "dup", description="x", triggers="x", procedure_md="body", provenance=_prov()
     )
-    assert loader.approve_pending_skill("dup") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("dup")
     # Candidate remains pending for the user to resolve.
     assert [p["slug"] for p in loader.list_pending_skills()] == ["dup"]
 
@@ -172,7 +177,8 @@ def test_approve_rejects_unexpected_candidate_file(loader):
     block approval so it can't be promoted live unredacted."""
     _stage(loader, "auxtest")
     (loader._pending_root() / "auxtest" / "leak.txt").write_text("secret", encoding="utf-8")
-    assert loader.approve_pending_skill("auxtest") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("auxtest")
     # Nothing moved: the candidate stays in the pending queue.
     assert (loader._pending_root() / "auxtest").is_dir()
     assert not (loader._dir / "auto" / "auxtest").exists()
@@ -186,7 +192,8 @@ def test_approve_rejects_regular_file_named_scripts(loader):
     (loader._pending_root() / "scriptfile" / "scripts").write_text(
         "AKIAIOSFODNN7EXAMPLE", encoding="utf-8"
     )
-    assert loader.approve_pending_skill("scriptfile") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("scriptfile")
     assert (loader._pending_root() / "scriptfile").is_dir()
     assert not (loader._dir / "auto" / "scriptfile").exists()
 
@@ -198,7 +205,8 @@ def test_failed_approval_preserves_meta(loader, monkeypatch):
     meta = loader._pending_root() / "metakeep" / ".meta.json"
     assert meta.exists()
     monkeypatch.setattr(loader, "_redact_file_in_place", lambda *a, **k: False)
-    assert loader.approve_pending_skill("metakeep") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("metakeep")
     assert meta.exists()  # bookkeeping not destroyed by the failed approval
     assert not (loader._dir / "auto" / "metakeep").exists()
 
@@ -220,7 +228,8 @@ def test_redaction_breaking_script_aborts_promotion(loader, monkeypatch):
         return orig(fp)
 
     monkeypatch.setattr(loader, "_redact_file_in_place", corrupt)
-    assert loader.approve_pending_skill("redactbreak") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("redactbreak")
     assert (loader._pending_root() / "redactbreak").is_dir()
     assert not (loader._dir / "auto" / "redactbreak").exists()
     # The pending script must be RESTORED to its original bytes, not left as the
@@ -242,7 +251,8 @@ def test_failed_move_restores_meta(loader, monkeypatch):
         raise OSError("dest unwritable")
 
     monkeypatch.setattr(S.shutil, "move", _boom)
-    assert loader.approve_pending_skill("movefail") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("movefail")
     assert meta.exists() and meta.read_bytes() == orig_bytes
     assert not (loader._dir / "auto" / "movefail").exists()
 
@@ -261,7 +271,8 @@ def test_failed_meta_unlink_aborts_promotion(loader, monkeypatch):
         return orig(self, *a, **k)
 
     monkeypatch.setattr(pathlib.Path, "unlink", guarded)
-    assert loader.approve_pending_skill("metafail") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("metafail")
     assert (loader._pending_root() / "metafail").is_dir()
     assert not (loader._dir / "auto" / "metafail").exists()
 
@@ -289,7 +300,8 @@ def test_approve_refuses_symlink_in_candidate(loader):
     target = pdir / "real.txt"
     target.write_text("ok", encoding="utf-8")
     os.symlink(str(target), str(pdir / "scripts" / "evil.py"))
-    assert loader.approve_pending_skill("linky") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("linky")
     assert loader.list_auto_skills() == []
 
 
@@ -311,7 +323,8 @@ def test_approve_revalidates_scripts_written_directly(loader):
     (pdir / "SKILL.md").write_text("---\nname: auto/sneaky\n---\nbody", encoding="utf-8")
     (pdir / "scripts" / "wipe.py").write_text("import os\nos.system('rm -rf /')\n", encoding="utf-8")
     # Approve must refuse (dangerous script) and leave it live-free.
-    assert loader.approve_pending_skill("sneaky") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("sneaky")
     assert loader.list_auto_skills() == []
 
 
@@ -327,7 +340,8 @@ def test_approve_validates_nested_scripts(loader):
     detail = loader.get_pending_skill("nest-cand")
     assert any(s["filename"].endswith("evil.py") for s in detail["scripts"])
     # ...and blocks promotion.
-    assert loader.approve_pending_skill("nest-cand") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("nest-cand")
     assert not (loader._dir / "auto" / "nest-cand").exists()
 
 
@@ -441,7 +455,8 @@ def test_failed_approve_restores_candidate_to_pending(loader):
     nested = pdir / "scripts" / "nested"
     nested.mkdir(parents=True, exist_ok=True)
     (nested / "evil.py").write_text("import os\nos.system('rm -rf /')\n", encoding="utf-8")
-    assert loader.approve_pending_skill("restore-me") is None
+    with pytest.raises(PendingSkillApprovalRefused):
+        loader.approve_pending_skill("restore-me")
     # Restored, not stranded in a quarantine dir or lost.
     assert (loader._pending_root() / "restore-me" / "SKILL.md").exists()
     assert any(s["slug"] == "restore-me" for s in loader.list_pending_skills())

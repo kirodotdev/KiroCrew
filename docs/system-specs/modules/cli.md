@@ -232,6 +232,7 @@ choice blob makes the usage line unreadable.
 | `kirocrew app uninstall NAME --purge-data` | Explicitly uninstall an app and permanently delete its app data. |
 | `kirocrew app dev <name> [--off] [--confirm-out-of-install-root]` | Toggle an installed app into/out of dev mode (no-store UI serving + live reload on file change). See [App Dev Mode](#app-dev-mode). |
 | `kirocrew learn add/list/remove` | Manage learned corrections |
+| `kirocrew skills list/show/approve/dismiss` | Operator-only review of pending skill candidates: list pending or live skills, inspect a candidate, and promote or dismiss it through `SkillsLoader`. `list` defaults to pending and supports `--pending`, `--live`, `--all`, and `--json`; refused writes exit non-zero with a coded reason. The command group is intentionally omitted from agent-facing command guidance because it has no MCP twin. |
 | `kirocrew run TASK.md` | Run an autonomous task from a spec file |
 | `kirocrew token` | Print a dashboard access URL with auth token |
 | `kirocrew logout` | Revoke all active dashboard sessions, refresh chains included |

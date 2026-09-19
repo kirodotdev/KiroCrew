@@ -1945,6 +1945,14 @@ def remove_retired_conductor_skill() -> bool:
         os.close(root_fd)
 
 
+class PendingSkillApprovalRefused(Exception):
+    """A pending candidate failed an approval check with a stable reason code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class SkillsLoader:
     """Load skill markdown files from ~/.kiro/crew/skills/.
 
@@ -4044,22 +4052,27 @@ class SkillsLoader:
                     return True
         return False
 
-    def _redact_file_in_place(self, fp: Path) -> bool:
-        """Redact secrets from a file in place. Returns False if the file could
-        not be read or a required rewrite failed — the caller MUST abort
-        promotion so an unredacted secret never reaches a live skill."""
+    def _redact_file_in_place(self, fp: Path) -> str | None:
+        """Redact a file in place, returning a coded refusal or ``None``.
+
+        The caller maps invalid encoding by file role: malformed ``SKILL.md``
+        is an ``invalid_skill_encoding`` refusal, while malformed helper files
+        are script-validation failures.
+        """
         try:
             original = fp.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError):
-            return False
+        except UnicodeDecodeError:
+            return "invalid_encoding"
+        except OSError:
+            return "approval_refused"
         safe = self._redact_text(original)
         if safe == original:
-            return True
+            return None
         try:
             fp.write_text(safe, encoding="utf-8")
         except OSError:
-            return False
-        return True
+            return "approval_refused"
+        return None
 
     @staticmethod
     def _collect_scripts(sdir: Path) -> list[dict]:
@@ -4127,42 +4140,53 @@ class SkillsLoader:
         skip the directory-only script validation + redaction walk. Returns True
         only when the layout is safe to promote.
         """
-        if self._candidate_has_symlink(src):
-            logger.warning("Refusing to approve %s: candidate contains a symlink", name)
-            return False
-        _allowed_top = {"SKILL.md", ".meta.json", "scripts"}
-        for entry in src.iterdir():
-            if entry.name not in _allowed_top:
-                logger.warning(
-                    "Refusing to approve %s: unexpected candidate entry %r", name, entry.name
-                )
+        try:
+            if self._candidate_has_symlink(src):
+                logger.warning("Refusing to approve %s: candidate contains a symlink", name)
                 return False
-            if entry.name == "scripts" and not entry.is_dir():
-                logger.warning(
-                    "Refusing to approve %s: 'scripts' must be a directory, not a file", name
-                )
-                return False
+            _allowed_top = {"SKILL.md", ".meta.json", "scripts"}
+            for entry in src.iterdir():
+                if entry.name not in _allowed_top:
+                    logger.warning(
+                        "Refusing to approve %s: unexpected candidate entry %r", name, entry.name
+                    )
+                    return False
+                if entry.name == "scripts" and not entry.is_dir():
+                    logger.warning(
+                        "Refusing to approve %s: 'scripts' must be a directory, not a file", name
+                    )
+                    return False
+        except OSError as exc:
+            raise PendingSkillApprovalRefused("candidate_unreadable") from exc
         return True
 
-    def _validate_and_redact_candidate(self, src: Path, name: str) -> dict[Path, bytes] | None:
+    def _validate_and_redact_candidate(
+        self,
+        src: Path,
+        name: str,
+    ) -> dict[Path, bytes]:
         """Re-validate + redact a candidate's SKILL.md and scripts IN PLACE.
 
         Shared by ``approve_pending_skill`` and ``approve_pending_update`` so
         both enforce the identical discipline: validate every script (covers
         crystallize direct-writes), snapshot each target's ORIGINAL bytes, redact
         in place, then re-validate scripts (redacting a credential-shaped token
-        can break syntax). On ANY failure the originals are restored and ``None``
-        is returned so a rejected candidate is never left corrupted. On success
-        returns the ``{path: original_bytes}`` snapshot so the caller can restore
-        on a LATER failure (e.g. a failed move / snapshot).
+        can break syntax). On ANY failure the originals are restored and a coded
+        refusal is raised so a rejected candidate is never left corrupted. On
+        success returns the ``{path: original_bytes}`` snapshot so the caller can
+        restore on a LATER failure (e.g. a failed move / snapshot).
         """
         sdir_src = src / "scripts"
         # Pre-redaction script validation.
         if sdir_src.is_dir():
-            ok, report = validate_scripts(self._collect_scripts(sdir_src))
+            try:
+                scripts = self._collect_scripts(sdir_src)
+            except UnicodeDecodeError as exc:
+                raise PendingSkillApprovalRefused("script_validation_failed") from exc
+            ok, report = validate_scripts(scripts)
             if not ok:
                 logger.warning("Refusing to approve %s: script validation failed: %s", name, report)
-                return None
+                raise PendingSkillApprovalRefused("script_validation_failed")
         # Snapshot each target FIRST so an abort after partial in-place redaction
         # restores the candidate's ORIGINAL bytes.
         redact_targets = [src / "SKILL.md"]
@@ -4176,8 +4200,8 @@ class SkillsLoader:
         for fp in redact_targets:
             try:
                 redact_backup[fp] = fp.read_bytes()
-            except OSError:
-                pass
+            except OSError as exc:
+                raise PendingSkillApprovalRefused("candidate_unreadable") from exc
 
         def _restore_redacted() -> None:
             for _fp, _b in redact_backup.items():
@@ -4187,30 +4211,41 @@ class SkillsLoader:
                     pass
 
         for fp in redact_targets:
-            if not self._redact_file_in_place(fp):
+            failure = self._redact_file_in_place(fp)
+            if failure is not None:
                 _restore_redacted()
                 logger.warning(
                     "Refusing to approve %s: could not redact %s before promotion", name, fp.name
                 )
-                return None
+                if failure == "invalid_encoding":
+                    code = (
+                        "invalid_skill_encoding"
+                        if fp == src / "SKILL.md"
+                        else "script_validation_failed"
+                    )
+                else:
+                    code = "candidate_unreadable"
+                raise PendingSkillApprovalRefused(code)
         # Re-validate scripts AFTER redaction so a broken/altered helper never
         # goes live and the pending draft is not corrupted.
         if sdir_src.is_dir():
-            ok, report = validate_scripts(self._collect_scripts(sdir_src))
+            try:
+                scripts = self._collect_scripts(sdir_src)
+            except UnicodeDecodeError as exc:
+                _restore_redacted()
+                raise PendingSkillApprovalRefused("script_validation_failed") from exc
+            ok, report = validate_scripts(scripts)
             if not ok:
                 _restore_redacted()
                 logger.warning(
                     "Refusing to approve %s: scripts invalid after redaction: %s", name, report
                 )
-                return None
+                raise PendingSkillApprovalRefused("script_validation_failed")
         return redact_backup
 
     @staticmethod
     def _auto_slug_from_name(name: str) -> str:
-        """Return the bare slug for an auto-skill *name*, accepting either
-        ``auto/<slug>`` or a bare ``<slug>``. Non-auto namespaces (any name with
-        a slash after stripping the ``auto/`` prefix) fall through and are caught
-        by the ``_is_pending_slug_safe`` guard at the call sites."""
+        """Return a safe candidate slug from an auto-skill name."""
         if name.startswith(f"{AUTO_SKILL_NAMESPACE}/"):
             return name.split("/", 1)[1]
         return name
@@ -4455,11 +4490,12 @@ class SkillsLoader:
         )
         return highest + 1
 
-    def approve_pending_update(self, slug: str) -> str | None:
+    def approve_pending_update(self, slug: str) -> str:
         """Promote a pending UPDATE candidate over its live target auto-skill.
 
         Preconditions (all checked BEFORE any live mutation; a failure here
-        leaves BOTH the live skill and the candidate untouched, returns None):
+        leaves BOTH the live skill and the candidate untouched and raises
+        ``PendingSkillApprovalRefused``):
         the slug is safe, the candidate has a ``SKILL.md``, its ``.meta.json``
         has ``kind == "update"``, and ``target`` names an EXISTING live auto
         skill. Then: the shared symlink/unexpected-entry guard runs, scripts are
@@ -4475,26 +4511,26 @@ class SkillsLoader:
         pending dir, and SEL-audit. Returns ``auto/<target>`` on success.
         """
         if not self._is_pending_slug_safe(slug):
-            return None
+            raise PendingSkillApprovalRefused("not_found")
         src = self._pending_root() / slug
         if not (src / "SKILL.md").exists():
-            return None
+            raise PendingSkillApprovalRefused("not_found")
         meta = self._read_pending_meta(slug)
         if meta.get("kind") != "update":
-            return None
+            raise PendingSkillApprovalRefused("invalid_target")
         target = meta.get("target")
         if not isinstance(target, str) or not target:
-            return None
+            raise PendingSkillApprovalRefused("invalid_target")
         target_slug = self._auto_slug_from_name(target)
         if not self._is_pending_slug_safe(target_slug):
-            return None
+            raise PendingSkillApprovalRefused("invalid_target")
         live_dir = self._dir / AUTO_SKILL_NAMESPACE / target_slug
         live_skill = live_dir / "SKILL.md"
         if not live_skill.exists():
             logger.warning(
                 "Refusing to approve update %s: target %r is not a live auto skill", slug, target
             )
-            return None
+            raise PendingSkillApprovalRefused("invalid_target")
         target_name = f"{AUTO_SKILL_NAMESPACE}/{target_slug}"
         # The LIVE side is a write target here (unlike approve_pending_skill, which
         # moves into a fresh dest), so it needs its own symlink guard: a symlinked
@@ -4505,14 +4541,12 @@ class SkillsLoader:
                 "Refusing to approve update %s: live skill directory contains a symlink",
                 target_name,
             )
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         # Shared symlink + unexpected-entry rejection.
         if not self._candidate_layout_ok(src, target_name):
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         # Re-validate + redact the candidate in place (restores originals on fail).
         redact_backup = self._validate_and_redact_candidate(src, target_name)
-        if redact_backup is None:
-            return None
 
         def _restore_redacted() -> None:
             for _fp, _b in redact_backup.items():
@@ -4525,9 +4559,12 @@ class SkillsLoader:
         # live mutation — a read failure aborts with live + candidate intact.
         try:
             candidate_body = (src / "SKILL.md").read_text(encoding="utf-8")
-        except OSError:
+        except UnicodeDecodeError as exc:
             _restore_redacted()
-            return None
+            raise PendingSkillApprovalRefused("invalid_skill_encoding") from exc
+        except OSError as exc:
+            _restore_redacted()
+            raise PendingSkillApprovalRefused("candidate_unreadable") from exc
         current_version = self.get_auto_skill_version(target_name)
         # Snapshot under a number that is guaranteed free, so an earlier snapshot
         # can never be destroyed by drifted numbering.
@@ -4572,7 +4609,7 @@ class SkillsLoader:
                     "reason": "stale_base",
                 },
             )
-            return None
+            raise PendingSkillApprovalRefused("stale_base")
         live_created_at = self._cached_frontmatter(live_skill, within=None).get("created_at", "")
         # Carry the live skill's pin forward: a pinned skill is exempt from the
         # lifecycle's inactivity / max-N archival, and silently dropping the flag
@@ -4610,7 +4647,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve update %s: could not snapshot live version", target_name
             )
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         # (f) Write candidate over live.
         try:
             atomic_write(live_skill, new_live_content)
@@ -4625,7 +4662,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve update %s: could not write live SKILL.md", target_name
             )
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         # (g) Promote candidate scripts into the live scripts/ dir (exec bit on
         # POSIX). COPY rather than move: the pending dir is deleted in (i), so a
         # move that fails partway would leave the approved script in neither
@@ -4698,7 +4735,7 @@ class SkillsLoader:
                     "Refusing to approve update %s: could not promote candidate scripts",
                     target_name,
                 )
-                return None
+                raise PendingSkillApprovalRefused("approval_refused")
         # (h) Prune version history to the cap.
         self._prune_versions(versions_dir)
         # (i) Remove the pending candidate.
@@ -4741,38 +4778,36 @@ class SkillsLoader:
             )
         return target_name
 
-    def approve_pending_skill(self, slug: str) -> str | None:
+    def approve_pending_skill(self, slug: str) -> str:
         """Promote a pending candidate to a live auto-skill.
 
         Re-validates + redacts the candidate, then moves ``auto/.pending/<slug>``
         → ``auto/<slug>`` and marks any bundled scripts executable. Returns the
-        live name, or ``None`` if the candidate is missing, a live skill of that
-        name already exists, it contains a symlink, script validation fails, or
-        redaction fails. Every check runs BEFORE the move, so a rejected
-        candidate is left untouched in the pending queue.
+        live name, or raises ``PendingSkillApprovalRefused`` when the candidate
+        is missing, conflicts with a live skill, or fails a safety check. Every
+        check runs BEFORE the move, so a rejected candidate is left untouched in
+        the pending queue.
         """
         if not self._is_pending_slug_safe(slug):
-            return None
+            raise PendingSkillApprovalRefused("not_found")
         src = self._pending_root() / slug
         if not (src / "SKILL.md").exists():
-            return None
+            raise PendingSkillApprovalRefused("not_found")
         name = f"{AUTO_SKILL_NAMESPACE}/{slug}"
         dest = self._dir / name
         if dest.exists():
             logger.warning("Cannot approve %s: a live skill already exists", name)
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         # Reject any symlink in the candidate + any unexpected top-level entry
         # (defense-in-depth on top of the mandatory human review); promotion +
         # chmod must only touch known, real files. Factored into a shared helper
         # so the update-approve path enforces the identical layout guard.
         if not self._candidate_layout_ok(src, name):
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         # Re-validate every script + redact the body + scripts before going live;
         # snapshots each file first so a failure restores the ORIGINAL bytes and
         # never leaves a corrupted pending draft. Shared with the update path.
         redact_backup = self._validate_and_redact_candidate(src, name)
-        if redact_backup is None:
-            return None
 
         def _restore_redacted() -> None:
             for _fp, _b in redact_backup.items():
@@ -4801,7 +4836,7 @@ class SkillsLoader:
             logger.warning(
                 "Refusing to approve %s: could not read pending .meta.json before promotion", name
             )
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         try:
             meta_path.unlink()
         except FileNotFoundError:
@@ -4812,7 +4847,7 @@ class SkillsLoader:
                 "Refusing to approve %s: could not remove pending .meta.json before promotion",
                 name,
             )
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         dest.parent.mkdir(parents=True, exist_ok=True)
         # Cutoff for notification resolution, captured BEFORE the candidate
         # leaves the pending queue: staging refuses to overwrite an existing
@@ -4833,7 +4868,7 @@ class SkillsLoader:
                     pass
             _restore_redacted()
             logger.warning("Refusing to approve %s: could not move candidate live", name)
-            return None
+            raise PendingSkillApprovalRefused("approval_refused")
         # Mark scripts executable now that a human approved them (recursively).
         sdir = dest / "scripts"
         if sdir.is_dir():
@@ -4851,6 +4886,38 @@ class SkillsLoader:
             {"slug": slug, "outcome": "approved", "name": name, "consumed_at": consumed_at}
         )
         return name
+
+    def approve_pending_candidate(self, slug: str) -> tuple[str | None, str]:
+        """Approve one pending candidate for the CLI and dashboard surfaces.
+
+        This is the shared surface adapter. The mutation-owning new/update path
+        supplies stable refusal codes; this method only dispatches and converts
+        those typed refusals for CLI and dashboard callers.
+        """
+        meta = self._read_pending_meta(slug)
+        try:
+            if meta.get("kind") == "update":
+                name = self.approve_pending_update(slug)
+            else:
+                name = self.approve_pending_skill(slug)
+        except PendingSkillApprovalRefused as exc:
+            return None, exc.code
+        except OSError:
+            return None, "candidate_unreadable"
+        if not name:
+            return None, "approval_refused"
+
+        try:
+            cfg = KiroCrewConfig.load().skills
+            self.run_skill_lifecycle(
+                max_auto_skills=cfg.max_auto_skills,
+                stale_after_days=cfg.stale_after_days,
+                archive_after_days=cfg.archive_after_days,
+                exempt={name},
+            )
+        except Exception:
+            pass
+        return name, ""
 
     def dismiss_pending_skill(self, slug: str) -> bool:
         """Delete a pending candidate. Returns True if it existed."""

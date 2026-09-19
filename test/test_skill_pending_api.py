@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import json
 from types import SimpleNamespace
+from typing import get_type_hints
 
 import pytest
 
 from kiro_crew.dashboard.handlers import prompts as H
-from kiro_crew.skills import AutoSkillProvenance, SkillsLoader
+from kiro_crew.skills import (
+    AutoSkillProvenance,
+    PendingSkillApprovalRefused,
+    SkillsLoader,
+)
 
 _OMITTED = object()
 
@@ -130,6 +135,82 @@ async def test_approve_promotes(loader):
 async def test_approve_missing_returns_409(loader):
     resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "nope"}))
     assert resp.status == 409
+
+
+@pytest.mark.asyncio
+async def test_approve_uses_shared_loader_helper(loader, monkeypatch):
+    called: list[str] = []
+
+    def _approve(slug):
+        called.append(slug)
+        return "auto/deploy-helper", ""
+
+    monkeypatch.setattr(loader, "approve_pending_candidate", _approve)
+    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+
+    assert resp.status == 200
+    assert _payload(resp)["approved"] == "auto/deploy-helper"
+    assert called == ["deploy-helper"]
+
+
+@pytest.mark.asyncio
+async def test_approve_returns_specific_refusal_error(loader, monkeypatch):
+    monkeypatch.setattr(
+        loader,
+        "approve_pending_candidate",
+        lambda _slug: (None, "script_validation_failed"),
+    )
+
+    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+
+    assert resp.status == 409
+    assert _payload(resp) == {"error": "script validation failed"}
+
+
+@pytest.mark.asyncio
+async def test_approve_invalid_skill_encoding_returns_specific_error(loader):
+    pending = loader._pending_root() / "deploy-helper"
+    (pending / "SKILL.md").write_bytes(b"\xff")
+
+    resp = await H.api_skill_pending_approve(
+        _Req(loader, match={"slug": "deploy-helper"})
+    )
+
+    assert resp.status == 409
+    assert _payload(resp) == {"error": "the pending SKILL.md is not valid UTF-8"}
+    assert pending.exists()
+
+
+@pytest.mark.asyncio
+async def test_approve_malformed_update_target_returns_specific_error(loader):
+    pending = loader._pending_root() / "deploy-helper"
+    meta_path = pending / ".meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.update({"kind": "update", "target": []})
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    resp = await H.api_skill_pending_approve(_Req(loader, match={"slug": "deploy-helper"}))
+
+    assert resp.status == 409
+    assert _payload(resp) == {"error": "the pending update target is invalid"}
+    assert pending.exists()
+
+
+def test_update_owner_surfaces_invalid_target_code(loader):
+    pending = loader._pending_root() / "deploy-helper"
+    meta_path = pending / ".meta.json"
+    meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    meta.update({"kind": "update", "target": []})
+    meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+    with pytest.raises(PendingSkillApprovalRefused) as exc:
+        loader.approve_pending_update("deploy-helper")
+
+    assert exc.value.code == "invalid_target"
+
+
+def test_auto_slug_helper_accepts_only_str():
+    assert get_type_hints(SkillsLoader._auto_slug_from_name)["name"] is str
 
 
 @pytest.mark.asyncio
@@ -283,10 +364,16 @@ async def test_new_detail_has_no_live_body(loader):
 @pytest.mark.asyncio
 async def test_approve_routes_update_to_approve_pending_update(loader, monkeypatch):
     """kind=='update' → approve_pending_update; approve_pending_skill untouched."""
-    monkeypatch.setattr(
-        loader,
-        "get_pending_skill",
-        lambda slug: {"slug": slug, "meta": {"kind": "update", "target": "auto/deploy-helper"}},
+    loader.stage_skill_candidate(
+        "deploy-helper-update",
+        description="d",
+        triggers="t",
+        procedure_md="## Steps\nnew\n",
+        provenance=AutoSkillProvenance(
+            session_key="s", created_at=AutoSkillProvenance.now_iso()
+        ),
+        kind="update",
+        target="auto/deploy-helper",
     )
     called: dict = {}
 
@@ -298,7 +385,7 @@ async def test_approve_routes_update_to_approve_pending_update(loader, monkeypat
         called["new"] = slug
         return "auto/should-not-run"
 
-    monkeypatch.setattr(loader, "approve_pending_update", _upd, raising=False)
+    monkeypatch.setattr(loader, "approve_pending_update", _upd)
     monkeypatch.setattr(loader, "approve_pending_skill", _new)
     monkeypatch.setattr(loader, "run_skill_lifecycle", lambda **k: None)
     resp = await H.api_skill_pending_approve(

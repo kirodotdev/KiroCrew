@@ -4526,13 +4526,15 @@ Opt-in secondary flag, gated by `auto_create_from_sessions`. When on, the consol
 
 ### CLI
 
-No new command. Users interact via the existing skill management surface:
+`kirocrew skills` is the host operator surface for the pending queue and live catalog:
 
-- Off by default (opt-in). Enable: `kirocrew config set skills.auto_create_from_sessions true` (or dashboard Settings → Skills); auto-approve prose-only: `kirocrew config set skills.approval_required false`
-- Review pending candidates: dashboard Skills → Pending review, or `GET /api/skills/-/pending`
-- List auto skills: filter `kirocrew` skill listings to those under `auto/`, or use `SkillsLoader.list_auto_skills()` in code
-- Remove unwanted auto skill: `rm -rf ~/.kiro/crew/skills/auto/<slug>` (or dashboard skill delete when UI lands)
-- Audit trail: `kirocrew security events -n 20 | grep auto_skill`
+- Off by default (opt-in). Enable generation with `kirocrew config set skills.auto_create_from_sessions true`; auto-approve prose-only candidates with `kirocrew config set skills.approval_required false`.
+- `skills list` defaults to pending candidates; `--pending`, `--live`, and `--all` select the set, and `--json` preserves the loader metadata.
+- `skills show <slug>` prints the pending `SKILL.md`, redacted `.meta.json`, and script-validation status.
+- `skills approve <slug>` calls `approve_pending_candidate`, the single shared approval form for CLI and dashboard, which routes by `kind`, runs lifecycle bounds, and returns a stable refusal code; `skills dismiss <slug>` calls `dismiss_pending_skill`. Both mutation paths emit a CLI SEL permission-decision event.
+- The entire `skills` CLI group is operator-only and is intentionally omitted from the agent-facing command skill because it has no MCP twin. **CLI invocation boundary:** `skills approve` and `skills dismiss` refuse to run from an agent shell. The check is `_in_agent_session()` (`src/kiro_crew/cloud/aws.py`, keyed on `KIROCREW_SESSION_KEY`, the same detector the AWS credential floor uses); a refused call exits nonzero with the coded reason `agent_shell_denied` and emits a SEL audit row, so a prompt-injected agent under YOLO approval cannot promote a candidate it staged. `list` and `show` stay available to agents. The equivalent dashboard mutations require the configured dashboard owner and are SEL-audited.
+- The dashboard Skills → Pending review surface remains available for the same operations.
+- Audit trail: `kirocrew security events -n 20 | grep auto_skill`.
 
 ## Hooks (`hooks.py`)
 
