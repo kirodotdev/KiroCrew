@@ -1380,6 +1380,54 @@ export interface AcpBackendProbe {
    * standing fact the tool-approval line explains.
    */
   offered_by_build?: boolean
+  /**
+   * How this harness receives Crew's MCP servers, projected on the server from
+   * the declaration `providers/mirrors/registry.py` already carries
+   * (`agent_sdk/backend_mcp_ability.py`). OPTIONAL, like every other card field,
+   * because a gateway that predates it sends none.
+   *
+   * The other half of the card, and the half a membership set cannot answer: the
+   * capability lines say what the harness can DO, these say what happens to the
+   * user's own AGENT SPEC on the way to it.
+   *
+   * `projection` is `ProjectionKind`'s value (`native` / `mirror` / `external` /
+   * `no-channel` / `broker-only`) and `per_tool_deny` is `PerToolDeny`'s
+   * (`settings-file` / `per-call` / `whole-server`), each `''` where the
+   * declaration carries none. Both are rendered from a label keyed by the VALUE,
+   * never by a harness, so a harness declaring an existing kind needs no label of
+   * its own -- the same arrangement as `tool_approval`.
+   *
+   * `costs_whole_server` is the server's own classification of the reach: `true`
+   * where switching ONE tool off can cost a whole server rather than that tool,
+   * which today is `whole-server` and `per-call` alike. It travels with the reach so
+   * that no renderer decides for itself which reaches are dangerous, and so a reach
+   * added to the core arrives classified. OPTIONAL like the rest: absent from a
+   * gateway that predates it, and a renderer reads it as `false` then.
+   *
+   * `spec_keys` maps each listed concern id to the key the AGENT SPEC itself spells
+   * (`permission_mode` -> `permissions.defaultMode`), as a render fallback: a concern
+   * this frontend has no label for shows the spec's own word instead of vanishing, the
+   * same way an unlabelled kind or reach shows its declared value. Absent from a
+   * gateway that predates it, and a renderer falls back to the id then.
+   *
+   * `withheld` and `no_channel` are concern ids, and the split is the meaning: a
+   * withhold is a DECISION with a reason behind it, while no-channel is a gap the
+   * transport cannot carry today. They are stated only where they hold, so a
+   * harness that withholds nothing renders nothing.
+   *
+   * It is ADVISORY. Per-tool MCP deny is not a requirement on every provider: a
+   * harness with no per-call deny channel withholds the whole server instead, and
+   * this is where it says so before a session runs. Nothing here refuses a
+   * selection.
+   */
+  mcp?: {
+    projection: string
+    per_tool_deny: string
+    costs_whole_server?: boolean
+    withheld: string[]
+    no_channel: string[]
+    spec_keys?: Record<string, string>
+  }
 }
 
 let _sessionExpiredShown = false

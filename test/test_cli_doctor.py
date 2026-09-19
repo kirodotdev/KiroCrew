@@ -442,9 +442,7 @@ class TestUnresolvedMcpRefs:
         """
         from kiro_crew.agent_sdk.drivers import acp as acp_driver
 
-        monkeypatch.setattr(
-            acp_driver, "agent_spec_mcp_refs", lambda _agent: (spec_found, rows)
-        )
+        monkeypatch.setattr(acp_driver, "agent_spec_mcp_refs", lambda _agent: (spec_found, rows))
 
     def test_a_backend_with_no_projection_names_the_unprojected_refs(self, monkeypatch, capsys):
         self._arrange(monkeypatch, [("codex", ["@kirocrew-core"], False)])
@@ -566,6 +564,240 @@ class TestUnresolvedMcpRefs:
         assert capsys.readouterr().out == ""
 
 
+class TestBackendAbilityCardRows:
+    """The MCP ability of the harness IN USE, and which others cost a whole server.
+
+    The class above answers for the configured harness only when something about it
+    is wrong. This is the other question -- what is my harness doing to my agent
+    file, and what would switching cost me -- and it is in a terminal report because
+    the users most likely to meet a projection gap are the ones already diagnosing
+    one.
+
+    **Two lines on a stock run.** The full per-harness comparison belongs to the
+    dashboard, which has the room and the labels in thirteen languages; a row apiece for
+    six harnesses in a terminal report is a section readers learn to skip. What this
+    section carries is the in-use harness's own card and the one cross-harness fact a
+    chooser cannot act without: where a tool-off can withhold Crew's own servers.
+
+    Every assertion reads the SHIPPED declarations. A row rendered from a stub would
+    prove the formatting and not the wiring, and a declaration nothing renders is the
+    state the issue reported.
+    """
+
+    def _cfg(self, backend: str):
+        return SimpleNamespace(agent=SimpleNamespace(acp_backend=backend))
+
+    def test_the_section_reports_the_install_and_the_cross_harness_cost(self, capsys):
+        """What the section claims to answer, and nothing wider.
+
+        Two facts: the card of the harness IN USE, and every harness where a tool-off can
+        withhold Crew's own servers. A harness that is neither is absent by design -- the
+        per-harness comparison is the panel's, and a terminal report that names six
+        harnesses on every run is a section readers learn to skip.
+        """
+        from kiro_crew.providers.mirrors import PROJECTIONS, PerToolDeny
+
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        assert "mcp ability:" in out
+        assert cli_doctor._backend_policy_label("claude") in out
+        for backend, declared in PROJECTIONS.items():
+            if declared.per_tool_deny is PerToolDeny.WHOLE_SERVER:
+                assert cli_doctor._backend_policy_label(backend) in out, backend
+
+    def test_only_the_harness_in_use_gets_a_row(self, capsys):
+        """One card, for the install being diagnosed, and none for the rest.
+
+        Driven on the shipped declarations, so the harnesses this asserts are rowless
+        are the real selectable set rather than a stub's.
+        """
+        from kiro_crew.acp_backends import selectable_backend_values
+
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        assert f"    {cli_doctor._backend_policy_label('claude')} (in use): " in out
+        for backend in selectable_backend_values():
+            if backend == "claude":
+                continue
+            label = cli_doctor._backend_policy_label(backend)
+            assert f"    {label} (in use): " not in out, label
+            assert f"    {label}: " not in out, label
+
+    def test_the_in_use_row_states_the_declared_reach(self, capsys):
+        """The line the maintainer's ruling turned into a row.
+
+        Per-tool ``mcp.deny`` is not a hard requirement on every provider: a harness
+        with no per-call deny channel withholds the whole server instead, and an
+        operator running on one is told in the row for their own harness. The DECLARED
+        value, not an English gloss of it -- the panel owns the prose.
+        """
+        from kiro_crew.providers.mirrors import PROJECTIONS, PerToolDeny
+
+        declared = sorted(
+            backend
+            for backend, projection in PROJECTIONS.items()
+            if projection.per_tool_deny is PerToolDeny.WHOLE_SERVER
+        )
+        assert declared, "no harness declares the whole-server reach any more"
+        for backend in declared:
+            cli_doctor._doctor_backend_ability_cards(self._cfg(backend))
+            out = capsys.readouterr().out
+            label = cli_doctor._backend_policy_label(backend)
+            row = next(
+                line for line in out.splitlines() if line.strip().startswith(f"{label} (in use):")
+            )
+            assert "per-tool deny: 'whole-server'" in row, backend
+
+    def test_the_whole_server_reach_says_what_it_costs_once(self, capsys):
+        """The consequence a reader cannot recover from the declared value alone.
+
+        ``per-tool deny: whole-server`` is the declaration's own word for it; that
+        switching ONE tool off withholds the whole server that tool belongs to, and that
+        a session narrowing kirocrew-core then cannot report back, is what the reader is
+        here to find out. No amount of reading the row supplies it.
+
+        Conditional, and the condition is asserted: a third-party server costs that
+        server and not the channel, so an unconditional sentence would tell most readers
+        something false about their own restriction.
+
+        ONE sentence, naming exactly the harnesses it holds for, and it prints whether
+        or not the reader is ON one of them: it is the fact they need BEFORE switching.
+        """
+        import re as _re
+
+        from kiro_crew.providers.mirrors import PROJECTIONS, PerToolDeny
+
+        declared = sorted(
+            b for b, p in PROJECTIONS.items() if p.per_tool_deny is PerToolDeny.WHOLE_SERVER
+        )
+        assert declared, "no harness declares the whole-server reach any more"
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        # Wrapped across lines by ``_print_wrapped``, so every assertion reads the
+        # report's words rather than one line of them.
+        flat = " ".join(out.split())
+        assert "where that server is kirocrew-core" in flat
+        assert flat.count("kirocrew-core") == 1, "one sentence, not one per harness"
+        named = _re.search(r"On (.+?), switching a single MCP tool off", flat)
+        assert named, flat
+        for backend in declared:
+            assert cli_doctor._backend_policy_label(backend) in named.group(1), backend
+
+    def test_a_harness_whose_tool_off_costs_one_tool_is_not_named_in_the_caveat(self, capsys):
+        """The sentence holds for the reach it describes, and for no other.
+
+        ``settings-file`` reaches the harness as a rule it reads, so the narrowed
+        server stays mounted and the cost is the tool. ``per-call`` refuses per tool on
+        Crew's OWN servers, so a session can still report back -- it is named on the
+        panel, where a third-party server's loss has room to be explained, and not in
+        the sentence about the control plane.
+        """
+        import re as _re
+
+        from kiro_crew.providers.mirrors import PROJECTIONS, PerToolDeny
+
+        spared = sorted(
+            b
+            for b, p in PROJECTIONS.items()
+            if p.per_tool_deny in (PerToolDeny.SETTINGS_FILE, PerToolDeny.PER_CALL)
+        )
+        assert spared, "no harness keeps a tool-off per tool any more"
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        named = _re.search(r"On (.+?), switching a single MCP tool off", " ".join(out.split()))
+        assert named, out
+        for backend in spared:
+            label = cli_doctor._backend_policy_label(backend)
+            assert label not in named.group(1), label
+
+    def test_a_withhold_is_named_by_the_key_the_spec_spells(self, capsys):
+        """The reader is holding the agent file, so the row names its own keys.
+
+        ``permissions.defaultMode`` is what they have to go and look at; the card id
+        (``permission_mode``) is a machine key the dashboard hangs a translated label
+        off. Both come from the same enum, so neither is written down twice.
+        """
+        cli_doctor._doctor_backend_ability_cards(self._cfg("opencode"))
+        out = capsys.readouterr().out
+        assert "not sent from your agent file:" in out
+        assert "permissions.defaultMode" in out
+        assert "no channel yet: hooks" in out
+
+    def test_a_harness_in_use_that_loses_nothing_still_gets_its_row(self, capsys):
+        """Silence is wrong for the harness in USE, however good its answer is.
+
+        "Nothing is withheld here" is an answer the operator came for; leaving the row
+        out would read as "nobody measured this one". kiro-cli reads the spec itself, so
+        this is the real quiet case rather than a stub.
+        """
+        cli_doctor._doctor_backend_ability_cards(self._cfg(""))
+        out = capsys.readouterr().out
+        assert "(in use): projection: 'native'" in out
+
+    def test_the_row_never_moves_doctors_exit_code(self):
+        """It takes no ``issues`` list, so it structurally cannot append one.
+
+        A declared difference between harnesses is what the declaration is FOR;
+        failing doctor on one would make choosing a harness read as a fault.
+        """
+        import inspect
+
+        params = list(inspect.signature(cli_doctor._doctor_backend_ability_cards).parameters)
+        assert params == ["cfg"]
+
+    def test_the_rows_are_reached_from_the_report_itself(self):
+        """The section runs, rather than existing for its own tests to call."""
+        import inspect
+
+        assert "_doctor_backend_ability_cards(cfg)" in inspect.getsource(cli_doctor._doctor)
+
+    def test_an_unreadable_config_does_not_break_triage(self, capsys):
+        """No harness in use, no report: the section is advisory either way."""
+
+        class _Boom:
+            @property
+            def agent(self):
+                raise RuntimeError("config unreadable")
+
+        cli_doctor._doctor_backend_ability_cards(_Boom())  # must not raise
+        assert capsys.readouterr().out == ""
+
+    def test_an_unreadable_registry_does_not_break_triage(self, monkeypatch, capsys):
+        """Advisory rows, so a broken tree is reported by something else."""
+        from kiro_crew.agent_sdk import backend_mcp_ability
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("registry unreadable")
+
+        monkeypatch.setattr(backend_mcp_ability, "ability_for", _boom)
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))  # must not raise
+        assert capsys.readouterr().out == ""
+
+    def test_a_kind_this_build_has_no_phrase_for_prints_the_raw_value(self, monkeypatch, capsys):
+        """Honest rather than silent, and scrubbed on the way out.
+
+        An edition plugin authors its own declaration, so the fallback value goes
+        through the same display guard as every other value in this report.
+        """
+        from kiro_crew.agent_sdk import backend_mcp_ability
+        from kiro_crew.agent_sdk.backend_mcp_ability import McpAbility
+
+        monkeypatch.setattr(
+            backend_mcp_ability,
+            "ability_for",
+            lambda _b: McpAbility(
+                projection="teleported\x1b]0;pwned\x07",
+                per_tool_deny="",
+                withheld=(),
+                no_channel=(),
+            ),
+        )
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        assert "teleported" in out
+        assert "\x1b" not in out
+
+
 class TestSelectedBackendProjectionRow:
     """The row for a harness whose transport carries none of Crew's own tools.
 
@@ -574,6 +806,12 @@ class TestSelectedBackendProjectionRow:
     server produces no row at all -- while a ``no-channel`` harness has no
     transport for Crew's servers whatever any spec says. That is a property of the
     harness, and the operator who selected it gets told once.
+
+    The per-tool deny reach is NOT this row's subject:
+    ``TestBackendAbilityCardRows`` owns it -- in the in-use harness's own row, and in
+    one sentence naming every harness the costly reach holds for. One declaration with
+    two readings in one report is how the two drift apart, so
+    ``test_the_deny_reach_is_stated_once_in_the_report`` holds that boundary.
     """
 
     def _cfg(self, backend: str):
@@ -592,17 +830,20 @@ class TestSelectedBackendProjectionRow:
         here rather than the test being deleted with the backend it happened to be
         demonstrated on.
         """
-        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+        from kiro_crew.agent_sdk import backend_mcp_ability
+        from kiro_crew.agent_sdk.backend_mcp_ability import McpAbility
 
         monkeypatch.setattr(
-            acp_driver,
-            "backend_mcp_projection",
-            lambda _b: (
-                "no-channel",
-                "an http or sse MCP endpoint the shared gateway serves",
-                "docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+            backend_mcp_ability,
+            "ability_for",
+            lambda _b: McpAbility(
+                projection="no-channel",
                 # A no-channel backend has no mirror, so it declares no reach.
-                "",
+                per_tool_deny="",
+                withheld=(),
+                no_channel=(),
+                channel="an http or sse MCP endpoint the shared gateway serves",
+                tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
             ),
         )
         cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
@@ -612,67 +853,24 @@ class TestSelectedBackendProjectionRow:
         assert "Would need:" in out
         assert "Tracked at:" in out
 
-    def test_a_whole_server_deny_backend_gets_a_row_about_the_consequence(self, capsys):
-        """The reader this declaration exists for.
+    def test_the_deny_reach_is_stated_once_in_the_report(self, capsys):
+        """The consequence of a whole-server reach is this report's, not this ROW's.
 
-        `per_tool_deny` is a claim about what a RESTRICTION costs, not about whether
-        the servers arrive, so it prints independently of the kind. It earns a row
-        because its consequence is the one an operator meets by accident: switching
-        one tool off is an ordinary dashboard action that says nothing about servers,
-        and on such a harness it removes the whole server — Crew's own control plane
-        included, which leaves that session unable to report back at all.
-        """
-        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+        It was stated twice: once per selectable harness by
+        ``_doctor_backend_ability_cards`` and again, in different words, for the
+        selected harness alone. Two readings of one declared field is how prose and
+        record drift, so the selected-harness row states the kind's own gap and
+        nothing about the reach.
 
-        monkeypatch = pytest.MonkeyPatch()
-        try:
-            monkeypatch.setattr(
-                acp_driver,
-                "backend_mcp_projection",
-                lambda _b: ("mirror", "", "", "whole-server"),
-            )
-            cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
-        finally:
-            monkeypatch.undo()
-        out = capsys.readouterr().out
-        assert "withholds the whole server" in out
-        assert "kirocrew-core" in out
-        # A mirror is not a no-channel backend, so the OTHER row must stay silent.
-        assert "carries none of Kiro Crew's own tools" not in out
-
-    def test_a_backend_whose_deny_reaches_one_tool_prints_no_such_row(self, capsys):
-        """Silence for the reaches that hold no surprise.
-
-        `settings-file` and `per-call` both honour the restriction per TOOL, so the
-        server stays available and there is nothing an operator needs warning about.
-        A row on every install is a row people stop reading.
-        """
-        from kiro_crew.agent_sdk.drivers import acp as acp_driver
-
-        monkeypatch = pytest.MonkeyPatch()
-        try:
-            for reach in ("settings-file", "per-call"):
-                monkeypatch.setattr(
-                    acp_driver,
-                    "backend_mcp_projection",
-                    lambda _b, _r=reach: ("mirror", "", "", _r),
-                )
-                cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
-                assert capsys.readouterr().out == "", reach
-        finally:
-            monkeypatch.undo()
-
-    def test_the_real_opencode_declaration_drives_that_row(self, capsys):
-        """Read off the SHIPPED declaration, not a stub.
-
-        The stubbed cases above pin the rendering; this pins that the field the
-        registry actually carries for opencode is the one that reaches this row. A
-        declaration nothing reads is what the first-principles lane flagged, so the
-        wiring is asserted end to end rather than assumed.
+        Driven on the shipped opencode declaration, which carries `whole-server`, so
+        the assertion is about the report rather than about a stub.
         """
         cli_doctor._doctor_selected_backend_projection(self._cfg("opencode"))
+        assert capsys.readouterr().out == ""
+
+        cli_doctor._doctor_backend_ability_cards(self._cfg("opencode"))
         out = capsys.readouterr().out
-        assert "withholds the whole server" in out
+        assert out.count("per-tool deny: 'whole-server'") == 1, out
 
     def test_the_shipped_tables_hold_exactly_the_declared_no_channel_backends(self):
         """The row's own subject, read off the SHIPPED tables rather than a stub.
@@ -724,12 +922,20 @@ class TestSelectedBackendProjectionRow:
         Same rule as the refs row: anything a party other than this file wrote
         goes through ``_safe_display`` before reaching a terminal.
         """
-        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+        from kiro_crew.agent_sdk import backend_mcp_ability
+        from kiro_crew.agent_sdk.backend_mcp_ability import McpAbility
 
         monkeypatch.setattr(
-            acp_driver,
-            "backend_mcp_projection",
-            lambda _b: ("no-channel", "http\x1b]0;pwned\x07", "tracked", ""),
+            backend_mcp_ability,
+            "ability_for",
+            lambda _b: McpAbility(
+                projection="no-channel",
+                per_tool_deny="",
+                withheld=(),
+                no_channel=(),
+                channel="http\x1b]0;pwned\x07",
+                tracking="tracked",
+            ),
         )
         cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
         out = capsys.readouterr().out
@@ -836,9 +1042,7 @@ class TestOomKillerProbe:
     def test_absent_systemctl_is_unknown(self, monkeypatch) -> None:
         # Resolution goes through the trusted-bin pin (fixed system dirs), so a
         # PATH-planted shim can never be executed; a miss degrades to unknown.
-        monkeypatch.setattr(
-            cli_doctor.platform_compat, "trusted_system_bin", lambda _n: None
-        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_system_bin", lambda _n: None)
         assert cli_doctor._detect_userspace_oom_killer() is None
 
 
@@ -902,9 +1106,7 @@ class TestMemoryPressure:
         assert "⚠️" not in out
         assert issues == ["pre-existing"]
 
-    def test_no_swap_unknown_killer_is_informational_not_warning(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_no_swap_unknown_killer_is_informational_not_warning(self, monkeypatch, capsys) -> None:
         # Inconclusive detection (no systemctl / probe failure) must not warn —
         # a container or non-systemd host may run a killer doctor cannot see.
         issues = self._arrange(monkeypatch, swap_kib=0, killer=None)
@@ -950,9 +1152,7 @@ class TestMemoryPressure:
         cli_doctor._doctor_memory_pressure(issues)
 
         out = capsys.readouterr().out
-        assert out.index("session ceiling") < out.index("gateway rss") < out.index(
-            "not applicable"
-        )
+        assert out.index("session ceiling") < out.index("gateway rss") < out.index("not applicable")
         assert issues == []
 
 
@@ -1117,7 +1317,9 @@ class TestGatewayMemoryLines:
         monkeypatch.setattr(cli_doctor, "_read_gateway_pid", lambda: 4242)
         monkeypatch.setattr(cli_doctor.platform_compat, "proc_rss_bytes_for_pid", lambda pid: None)
         monkeypatch.setattr(cli_doctor.platform_compat, "IS_WINDOWS", False)
-        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_system_bin", lambda name: "/bin/ps")
+        monkeypatch.setattr(
+            cli_doctor.platform_compat, "trusted_system_bin", lambda name: "/bin/ps"
+        )
         calls: list[list[str]] = []
 
         def _ps(argv, timeout):
@@ -1160,9 +1362,7 @@ class TestDoctorAgentAuth:
         if vault_import_fails:
             monkeypatch.setitem(sys.modules, "kiro_crew.auth.bridge", None)
         else:
-            monkeypatch.setattr(
-                "kiro_crew.auth.bridge.vault_holds_identity", lambda: vault_holds
-            )
+            monkeypatch.setattr("kiro_crew.auth.bridge.vault_holds_identity", lambda: vault_holds)
             monkeypatch.setattr(
                 "kiro_crew.auth.bridge.describe_vault_identity", lambda: vault_detail
             )
@@ -1225,17 +1425,13 @@ class TestDoctorAgentAuth:
         # The kiro row is untouched: it still reports the host store's own state.
         assert "✅ kiro-cli's own sign-in" in out
 
-    def test_a_vault_owned_row_alone_consumes_no_kiro_cli_probe(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_a_vault_owned_row_alone_consumes_no_kiro_cli_probe(self, monkeypatch, capsys) -> None:
         """The vault verdict is the row's whole answer, so with no other host-store
         row on the board the kiro-cli probe never runs at all -- and a store that
         was never measured must not be claimed present, so the secondary-detail
         line stays absent too. With no detail line to affirm health the glyph is
         the row's "could not check" marker, never a green asserted from silence."""
-        out, probes = self._run(
-            monkeypatch, capsys, ["kas"], signed_in=True, vault_holds=True
-        )
+        out, probes = self._run(monkeypatch, capsys, ["kas"], signed_in=True, vault_holds=True)
         assert probes == 0
         assert "⚠️  Kiro Crew vault (signed in through Kiro Crew)" in out
         assert "✅ Kiro Crew vault" not in out
@@ -1243,9 +1439,7 @@ class TestDoctorAgentAuth:
         # kiro-cli's store here, so nothing may be asserted about it.
         assert "also present" not in out
 
-    def test_a_rejected_refresh_vault_owner_is_not_a_green_row(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_a_rejected_refresh_vault_owner_is_not_a_green_row(self, monkeypatch, capsys) -> None:
         """The vault still OWNS the spawn when the issuer has rejected its refresh
         token (``is_usable`` cannot know that without a network call), but the
         glyph column is what an operator scans -- a ✅ above a detail line whose
@@ -1271,9 +1465,7 @@ class TestDoctorAgentAuth:
         for word in detail.split():
             assert word in out, word
 
-    def test_both_stores_holding_reports_the_second_store_too(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_both_stores_holding_reports_the_second_store_too(self, monkeypatch, capsys) -> None:
         """The two stores can hold DIFFERENT accounts. The vault owns the spawn,
         but a row that silently dropped kiro-cli's own sign-in would trade one
         wrong report for another -- so it is reported as secondary detail, and
@@ -1290,14 +1482,10 @@ class TestDoctorAgentAuth:
         assert "also present and may be a different account" in out
         assert "the relay uses the vault" in out
 
-    def test_vault_not_holding_falls_back_to_the_kiro_cli_row(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_vault_not_holding_falls_back_to_the_kiro_cli_row(self, monkeypatch, capsys) -> None:
         """An empty vault leaves the row exactly as it was: kiro-cli's store is
         the runtime's fallback owner, probed once."""
-        out, probes = self._run(
-            monkeypatch, capsys, ["kas"], signed_in=True, vault_holds=False
-        )
+        out, probes = self._run(monkeypatch, capsys, ["kas"], signed_in=True, vault_holds=False)
         assert probes == 1
         assert "✅ kiro-cli's own sign-in" in out
         assert "Kiro Crew vault" not in out
@@ -1474,9 +1662,7 @@ class TestDoctorKas:
         assert "does not offer engine v3" in out
         assert any("does not support the KAS engine" in i for i in issues)
 
-    def test_help_without_the_flag_is_a_failure_not_unknown(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_help_without_the_flag_is_a_failure_not_unknown(self, monkeypatch, capsys) -> None:
         """A kiro-cli predating engine selection must FAIL the check.
 
         Reporting it as "unknown" would let a configuration that cannot work
@@ -1497,9 +1683,7 @@ class TestDoctorKas:
         assert "engine support unknown" not in out
         assert any("too old to select the KAS engine" in i for i in issues)
 
-    def test_unreadable_help_is_reported_unknown_not_failed(
-        self, monkeypatch, capsys
-    ) -> None:
+    def test_unreadable_help_is_reported_unknown_not_failed(self, monkeypatch, capsys) -> None:
         """Only a FAILED probe is unknown; a diagnostic must not invent a verdict.
 
         ``None`` now means the subprocess did not run, which is the one case
@@ -1515,9 +1699,7 @@ class TestDoctorKas:
         assert "engine support unknown" in out
         assert issues == []
 
-    def test_probe_returns_help_text_even_without_the_flag(
-        self, monkeypatch
-    ) -> None:
+    def test_probe_returns_help_text_even_without_the_flag(self, monkeypatch) -> None:
         """The probe must not swallow ran-but-lacks-the-flag into None.
 
         Pins the split directly: the previous implementation returned None for
@@ -1883,11 +2065,7 @@ class TestSourceCheckout:
 
         def fake_run(argv, *a, **k):
             errors = k.get("errors")
-            stdout = (
-                raw.decode("utf-8", errors=errors)
-                if errors
-                else raw.decode("utf-8")
-            )
+            stdout = raw.decode("utf-8", errors=errors) if errors else raw.decode("utf-8")
             return _sp.CompletedProcess(argv, 0, stdout=stdout, stderr="")
 
         monkeypatch.setattr(
@@ -1897,9 +2075,7 @@ class TestSourceCheckout:
         line = cli_doctor._git_line(tmp_path, "rev-parse", "--abbrev-ref", "HEAD")
         assert line == "exp\ufffdrimental"
 
-    def test_git_line_pins_git_and_returns_none_when_untrusted(
-        self, monkeypatch, tmp_path
-    ) -> None:
+    def test_git_line_pins_git_and_returns_none_when_untrusted(self, monkeypatch, tmp_path) -> None:
         """git resolves via trusted_git_bin; a miss means no subprocess at all.
 
         Doctor runs with operator privileges, so a ``git`` shim planted in an
@@ -1928,9 +2104,7 @@ class TestSourceCheckout:
         assert calls == []
 
         # Hit: the resolved absolute path is argv[0], never the bare "git".
-        monkeypatch.setattr(
-            cli_doctor.platform_compat, "trusted_git_bin", lambda: "/usr/bin/git"
-        )
+        monkeypatch.setattr(cli_doctor.platform_compat, "trusted_git_bin", lambda: "/usr/bin/git")
         assert cli_doctor._git_line(tmp_path, "rev-parse", "HEAD") == "main"
         assert calls and calls[0][0] == "/usr/bin/git"
 
@@ -2077,9 +2251,7 @@ class TestCliInstallerResidue:
     def test_uncapped_size_is_not_marked_as_a_floor(self, monkeypatch, capsys) -> None:
         # Below the cap the scan saw everything, so the figure is exact and must
         # NOT be hedged -- otherwise every host reads as approximate.
-        monkeypatch.setattr(
-            cli_doctor, "_scan_cli_installer_residue", lambda _d: (4, 4 * 1048576)
-        )
+        monkeypatch.setattr(cli_doctor, "_scan_cli_installer_residue", lambda _d: (4, 4 * 1048576))
         issues: list[str] = []
         cli_doctor._doctor_cli_installer_residue(issues)
         out = capsys.readouterr().out
@@ -2116,9 +2288,9 @@ class TestEffectiveModelSection:
 
         agents_dir = kiro_agents_dir()
         # Fail loudly rather than write into a real home if the override lapses.
-        assert self._tmp in agents_dir.parents or agents_dir.is_relative_to(self._tmp), (
-            f"KIRO_HOME isolation failed: {agents_dir} is outside {self._tmp}"
-        )
+        assert self._tmp in agents_dir.parents or agents_dir.is_relative_to(
+            self._tmp
+        ), f"KIRO_HOME isolation failed: {agents_dir} is outside {self._tmp}"
         agents_dir.mkdir(parents=True, exist_ok=True)
         return agents_dir
 
@@ -2568,9 +2740,7 @@ class TestWhatsAppSection:
 
     @staticmethod
     def _extra(monkeypatch, present: bool) -> None:
-        monkeypatch.setattr(
-            "kiro_crew.whatsapp.client.neonize_available", lambda: present
-        )
+        monkeypatch.setattr("kiro_crew.whatsapp.client.neonize_available", lambda: present)
 
     @staticmethod
     def _pair(home: Path) -> Path:
@@ -2662,9 +2832,7 @@ class TestWhatsAppSection:
 
         assert str(default_db_path(home)) in capsys.readouterr().out
 
-    def test_the_check_never_imports_neonize(
-        self, home: Path, monkeypatch, capsys
-    ) -> None:
+    def test_the_check_never_imports_neonize(self, home: Path, monkeypatch, capsys) -> None:
         """The whole point of the ``find_spec`` probe: importing neonize loads a
         ~19 MB ctypes CDLL plus protobuf descriptors, and a health check must not
         pay that (or construct a client as a side effect of asking a question).
@@ -3161,9 +3329,7 @@ class TestCronHealth:
         # loadability puts it in the auto-paused bucket, so doctor advises
         # `cron resume` for a job that does not exist and the unloadable-store
         # report never fires. The store is the fault; the phantom job is not.
-        (tmp_path / "crons.json").write_text(
-            '{"jobs": [{"auto_paused": true}]}', encoding="utf-8"
-        )
+        (tmp_path / "crons.json").write_text('{"jobs": [{"auto_paused": true}]}', encoding="utf-8")
 
         issues = self._run(monkeypatch, tmp_path)
 
@@ -3329,7 +3495,10 @@ class TestProjectSectionAndAuthRow:
         out = self._run_doctor(tmp_path, monkeypatch, capsys, project_dir="")
         assert "no token required" not in out
         assert "loopback trusted" not in out
-        assert "auth:        token required — loopback is not exempt (CLI/MCP use the local secret)" in out
+        assert (
+            "auth:        token required — loopback is not exempt (CLI/MCP use the local secret)"
+            in out
+        )
 
     def test_auth_row_claim_is_grounded_in_the_middleware(self) -> None:
         # The row's claim is prose; this pins it to production code so a

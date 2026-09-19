@@ -124,7 +124,17 @@ export const CHUNK_BUDGETS = {
   // was set at 3.7% over its own measurement, below the 5% convention, and
   // ordinary catalog growth since then used that margin up. Back to the 5%
   // convention over the measured size.
-  t: 861 * KB, // measured 820.3 KB on the capability-inheritance build rebased onto f382f0a70 (~5% headroom)
+  // Re-measured 2026-09-19 on the provider ability card branch: the analyze build
+  // emits the chunk at 881,324 B (860.7 KB) against the 861 KB ceiling -- 0.03%
+  // headroom locally, and 280 B OVER on the merge ref. The growth is catalog copy
+  // only: this branch's 20 MCP ability-card keys across 13 catalogs, rewritten
+  // several times over the review to name the harness in every line. The chunk
+  // report still counts 12 modules and this branch adds no dependency, and no lazy
+  // import() boundary can move a catalog string out of the eager entry. Same
+  // recurrence and same remedy as the `all` entry above: a ceiling that drifted to
+  // under 1% headroom fails on routine string growth rather than on the new library
+  // it exists to catch, so it goes back to the 5% convention over the measurement.
+  t: 904 * KB, // measured 860.7 KB on the provider-ability-card analyze build (~5% headroom)
 
   // Pierre editor implementation (PR #4072 replaced Monaco, whose
   // 'editor.api2' chunk this entry set used to carry) -- the code-editor

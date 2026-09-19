@@ -424,6 +424,12 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
         "operator_notes",
         "tool_approval",
         "offered_by_build",
+        # The MCP half, projected from the mirror declarations rather than from a
+        # membership set, and carried as its own GROUP: its four fields answer one
+        # question together, and a panel on an older gateway tests one absent object
+        # instead of four absent fields. Its own shape is pinned in
+        # ``test_backend_mcp_ability``.
+        "mcp",
     }
     capabilities = payload["capabilities"]
     assert isinstance(capabilities, list)
