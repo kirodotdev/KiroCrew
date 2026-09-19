@@ -443,8 +443,47 @@ async def api_branding(request: web.Request) -> web.Response:
             "bot_name": cfg.dashboard.bot_name or "Kiro Crew",
             "avatar": "/logo.png",
             "direct_local": is_direct_local_request(request),
+            # Remote-editor link config, read on the SAME `useBranding` gate as
+            # `direct_local` (FilePathMenu shows the "Open in <editor>" row only
+            # when NOT direct-local). Both values are CLAMPED here, not merely
+            # forwarded: a three-segment key is kept by the loader even when it
+            # fails schema validation (past the repair depth cap), so a
+            # hand-edited config.json could hold an unknown editor or a host with
+            # URL metacharacters. An unknown editor becomes "" (row hidden) and a
+            # host that is not charset-clean becomes "" (no malformed link), so
+            # the browser never builds a link from an unvalidated value.
+            "remote_editor": _remote_editor_branding(cfg),
         }
     )
+
+
+#: The editors whose URL scheme the "Open in <editor>" row may build. Each is a
+#: VS Code-family app that keeps the ``vscode-remote`` authority, so the link is
+#: ``<id>://vscode-remote/ssh-remote+<host><path>``. Shared by the branding clamp
+#: below and the ``dashboard.remote_editor.editor`` write gate in
+#: ``_EDITABLE_CONFIG`` so the two cannot drift.
+_REMOTE_EDITOR_IDS: tuple[str, ...] = ("vscode", "kiro")
+
+#: Same charset as the ``dashboard.remote_editor.host`` schema pattern. Anchored
+#: full-match so a host carrying URL structure (``/``, ``:``, ``?``, ``#``,
+#: whitespace) is rejected rather than injected into the generated link.
+_REMOTE_EDITOR_HOST_RE = re.compile(r"^[A-Za-z0-9._@+-]*$")
+
+
+def _remote_editor_branding(cfg: KiroCrewConfig) -> dict[str, str]:
+    """Clamp the stored remote-editor config to what a link may safely use.
+
+    Returns ``{"editor", "host"}`` with an unknown editor or a non-charset-clean
+    host reduced to ``""`` (feature off), so the client can trust both values
+    verbatim. Reads defensively because the field is a plain dict that may carry
+    loader-kept junk (see :func:`api_branding`).
+    """
+    raw = cfg.dashboard.remote_editor if isinstance(cfg.dashboard.remote_editor, dict) else {}
+    editor = raw.get("editor", "")
+    host = raw.get("host", "")
+    editor = editor if editor in _REMOTE_EDITOR_IDS else ""
+    host = host if isinstance(host, str) and _REMOTE_EDITOR_HOST_RE.fullmatch(host) else ""
+    return {"editor": editor, "host": host}
 
 
 def _liveness_payload(request: web.Request) -> dict[str, object]:
@@ -1971,6 +2010,23 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     # stays config-file-only: it also kills the PTY, which is not a display
     # preference.
     "dashboard.terminal.completion.enabled": {"type": "bool"},
+    # Remote-editor link (Settings → Display → Remote editor). Both keys are
+    # three segments deep, so the loader keeps a bad value on load and the write
+    # gate is the real enforcement point for anything a UI or CLI writes.
+    # `editor` is an enum, not a free string: the value ends up interpolated into
+    # a clickable custom-scheme URL, so an open set would let a write mint a link
+    # to any protocol handler. "" = off. The values list is shared with the
+    # branding clamp (`_REMOTE_EDITOR_IDS`) so the write gate and the read path
+    # cannot disagree on the allowed set.
+    "dashboard.remote_editor.editor": {"type": "enum", "values": ["", *_REMOTE_EDITOR_IDS]},
+    # SSH authority the link connects over. Charset-restricted (same pattern as
+    # the schema) so it cannot inject path/query/authority structure into the
+    # generated URL; "" clears it.
+    "dashboard.remote_editor.host": {
+        "type": "str",
+        "max_len": 256,
+        "pattern": r"^[A-Za-z0-9._@+-]*$",
+    },
     # Keep the host awake while the agent is running a task. Gateway-host
     # behavior (not a display pref), read by the prevent-sleep poll in
     # dashboard/server.py; off by default.

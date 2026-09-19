@@ -8582,7 +8582,8 @@
       "copy_path": "Copier le chemin",
       "path_copied": "Chemin copié",
       "reveal_blocked": "Ce chemin est protégé et ne peut pas être ouvert.",
-      "reveal_failed": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}."
+      "reveal_failed": "Impossible d'ouvrir ce chemin sur la machine qui exécute {{productName}}.",
+      "open_in_remote_editor": "Ouvrir dans {{editor}}"
     },
     "pendingQuestionCard": {
       "answer_failed": "Impossible d’envoyer votre réponse. L’agent attend toujours, réessayez.",
@@ -13807,7 +13808,15 @@
         "zoom_level": "Niveau de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Impossible de charger les réglages d’affichage enregistrés. Les réglages du shell, des sessions récentes et de la complétion des commandes sont indisponibles jusqu’au chargement.",
-        "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence."
+        "recent_tint_save_failed": "Impossible d’enregistrer le nombre de sessions récentes mises en évidence.",
+        "remote_editor": "Éditeur distant",
+        "remote_editor_editor": "Éditeur",
+        "remote_editor_editor_desc": "Ouvrez des fichiers distants dans votre éditeur local via votre propre session SSH. Affiché dans les menus de chemin de fichier lorsque le tableau de bord s’exécute sur une passerelle distante. Le lien s’ouvre avec vos propres identifiants SSH.",
+        "remote_editor_off": "Désactivé",
+        "remote_editor_host": "Hôte SSH",
+        "remote_editor_host_desc": "Nom d’hôte ou alias ~/.ssh/config sur lequel la passerelle s’exécute.",
+        "remote_editor_save_failed": "Impossible d’enregistrer le choix de l’éditeur.",
+        "remote_editor_host_save_failed": "Impossible d’enregistrer l’hôte SSH."
       },
       "importPanel": {
         "agent_data": "Données de l'agent",

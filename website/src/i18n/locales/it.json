@@ -8582,7 +8582,8 @@
       "copy_path": "Copia percorso",
       "path_copied": "Percorso copiato",
       "reveal_blocked": "Questo percorso è protetto e non può essere aperto.",
-      "reveal_failed": "Impossibile aprire questo percorso sul computer che esegue {{productName}}."
+      "reveal_failed": "Impossibile aprire questo percorso sul computer che esegue {{productName}}.",
+      "open_in_remote_editor": "Apri in {{editor}}"
     },
     "pendingQuestionCard": {
       "answer_failed": "Impossibile inviare la tua risposta. L’agente è ancora in attesa, quindi riprova.",
@@ -13806,7 +13807,15 @@
         "zoom_level": "Livello di zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Impossibile caricare le impostazioni di visualizzazione salvate. Le impostazioni di shell, sessioni recenti e completamento dei comandi non sono disponibili finché non vengono caricate.",
-        "recent_tint_save_failed": "Impossibile salvare il numero di sessioni recenti evidenziate."
+        "recent_tint_save_failed": "Impossibile salvare il numero di sessioni recenti evidenziate.",
+        "remote_editor": "Editor remoto",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Apri file remoti nel tuo editor locale tramite la tua sessione SSH. Mostrato nei menu del percorso file quando la dashboard è in esecuzione su un gateway remoto. Il link si apre con le tue credenziali SSH.",
+        "remote_editor_off": "Disattivato",
+        "remote_editor_host": "Host SSH",
+        "remote_editor_host_desc": "Nome host o alias ~/.ssh/config su cui è in esecuzione il gateway.",
+        "remote_editor_save_failed": "Impossibile salvare la scelta dell’editor.",
+        "remote_editor_host_save_failed": "Impossibile salvare l’host SSH."
       },
       "importPanel": {
         "agent_data": "Dati dell'agente",

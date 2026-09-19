@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { screen, fireEvent, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { renderWithProviders } from './helpers'
-import FilePathMenu from '../components/FilePathMenu'
+import FilePathMenu, { remoteEditorUrl } from '../components/FilePathMenu'
 import {
   consumeChatHandoff,
   installSoftNavigate,
@@ -12,7 +12,7 @@ import {
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 
-const brandingEnv = vi.hoisted(() => ({ directLocal: true }))
+const brandingEnv = vi.hoisted(() => ({ directLocal: true, remoteEditor: { editor: '', host: '' } }))
 const platformEnv = vi.hoisted(() => ({ value: 'other' as 'other' | 'darwin' | 'windows' }))
 const editorEnv = vi.hoisted(() => ({
   enabled: false,
@@ -20,7 +20,7 @@ const editorEnv = vi.hoisted(() => ({
 }))
 
 vi.mock('../hooks/useBranding', () => ({
-  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal }),
+  useBranding: () => ({ botName: 'Test', avatar: '', directLocal: brandingEnv.directLocal, remoteEditor: brandingEnv.remoteEditor }),
 }))
 
 // The reveal label is platform-aware (names Finder / File Explorer on the
@@ -61,6 +61,7 @@ import { copyToClipboard } from '../utils/clipboard'
 beforeEach(() => {
   vi.clearAllMocks()
   brandingEnv.directLocal = true
+  brandingEnv.remoteEditor = { editor: '', host: '' }
   platformEnv.value = 'other'
   editorEnv.enabled = false
   editorEnv.open.mockResolvedValue({ ok: true })
@@ -74,6 +75,7 @@ beforeEach(() => {
 
 afterEach(() => {
   brandingEnv.directLocal = true
+  brandingEnv.remoteEditor = { editor: '', host: '' }
   platformEnv.value = 'other'
   editorEnv.enabled = false
   __resetNavSeamForTests()
@@ -432,9 +434,153 @@ describe('FilePathMenu', () => {
   })
 })
 
+// ── Remote-editor row (remote gateway → local editor over SSH) ───────────────
+
+describe('FilePathMenu remote-editor row', () => {
+  const REMOTE_PATH = '/home/user/.kiro/crew/config.json'
+
+  beforeEach(() => {
+    brandingEnv.directLocal = false
+    brandingEnv.remoteEditor = { editor: 'vscode', host: 'dev-dsk.example.com' }
+  })
+
+  it('shows "Open in VS Code" on a remote session with editor + host set', async () => {
+    renderWithProviders(
+      <FilePathMenu filePath={REMOTE_PATH}>
+        <span data-testid="trigger">config.json</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    await waitFor(() => expect(screen.getByText('Open in VS Code')).toBeInTheDocument())
+  })
+
+  it('labels the row per configured editor', async () => {
+    brandingEnv.remoteEditor = { editor: 'kiro', host: 'h.example.com' }
+    renderWithProviders(
+      <FilePathMenu filePath={REMOTE_PATH}>
+        <span data-testid="trigger">config.json</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    await waitFor(() => expect(screen.getByText('Open in Kiro')).toBeInTheDocument())
+  })
+
+  it('is hidden on a direct-local session even when configured', async () => {
+    brandingEnv.directLocal = true
+    renderWithProviders(
+      <FilePathMenu filePath={REMOTE_PATH}>
+        <span data-testid="trigger">config.json</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    await waitFor(() => expect(screen.getByText('Copy path')).toBeInTheDocument())
+    expect(screen.queryByText('Open in VS Code')).not.toBeInTheDocument()
+  })
+
+  it('is hidden when no editor is configured (feature off)', async () => {
+    brandingEnv.remoteEditor = { editor: '', host: 'h.example.com' }
+    renderWithProviders(
+      <FilePathMenu filePath={REMOTE_PATH}>
+        <span data-testid="trigger">config.json</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    await waitFor(() => expect(screen.getByText('Copy path')).toBeInTheDocument())
+    expect(screen.queryByText(/^Open in /)).not.toBeInTheDocument()
+  })
+
+  it('is hidden when no host is configured (no malformed link)', async () => {
+    brandingEnv.remoteEditor = { editor: 'vscode', host: '' }
+    renderWithProviders(
+      <FilePathMenu filePath={REMOTE_PATH}>
+        <span data-testid="trigger">config.json</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    await waitFor(() => expect(screen.getByText('Copy path')).toBeInTheDocument())
+    expect(screen.queryByText('Open in VS Code')).not.toBeInTheDocument()
+  })
+
+  it('is shown for a directory (opens as a remote workspace)', async () => {
+    renderWithProviders(
+      <FilePathMenu filePath="/home/user/.kiro/crew" kind="dir">
+        <span data-testid="trigger">crew</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    // Unlike "Open with default app", the remote-editor row is NOT gated on kind.
+    await waitFor(() => expect(screen.getByText('Open in VS Code')).toBeInTheDocument())
+  })
+
+  it('routes the vscode-remote URL through window.location on select', async () => {
+    renderWithProviders(
+      <FilePathMenu filePath={REMOTE_PATH}>
+        <span data-testid="trigger">config.json</span>
+      </FilePathMenu>,
+    )
+    rightClick(screen.getByTestId('trigger'))
+    const row = await screen.findByRole('menuitem', { name: 'Open in VS Code' })
+    // Stub window.location AFTER render so the router is unaffected; capture the
+    // href the row assigns (openRemoteEditor uses window.location.href, not an
+    // <a> the markdown link rewriter would rewrite — see issue #9925).
+    const orig = Object.getOwnPropertyDescriptor(window, 'location')!
+    let assigned = ''
+    Object.defineProperty(window, 'location', {
+      configurable: true,
+      value: { get href() { return '' }, set href(v: string) { assigned = v } },
+    })
+    try {
+      fireEvent.click(row)
+    } finally {
+      Object.defineProperty(window, 'location', orig)
+    }
+    expect(assigned).toBe(
+      'vscode://vscode-remote/ssh-remote+dev-dsk.example.com/home/user/.kiro/crew/config.json',
+    )
+  })
+})
+
+// ── remoteEditorUrl (pure URL builder) ───────────────────────────────────────
+
+describe('remoteEditorUrl', () => {
+  it('builds the vscode-remote authority URL', () => {
+    expect(remoteEditorUrl('vscode', 'host.example.com', '/a/b.txt')).toBe(
+      'vscode://vscode-remote/ssh-remote+host.example.com/a/b.txt',
+    )
+  })
+
+  it('uses each editor id as its scheme', () => {
+    expect(remoteEditorUrl('kiro', 'h', '/x')).toBe('kiro://vscode-remote/ssh-remote+h/x')
+  })
+
+  it('percent-encodes path segments but keeps the separators', () => {
+    // A space and a `#` in a filename must not break out of the path.
+    expect(remoteEditorUrl('vscode', 'h', '/a/my file #1.md')).toBe(
+      'vscode://vscode-remote/ssh-remote+h/a/my%20file%20%231.md',
+    )
+  })
+
+  it('returns null for an unknown or empty editor (cannot mint an arbitrary scheme)', () => {
+    expect(remoteEditorUrl('emacs', 'h', '/x')).toBeNull()
+    expect(remoteEditorUrl('', 'h', '/x')).toBeNull()
+  })
+
+  it('returns null when host or path is empty', () => {
+    expect(remoteEditorUrl('vscode', '', '/x')).toBeNull()
+    expect(remoteEditorUrl('vscode', 'h', '')).toBeNull()
+  })
+
+  it('rejects non-absolute paths (a relative path would graft onto the SSH host)', () => {
+    // `prod` + `-backup/etc/config.json` must NOT become authority `prod-backup`.
+    expect(remoteEditorUrl('vscode', 'prod', '-backup/etc/config.json')).toBeNull()
+    expect(remoteEditorUrl('vscode', 'h', 'relative/path.txt')).toBeNull()
+    expect(remoteEditorUrl('vscode', 'h', './x')).toBeNull()
+    expect(remoteEditorUrl('vscode', 'h', '~/x')).toBeNull()
+  })
+})
+
 // ── Item-row aria labels ─────────────────────────────────────────────────────
 // The render/hide/open-click/copy-click behaviour of the item rows is already
-// covered by the `describe('FilePathMenu')` suite above through the same public
 // wrapper (FilePathMenuItems is a private building block with no other entry
 // point), so those cases are not repeated here. Only the accessible-name
 // assertion — which the suite above does not make — is kept.

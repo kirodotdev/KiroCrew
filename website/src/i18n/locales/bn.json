@@ -8467,7 +8467,8 @@
       "copy_path": "পাথ কপি করুন",
       "path_copied": "পাথ কপি করা হয়েছে",
       "reveal_blocked": "এই পাথটি সুরক্ষিত এবং খোলা যাবে না।",
-      "reveal_failed": "{{productName}} চালানো মেশিনে এই পাথটি খোলা যায়নি।"
+      "reveal_failed": "{{productName}} চালানো মেশিনে এই পাথটি খোলা যায়নি।",
+      "open_in_remote_editor": "{{editor}}-এ খুলুন"
     },
     "pendingQuestionCard": {
       "answer_failed": "আপনার উত্তর পাঠানো যায়নি। এজেন্ট এখনও অপেক্ষা করছে, তাই আবার চেষ্টা করুন।",
@@ -13624,7 +13625,15 @@
         "zoom_level": "জুম লেভেল",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "সংরক্ষিত ডিসপ্লে সেটিং লোড করা যায়নি। লোড হওয়া পর্যন্ত শেল, সাম্প্রতিক সেশন ও কমান্ড সম্পূর্ণকরণের সেটিংগুলো অনুপলব্ধ।",
-        "recent_tint_save_failed": "সাম্প্রতিক সেশন হাইলাইটের সংখ্যা সংরক্ষণ করা যায়নি।"
+        "recent_tint_save_failed": "সাম্প্রতিক সেশন হাইলাইটের সংখ্যা সংরক্ষণ করা যায়নি।",
+        "remote_editor": "রিমোট এডিটর",
+        "remote_editor_editor": "এডিটর",
+        "remote_editor_editor_desc": "আপনার নিজের SSH সেশনের মাধ্যমে আপনার লোকাল এডিটরে রিমোট ফাইল খুলুন। ড্যাশবোর্ড কোনো রিমোট গেটওয়েতে চললে এটি ফাইল-পাথ মেনুতে দেখা যায়। লিঙ্কটি আপনার নিজের SSH ক্রেডেনশিয়ালের মাধ্যমে খোলে।",
+        "remote_editor_off": "বন্ধ",
+        "remote_editor_host": "SSH হোস্ট",
+        "remote_editor_host_desc": "গেটওয়ে যে হোস্টনেম বা ~/.ssh/config উপনামে চলে।",
+        "remote_editor_save_failed": "এডিটরের নির্বাচন সংরক্ষণ করা যায়নি।",
+        "remote_editor_host_save_failed": "SSH হোস্ট সংরক্ষণ করা যায়নি।"
       },
       "importPanel": {
         "agent_data": "এজেন্ট ডেটা",

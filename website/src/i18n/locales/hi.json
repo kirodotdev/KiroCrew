@@ -8467,7 +8467,8 @@
       "copy_path": "पथ कॉपी करें",
       "path_copied": "पथ कॉपी किया गया",
       "reveal_blocked": "यह पथ सुरक्षित है और इसे खोला नहीं जा सकता।",
-      "reveal_failed": "{{productName}} चलाने वाली मशीन पर यह पथ नहीं खोला जा सका।"
+      "reveal_failed": "{{productName}} चलाने वाली मशीन पर यह पथ नहीं खोला जा सका।",
+      "open_in_remote_editor": "{{editor}} में खोलें"
     },
     "pendingQuestionCard": {
       "answer_failed": "तुम्हारा उत्तर भेजा नहीं जा सका। एजेंट अभी भी प्रतीक्षा कर रहा है, इसलिए फिर से कोशिश करो।",
@@ -13624,7 +13625,15 @@
         "zoom_level": "ज़ूम स्तर",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "सहेजी गई डिस्प्ले सेटिंग लोड नहीं हो सकीं। लोड होने तक शेल, हाल के सत्र और कमांड पूर्णता की सेटिंग उपलब्ध नहीं हैं।",
-        "recent_tint_save_failed": "हाल के सत्रों की हाइलाइट संख्या सहेजी नहीं जा सकी।"
+        "recent_tint_save_failed": "हाल के सत्रों की हाइलाइट संख्या सहेजी नहीं जा सकी।",
+        "remote_editor": "रिमोट एडिटर",
+        "remote_editor_editor": "एडिटर",
+        "remote_editor_editor_desc": "अपने स्वयं के SSH सत्र के माध्यम से अपने लोकल एडिटर में रिमोट फ़ाइलें खोलें। जब डैशबोर्ड किसी रिमोट गेटवे पर चलता है, तब यह फ़ाइल-पथ मेन्यू में दिखाई देता है। यह लिंक अपने स्वयं के SSH क्रेडेंशियल के माध्यम से खुलता है।",
+        "remote_editor_off": "बंद",
+        "remote_editor_host": "SSH होस्ट",
+        "remote_editor_host_desc": "वह होस्टनाम या ~/.ssh/config उपनाम जिस पर गेटवे चलता है।",
+        "remote_editor_save_failed": "एडिटर का चयन सहेजा नहीं जा सका।",
+        "remote_editor_host_save_failed": "SSH होस्ट सहेजा नहीं जा सका।"
       },
       "importPanel": {
         "agent_data": "एजेंट डेटा",

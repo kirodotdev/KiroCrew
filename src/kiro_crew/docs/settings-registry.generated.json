@@ -937,6 +937,14 @@
       "description": "How the session color is applied to the row."
     },
     {
+      "id": "display.editor",
+      "label": "Editor",
+      "tab": "display",
+      "route": "/settings/display?highlight=key%3Adashboard.remote_editor.editor",
+      "description": "Open remote files in your local editor over your own SSH session. Shown in the file-path menus when the dashboard runs on a remote gateway. The link opens over your own SSH credentials.",
+      "configKey": "dashboard.remote_editor.editor"
+    },
+    {
       "id": "display.font",
       "label": "Font",
       "tab": "display",
@@ -998,6 +1006,14 @@
       "tab": "display",
       "route": "/settings/display?highlight=display.palette",
       "description": "Choose a color palette for your sidebar sessions."
+    },
+    {
+      "id": "display.ssh-host",
+      "label": "SSH host",
+      "tab": "display",
+      "route": "/settings/display?highlight=key%3Adashboard.remote_editor.host",
+      "description": "Hostname or ~/.ssh/config alias the gateway runs on.",
+      "configKey": "dashboard.remote_editor.host"
     },
     {
       "id": "display.theme",

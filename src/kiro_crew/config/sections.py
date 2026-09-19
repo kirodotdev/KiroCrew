@@ -3376,6 +3376,62 @@ class DashboardConfig:
             },
         ),
     )
+    remote_editor: dict = field(
+        default_factory=lambda: {"editor": "", "host": ""},
+        metadata=_meta(
+            "Remote editor",
+            "Open a file from the dashboard's file-path menus in your LOCAL "
+            "editor over your own SSH session, for a gateway running on a "
+            "remote/headless host. Off by default.",
+            # Sub-keys flatten into first-class schema entries
+            # (dashboard.remote_editor.<key>) the same way dashboard.terminal.*
+            # does, so a Settings control can reference them by configKey and
+            # `kirocrew config set` accepts them. The field stays a plain dict so
+            # a key a future release adds still round-trips via
+            # additionalProperties.
+            properties={
+                # An ENUM, never a free string: the value is interpolated into a
+                # clickable custom-scheme URL in the browser, so an arbitrary
+                # string would let a config write mint a link to any registered
+                # protocol handler. "" = off (the default). A value outside this
+                # set is kept by the loader (it is three segments deep, past the
+                # repair depth cap) but the branding endpoint clamps an unknown
+                # editor back to "" before it can reach a link.
+                "editor": {
+                    "type": "string",
+                    "enum": ["", "vscode", "kiro"],
+                    "default": "",
+                    "x-meta": {
+                        "label": "Editor",
+                        "help": (
+                            "Which local editor to open remote files in. VS Code "
+                            "and Kiro both use the vscode-remote SSH authority. "
+                            "Empty disables the menu row."
+                        ),
+                    },
+                },
+                # The SSH authority the generated link connects over: an FQDN or
+                # the user's ~/.ssh/config alias. Charset-restricted so it cannot
+                # inject path/query/authority structure into the URL the browser
+                # builds around it (the host is placed straight after
+                # `ssh-remote+`).
+                "host": {
+                    "type": "string",
+                    "default": "",
+                    "maxLength": 256,
+                    "pattern": r"^[A-Za-z0-9._@+-]*$",
+                    "x-meta": {
+                        "label": "SSH host",
+                        "help": (
+                            "SSH authority the gateway runs on — a hostname or a "
+                            "~/.ssh/config alias. Used verbatim after "
+                            "ssh-remote+ in the editor link."
+                        ),
+                    },
+                },
+            },
+        ),
+    )
     default_project: str = field(
         default="",
         metadata=_meta(

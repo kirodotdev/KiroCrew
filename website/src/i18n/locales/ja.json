@@ -8352,7 +8352,8 @@
       "copy_path": "パスをコピー",
       "path_copied": "パスをコピーしました",
       "reveal_blocked": "このパスは保護されているため開けません。",
-      "reveal_failed": "{{productName}} を実行しているマシンでこのパスを開けませんでした。"
+      "reveal_failed": "{{productName}} を実行しているマシンでこのパスを開けませんでした。",
+      "open_in_remote_editor": "{{editor}} で開く"
     },
     "pendingQuestionCard": {
       "answer_failed": "回答を送信できませんでした。エージェントはまだ待機しているので、もう一度お試しください。",
@@ -13440,7 +13441,15 @@
         "zoom_level": "ズームレベル",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "保存された表示設定を読み込めませんでした。読み込まれるまで、シェル、最近のセッション、コマンド補完の設定は使用できません。",
-        "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。"
+        "recent_tint_save_failed": "最近のセッションのハイライト数を保存できませんでした。",
+        "remote_editor": "リモートエディター",
+        "remote_editor_editor": "エディター",
+        "remote_editor_editor_desc": "自分の SSH セッションを介して、ローカルのエディターでリモートのファイルを開きます。ダッシュボードがリモートのゲートウェイで動作しているとき、ファイルパスのメニューに表示されます。リンクは自分の SSH 認証情報を使って開きます。",
+        "remote_editor_off": "オフ",
+        "remote_editor_host": "SSH ホスト",
+        "remote_editor_host_desc": "ゲートウェイが動作しているホスト名、または ~/.ssh/config のエイリアス。",
+        "remote_editor_save_failed": "エディターの選択を保存できませんでした。",
+        "remote_editor_host_save_failed": "SSH ホストを保存できませんでした。"
       },
       "importPanel": {
         "agent_data": "エージェントデータ",

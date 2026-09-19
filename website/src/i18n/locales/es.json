@@ -8582,7 +8582,8 @@
       "copy_path": "Copiar ruta",
       "path_copied": "Ruta copiada",
       "reveal_blocked": "Esta ruta está protegida y no se puede abrir.",
-      "reveal_failed": "No se pudo abrir esta ruta en el equipo donde se ejecuta {{productName}}."
+      "reveal_failed": "No se pudo abrir esta ruta en el equipo donde se ejecuta {{productName}}.",
+      "open_in_remote_editor": "Abrir en {{editor}}"
     },
     "pendingQuestionCard": {
       "answer_failed": "No se pudo enviar tu respuesta. El agente sigue esperando, así que inténtalo de nuevo.",
@@ -13807,7 +13808,15 @@
         "zoom_level": "Nivel de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "No se pudieron cargar los ajustes de pantalla guardados. Los ajustes de shell, sesiones recientes y completado de comandos no están disponibles hasta que se carguen.",
-        "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas."
+        "recent_tint_save_failed": "No se pudo guardar el número de sesiones recientes resaltadas.",
+        "remote_editor": "Editor remoto",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Abre archivos remotos en tu editor local a través de tu propia sesión SSH. Se muestra en los menús de ruta de archivo cuando el panel se ejecuta en una puerta de enlace remota. El enlace se abre con tus propias credenciales SSH.",
+        "remote_editor_off": "Desactivado",
+        "remote_editor_host": "Host SSH",
+        "remote_editor_host_desc": "Nombre de host o alias de ~/.ssh/config en el que se ejecuta la puerta de enlace.",
+        "remote_editor_save_failed": "No se pudo guardar la elección del editor.",
+        "remote_editor_host_save_failed": "No se pudo guardar el host SSH."
       },
       "importPanel": {
         "agent_data": "Datos del agente",

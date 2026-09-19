@@ -523,6 +523,26 @@ class TestDeclaredDictProperties:
         validate_config_data(data)
         assert data["dashboard"]["terminal"]["completion"] == {"enabled": False, "commands": ["gh"]}
 
+    def test_remote_editor_keys_are_first_class_entries(self) -> None:
+        # Both Settings controls reference these by configKey, and `kirocrew
+        # config set` consults SCHEMA_REGISTRY, so they must flatten.
+        index = {e.path: e for e in SCHEMA_REGISTRY}
+        editor = index.get("dashboard.remote_editor.editor")
+        host = index.get("dashboard.remote_editor.host")
+        assert editor is not None and editor.type == "string"
+        assert editor.label == "Editor"
+        assert host is not None and host.type == "string"
+        assert host.label == "SSH host"
+
+    def test_remote_editor_schema_carries_enum_and_pattern(self) -> None:
+        # The enum is the security boundary (an open string could mint a link to
+        # any protocol handler); the host pattern blocks URL-structure injection.
+        node = JSON_SCHEMA["properties"]["dashboard"]["properties"]["remote_editor"]
+        assert node.get("additionalProperties") is True
+        assert node["properties"]["editor"]["enum"] == ["", "vscode", "kiro"]
+        assert node["properties"]["host"]["pattern"] == r"^[A-Za-z0-9._@+-]*$"
+        assert node["properties"]["host"]["maxLength"] == 256
+
 
 class TestAgentWorkspaceBindingsSchema:
     """Unit tests for schema registry entries added by Phase 2 dataclasses.

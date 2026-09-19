@@ -1458,6 +1458,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "occurrence": 1
   },
   {
+    "id": "display.editor",
+    "label": "Editor",
+    "labelKey": "pages.settings.displayPanel.remote_editor_editor",
+    "description": "Open remote files in your local editor over your own SSH session. Shown in the file-path menus when the dashboard runs on a remote gateway. The link opens over your own SSH credentials.",
+    "tab": "display",
+    "type": "select",
+    "occurrence": 1,
+    "configKey": "dashboard.remote_editor.editor"
+  },
+  {
     "id": "display.font",
     "label": "Font",
     "labelKey": "pages.settings.displayPanel.terminal_font_family",
@@ -1537,6 +1547,16 @@ export const SETTINGS_REGISTRY: SettingEntry[] =
     "tab": "display",
     "type": "buttonGroup",
     "occurrence": 1
+  },
+  {
+    "id": "display.ssh-host",
+    "label": "SSH host",
+    "labelKey": "pages.settings.displayPanel.remote_editor_host",
+    "description": "Hostname or ~/.ssh/config alias the gateway runs on.",
+    "tab": "display",
+    "type": "input",
+    "occurrence": 1,
+    "configKey": "dashboard.remote_editor.host"
   },
   {
     "id": "display.theme",

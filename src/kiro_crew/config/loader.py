@@ -3293,6 +3293,11 @@ def _build_dashboard_config(_degraded: set[str], dashboard_data: dict) -> Dashbo
         ),
         tail_fork_enabled=dashboard_data.get("tail_fork_enabled", False),
         terminal=dashboard_data.get("terminal", {"enabled": True}),
+        remote_editor=(
+            dashboard_data.get("remote_editor", {"editor": "", "host": ""})
+            if isinstance(dashboard_data.get("remote_editor"), dict)
+            else {"editor": "", "host": ""}
+        ),
         default_project=dashboard_data.get("default_project", ""),
         theme_mode=dashboard_data.get("theme_mode", ""),
         sso_login_flags=str(dashboard_data.get("sso_login_flags", "")),

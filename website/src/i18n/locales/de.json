@@ -8467,7 +8467,8 @@
       "copy_path": "Pfad kopieren",
       "path_copied": "Pfad kopiert",
       "reveal_blocked": "Dieser Pfad ist geschützt und kann nicht geöffnet werden.",
-      "reveal_failed": "Dieser Pfad konnte auf dem Computer, auf dem {{productName}} läuft, nicht geöffnet werden."
+      "reveal_failed": "Dieser Pfad konnte auf dem Computer, auf dem {{productName}} läuft, nicht geöffnet werden.",
+      "open_in_remote_editor": "In {{editor}} öffnen"
     },
     "pendingQuestionCard": {
       "answer_failed": "Ihre Antwort konnte nicht gesendet werden. Der Agent wartet noch; bitte erneut versuchen.",
@@ -13623,7 +13624,15 @@
         "zoom_level": "Zoomstufe",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Die gespeicherten Anzeigeeinstellungen konnten nicht geladen werden. Die Einstellungen für Shell, letzte Sitzungen und Befehlsvervollständigung sind nicht verfügbar, bis sie geladen sind.",
-        "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden."
+        "recent_tint_save_failed": "Die Anzahl hervorgehobener letzter Sitzungen konnte nicht gespeichert werden.",
+        "remote_editor": "Remote-Editor",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Öffne entfernte Dateien in deinem lokalen Editor über deine eigene SSH-Sitzung. Wird in den Dateipfad-Menüs angezeigt, wenn das Dashboard auf einem entfernten Gateway läuft. Der Link wird über deine eigenen SSH-Anmeldedaten geöffnet.",
+        "remote_editor_off": "Aus",
+        "remote_editor_host": "SSH-Host",
+        "remote_editor_host_desc": "Hostname oder ~/.ssh/config-Alias, auf dem das Gateway läuft.",
+        "remote_editor_save_failed": "Editor-Auswahl konnte nicht gespeichert werden.",
+        "remote_editor_host_save_failed": "SSH-Host konnte nicht gespeichert werden."
       },
       "importPanel": {
         "agent_data": "Agenten-Daten",

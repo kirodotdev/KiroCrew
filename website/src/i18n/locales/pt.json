@@ -8582,7 +8582,8 @@
       "copy_path": "Copiar caminho",
       "path_copied": "Caminho copiado",
       "reveal_blocked": "Este caminho está protegido e não pode ser aberto.",
-      "reveal_failed": "Não foi possível abrir este caminho na máquina que executa o {{productName}}."
+      "reveal_failed": "Não foi possível abrir este caminho na máquina que executa o {{productName}}.",
+      "open_in_remote_editor": "Abrir no {{editor}}"
     },
     "pendingQuestionCard": {
       "answer_failed": "Não foi possível enviar sua resposta. O agente ainda está aguardando, então tente novamente.",
@@ -13806,7 +13807,15 @@
         "zoom_level": "Nível de zoom",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "Não foi possível carregar as configurações de exibição salvas. As configurações de shell, sessões recentes e conclusão de comandos ficam indisponíveis até que elas carreguem.",
-        "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas."
+        "recent_tint_save_failed": "Não foi possível salvar a quantidade de sessões recentes destacadas.",
+        "remote_editor": "Editor remoto",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Abra arquivos remotos no seu editor local pela sua própria sessão SSH. Exibido nos menus de caminho de arquivo quando o painel é executado em um gateway remoto. O link é aberto com suas próprias credenciais SSH.",
+        "remote_editor_off": "Desativado",
+        "remote_editor_host": "Host SSH",
+        "remote_editor_host_desc": "Nome de host ou alias de ~/.ssh/config em que o gateway é executado.",
+        "remote_editor_save_failed": "Não foi possível salvar a escolha do editor.",
+        "remote_editor_host_save_failed": "Não foi possível salvar o host SSH."
       },
       "importPanel": {
         "agent_data": "Dados do agente",

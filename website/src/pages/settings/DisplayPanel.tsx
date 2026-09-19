@@ -36,6 +36,7 @@ import { isFontInstalled, monospaceFontStack } from '../../utils/fontDetect'
 import { i18nT } from '../../i18n/t'
 import { ThemeDroppedRulesNotice } from './ThemeDroppedRulesNotice'
 import ErrorNotice from '../../components/ErrorNotice'
+import { REMOTE_EDITORS } from '../../components/FilePathMenu'
 import { useImeGuard } from '../../hooks/useImeGuard'
 /**
  * Lightweight inline spinner (no modal / progress bar — matches the "status,
@@ -147,6 +148,7 @@ export function DisplayPanel() {
     dashboard?: {
       recent_tint_count?: number
       terminal?: { shell?: string; completion?: { enabled?: boolean } }
+      remote_editor?: { editor?: string; host?: string }
     }
   }
   const mcQ = useQuery<KirocrewCfg>({
@@ -255,6 +257,80 @@ export function DisplayPanel() {
     onFailure: () => setCompletionError(i18nT('pages.settings.displayPanel.terminal_completion_save_failed')),
     onSupersede: () => setCompletionError(null),
   }))
+
+  // ── Remote editor (dashboard.remote_editor.{editor,host}) ──
+  // Open a remote gateway's files in the user's LOCAL editor over their own SSH
+  // session. Persisted server-side because the branding endpoint reads it to
+  // gate the file-path menus' "Open in <editor>" row; the write rides SSH, so no
+  // new write surface is added here. Both fields use the same per-path overlay
+  // as the terminal fields above so a slow save cannot roll back its sibling.
+  const serverEditor = mcQ.data?.dashboard?.remote_editor?.editor ?? ''
+  const shownEditor = overlay.shown('dashboard.remote_editor.editor', serverEditor)
+  const [editorError, setEditorError] = useState<string | null>(null)
+  const editorOpts = overlay.mutationOpts<string>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: string) => api.patchConfig('dashboard.remote_editor.editor', value),
+    path: () => 'dashboard.remote_editor.editor',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.remote_editor.editor', value),
+    onFailure: () => setEditorError(i18nT('pages.settings.displayPanel.remote_editor_save_failed')),
+    onSupersede: () => setEditorError(null),
+  })
+  const editorMut = useMutation({
+    ...editorOpts,
+    // Also refetch ['branding']: that endpoint reads dashboard.remote_editor to
+    // gate the file-path menus' "Open in <editor>" row, so without this an open
+    // menu keeps the stale editor until a reload. Runs alongside the
+    // ['kirocrewConfig'] invalidation the overlay's onSuccess already returns.
+    onSuccess: (data: unknown, value: string, token: number) =>
+      Promise.all([
+        editorOpts.onSuccess(data, value, token),
+        qc.invalidateQueries({ queryKey: ['branding'] }),
+      ]),
+  })
+
+  // Host is free text committed on blur, mirroring the shell field: an FQDN or
+  // ~/.ssh/config alias the browser cannot enumerate. The backend enforces the
+  // charset, so a rejected value stays in the field (no draft hand-off) for the
+  // user to fix.
+  const serverHost = mcQ.data?.dashboard?.remote_editor?.host ?? ''
+  const shownHost = overlay.shown('dashboard.remote_editor.host', serverHost)
+  const [hostDraft, setHostDraft] = useState<string | null>(null)
+  const [hostError, setHostError] = useState<string | null>(null)
+  const hostOpts = overlay.mutationOpts<string>({
+    queryKey: ['kirocrewConfig'],
+    mutationFn: (value: string) => api.patchConfig('dashboard.remote_editor.host', value),
+    path: () => 'dashboard.remote_editor.host',
+    displayValue: v => v,
+    applyToCache: (cached, value) =>
+      setConfigPathValue(cached as KirocrewCfg, 'dashboard.remote_editor.host', value),
+    onFailure: () => setHostError(i18nT('pages.settings.displayPanel.remote_editor_host_save_failed')),
+    onSupersede: () => setHostError(null),
+  })
+  const hostMut = useMutation({
+    ...hostOpts,
+    onSuccess: (data: unknown, value: string, token: number) => {
+      setHostDraft(null)
+      setHostError(null)
+      // Also refetch ['branding']: the host feeds the "Open in <editor>" link
+      // the same way the editor does, alongside the overlay's ['kirocrewConfig'].
+      return Promise.all([
+        hostOpts.onSuccess(data, value, token),
+        qc.invalidateQueries({ queryKey: ['branding'] }),
+      ])
+    },
+  })
+  const commitHost = () => {
+    if (hostDraft === null) return
+    const value = hostDraft.trim()
+    if (value === shownHost) {
+      setHostDraft(null)
+      setHostError(null)
+      return
+    }
+    hostMut.mutate(value)
+  }
 
   // ── Install theme (Level 0) from a local folder or a GitHub repo ──
   const [installType, setInstallType] = useState<'github' | 'local'>('github')
@@ -459,8 +535,56 @@ export function DisplayPanel() {
         </SettingsCard>
       </SettingsSection>
 
-      <SettingsSection title={i18nT('pages.settings.displayPanel.theme')}>
+      {/* Remote editor: open a remote gateway's files in the user's LOCAL editor
+          over their own SSH session. Sits next to Terminal because both persist
+          gateway-host-scoped preferences server-side. When on (an editor picked)
+          and the session is remote, the file-path menus grow an "Open in
+          <editor>" row that builds a `<scheme>://vscode-remote/ssh-remote+<host>`
+          link — no new write surface: the edit rides the user's SSH creds. */}
+      <SettingsSection title={i18nT('pages.settings.displayPanel.remote_editor')}>
         <SettingsCard index={3}>
+          <SettingsSelect
+            label={i18nT('pages.settings.displayPanel.remote_editor_editor')}
+            description={i18nT('pages.settings.displayPanel.remote_editor_editor_desc')}
+            value={shownEditor}
+            options={['', 'vscode', 'kiro']}
+            optionLabels={[
+              i18nT('pages.settings.displayPanel.remote_editor_off'),
+              REMOTE_EDITORS.vscode.label,
+              REMOTE_EDITORS.kiro.label,
+            ]}
+            onChange={v => editorMut.mutate(v)}
+            disabled={!mcQ.isSuccess}
+            configKey="dashboard.remote_editor.editor"
+          />
+          {/* No hand-off: the editor select saves on change (no draft of its
+              own), but `hostDraft` below and the theme `installValue` further
+              down this panel are unsaved local state the hand-off's navigation
+              would unmount and discard. Same rule as the completion notice. */}
+          <ErrorNotice message={editorError} variant="inline" />
+          {/* Free text with commit-on-blur, mirroring the shell field: the SSH
+              authority cannot be enumerated from the browser, and the backend
+              validates the charset before persisting. No placeholder — a raw
+              hostname is Latin the en-XA render gate flags, and it is not
+              translatable copy; the description carries the guidance. */}
+          <SettingsInput
+            label={i18nT('pages.settings.displayPanel.remote_editor_host')}
+            description={i18nT('pages.settings.displayPanel.remote_editor_host_desc')}
+            value={hostDraft ?? shownHost}
+            onChange={setHostDraft}
+            onBlur={commitHost}
+            disabled={hostMut.isPending || !mcQ.isSuccess}
+            configKey="dashboard.remote_editor.host"
+            aria-label={i18nT('pages.settings.displayPanel.remote_editor_host')}
+          />
+          {/* No hand-off: hostDraft is uncommitted — a rejected host stays in the
+              field for the user to fix, and a hand-off would navigate away. */}
+          <ErrorNotice message={hostError} variant="inline" />
+        </SettingsCard>
+      </SettingsSection>
+
+      <SettingsSection title={i18nT('pages.settings.displayPanel.theme')}>
+        <SettingsCard index={4}>
           <div className="flex items-center gap-2">
             <div className="flex-1 min-w-0">
               <SettingsSelect label={i18nT('pages.settings.displayPanel.theme')} description={i18nT('pages.settings.displayPanel.select_a_theme_for_the_dashboard')} value={colorTheme}
@@ -571,7 +695,7 @@ export function DisplayPanel() {
 
       {/* Sidebar Colors */}
       <SettingsSection title={i18nT('pages.settings.displayPanel.sidebar_colors')}>
-        <SettingsCard index={4}>
+        <SettingsCard index={5}>
           <SettingsButtonGroup
             label={i18nT('pages.settings.displayPanel.palette')}
             description={i18nT('pages.settings.displayPanel.choose_a_color_palette_for_your_sidebar_sessions')}

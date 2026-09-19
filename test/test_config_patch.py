@@ -275,6 +275,89 @@ class TestTerminalCompletionEnabled:
             assert resp.status == 400
 
 
+# ── Remote editor (dashboard.remote_editor.{editor,host}) ─────────────────
+
+
+class TestRemoteEditor:
+    """Write gate for the remote-editor link config.
+
+    ``editor`` is an enum, not a free string, because the value is interpolated
+    into a clickable custom-scheme URL in the browser; ``host`` is charset-
+    restricted so it cannot inject URL structure. Both are three segments deep,
+    so this PATCH gate — not the load-time schema — is where a UI/CLI write is
+    actually enforced.
+    """
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("editor", ["", "vscode", "kiro"])
+    async def test_valid_editor_persists_nested(self, tmp_config, editor) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.remote_editor.editor", editor)
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["remote_editor"]["editor"] == editor
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("bad", ["emacs", "vim", "code", "VS Code", "vscode-insiders"])
+    async def test_invalid_editor_rejected(self, tmp_config, bad) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.remote_editor.editor", bad)
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_valid_host_persists_nested(self, tmp_config) -> None:
+        host = "dev-host.example.com"
+        async with TestClient(TestServer(_make_app())) as c:
+            resp = await _patch(c, "dashboard.remote_editor.host", host)
+            assert resp.status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["remote_editor"]["host"] == host
+
+    @pytest.mark.asyncio
+    async def test_empty_host_clears(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.remote_editor.host", "")).status == 200
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "bad",
+        [
+            "bad/host",  # path separator
+            "host:2222",  # port colon
+            "a host",  # whitespace
+            "http://evil",  # scheme structure
+            "host#frag",  # fragment
+            "host?q=1",  # query
+        ],
+    )
+    async def test_host_charset_rejected(self, tmp_config, bad) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.remote_editor.host", bad)).status == 400
+        # Nothing persisted for a refused host.
+        data = json.loads(tmp_config.read_text())
+        assert "host" not in data.get("dashboard", {}).get("remote_editor", {})
+
+    @pytest.mark.asyncio
+    async def test_host_overlong_rejected(self, tmp_config) -> None:
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.remote_editor.host", "a" * 257)).status == 400
+
+    @pytest.mark.asyncio
+    async def test_editor_and_host_nest_together(self, tmp_config) -> None:
+        # Two writes to the same sub-object must not clobber each other's key —
+        # the same nesting guarantee the terminal completion test pins.
+        async with TestClient(TestServer(_make_app())) as c:
+            assert (await _patch(c, "dashboard.remote_editor.editor", "vscode")).status == 200
+            assert (
+                await _patch(c, "dashboard.remote_editor.host", "host.example.com")
+            ).status == 200
+        data = json.loads(tmp_config.read_text())
+        assert data["dashboard"]["remote_editor"] == {
+            "editor": "vscode",
+            "host": "host.example.com",
+        }
+
+
 class TestPatchGeneral:
     @pytest.mark.asyncio
     async def test_unknown_field_returns_400(self, tmp_config) -> None:

@@ -8352,7 +8352,8 @@
       "copy_path": "复制路径",
       "path_copied": "路径已复制",
       "reveal_blocked": "此路径受保护，无法打开。",
-      "reveal_failed": "无法在运行 {{productName}} 的计算机上打开此路径。"
+      "reveal_failed": "无法在运行 {{productName}} 的计算机上打开此路径。",
+      "open_in_remote_editor": "在 {{editor}} 中打开"
     },
     "pendingQuestionCard": {
       "answer_failed": "无法发送你的回答。智能体仍在等待，请重试。",
@@ -13440,7 +13441,15 @@
         "zoom_level": "缩放级别",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "无法加载已保存的显示设置。加载完成前，Shell、最近会话和命令补全设置不可用。",
-        "recent_tint_save_failed": "无法保存最近会话的高亮数量。"
+        "recent_tint_save_failed": "无法保存最近会话的高亮数量。",
+        "remote_editor": "远程编辑器",
+        "remote_editor_editor": "编辑器",
+        "remote_editor_editor_desc": "通过你自己的 SSH 会话在本地编辑器中打开远程文件。当仪表板在远程网关上运行时，会显示在文件路径菜单中。链接通过你自己的 SSH 凭据打开。",
+        "remote_editor_off": "关闭",
+        "remote_editor_host": "SSH 主机",
+        "remote_editor_host_desc": "网关运行所在的主机名或 ~/.ssh/config 别名。",
+        "remote_editor_save_failed": "无法保存编辑器选择。",
+        "remote_editor_host_save_failed": "无法保存 SSH 主机。"
       },
       "importPanel": {
         "agent_data": "代理数据",

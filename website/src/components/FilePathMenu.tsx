@@ -31,7 +31,7 @@
  * row promise a launch it can never perform. Reveal still works on Windows.
  */
 import { type ReactNode, useCallback, useEffect, useId, useRef, useState } from 'react'
-import { ExternalLink, FolderOpen, Copy, Check, AlertCircle, PenLine } from 'lucide-react'
+import { ExternalLink, FolderOpen, Copy, Check, AlertCircle, PenLine, Code2 } from 'lucide-react'
 import {
   ContextMenu,
   ContextMenuTrigger,
@@ -169,6 +169,80 @@ export function useCanOpenFile(kind?: FilePathKind): boolean {
   return !!directLocal && kind !== 'dir' && gatewayPlatform !== 'windows'
 }
 
+/**
+ * The VS Code-family editors the "Open in <editor>" row can target. The id IS
+ * the URL scheme; each keeps the `vscode-remote` authority, so the link is
+ * `<scheme>://vscode-remote/ssh-remote+<host><path>`. `label` is the brand
+ * proper noun — passed to i18n as an interpolation var, never a catalog value,
+ * so it is displayed verbatim in every language.
+ *
+ * This map is also the frontend's own allowlist: `remoteEditorUrl` returns null
+ * for any editor id not a key here, so even a value the server-side clamp missed
+ * cannot mint a link to an arbitrary registered protocol handler.
+ */
+export const REMOTE_EDITORS: Record<string, { scheme: string; label: string }> = {
+  vscode: { scheme: 'vscode', label: 'VS Code' },
+  kiro: { scheme: 'kiro', label: 'Kiro' },
+}
+
+/**
+ * Build the remote-authority editor URL for `absPath`, or null when the feature
+ * is off (no editor), no host is set, or the editor id is unknown.
+ *
+ * The host goes verbatim after `ssh-remote+` — it is charset-restricted at the
+ * config boundary, so it cannot carry URL structure. Every path SEGMENT is
+ * percent-encoded (so a space, `#`, `?` or `%` in a filename cannot break out of
+ * the path) while the `/` separators stay literal, which is the shape a
+ * vscode-remote authority expects.
+ *
+ * Only ABSOLUTE paths are accepted: a relative path would glue its first
+ * segment directly onto the SSH authority (`prod` + `-backup/x` would target
+ * host `prod-backup`), so anything not starting with `/` returns null.
+ */
+export function remoteEditorUrl(editor: string, host: string, absPath: string): string | null {
+  const entry = REMOTE_EDITORS[editor]
+  if (!entry || !host || !absPath || !absPath.startsWith('/')) return null
+  const encodedPath = absPath.split('/').map(encodeURIComponent).join('/')
+  return `${entry.scheme}://vscode-remote/ssh-remote+${host}${encodedPath}`
+}
+
+/**
+ * The remote-editor menu action for `filePath`, or null when the row must not
+ * render. Shown ONLY on a remote session (`!directLocal` — a local gateway uses
+ * the OS open/reveal rows instead) with an editor and a host configured.
+ *
+ * Unlike the Open row it is deliberately NOT gated on `kind`: a vscode-remote
+ * authority opens a directory as a remote workspace, which is useful for editing
+ * a whole config tree. Shared by the three file-location surfaces (this menu,
+ * MarkdownPanel's overflow, FileViewer's overflow) so the row is gated and
+ * labelled identically everywhere, the same way `useCanOpenFile` /
+ * `useRevealLabel` are shared.
+ */
+export function useRemoteEditorOpen(filePath: string): { label: string; url: string } | null {
+  const { directLocal, remoteEditor } = useBranding()
+  // Remote gateways only; a local (or origin-unknown) session uses the OS
+  // open/reveal rows instead. `!remoteEditor` guards a branding value that has
+  // not loaded yet or a partial test stub that omits the field.
+  if (directLocal || !remoteEditor) return null
+  const url = remoteEditorUrl(remoteEditor.editor, remoteEditor.host, filePath)
+  if (!url) return null
+  return {
+    label: i18nT('components.filePathMenu.open_in_remote_editor', {
+      editor: REMOTE_EDITORS[remoteEditor.editor].label,
+    }),
+    url,
+  }
+}
+
+/**
+ * Route a custom-scheme editor link. Uses `window.location.href` (not an
+ * `<a href>` the chat-markdown link rewriter would rewrite — see #9925), which
+ * hands the URL to the OS scheme handler and leaves the dashboard page in place.
+ */
+export function openRemoteEditor(url: string): void {
+  window.location.href = url
+}
+
 // ── Menu-item building blocks ────────────────────────────────────────────────
 
 interface FilePathMenuItemsProps {
@@ -271,6 +345,10 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
   // The one shared Open gate (see useCanOpenFile) — the same predicate the two
   // overflow menus consume, so a Windows/dir target hides Open identically.
   const canOpen = useCanOpenFile(kind)
+  // The shared remote-editor action (see useRemoteEditorOpen): a "Open in
+  // <editor>" row on a remote session, gated and labelled identically to the
+  // MarkdownPanel / FileViewer overflows. null when off or on a local gateway.
+  const remoteEditorAction = useRemoteEditorOpen(filePath)
 
   // Copy path's whole acknowledgment is the glyph flipping to a tick and back
   // (see useCopyAck, shared with the Office card). The Copy item keeps the menu
@@ -361,6 +439,20 @@ function FilePathMenuItems({ filePath, kind }: FilePathMenuItemsProps) {
         >
           <ExternalLink size={14} className="lucide-inline" />
           {openLabel}
+        </ContextMenuItem>
+      )}
+      {/* Open in the user's LOCAL editor over their own SSH session (remote
+          gateway only — see useRemoteEditorOpen). No preventDefault: this hands
+          off to the OS scheme handler and the menu can close normally. Directory
+          targets are allowed (opens as a remote workspace), so it is not gated
+          on `kind`. */}
+      {remoteEditorAction && (
+        <ContextMenuItem
+          onSelect={() => openRemoteEditor(remoteEditorAction.url)}
+          aria-label={remoteEditorAction.label}
+        >
+          <Code2 size={14} className="lucide-inline" />
+          {remoteEditorAction.label}
         </ContextMenuItem>
       )}
       {isLocal && (

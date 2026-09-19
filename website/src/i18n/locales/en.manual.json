@@ -3285,6 +3285,9 @@
     },
     "pierreEditorImpl": {
       "highlighting_unavailable_with_reason": "Syntax highlighting is unavailable until you reload. Content remains readable. Last failure: {{classification}} (generation {{generation}}, attempt {{attempt}}): {{reason}}"
+    },
+    "filePathMenu": {
+      "open_in_remote_editor": "Open in {{editor}}"
     }
   },
   "hooks": {
@@ -5703,7 +5706,15 @@
         "terminal_completion_desc": "Show the completion popup while typing in the Terminal. Enter runs the line you typed; to take a suggestion, press ↑/↓ then Enter, or Tab. Off hides the popup; your shell's own Tab completion still works.",
         "terminal_completion_save_failed": "Could not save the command completion setting",
         "config_load_failed": "Could not load the saved display settings. The shell, recent-session and command completion settings are unavailable until it loads.",
-        "recent_tint_save_failed": "Could not save the recent-session highlight count."
+        "recent_tint_save_failed": "Could not save the recent-session highlight count.",
+        "remote_editor": "Remote editor",
+        "remote_editor_editor": "Editor",
+        "remote_editor_editor_desc": "Open remote files in your local editor over your own SSH session. Shown in the file-path menus when the dashboard runs on a remote gateway. The link opens over your own SSH credentials.",
+        "remote_editor_off": "Off",
+        "remote_editor_host": "SSH host",
+        "remote_editor_host_desc": "Hostname or ~/.ssh/config alias the gateway runs on.",
+        "remote_editor_save_failed": "Couldn’t save the editor choice.",
+        "remote_editor_host_save_failed": "Couldn’t save the SSH host."
       },
       "instancesPanel": {
         "add_remote_crew": "Add remote instance",

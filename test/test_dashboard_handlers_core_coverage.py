@@ -181,6 +181,7 @@ class TestPageAndAssets:
             "bot_name": "Kiro Crew",
             "avatar": "/logo.png",
             "direct_local": True,
+            "remote_editor": {"editor": "", "host": ""},
         }
 
     @pytest.mark.asyncio

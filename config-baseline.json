@@ -6682,6 +6682,10 @@
         "terminal": {
           "enabled": true
         },
+        "remote_editor": {
+          "editor": "",
+          "host": ""
+        },
         "default_project": "",
         "theme_mode": "",
         "sso_login_flags": "",
@@ -7400,6 +7404,55 @@
       "hasChildren": true,
       "enumValues": null,
       "defaultValue": {}
+    },
+    {
+      "path": "dashboard.remote_editor",
+      "kind": "core",
+      "type": "object",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Remote editor",
+      "help": "Open a file from the dashboard's file-path menus in your LOCAL editor over your own SSH session, for a gateway running on a remote/headless host. Off by default.",
+      "hasChildren": true,
+      "enumValues": null,
+      "defaultValue": {
+        "editor": "",
+        "host": ""
+      }
+    },
+    {
+      "path": "dashboard.remote_editor.editor",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Editor",
+      "help": "Which local editor to open remote files in. VS Code and Kiro both use the vscode-remote SSH authority. Empty disables the menu row.",
+      "hasChildren": false,
+      "enumValues": [
+        "",
+        "vscode",
+        "kiro"
+      ],
+      "defaultValue": ""
+    },
+    {
+      "path": "dashboard.remote_editor.host",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "SSH host",
+      "help": "SSH authority the gateway runs on — a hostname or a ~/.ssh/config alias. Used verbatim after ssh-remote+ in the editor link.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
     },
     {
       "path": "dashboard.default_project",

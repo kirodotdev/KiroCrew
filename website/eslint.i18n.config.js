@@ -708,6 +708,22 @@ export default [
               // slash-prefixed string (`'/Delete'`) is exempt.
               '^https?://\\S*$',
               '^[.~]?/\\S*$',
+              // The remote-editor deep link's static middle (FilePathMenu.tsx
+              // `remoteEditorUrl` builds `<scheme>://vscode-remote/ssh-remote+<host>
+              // <path>` as a template literal; this is its one non-empty quasi).
+              // URL grammar the OS scheme handler parses, not copy — same category as
+              // the URL/path entries directly above, whole-value anchored so no
+              // sentence can match.
+              '^://vscode-remote/ssh-remote\\+$',
+              // Editor BRAND names rendered as the remote-editor menu row / Settings
+              // select labels (FilePathMenu.tsx `REMOTE_EDITORS`). Proper nouns, kept
+              // verbatim in every language. They CANNOT go in `glossary.json`: the
+              // catalog already uses "cursor" as a common noun (`Show cursor motion`),
+              // and the glossary's near-miss detector would read that as a respelling
+              // of the brand and fail. ENUMERATED as a closed set and whole-value
+              // anchored, so ordinary copy that merely contains one of these words is
+              // untouched.
+              '^(?:VS Code|Kiro|Cursor|Windsurf)$',
               // URL-GRAMMAR FRAGMENTS of the Issue Radar provider table
               // (`apps/issue-radar/lib/links.ts`): the repository-path templates, the
               // two placeholders `String.replace` substitutes into them, and Azure

@@ -2,9 +2,10 @@ import { createContext, useContext, type ReactNode } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { api } from '../api/client'
 
-interface Branding { botName: string; avatar: string; directLocal: boolean }
+interface RemoteEditor { editor: string; host: string }
+interface Branding { botName: string; avatar: string; directLocal: boolean; remoteEditor: RemoteEditor }
 
-const defaults: Branding = { botName: 'Kiro Crew', avatar: '/logo.png', directLocal: false }
+const defaults: Branding = { botName: 'Kiro Crew', avatar: '/logo.png', directLocal: false, remoteEditor: { editor: '', host: '' } }
 const BrandingContext = createContext<Branding>(defaults)
 
 export function BrandingProvider({ children }: { children: ReactNode }) {
@@ -23,7 +24,17 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
     staleTime: Infinity,
   })
   const b: Branding = data
-    ? { botName: data.bot_name || defaults.botName, avatar: data.avatar || defaults.avatar, directLocal: !!data.direct_local }
+    ? {
+        botName: data.bot_name || defaults.botName,
+        avatar: data.avatar || defaults.avatar,
+        directLocal: !!data.direct_local,
+        // Both fields are clamped server-side (unknown editor / non-charset-clean
+        // host become ""), so the consumer can build a link from them directly.
+        remoteEditor: {
+          editor: data.remote_editor?.editor ?? '',
+          host: data.remote_editor?.host ?? '',
+        },
+      }
     : defaults
   return <BrandingContext.Provider value={b}>{children}</BrandingContext.Provider>
 }

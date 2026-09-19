@@ -8352,7 +8352,8 @@
       "copy_path": "경로 복사",
       "path_copied": "경로 복사됨",
       "reveal_blocked": "이 경로는 보호되어 있어 열 수 없습니다.",
-      "reveal_failed": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없습니다."
+      "reveal_failed": "{{productName}}이(가) 실행 중인 컴퓨터에서 이 경로를 열 수 없습니다.",
+      "open_in_remote_editor": "{{editor}}에서 열기"
     },
     "pendingQuestionCard": {
       "answer_failed": "답변을 보낼 수 없습니다. 에이전트가 아직 대기 중이므로 다시 시도하세요.",
@@ -13440,7 +13441,15 @@
         "zoom_level": "확대/축소 수준",
         "font_family_option_opendyslexic": "OpenDyslexic",
         "config_load_failed": "저장된 표시 설정을 불러올 수 없습니다. 불러올 때까지 셸, 최근 세션, 명령 자동 완성 설정은 사용할 수 없습니다.",
-        "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다."
+        "recent_tint_save_failed": "최근 세션 강조 개수를 저장할 수 없습니다.",
+        "remote_editor": "원격 편집기",
+        "remote_editor_editor": "편집기",
+        "remote_editor_editor_desc": "본인의 SSH 세션을 통해 로컬 편집기에서 원격 파일을 엽니다. 대시보드가 원격 게이트웨이에서 실행될 때 파일 경로 메뉴에 표시됩니다. 링크는 본인의 SSH 자격 증명으로 열립니다.",
+        "remote_editor_off": "끄기",
+        "remote_editor_host": "SSH 호스트",
+        "remote_editor_host_desc": "게이트웨이가 실행되는 호스트 이름 또는 ~/.ssh/config 별칭.",
+        "remote_editor_save_failed": "편집기 선택을 저장하지 못했습니다.",
+        "remote_editor_host_save_failed": "SSH 호스트를 저장하지 못했습니다."
       },
       "importPanel": {
         "agent_data": "에이전트 데이터",

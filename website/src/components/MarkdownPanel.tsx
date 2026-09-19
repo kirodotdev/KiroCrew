@@ -347,7 +347,7 @@ import { PierreFilePair, type PierreEditorHandle, type RevealTarget } from '../p
 import { i18nT } from '../i18n/t'
 import { useDocumentImeLatch, useImeGuard } from '../hooks/useImeGuard'
 import { useScrollMemory } from '../hooks/useScrollMemory'
-import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile } from './FilePathMenu'
+import FilePathMenu, { revealOrOpen, useRevealLabel, useCanOpenFile, useRemoteEditorOpen, openRemoteEditor } from './FilePathMenu'
 
 /**
  * File types that render through a dedicated viewer instead of a text editor.
@@ -588,6 +588,9 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
   // Platform-aware reveal label from the shared owner (FilePathMenu) so this
   // overflow and FileViewer's overflow name the identical action identically.
   const revealLabel = useRevealLabel()
+  // Shared remote-editor row (see FilePathMenu.useRemoteEditorOpen): a remote
+  // session's "Open in <editor>" link, iconless to match this group.
+  const remoteEditorAction = useRemoteEditorOpen(filePath)
   const knowledge = useFileKnowledgeState(filePath, onError)
   const artifact = useFileArtifactState(filePath, content, onError)
   const contribItems = useFileMenuItems('file-overflow')
@@ -713,6 +716,13 @@ export function OverflowMenu({ filePath, content, onError, onRefresh, refreshDis
           {directLocal && (
             <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { void revealOrOpen(filePath, 'reveal', { onError }); setOpen(false) }}>
               {revealLabel}
+            </button>
+          )}
+          {/* Remote-editor link (remote session only — see useRemoteEditorOpen).
+              Iconless like its neighbours; hands off to the OS scheme handler. */}
+          {remoteEditorAction && (
+            <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { openRemoteEditor(remoteEditorAction.url); setOpen(false) }}>
+              {remoteEditorAction.label}
             </button>
           )}
           <button role="menuitem" data-option tabIndex={-1} className={menuRowCls} onClick={() => { copyToClipboard(filePath); setOpen(false) }}>
