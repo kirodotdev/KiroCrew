@@ -35,7 +35,15 @@ import aiohttp
 
 from kiro_crew.messaging.split import truncate_utf8
 from kiro_crew.wecom.attachments import to_attachments
-from kiro_crew.wecom.media import mixed_text
+from kiro_crew.wecom.media import WECOM_MAX_PLAINTEXT_BYTES, mixed_text
+from kiro_crew.wecom.media_upload import (
+    CMD_CHUNK,
+    CMD_FINISH,
+    CMD_INIT,
+    MediaUpload,
+    WeComUploadError,
+    prepare_upload,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +98,16 @@ _PUSH_REQ_PREFIX = "aibot_send_msg-"
 # reported as failure, because an unacknowledged push is exactly the case the
 # caller must not record as delivered.
 _PUSH_ACK_TIMEOUT_SECS = 10.0
+
+# Media-upload frames mint their own unique req_id (like a proactive push), so
+# their responses correlate exactly — carried on _pending_responses, which
+# returns the whole frame because the upload_id / media_id live in body.
+_UPLOAD_REQ_PREFIX = "aibot_upload_media-"
+
+# Per-frame ACK wait for the upload handshake. Each init/chunk/finish is a small
+# frame, so this bounds one round trip; a whole upload is this times the chunk
+# count plus two, which for the 20 MiB / 40-chunk ceiling stays well bounded.
+_UPLOAD_ACK_TIMEOUT_SECS = 30.0
 
 # Reply-ACK errcodes that mean THIS stream bubble can never be written again:
 # 846605 the req_id is not routable, 846608 the bubble passed the
@@ -193,6 +211,13 @@ class WeComClient:
         # req_id -> future awaiting that command's ACK. Only proactive pushes wait
         # on one (see _PUSH_REQ_PREFIX).
         self._pending_acks: dict[str, asyncio.Future[int]] = {}
+        # req_id -> future awaiting a command's FULL response frame, not just its
+        # errcode. The media-upload commands (aibot_upload_media_init/finish) reply
+        # with a body carrying an upload_id / media_id that _pending_acks (an int
+        # errcode only) cannot convey, so they wait here instead. Kept separate
+        # rather than widening _pending_acks so the stream/proactive ACK path and
+        # its fail-open int contract are untouched.
+        self._pending_responses: dict[str, asyncio.Future[dict[str, Any]]] = {}
         # Optional live connection-status callback (healthy: bool, reason: str),
         # set by the gateway to keep the settings badge truthful. Fired from the
         # reconnect loop on state TRANSITIONS only (deduped via _last_status):
@@ -278,6 +303,15 @@ class WeComClient:
                     if not waiter.done():
                         waiter.set_result(-1)
                 self._pending_acks.clear()
+                # Upload-response waiters expect a frame dict; a closed connection
+                # is not one, so fail them explicitly rather than let them time
+                # out — an in-flight upload aborts at once instead of stalling.
+                for resp_waiter in list(self._pending_responses.values()):
+                    if not resp_waiter.done():
+                        resp_waiter.set_exception(
+                            ConnectionError("WeCom connection closed during media upload")
+                        )
+                self._pending_responses.clear()
                 await self._drain_handler_tasks()
             finally:
                 if self._session and not self._session.closed:
@@ -518,6 +552,158 @@ class WeComClient:
             return False
         return True
 
+    async def _upload_command(self, cmd: str, body: dict[str, object]) -> dict[str, Any]:
+        """Send one upload-handshake frame and await its full response frame.
+
+        Mints a unique req_id and waits on ``_pending_responses`` (not
+        ``_pending_acks``), because the reply body carries the ``upload_id`` /
+        ``media_id`` an int errcode cannot convey. Raises :class:`WeComUploadError`
+        on a dead socket, a timeout, or a non-zero platform errcode — so a caller
+        can treat a returned frame as accepted.
+        """
+        ws = self._ws
+        if ws is None or ws.closed:
+            raise WeComUploadError("no live WeCom connection")
+        req_id = _UPLOAD_REQ_PREFIX + _req_id()
+        frame = {"cmd": cmd, "headers": {"req_id": req_id}, "body": body}
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[dict[str, Any]] = loop.create_future()
+        self._pending_responses[req_id] = waiter
+        try:
+            await self._ws_send(ws, frame)
+        except (ConnectionError, RuntimeError, aiohttp.ClientError) as exc:
+            self._pending_responses.pop(req_id, None)
+            raise WeComUploadError(f"upload frame send failed: {type(exc).__name__}") from exc
+        try:
+            data = await asyncio.wait_for(waiter, timeout=_UPLOAD_ACK_TIMEOUT_SECS)
+        except asyncio.TimeoutError as exc:
+            raise WeComUploadError("upload command was not acknowledged in time") from exc
+        finally:
+            self._pending_responses.pop(req_id, None)
+        errcode = data.get("errcode")
+        if errcode not in (0, None):
+            # errcode/errmsg are externally-derived; log the classification only,
+            # matching the reply/proactive ACK branches (clear-text-logging).
+            logger.warning("WeCom upload command refused by the platform")
+            raise WeComUploadError("upload command was refused by the platform")
+        body_out = data.get("body")
+        return body_out if isinstance(body_out, dict) else {}
+
+    async def upload_media(self, data: bytes, media_type: str, filename: str) -> str:
+        """Upload one file as WeCom temporary material; return its ``media_id``.
+
+        Runs the three-command handshake (``init`` → ``chunk`` × N → ``finish``)
+        over the long connection and returns the ``media_id`` a send frame then
+        references. The id is valid for three days.
+
+        Takes BYTES, never a path — the same security contract every channel's
+        ``send_file`` keeps: the bytes handed here are exactly what a caller
+        validated, and nothing can substitute different content between validation
+        and upload. Raises :class:`WeComUploadError` on any refusal or transport
+        failure, so the caller never sends a frame referencing an id that was
+        never issued.
+
+        The prepare step (md5 + chunking) is CPU-bound on a multi-megabyte body,
+        so it runs off the event loop, matching how :mod:`kiro_crew.wecom.media`
+        keeps AES-CBC off it.
+        """
+        upload: MediaUpload = await asyncio.to_thread(
+            prepare_upload, data, media_type, filename, max_bytes=WECOM_MAX_PLAINTEXT_BYTES
+        )
+        init = await self._upload_command(CMD_INIT, upload.init_body())
+        upload_id = init.get("upload_id")
+        if not isinstance(upload_id, str) or not upload_id:
+            raise WeComUploadError("init response carried no upload_id")
+        for index in range(upload.total_chunks):
+            # base64 is applied per chunk inside chunk_body, so the encoded copies
+            # do not all coexist. to_thread keeps that CPU off the loop too.
+            body = await asyncio.to_thread(upload.chunk_body, upload_id, index)
+            await self._upload_command(CMD_CHUNK, body)
+        finish = await self._upload_command(CMD_FINISH, upload.finish_body(upload_id))
+        media_id = finish.get("media_id")
+        if not isinstance(media_id, str) or not media_id:
+            raise WeComUploadError("finish response carried no media_id")
+        return media_id
+
+    async def send_file(self, req_id: str, media_id: str, *, media_type: str = "file") -> bool:
+        """Reply to an inbound turn with a media object (cmd ``aibot_respond_msg``).
+
+        Routes to the user's chat by replaying the inbound ``req_id``, exactly as
+        :meth:`send_stream` does, but sends ONE ``msgtype:<media_type>`` frame
+        referencing a ``media_id`` from :meth:`upload_media` instead of a text
+        stream. ``media_type`` is the WeCom msgtype (``file`` / ``image`` /
+        ``voice`` / ``video``); the media_id must have been uploaded as that same
+        type.
+
+        Returns whether the frame reached the socket. Like ``send_stream`` there
+        is no per-frame ACK wait: a reply frame replays the inbound req_id, so an
+        ACK cannot be attributed to it (see ``send_stream``'s note).
+        """
+        ws = self._ws
+        if ws is None or ws.closed or not req_id or not media_id:
+            return False
+        frame = {
+            "cmd": "aibot_respond_msg",
+            "headers": {"req_id": req_id},
+            "body": {
+                "msgtype": media_type,
+                media_type: {"media_id": media_id},
+            },
+        }
+        try:
+            await self._ws_send(ws, frame)
+            return True
+        except (ConnectionError, RuntimeError, aiohttp.ClientError) as exc:
+            logger.warning("WeCom file send failed: %s", exc)
+            return False
+
+    async def send_file_proactive(
+        self, chat_id: str, media_id: str, *, media_type: str = "file"
+    ) -> bool:
+        """Push a media object into a conversation with no inbound request (cmd
+        ``aibot_send_msg``).
+
+        The media counterpart of :meth:`send_proactive`: mints its own req_id and
+        WAITS for the ACK, because a proactive push's acceptance is confirmable
+        and callers (a cron result, a mirror) record delivery from the return
+        value. Same warm-conversation requirement as ``send_proactive`` — WeCom
+        only delivers where the user has messaged the bot first.
+        """
+        ws = self._ws
+        if ws is None or ws.closed or not chat_id or not media_id:
+            return False
+        req_id = _PUSH_REQ_PREFIX + _req_id()
+        frame = {
+            "cmd": "aibot_send_msg",
+            "headers": {"req_id": req_id},
+            "body": {
+                "chatid": chat_id,
+                "chat_type": 1,
+                "msgtype": media_type,
+                media_type: {"media_id": media_id},
+            },
+        }
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[int] = loop.create_future()
+        self._pending_acks[req_id] = waiter
+        try:
+            await self._ws_send(ws, frame)
+        except (ConnectionError, RuntimeError, aiohttp.ClientError) as exc:
+            logger.warning("WeCom proactive file send failed: %s", exc)
+            self._pending_acks.pop(req_id, None)
+            return False
+        try:
+            errcode = await asyncio.wait_for(waiter, timeout=_PUSH_ACK_TIMEOUT_SECS)
+        except asyncio.TimeoutError:
+            logger.warning("WeCom proactive file send was not acknowledged in time")
+            return False
+        finally:
+            self._pending_acks.pop(req_id, None)
+        if errcode:
+            logger.warning("WeCom proactive file send was refused by the platform")
+            return False
+        return True
+
     async def say(self, inbound: "WeComInbound", content: str) -> bool:
         """Deliver a one-shot out-of-band message for *inbound*'s conversation.
 
@@ -752,6 +938,15 @@ class WeComClient:
                 self._pending_pongs = max(0, self._pending_pongs - 1)
                 return
             ec = data.get("errcode")
+            # Upload-media commands wait for the WHOLE frame (upload_id / media_id
+            # live in body), so resolve them here first — before the int-errcode
+            # _pending_acks path. Their req_ids are minted only for this map, so a
+            # match is unambiguous and never steals a stream/proactive ACK.
+            resp_waiter = self._pending_responses.get(rid) if isinstance(rid, str) else None
+            if resp_waiter is not None:
+                if not resp_waiter.done():
+                    resp_waiter.set_result(data)
+                return
             waiter = self._pending_acks.get(rid) if isinstance(rid, str) else None
             if waiter is not None:
                 # Still mark the bubble: a caller recovering by rolling needs

@@ -43,9 +43,12 @@ dispatched and in this order:
 from __future__ import annotations
 
 import logging
+import ntpath
+import posixpath
 from collections.abc import Awaitable, Callable, Iterable
 from typing import Any
 
+from kiro_crew.messaging.outbound_files import OutboundFile
 from kiro_crew.messaging.tables import TABLE_POLICY_OFF
 from kiro_crew.messaging.transport import (
     ConfiguredChannelTarget,
@@ -105,7 +108,7 @@ WECOM_CAPABILITIES = TransportCapabilities(
     edit=True,
     reactions=False,
     files_inbound=True,
-    files_outbound=False,
+    files_outbound=True,
     rich_blocks=False,
     threads=False,
     # Keep canonical tables: an adaptive representation can exceed the cap while
@@ -126,6 +129,48 @@ WECOM_CAPABILITIES = TransportCapabilities(
     # and repeat the same result on the next tick.
     returns_message_id=False,
 )
+
+
+#: Extension -> WeCom media ``type`` (aibot_upload_media_init body.type). Anything
+#: not mapped is a普通 ``file``. Voice is AMR-only on WeCom (see the voice note in
+#: send_document), so only ``.amr`` maps to voice — a wav/mp3 named otherwise would
+#: fail to render as a playable voice message even if we forced the type.
+_WECOM_TYPE_BY_EXT: dict[str, str] = {
+    # image
+    ".png": "image",
+    ".jpg": "image",
+    ".jpeg": "image",
+    ".gif": "image",
+    ".bmp": "image",
+    ".webp": "image",
+    # voice (WeCom voice is AMR)
+    ".amr": "voice",
+    # video
+    ".mp4": "video",
+    ".mov": "video",
+    ".m4v": "video",
+    ".webm": "video",
+}
+
+
+def wecom_media_type_for(filename: str) -> str:
+    """The WeCom media ``type`` for *filename*, by extension; ``file`` by default."""
+    dot = filename.rfind(".")
+    ext = filename[dot:].lower() if dot != -1 else ""
+    return _WECOM_TYPE_BY_EXT.get(ext, "file")
+
+
+def _basename(path: str) -> str:
+    """Basename of *path* regardless of the OS that produced it.
+
+    ``OutboundFile.path`` is an OS-native path from the caller: a Windows send
+    yields a backslash path (``C:\\Users\\<user>\\file.pdf``), so splitting on
+    ``/`` alone (or the container's own ``posixpath``) would leave the whole
+    absolute path — disclosing the local username and directory layout to WeCom
+    in the upload's ``filename`` field. Strip both separators, whichever the
+    running OS uses, so only the leaf name is transmitted.
+    """
+    return posixpath.basename(ntpath.basename(path))
 
 
 class WeComTransport(MessagingTransport):
@@ -252,6 +297,69 @@ class WeComTransport(MessagingTransport):
             # also mean failure.
             raise WeComSendError("WeCom proactive send failed (no live connection)")
         return ""
+
+    async def send_document(
+        self,
+        conversation_id: str,
+        document: OutboundFile,
+        *,
+        caption: str = "",
+        thread_id: str | None = None,
+    ) -> str | None:
+        """Deliver ONE file to *conversation_id* as native WeCom media.
+
+        The generic-file counterpart of :meth:`send_message`, resolved by
+        ``upload_destination.resolve_channel`` for the ``file_send`` MCP tool and
+        called by ``api_channel_upload_file`` with ``caption`` + ``thread_id``.
+        WeCom has no thread concept, so ``thread_id`` is accepted for the shared
+        transport contract and ignored. Runs the temporary-material upload
+        handshake (``upload_media``) then a proactive file send
+        (``send_file_proactive``) — the ``aibot_send_msg`` path, matching
+        :meth:`send_message`'s mirror/cron semantics.
+
+        Takes an :class:`OutboundFile` whose ``data`` the file_send gates already
+        validated; the upload uses those bytes, never re-opening the path.
+        ``conversation_id`` is the userid (see :meth:`resolve_conversation`).
+
+        Returns a non-empty marker (the WeCom ``media_id``, or ``"sent"``) on a
+        confirmed send — WeCom carries no message id (``returns_message_id=False``),
+        but the channel-upload caller treats a falsy return as a delivery failure,
+        so success must be non-empty — and ``None`` on a delivery failure, so the
+        caller falls back to its dashboard-link path.
+        """
+        if not conversation_id or not document.data:
+            return None
+        # Re-authorize at the send boundary, same as send_message: a persisted
+        # binding outlives the allow-list entry that justified it.
+        if not self._may_push(conversation_id):
+            logger.warning("wecom send_document: conversation not authorized")
+            return None
+        filename = _basename(document.path) or "file"
+        # Pick the WeCom media type by extension so an image renders as an image
+        # message, an .amr as a playable voice, an mp4 as video — not all as a
+        # generic file. Voice is AMR-only on WeCom: a caller wanting a playable
+        # voice message must hand an .amr (transcode upstream, e.g. ffmpeg); a
+        # wav/mp3 falls through to `file` rather than a voice that will not play.
+        wecom_type = wecom_media_type_for(filename)
+        try:
+            media_id = await self._client.upload_media(document.data, wecom_type, filename)
+            if not await self._client.send_file_proactive(
+                conversation_id, media_id, media_type=wecom_type
+            ):
+                logger.warning("wecom send_document: proactive send not acknowledged")
+                return None
+        except Exception as exc:  # noqa: BLE001 — best-effort leg; caller falls back
+            # Never log the exception payload (may carry the path / errmsg); the
+            # class is enough for an operator, matching the client's own logging.
+            logger.warning("wecom send_document failed: %s", type(exc).__name__)
+            return None
+        # WeCom carries no message id on aibot_send_msg (returns_message_id=False),
+        # but the channel-upload caller treats a FALSY return (`""`/None) as a
+        # delivery failure (`if not mid`). A confirmed proactive send above IS a
+        # delivery, so return a non-empty marker — the media_id — rather than the
+        # empty string, which would be misread as "delivery_reported_no_message_id"
+        # even though the file already reached the user.
+        return media_id or "sent"
 
     async def resolve_conversation(self, user_id: str) -> str:
         # No addressable DM channel id; the userid is the logical conversation.

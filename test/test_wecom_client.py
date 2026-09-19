@@ -838,3 +838,197 @@ class TestStatusCallback:
 
         assert seen and seen[0][0] is False
         assert "dns boom" in seen[0][1]
+
+
+# ------------------------------------------------------------------
+# Tests: media upload handshake + file send
+# ------------------------------------------------------------------
+
+
+def _make_client() -> WeComClient:
+    return WeComClient(
+        bot_id="bot1",
+        secret="sec1",
+        ws_url="wss://fake",
+        on_message=AsyncMock(),
+    )
+
+
+async def _feed_response(client: WeComClient, req_prefix: str, frame: dict) -> None:
+    """Deliver *frame* as the response to the newest pending upload req_id.
+
+    The upload command mints its own req_id and parks a future on
+    _pending_responses; a real ACK frame replays that req_id. The test does not
+    know the minted id, so it stamps the frame with the sole pending id.
+    """
+    pending = [rid for rid in client._pending_responses if rid.startswith(req_prefix)]
+    assert len(pending) == 1, f"expected one pending upload req_id, got {pending}"
+    frame = {**frame, "headers": {"req_id": pending[0]}}
+    await client._handle_message(json.dumps(frame))
+
+
+class TestUploadMedia:
+    pytestmark = pytest.mark.asyncio
+
+    async def test_full_handshake_returns_media_id(self) -> None:
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        # Small file → single chunk → init, chunk, finish (3 frames).
+        async def drive_responses() -> str:
+            return await client.upload_media(b"hello", "file", "greet.txt")
+
+        task = asyncio.create_task(drive_responses())
+        # Let upload_media run until it parks on the init response.
+        await asyncio.sleep(0.05)
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"upload_id": "UP1"},
+                "errcode": 0,
+                "errmsg": "ok",
+            },
+        )
+        await asyncio.sleep(0.05)
+        await _feed_response(client, "aibot_upload_media-", {"errcode": 0, "errmsg": "ok"})
+        await asyncio.sleep(0.05)
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"type": "file", "media_id": "MID42"},
+                "errcode": 0,
+                "errmsg": "ok",
+            },
+        )
+        media_id = await asyncio.wait_for(task, timeout=2)
+
+        assert media_id == "MID42"
+        # Three frames, correct cmds and correlated upload_id.
+        assert [f["cmd"] for f in fake_ws.sent] == [
+            "aibot_upload_media_init",
+            "aibot_upload_media_chunk",
+            "aibot_upload_media_finish",
+        ]
+        assert fake_ws.sent[0]["body"]["filename"] == "greet.txt"
+        assert fake_ws.sent[0]["body"]["total_chunks"] == 1
+        assert fake_ws.sent[1]["body"]["upload_id"] == "UP1"
+        assert fake_ws.sent[1]["body"]["chunk_index"] == 0
+        assert fake_ws.sent[2]["body"]["upload_id"] == "UP1"
+
+    async def test_non_zero_errcode_raises(self) -> None:
+        from kiro_crew.wecom.media_upload import WeComUploadError
+
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        task = asyncio.create_task(client.upload_media(b"hi", "file", "f.txt"))
+        await asyncio.sleep(0.05)
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {},
+                "errcode": 40004,
+                "errmsg": "bad",
+            },
+        )
+        with pytest.raises(WeComUploadError, match="refused"):
+            await asyncio.wait_for(task, timeout=2)
+
+    async def test_missing_media_id_raises(self) -> None:
+        from kiro_crew.wecom.media_upload import WeComUploadError
+
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        task = asyncio.create_task(client.upload_media(b"hi", "file", "f.txt"))
+        await asyncio.sleep(0.05)
+        await _feed_response(
+            client,
+            "aibot_upload_media-",
+            {
+                "body": {"upload_id": "UP1"},
+                "errcode": 0,
+            },
+        )
+        await asyncio.sleep(0.05)
+        await _feed_response(client, "aibot_upload_media-", {"errcode": 0})
+        await asyncio.sleep(0.05)
+        await _feed_response(client, "aibot_upload_media-", {"body": {}, "errcode": 0})
+        with pytest.raises(WeComUploadError, match="media_id"):
+            await asyncio.wait_for(task, timeout=2)
+
+    async def test_no_ws_raises(self) -> None:
+        from kiro_crew.wecom.media_upload import WeComUploadError
+
+        client = _make_client()
+        client._ws = None
+        with pytest.raises(WeComUploadError, match="no live"):
+            await client.upload_media(b"hi", "file", "f.txt")
+
+    async def test_pending_responses_does_not_disturb_pending_acks(self) -> None:
+        # A stream/proactive int-ACK still routes to _pending_acks even while an
+        # upload response waiter exists for a different req_id.
+        client = _make_client()
+        loop = asyncio.get_running_loop()
+        ack_waiter: asyncio.Future[int] = loop.create_future()
+        client._pending_acks["aibot_send_msg-abc"] = ack_waiter
+        resp_waiter: asyncio.Future[dict] = loop.create_future()
+        client._pending_responses["aibot_upload_media-xyz"] = resp_waiter
+
+        # Deliver an int-ACK for the proactive push req_id.
+        await client._handle_message(
+            json.dumps(
+                {
+                    "headers": {"req_id": "aibot_send_msg-abc"},
+                    "errcode": 0,
+                }
+            )
+        )
+        assert ack_waiter.result() == 0
+        assert not resp_waiter.done()  # untouched
+
+
+class TestSendFile:
+    pytestmark = pytest.mark.asyncio
+
+    async def test_reply_frame_structure(self) -> None:
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        result = await client.send_file("req-1", "MID42")
+
+        assert result is True
+        frame = fake_ws.sent[0]
+        assert frame["cmd"] == "aibot_respond_msg"
+        assert frame["headers"]["req_id"] == "req-1"
+        assert frame["body"]["msgtype"] == "file"
+        assert frame["body"]["file"]["media_id"] == "MID42"
+
+    async def test_image_media_type(self) -> None:
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+
+        await client.send_file("req-1", "MID", media_type="image")
+        frame = fake_ws.sent[0]
+        assert frame["body"]["msgtype"] == "image"
+        assert frame["body"]["image"]["media_id"] == "MID"
+
+    async def test_returns_false_without_ws(self) -> None:
+        client = _make_client()
+        client._ws = None
+        assert await client.send_file("req-1", "MID") is False
+
+    async def test_returns_false_without_media_id(self) -> None:
+        fake_ws = FakeWS()
+        client = _make_client()
+        client._ws = fake_ws  # type: ignore[assignment]
+        assert await client.send_file("req-1", "") is False
+        assert len(fake_ws.sent) == 0
