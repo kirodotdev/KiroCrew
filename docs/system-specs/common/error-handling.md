@@ -88,6 +88,12 @@ never drift. Notable terminal (non-retryable) classes:
   backend through the prompt transport everywhere, even on Slack, which also
   offers `!compact` as its own alias. The same rule governs the sibling
   prompt-busy branch, which for the same reason now names no command at all.
+- **Unsupported image history**: Kiro's `IMAGE_FORMAT_UNSUPPORTED` /
+  `ImageValidationError` is terminal and structural. The exception also carries
+  the narrower `image_format_unsupported` tag. A current attachment is left in
+  place with remove-or-re-encode guidance; a dashboard turn with no new
+  attachments may discard the native resume SID once and retry from KiroCrew's
+  bounded text transcript, which excludes native binary image blocks.
 - **Usage limit** and **model not entitled**: allowance spent, or the plan lacks
   the model; also terminal, with guidance to switch model or tier.
 

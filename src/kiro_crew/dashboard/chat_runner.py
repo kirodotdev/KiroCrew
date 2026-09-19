@@ -8357,8 +8357,8 @@ async def _run_chat(
     # conversation), discard_conversation CLEARS the sid so the next turn
     # cold-starts a fresh conversation — while keeping the session-map entry,
     # whose Slack thread/channel linkage must survive the recovery. Set only
-    # by the consecutive pre-stream-exhaustion branch in the AcpError handler
-    # below.
+    # by the consecutive pre-stream-exhaustion branch or the typed
+    # unsupported-history-image recovery in the AcpError handler below.
     needs_conversation_discard = False
     _auth_required = False
     saw_compaction = False
@@ -15240,6 +15240,52 @@ async def _run_chat(
                     else "⟳ Session busy — please retry."
                 )
                 slot.append("error", _retry_msg, "msg msg-err")
+        elif (
+            getattr(exc, "image_format_unsupported", False)
+            and not _attachments
+            and not slot._poisoned_reset_used
+            and _prompt_depth == 0
+            and not _should_suppress_requeue(slot)
+            and not _has_user_queued_followup(slot)
+            and not getattr(slot, "_pending_steers", None)
+        ):
+            # Kiro accepted this turn with no new attachment, then rejected an
+            # image carried by the native conversation. Retrying that same
+            # session is deterministic; discard only its resume SID so the
+            # dashboard/channel identity and text transcript survive. The fresh
+            # session receives KiroCrew's bounded text replay, never native
+            # binary image blocks. One-shot accounting is shared with the
+            # canary-based poison recovery, so a failed fresh attempt cannot
+            # enter a discard loop.
+            _persist_partial_reply()
+            slot._prestream_exhausted_cycles = 0
+            slot._poisoned_reset_used = True
+            needs_conversation_discard = True
+            if _turn_emitted:
+                # A tool or assistant output already landed. Continue from the
+                # persisted transcript rather than replaying the original user
+                # request and potentially repeating a completed side effect.
+                _image_recovery_text = _POSTTOKEN_RECOVER_MSG
+                _image_recovery_payload = RecoveryPayload.CONTINUATION
+            else:
+                # No model activity landed, so the current text is safe to
+                # replay verbatim after removing the poisoned native history.
+                _image_recovery_text = message
+                _image_recovery_payload = payload_for_replay(_is_synthetic)
+            slot.append(
+                "error",
+                "⟳ The backend retained an image it can no longer process — "
+                "restarting the model session without binary image history and "
+                "continuing…",
+                "msg msg-err",
+                meta={"kind": TRANSIENT_RETRY_KIND},
+            )
+            _queue_recovery(
+                0,
+                _image_recovery_text,
+                kind=SYNTHETIC_RECOVERY_KIND,
+                payload=_image_recovery_payload,
+            )
         elif (
             not _turn_emitted
             and acp_error_is_transient(exc)
