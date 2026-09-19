@@ -33,11 +33,15 @@ import logging
 from kiro_crew.cloud import ssm as cloud_ssm
 from kiro_crew.instances.constants import DEFAULT_SSM_MINT_TIMEOUT_SECS
 
-# The subcommand builder and the ttl/port bounds are SHARED with the SSH
-# transport on purpose: both transports hand the same string to the same remote
-# shell, so a second copy of either could only ever drift into a weaker bound.
+# The subcommand builder, the ttl/port bounds AND the error-tail scrubber are
+# SHARED with the SSH transport on purpose: both transports hand the same string
+# to the same remote shell and both build an error out of a stream that can be
+# holding a live token, so a second copy of any of them could only ever drift
+# into a weaker bound.
 from kiro_crew.instances.token_mint import (
+    _OUTPUT_TAIL_CHARS,
     TokenMintError,
+    _redacted_output_tail,
     _token_subcommand,
     _validate_port,
     _validate_ttl,
@@ -51,7 +55,6 @@ from kiro_crew.instances.validation import (
     validate_ssm_run_as,
     validate_ssm_target,
 )
-from kiro_crew.security import redact
 
 logger = logging.getLogger(__name__)
 
@@ -62,24 +65,33 @@ logger = logging.getLogger(__name__)
 # ``instances.mint_timeout_secs`` wins for both transports.
 _DEFAULT_MINT_TIMEOUT_SECS = DEFAULT_SSM_MINT_TIMEOUT_SECS
 
-# How much of a failing remote's stdout/stderr to carry in an error message.
-_OUTPUT_TAIL_CHARS = 300
-
 
 def _redacted_tail(text: str, limit: int = _OUTPUT_TAIL_CHARS) -> str:
     """Credential/exfil-redact *text* and return its last *limit* chars.
 
-    Mirrors :func:`kiro_crew.instances.token_mint._redacted_output_tail`'s
-    intent (never let a token or credential-looking string reach a raised
-    exception's message) but is not called on an unbounded remote payload here:
-    :func:`cloud.ssm.run_command`'s ``CommandResult.stdout``/``stderr`` are
-    already SSM-invocation-output-sized (not a giant blind stream), so no
-    scan-window bounding is needed.
+    Delegates to :func:`kiro_crew.instances.token_mint._redacted_output_tail`,
+    because ``redact()`` alone is not the whole scrub this site needs: the shared
+    helper adds a ``?token=`` URL-param pass and a wider token-shape pass on top
+    of it, and both are load-bearing here. A partially-successful mint prints its
+    success URL and then exits non-zero, so the stream this tail is built from can
+    hold a live token -- and two shapes in it are invisible to ``redact()`` on its
+    own: a two-segment ``payload.signature`` token whose payload and signature do
+    not clear the bounds ``security``'s two-segment link-token pattern keys on,
+    and a ``?token=<value>`` URL whose value that pattern does not match at all.
+
+    The wider token-shape pass is borrowed at THIS site rather than pushed down
+    into ``redact()``. Over-matching here costs one masked word in an
+    operator-facing error string, whereas ``redact()``'s patterns also gate
+    request-blocking decisions, where the same widening flags ordinary dotted
+    filenames.
+
+    Scan bounding comes with the shared helper. SSM's ``GetCommandInvocation``
+    truncates ``StandardOutputContent`` to 24,000 chars and ``redact()`` over that
+    much text measures ~1.6ms, so the scan is not an event-loop stall at either
+    width; sharing the window simply leaves one fewer local bound to keep true.
+    The carried tail is ``_OUTPUT_TAIL_CHARS``, shared for the same reason.
     """
-    if not text:
-        return ""
-    safe = redact(text)
-    return safe.strip()[-limit:]
+    return _redacted_output_tail(text, limit)
 
 
 async def _send_over_ssm(
