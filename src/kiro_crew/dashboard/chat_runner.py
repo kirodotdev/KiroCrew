@@ -255,6 +255,7 @@ from kiro_crew.llm_helpers import (
 )
 from kiro_crew.mcp_discovery import kirocrew_managed_names
 from kiro_crew.members import member_lifecycle, record_activity
+from kiro_crew.messaging.commands import compact_unsupported_reply
 from kiro_crew.messaging.dispatch import consume_reinjection, rearm_reinjection
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.identity import publish_turn_identity
@@ -8728,12 +8729,14 @@ async def _run_chat(
                 outcome="auto_managed_backend",
                 metadata={"backend": _compact_unsupported, "slot": slot.key},
             )
+            # The shared three-arm reply, not a sentence of this surface's own.
+            # An inline copy here said the harness self-manages for EVERY backend
+            # outside ``ACP_BACKENDS_COMPACT``, which is true of one of them --
+            # and this is the dashboard, where the claim is most visible. The
+            # markdown register matches what that helper already emits.
             slot.append(
                 "assistant",
-                f"ℹ️ The `{_compact_unsupported}` backend manages compaction "
-                "automatically — it summarizes the conversation on its own as "
-                "context fills, so manual `/compact` isn't needed (and isn't "
-                "supported) here.",
+                compact_unsupported_reply(_compact_unsupported),
                 "msg msg-a",
             )
             state.push_slots_update()

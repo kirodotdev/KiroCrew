@@ -155,6 +155,7 @@ from kiro_crew.acp.types import (
     StructuredStatus,
     effort_config_option_id,
 )
+from kiro_crew.agent_sdk.capabilities import capabilities_for
 from kiro_crew.config.paths import kiro_sessions_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import subprocess_executor
@@ -2326,6 +2327,62 @@ class AcpSessionHandle:
                     "summary": event.title or "",
                 }
 
+    def _inline_turn_finished_cleanly(self) -> bool:
+        """Whether the last turn reached its own end boundary uncancelled.
+
+        A cancelled turn is NOT a completed compaction, and this is the arm where
+        getting that wrong is most expensive: a false ``completed`` resets the
+        context meter and arms the compaction cooldown, so the session stays full
+        AND stops retrying. The turn reaching its own end boundary is the whole
+        evidence an inline harness offers, so the absence of that boundary has to
+        withhold the answer.
+
+        The test is POSITIVE -- the stop reason must BE ``end_turn`` -- rather than
+        "not cancelled". Excluding cancels alone accepts every other way a turn can
+        fail to finish: a refusal, a token limit, a stop reason this build does not
+        recognise, or a turn that never reported one at all. Each of those means the
+        compaction did not run, and each would otherwise be reported as a success.
+
+        ``_cancelled`` is checked as well as the reason, because a cancel that never
+        got an ack leaves the reason empty while the flag is already set -- and an
+        unacked cancel is exactly the case where the compaction is least likely to
+        have run. Both are THIS class's own turn state, so they are read directly
+        here -- the sibling on ``AcpProvider`` asks
+        ``AcpClient.turn_finished_cleanly`` instead, because there the state belongs
+        to the client and reading it across that boundary would decide a
+        compaction's fate from a shape the provider does not own. Both reads keep
+        ``getattr`` defaults that fail CLOSED, so a handle built without a turn --
+        the ``__new__`` shape several suites use -- does not get the shortcut.
+        """
+        if getattr(self, "_cancelled", True):
+            return False
+        return getattr(self, "_last_stop_reason", "") == STOP_REASON_END_TURN
+
+    def _compacts_inline(self) -> bool:
+        """Whether this handle's backend finishes a compaction inside its turn.
+
+        ``ACP_BACKENDS_INLINE_COMPACTION`` membership, read through
+        ``capabilities_for`` so the answer comes from the same table every other
+        consumer reads.
+
+        Read off ``self._runtime.acp_backend``, the way every other capability on
+        this class reads it -- the handle has no backend of its own, it fronts a
+        runtime's.
+
+        Fails CLOSED, and that direction is the point rather than caution: a
+        handle built through ``__new__`` has no ``_runtime`` at all, which is the
+        shape several suites use to exercise the queue drain without spawning a
+        process. Returning False there leaves such a handle on the waiting arm,
+        the behaviour it had before this capability existed. Claiming the
+        capability instead would tell every one of those callers a compaction
+        completed that nothing ever ran.
+        """
+        runtime = getattr(self, "_runtime", None)
+        backend = getattr(runtime, "acp_backend", None)
+        if not isinstance(backend, str):
+            return False
+        return capabilities_for(backend).compacts_inline
+
     async def wait_for_compaction(
         self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS
     ) -> dict[str, str]:
@@ -2347,6 +2404,15 @@ class AcpSessionHandle:
                 # fallback.
                 await self._drain_post_compaction_metadata()
             return cached
+        if self._compacts_inline() and self._inline_turn_finished_cleanly():
+            # The drained turn IS the result for a member of
+            # ``ACP_BACKENDS_INLINE_COMPACTION`` — the same record as on
+            # ``AcpProvider.wait_for_compaction``, including why it sits on the
+            # wait rather than on ``compact()``. Both classes carry it because
+            # both are reachable: this one fronts the shared-runtime sessions,
+            # and an answer given on only one of the two leaves the other
+            # stranding its callers for the full timeout.
+            return {"type": "completed", "summary": ""}
         deadline = time.monotonic() + timeout
         # ONE buffer for this call AND the nested grace drain, restored at ONE
         # point (the finally below) strictly BEFORE any re-poison. Separate

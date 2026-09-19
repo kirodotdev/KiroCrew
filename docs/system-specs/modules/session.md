@@ -511,21 +511,60 @@ send time.
   tool-count gate (that gate protects un-landing, and there is nothing here to
   un-land) and no stage-execution gate (a notice changes no turn result the stage
   loop reads).
-- **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on a backend that can serve
-  `/compact`: kiro-cli via a `/compact` **prompt** (`session/prompt` +
-  `_kiro.dev/compaction/status` watch — never the string form of
-  `_kiro.dev/commands/execute`, which kiro-cli 2.14.0 exits rc=0 on),
-  claude via SDK `/compact`, codex via the `compact` command its
-  `available_commands_update` advertises (the compaction is reported as a
-  `tool_call` pair marked `_meta.contextCompaction`, translated by
-  `_dispatch.parse_codex_compaction_update`). A backend OUTSIDE `ACP_BACKENDS_COMPACT` is
-  declined instead (`"compact_unsupported"`, see the gate ladder below):
-  KAS never answers the `/compact` prompt with a compaction status, so an
-  ungated dispatch stranded the status wait for the whole budget WHILE
-  HOLDING the turn semaphore and then recycled the session, losing the live
-  conversation (#7812) — it summarizes on its own initiative and its
-  `summarization_completed` frame resets the meter, so declining leaves
-  nothing unmanaged. The
+- **Context compaction**: at ≥ configured threshold (`session.autocompact_pct`, default 70%, valid 5–90), compacts **in place** on a member of
+  `ACP_BACKENDS_COMPACT` — kiro-cli, claude, codex and opencode. They divide by WHERE
+  the
+  done signal lands, which is `ACP_BACKENDS_INLINE_COMPACTION`: kiro-cli sends a
+  `/compact` **prompt** (`session/prompt` + `_kiro.dev/compaction/status` watch —
+  never the string form of `_kiro.dev/commands/execute`, which kiro-cli 2.14.0
+  exits rc=0 on) and its result arrives afterwards, while claude, codex and opencode
+  finish the whole compaction inside the prompt turn. claude and opencode emit no
+  status at all; codex reports the compaction as a `tool_call` pair marked
+  `_meta.contextCompaction` (translated by
+  `_dispatch.parse_codex_compaction_update`) that arrives before the prompt
+  response, so its terminal is read from the stream like kiro-cli's.
+  For the two that emit nothing `wait_for_compaction()` answers `completed` from the
+  capability
+  rather than from the queue — but only when the turn reached its own end
+  boundary uncancelled, since a cancelled turn compacted nothing and a false
+  `completed` resets the meter AND arms the cooldown. Awaiting the queue for an
+  inline member instead spends the full `COMPACT_WAIT_TIMEOUT_SECS` and then
+  recycles a session that had just compacted correctly. That answer lives on the
+  WAIT, because both routes to a compaction reach it — the manual entry points
+  through `provider.compact()`, the autocompact through
+  `stream_command("/compact")`.
+
+  A backend outside that set takes one of three arms, each a positive
+  membership so that an unclassified harness cannot fall into a claim by
+  accident:
+
+  - `ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` (KAS) is **declined**
+    (`"compact_unsupported"`, see the gate ladder below). KAS never answers the
+    `/compact` prompt with a compaction status, so an ungated dispatch stranded
+    the status wait for the whole budget WHILE HOLDING the turn semaphore and
+    then recycled the session, losing the live conversation (#7812) — it
+    summarizes on its own initiative and its `summarization_completed` frame
+    resets the meter, so declining leaves nothing unmanaged.
+  - `ACP_BACKENDS_CONTEXT_RECYCLE` (deepseek) is **recycled**. Its ACP surface
+    carries no compaction of any kind, so declining bounded nothing and the
+    context grew toward the harness's own window. `_recycle_unmanaged` reaches
+    the same destination a failed compaction already reaches, on the reason
+    rather than after spending the timeout that proves it. The arm falls THROUGH
+    the gate rung rather than returning from it, so `unconfirmed`, `in_progress`
+    and `cooldown` still run first — an ambiguous reading must not spend a
+    recycle.
+  - A backend in none of the three is **declined and logged at WARNING**, naming
+    the missing membership. Declining is the safe action, since the alternative
+    ends a conversation and no harness earns that by never having been
+    classified, but it is not a settled condition and the log says so. pi and goose
+    are that case today: both look inline in SOURCE but have no driven capture,
+    which is the bar `ACP_BACKENDS_COMPACT` holds its members to.
+
+  Every surface that refuses a manual `/compact` picks among three sentences via
+  `messaging.commands.compact_refusal_arm`, so a surface supplies wording only and
+  cannot disagree with the others about which case a backend is in.
+
+  The
   process and session ID survive, so queued/agentic work continues
   automatically. kiro-cli only: if the in-place compact fails, times out,
   or the provider lacks native support, falls back to the legacy

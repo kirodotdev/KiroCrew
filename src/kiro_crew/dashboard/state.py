@@ -95,6 +95,11 @@ from kiro_crew.release_channel import channel as _release_channel_of_build
 from kiro_crew.safety_override import cached_disabled_approval_modes, safety_override
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel
+from kiro_crew.session_compaction import (
+    COMPACT_OUTCOME_COMPACTED,
+    COMPACT_OUTCOME_RECYCLED,
+    COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.dashboard._types import (  # noqa: F401
@@ -802,6 +807,23 @@ _SSE_INTERVAL_SECS = 5
 _NOTIFICATIONS_FILE = "notifications.jsonl"
 _MAX_PERSISTED_NOTIFICATIONS = 200
 _AUTO_COMPACT_NOTICE = "🔄 Auto-compacted at {pct:.0f}%."
+#: The notice for the arm that REPLACES the session instead of summarizing it. A
+#: separate template because ``_AUTO_COMPACT_NOTICE`` would announce a summary that
+#: never happened, and the user's next question -- why does the agent not remember
+#: this -- is answerable only if the notice said what actually occurred.
+_AUTO_RECYCLE_NOTICE = (
+    "♻️ Compaction didn't succeed at {pct:.0f}%, so the session was restarted "
+    "instead. The conversation above is still here; the agent no longer remembers it."
+)
+#: The same restart, for a backend that never had a compaction to attempt. Only this
+#: one may name the missing capability: the notice above is reached by kiro-cli and
+#: opencode sessions whose compaction merely failed, and telling those users their
+#: backend cannot compact would be false.
+_AUTO_RESTART_UNCOMPACTABLE_NOTICE = (
+    "♻️ Context reached {pct:.0f}% and this backend cannot compact at all, so "
+    "the session was restarted. The conversation above is still here; the agent no "
+    "longer remembers it."
+)
 _AUTO_COMPACT_FAILED_NOTICE = (
     "⚠ Auto-compact failed at {pct:.0f}% — will retry after cooldown. "
     "You can run `/compact` manually."
@@ -4505,7 +4527,13 @@ class DashboardState:
     def wire_session_compact_callback(self) -> None:
         """Register the dashboard's compaction callback on the session manager."""
 
-        async def _on_compacted(key: str, pct: float, *, success: bool) -> None:
+        async def _on_compacted(
+            key: str,
+            pct: float,
+            *,
+            success: bool,
+            outcome: str = COMPACT_OUTCOME_COMPACTED,
+        ) -> None:
             from kiro_crew.dashboard.chat_utils import dashboard_slot_key
 
             slot_key = dashboard_slot_key(key)
@@ -4515,17 +4543,26 @@ class DashboardState:
                 # get the notice: silently summarized history is the confusing
                 # outcome this notice exists to prevent.
                 if is_channel_session_key(key):
-                    await self._notify_channel_compaction(key, pct, success=success)
+                    await self._notify_channel_compaction(
+                        key, pct, success=success, outcome=outcome
+                    )
             else:
                 # No tab to append to, so the notice would be dropped and the
                 # user would see summarized history with no explanation. Route
                 # it to its own conversation instead.
-                await self._notify_channel_compaction(key, pct, success=success)
+                await self._notify_channel_compaction(key, pct, success=success, outcome=outcome)
                 return
             slot = self.get_slot(slot_key)
             if slot is None:
                 return
-            template = _AUTO_COMPACT_NOTICE if success else _AUTO_COMPACT_FAILED_NOTICE
+            if not success:
+                template = _AUTO_COMPACT_FAILED_NOTICE
+            elif outcome == COMPACT_OUTCOME_RESTARTED_UNCOMPACTABLE:
+                template = _AUTO_RESTART_UNCOMPACTABLE_NOTICE
+            elif outcome == COMPACT_OUTCOME_RECYCLED:
+                template = _AUTO_RECYCLE_NOTICE
+            else:
+                template = _AUTO_COMPACT_NOTICE
             message = template.format(pct=pct)
             try:
                 # Tag kind="compaction" so this proactive auto-compact notice
@@ -4557,7 +4594,14 @@ class DashboardState:
 
         self.sessions.set_compact_callback(_on_compacted)
 
-    async def _notify_channel_compaction(self, key: str, pct: float, *, success: bool) -> None:
+    async def _notify_channel_compaction(
+        self,
+        key: str,
+        pct: float,
+        *,
+        success: bool,
+        outcome: str = COMPACT_OUTCOME_COMPACTED,
+    ) -> None:
         """Deliver the auto-compact notice to a channel-originated session.
 
         Isolated from the dashboard leg: a channel that is unreachable, ungoverned
@@ -4565,7 +4609,9 @@ class DashboardState:
         the session manager's background task.
         """
         try:
-            await deliver_channel_compaction_notice(self, key, pct, success=success)
+            await deliver_channel_compaction_notice(
+                self, key, pct, success=success, outcome=outcome
+            )
         except Exception:
             logging.getLogger(__name__).exception(
                 "Failed to deliver channel compact notice for %s", key

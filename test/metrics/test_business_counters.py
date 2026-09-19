@@ -181,7 +181,12 @@ class TestCompactions:
             _recycling={"k": object()} if recycling else {},
             mark_needs_reinjection=lambda key: None,
         )
-        stub.state = SimpleNamespace(on_compacted=None)
+        # ``uncompactable_recycles`` is the set that tells a "nothing could compact
+        # this" recycle apart from a "the compaction failed" one, which the callback
+        # reports as different outcomes. This case is the FAILED one, so the set is
+        # empty -- present rather than absent, because the real ``CompactionState``
+        # always has it and a double without it would pass by accident.
+        stub.state = SimpleNamespace(on_compacted=None, uncompactable_recycles=set())
         asyncio.run(
             CompactionCoordinator._fire_compact_callback(coordinator, "k", 0.9, success=success)
         )

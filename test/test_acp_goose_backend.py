@@ -78,14 +78,43 @@ def test_goose_is_not_in_the_capability_sets_it_has_no_evidence_for() -> None:
     """Absence is a decision here, not an oversight, so it is pinned as one.
 
     Each of these would make a claim the wire does not support: a shared process, a
-    steer method, a compaction capability, or an internal sandbox that would displace
-    the credential mask this harness depends on.
+    steer method, or an internal sandbox that would displace the credential mask
+    this harness depends on.
+
+    ``ACP_BACKENDS_COMPACT`` is deliberately NOT in this list, and the sibling
+    test below says why: goose publishes ``compact`` among the built-ins its
+    ``available_commands_update`` carries and dispatches it before any model
+    turn, so its membership rests on evidence rather than on resemblance.
+    ``test_compaction_other_backends`` holds that evidence.
     """
     assert GOOSE not in sdk_backends.ACP_BACKENDS_ACP_RUNTIME
     assert GOOSE not in sdk_backends.ACP_BACKENDS_STEER
-    assert GOOSE not in sdk_backends.ACP_BACKENDS_COMPACT
     assert GOOSE not in sdk_backends.ACP_BACKENDS_INTERNAL_SANDBOX
     assert GOOSE not in sdk_backends.ACP_BACKENDS_SESSION_SHARING
+
+
+def test_goose_compaction_is_unclassified_pending_a_capture() -> None:
+    """Absence as a decision, and the decision is about the evidence CLASS.
+
+    goose 1.50.1 -- the release this harness pins as its VERIFIED RANGE --
+    dispatches ``/compact`` out of ``Agent::reply`` through ``execute_command``
+    before a model turn starts, and its own ``command_starts_turn("/compact")``
+    is false, so its SOURCE says the compaction finishes inside the prompt turn.
+    What it lacks is a driven capture, which is the bar
+    ``ACP_BACKENDS_COMPACT`` holds its members to.
+
+    So goose is in none of the three compaction sets, and that is the position
+    every arm has to agree on: it is not offered a manual ``/compact``, it is not
+    claimed to manage its own context, and it is not recycled.
+    """
+    assert GOOSE not in sdk_backends.ACP_BACKENDS_COMPACT
+    assert GOOSE not in sdk_backends.ACP_BACKENDS_INLINE_COMPACTION
+    harness_managed = getattr(sdk_backends, "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION", None)
+    assert harness_managed is not None, "agent_sdk.backends declares no harness-managed set"
+    assert GOOSE not in harness_managed
+    recycle = getattr(sdk_backends, "ACP_BACKENDS_CONTEXT_RECYCLE", None)
+    assert recycle is not None, "agent_sdk.backends declares no context-recycle set"
+    assert GOOSE not in recycle
 
 
 def test_goose_serves_session_load_so_it_needs_no_load_workaround() -> None:

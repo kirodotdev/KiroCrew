@@ -285,6 +285,23 @@ OFF_CARD_SETS: Mapping[str, str] = {
         "whether a manual /compact is awaited or immediate. The user sees /compact "
         "finish either way; a wrong membership is a hung wait, which is a defect"
     ),
+    "ACP_BACKENDS_CONTEXT_RECYCLE": (
+        "the other half of that split: whether a full context is answered by "
+        "restarting the session. Same reasoning as its partner set, and the same "
+        "defect in either direction -- a wrong membership either recycles a session "
+        "that did not need it or leaves one growing into its own window. The card "
+        "reports whether /compact works, which is what a reader choosing a harness "
+        "acts on"
+    ),
+    "ACP_BACKENDS_HARNESS_MANAGED_COMPACTION": (
+        "what answers a full context on a harness Crew cannot hand /compact to. The "
+        "card already reports whether /compact works, which is the part a reader "
+        "choosing a harness acts on, and both states of THIS set are correct "
+        "behaviour for the harness they describe. A wrong membership is a defect in "
+        "either direction -- claiming it leaves the context unbounded, withholding "
+        "it recycles a session that did not need it -- and neither is an absent "
+        "feature a card could mark"
+    ),
     "ACP_BACKENDS_SEED_LOCAL_SETTINGS": (
         "whether a settings file is re-seeded on a model switch. Invisible when "
         "right, a stale model when wrong"

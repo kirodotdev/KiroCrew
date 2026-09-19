@@ -35,7 +35,13 @@ from kiro_crew.acp.types import (
     ACP_BACKEND_PI,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_CONTEXT_RECYCLE,
     ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION,
+)
+from kiro_crew.acp.types import (
+    ACP_BACKENDS_HARNESS_MANAGED_COMPACTION as ACP_BACKENDS_HARNESS_MANAGED,
+)
+from kiro_crew.acp.types import (
     ACP_BACKENDS_HARNESS_OWNED_SESSIONS,
     ACP_BACKENDS_KIRO_SLASH_COMMANDS,
     ACP_BACKENDS_KNOWN,
@@ -641,6 +647,38 @@ class AcpProvider(LLMProvider):
         """
         backend = getattr(self._client, "backend", ACP_BACKEND_KIRO)
         if not isinstance(backend, str) or backend in ACP_BACKENDS_COMPACT:
+            return None
+        return backend
+
+    @property
+    def compaction_self_managed(self) -> bool:
+        """Whether this harness bounds its own context (harness-parity H6).
+
+        Membership in ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``, OR membership
+        in ``ACP_BACKENDS_COMPACT`` — a backend Crew can compact is bounded
+        whoever does the bounding, so the question only discriminates among the
+        backends Crew cannot compact. A non-``str`` backend answers ``True``, the
+        ABC default, so a spec'd double never reads as the unclassified case.
+        """
+        backend = getattr(self._client, "backend", ACP_BACKEND_KIRO)
+        if not isinstance(backend, str):
+            return True
+        return backend in ACP_BACKENDS_COMPACT or backend in ACP_BACKENDS_HARNESS_MANAGED
+
+    @property
+    def compaction_unmanaged_backend(self) -> str | None:
+        """Backend id when neither Crew nor the harness compacts, else ``None``.
+
+        Membership in ``ACP_BACKENDS_CONTEXT_RECYCLE`` (harness-parity H6), read
+        POSITIVELY. Answering it by exclusion from the other two compaction sets
+        would hand the one session-destroying arm to every harness added later
+        without anyone deciding it. The same ``str`` caution
+        :attr:`manual_compact_unsupported_backend` takes applies here for a
+        sharper version of the same reason — a spec'd double must not read as a
+        positive claim, and here the claim ends a conversation.
+        """
+        backend = getattr(self._client, "backend", ACP_BACKEND_KIRO)
+        if not isinstance(backend, str) or backend not in ACP_BACKENDS_CONTEXT_RECYCLE:
             return None
         return backend
 
@@ -1926,6 +1964,32 @@ class AcpProvider(LLMProvider):
         """True when the inner client supports mid-turn steer."""
         return bool(getattr(self._client, "supports_steer", False))
 
+    def _inline_turn_finished_cleanly(self) -> bool:
+        """Whether the last turn reached its own end boundary uncancelled.
+
+        A cancelled turn is NOT a completed compaction, and this is the arm where
+        getting that wrong is most expensive: a false ``completed`` resets the
+        context meter and arms the compaction cooldown, so the session stays full
+        AND stops retrying. The turn reaching its own end boundary is the whole
+        evidence an inline harness offers, so the absence of that boundary has to
+        withhold the answer.
+
+        The test is POSITIVE -- the stop reason must BE ``end_turn`` -- rather than
+        "not cancelled". Excluding cancels alone accepts every other way a turn can
+        fail to finish: a refusal, a token limit, a stop reason this build does not
+        recognise, or a turn that never reported one at all. Each of those means the
+        compaction did not run, and each would otherwise be reported as a success.
+
+        The turn state itself belongs to the client, which is where the question is
+        answered (``AcpClient.turn_finished_cleanly``) -- reading its private
+        ``_cancelled`` / ``_last_stop_reason`` from out here would decide a
+        compaction's fate from a shape this class does not own. Probed rather than
+        called outright, and fails CLOSED when the probe is absent: a placeholder or
+        double that cannot answer does not get the shortcut.
+        """
+        probe = getattr(self._client, "turn_finished_cleanly", None)
+        return bool(probe()) if callable(probe) else False
+
     async def wait_for_compaction(self, timeout: float = COMPACT_WAIT_TIMEOUT_SECS) -> dict:
         """Wait for compaction completed/failed after stream ends.
 
@@ -1944,6 +2008,30 @@ class AcpProvider(LLMProvider):
                 if drain is not None:
                     await drain()
             return cached
+        if self.capabilities.compacts_inline and self._inline_turn_finished_cleanly():
+            # A member of ``ACP_BACKENDS_INLINE_COMPACTION`` finished its
+            # compaction inside the ``session/prompt`` turn, and that turn is
+            # over by the time anyone reaches this method. claude-agent-acp
+            # compacts natively in-prompt; opencode serves ``/compact`` out of
+            # its prompt handler
+            # (``test/fixtures/acp_frames/opencode/compact-live.jsonl``). Neither
+            # emits a compaction status, so the queue wait below has nothing to
+            # receive and would spend the whole ``COMPACT_WAIT_TIMEOUT_SECS``
+            # proving it. The set has exactly those two members -- pi and goose
+            # look the same in their own source and are absent for want of a
+            # driven capture, which is recorded on ``ACP_BACKENDS_COMPACT``.
+            #
+            # HERE rather than in ``compact()``, because this is the one method
+            # BOTH routes to a compaction reach. ``compact()`` covers the
+            # seventeen call sites that pair it with this wait, but the session
+            # layer's autocompact drives the harness through
+            # ``stream_command("/compact")`` and never calls ``compact()`` at
+            # all -- so an arm placed there left the automatic path, the one no
+            # user action is needed to reach, still stranding.
+            #
+            # No ``summary``: an inline harness reports no summary text, and an
+            # invented one would be echoed to the user as the backend's own.
+            return {"type": "completed", "summary": ""}
         return await self._client.wait_for_compaction(timeout)
 
     async def new_conversation(self) -> None:

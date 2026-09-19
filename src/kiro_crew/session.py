@@ -170,6 +170,7 @@ from kiro_crew.session_background import (
 )
 from kiro_crew.session_cleanup import CleanupDeps, CleanupState, SessionCleanup
 from kiro_crew.session_compaction import (
+    COMPACT_OUTCOME_COMPACTED,
     CompactionCoordinator,
     CompactionDeps,
     CompactionState,
@@ -647,7 +648,20 @@ _POST_COMPACT_RESET_PCT = 95.0
 
 
 class _CompactCallback(Protocol):
-    async def __call__(self, key: str, pct: float, *, success: bool) -> None: ...  # noqa: E704
+    # Mirrors ``session_compaction.CompactCallback`` exactly, including ``outcome``:
+    # this facade re-declares the shape so callers need not import the coordinator,
+    # and a narrower copy here makes the two disagree about what a registration must
+    # accept. ``outcome`` says WHICH arm ran -- compacted or recycled -- because a
+    # recycle is equally "successful" to a caller that only needs headroom, and a
+    # surface told only ``success`` announced a summary that never happened.
+    async def __call__(  # noqa: E704
+        self,
+        key: str,
+        pct: float,
+        *,
+        success: bool,
+        outcome: str = COMPACT_OUTCOME_COMPACTED,
+    ) -> None: ...
 
 
 class _RecycleCallback(Protocol):
@@ -2431,9 +2445,15 @@ class SessionManager:
         """Delegate backend-specific compaction execution."""
         return await self._compaction._compact_session(key, pct)
 
-    async def _recycle_held(self, key: str, session: "_Session", pct: float) -> None:
+    async def _recycle_held(
+        self, key: str, session: "_Session", pct: float, *, uncompactable: bool = False
+    ) -> None:
         """Delegate exact-session recycle while its semaphore is held."""
-        await self._compaction._recycle_held(key, session, pct)
+        await self._compaction._recycle_held(key, session, pct, uncompactable=uncompactable)
+
+    async def _recycle_unmanaged(self, key: str, session: "_Session", pct: float) -> str:
+        """Delegate the recycle for a backend no compaction path can reach."""
+        return await self._compaction._recycle_unmanaged(key, session, pct)
 
     async def _compact_in_place(self, key: str, session: "_Session", pct: float) -> str:
         """Delegate in-place compaction under turn exclusion."""

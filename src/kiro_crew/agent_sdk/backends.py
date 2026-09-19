@@ -94,6 +94,10 @@ with no row here.
      - pre-session registry query (whether manual ``/compact`` is offered at all)
    * - ``ACP_BACKENDS_INLINE_COMPACTION``
      - semantic question (``SessionCapabilities.compacts_inline``)
+   * - ``ACP_BACKENDS_HARNESS_MANAGED_COMPACTION``
+     - semantic question (whether a skipped autocompact is answered by the harness)
+   * - ``ACP_BACKENDS_CONTEXT_RECYCLE``
+     - semantic question (whether a full context is answered by recycling)
    * - ``ACP_BACKENDS_INTERNAL_SANDBOX``
      - driver-internal (whether Crew's seatbelt is skipped at spawn)
    * - ``ACP_BACKENDS_POD_HOME_REMAP``
@@ -824,48 +828,159 @@ ACP_BACKENDS_MEMBER_DISPATCH = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_KAS})
 ACP_BACKENDS_STEER = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_KAS})
 
 # Backends that can serve a MANUAL ``/compact`` (the user-typed slash command).
-# Both members act on the ``/compact`` prompt that ``AcpProvider.compact()``
-# sends: claude-agent-acp performs the compaction natively inside the
-# session/prompt turn, and kiro-cli ACKs the prompt then emits
-# ``_kiro.dev/compaction/status``, which ``wait_for_compaction()`` picks up.
-# KAS is NOT a member: it treats the ``/compact`` prompt as ordinary text and
-# never emits a compaction status in response — its ``summarization_*`` frames
-# (mapped to compaction status by ``acp.kas_wire``) fire only for
-# KAS-initiated auto-summarization. A manual ``/compact`` on KAS therefore
-# strands the status waiter for the full ``COMPACT_WAIT_TIMEOUT_SECS``, so the
-# manual entry points refuse it up front instead. This set gates ONLY
-# the manual command: KAS auto-summarization keeps mapping to compaction
-# status unchanged.
-# opencode advertises no compaction capability of any kind, so a ``/compact``
-# prompt would reach it as ordinary text and the status waiter would strand.
-# pi is not a member either, and the exclusion is conservative rather than
-# evidenced: pi-acp lists a ``/compact`` built-in in its ``available_commands_update``
-# and documents it as running pi's compaction, but whether that command completes
-# inside the ``session/prompt`` turn has not been observed on this core, and a wrong
-# guess strands the waiter. It joins here and in ``ACP_BACKENDS_INLINE_COMPACTION``
-# together, on a capture.
-# deepseek is not a member, and its exclusion is about the SURFACE rather than the
-# feature: the harness carries compaction internally, but its ACP surface rejects
-# commands outright and its ``session/update`` vocabulary has no compaction status.
-# A ``/compact`` prompt would reach it as ordinary text and strand the waiter.
-# codex IS a member, on a capture rather than on its documentation. codex-acp 1.11.0
+# Every member acts on the ``/compact`` prompt that ``AcpProvider.compact()``
+# sends. They do not all answer it the same way, and that split is
+# ``ACP_BACKENDS_INLINE_COMPACTION``: kiro-cli ACKs the prompt then emits
+# ``_kiro.dev/compaction/status``, which ``wait_for_compaction()`` picks up, while
+# claude-agent-acp, codex-acp, opencode, pi-acp and goose finish the whole
+# compaction inside the ``session/prompt`` turn.
+#
+# opencode is a member on a LIVE capture against opencode 1.18.30, and it joins
+# despite advertising nothing: its ``available_commands_update`` lists only
+# ``customize-opencode``, ``init`` and ``review``. That silence was read here as "no
+# compaction capability of any kind", and it is not one -- the harness serves
+# ``/compact`` out of its PROMPT handler rather than out of its command list, so the
+# command list cannot answer the question. Driven over four turns the session's
+# ``usage_update.used`` climbed 14863 -> 15727 -> 16614 -> 17478. A ``/compact``
+# prompt then returned ``stopReason: end_turn`` with no status frame of any kind,
+# and the next ORDINARY turn read 14577 -- below the pre-compact peak -- with the
+# model answering out of a summary of the turns that were dropped. So the context
+# really shrank, and the turn's own terminal frame is the only done signal there is.
+# The single-turn slice of that drive is committed as evidence rather than quoted:
+# ``test/fixtures/acp_frames/opencode/compact-live.jsonl`` carries the ordinary
+# turn, the ``/compact`` turn's ``used: 514``, and the ``end_turn`` with nothing
+# after it -- which is the ABSENCE this membership rests on.
+#
+# codex is a member on a capture rather than on its documentation. codex-acp 1.11.0
 # driven over stdio advertises ``compact`` in its ``available_commands_update``
 # ("Summarize conversation to avoid hitting the context limit"), intercepts the
 # ``/compact`` prompt as that command, and answers the same ``session/prompt``
 # request once the compaction is done. The frames are a MARKED tool-call pair --
 # ``_meta.contextCompaction`` -- which ``_dispatch.parse_codex_compaction_update``
 # translates into the compaction status every consumer already reads, so the waiter
-# is satisfied from inside the turn rather than stranded after it.
-# What the capture also settles is the claim Crew was making while codex sat outside
-# this set. The refusal text says the backend "manages compaction automatically",
-# and codex's native auto-compaction is real but CONDITIONAL: with
-# ``model_auto_compact_token_limit`` set it fires on its own and emits the same
-# marked pair, and with the limit absent a session held at 50k tokens across three
-# turns compacted not once. So the promise was true only for an operator who had
-# configured it, and Crew's own threshold-driven compaction -- which reads this same
-# set through ``session_compaction._compact_unsupported_backend`` -- was declining
-# for everyone else. Membership is what stops a codex session growing unbounded.
-ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+# is satisfied from inside the turn rather than stranded after it. Its native
+# auto-compaction is real but CONDITIONAL: with ``model_auto_compact_token_limit``
+# set it fires on its own and emits the same marked pair, and with the limit absent a
+# session held at 50k tokens across three turns compacted not once. So the old
+# "manages compaction automatically" promise was true only for an operator who had
+# configured it.
+#
+# pi and goose are NOT members, and the reason is the evidence CLASS rather than the
+# feature. Both advertise a ``compact`` built-in and both dispatch it before any
+# model turn -- pi-acp 0.0.33 intercepts it in ``prompt()``, awaits
+# ``session.proc.compact(...)`` and returns ``{ stopReason: "end_turn" }``; goose
+# 1.50.1 routes it through ``Agent::reply`` -> ``execute_command`` ->
+# ``handle_compact_command``, and its own ``command_starts_turn("/compact")`` is
+# false. So the source says inline in both cases.
+#
+# What neither has is a driven capture, and this set asks for one: the bar opencode
+# met is a live session whose ``usage_update.used`` was seen to fall. Source says
+# what the code WOULD do; a capture says what the harness DID. For a membership whose
+# wrong answer makes ``wait_for_compaction`` report a completion that did not happen,
+# the second is the bar, and holding both to it is what keeps this set's memberships
+# comparable to each other. Neither could be driven where this was written -- pi
+# answers ``Authentication required``, goose
+# ``Failed to resolve provider: GOOSE_PROVIDER`` -- so they wait for someone who can
+# drive them rather than entering on the weaker class.
+#
+# Until then both are unclassified, which is a better position than the one they
+# held: they take the ``COMPACT_ARM_UNCLASSIFIED`` refusal, which promises nothing,
+# and the gate logs a WARNING naming the memberships they lack, instead of being
+# told their harness manages compaction itself on no evidence at all.
+#
+# kas and deepseek are the other two non-members, and none of the four is the same
+# case.
+# :data:`ACP_BACKENDS_HARNESS_MANAGED_COMPACTION` carries the difference and the
+# consequence: KAS compacts on its own initiative AND says so on the wire, so
+# declining its ``/compact`` costs nothing, while deepseek says nothing at all, so a
+# decline leaves its context unbounded.
+ACP_BACKENDS_COMPACT = frozenset(
+    {
+        ACP_BACKEND_KIRO,
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+    }
+)
+
+# Backends that compact on their OWN initiative and report it on their ACP surface,
+# so Crew's context meter falls back below the threshold without Crew acting.
+#
+# This is the set that makes a decline HONEST. A backend outside
+# :data:`ACP_BACKENDS_COMPACT` cannot be handed a ``/compact`` prompt, and the
+# question that remains is what happens instead. A member answers it: KAS runs
+# auto-summarization and emits ``summarization_started`` /
+# ``summarization_completed``, which ``acp.kas_wire`` maps to a compaction status and
+# which calls ``reset_after_compaction()`` on the meter
+# (``acp/session_handle.py``) -- so the reading that crossed
+# ``session.autocompact_pct`` drops on its own and the user-facing "manages
+# compaction automatically" is a description rather than a hope. A backend outside
+# BOTH this set and ``ACP_BACKENDS_COMPACT`` has no compaction path Crew can see on
+# any surface, so skipping it is not a decline but a leak: nothing bounds the context
+# and nothing tells the user. What Crew does about that is decided by a THIRD
+# membership, :data:`ACP_BACKENDS_CONTEXT_RECYCLE` -- a member of that set is
+# recycled at the threshold, and a backend in none of the three is declined and
+# logged at WARNING, because ending a conversation is not something a harness earns
+# by never having been classified.
+#
+# deepseek is the standing non-member and the reason this set exists, and the frames
+# that establish it are in the corpus rather than quoted here:
+# ``test/fixtures/acp_frames/deepseek/handshake-live.jsonl`` and
+# ``turn-live.jsonl``. What those frames establish is an ACP surface with no
+# compaction on it: no ``available_commands_update`` is emitted at all,
+# ``session/load`` answers ``"Method not found"``, and the advertised capabilities are
+# ``mcpCapabilities`` / ``promptCapabilities`` / ``sessionCapabilities`` -- no
+# compaction anything. Whether the harness summarizes for ITSELF behind that surface
+# is not established here, and is deliberately claimed in neither direction: the
+# capture stops at ``used`` 7695 of ``size`` 8192, so it is evidence about 94% of the
+# window and says nothing about the wall. Driving deepseek across its own window is
+# tracked separately. The membership rests on the observable half, which is the half
+# Crew acts on: there is no status to wait for and no command to send, so a reading
+# that crossed ``session.autocompact_pct`` would be answered by nothing here however
+# the harness behaves at the wall. Meanwhile its ``usage_update`` reports a real
+# meter, climbing ``used`` 7554 -> 7695 of ``size`` 8192 across ONE captured turn: a
+# reading Crew can act on with nowhere to act. Those two files are the whole basis of this membership, which is an ABSENCE --
+# an inventory question, unlike ``ACP_BACKENDS_COMPACT``'s positive capability claim,
+# which is why that set needs a harness DRIVEN and this one does not.
+#
+# A harness that joins NEITHER this set nor ``ACP_BACKENDS_COMPACT`` is DECLINED at
+# the threshold, not recycled. The recycle is its own membership,
+# :data:`ACP_BACKENDS_CONTEXT_RECYCLE`, because granting the one session-ending arm
+# by exclusion would be the same unproven claim this set exists to remove, only
+# louder. What such a harness gets instead is a WARNING from the gate naming both
+# memberships it lacks, and the refusal arm that promises nothing -- so the leak is
+# reported rather than either denied or answered by ending the conversation. pi and
+# goose are that case today.
+ACP_BACKENDS_HARNESS_MANAGED_COMPACTION = frozenset({ACP_BACKEND_KAS})
+
+# Backends whose FULL context is answered by recycling the session, because no
+# compaction reaches them from either side.
+#
+# The third of three answers to "what happens when this context fills", and the
+# only destructive one, which is why it is a membership rather than the leftover.
+# A member is a harness Crew cannot hand ``/compact`` to
+# (:data:`ACP_BACKENDS_COMPACT`) AND that reports no compaction of its own
+# (:data:`ACP_BACKENDS_HARNESS_MANAGED_COMPACTION`), so its context grows until the
+# harness's own window ends the conversation for it. Recycling at
+# ``session.autocompact_pct`` bounds it, at the cost of what the agent remembered
+# — the same cost the window exacts anyway, taken while the session is still
+# usable.
+#
+# deepseek is the one member. Its ACP surface emits no
+# ``available_commands_update`` at all (``session/load`` is already
+# ``Method not found``) and its ``session/update`` vocabulary carries no compaction
+# status, while its ``usage_update`` reports a real meter (``used`` 7554 -> 7695 of
+# ``size`` 8192 in one captured turn) — a reading with nowhere to go.
+#
+# A harness in NONE of the three sets is deliberately not a member here. Granting
+# this by exclusion would hand a session-destroying behaviour to every harness
+# added later without anyone deciding it, which is the same defect as claiming
+# self-management on no evidence — only louder, because this arm ends
+# conversations. Such a harness declines like a harness-managed one and is told so
+# in its own words (:func:`compact_unsupported_reply` has a third sentence for
+# exactly this case), and the gate logs a WARNING naming the gap, so the condition
+# is reported rather than silent while somebody decides which set it belongs in.
+ACP_BACKENDS_CONTEXT_RECYCLE = frozenset({ACP_BACKEND_DEEPSEEK})
 
 # Backends that finish a manual ``/compact`` INSIDE the ``session/prompt`` turn,
 # so the turn's terminal frame is the done signal and there is no asynchronous
@@ -875,8 +990,8 @@ ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACK
 # non-member it is done leaves the user's ``/compact`` silently unacknowledged.
 #
 # A STRICT SUBSET of ``ACP_BACKENDS_COMPACT``, which answers the earlier question
-# "is a manual /compact offered at all". KAS is in neither. kiro-cli is in
-# ``ACP_BACKENDS_COMPACT`` but not here: it ACKs the prompt and then emits
+# "is a manual /compact offered at all". kas and deepseek are in neither. kiro-cli
+# is in ``ACP_BACKENDS_COMPACT`` but not here: it ACKs the prompt and then emits
 # ``_kiro.dev/compaction/status``, which is exactly the asynchronous result this
 # set says a non-member has. codex-acp IS a member, and its evidence is the same
 # capture: the ``tool_call_update`` carrying ``status: "completed"`` and
@@ -890,14 +1005,23 @@ ACP_BACKENDS_COMPACT = frozenset({ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACK
 # withholds it from every harness that is not, with neither being a decision anyone
 # recorded (harness-parity H6). Membership is exactly the set of harnesses that
 # demonstrate the capability.
-# opencode is in neither this set nor ``ACP_BACKENDS_COMPACT``, which is the same
-# position KAS holds: no manual compaction is offered for it at all.
-# pi is in neither set for the reason recorded on ``ACP_BACKENDS_COMPACT``: the
-# built-in exists but its turn shape is unobserved, and the two memberships move
-# together once it is.
-# deepseek holds that same position: absent from both, so no manual compaction is
-# offered for it and this set is never consulted for it.
-ACP_BACKENDS_INLINE_COMPACTION = frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+#
+# opencode is a member on the evidence recorded on ``ACP_BACKENDS_COMPACT``, and it
+# demonstrates the capability in the one way this set is about -- where the done
+# signal lands. Its ``/compact`` turn ends with ``stopReason: end_turn`` and emits no
+# status frame at all, so the turn's terminal frame is the ONLY signal there is,
+# which makes awaiting one a strand rather than a wait.
+#
+# pi and goose are absent for the reason recorded on ``ACP_BACKENDS_COMPACT``: their
+# source says inline, no capture confirms it, and the two memberships move together
+# when one does.
+ACP_BACKENDS_INLINE_COMPACTION = frozenset(
+    {
+        ACP_BACKEND_CLAUDE,
+        ACP_BACKEND_CODEX,
+        ACP_BACKEND_OPENCODE,
+    }
+)
 
 # Backends carrying their OWN internal OS sandbox, which on macOS cannot nest
 # inside Kiro Crew's seatbelt (kernel EPERM) — so ``sandbox.wrap_argv`` skips

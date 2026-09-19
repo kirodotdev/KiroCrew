@@ -39,7 +39,10 @@ from kiro_crew.config.sections import _normalize_threshold_pair
 from kiro_crew.history import mint_row_mid
 from kiro_crew.messaging.attachments import append_attachment_context
 from kiro_crew.messaging.attachments import cleanup as cleanup_attachments
-from kiro_crew.messaging.commands import compact_unsupported_backend
+from kiro_crew.messaging.commands import (
+    compact_unsupported_backend,
+    compact_unsupported_reply_zh,
+)
 from kiro_crew.messaging.conversation import reserve_new_generation
 from kiro_crew.messaging.dispatch import (
     ChannelTurn,
@@ -98,9 +101,6 @@ _COMPACT_BUSY = "⏳ 正在处理上一条消息，请稍后再试 /compact。"
 _COMPACT_NOTHING = "ℹ️ 当前没有可压缩的对话。"
 _COMPACT_DONE = "🗜️ 已压缩上下文。"
 _COMPACT_FAILED = "⚠️ 压缩失败，请重试。"
-#: This surface speaks Chinese; the wording translates
-#: ``messaging.commands.compact_unsupported_reply``.
-_COMPACT_AUTO_MANAGED = "ℹ️ 当前后端会自动压缩上下文，无需手动 /compact。"
 
 
 class WeixinDispatcher:
@@ -626,7 +626,7 @@ class WeixinDispatcher:
             unsupported = compact_unsupported_backend(provider)
             if unsupported:
                 logger.debug("weixin: manual /compact declined — %s compacts itself", unsupported)
-                await self._say(user_id, _COMPACT_AUTO_MANAGED)
+                await self._say(user_id, compact_unsupported_reply_zh(unsupported))
                 return
             await provider.compact()
             await provider.wait_for_compaction()

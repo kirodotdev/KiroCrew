@@ -1,0 +1,156 @@
+[
+  {
+    "agent_capabilities": {
+      "loadSession": true,
+      "mcpCapabilities": {
+        "http": true,
+        "sse": true
+      },
+      "promptCapabilities": {
+        "embeddedContext": true,
+        "image": true
+      },
+      "sessionCapabilities": {
+        "close": {},
+        "fork": {},
+        "list": {},
+        "resume": {}
+      }
+    },
+    "agent_version": "1.18.30",
+    "frame": "response",
+    "id": 1,
+    "protocol_version": 1
+  },
+  {
+    "config_options": [
+      {
+        "category": "model",
+        "currentValue": "opencode/big-pickle",
+        "id": "model",
+        "name": "Model",
+        "options": [
+          {
+            "name": "OpenCode Zen/Big Pickle",
+            "value": "opencode/big-pickle"
+          },
+          {
+            "name": "OpenCode Zen/Ling 3.0 Flash Fin Free",
+            "value": "opencode/ling-3.0-flash-fin-free"
+          },
+          {
+            "name": "OpenCode Zen/MiMo V2.5 Free",
+            "value": "opencode/mimo-v2.5-free"
+          },
+          {
+            "name": "OpenCode Zen/Muse Spark 1.2 Free",
+            "value": "opencode/muse-spark-1.2-contributor-free"
+          },
+          {
+            "name": "OpenCode Zen/Muse Spark 1.3 Free",
+            "value": "opencode/muse-spark-1.3-contributor-free"
+          },
+          {
+            "name": "OpenCode Zen/Nemotron 3 Ultra Free",
+            "value": "opencode/nemotron-3-ultra-free"
+          },
+          {
+            "name": "OpenCode Zen/Nemotron 3.5 Lightning Free",
+            "value": "opencode/nemotron-3.5-lightning-free"
+          }
+        ],
+        "type": "select"
+      },
+      {
+        "category": "mode",
+        "currentValue": "build",
+        "id": "mode",
+        "name": "Session Mode",
+        "options": [
+          {
+            "description": "The default agent. Executes tools based on configured permissions.",
+            "name": "build",
+            "value": "build"
+          },
+          {
+            "description": "Plan mode. Disallows all edit tools.",
+            "name": "plan",
+            "value": "plan"
+          }
+        ],
+        "type": "select"
+      }
+    ],
+    "frame": "response",
+    "id": 2,
+    "session_id": "ses_f48d6cdbaffeOXOzLHrYprzaz3"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "ok"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "ok",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      14011,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 3,
+    "prompt_tokens": [
+      12219,
+      3,
+      1792,
+      0
+    ],
+    "stop_reason": "end_turn"
+  },
+  {
+    "action": "update",
+    "events": [
+      {
+        "kind": "text_chunk",
+        "text": "## Objective\n- Fulfill the user's request to reply with the single word \"ok\" (completed; no actual coding task exists).\n\n## Important Details\n- The entire conversation consists of the user instructing the assistant to reply with \"ok\" and the assistant complying.\n- No constraints, preferences, decisions, or task context were provided beyond this.\n\n## Work State\n### Completed\n- Assistant replied \"ok\" as requested.\n\n### Active\n- (none)\n\n### Blocked\n- (none)\n\n## Next Move\n1. (none)\n2. (none)\n\n## Relevant Files\n- (none)"
+      }
+    ],
+    "frame": "session/update",
+    "session_update": "agent_message_chunk",
+    "text_chunk": {
+      "text": "## Objective\n- Fulfill the user's request to reply with the single word \"ok\" (completed; no actual coding task exists).\n\n## Important Details\n- The entire conversation consists of the user instructing the assistant to reply with \"ok\" and the assistant complying.\n- No constraints, preferences, decisions, or task context were provided beyond this.\n\n## Work State\n### Completed\n- Assistant replied \"ok\" as requested.\n\n### Active\n- (none)\n\n### Blocked\n- (none)\n\n## Next Move\n1. (none)\n2. (none)\n\n## Relevant Files\n- (none)",
+      "thinking": false
+    }
+  },
+  {
+    "action": "update",
+    "events": [],
+    "frame": "session/update",
+    "session_update": "usage_update",
+    "usage": [
+      514,
+      200000
+    ],
+    "usage_cost": 0.0
+  },
+  {
+    "frame": "response",
+    "id": 4,
+    "stop_reason": "end_turn"
+  }
+]

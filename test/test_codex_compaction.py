@@ -67,6 +67,7 @@ from kiro_crew.acp_backends import (
     ACP_BACKEND_CODEX,
     ACP_BACKEND_KAS,
     ACP_BACKEND_KIRO,
+    ACP_BACKEND_OPENCODE,
     ACP_BACKENDS_ACP_RUNTIME,
     ACP_BACKENDS_COMPACT,
     ACP_BACKENDS_INLINE_COMPACTION,
@@ -160,12 +161,25 @@ class TestMembership:
         assert capabilities_for(ACP_BACKEND_CODEX).compacts_inline is True
 
     def test_no_other_harness_was_granted_anything(self) -> None:
-        """One membership edit, not a widening: KAS in particular stays out."""
+        """One membership edit, not a widening: KAS in particular stays out.
+
+        Every member is named, opencode included (its evidence lives in
+        ``test_compaction_other_backends``), which is what the pin is FOR: a member
+        is here by a deliberate edit carrying a capture, so a widening cannot
+        arrive unannounced.
+        """
         assert ACP_BACKEND_KAS not in ACP_BACKENDS_COMPACT
         assert ACP_BACKENDS_COMPACT == frozenset(
-            {ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX}
+            {
+                ACP_BACKEND_KIRO,
+                ACP_BACKEND_CLAUDE,
+                ACP_BACKEND_CODEX,
+                ACP_BACKEND_OPENCODE,
+            }
         )
-        assert ACP_BACKENDS_INLINE_COMPACTION == frozenset({ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX})
+        assert ACP_BACKENDS_INLINE_COMPACTION == frozenset(
+            {ACP_BACKEND_CLAUDE, ACP_BACKEND_CODEX, ACP_BACKEND_OPENCODE}
+        )
 
 
 # --------------------------------------------------------------------------- #
@@ -736,20 +750,26 @@ class TestTheInPlaceArmStopsWaitingForAnInlineHarness:
             provider.wait_for_compaction.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_a_statusless_turn_is_not_awaited_for_an_inline_harness(self) -> None:
-        """No terminal in the stream means no compaction happened.
+    async def test_a_statusless_turn_is_answered_without_burning_the_budget(self) -> None:
+        """No terminal in the stream, and the path still must not wait one out.
 
-        For an inline harness the turn's terminal WAS the whole answer, so there
-        is no second result coming. The path recycles instead of waiting.
+        The answer lives on ``wait_for_compaction``, not here: the manual entry
+        points reach a compaction through ``provider.compact()`` and never through
+        this method, so an arm at this one call site leaves every one of those sites
+        stranding. The wait answers an inline member out of the capability, so this
+        call returns at once instead of spending ``COMPACT_WAIT_TIMEOUT_SECS`` while
+        holding the semaphore -- and a harness that did NOT compact is caught one
+        rung later, by the meter reading the coordinator takes once the compaction
+        reports done.
         """
         factory = _autocompact_provider_factory(ACP_BACKEND_CODEX, stream_status=None)
         async with _managed_manager(factory) as mgr:
             provider, _, _ = await mgr.get_or_create(_AUTOCOMPACT_KEY)
             mgr.release(_AUTOCOMPACT_KEY)
 
-            assert await mgr.compact_if_needed(_AUTOCOMPACT_KEY) == "recycled"
+            assert await mgr.compact_if_needed(_AUTOCOMPACT_KEY) in ("ok", "reset")
 
-            provider.wait_for_compaction.assert_not_awaited()
+            provider.wait_for_compaction.assert_awaited()
 
     @pytest.mark.asyncio
     async def test_a_non_inline_harness_keeps_its_asynchronous_wait(self) -> None:
@@ -765,30 +785,25 @@ class TestTheInPlaceArmStopsWaitingForAnInlineHarness:
             provider.wait_for_compaction.assert_awaited()
 
     def test_the_arm_is_chosen_by_capability_not_by_backend_name(self) -> None:
-        """The sibling work adds opencode, pi and goose to
-        ``ACP_BACKENDS_INLINE_COMPACTION``, and they must inherit this arm by
-        joining the set rather than by editing this method.
+        """A harness inherits this arm by joining
+        ``ACP_BACKENDS_INLINE_COMPACTION``, which is the property this pins -- at
+        the seam the arm lives on rather than at any one call site.
 
         Read off the parsed CODE, not the source text: a comment naming the
         capability would satisfy a substring check while the condition tested
         something else entirely, which makes the substring version pass on a tree
         where the gate has been deleted.
         """
-        tree = ast.parse(
-            textwrap.dedent(inspect.getsource(CompactionCoordinator._compact_in_place))
-        )
-        called = {
-            node.func.id
-            for node in ast.walk(tree)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-        }
-        assert "capabilities_of" in called
+        tree = ast.parse(textwrap.dedent(inspect.getsource(AcpProvider.wait_for_compaction)))
         attrs = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
         assert "compacts_inline" in attrs
         names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
         assert not any(
             n.startswith("ACP_BACKEND_") for n in names
         ), "the arm must not be selected by a harness identity"
+        # And the coordinator carries no second copy of it: a per-call-site read is
+        # how the manual routes end up stranding while this one method is served.
+        assert "compacts_inline" not in inspect.getsource(CompactionCoordinator._compact_in_place)
 
 
 def _stub_provider(impl: Any, backend: str) -> Any:

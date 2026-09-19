@@ -10557,6 +10557,29 @@ class AcpClient:
         """
         return self.backend in ACP_BACKENDS_STEER
 
+    def turn_finished_cleanly(self) -> bool:
+        """Whether the last turn reached its own end boundary uncancelled.
+
+        Asked by a capability that treats the turn's end AS its result -- an inline
+        compaction, whose harness emits no status frame, so the boundary is the only
+        evidence there is. The test is POSITIVE: the stop reason must BE
+        ``end_turn``, because "not cancelled" also admits a refusal, a token limit,
+        a reason this build does not recognise, and a turn that reported none.
+
+        ``_cancelled`` is checked as well, because a cancel that never got an ack
+        leaves the reason empty while the flag is already set -- and an unacked
+        cancel is exactly the case where whatever the turn was for is least likely
+        to have happened.
+
+        Declared HERE rather than read off ``_cancelled`` / ``_last_stop_reason``
+        from outside: both are this class's private turn state, and a consumer
+        reading them across the wrapper boundary would answer this question from a
+        shape it does not own -- silently, if either field were ever renamed.
+        """
+        if self._cancelled:
+            return False
+        return self._last_stop_reason == STOP_REASON_END_TURN
+
     async def wait_turn_done(self, timeout: float) -> str:
         """Wait for the current prompt to finish. Returns stop_reason or raises TimeoutError."""
         await asyncio.wait_for(self._turn_done.wait(), timeout=timeout)

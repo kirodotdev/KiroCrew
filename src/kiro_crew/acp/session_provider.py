@@ -36,6 +36,12 @@ from kiro_crew.acp.runtime import AcpRuntime, AcpRuntimeDead, AcpRuntimeError, A
 from kiro_crew.acp.session_handle import WatchdogSettings
 from kiro_crew.acp.types import (
     ACP_BACKENDS_COMPACT,
+    ACP_BACKENDS_CONTEXT_RECYCLE,
+)
+from kiro_crew.acp.types import (
+    ACP_BACKENDS_HARNESS_MANAGED_COMPACTION as ACP_BACKENDS_HARNESS_MANAGED,
+)
+from kiro_crew.acp.types import (
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_SESSION_EVICTION,
     STOP_REASON_END_TURN,
@@ -700,6 +706,29 @@ class AcpSessionProvider(LLMProvider):
         """
         backend = self.backend
         if not isinstance(backend, str) or backend in ACP_BACKENDS_COMPACT:
+            return None
+        return backend
+
+    @property
+    def compaction_self_managed(self) -> bool:
+        """Same membership answer as ``AcpProvider.compaction_self_managed``, for
+        the bare shared-subagent shape handed out without the wrapper."""
+        backend = self.backend
+        if not isinstance(backend, str):
+            return True
+        return backend in ACP_BACKENDS_COMPACT or backend in ACP_BACKENDS_HARNESS_MANAGED
+
+    @property
+    def compaction_unmanaged_backend(self) -> str | None:
+        """Backend id when neither Crew nor the harness compacts, else ``None``.
+
+        Same ``ACP_BACKENDS_CONTEXT_RECYCLE`` membership answer as
+        ``AcpProvider.compaction_unmanaged_backend``, for the bare
+        shared-subagent shape that is handed out without the ``AcpProvider``
+        wrapper.
+        """
+        backend = self.backend
+        if not isinstance(backend, str) or backend not in ACP_BACKENDS_CONTEXT_RECYCLE:
             return None
         return backend
 
