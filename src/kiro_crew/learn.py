@@ -79,7 +79,6 @@ def _is_owned_store_root(base_dir: Path) -> bool:
 
 
 _LESSONS_FILE = "lessons.jsonl"
-_MAX_LESSONS_IN_CONTEXT = 50
 _MAX_LESSONS_TOTAL = 200  # prune oldest when exceeded
 
 # One lock PER FILE, shared by every LessonStore instance addressing it. A
@@ -520,26 +519,53 @@ class LessonStore:
         ]
 
     @named_store_operation
-    def get_context(self, project_dir: str | Path | None = None) -> str:
+    def get_context(self, project_dir: str | Path | None = None, *, cap: int = 0) -> str:
         """Format lessons as context for injection into prompts.
 
         *project_dir* is the session's active project, used only by the
-        ``repo_scope`` gate; omitting it withholds every scoped lesson.
+        ``repo_scope`` gate; omitting it withholds every scoped lesson. ``cap``
+        is a model-safety ceiling for this rendered block, not the ordinary
+        background budget. Content at or below it is byte-identical to the
+        uncapped result; overflow keeps the newest complete lessons first.
         """
         lessons = self._applicable(self.load_all(), project_dir)
         if not lessons:
             return ""
 
-        lessons = lessons[-_MAX_LESSONS_IN_CONTEXT:]
+        def render(selected: list[Lesson], omitted: int = 0) -> str:
+            lines = [
+                "[Learned corrections — user-taught rules from past mistakes.\n"
+                "ALWAYS follow these. They override default behavior.]"
+            ]
+            for lesson in selected:
+                entry = f"- {lesson.rule}"
+                if lesson.negative:
+                    entry += f" — {lesson.negative}"
+                lines.append(entry)
+            lines.append("[End of learned corrections]\n")
+            context = "\n".join(lines)
+            if omitted:
+                context += (
+                    f"[Context budget: omitted {omitted} lessons above the model-safe "
+                    "protected-content ceiling; use memory_recall.]\n\n"
+                )
+            return context
 
-        lines = [
-            "[Learned corrections — user-taught rules from past mistakes.\n"
-            "ALWAYS follow these. They override default behavior.]"
-        ]
-        for lesson in lessons:
-            entry = f"- {lesson.rule}"
-            if lesson.negative:
-                entry += f" — {lesson.negative}"
-            lines.append(entry)
-        lines.append("[End of learned corrections]\n")
-        return "\n".join(lines)
+        full = render(lessons)
+        if not cap or len(full) <= cap:
+            return full
+
+        # JSONL has no relevance signal. Newest-first is the only stable ranking
+        # available when the model-safe ceiling forces a choice. Keep the longest
+        # newest-first prefix that fits, reserving room for the omission notice
+        # at its widest (every lesson omitted), so one pass over the list decides.
+        frame = len(render([], len(lessons)))
+        budget = cap - frame
+        selected: list[Lesson] = []
+        for lesson in reversed(lessons):
+            entry = len(lesson.rule) + 3 + (len(lesson.negative) + 3 if lesson.negative else 0)
+            if entry > budget:
+                break
+            budget -= entry
+            selected.append(lesson)
+        return render(selected, len(lessons) - len(selected))

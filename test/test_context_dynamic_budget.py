@@ -1,12 +1,4 @@
-"""Dynamic context-budget scaling: section caps scale proportionally with the
-active model's context window.
-
-The historical caps (``_CONTEXT_BUDGET_BASE`` and its derived section caps) were
-hand-tuned for a 1M-token window. This suite pins the contract that the SAME
-percentage of the window is spent on memory/lessons/history regardless of model
-size — e.g. a section that consumes 20% of a 1M window must consume 20% of a
-200K window too (i.e. one-fifth the absolute chars).
-"""
+"""Crew background admission is fixed; replay and native-window metadata are separate."""
 
 from __future__ import annotations
 
@@ -60,53 +52,27 @@ def test_all_caps_at_reference_window_equal_module_constants():
 # ── Proportional scaling (the core spec) ─────────────────────────────────────
 
 
-def test_caps_scale_linearly_to_one_fifth_at_200k():
-    # 200K is one-fifth of the 1M reference, so every cap is one-fifth its
-    # 1M value (the user's "20% of 1M → 20% applied to 200K" requirement).
-    caps = ctx._resolve_caps(200_000)
-    assert caps.memory_history == ctx._MEMORY_HISTORY_CAP // 5
-    assert caps.lessons == ctx._LESSONS_CAP // 5
-    assert caps.semantic == ctx._SEMANTIC_MEMORY_CAP // 5
-    assert caps.episodic == ctx._EPISODIC_MEMORY_CAP // 5
-    assert caps.prefs == ctx._MEMORY_PREFS_CAP // 5
-    assert caps.projects == ctx._MEMORY_PROJECTS_CAP // 5
+def test_background_caps_are_fixed_at_200k():
+    assert ctx._resolve_caps(200_000).skills == ctx._resolve_caps(1_000_000).skills
+    assert ctx._resolve_caps(200_000).history_fallback == 6930
+    assert ctx._resolve_caps(1_000_000).history_fallback == 34650
 
 
-def test_percentage_of_window_is_invariant_across_models():
-    # The whole point: a section's share of the WINDOW is the same on a 200K
-    # model as on a 1M model, even though the absolute char count differs 5x.
-    caps_1m = ctx._resolve_caps(1_000_000)
-    caps_200k = ctx._resolve_caps(200_000)
-    share_1m = caps_1m.lessons / 1_000_000
-    share_200k = caps_200k.lessons / 200_000
-    assert share_1m == pytest.approx(share_200k, rel=1e-3)
+@pytest.mark.parametrize("window", [1000, 200_000, 1_000_000, 2_000_000])
+def test_absolute_background_budget_is_invariant_across_models(window):
+    assert ctx._resolve_caps(window).base == ctx._CONTEXT_BUDGET_BASE
 
 
-def test_larger_than_reference_window_scales_up():
-    # A hypothetical 2M model gets double the caps (the scaling is not clamped
-    # to shrink-only — it is genuinely proportional).
-    caps = ctx._resolve_caps(2_000_000)
-    assert caps.base == 2 * ctx._CONTEXT_BUDGET_BASE
+def test_larger_than_reference_window_cannot_expand_background():
+    assert ctx._resolve_caps(2_000_000).base == ctx._CONTEXT_BUDGET_BASE
 
 
 # ── Global ceiling stays the sum of scaled section caps ──────────────────────
 
 
-def test_global_ceiling_is_sum_of_scaled_section_caps():
+def test_global_ceiling_is_shared_not_additive():
     caps = ctx._resolve_caps(200_000)
-    expected = (
-        caps.compressed_history
-        + caps.prefs
-        + caps.projects
-        + caps.memory_history
-        + caps.semantic
-        + caps.episodic
-        + caps.lessons
-        + caps.skills
-        + caps.steering
-        + caps.preamble_headroom
-    )
-    assert caps.max_context == expected
+    assert caps.max_context == caps.base
 
 
 # ── Fail-safe fallbacks (must never shrink the default deployment) ───────────
@@ -134,36 +100,23 @@ def test_tiny_window_is_floored_not_zeroed():
 # ── End-to-end: build_session_context honours the resolved window ────────────
 
 
-def test_build_session_context_scales_memory_for_small_window(tmp_path):
-    ws = tmp_path / "ws"
-    store = MemoryStore(workspace=ws)
-    # A history far larger than a 200K model's scaled history cap but smaller
-    # than the 1M cap, so the two windows must yield different truncation.
-    big = "HISTLINE " * 6000  # ~54k chars
-    store.write_projects("# Projects\n\n" + big)
-
+def test_build_session_context_does_not_load_old_projects_for_any_window(tmp_path):
+    store = MemoryStore(workspace=tmp_path / "ws")
+    store.write_projects("# Projects\n\n" + "OLD TASK FACT " * 6000)
     builder = _builder_for(store, tmp_path)
-
-    ctx_1m = builder.build_session_context(model_window=1_000_000)
-    ctx_200k = builder.build_session_context(model_window=200_000)
-
-    # The 200K context must be strictly smaller — the projects section is
-    # truncated harder under the scaled-down cap.
-    assert len(ctx_200k) < len(ctx_1m)
+    for window in (200_000, 1_000_000, 2_000_000):
+        text = builder.build_session_context(model_window=window)
+        assert "OLD TASK FACT " * 100 not in text
+        assert "# Projects" in text
+        assert "memory_recall" in text
 
 
 # ── per_message cap scales with the history budget ───────────────────────────
 
 
-def test_per_message_cap_scales_and_never_exceeds_history_budget():
-    # Regression: _PER_MESSAGE_CAP was fixed at 8000 while history_fallback
-    # scaled down, so on a 200K window one big recent message (~8000 chars)
-    # exceeded the whole scaled history budget (~6930) and dropped ALL history.
-    caps = ctx._resolve_caps(200_000)
-    assert caps.per_message == ctx._PER_MESSAGE_CAP // 5
-    # The call site clamps to min(per_message, budget); assert the raw scaled
-    # value is itself below the reference per-message cap so scaling happened.
-    assert caps.per_message < ctx._PER_MESSAGE_CAP
+def test_per_message_allowance_scales_with_model_window():
+    assert ctx._resolve_caps(200_000).per_message == 1600
+    assert ctx._resolve_caps(2_000_000).per_message == 16000
 
 
 def test_small_window_still_injects_recent_history(tmp_path):

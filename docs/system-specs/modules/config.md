@@ -1910,7 +1910,7 @@ class MessagingConfig:
 @dataclass
 class SkillsConfig:
     max_triggered: int = 0         # max skills loaded per message (>=0)
-    lazy_load: bool = False        # inject only a usage-ranked top-K of on-demand skills (long tail via skill_search / $skillname / triggers); off = legacy full skills dump
+    lazy_load: bool = False        # false = short skill_search entry; true = bounded usage-ranked index; neither expands background admission
     # ... auto_create_from_sessions / auto_refine_on_deviation / extra_paths
 
 @dataclass
@@ -2678,3 +2678,17 @@ When `agent.model` is `"auto"` (default):
 - Missing file → defaults
 - Invalid JSON → defaults (warning logged)
 - Missing fields → individual defaults
+
+### Default context discovery
+
+`skills.max_triggered=0` disables per-message trigger injection, not discovery.
+The default entry shows up to eight usage-ranked names and short purposes plus
+`skill_search` guidance for short keywords. `lazy_load=true` selects a longer,
+bounded ranked index. Both preserve pinned instructions, confined project-body
+limits and explicit loading. Thread history scales with the model window
+independently of the fixed old-activity allowance; no additional config switches
+are introduced. The model window also derives the non-configurable protected-content
+safety ceiling: `max(3 * 33,000, floor(window_tokens * 4.0 * 0.125))` characters.
+Crossing it omits complete lesson entries first and reports their count; preferences,
+safety rules, and date/runtime identity stay whole. This does not change the fixed
+33,000-character optional-content allowance.

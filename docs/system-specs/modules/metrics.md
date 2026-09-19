@@ -1857,3 +1857,31 @@ needed because a same-day backfill's 23:59 is in the future and
 only fail verification. Because `_ensure_downloaded()` returns early when
 `model_ready()`, a CDN request is a **first-install** signal, not a DAU signal —
 the dashboard shows it as "downloads", deliberately separate from DAI.
+
+### Crew assembly extents
+
+`context_blocks.measure_prompt` reuses the existing marker classifier and an
+authoritative user span to report exact characters and UTF-8 bytes at the
+`crew_assembly` boundary. `ContextBuilder.build_message` emits both through the
+existing recorder as `kirocrew.context.block.chars` and `.bytes`, with bounded
+`section`, `domain`, `boundary` and `lifecycle` attributes. Lifecycles are fresh,
+warm, resume, reinjection and minimal; they describe composition, not proof of
+provider receipt or retention. Domains distinguish request, contract, replay,
+following-interaction guidance and background. Unknown marker gaps remain visible.
+No body, source path, user identity, token conversion or cost is recorded.
+
+The reading explicitly reports `native=UNKNOWN` and `external_mcp=UNKNOWN`.
+Provider-owned history, resources, native prompts and external MCP serialization
+cannot be measured from this string. Dashboard prefixes added after this boundary
+remain covered by the existing final-prompt character classifier, not by a claim
+that the assembly reading measured them. These extents are not full model input.
+Synthetic Unicode fixtures assert both closure sums and request attribution.
+
+### Crew assembly measurement gate
+
+`ContextBuilder.build_message` skips `measure_prompt` when both its metrics
+recorder and DEBUG logging are disabled. Attribution depends on the caller's
+accurate `user_text_range`: Slack passes the actual user's slice after adding a
+cancelled-turn restore prefix, so that prefix remains context rather than request
+text. Character and UTF-8 byte totals describe Crew assembly only; native provider
+inputs, external MCP schemas and actual model calling behavior remain unmeasured.

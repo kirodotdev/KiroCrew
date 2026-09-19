@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import unicodedata
 from typing import Any
+
+from kiro_crew import embeddings, memory_v2
 
 MAX_RECALL_PAYLOAD_BYTES = 16_384
 # MCP-mode accounting includes the default-json.dumps TextContent envelope,
@@ -32,6 +35,20 @@ _TEXT_FIELDS = (
 )
 
 
+def recall_terms(text: str) -> frozenset[str]:
+    """Reuse memory's CJK/identifier tokenizer without question filler."""
+    text = re.sub(
+        r"进度|怎么样|怎么|如何|什么|请问|帮我|告诉我|一下|是否|那个|这个|上次|继续", " ", text
+    )
+    text = re.sub(
+        r"\b(?:which project does|belong to|know about|what is the status of)\b",
+        " ",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return memory_v2.terms(text)
+
+
 def v2_operating_point(recorded_signature: str | None, *, embed_fn: object = None) -> dict:
     """Qualify the provisional Qwen operating points without changing recall.
 
@@ -39,8 +56,6 @@ def v2_operating_point(recorded_signature: str | None, *, embed_fn: object = Non
     of future default model changes. A matching signature is not calibration or
     proof of identical weights. No model is constructed or inspected here.
     """
-    from kiro_crew import embeddings, memory_v2
-
     reference = embeddings.embedding_space_signature("qwen3-embedding:0.6b", 1024)
     active, source = embeddings.peek_shared_embedding_identity()
     if embed_fn is not None and embed_fn is not embeddings.make_sync_embed_fn():
@@ -200,8 +215,25 @@ def bound_recall_payload(
     else:
         result = dict(payload)
     retrieval = dict(result.get("retrieval") or {})
-    facts = list(retrieval.get("facts") or [])
-    episodes = list(retrieval.get("episodes") or [])
+
+    def unique_evidence(rows: list[dict]) -> list[dict]:
+        # Presentation-only deduplication. A stable record identity AND identical
+        # evidence are required: equal prose from different sources is not a
+        # duplicate, nor are different revisions of one record. Never touch storage.
+        seen: set[tuple[str, str]] = set()
+        selected = []
+        for row in rows:
+            identity = row.get("id")
+            if isinstance(identity, str) and identity:
+                key = (identity, _encoded(row))
+                if key in seen:
+                    continue
+                seen.add(key)
+            selected.append(row)
+        return selected
+
+    facts = unique_evidence(list(retrieval.get("facts") or []))
+    episodes = unique_evidence(list(retrieval.get("episodes") or []))
     retrieval.update(facts=facts, episodes=episodes)
     result["retrieval"] = retrieval
     omitted = int(retrieval.get("omitted_for_payload_budget", 0))
@@ -260,15 +292,18 @@ def bound_recall_payload(
                 rows[index]["text_truncated"] = True
             else:
                 rows[index]["snippet_truncated"] = True
-        elif episodes:
-            episodes.pop()
-            omitted += 1
-        elif facts:
-            facts.pop()
-            omitted += 1
         elif result.get("lessons_context"):
             result["lessons_context"] = ""
             retrieval["lessons_omitted_for_payload_budget"] = True
+        elif facts or episodes:
+            # A shared relevance scale is supplied when Markdown is merged.
+            # Missing scores retain the store's original ranked selection.
+            candidates = [
+                (rows[-1].get("recall_relevance", 1.0), rows) for rows in (facts, episodes) if rows
+            ]
+            _, rows = min(candidates, key=lambda candidate: candidate[0])
+            rows.pop()
+            omitted += 1
         else:
             # Defensive refusal for a future caller adding unbounded metadata.
             return {
