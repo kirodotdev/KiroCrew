@@ -67,18 +67,22 @@ logger = logging.getLogger(__name__)
 # Any file older than this threshold is garbage regardless of PID liveness.
 _LAUNCHER_MAX_AGE_SECONDS = 3600
 
-#: Run-directory artifact families the sweep reclaims, by filename prefix ->
-#: accepted suffixes. Every family tags the writing process's PID right after the
-#: prefix. ``kirocrew_sandbox_``: per-spawn launchers and Seatbelt profiles,
-#: consumed once at exec. ``kirocrew_pi_gate_``: the pi tool-gate launcher and
-#: the sealed extension copy (``acp/client.py``), written once per gateway
-#: process and reused by its later spawns.
+#: Artifact families the sweep reclaims, by filename prefix -> accepted
+#: suffixes. Every family tags the writing process's PID after the prefix.
 _SANDBOX_ARTIFACT_PREFIX = "kirocrew_sandbox_"
+_PI_GATE_ARTIFACT_PREFIX = "kirocrew_pi_gate_"
+# Named ONCE because two sweeps accept this family: the run dir still holds artifacts
+# written before they moved, and the gate dir holds the current ones. Two spellings could
+# drift and leave one of those directories unswept. ``.tmp`` is the mkstemp stage both pi
+# artifacts pass through before publication.
+_PI_GATE_ARTIFACT_SUFFIXES: tuple[str, ...] = (".sh", ".cmd", ".ts", ".tmp")
 _RUN_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
     _SANDBOX_ARTIFACT_PREFIX: (".sb", ".py"),
-    # ``.tmp`` is the mkstemp stage both pi artifacts are written under before
-    # the rename; a crash between the two leaves it behind under the same PID.
-    "kirocrew_pi_gate_": (".sh", ".cmd", ".ts", ".tmp"),
+    # The run sweep accepts pi artifacts as well as sandbox launchers.
+    _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
+}
+_PI_GATE_DIR_ARTIFACTS: dict[str, tuple[str, ...]] = {
+    _PI_GATE_ARTIFACT_PREFIX: _PI_GATE_ARTIFACT_SUFFIXES,
 }
 
 # Bind-mount SOURCES staged by the namespace launcher (empty dirs/files bound
@@ -489,6 +493,21 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # an owner address-bar launch. The gateway installer runs outside the agent
     # sandbox, so it can still replace the managed copy.
     "playwright-cli",
+    # The pi gate launcher and sealed extension must be readable and executable by
+    # the enforced harness's child, but never writable by it. The launcher cache
+    # accepts an existing path after ``isfile`` without re-verifying its content, so
+    # a writable child could plant the launcher a later session executes.
+    #
+    # On the precreate and no-follow lists above as well, for the same two reasons
+    # ``playwright-cli`` is: ``mount(2)`` cannot seal an absent path, so a leaf left off
+    # them stays WRITABLE in-sandbox until pi first runs, and the mounted NAME has to
+    # stay the real directory because the gateway later execs out of it. Those lists are
+    # walked identically for every backend and carry no per-adapter branch, so an
+    # unsafe state here refuses the spawn exactly as it does for any other entry.
+    # ``acp/client.py``'s ``_pi_gate_artifact_dir`` re-checks the same states on the pi
+    # spawn path, before the sandbox is built, so a pi session refuses with a message
+    # that names the directory it actually resolves.
+    "pi-gate",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -986,6 +1005,10 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
     # which is the state of every install that has never sampled a decision, and
     # leaves exactly the name an agent would create in order to forge a verdict.
     "decisions",
+    # Pi's gate launcher and sealed extension. Materialised here rather than only by
+    # the adapter so the directory is a read-only mountpoint before ANY sandbox starts,
+    # including the first pi spawn on a fresh install.
+    "pi-gate",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
@@ -998,6 +1021,7 @@ _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
     "subagents",
     "member-memory-bindings",
     "decisions",
+    "pi-gate",
 )
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
@@ -6881,7 +6905,7 @@ def _parse_pid_segment(pid_str: str) -> int | None:
 
 
 def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = None) -> int:
-    """Remove orphan sandbox files from <config_dir>/run/ and legacy /tmp.
+    """Remove orphan sandbox files from runtime artifact directories and legacy /tmp.
 
     A file is removed when EITHER:
       - The tagged PID is dead (os.kill probe fails), OR
@@ -6912,51 +6936,98 @@ def cleanup_stale_sandbox_profiles(*, data_home: Path, legacy_dir: str | None = 
     now = time.time()
     if legacy_dir is None:
         legacy_dir = _LEGACY_LAUNCHER_DIR
-    run_dir = str(data_home / "run")
+    artifact_dirs = (
+        (str(data_home / "run"), _RUN_DIR_ARTIFACTS),
+        (str(data_home / "pi-gate"), _PI_GATE_DIR_ARTIFACTS),
+    )
     removed = 0
 
-    # ── Sweep <config_dir>/run/ (PID + age) ──
-    if os.path.isdir(run_dir):
-        for entry in os.listdir(run_dir):
-            prefix = next((p for p in _RUN_DIR_ARTIFACTS if entry.startswith(p)), None)
-            if prefix is None:
-                continue
-            suffix = next((x for x in _RUN_DIR_ARTIFACTS[prefix] if entry.endswith(x)), None)
-            if suffix is None:
-                continue
-            filepath = os.path.join(run_dir, entry)
-            # Age check first — handles the spawner-PID design flaw. Not for the
-            # pi gate artifacts: those are written once per gateway process and
-            # REUSED by every later spawn of that process, so their age says
-            # nothing, and the PID in their name is the owner's own.
-            try:
-                mtime = os.stat(filepath).st_mtime
-            except OSError:
-                continue
-            if prefix == _SANDBOX_ARTIFACT_PREFIX and (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+    # ── Sweep runtime artifact directories (PID + age) ──
+    for artifact_dir, families in artifact_dirs:
+        artifact_fd: int | None = None
+        try:
+            if platform_compat.IS_WINDOWS:
+                # Windows has no os-level pinned-directory primitive, so this
+                # check-then-act arm retains an accepted replacement window.
+                if platform_compat.is_link_or_junction(artifact_dir):
+                    logger.warning(
+                        "Refusing to sweep linked or non-directory artifact directory: %s",
+                        artifact_dir,
+                    )
+                    continue
+                if not os.path.isdir(artifact_dir):
+                    continue
+                entries = os.listdir(artifact_dir)
+            else:
                 try:
-                    os.remove(filepath)
-                    removed += 1
-                except OSError:
-                    pass
-                continue
-            # Fresh file — fall back to PID liveness check
-            middle = entry[len(prefix) : -len(suffix)]
-            pid = _parse_pid_segment(middle.split("_", 1)[0])
-            if pid is None:
-                continue
-            # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
-            # TERMINATES the target process on Windows (see platform_compat).
-            try:
-                alive = platform_compat.pid_exists(pid)
-            except OverflowError:
-                alive = False  # absurd pid digits from a corrupt filename — stale
-            if not alive:
+                    artifact_fd = os.open(
+                        artifact_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+                    )
+                except OSError as exc:
+                    if exc.errno == errno.ENOENT:
+                        continue
+                    if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                        logger.warning(
+                            "Refusing to sweep linked or non-directory artifact directory: %s",
+                            artifact_dir,
+                        )
+                        continue
+                    raise
+                with os.scandir(artifact_fd) as iterator:
+                    entries = [entry.name for entry in iterator]
+
+            for entry in entries:
+                prefix = next((p for p in families if entry.startswith(p)), None)
+                if prefix is None:
+                    continue
+                suffix = next((x for x in families[prefix] if entry.endswith(x)), None)
+                if suffix is None:
+                    continue
+                filepath = os.path.join(artifact_dir, entry)
+                # Age check first — handles the spawner-PID design flaw. Not for the
+                # pi gate artifacts: those are written once per gateway process and
+                # REUSED by every later spawn of that process, so their age says
+                # nothing, and the PID in their name is the owner's own.
                 try:
-                    os.remove(filepath)
-                    removed += 1
+                    if artifact_fd is None:
+                        mtime = os.stat(filepath).st_mtime
+                    else:
+                        mtime = os.stat(entry, dir_fd=artifact_fd, follow_symlinks=False).st_mtime
                 except OSError:
-                    pass
+                    continue
+                if prefix == _SANDBOX_ARTIFACT_PREFIX and (now - mtime) > _LAUNCHER_MAX_AGE_SECONDS:
+                    try:
+                        if artifact_fd is None:
+                            os.remove(filepath)
+                        else:
+                            os.unlink(entry, dir_fd=artifact_fd)
+                        removed += 1
+                    except OSError:
+                        pass
+                    continue
+                # Fresh file — fall back to PID liveness check
+                middle = entry[len(prefix) : -len(suffix)]
+                pid = _parse_pid_segment(middle.split("_", 1)[0])
+                if pid is None:
+                    continue
+                # Liveness probe via the shim — NEVER raw os.kill(pid, 0), which
+                # TERMINATES the target process on Windows (see platform_compat).
+                try:
+                    alive = platform_compat.pid_exists(pid)
+                except OverflowError:
+                    alive = False  # absurd pid digits from a corrupt filename — stale
+                if not alive:
+                    try:
+                        if artifact_fd is None:
+                            os.remove(filepath)
+                        else:
+                            os.unlink(entry, dir_fd=artifact_fd)
+                        removed += 1
+                    except OSError:
+                        pass
+        finally:
+            if artifact_fd is not None:
+                os.close(artifact_fd)
 
     # ── Sweep legacy /tmp/kirocrew_sandbox_*.py (age only, no PID segment) ──
     if os.path.isdir(legacy_dir):
