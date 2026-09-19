@@ -1256,6 +1256,33 @@ that must not change, because the SPA's per-origin `localStorage` is keyed on it
    `stop` names the pid(s) — with the cmdline basename when cheap — and exits 1 with SEL
    `reason=unrecognized_listener`, rather than reporting "no gateway running" for a port
    that is occupied.
+   Before that refusal, the authenticated shutdown is tried once more, with SEL
+   `reason=argv_declined_listener` (the empty-lookup attempt above carries
+   `reason=listener_lookup_empty`, so the two paths stay separable). argv is the
+   weakest identity a gateway has — every spawn shape has to be taught to the
+   patterns, and the desktop app's is not among them — while the per-generation
+   secret is published by the gateway at startup whatever its command line reads.
+   Answering the request shuts down the answerer, so no pid is guessed or
+   signalled on that path, and a listener that does not answer keeps the
+   `unrecognized_listener` refusal exactly as before.
+   The request is made only once the process that will RECEIVE the secret is
+   proven to be this port's gateway (`_verified_loopback_gateway_pids`), because
+   the secret mints owner tokens and reachability is not identity. The proof is
+   the one `port_resolution._gateway_owns_port` documents, minus its argv step —
+   which that contract itself keeps as defense in depth rather than proof —
+   plus the start identity and the address: the pid and `.start` token recorded
+   in `run/gateway-<port>.pid` (0600 inside the 0700 `run/` dir, on the
+   `is_sensitive_path` floor), that token still matching the live pid's, that pid
+   among the ones a `127.0.0.1` connect actually reaches
+   (`platform_compat.loopback_owner_pids`, which mirrors the kernel's
+   most-specific-bind dispatch, so a gateway bound to another address cannot
+   vouch for a process squatting loopback), and the pid owned by this account.
+   Every step fails closed, and the path denies outright off POSIX where
+   `process_owner_uid` reports no owner — the same boundary `_gateway_owns_port`
+   draws. `restart` reuses that proof: when a listener was found but the argv
+   filter named no incumbent, it resolves the answering pid BEFORE the stop
+   (afterwards the identity is gone) and waits for it, since who must release the
+   port before a replacement can bind is answered by who answered, not by argv.
 4. Terminate each verified PID: `os.kill(SIGTERM)` on POSIX; `taskkill /T /F`
    (via `platform_compat.kill_process_tree`) on Windows so the gateway's detached
    children are reaped too. Liveness is probed with `platform_compat.pid_exists`

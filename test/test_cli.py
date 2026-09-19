@@ -2320,7 +2320,12 @@ class TestStop:
         # but name the pid so the operator can see what holds the port.
         from kiro_crew.cli_server import _stop
 
-        with self._mock_sel(), self._ports([1234]), self._cmdline("nginx: worker"):
+        with (
+            self._mock_sel(),
+            self._ports([1234]),
+            self._cmdline("nginx: worker"),
+            self._endpoint(False),
+        ):
             with pytest.raises(SystemExit) as exc:
                 _stop(5476)
             assert exc.value.code == 1
@@ -2335,7 +2340,12 @@ class TestStop:
         from kiro_crew.cli_server import _stop
 
         quoted = '"/opt/some tool/bin/otherd" --port 5476'
-        with self._mock_sel(), self._ports([4321]), self._cmdline(quoted):
+        with (
+            self._mock_sel(),
+            self._ports([4321]),
+            self._cmdline(quoted),
+            self._endpoint(False),
+        ):
             with pytest.raises(SystemExit):
                 _stop(5476)
         out = capsys.readouterr().out
@@ -2349,7 +2359,12 @@ class TestStop:
         from kiro_crew.cli_server import _MAX_ECHOED_NAME_LEN, _stop, _terminal_safe_name
 
         hostile = "/tmp/\x1b[31mred\x1b[0m\x1b]0;owned\x07" + "x" * 200
-        with self._mock_sel(), self._ports([4321]), self._cmdline(f"'{hostile}' --port 5476"):
+        with (
+            self._mock_sel(),
+            self._ports([4321]),
+            self._cmdline(f"'{hostile}' --port 5476"),
+            self._endpoint(False),
+        ):
             with pytest.raises(SystemExit):
                 _stop(5476)
         out = capsys.readouterr().out
@@ -2467,6 +2482,197 @@ class TestStop:
         # (which exits 1 here because no listener is found on 8089).
         assert "No Kiro Crew gateway" in capsys.readouterr().out
 
+    # ---- a listener argv cannot name: the desktop-app spawn shape -----------
+
+    #: The app spawns a bare interpreter inside the toolbox payload, which no
+    #: ``_args_look_like_kirocrew`` pattern matches.
+    APP_ARGV = (
+        "/Applications/KiroCrew.app/Contents/Resources/backend-dist/"
+        "kirocrew-backend-arm64/bin/python3.12 /Applications/KiroCrew.app/"
+        "Contents/Resources/backend-dist/kirocrew-backend-arm64/serve.py"
+    )
+
+    def _kill_patch(self):
+        """Patch the signal call the running OS takes, and return it."""
+        if sys.platform == "win32":
+            return patch(
+                "kiro_crew.cli_server.platform_compat.kill_process_tree", return_value=True
+            )
+        return patch("os.kill")
+
+    def _endpoint(self, answers):
+        """Whether the process on the port answers the authenticated shutdown."""
+        return patch("kiro_crew.cli_server._request_gateway_shutdown", return_value=answers)
+
+    def _proven(self, pids):
+        """Which pids the identity proof vouches for as this port's gateway."""
+        return patch("kiro_crew.cli_server._verified_loopback_gateway_pids", return_value=pids)
+
+    @staticmethod
+    def _identity_inputs(
+        *, record=(50519, "tok"), live_token="tok", loopback=(50519,), uid=1000, posix=True
+    ):
+        """Every input the identity proof reads, each independently settable."""
+        return [
+            patch("kiro_crew.cli_server.platform_compat.IS_POSIX", posix),
+            patch("kiro_crew.cli_server.run_marker.read_pid_record_path", return_value=record),
+            patch("kiro_crew.cli_server.run_marker.pid_start_token", return_value=live_token),
+            patch("kiro_crew.cli_server.platform_compat.find_port_listeners", return_value=[]),
+            patch(
+                "kiro_crew.cli_server.platform_compat.loopback_owner_pids",
+                return_value=list(loopback),
+            ),
+            patch("kiro_crew.cli_server.platform_compat.process_owner_uid", return_value=uid),
+            patch("kiro_crew.cli_server.os.getuid", create=True, return_value=1000),
+        ]
+
+    def _proof(self, **kwargs):
+        """Run the identity proof with *kwargs* overriding one input at a time."""
+        from kiro_crew.cli_server import _verified_loopback_gateway_pids
+
+        with contextlib.ExitStack() as stack:
+            for ctx in self._identity_inputs(**kwargs):
+                stack.enter_context(ctx)
+            return _verified_loopback_gateway_pids(5476)
+
+    def test_the_identity_proof_vouches_for_the_recorded_loopback_gateway(self):
+        """All four parts line up: the recorded pid is who answers, and it is ours."""
+        assert self._proof() == [50519]
+
+    def test_the_identity_proof_refuses_a_squatter_on_loopback(self):
+        """Our gateway bound elsewhere, someone else holding loopback.
+
+        The recorded pid is not who a ``127.0.0.1`` request would reach, so the
+        secret is not handed to whoever is.
+        """
+        assert self._proof(loopback=(99999,)) == []
+
+    def test_the_identity_proof_refuses_a_recycled_pid(self):
+        """A pid left behind by a crash and reused cannot inherit the claim."""
+        assert self._proof(live_token="different") == []
+        assert self._proof(record=(50519, "")) == []
+
+    def test_the_identity_proof_refuses_a_process_owned_by_someone_else(self):
+        """Pid recycling into another account's process is what the uid closes."""
+        assert self._proof(uid=4242) == []
+
+    def test_the_identity_proof_refuses_without_a_record_or_off_posix(self):
+        """No recorded identity, and no platform to prove it on, both deny."""
+        assert self._proof(record=None) == []
+        assert self._proof(posix=False) == []
+
+    def test_argv_declines_the_app_spawn_shape(self):
+        """The premise of the tests below, asserted rather than assumed."""
+        from kiro_crew.cli_server import _args_look_like_kirocrew
+
+        assert _args_look_like_kirocrew(self.APP_ARGV) is False
+
+    def test_an_argv_declined_listener_is_asked_to_stop_itself(self, capsys):
+        """A gateway argv cannot name is still reachable as a gateway.
+
+        The desktop app spawns a bare interpreter, which the argv patterns
+        decline. Identity comes from the gateway instead: it is asked to stop
+        ITSELF over one loopback request carrying this generation's secret, which
+        it publishes at startup whatever its command line reads. Nothing is
+        signalled, so no pid is guessed.
+        """
+        from kiro_crew.cli_server import _stop
+
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            self._ports([50519]),
+            self._cmdline(self.APP_ARGV),
+            self._proven([50519]),
+            self._endpoint(True),
+            self._kill_patch() as mock_kill,
+        ):
+            _stop(5476)
+        out = capsys.readouterr().out
+        assert "graceful shutdown" in out
+        assert "not recognised" not in out
+        mock_kill.assert_not_called()
+        reasons = [c.kwargs["resources"] for c in mock_sel.log_api_access.call_args_list]
+        assert any("reason=argv_declined_listener" in r and "via=api" in r for r in reasons)
+
+    def test_a_listener_that_does_not_answer_is_still_refused(self, capsys):
+        """The control: only a process that proves itself is stopped.
+
+        Nothing answers the authenticated request -- no secret, or a stranger on
+        the port -- so the existing refusal stands, exit 1, and no pid is
+        signalled. Being unrecognised is not by itself permission to act.
+        """
+        from kiro_crew.cli_server import _stop
+
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            self._ports([50519]),
+            self._cmdline(self.APP_ARGV),
+            self._proven([50519]),
+            self._endpoint(False),
+            self._kill_patch() as mock_kill,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop(5476)
+            assert exc.value.code == 1
+        assert "not recognised" in capsys.readouterr().out
+        mock_kill.assert_not_called()
+        reasons = [c.kwargs["resources"] for c in mock_sel.log_api_access.call_args_list]
+        assert any("reason=unrecognized_listener" in r for r in reasons)
+        assert not any("reason=argv_declined_listener" in r for r in reasons)
+
+    def test_an_unproven_responder_is_never_sent_the_secret(self, capsys):
+        """No identity, no request -- the refusal comes first.
+
+        The request carries the per-generation secret, which mints owner tokens,
+        so a listener the proof cannot vouch for must not receive it. The stop
+        refuses exactly as it does for any other unrecognised listener.
+        """
+        from kiro_crew.cli_server import _stop
+
+        mock_sel = MagicMock()
+        with (
+            patch("kiro_crew.cli_server.sel", return_value=mock_sel),
+            self._ports([50519]),
+            self._cmdline(self.APP_ARGV),
+            self._proven([]),
+            patch("kiro_crew.cli_server._request_gateway_shutdown") as mock_request,
+            self._kill_patch() as mock_kill,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _stop(5476)
+            assert exc.value.code == 1
+        mock_request.assert_not_called()
+        assert "not recognised" in capsys.readouterr().out
+        mock_kill.assert_not_called()
+        reasons = [c.kwargs["resources"] for c in mock_sel.log_api_access.call_args_list]
+        assert any("reason=unrecognized_listener" in r for r in reasons)
+
+    def test_a_recognised_listener_is_not_asked_over_the_endpoint(self, capsys):
+        """The endpoint is the fallback, never a substitute for the usual path.
+
+        A listener the argv check DOES classify keeps the ordinary SIGTERM, and
+        the request is not made at all -- otherwise every stop would depend on an
+        HTTP round trip the pid path never needed.
+        """
+        from kiro_crew.cli_server import _stop
+
+        with (
+            self._mock_sel(),
+            self._ports([1234]),
+            self._cmdline("python3 -m kiro_crew gateway"),
+            patch("time.sleep"),
+            patch("kiro_crew.cli_server.platform_compat.pid_exists", return_value=False),
+            patch("kiro_crew.cli_server._stop_mcp_gateway_daemon"),
+            patch("kiro_crew.cli_server._request_gateway_shutdown") as mock_endpoint,
+            self._kill_patch(),
+        ):
+            _stop(5476)
+        mock_endpoint.assert_not_called()
+        out = capsys.readouterr().out
+        assert "SIGTERM" in out or "Terminated" in out
+
 
 class TestWaitForPidsExit:
     """Tests for the bounded ``_wait_for_pids_exit`` helper."""
@@ -2564,6 +2770,17 @@ class TestRestart:
 
     def _mock_sel(self):
         return patch("kiro_crew.cli_server.sel", return_value=MagicMock())
+
+    def _lock_file(self, tmp_path, *, mode=0o600):
+        """A real ``gateway.lock`` in a patched config dir (see ``TestStop``)."""
+        path = tmp_path / "gateway.lock"
+        path.write_text("50519\n")
+        path.chmod(mode)
+        return patch("kiro_crew.cli_server.config_dir", return_value=tmp_path)
+
+    def _lock_private(self, answer):
+        """Pin the lock-permission seam (see ``TestStop._lock_private``)."""
+        return patch("kiro_crew.cli_server._lock_file_is_account_private", return_value=answer)
 
     def test_service_active_restarts_via_controller(self, capsys):
         from kiro_crew.cli_server import _restart
@@ -2968,6 +3185,12 @@ class TestRestart:
                 "kiro_crew.cli_server.platform_compat.find_listening_pids",
                 return_value=[1234],
             ),
+            # A RUNNING gateway, per this test's name: argv classifies it, so it
+            # is the incumbent by that route and the endpoint path is not
+            # involved. The wait is stubbed so the assertion never depends on
+            # whether pid 1234 happens to exist on the host.
+            patch("kiro_crew.cli_server._is_kirocrew_process", return_value=True),
+            patch("kiro_crew.cli_server._wait_for_pids_exit", return_value=[]),
             patch("kiro_crew.cli_server._stop") as mock_stop,
             patch(
                 "kiro_crew.cli_server._spawn_detached_gateway",
@@ -3096,7 +3319,14 @@ class TestRestart:
 
         ``find_listening_pids`` reports whatever holds the port. Blocking on a
         foreign process would make restart hang for the full timeout and then
-        refuse, so the wait set is filtered by ``_is_kirocrew_process``.
+        refuse, so nothing is waited on and the spawn proceeds to fail on its own
+        bind.
+
+        The stub raises ``SystemExit`` because that is what ``_stop`` does with a
+        listener nothing identifies: the argv check declines it, the
+        authenticated shutdown gets no answer, and it exits 1 on the
+        ``unrecognized_listener`` refusal. A stub that returned normally would
+        model a stop that neither stopped nor refused.
         """
         from kiro_crew import cli_server
 
@@ -3111,7 +3341,7 @@ class TestRestart:
                 return_value=[1234],
             ),
             patch("kiro_crew.cli_server._is_kirocrew_process", return_value=False),
-            patch("kiro_crew.cli_server._stop") as mock_stop,
+            patch("kiro_crew.cli_server._stop", side_effect=SystemExit(1)) as mock_stop,
             patch("kiro_crew.cli_server._pid_exited", return_value=False) as mock_exited,
             patch("kiro_crew.cli_server._print_token_url"),
             patch(
@@ -3348,6 +3578,54 @@ class TestRestart:
         # And we should have fallen through to the spawn path.
         mock_spawn.assert_called_once()
         assert "Started detached gateway" in capsys.readouterr().out
+
+    def test_restart_waits_for_the_listener_that_acknowledged(self, capsys):
+        """Restart must outwait the gateway that accepted the shutdown.
+
+        The app-spawned listener fails the argv check, so it is no incumbent by
+        that route -- yet it is the process that must release the port before a
+        replacement can bind, and it is still exiting. Who to wait for is
+        answered by who is listening, so the enumerated pid is used and the
+        replacement spawns only after it is gone.
+        """
+        from kiro_crew.cli_server import _restart
+
+        app_argv = (
+            "/Applications/KiroCrew.app/Contents/Resources/backend-dist/"
+            "kirocrew-backend-arm64/bin/python3.12 /Applications/KiroCrew.app/"
+            "Contents/Resources/backend-dist/kirocrew-backend-arm64/serve.py"
+        )
+        with (
+            self._mock_sel(),
+            patch(
+                "kiro_crew.cli_server.platform_compat.find_listening_pids",
+                return_value=[50519],
+            ),
+            patch(
+                "kiro_crew.cli_server.platform_compat.process_command_line",
+                return_value=app_argv,
+            ),
+            patch(
+                "kiro_crew.cli_server._verified_loopback_gateway_pids",
+                return_value=[50519],
+            ),
+            patch("kiro_crew.cli_server._request_gateway_shutdown", return_value=True),
+            patch("kiro_crew.cli_server.platform_compat.IS_WINDOWS", False),
+            patch("kiro_crew.cli_server.os.kill") as mock_kill,
+            patch("kiro_crew.cli_server._refuse_if_lock_held"),
+            patch("kiro_crew.cli_server._wait_for_pids_exit", return_value=[]) as mock_wait,
+            patch("kiro_crew.cli_server.run_marker.read_pid", return_value=None),
+            patch(
+                "kiro_crew.cli_server._spawn_detached_gateway",
+                return_value=self._fake_proc(60815),
+            ) as mock_spawn,
+        ):
+            _restart(5476)
+        # Nothing is signalled: the gateway shut itself down.
+        mock_kill.assert_not_called()
+        assert mock_wait.call_args.args[0] == [50519]
+        mock_spawn.assert_called_once()
+        assert "does not look like a Kiro Crew gateway" not in capsys.readouterr().out
 
 
 class TestRestartReadinessVerdict:

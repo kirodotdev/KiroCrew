@@ -373,8 +373,13 @@ def _request_gateway_shutdown(port: int) -> bool:
     return bool(isinstance(payload, dict) and payload.get("ok") and payload.get("shutting_down"))
 
 
-def _report_authenticated_shutdown(port: int) -> bool:
-    """Request, audit, and report an authenticated graceful shutdown."""
+def _report_authenticated_shutdown(port: int, reason: str = "listener_lookup_empty") -> bool:
+    """Request, audit, and report an authenticated graceful shutdown.
+
+    *reason* names the path that asked, since two of them do: the port lookup
+    found nobody (the default), or it found a listener no argv pattern
+    classifies (``argv_declined_listener``). The SEL record separates them.
+    """
     if not _request_gateway_shutdown(port):
         return False
     sel().log_api_access(
@@ -382,7 +387,7 @@ def _report_authenticated_shutdown(port: int) -> bool:
         operation="gateway_stop",
         outcome="allowed",
         source="cli",
-        resources=f"port={port} via=api reason=listener_lookup_empty",
+        resources=f"port={port} via=api reason={reason}",
     )
     print(f"✅ Requested graceful shutdown from gateway on port {port}.")
     return True
@@ -406,6 +411,56 @@ def _terminal_safe_name(name: str) -> str:
     classes without enumerating escape grammars.
     """
     return "".join(ch for ch in name if ch.isprintable())[:_MAX_ECHOED_NAME_LEN]
+
+
+def _verified_loopback_gateway_pids(port: int) -> list[int]:
+    """The pids a ``127.0.0.1:<port>`` request reaches, if they are our gateway.
+
+    Empty unless the process that would answer is provably the gateway that
+    recorded itself on this port. That proof has to exist before the request is
+    made, because the request carries the per-generation local secret and that
+    secret mints owner tokens: handing it to whatever answers would let a
+    foreign local process act as the operator. Reachability is not identity, and
+    argv cannot supply it here -- being argv-declined is the whole situation
+    this path serves. So the proof is the one
+    ``port_resolution._gateway_owns_port`` documents, minus its argv step (which
+    that contract itself keeps as defense in depth rather than proof), plus the
+    start identity and the ADDRESS the request will actually reach:
+
+    1. the pid and start token the gateway recorded for this port --
+       ``run/gateway-<port>.pid`` and its ``.start`` sidecar, written ``0600``
+       inside the ``0700`` ``run/`` dir, which is on the ``is_sensitive_path``
+       floor, so another local user cannot nominate a process of theirs;
+    2. that start token still matches the live pid's, so a pid left behind by a
+       crash and recycled onto an unrelated process cannot inherit the claim;
+    3. the pid is one of those a loopback connect actually reaches
+       (:func:`platform_compat.loopback_owner_pids` mirrors the kernel's
+       most-specific-bind dispatch) -- so a gateway bound to some other specific
+       address can never vouch for a process squatting ``127.0.0.1``;
+    4. the pid is owned by this account.
+
+    Fails closed at every step. Denies outright off POSIX, where
+    ``process_owner_uid`` reports no owner and the file-permission argument the
+    recorded identity rests on does not hold -- the same boundary
+    ``_gateway_owns_port`` draws, for the same reason. A same-account attacker is
+    out of scope by construction: they can already read the secret file itself.
+    """
+    if not platform_compat.IS_POSIX:
+        return []
+    record = run_marker.read_pid_record_path(
+        config_dir() / run_marker.RUN_DIR_NAME / run_marker.pid_file_name(port)
+    )
+    if record is None:
+        return []
+    pid, start_token = record
+    if not start_token or start_token != run_marker.pid_start_token(pid):
+        return []
+    if pid not in platform_compat.loopback_owner_pids(platform_compat.find_port_listeners(port)):
+        return []
+    owner = platform_compat.process_owner_uid(pid)
+    if owner is None or owner != os.getuid():
+        return []
+    return [pid]
 
 
 def _stop(cli_port: int | None = None) -> None:
@@ -521,6 +576,21 @@ def _stop(cli_port: int | None = None) -> None:
     # recycled. Acceptable risk for an interactive CLI tool with low blast radius.
     unrecognized = [p for p in pids if not _is_kirocrew_process(p)]
     pids = [p for p in pids if _is_kirocrew_process(p)]
+    if (
+        not pids
+        and _verified_loopback_gateway_pids(port)
+        and _report_authenticated_shutdown(port, "argv_declined_listener")
+    ):
+        # argv is not the only identity a gateway has, and it is the weakest:
+        # every spawn shape has to be taught to the patterns, and the desktop
+        # app's is not among them. So before refusing, ask the gateway to stop
+        # ITSELF -- one loopback request carrying this generation's secret, which
+        # it published at startup whatever its command line reads. Answering
+        # shuts down the answerer, so no pid is guessed and nothing here signals
+        # a process it has not identified. The request is only made once the
+        # process that will receive that secret is proven to be our gateway
+        # (_verified_loopback_gateway_pids); unproven keeps the refusal below.
+        return
     if not pids:
         # Something holds the port, but nothing on it classifies as a Kiro Crew
         # gateway. Reporting "no gateway running" here is misleading — the port
@@ -1223,6 +1293,13 @@ def _restart(cli_port: int | None = None) -> None:
     prior_marker_pid = run_marker.read_pid(port)
     listeners = platform_compat.find_listening_pids(port)
     incumbents = [p for p in listeners if _is_kirocrew_process(p)]
+    # argv named no incumbent, so the stop below may go through the
+    # authenticated endpoint instead. Resolve who would answer it NOW, while the
+    # gateway is still up: after the stop that identity is gone, and it is the
+    # pid that must exit before a replacement can bind.
+    endpoint_incumbents = (
+        _verified_loopback_gateway_pids(port) if listeners and not incumbents else []
+    )
     wait_for_incumbents = False
     if listeners or not platform_compat.listening_pid_tool_available():
         # TOCTOU: the gateway can exit between the check above and _stop()'s own
@@ -1240,6 +1317,15 @@ def _restart(cli_port: int | None = None) -> None:
         except SystemExit:
             pass
         wait_for_incumbents = True
+        if not incumbents and stop_returned:
+            # The stop returned while the argv filter named nobody to wait for:
+            # the gateway acknowledged the authenticated shutdown and is now
+            # exiting, still owning the port and the lock. Wait for the pid that
+            # answered on loopback -- not every listener on the port, so an
+            # unrelated process sharing the number cannot stall the restart for
+            # the full timeout. An empty wait here returns at once and the
+            # replacement loses the race to the gateway still shutting down.
+            incumbents = endpoint_incumbents
         if not incumbents:
             # The port lookup named nobody to wait for. If _stop returned, a
             # gateway acknowledged the authenticated shutdown (the one path that
