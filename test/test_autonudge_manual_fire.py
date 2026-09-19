@@ -421,6 +421,22 @@ async def test_route_fires_and_returns_the_updated_loop(monkeypatch) -> None:
 
 
 @pytest.mark.asyncio
+async def test_route_refuses_before_firing_when_the_scrub_policy_cannot_compose(
+    monkeypatch,
+) -> None:
+    """The reply is serialized, so arming first 503s a cycle that already ran."""
+    loop = NudgeLoop(id="lp-1", slot_key="chat-1-111", message="check", idle_secs=300)
+    svc = _FakeSvc([loop])
+    monkeypatch.setattr(h, "_autonudge_get", lambda: svc)
+    monkeypatch.setattr(h, "scrub_policy_unavailable", lambda: True)
+
+    resp = await h.api_autonudge_fire(_mk("lp-1", slot=_slot()))
+
+    assert resp.status == 503
+    assert svc.fired == [], "the cycle was armed before the projection was checked"
+
+
+@pytest.mark.asyncio
 async def test_route_refuses_when_the_session_already_has_a_turn_in_flight(monkeypatch) -> None:
     """Refused, not queued — and the fire path already decided that.
 

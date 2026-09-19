@@ -343,6 +343,21 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
         "value passes through the credential + exfiltration-URL chain before egress.",
     ),
     (
+        "Auto-nudge loop inventory",
+        "dashboard/handlers/autonudge.py",
+        "A nudge loop's own text fields -- its `message` and `stopped_reason` -- "
+        "served by `GET /api/autonudge` and its per-loop detail, and echoed back on the "
+        "`POST` and `PATCH` responses. `message` is the instruction re-delivered to the "
+        "model every cycle, and three producers reach `svc.add` without passing through the "
+        "arming authorizer (the goal loop, auto-research, and issue-radar, the last "
+        "composing its text from external issue bodies), while a hand-edited "
+        "`autonudge.json` bypasses that authorizer too -- so the stored value can be text "
+        "nothing has scanned. `_serialize` therefore runs the credential + "
+        "exfiltration-URL chain over every string it returns except the `id` and `slot_key` "
+        "the client uses to address the loop, which must survive verbatim or the row cannot "
+        "be acted on.",
+    ),
+    (
         "Chat pin previews",
         "dashboard/chat_pins.py",
         "Message previews submitted to POST /api/chat/pins are persisted to "
@@ -700,7 +715,10 @@ _REDACTION_SINKS: tuple[tuple[str, str, str], ...] = (
     (
         "Slack cron / notification posts",
         "slack/gateway.py",
-        "Job names, cron results, and error strings before they reach a channel.",
+        "Job names, cron results, and error strings before they reach a channel. Also "
+        "the auto-nudge loop's `message` before the `autonudge_state` broadcast reaches "
+        "every connected dashboard client -- a distinct egress from the channel posts, "
+        "and one a producer that bypasses the arm-time authorizer can reach.",
     ),
     (
         "Subagent results",
@@ -1491,8 +1509,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # no output of its own -- the registered sinks are the modules that call
         # it (slack/format.py, messaging/renderer.py).
         "messaging/display_safety.py",
-        # ``autonudge.py``'s ``_load`` credential-scrubs a persisted ``banner`` in
-        # memory and attempts to persist the masked value back, so a banner
+        # ``_load`` credential-scrubs a persisted ``banner`` and ``message`` in
+        # memory and attempts to persist the masked value back, so a value
         # written to the store out-of-band (a hand-edited file, or a direct
         # ``AutoNudgeService.add`` that skips the authorizer) is masked on the next
         # load rather than served raw — best-effort, since a failed re-persist
@@ -1502,6 +1520,8 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         # this is at-rest sanitisation at the trust boundary where the store is
         # read, not an egress pass.
         "autonudge.py",
+        # The other inbound edge: ``autonudge_authz`` scrubs a ``message`` arriving over
+        # the API, and owns no output of its own.
         "autonudge_authz.py",
         # Inbound structured-monitor target validation. A canonical provider URL
         # is rejected when its path contains credential-shaped text, before the
