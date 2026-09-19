@@ -10347,6 +10347,10 @@
         "copy_text_failed": "Falha ao copiar",
         "copy_text_unavailable": "A área de transferência está bloqueada aqui. O texto da sua publicação está selecionado — pressione Ctrl+C / ⌘C. O texto do cartão que você editou, copie do próprio cartão.",
         "export_failed": "Não foi possível gerar o cartão de compartilhamento"
+      },
+      "sectionMarkerRow": {
+        "end_of": "Fim da seção: {{label}}",
+        "end_of_section": "Fim da seção"
       }
     },
     "chatPage": {

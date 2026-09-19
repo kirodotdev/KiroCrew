@@ -10061,6 +10061,10 @@
         "copy_text_failed": "복사하지 못했습니다",
         "copy_text_unavailable": "이 환경에서는 클립보드가 차단되어 있습니다. 게시글 텍스트가 선택되어 있으니 Ctrl+C / ⌘C를 누르세요. 편집한 카드 텍스트는 카드에서 직접 복사하세요.",
         "export_failed": "공유 카드를 만들 수 없습니다"
+      },
+      "sectionMarkerRow": {
+        "end_of": "섹션 {{label}} 끝",
+        "end_of_section": "섹션 끝"
       }
     },
     "chatPage": {
