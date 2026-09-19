@@ -2,6 +2,7 @@
 
 import asyncio
 import hashlib
+import json
 import threading
 from unittest import mock
 from unittest.mock import AsyncMock, MagicMock
@@ -965,6 +966,334 @@ class TestArtifactKnowledgeSync:
             art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
             loop=asyncio.get_running_loop())
         await sync._handle("upsert", art.slug)  # raises if a store take is on-loop
+
+    @pytest.mark.asyncio
+    async def test_handle_upsert_with_a_real_ingest_stays_off_the_loop(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """No ``ingest_file`` stub: the pipeline's real path returns a job id, so
+        the post-ingest ``get_job_status`` read (and, on the second upsert, the
+        changed-content branch before it) runs too. A stubbed ingest returns no
+        job id and skips that read, which is how an on-loop take there can hide
+        from a stub-based test.
+        """
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="v1 body", kind="markdown")
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        sync = ArtifactKnowledgeSync(
+            art_store=art_store, pipeline=pipeline, kinds=DEFAULT_KINDS,
+            loop=asyncio.get_running_loop())
+        await sync._handle("upsert", art.slug)  # first ingest: job id + status read
+        art_store.update(art.slug, content="v2 body", snapshot=True)
+        await sync._handle("upsert", art.slug)  # changed content: claim release + status read
+        row = await asyncio.to_thread(kstore.get_source_by_uri, ARTIFACT_SOURCE_URI)
+        assert row is not None
+
+    @pytest.mark.asyncio
+    async def test_reconcile_with_a_real_ingest_stays_off_the_loop(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """``reconcile_artifacts`` reads each new job's status to skip
+        duplicates; that read must be offloaded as well."""
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art_store.create(name="Doc", content="body to reconcile", kind="markdown")
+        monkeypatch.setenv("KIROCREW_STRICT_ON_LOOP_STORE", "1")
+        ingested, _removed, _deferred = await reconcile_artifacts(
+            pipeline, art_store, sid, DEFAULT_KINDS
+        )
+        assert ingested == 1
+
+    @pytest.mark.asyncio
+    async def test_cancel_during_status_read_still_lands_the_ownership_fallback(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """The in-hop ownership write AND its in-hop retry fail (both swallowed
+        as fail-safe), then the ingest task is cancelled while the post-ingest
+        status read is running. The status read and the fallback write are one
+        drained worker unit, so the committed items still get a state row
+        naming them; a skipped fallback would leave them orphaned and the next
+        reconcile would ingest the artifact again beside them.
+        """
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="owned body", kind="markdown")
+
+        calls = {"set_state": 0, "guarded": 0}
+
+        def failing_set_state(*_args, **_kwargs):
+            calls["set_state"] += 1
+            raise RuntimeError("writer lock contention")
+
+        real_guarded = artifact_ingest._write_ownership_if_intact
+
+        def flaky_guarded(*args, **kwargs):
+            calls["guarded"] += 1
+            if calls["guarded"] == 1:  # the in-hop retry: fails, is swallowed
+                raise RuntimeError("writer lock contention")
+            return real_guarded(*args, **kwargs)
+
+        monkeypatch.setattr(artifact_ingest, "_set_state", failing_set_state)
+        monkeypatch.setattr(
+            artifact_ingest, "_write_ownership_if_intact", flaky_guarded
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+        real_status = pipeline.get_job_status
+
+        def slow_status(job_id):
+            entered.set()
+            release.wait(5)
+            return real_status(job_id)
+
+        monkeypatch.setattr(pipeline, "get_job_status", slow_status)
+
+        task = asyncio.create_task(
+            ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+        )
+        assert await asyncio.to_thread(entered.wait, 5)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        prev_hash, item_ids = await asyncio.to_thread(
+            artifact_ingest._get_state, kstore, sid, art.slug
+        )
+        assert item_ids, "fallback ownership write must land despite the cancellation"
+        assert prev_hash == hashlib.sha256(b"owned body").hexdigest()
+        assert calls == {"set_state": 1, "guarded": 2}
+
+    @pytest.mark.asyncio
+    async def test_in_hop_retry_records_ownership_before_any_cancellation_point(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """The plain in-hop ownership write fails; the guarded retry inside the
+        same finalize hop must record ownership BEFORE ``ingest_file`` returns,
+        so a cancellation landing anywhere after the hop -- here, before the
+        settle unit is even entered -- finds the committed items already owned.
+        """
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="hop body", kind="markdown")
+
+        def failing_set_state(*_args, **_kwargs):
+            raise RuntimeError("writer lock contention")
+
+        monkeypatch.setattr(artifact_ingest, "_set_state", failing_set_state)
+
+        async def cancelled_before_settle(_fn):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(
+            artifact_ingest, "run_to_completion", cancelled_before_settle
+        )
+
+        with pytest.raises(asyncio.CancelledError):
+            await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+
+        prev_hash, item_ids = await asyncio.to_thread(
+            artifact_ingest._get_state, kstore, sid, art.slug
+        )
+        assert item_ids, "the in-hop retry must have recorded ownership"
+        assert prev_hash == hashlib.sha256(b"hop body").hexdigest()
+
+    @pytest.mark.asyncio
+    async def test_fallback_does_not_resurrect_ids_removed_by_a_concurrent_dedup(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """The in-hop ownership write fails, and between the commit and the
+        fallback a dedup sweep on the shared source deletes one committed item
+        and marks this slug's state row ``deduped``. The fallback must NOT record
+        the captured ids over that result: an ``active`` row naming deleted ids
+        would make every unchanged ingest short-circuit against missing content.
+        """
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="swept body", kind="markdown")
+
+        def failing_set_state(*_args, **_kwargs):
+            raise RuntimeError("writer lock contention")
+
+        monkeypatch.setattr(artifact_ingest, "_set_state", failing_set_state)
+
+        real_guarded = artifact_ingest._write_ownership_if_intact
+        guarded_calls = {"n": 0}
+
+        def flaky_guarded(*args, **kwargs):
+            guarded_calls["n"] += 1
+            if guarded_calls["n"] == 1:  # the in-hop retry: fails, is swallowed
+                raise RuntimeError("writer lock contention")
+            return real_guarded(*args, **kwargs)
+
+        monkeypatch.setattr(
+            artifact_ingest, "_write_ownership_if_intact", flaky_guarded
+        )
+        real_status = pipeline.get_job_status
+
+        def sweeping_status(job_id):
+            # A dedup sweep lands after the commit, before the fallback: the
+            # committed item is gone. The sweep cannot mark this row (it never
+            # named the item), so whatever it holds is stale -- here a marker
+            # from an earlier content version.
+            ids = [
+                r["id"]
+                for r in kstore.db.execute(
+                    "SELECT id FROM items WHERE source_id = ?", (sid,)
+                ).fetchall()
+            ]
+            assert ids
+            kstore.delete_items_batch(ids[:1])
+            artifact_ingest._record_deduped_state(
+                kstore, sid, art.slug, "stale-hash", "Doc", "markdown"
+            )
+            return real_status(job_id)
+
+        monkeypatch.setattr(pipeline, "get_job_status", sweeping_status)
+
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+
+        row = await asyncio.to_thread(
+            lambda: kstore.db.execute(
+                "SELECT status, item_ids, content_hash, merged_into_source_id "
+                "FROM artifact_item_state WHERE source_id = ? AND slug = ?",
+                (sid, art.slug),
+            ).fetchone()
+        )
+        # The sweep's verdict is recorded for THIS content, never an active row
+        # over deleted ids, and never the stale marker left as it was.
+        assert row["status"] == "deduped"
+        assert json.loads(row["item_ids"] or "[]") == []
+        assert row["content_hash"] == hashlib.sha256(b"swept body").hexdigest()
+        assert row["merged_into_source_id"] is None  # no exact-text winner exists
+        remaining = await asyncio.to_thread(
+            lambda: kstore.db.execute(
+                "SELECT COUNT(*) FROM items WHERE source_id = ?", (sid,)
+            ).fetchone()[0]
+        )
+        assert remaining == 0, "no untracked remnant of the collapsed group may remain"
+        assert guarded_calls["n"] == 2  # in-hop retry failed, fallback ran
+
+    @pytest.mark.asyncio
+    async def test_collapsed_group_records_the_dedup_winner_claim(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """Same interleaving, but an exact-text winner exists in another source:
+        the marker must claim it (``merged_into_source_id``), so that deleting
+        the winner later revives this slug through the same path as any other
+        deferred document. A remnant of the collapsed group is deleted with it.
+        """
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="claimed body", kind="markdown")
+        other = await asyncio.to_thread(
+            kstore.add_source, name="Other", source_type="manual", uri="manual://o"
+        )
+
+        # Two chunks, so the collapse can be partial and leave a remnant.
+        def _two_chunks(text, **_kw):
+            return [
+                {"content": text, "chunk_index": 0, "section_title": None,
+                 "line_start": 0, "line_end": 0},
+                {"content": text + " (2)", "chunk_index": 1, "section_title": None,
+                 "line_start": 1, "line_end": 1},
+            ]
+
+        pipeline.chunker.chunk_markdown.side_effect = _two_chunks
+        pipeline.extractor.extract_batch = AsyncMock(
+            return_value=[
+                {"category": "document", "summary": "s", "entities": []},
+                {"category": "document", "summary": "s", "entities": []},
+            ]
+        )
+
+        def failing_set_state(*_args, **_kwargs):
+            raise RuntimeError("writer lock contention")
+
+        monkeypatch.setattr(artifact_ingest, "_set_state", failing_set_state)
+        real_guarded = artifact_ingest._write_ownership_if_intact
+        guarded_calls = {"n": 0}
+
+        def flaky_guarded(*args, **kwargs):
+            guarded_calls["n"] += 1
+            if guarded_calls["n"] == 1:
+                raise RuntimeError("writer lock contention")
+            return real_guarded(*args, **kwargs)
+
+        monkeypatch.setattr(
+            artifact_ingest, "_write_ownership_if_intact", flaky_guarded
+        )
+        real_status = pipeline.get_job_status
+
+        def sweeping_status(job_id):
+            rows = kstore.db.execute(
+                "SELECT id, content_hash FROM items WHERE source_id = ?", (sid,)
+            ).fetchall()
+            assert len(rows) == 2
+            # The winner: the same document (same extracted-text hash) owned by
+            # another source, which is what the sweep kept.
+            kstore.add_item("Doc", "claimed body", "document", source_id=other,
+                            content_hash=rows[0]["content_hash"])
+            # A partial collapse: one committed item deleted, the other left.
+            kstore.delete_items_batch([rows[0]["id"]])
+            return real_status(job_id)
+
+        monkeypatch.setattr(pipeline, "get_job_status", sweeping_status)
+
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+
+        row = await asyncio.to_thread(
+            lambda: kstore.db.execute(
+                "SELECT status, item_ids, content_hash, merged_into_source_id "
+                "FROM artifact_item_state WHERE source_id = ? AND slug = ?",
+                (sid, art.slug),
+            ).fetchone()
+        )
+        assert row["status"] == "deduped"
+        assert json.loads(row["item_ids"] or "[]") == []
+        assert row["content_hash"] == hashlib.sha256(b"claimed body").hexdigest()
+        assert row["merged_into_source_id"] == other
+        remaining = await asyncio.to_thread(
+            lambda: kstore.db.execute(
+                "SELECT COUNT(*) FROM items WHERE source_id = ?", (sid,)
+            ).fetchone()[0]
+        )
+        assert remaining == 0
+        assert guarded_calls["n"] == 2
+
+    @pytest.mark.asyncio
+    async def test_guarded_write_replaces_a_stale_deduped_row(
+        self, pipeline, art_store, kstore, monkeypatch
+    ):
+        """A slug whose state row is a STALE ``deduped`` marker (a prior version
+        of the content lost a dedup) is edited to unique content and
+        re-ingests. When the plain in-hop write fails, the guarded write must
+        still record ownership: the stale marker carries the OLD hash and names
+        no items, so it says nothing about this commit, and skipping on it would
+        orphan the freshly committed group behind a row that keeps claiming
+        "deduped" -- every later reconcile would then re-ingest a duplicate.
+        """
+        sid, _ = await asyncio.to_thread(ensure_artifact_source, kstore)
+        art = art_store.create(name="Doc", content="unique new body", kind="markdown")
+        # The stale marker from a previous, different content version.
+        await asyncio.to_thread(
+            artifact_ingest._record_deduped_state,
+            kstore, sid, art.slug, "old-content-hash", "Doc", "markdown",
+        )
+
+        def failing_set_state(*_args, **_kwargs):
+            raise RuntimeError("writer lock contention")
+
+        monkeypatch.setattr(artifact_ingest, "_set_state", failing_set_state)
+
+        await ingest_artifact(pipeline, art_store, art.slug, sid, DEFAULT_KINDS)
+
+        row = await asyncio.to_thread(
+            lambda: kstore.db.execute(
+                "SELECT status, content_hash, item_ids FROM artifact_item_state "
+                "WHERE source_id = ? AND slug = ?",
+                (sid, art.slug),
+            ).fetchone()
+        )
+        assert row["status"] == "active"
+        assert row["content_hash"] == hashlib.sha256(b"unique new body").hexdigest()
+        assert json.loads(row["item_ids"]), "the committed group must be owned"
 
     @pytest.mark.asyncio
     async def test_handle_delete_takes_no_db_connection_on_the_loop(
