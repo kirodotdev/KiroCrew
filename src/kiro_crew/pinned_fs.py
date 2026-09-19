@@ -133,6 +133,27 @@ _OMITS_WANTED_DATA = frozenset(
     {SKIP_UNREADABLE_ENTRY, SKIP_TOO_LARGE, SKIP_VANISHED, SKIP_IDENTITY_CHANGED}
 )
 
+#: Times :func:`create_and_open_dir_pinned` re-runs its ``mkdir``-then-``open`` pair
+#: when the directory is removed between the two. There is no atomic "create this
+#: directory and open it", so a removal lands INSIDE the sequence and no ordering of
+#: the two calls closes that window -- the answer is to run the sequence again. A
+#: small count is the right bound because an attempt is two syscalls with NO sleep
+#: between them: this is a lost race to redo at once, not a resource to wait on.
+#: Three, so a single interleaving costs one retry, a second one is still absorbed,
+#: and a caller that keeps losing reports rather than spinning: past that point the
+#: removals are not a race being lost but something removing the directory
+#: repeatedly, which no number of attempts fixes and an operator has to see.
+#:
+#: :mod:`kiro_crew.platform_log_append` holds a private bound of the same name and
+#: the same value for its own create-then-open pair, and the two stay separate
+#: deliberately. They govern different sequences with different costs: that one
+#: re-runs a directory create plus a FILE open for best-effort observation, where
+#: losing the race costs one log row, and this one re-runs a directory create plus
+#: the open OF that directory for a caller whose data must land. Sharing one
+#: constant would mean tuning either operation silently retunes the other, and the
+#: equal value today is two similar judgements rather than one decision.
+_CREATE_ATTEMPTS = 3
+
 
 def omits_wanted_data(reason: str) -> bool:
     """Whether *reason* means the archive lacks something it was asked to carry.
@@ -1086,38 +1107,124 @@ def create_and_open_dir_pinned(
     link when the parent was resolved is followed by that resolution, because refusing
     every symlinked ancestor would break a destination under ``/tmp`` on macOS. The
     parent must therefore already exist -- callers create their own tree roots.
+
+    Creating the directory and opening it are two syscalls, and a removal landing
+    between them is an interleaving no ordering closes. The pair is therefore
+    re-attempted, :data:`_CREATE_ATTEMPTS` times, against the SAME pinned parent
+    descriptor -- a retry resolves no name, so it cannot be steered anywhere the first
+    attempt could not go, and ``must_create`` plus the ``O_NOFOLLOW`` refusal are both
+    re-asked on every attempt. Tolerating only the ``FileExistsError`` half handled a
+    concurrent writer and not a concurrent remover (GH-12043), and this is a caller
+    that needs the directory: a snapshot's staging root, a restore destination, a pod
+    home. Exhaustion, and a removal of the pinned PARENT (which no attempt can
+    survive), raise ``FileNotFoundError`` carrying the whole path rather than the bare
+    relative name ``openat`` was given.
+
+    The re-attempt covers a directory THIS call created and no other. When the
+    ``mkdir`` instead MET one that was already there -- the merge case, where
+    ``must_create`` is false and the destination legitimately holds the caller's files
+    -- a removal in the window is reported, not re-attempted: the contents are already
+    unrecoverable, and re-creating the name would hand back an empty directory that an
+    additive restore would stage into and report success over. Review caught that as
+    the retry's one unsafe case, and it is why the loop tracks which of the two
+    happened rather than retrying on the errno alone.
     """
     as_given = Path(path)
     parent_fd = pin_parent(
         os.path.realpath(as_given.parent or Path(".")), what=what, refusal=refusal
     )
     try:
-        try:
-            os.mkdir(as_given.name, 0o700, dir_fd=parent_fd)
-        except FileExistsError:
-            if must_create:
-                raise refusal(
-                    f"refusing to use the {what}: {as_given.name!r} already exists, and "
-                    "this operation replaces its destination rather than merging into "
-                    "it. Something recreated that directory after it was removed, so "
-                    "staging into it would leave files the archive does not contain "
-                    "while reporting a replacement. Remove it and re-run with the "
-                    "gateway stopped."
-                ) from None
-        try:
-            return os.open(as_given.name, dir_flags(), dir_fd=parent_fd)
-        except OSError as exc:
-            # A link (or a plain file) at the destination's own name. O_NOFOLLOW already
-            # refuses it -- the gap review found was that it escaped as a raw OSError, so
-            # a restore ended in a traceback instead of the refusal every other path on
-            # this surface produces. Translated here so callers have one type to contain.
-            if exc.errno in (errno.ELOOP, errno.ENOTDIR):
-                raise refusal(
-                    f"refusing to use the {what}: {as_given.name!r} is a symbolic link "
-                    "or not a directory, so creating the tree there would write through "
-                    "whatever it points at. Remove it and re-run."
+        lost: FileNotFoundError | None = None
+        for _ in range(_CREATE_ATTEMPTS):
+            ours = True
+            try:
+                os.mkdir(as_given.name, 0o700, dir_fd=parent_fd)
+            except FileExistsError:
+                if must_create:
+                    raise refusal(
+                        f"refusing to use the {what}: {as_given.name!r} already exists, and "
+                        "this operation replaces its destination rather than merging into "
+                        "it. Something recreated that directory after it was removed, so "
+                        "staging into it would leave files the archive does not contain "
+                        "while reporting a replacement. Remove it and re-run with the "
+                        "gateway stopped."
+                    ) from None
+                ours = False
+            except FileNotFoundError as exc:
+                # The PINNED PARENT is gone, not the directory being created. Nothing
+                # can be made inside an unlinked directory, so every further attempt
+                # would land here too -- reported at once, and with the whole path,
+                # because the errno carries only the relative name the syscall was
+                # given.
+                raise FileNotFoundError(
+                    errno.ENOENT,
+                    f"the directory holding the {what} was removed, so "
+                    f"{as_given.name!r} cannot be created in it",
+                    str(as_given),
                 ) from exc
-            raise
+            try:
+                return os.open(as_given.name, dir_flags(), dir_fd=parent_fd)
+            except FileNotFoundError as exc:
+                if not ours:
+                    # This call did NOT create the directory: the `mkdir` above met one
+                    # that was already there, holding whatever the caller was about to
+                    # merge into, and it is gone. Re-creating it would hand back an
+                    # EMPTY directory, and a merge (`must_create=False`) would then
+                    # stage the archive into it and report success while the files it
+                    # was merging with are unrecoverably gone. Review caught this as
+                    # the retry's one unsafe case. So it is reported instead -- the
+                    # same outcome the caller got before the retry existed, with the
+                    # path the errno omits and a sentence saying what was lost.
+                    raise FileNotFoundError(
+                        errno.ENOENT,
+                        f"the {what} already existed when this call met it and was "
+                        "removed before it could be opened, so whatever it held is "
+                        "gone; refusing to re-create it empty, because an additive "
+                        "restore would then report success over the loss",
+                        str(as_given),
+                    ) from exc
+                # The directory this attempt CREATED is gone. Nothing of the caller's
+                # was in it -- it was empty and unopened -- so re-running the pair
+                # costs nothing and loses nothing. That is the mirror of the
+                # ``FileExistsError`` tolerated above: a concurrent writer is handled
+                # and, without this, a concurrent REMOVER was not (GH-12043). Both are
+                # the same interleaving seen from opposite sides, and everything here
+                # runs as the same user as the agent, which is the premise the pinning
+                # exists for.
+                #
+                # The pair is run again rather than repaired in place, because no
+                # ordering of two syscalls closes a window between them. Every attempt
+                # goes through the ONE descriptor pinned above this loop, so a retry
+                # cannot be steered: nothing is re-resolved by name, ``must_create``
+                # and this created-it-ourselves test are re-asked on each attempt, and
+                # a link that appears at the name between two attempts is refused by
+                # the ``O_NOFOLLOW`` below exactly as it is on the first.
+                lost = exc
+                continue
+            except OSError as exc:
+                # A link (or a plain file) at the destination's own name. O_NOFOLLOW already
+                # refuses it -- the gap review found was that it escaped as a raw OSError, so
+                # a restore ended in a traceback instead of the refusal every other path on
+                # this surface produces. Translated here so callers have one type to contain.
+                if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+                    raise refusal(
+                        f"refusing to use the {what}: {as_given.name!r} is a symbolic link "
+                        "or not a directory, so creating the tree there would write through "
+                        "whatever it points at. Remove it and re-run."
+                    ) from exc
+                raise
+        # Exhaustion is a ``FileNotFoundError``, not a *refusal*: a refusal on this
+        # surface means the destination is a link or an occupied name a caller must
+        # remove, and callers word it that way -- the prompt handler maps one to
+        # "your prompt root is a link". A directory that keeps being removed is an
+        # operational failure, so it stays in the class the kernel reported and gains
+        # the FULL path the kernel could not name.
+        raise FileNotFoundError(
+            errno.ENOENT,
+            f"the {what} {as_given} was removed between its creation and its open, "
+            f"{_CREATE_ATTEMPTS} attempts in a row",
+            str(as_given),
+        ) from lost
     finally:
         os.close(parent_fd)
 

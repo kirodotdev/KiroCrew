@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import errno
 import hashlib
 import http.client
 import json
@@ -1013,6 +1014,183 @@ class TestManifestOnDisk:
             assert stat.S_IMODE(folder.stat().st_mode) == 0o700
             path = manifest_mod.cached_manifest_path("0.6.0")
             assert stat.S_IMODE(path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(
+        not pinned_fs.supports_pinned_walk(), reason="the descriptor-relative create path"
+    )
+    def test_a_release_folder_removed_before_its_open_names_the_whole_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Creating the folder and opening it are two calls, and a removal fits between.
+
+        The `FileExistsError` half of that race was tolerated and this half was not
+        (GH-12043): the open failed with `ENOENT` on the bare relative name `'0.6.0'`,
+        which names no directory and reads as a working-directory bug. It is reported
+        with the whole path now -- and still reported, not re-created, because the
+        actor that removes a release folder here is the cache's own eviction.
+        """
+        real_mkdir = os.mkdir
+        removals: list[int] = []
+
+        def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+            real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+            if name == "0.6.0":
+                removals.append(1)
+                os.rmdir(name, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+            monkeypatch.setattr(os, "mkdir", vanishing)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+        assert removals == [1], "the race did not happen, so this asserts nothing"
+        assert excinfo.value.filename == str(folder)
+        assert "release folder was removed" in str(excinfo.value)
+        assert not folder.exists(), "an evicted release folder was re-created"
+
+    @pytest.mark.skipif(
+        not pinned_fs.supports_pinned_walk(), reason="the descriptor-relative create path"
+    )
+    def test_a_cache_root_removed_under_its_pin_names_the_release_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other end of the same sequence: the root goes, so the `mkdir` has nowhere.
+
+        Reported separately from the folder's own removal because the two are
+        different conditions, and reported with the path for the same reason: the
+        errno carries only `'0.6.0'`.
+        """
+        real_mkdir = os.mkdir
+
+        def removing_the_root(
+            name: object, mode: int = 0o777, *, dir_fd: int | None = None
+        ) -> None:
+            if name == "0.6.0":
+                os.rmdir(manifest_mod.cache_root())
+            real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+            monkeypatch.setattr(os, "mkdir", removing_the_root)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+        assert excinfo.value.filename == str(folder)
+        assert "cache root was removed" in str(excinfo.value)
+
+    def test_the_by_name_branch_also_names_the_whole_path_when_the_folder_vanishes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The platform WITHOUT `dir_fd` reports the removal with the path too.
+
+        Review asked for the claim to be measured rather than asserted in prose, and
+        measuring it found the prose wrong. That branch pins by path, and on the
+        platform it exists for it does so through `CreateFileW`: the `ctypes.WinError`
+        raised when the folder is gone carries NO `filename` and no path in its
+        message, so the operator was told only that the system cannot find the file.
+        A POSIX `os.open` on the same code path DOES set `filename`, which is why
+        running the branch on this host proves nothing on its own -- the stub below
+        reproduces the one thing that differs, an `ENOENT` with nothing attached.
+        """
+        monkeypatch.setattr(manifest_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+        real_mkdir = os.mkdir
+        real_pin = manifest_mod.platform_compat.pin_directory
+        pinned_by_name: list[str] = []
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+
+            def windows_shaped_pin(path: object) -> int:
+                pinned_by_name.append(str(path))
+                if Path(str(path)) == folder:
+                    # What `ctypes.WinError(ERROR_PATH_NOT_FOUND)` produces: an errno
+                    # and a message, and no filename whatsoever.
+                    raise FileNotFoundError(2, "The system cannot find the file specified")
+                return real_pin(path)  # type: ignore[arg-type]
+
+            def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+                real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+                if Path(str(name)) == folder:
+                    os.rmdir(name)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(manifest_mod.platform_compat, "pin_directory", windows_shaped_pin)
+            monkeypatch.setattr(os, "mkdir", vanishing)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+
+        assert str(folder) in pinned_by_name, "the by-name branch was not the one exercised"
+        assert excinfo.value.filename == str(folder)
+        assert "removed between its creation and its open" in str(excinfo.value)
+        assert not folder.exists()
+
+    def test_the_by_name_branch_translates_a_not_found_that_is_not_the_subclass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The translation keys on the CONDITION, not on the exception class.
+
+        Review asked whether `pin_directory`'s vanished-folder error really arrives
+        as `FileNotFoundError` on a real Windows host, and observed that if it does
+        not, the translation never fires. Rather than depend on CPython's
+        winerror-to-subclass mapping, the handler tests errno and `winerror`. This
+        raises a PLAIN `OSError` carrying `ENOENT` -- the shape the doubt describes --
+        and asserts the path still arrives.
+        """
+        monkeypatch.setattr(manifest_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+        real_mkdir = os.mkdir
+        real_pin = manifest_mod.platform_compat.pin_directory
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+
+            def bare_oserror_pin(path: object) -> int:
+                # The branch pins the cache ROOT first; only the release folder is
+                # made to fail.
+                if Path(str(path)) != folder:
+                    return real_pin(path)  # type: ignore[arg-type]
+                # Constructing OSError(ENOENT, ...) would be mapped to
+                # FileNotFoundError by CPython, which is the very thing not to rely
+                # on, so the errno is attached after construction.
+                exc = OSError()
+                exc.errno = errno.ENOENT
+                raise exc
+
+            def vanishing(name: object, mode: int = 0o777, *, dir_fd: int | None = None) -> None:
+                real_mkdir(name, mode, dir_fd=dir_fd)  # type: ignore[arg-type]
+                if Path(str(name)) == folder:
+                    os.rmdir(name)  # type: ignore[arg-type]
+
+            monkeypatch.setattr(manifest_mod.platform_compat, "pin_directory", bare_oserror_pin)
+            monkeypatch.setattr(os, "mkdir", vanishing)
+            with pytest.raises(FileNotFoundError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+
+        assert excinfo.value.filename == str(folder)
+        assert "removed between its creation and its open" in str(excinfo.value)
+
+    def test_the_by_name_branch_does_not_swallow_an_unrelated_pin_failure(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Widening the handler to `OSError` must not absorb errors it never owned.
+
+        The handler catches `OSError` so a not-found reaches the translation whatever
+        class the platform picked; this pins the other half of that widening, which is
+        that anything NOT a not-found still propagates as itself.
+        """
+        monkeypatch.setattr(manifest_mod.pinned_fs, "supports_pinned_walk", lambda: False)
+        real_pin = manifest_mod.platform_compat.pin_directory
+
+        with patch.dict(os.environ, {"KIROCREW_HOME": str(tmp_path)}):
+            folder = manifest_mod.release_dir("0.6.0")
+
+            def refusing_pin(path: object) -> int:
+                if Path(str(path)) != folder:
+                    return real_pin(path)  # type: ignore[arg-type]
+                raise PermissionError(errno.EACCES, "permission denied")
+
+            monkeypatch.setattr(manifest_mod.platform_compat, "pin_directory", refusing_pin)
+            with pytest.raises(PermissionError) as excinfo:
+                manifest_mod.ensure_cache_dir("0.6.0")
+
+        assert "removed between its creation and its open" not in str(excinfo.value)
 
 
 # ── eviction ──
