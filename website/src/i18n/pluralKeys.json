@@ -187,6 +187,8 @@
   "pages.sessionStorage.sweep_preview",
   "pages.settings.aboutPanel.commits_ahead",
   "pages.settings.aboutPanel.commits_behind",
+  "pages.settings.botChannelPanel.backfill_failed_all",
+  "pages.settings.botChannelPanel.backfill_moved",
   "pages.settings.webhooksPanel.tokens_count",
   "pages.telemetryPanel.startups_recorded",
   "pages.telemetryPanel.turn_faults",

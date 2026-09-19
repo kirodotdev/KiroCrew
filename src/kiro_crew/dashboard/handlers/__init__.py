@@ -329,6 +329,7 @@ from kiro_crew.dashboard.handlers.messaging import (  # noqa: E402, F401
     api_browser_token_put,
     api_browser_view_get,
     api_browser_view_start,
+    api_channel_folder_backfill,
     api_delete_message,
     api_discord_config_get,
     api_discord_config_save,

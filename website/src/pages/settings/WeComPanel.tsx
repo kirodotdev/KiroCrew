@@ -30,6 +30,7 @@ function wecomSpec(): BotChannelSpec {
     // Product name — not translated.
     name: 'WeCom',
     queryKey: 'wecom-config',
+    namespace: 'wecom',
     logo: <WeComLogo size={20} />,
     description: i18nT('pages.settings.weComPanel.description'),
     host: 'openws.work.weixin.qq.com',

@@ -10,6 +10,7 @@ import { TagListEditor } from './SlackPanel'
 import { api, type WebexConfigData, type WebexConfigSave } from '../../api/client'
 
 import { i18nT } from '../../i18n/t'
+import { ChannelFolderBackfill } from './ChannelFolderBackfill'
 /** Brand name — do-not-translate, so it lives here rather than in the catalog. */
 const CHANNEL_NAME = "Webex"
 const CREATE_BOT_URL = 'https://developer.webex.com/my-apps/new/bot'
@@ -374,6 +375,14 @@ export function WebexPanel() {
                   disabled={ro}
                 />
               </div>
+            )}
+            {!!data.session_folder && (
+              <ChannelFolderBackfill
+                namespace="webex"
+                folderName={data.session_folder}
+                disabled={ro}
+                testId="session-folder-backfill"
+              />
             )}
           </div>
         </SettingsCard>
