@@ -7,6 +7,7 @@ import json
 import os
 import stat
 import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -219,6 +220,29 @@ def test_contended_append_times_out_without_writing(path, monkeypatch):
                     pending.result(timeout=5)
     assert path.read_bytes() == b'{"keep":1}\n'
     pla.append_line(path, b"{}\n")
+
+
+def test_the_open_is_not_charged_to_the_append_deadline(path, monkeypatch):
+    """A first append whose open outran the budget still writes its row.
+
+    The budget spans the lock wait and the write retries, which is what the
+    platform-compat contract says it spans. Start it above the open instead and a
+    create-and-pin slower than the whole budget -- a loaded Windows worker, a
+    scanner touching a fresh directory -- raises at the lock. The leaf is created
+    BY that open, so the caller is left a day file that exists and holds nothing,
+    and reading a JSONL log back then fails to parse.
+    """
+    original = pla._pin_and_open_leaf
+    overrun = pla._APPEND_TIMEOUT_SECONDS + 0.1
+
+    def slow(leaf, anchor, stack):
+        fd = original(leaf, anchor, stack)
+        time.sleep(overrun)
+        return fd
+
+    monkeypatch.setattr(pla, "_pin_and_open_leaf", slow)
+    pla.append_line(path, b'{"row":1}\n')
+    assert path.read_bytes() == b'{"row":1}\n'
 
 
 @pytest.mark.parametrize("failure", ["write", "validate", "none"])

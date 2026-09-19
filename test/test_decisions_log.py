@@ -13,10 +13,12 @@ from __future__ import annotations
 import json
 import os
 import stat
+import time
 from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from kiro_crew import platform_log_append
 from kiro_crew.decisions import log as log_mod
 from kiro_crew.decisions.log import append, build_row, log_path, session_digest
 from kiro_crew.decisions.types import Answer
@@ -192,6 +194,25 @@ class TestAppend:
         append(_row(answers={"v": Answer("v", _Odd(), 1.0)}))
         row = json.loads(log_path().read_text(encoding="utf-8"))
         assert row["answers"]["v"]["value"] == "odd-value"
+
+    def test_a_slow_open_leaves_no_empty_day_file(self, home, monkeypatch):
+        """A swallowed failure must not leave a day file that exists and holds nothing.
+
+        :func:`append` never raises, so a timeout it swallows is invisible at the
+        call site. The one trace it can leave is the leaf the open already created,
+        empty -- and reading that back raises ``JSONDecodeError`` instead of
+        returning the row, which is how a reader here goes red on a loaded worker.
+        """
+        original = platform_log_append._pin_and_open_leaf
+
+        def slow(leaf, anchor, stack):
+            fd = original(leaf, anchor, stack)
+            time.sleep(platform_log_append._APPEND_TIMEOUT_SECONDS + 0.1)
+            return fd
+
+        monkeypatch.setattr(platform_log_append, "_pin_and_open_leaf", slow)
+        append(_row())
+        assert json.loads(log_path().read_text(encoding="utf-8"))["point"] == "skills.select"
 
 
 class TestRetention:

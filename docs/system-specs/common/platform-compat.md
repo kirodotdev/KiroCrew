@@ -128,8 +128,10 @@ Windows uses inherited ACLs, not a claim that POSIX mode bits enforce privacy.
 The open file must be regular and have exactly one hard link. The existing
 cross-platform file lock spans EOF validation, short-write/EINTR retries and
 rollback. File offsets are explicitly reset inside the lock, including on Windows.
-Lock acquisition and retries share a finite deadline. No additional worker is
-spawned; a stalled filesystem syscall itself is not cancellable by that deadline.
+Lock acquisition and retries share a finite deadline that starts once the log is
+open, so the create-and-pin ahead of it never spends the budget it cannot be
+cancelled by. No additional worker is spawned; a stalled filesystem syscall
+itself is not cancellable by that deadline.
 
 On write failure, rollback removes only the bytes counted for that append when
 the file has exactly the expected size. Existing bytes or unrelated growth are

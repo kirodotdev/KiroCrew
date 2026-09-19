@@ -329,12 +329,20 @@ def append_line(path: Path, line: bytes, *, max_bytes: int | None = None) -> Non
     place and the next append terminates it before writing, so one torn row
     costs one unparseable line and not the record after it. Locks are advisory
     on POSIX: unrelated writers must honor this protocol to serialize. The
-    deadline bounds contention and retries, not a stalled filesystem syscall.
+    deadline starts once the log is OPEN and from there bounds contention and
+    retries; it does not bound the open, nor a stalled filesystem syscall.
     """
     if not line.endswith(b"\n") or b"\n" in line[:-1]:
         raise ValueError("append requires exactly one newline-terminated record")
-    deadline = time.monotonic() + _APPEND_TIMEOUT_SECONDS
     with _open_log(path) as fd:
+        # Set the deadline adjacent to what it governs, AFTER the open: the budget
+        # bounds the lock wait and the write retries, and a create-and-pin it
+        # cannot cancel does not get to spend it. Charged from above the open
+        # instead, an open slower than the whole budget -- a loaded worker, a
+        # scanner on a fresh directory -- raises right here with the leaf ALREADY
+        # created, leaving a day file that exists and holds nothing for the next
+        # reader of this JSONL log to fail on (GH-12077).
+        deadline = time.monotonic() + _APPEND_TIMEOUT_SECONDS
         with platform_compat.file_lock(fd, exclusive=True, timeout=_remaining(deadline)):
             _regular_single_link(fd)
             start = os.lseek(fd, 0, os.SEEK_END)
