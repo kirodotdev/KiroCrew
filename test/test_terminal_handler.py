@@ -16,6 +16,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from aiohttp import web
+from spawn_test_helpers import strip_spawn_shim
 
 from kiro_crew import platform_compat
 from kiro_crew.dashboard import terminal_commands
@@ -2613,7 +2614,7 @@ class TestApiTerminalWs:
 
         assert resp is ws
         spawn.assert_awaited_once()
-        assert spawn.call_args.args[0] == "/bin/zsh"
+        assert strip_spawn_shim(spawn.call_args.args)[0] == "/bin/zsh"
         assert spawn.call_args.kwargs["env"]["SHELL"] == "/bin/zsh"
 
     @pytest.mark.asyncio
@@ -2651,7 +2652,9 @@ class TestApiTerminalWs:
             resp = await terminal.api_terminal_ws(req)
 
         assert resp is ws
-        args = spawn.call_args.args
+        # The controlling terminal is claimed by the post-exec shim, so the argv
+        # the handler builds sits after the shim prefix.
+        args = strip_spawn_shim(spawn.call_args.args)
         assert args[0].replace("\\", "/").endswith("/bin/bash")
         # A real login shell, so `shopt -q login_shell` is true and every
         # profile stanza guarded on login-ness runs. The readiness
@@ -2665,6 +2668,81 @@ class TestApiTerminalWs:
         assert child_env["PROMPT_COMMAND"] == child_env[terminal._READY_HOOK_VAR]
         assert child_env[terminal._READY_TOKEN_VAR] in child_env["PROMPT_COMMAND"] \
             or "%s" in child_env["PROMPT_COMMAND"]
+
+    @pytest.mark.asyncio
+    async def test_spawn_asks_the_shim_for_the_terminal_and_passes_no_preexec_fn(self):
+        """The controlling terminal is requested post-exec, not in a fork.
+
+        ``preexec_fn`` is what makes CPython fork this whole threaded process, and
+        the parent then waits for the clone to ``exec`` inside an un-awaitable
+        ``os.read`` on the event loop thread. Its absence here is the fix; the
+        ``--ctty-fd=0`` flag is what carries the claim instead.
+        """
+        registry: dict = {}
+        req = _make_request(registry=registry, session_id="ctty-shim")
+        req.query = MagicMock()
+        req.query.get = lambda *a, **k: None
+
+        ws = AsyncMock()
+        ws.closed = False
+        fds = os.pipe()
+        spawn = AsyncMock(side_effect=RuntimeError("stop before read loop"))
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch.object(terminal.platform_compat, "IS_WINDOWS", False), \
+             patch.object(terminal._pty, "openpty", return_value=fds), \
+             patch.object(terminal.fcntl, "ioctl", lambda *a: None), \
+             patch.object(terminal.asyncio, "create_subprocess_exec", spawn), \
+             patch.object(terminal, "_get_config", return_value={"enabled": True}), \
+             patch.object(terminal.web, "WebSocketResponse", return_value=ws), \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            await terminal.api_terminal_ws(req)
+
+        spawn.assert_awaited_once()
+        assert "preexec_fn" not in spawn.call_args.kwargs
+        args = spawn.call_args.args
+        assert args[0] == sys.executable
+        assert "--ctty-fd=0" in args, "fd 0 is the PTY the child must claim"
+        # start_new_session is the setsid the claim depends on, and it is applied
+        # by _posixsubprocess in C rather than by Python in a fork child.
+        assert spawn.call_args.kwargs["start_new_session"] is True
+
+    @pytest.mark.asyncio
+    async def test_unavailable_shim_opens_without_a_terminal_rather_than_forking(self):
+        """No fallback to ``preexec_fn`` when the shim source is missing.
+
+        Reintroducing the fork is the defect being fixed, and a gateway the
+        loop-stall watchdog kills is a larger harm than a shell whose Ctrl+C does
+        not work. Only reachable on a truncated install.
+        """
+        registry: dict = {}
+        req = _make_request(registry=registry, session_id="ctty-no-shim")
+        req.query = MagicMock()
+        req.query.get = lambda *a, **k: None
+
+        ws = AsyncMock()
+        ws.closed = False
+        fds = os.pipe()
+        spawn = AsyncMock(side_effect=RuntimeError("stop before read loop"))
+        with patch.object(terminal.platform_compat, "IS_POSIX", True), \
+             patch.object(terminal.platform_compat, "IS_WINDOWS", False), \
+             patch.object(terminal._pty, "openpty", return_value=fds), \
+             patch.object(terminal.fcntl, "ioctl", lambda *a: None), \
+             patch.object(terminal, "spawn_shim_argv", return_value=()), \
+             patch.object(terminal.asyncio, "create_subprocess_exec", spawn), \
+             patch.object(terminal, "_get_config", return_value={"enabled": True}), \
+             patch.object(terminal.web, "WebSocketResponse", return_value=ws), \
+             patch.object(terminal, "logger") as mock_logger, \
+             patch.object(terminal, "_sel") as mock_sel:
+            mock_sel.return_value.log_api_access = MagicMock()
+            await terminal.api_terminal_ws(req)
+
+        spawn.assert_awaited_once()
+        assert "preexec_fn" not in spawn.call_args.kwargs
+        # Straight to the shell: no interpreter prefix to strip.
+        assert strip_spawn_shim(spawn.call_args.args) == spawn.call_args.args
+        assert mock_logger.warning.called, "the degraded terminal must be reported"
+        assert "controlling terminal" in str(mock_logger.warning.call_args)
 
     @pytest.mark.asyncio
     async def test_windows_conpty_spawn_failure_sends_error(self, monkeypatch):

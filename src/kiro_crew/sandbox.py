@@ -11522,6 +11522,7 @@ _PROFILE_OOM_BIAS = {
 # the (agent-writable) package directory at spawn time.
 _SHIM_ARGV_SEPARATOR = "--"
 _SHIM_CHDIR_FD_FLAG = "--chdir-fd="
+_SHIM_CTTY_FD_FLAG = "--ctty-fd="
 
 _SHIM_ARGV_CACHE: dict[str, tuple[str, ...]] = {}
 _SHIM_UNAVAILABLE_LOGGED = False
@@ -11564,7 +11565,9 @@ def _rlimit_spec(profile: str) -> str:
     return ",".join(f"{name}:{value}" for name, value in resource_limit_spec(cfg))
 
 
-def spawn_shim_argv(profile: str = RLIMIT_PROFILE_TOOL) -> tuple[str, ...]:
+def spawn_shim_argv(
+    profile: str = RLIMIT_PROFILE_TOOL, *, ctty_fd: int | None = None
+) -> tuple[str, ...]:
     """Return the argv prefix that applies *profile*'s policy AFTER ``exec``.
 
     Prepend it to a command and pass ``preexec_fn=None``; the shim replaces
@@ -11574,15 +11577,25 @@ def spawn_shim_argv(profile: str = RLIMIT_PROFILE_TOOL) -> tuple[str, ...]:
     Python in the child, where a wedged child blocks the spawning thread inside
     ``Popen`` and pins every fd it inherited.
 
+    *ctty_fd* asks the shim to make the terminal on that inherited descriptor the
+    child's controlling terminal, which is what lets Ctrl+C reach an interactive
+    shell. It is a spawn-scoped request rather than part of a profile: the
+    descriptor belongs to one PTY, and the same profile serves spawns with no
+    terminal at all. Passing it also redirects the child's stdin, stdout and
+    stderr onto that descriptor.
+
     Returns an empty tuple when there is nothing for a shim to do -- on Windows
-    (no POSIX rlimits), for a profile that asks for nothing, or if the shim source
-    could not be captured. An empty result on a profile that DOES carry policy
-    means the caller must fall back to ``preexec_fn`` rather than drop it.
+    (no POSIX rlimits), for a profile that asks for nothing and no *ctty_fd*, or
+    if the shim source could not be captured. An empty result on a profile that
+    DOES carry policy means the caller must fall back to ``preexec_fn`` rather
+    than drop it. A caller that asked for *ctty_fd* must NOT fall back that way:
+    reintroducing the fork is the defect the request exists to avoid, so it spawns
+    without the shim and accepts a shell with no controlling terminal.
     """
     global _SHIM_UNAVAILABLE_LOGGED
     if os.name != "posix":
         return ()
-    key = profile
+    key = profile if ctty_fd is None else f"{profile}|ctty={ctty_fd}"
     cached = _SHIM_ARGV_CACHE.get(key)
     if cached is not None:
         return cached
@@ -11598,7 +11611,7 @@ def spawn_shim_argv(profile: str = RLIMIT_PROFILE_TOOL) -> tuple[str, ...]:
         return ()
     spec = _rlimit_spec(profile)
     bias = _PROFILE_OOM_BIAS.get(profile, True)
-    if not spec and not bias:
+    if not spec and not bias and ctty_fd is None:
         # Nothing to do post-exec: skip the interpreter hop entirely rather than
         # pay ~10ms to exec a shim that would only exec again.
         _SHIM_ARGV_CACHE[key] = ()
@@ -11608,6 +11621,8 @@ def spawn_shim_argv(profile: str = RLIMIT_PROFILE_TOOL) -> tuple[str, ...]:
         argv.append(f"--rlimits={spec}")
     if bias:
         argv.append("--oom-bias")
+    if ctty_fd is not None:
+        argv.append(f"{_SHIM_CTTY_FD_FLAG}{ctty_fd}")
     argv.append(_SHIM_ARGV_SEPARATOR)
     resolved = tuple(argv)
     _SHIM_ARGV_CACHE[key] = resolved

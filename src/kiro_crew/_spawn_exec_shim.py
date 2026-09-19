@@ -1,8 +1,9 @@
-"""Post-exec shim: apply a child's resource limits, then ``exec`` the real command.
+"""Post-exec shim: apply a child's process setup, then ``exec`` the real command.
 
 Spawned as::
 
-    <sys.executable> -I -S -c <this file's source> [--rlimits=SPEC] [--oom-bias] -- argv...
+    <sys.executable> -I -S -c <this file's source> [--rlimits=SPEC] [--oom-bias]
+        [--chdir-fd=N] [--ctty-fd=N] -- argv...
 
 and replaces itself with ``argv`` via ``execv``, so the PID, process group,
 session, inherited fds, and exit status the caller observes are all the child's
@@ -50,6 +51,7 @@ except ImportError:  # pragma: no cover - Windows has no POSIX rlimits
 _RLIMIT_FLAG = "--rlimits="
 _OOM_BIAS_FLAG = "--oom-bias"
 _CHDIR_FD_FLAG = "--chdir-fd="
+_CTTY_FD_FLAG = "--ctty-fd="
 _ARGV_SEPARATOR = "--"
 # Shell convention for "command found but could not be executed", so a caller
 # that only sees the exit status can still tell an exec failure from the
@@ -170,6 +172,47 @@ def _enter_bound_directory(fd: int) -> bool:
     return True
 
 
+def _acquire_controlling_tty(fd: int) -> bool:
+    """Make the terminal on *fd* the controlling terminal of this session.
+
+    ``TIOCSCTTY`` is the reason an interactive shell can be interrupted at all:
+    without a controlling terminal the kernel has no foreground process group to
+    deliver Ctrl+C to, so ``SIGINT`` reaches nothing. Inheriting an already-open
+    terminal descriptor does not confer it -- it has to be claimed, after
+    ``setsid()``, by the session leader itself.
+
+    Claimed HERE rather than in a ``preexec_fn`` for the reason this whole module
+    exists: a ``preexec_fn`` would run this in a fork of the multi-threaded
+    gateway, and the ioctl is not what costs -- the fork is. Post-exec this
+    process is single-threaded, so the same ioctl carries none of that risk.
+
+    ``os.login_tty`` rather than a bare ``ioctl``: it is the libc primitive for
+    exactly this step, so the platform-correct ``TIOCSCTTY`` value comes from libc
+    instead of a hardcoded constant that differs between Linux and the BSDs. It
+    also calls ``setsid()`` first -- harmless when the spawn already asked for a
+    new session, because both glibc and the BSD libcs ignore that call's result --
+    and redirects stdin, stdout and stderr onto *fd*, which is what asking for a
+    controlling terminal means.
+
+    Returns False rather than exec'ing without one: a shell with no controlling
+    terminal looks like a working terminal until the user presses Ctrl+C and
+    nothing happens, and that silent substitution is the same failure class
+    :func:`_enter_bound_directory` refuses for a directory.
+    """
+    login_tty = getattr(os, "login_tty", None)
+    if login_tty is None:  # pragma: no cover - POSIX-only flag, POSIX-only callers
+        sys.stderr.write("spawn shim: os.login_tty unavailable on this platform\n")
+        return False
+    try:
+        login_tty(fd)
+    except OSError as exc:
+        sys.stderr.write(
+            f"spawn shim: cannot acquire controlling terminal on fd {fd}: {exc.strerror}\n"
+        )
+        return False
+    return True
+
+
 def main(argv: list[str] | None = None) -> int:
     """Parse the shim's own options, then ``exec`` the command after ``--``.
 
@@ -180,12 +223,25 @@ def main(argv: list[str] | None = None) -> int:
     spec = ""
     want_oom_bias = False
     chdir_fd: int | None = None
+    ctty_fd: int | None = None
     while args and args[0] != _ARGV_SEPARATOR:
         item = args.pop(0)
         if item.startswith(_RLIMIT_FLAG):
             spec = item[len(_RLIMIT_FLAG) :]
         elif item == _OOM_BIAS_FLAG:
             want_oom_bias = True
+        elif item.startswith(_CTTY_FD_FLAG):
+            raw_fd = item[len(_CTTY_FD_FLAG) :]
+            try:
+                ctty_fd = int(raw_fd)
+            except ValueError:
+                ctty_fd = -1
+            if ctty_fd < 0:
+                # Fail closed, as for the other descriptor flag: exec'ing a shell
+                # with no controlling terminal yields a terminal whose Ctrl+C is
+                # silently dead, which is worse than not opening one.
+                sys.stderr.write(f"spawn shim: bad {_CTTY_FD_FLAG}{raw_fd!r}\n")
+                return _EXEC_FAILED
         elif item.startswith(_CHDIR_FD_FLAG):
             raw_fd = item[len(_CHDIR_FD_FLAG) :]
             try:
@@ -225,6 +281,8 @@ def main(argv: list[str] | None = None) -> int:
     # Ahead of the limits, like every other allocating step: the failure path
     # here writes to stderr, and a tight RLIMIT_AS must not be what breaks it.
     if chdir_fd is not None and not _enter_bound_directory(chdir_fd):
+        return _EXEC_FAILED
+    if ctty_fd is not None and not _acquire_controlling_tty(ctty_fd):
         return _EXEC_FAILED
 
     _apply_rlimits(pairs)
