@@ -41,6 +41,23 @@ from kiro_crew.security import (
     _might_contain_credential,
     redact_credentials,
 )
+from kiro_crew.security.redaction import (
+    _HTML_REF_AMP,
+    _HTML_REF_EQUALS,
+    _HTML_REF_QUEST,
+    _TOKEN_PARAM_NAME_RE,
+    _TOKEN_PARAM_VALUE_CLASS,
+)
+
+# Mirror the live pass-4 wrapper exactly while keeping the oracle's span and
+# control-flow implementation independent. The name fold is ASCII-scoped so
+# parser-distinct Unicode lookalikes are not treated as `token`.
+_REFERENCE_TOKEN_PARAM_SEP_RE = rf"(?:[?&]|{_HTML_REF_AMP}|{_HTML_REF_QUEST})"
+_REFERENCE_TOKEN_PARAM_EQ_RE = rf"(?:=|{_HTML_REF_EQUALS})"
+_REFERENCE_TOKEN_PARAM_RE = re.compile(
+    rf"{_REFERENCE_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE})"
+    rf"{_REFERENCE_TOKEN_PARAM_EQ_RE}({_TOKEN_PARAM_VALUE_CLASS}+)"
+)
 
 # ── Reference oracle: the implementation as it stood before the optimisation ──
 
@@ -119,10 +136,28 @@ def _reference_redact_credentials(text: str) -> tuple[str, list[str]]:
         for start, end in gaps:
             pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
         warnings.append(f"Redacted bare secret key ({len(run)} chars)")
+    taken = sorted(taken + pass3)
+
+    # 4. `?token=` / `&token=` parameter values — ungated full scan, value
+    # group only, skipping a value that is already a fixed credential tag.
+    pass4: list[tuple[int, int, str]] = []
+    for m in _REFERENCE_TOKEN_PARAM_RE.finditer(text):
+        # Byte identity only: trust the two fixed credential literals, never a shape.
+        if any(
+            text.startswith(tag, m.start(1))
+            for tag in ("[REDACTED: credential]", "[REDACTED: encoded credential]")
+        ):
+            continue
+        gaps = _reference_uncovered(m.start(1), m.end(1), taken)
+        if not gaps:
+            continue
+        for start, end in gaps:
+            pass4.append((start, end, _REDACTED_CREDENTIAL_TAG))
+        warnings.append(f"Redacted token parameter value ({m.end(1) - m.start(1)} chars)")
 
     out: list[str] = []
     cursor = 0
-    for start, end, tag in sorted(taken + pass3):
+    for start, end, tag in sorted(taken + pass4):
         out.append(text[cursor:start])
         out.append(tag)
         cursor = end
@@ -307,6 +342,29 @@ def _corpus() -> list[str]:
         # bare 40-char AWS secret keys
         AWS_SECRET,
         f"key is {AWS_SECRET} ok",
+        # a bare secret AS a `?token=` value: pass 3 claims the value, pass 4
+        # must find no gap. This is the mutation pin for the
+        # `taken = sorted(taken + pass3)` fold ahead of pass 4 — without it,
+        # pass 4 re-claims the same span, `_splice` gets overlapping spans and
+        # the output doubles the tag, which the byte-identical differential
+        # then catches. Legacy-equivalent: legacy pass 3 replaces the same
+        # value and pass 4 does not exist there, so outputs agree.
+        f"?token={AWS_SECRET}",
+        # Percent-encoded and HTML-reference near misses stay legacy-equivalent:
+        # none becomes a token-parameter delimiter after the one decode performed
+        # by its owning parser stage.
+        "?to%6Aen=x",
+        "?to%6gen=x",
+        "&amptoken=Xk9fQ2mP4nR7sT1v",
+        "&Amp;token=Vb3nHj8LqW2zYc5d",
+        "&questtoken=Wq7dRt2xKp9mZv4c",
+        "?token&equalsQp4mXk9fR2vN7sT1",
+        "&amp;amp;token=Mn8qR3tV6xZ1cK5p",
+        "%26token=Yc5dVb3nHj8LqW2z",
+        "?token%3DXk9fQ2mP4nR7sT1v",
+        "&#382token=Vb3nHj8LqW2zYc5d",
+        "?token&#61123abcWq7dRt2xKp9mZv4c",
+        "&#00000000038;token=Qp4mXk9fR2vN7sT1",
         # the sliding-window cases the existing comment calls out explicitly
         glued,
         AWS_SECRET + "A",
@@ -419,6 +477,68 @@ LEGACY_DIVERGENT_SHAPES: tuple[tuple[str, str], ...] = (
     # A run whose head pass 1 took (`sk-proj-` consumes alphanumerics up to the
     # first slash): legacy skips the run and the key's 26-char tail survives.
     (f"sk-proj-{'a' * 20}Z{AWS_SECRET}", AWS_SECRET[14:]),
+    # Pass-4 shapes: an OPAQUE `?token=` / `&token=` value. Divergent for a
+    # different reason than the rows above -- the legacy oracle is the shipped
+    # pre-pass-4 behaviour, so it has no parameter-name pass at all and keeps
+    # the value verbatim; the live redactor and the by-span reference both
+    # remove it. The value is deliberately non-`eyJ` and far under the 40-char
+    # bare-secret floor, so no shape-based pass can mask the divergence.
+    (
+        "open https://host.example.com/?token=Xk9fQ2mP4nR7sT1v now",
+        "Xk9fQ2mP4nR7sT1v",
+    ),
+    (
+        "https://h.example/x?a=1&token=Vb3nHj8LqW2zYc5d&b=2",
+        "Vb3nHj8LqW2zYc5d",
+    ),
+    # The parameter NAME folds case; the value bytes do not.
+    (
+        "see https://h.example/?TOKEN=Wq7dRt2xKp9mZv4c now",
+        "Wq7dRt2xKp9mZv4c",
+    ),
+    # Standard query parsers percent-decode names after splitting raw `&`/`=`.
+    # These single-encoded names therefore authenticate as `token`, while the
+    # legacy oracle has no token-parameter pass and keeps each opaque value.
+    (
+        "see https://h.example/?to%6ben=Qp4mXk9fR2vN7sT1 now",
+        "Qp4mXk9fR2vN7sT1",
+    ),
+    (
+        "see https://h.example/?%74%6F%6B%65%6E=Mn8qR3tV6xZ1cK5p now",
+        "Mn8qR3tV6xZ1cK5p",
+    ),
+    (
+        "see https://h.example/?to%6Ben=Yc5dVb3nHj8LqW2z now",
+        "Yc5dVb3nHj8LqW2z",
+    ),
+    # HTML references decoded in an attribute before query parsing are the same
+    # pass-4 token parameter as their raw `&`, `?`, and `=` spellings. The
+    # pre-pass-4 legacy oracle keeps each opaque value, while live and reference
+    # pass 4 remove it.
+    ("see &amp;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &AMP;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &amp%74oken=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &AMP%74oken=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#38;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#38token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#0000000038;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#x26;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#X26token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#x0000000026;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &quest;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#63;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#63token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#0000000063;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#x3F;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#X3ftoken=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see &#x000000003F;token=Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see ?token&equals;Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see ?token&#61;Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see ?token&#61Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see ?token&#0000000061;Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see ?token&#x3D;Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see ?token&#X3dXk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
+    ("see ?token&#x000000003D;Xk9fQ2mP4nR7sT1v now", "Xk9fQ2mP4nR7sT1v"),
 )
 
 LEGACY_EQUIVALENT_CORPUS = _corpus()
@@ -474,6 +594,22 @@ def _legacy_redact_credentials(text: str) -> tuple[str, list[str]]:
 @pytest.mark.parametrize("text", CORPUS, ids=range(len(CORPUS)))
 def test_output_is_byte_identical_to_reference(text: str) -> None:
     assert redact_credentials(text) == _reference_redact_credentials(text)
+
+
+def test_reference_token_entity_case_matches_whatwg_decoding() -> None:
+    """The independent pass-4 wrapper keeps named refs case-sensitive."""
+    opaque = "Xk9fQ2mP4nR7sT1v"
+    for name in ("&PERCNT;74oken", "&PerCnt;74oken"):
+        text = f"?{name}={opaque}"
+        assert redact_credentials(text) == _reference_redact_credentials(text) == (text, [])
+
+    for name in ("&percnt;74oken", "&#X25;74oken"):
+        text = f"?{name}={opaque}"
+        expected = (
+            f"?{name}=[REDACTED: credential]",
+            ["Redacted token parameter value (16 chars)"],
+        )
+        assert redact_credentials(text) == _reference_redact_credentials(text) == expected
 
 
 @pytest.mark.parametrize("text", LEGACY_EQUIVALENT_CORPUS, ids=range(len(LEGACY_EQUIVALENT_CORPUS)))
@@ -613,6 +749,7 @@ def test_corpus_actually_exercises_every_pass() -> None:
     assert "Redacted credential pattern" in kinds
     assert "Redacted base64-encoded credential" in kinds
     assert "Redacted bare secret key" in kinds
+    assert "Redacted token parameter value" in kinds
 
 
 def test_warnings_never_carry_secret_material() -> None:

@@ -136,7 +136,7 @@ from kiro_crew.instances.validation import (
     validate_ssm_run_as,
     validate_ssm_target,
 )
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact
 from kiro_crew.sel import _HMAC_KEY_MIN_BYTES as _SEL_HMAC_KEY_MIN_BYTES
 from kiro_crew.sel import sel, sel_hmac_key_path
 
@@ -328,8 +328,11 @@ def _sanitize_banner(text: str, *, anchor: str | None = None) -> str:
     removed the phrase, the head slice is unchanged.
     """
     cleaned = _ANSI_CSI_RE.sub("", text)
-    cleaned = redact_credentials(cleaned)[0]
-    cleaned = redact_exfiltration_urls(cleaned)[0]
+    # Canonical exfiltration-then-credentials composition: the URL pass keys
+    # partly on query length and replaces the whole URL, so a credential pass
+    # run ahead of it can shorten a `?token=<long>` query below that threshold
+    # and leave the destination and payload parameters on the wire.
+    cleaned = redact(cleaned)
     if len(cleaned) <= _BANNER_DETAIL_MAX_CHARS:
         return cleaned
     if anchor:

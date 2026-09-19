@@ -20,7 +20,7 @@ from aiohttp import web
 from kiro_crew import platform_compat
 from kiro_crew.dashboard.handlers._shared import _get_skills
 from kiro_crew.frontmatter import SKILL_LOADER, parse_frontmatter
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 from kiro_crew.sel import sel as _sel
 from kiro_crew.skill_providers.base import ProviderRegistry, SkillProvider, provider_available
 from kiro_crew.skill_providers.skillsh import SkillsShConfig, SkillsShProvider
@@ -68,21 +68,20 @@ def _redact_external(text: str) -> str:
     exfiltration URLs per the security-controls guideline. Benign content passes
     through unchanged.
 
-    Three layers. The purely-lexical URL-parameter scrub runs **LAST**, and that
-    order is load-bearing: ``redact_exfiltration_urls`` classifies a URL as
-    suspicious partly by query LENGTH (``_EXFIL_QUERY_MIN_LEN``), and it replaces
-    the ENTIRE url when it fires. Scrubbing first shortens
-    ``?token=<210 chars>&host=…&path=…`` below that threshold, so the exfil scan
-    stops firing and every OTHER parameter -- the actual payload, which this
-    regex does not name -- renders verbatim. Running the scrub last keeps the
-    whole-URL redaction intact and still catches the short tokens the shape
-    matcher and the entropy heuristic both miss (e.g. ``?token=abc123``).
+    Three layers, and the ORDER is load-bearing at both seams.
+    ``security.redact`` -- the canonical exfiltration-then-credentials
+    composition (``redact_with_findings`` records why that order: the URL pass
+    classifies partly by query LENGTH (``_EXFIL_QUERY_MIN_LEN``) and replaces
+    the ENTIRE url when it fires, so any pass that rewrites query values ahead
+    of it drops the query below that threshold and every OTHER parameter, the
+    actual payload, renders verbatim) -- runs first as one unit, and the
+    purely-lexical URL-parameter scrub runs LAST so it only sees values the
+    real passes left standing (its ``(?!\\[REDACTED)`` guard skips what they
+    already replaced).
     """
     if not text:
         return text
-    scrubbed, _ = redact_credentials(text)
-    scrubbed, _ = redact_exfiltration_urls(scrubbed)
-    return _URL_SECRET_PARAM_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", scrubbed)
+    return _URL_SECRET_PARAM_RE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", redact(text))
 
 
 def _build_registry() -> ProviderRegistry:
@@ -446,8 +445,8 @@ async def api_skills_discover_install(request: web.Request) -> web.Response:
         )
         return web.json_response({"error": "Fetch timed out"}, status=504)
     except Exception as exc:
-        scrubbed, _ = redact_credentials(str(exc))
-        scrubbed, _ = redact_exfiltration_urls(scrubbed)
+        # Canonical composition — same reason as _redact_external above.
+        scrubbed = redact(str(exc))
         logger.warning(
             "Failed to fetch skill %r from %s: %r", _safe_skill_id, provider_name, scrubbed
         )

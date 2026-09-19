@@ -311,6 +311,7 @@ from kiro_crew.security import (
     StreamRedactor,
     is_sensitive_path,
     oauth_url_contains_credential,
+    redact,
     redact_and_truncate,
     redact_credentials,
     redact_exfiltration_urls,
@@ -2254,21 +2255,22 @@ def _flush_file_changes(slot: "_ChatSlot") -> None:
             entry["after"] = after.content
         if entry.pop("_before_truncated") or after.truncated:
             entry.update(truncated=True, snapshot_limit_chars=_MAX_SNAPSHOT)
-    # Scrub credentials and exfil URLs from path/before/after BEFORE attaching
+    # Scrub exfil URLs and credentials from path/before/after BEFORE attaching
     # to message meta. _save_slot_to_history runs _redact_meta on persist, but
     # the in-memory slot.messages reaches the dashboard UI via SSE/WS BEFORE
     # persistence — so without this, a config file containing an AKIA* key
     # (path not on the sensitive-path list) would briefly appear in the chip
     # diff. Redact in place so both the live and persisted views are clean.
+    # `security.redact` IS the canonical exfil-first composition — the URL pass
+    # classifies partly by query length and replaces the whole URL, so a
+    # hand-sequenced pair here risks re-introducing the creds-first ordering
+    # that defeats it.
     for entry in deduped.values():
-        entry["path"], _ = redact_credentials(entry["path"])
-        entry["path"], _ = redact_exfiltration_urls(entry["path"])
+        entry["path"] = redact(entry["path"])
         if entry["before"]:
-            entry["before"], _ = redact_credentials(entry["before"])
-            entry["before"], _ = redact_exfiltration_urls(entry["before"])
+            entry["before"] = redact(entry["before"])
         if entry["after"]:
-            entry["after"], _ = redact_credentials(entry["after"])
-            entry["after"], _ = redact_exfiltration_urls(entry["after"])
+            entry["after"] = redact(entry["after"])
     # No-op entries (before == after, e.g. an idempotent format-on-save)
     # are deliberately KEPT: the dashboard renders an explicit "no changes"
     # caption for them (FileChangeChips) instead of a contentless diff, so

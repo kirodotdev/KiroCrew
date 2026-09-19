@@ -938,6 +938,222 @@ _REDACTED_ENCODED_CREDENTIAL_TAG = "[REDACTED: encoded credential]"
 CREDENTIAL_REDACTION_TAGS = (_REDACTED_CREDENTIAL_TAG, _REDACTED_ENCODED_CREDENTIAL_TAG)
 
 
+# ── `?token=` / `&token=` URL parameter values (pass 4) ──
+# Keyed on the parameter NAME, not the value's shape, so an OPAQUE bearer value
+# -- one that looks nothing like a JWT -- is redacted where every shape-based
+# pattern above sees ordinary text. A parameter name is a context: `?token=`
+# cannot match a filename, an identifier or a sourcemap name, so this adds
+# coverage without inheriting shape-based false positives (the five measured
+# `eyJ…` lookalikes recorded on the two-segment link-token alternative).
+#
+# Group 1 is the VALUE, and only the value is replaced: `token=` stays visible
+# so a redacted URL still reads as a token URL. The precedent is
+# `instances/token_mint._TOKEN_RE` (`[?&]token=([^\s&]+)`), which one caller
+# kept privately because this module lacked the pass; the value class here is
+# WIDER-terminated per the issue's requirement -- it also stops at quotes and
+# `#` so a match cannot run past the parameter into a quoted string or a URL
+# fragment -- and additionally excludes the RFC 3986-forbidden bytes
+# (`<>{}|\^` and backtick): no legal URL query can carry them, while SOURCE
+# and DOC text quoting a token URL does (`?token={token}` in an f-string,
+# `` ?token=` `` in markdown, `?token=<your-token>` in prose). Without the
+# exclusion, pass 4 matches the template placeholder and the chip-diff path
+# (`chat_runner.py`) redacts a snapshot of `dashboard/urls.py` IN PLACE with
+# no recovery -- the exact non-cosmetic false-positive surface this module
+# cites as its reason for refusing to relax the JWT floor. A template whose
+# value starts with an excluded byte now yields an empty value and no match.
+#
+# The parameter NAME folds ASCII case (`(?ai:token)`) -- unlike `eyJ`, a
+# parameter name is not a fixed encoding prefix, and `?Token=` / `?TOKEN=`
+# from a third-party provider carries the same bearer value. ASCII scope keeps
+# Unicode lookalikes such as the Kelvin sign from spoofing the parser-visible
+# name; the value bytes are still matched exactly as written.
+#
+# ACCEPTED RESIDUAL: a template value made of LEGAL query bytes
+# (`?token=$TOKEN`, `?token=%s`) still matches and is redacted -- the class
+# excludes only bytes no legal query can carry, and a shape test on the value
+# would reintroduce the false-negative lever this pass exists to avoid.
+#
+# Deliberately NOT a `_CREDENTIAL_PATTERNS` branch, for two reasons. A branch
+# replaces its WHOLE span, which would swallow the `token=` anchor this pass
+# exists to keep visible. And `_contains_fixed_credential` -- which gates
+# request-BLOCKING decisions in `exfil.py` -- searches `_CREDENTIAL_PATTERNS`,
+# so a branch would turn every `?token=` URL into a blocked request: a
+# behaviour change the issue explicitly excludes. This pass redacts output
+# only; the blocking surface is unchanged. The other credential-bearing
+# parameter names (`access_token`, `id_token`, `api_key`, `code`) are excluded
+# on the issue's own scoping ground -- each name wants its own false-positive
+# analysis (`code=` especially collides with OAuth authorization codes AND
+# ordinary prose) -- not because adding them HERE would change the blocking
+# surface; a pass-4 name never feeds `_contains_fixed_credential`.
+_TOKEN_PARAM_VALUE_CLASS = r"[^\s&\"'#<>{}|\\^`]"
+
+_HTML_REF_AMP = (
+    r"&(?:amp;|AMP;|amp(?![0-9A-Za-z])|AMP(?![0-9A-Za-z])"
+    r"|#0{0,8}38(?:;|(?![0-9;]))|#[Xx]0{0,8}26(?:;|(?![0-9A-Fa-f;])))"
+)
+_HTML_REF_QUEST = r"&(?:quest;|#0{0,8}63(?:;|(?![0-9;]))|#[Xx]0{0,8}3[Ff](?:;|(?![0-9A-Fa-f;])))"
+_HTML_REF_EQUALS = r"&(?:equals;|#0{0,8}61(?:;|(?![0-9;]))|#[Xx]0{0,8}3[Dd](?:;|(?![0-9A-Fa-f;])))"
+_TOKEN_PARAM_SEP_ENTITY_RE = rf"(?:{_HTML_REF_AMP}|{_HTML_REF_QUEST})"
+_TOKEN_PARAM_SEP_RE = rf"(?:[?&]|{_TOKEN_PARAM_SEP_ENTITY_RE})"
+_TOKEN_PARAM_EQ_RE = rf"(?:=|{_HTML_REF_EQUALS})"
+
+
+# Apply one standard decode per pipeline stage. An HTML parser decodes these
+# references into structure BEFORE handing an attribute value to a query parser,
+# while that query parser splits on raw separators BEFORE percent-decoding the
+# parameter name. HTML references are therefore structure here, while encoded
+# `%26` / `%3D` remain later-stage data rather than separators.
+#
+# Deliberate declines follow the HTML5 parser's actual table and attribute state:
+# `&amptoken=` is unchanged because semicolon-less `&amp`/`&AMP` is decoded
+# only before a NON-alphanumeric per the WHATWG flush rule; `&Amp;`,
+# `&quest`, and `&equals` are absent from the table; `&amp;amp;token=` decodes only once to a non-token parameter name;
+# and `%26token=` / `?token%3D` are data when the query parser performs its split.
+#
+# Numeric references stop at eight leading zeros. An unbounded `0*` would make
+# the streaming WEAK holdback unbounded, so this is a DoS bound rather than a
+# claim that longer spellings differ in the HTML specification.
+# Each letter composes bounded HTML references over its literal byte and all
+# three bytes of its percent escape.
+def _html_numeric_refs(cp: int) -> list[str]:
+    """The two bounded HTML numeric spellings of one code point.
+
+    Mirrors `_HTML_REF_AMP`'s shape byte for byte, including the <=8-leading-zero
+    DoS bound and the WHATWG flush rule (a semicolon-less numeric reference is
+    decoded when the next byte cannot extend the number).
+
+    The `;` is excluded from the zero-width alternative so a PRESENT semicolon
+    MUST be consumed by the reference. Without it the engine can backtrack the
+    reference to its semicolon-less branch and hand the `;` to a FOLLOWING pattern
+    that accepts it: on `?token&#61;` with an empty value, `_TOKEN_PARAM_RE`'s EQ
+    gave up its `;` and the value class captured it, so pass 4 spliced the
+    credential tag over the semicolon in text `chat_runner.py` redacts IN PLACE.
+    A real parser never leaves the terminator behind (`&#61;` decodes to `=`,
+    `&#61;;` to `=;`), so the zero-width branch with `;` next models a decode no
+    parser performs. Today only `_HTML_REF_EQUALS` is reachable -- `;` matches no
+    name-letter, nibble, or separator alternative -- but the exclusion is uniform
+    in this generator so the invariant is structural rather than per-site. The
+    named `amp`/`AMP` lookaheads are deliberately NOT changed: `amp;` is ordered
+    first and wins on every match, and the name position rejects `;`.
+    """
+    return [
+        rf"&#0{{0,8}}{cp}(?:;|(?![0-9;]))",
+        rf"&#[Xx]0{{0,8}}{cp:x}(?:;|(?![0-9A-Fa-f;]))",
+    ]
+
+
+def _html_or_literal(chars: str) -> str:
+    """One anchor byte: its literal spellings, or an HTML reference to any of them.
+
+    The literal class is left for the surrounding scoped `(?ai:...)` to fold, as
+    the percent ladder already relies on. A numeric reference carries DIGITS,
+    which no case fold reaches, so a letter byte emits references for BOTH cases
+    explicitly -- without that, `%6&#102;` matched while `%6&#70;` did not.
+    """
+    literals = sorted(set(chars))
+    alternatives = ["[" + "".join(literals) + "]" if len(literals) > 1 else literals[0]]
+    for char in literals:
+        alternatives += _html_numeric_refs(ord(char))
+        if char.isalpha():
+            alternatives += _html_numeric_refs(ord(char.swapcase()))
+    return "(?:" + "|".join(alternatives) + ")"
+
+
+#: `%` at the HTML stage. `&percnt;` REQUIRES its semicolon: unlike `amp`, it is
+#: absent from the 106-entry semicolon-less legacy set, so `&percnt74` is data.
+#: Named references are case-sensitive, so disable the surrounding name ladder's
+#: ASCII case fold for this literal while numeric references keep folding `X`.
+_PERCENT_SIGN_RE = "(?:" + "|".join(["%", *_html_numeric_refs(0x25), "(?-i:&percnt;)"]) + ")"
+
+
+def _token_name_letter(letter: str) -> tuple[str, str]:
+    """(complete, partial) spellings of one `token` letter.
+
+    COMPLETE is every spelling that decodes to the letter: the literal
+    (ASCII-case folded by the caller's `(?ai:...)`), an HTML reference to either
+    case, and a percent escape whose three bytes are EACH spellable at the HTML
+    stage -- the composition the two modelled stages admit (`&#37;74`,
+    `%&#55;&#52;`). ASCII case differs in the HIGH nibble only, so the low nibble
+    is case-invariant and the high nibble is a two-digit class.
+
+    PARTIAL adds every end-of-chunk prefix whose last byte is NOT in
+    `_CRED_CLASS` -- i.e. one ending at a `;` -- because `natural_cut` already
+    holds every other prefix. The bare-`%` forms are kept from the round-4
+    ladder so its committed behaviour is unchanged.
+    """
+    lower, upper = format(ord(letter), "x"), format(ord(letter.upper()), "x")
+    assert lower[1] == upper[1], letter
+    high = _html_or_literal(lower[0] + upper[0])
+    low = _html_or_literal(lower[1])
+    complete = (
+        "(?:"
+        + "|".join(
+            [
+                letter,
+                *_html_numeric_refs(ord(letter)),
+                *_html_numeric_refs(ord(letter.upper())),
+                _PERCENT_SIGN_RE + high + low,
+            ]
+        )
+        + ")"
+    )
+    partial = (
+        "(?:"
+        + "|".join(
+            [
+                complete,
+                _PERCENT_SIGN_RE + high,
+                _PERCENT_SIGN_RE,
+                rf"%[{lower[0]}{upper[0]}]?",
+            ]
+        )
+        + ")"
+    )
+    return complete, partial
+
+
+_TOKEN_PARAM_NAME_SPELLINGS = tuple(_token_name_letter(c) for c in "token")
+_TOKEN_PARAM_NAME_RE = "".join(c for c, _ in _TOKEN_PARAM_NAME_SPELLINGS)
+_TOKEN_PARAM_NAME_PREFIX_RE = (
+    "(?:"
+    + "|".join(
+        "".join(c for c, _ in _TOKEN_PARAM_NAME_SPELLINGS[:k]) + _TOKEN_PARAM_NAME_SPELLINGS[k][1]
+        for k in range(len(_TOKEN_PARAM_NAME_SPELLINGS))
+    )
+    + ")"
+)
+_TOKEN_PARAM_RE = re.compile(
+    rf"{_TOKEN_PARAM_SEP_RE}(?ai:{_TOKEN_PARAM_NAME_RE}){_TOKEN_PARAM_EQ_RE}({_TOKEN_PARAM_VALUE_CLASS}+)"
+)
+
+# The in-progress form of the same anchor, for `StreamRedactor.feed`'s
+# credential-anchored holdback escalation (mirrors `_BEARER_ANCHOR_PARTIAL_RE`).
+# `?` `&` `=` are all in `_CRED_CLASS`, so a token URL is one withheld run --
+# but a run longer than the 512-char DoS floor with NO recognised credential
+# anchor is BISECTED, and for a >=512-char opaque value the bisection point
+# lands inside the value: the committed prefix carries the `token=` anchor
+# (and is redacted), while the tail reaches `flush()` anchor-less and streams
+# raw. Recognising the trailing partial escalates the tail to the 4096
+# ceiling and the fail-closed drop past it, exactly like a Bearer token.
+#
+# Every alternative below is one possible end-of-chunk prefix. For a percent
+# spelling, `%(?:[57]4?)?` (and its siblings) includes the bare `%`, the first
+# hex nibble, and the complete escape. The surrounding scoped `(?ai:...)` folds
+# both literal letters and hex letters without admitting Unicode lookalikes.
+# The same generated entity composition supplies complete-or-partial spellings
+# at every letter boundary.
+# `*` (not `+`): a buffer ending at a complete separator/name/equals spelling is
+# already an in-progress value match. A mid-entity tail needs no extra
+# alternative: every byte of `&amp` / `&#x2` belongs to `_CRED_CLASS`, while the
+# terminating `;` does not. The explicit entity-only alternative holds the
+# completed spelling at buffer end before that semicolon can release it.
+_TOKEN_PARAM_PARTIAL_RE = re.compile(
+    rf"(?:{_TOKEN_PARAM_SEP_RE}(?:(?ai:{_TOKEN_PARAM_NAME_PREFIX_RE})"
+    rf"|(?ai:{_TOKEN_PARAM_NAME_RE})(?P<eq>{_TOKEN_PARAM_EQ_RE}){_TOKEN_PARAM_VALUE_CLASS}*)"
+    rf"|{_TOKEN_PARAM_SEP_ENTITY_RE})\Z"
+)
+
+
 #: One redaction the batch redactor has decided on, positioned against the
 #: ORIGINAL text: ``(start, end, replacement)``. Every pass produces these and
 #: nothing is written until every pass has spoken.
@@ -996,10 +1212,10 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
     real standalone credential survives in plaintext. Splicing by span makes
     that unreachable in all three passes.
 
-    Passes are ranked: pass 1 outranks pass 2 outranks pass 3. A later pass's
-    span never rewrites text an earlier pass already claimed; it redacts only
-    the part of its span still standing in plaintext, so no character is
-    redacted twice and no character a pass flagged is left behind.
+    Passes are ranked: pass 1 outranks pass 2 outranks pass 3 outranks pass 4.
+    A later pass's span never rewrites text an earlier pass already claimed; it
+    redacts only the part of its span still standing in plaintext, so no
+    character is redacted twice and no character a pass flagged is left behind.
     """
     warnings: list[str] = []
 
@@ -1086,10 +1302,61 @@ def redact_credentials(text: str) -> tuple[str, list[str]]:
         for start, end in gaps:
             pass3.append((start, end, _REDACTED_CREDENTIAL_TAG))
         warnings.append(f"Redacted bare secret key ({len(run)} chars)")
+    taken = sorted(taken + pass3)
 
-    if not taken and not pass3:
+    # 4. `?token=` / `&token=` URL parameter VALUES, keyed on the parameter
+    # name (see `_TOKEN_PARAM_RE`). Ranked LAST so a value an earlier pass
+    # already caught -- an AKIA key, a JWT, a link token -- keeps that pass's
+    # tag, warning and span byte-identically; this pass only claims the opaque
+    # values nothing shape-based can see.
+    #
+    # UNGATED, deliberately: the name folds case (`(?i:token)`), and a
+    # case-insensitive pattern is only safely anchored by the SAME regex
+    # engine (see `_CREDENTIAL_PREFILTER_AUTHORIZATION_RE` for the
+    # `str.lower()` bypass this rule exists to prevent) -- so the cheapest
+    # valid gate is a same-engine search whose cost equals the scan it would
+    # skip, which is no gate at all. This pass is one two-alternation-free
+    # regex, not the 23-branch alternation pass 1's pre-filter exists for.
+    #
+    # A value that is already one of this module's fixed credential tags is
+    # skipped, not re-redacted: several surfaces run the redactor twice (the
+    # streaming path re-redacts the persisted copy; `redact_path_segments`
+    # requires its candidate to be a fixed point), and the value class stops at
+    # a tag's interior space. Matching a canonical tag again would mangle
+    # `token=[REDACTED: credential]` into
+    # `token=[REDACTED: credential] credential]` on the second run.
+    #
+    # Trust is BYTE-IDENTITY with a module-owned fixed literal, never a shape.
+    # `_TOKEN_PARAM_VALUE_CLASS` admits `[`, `]` and `:`, so a prefix test lets
+    # adversary-authored `?token=[REDACTED<secret>` bypass this terminal pass.
+    # `CREDENTIAL_REDACTION_TAGS` is the key because it contains ONLY fixed
+    # literals. The exfiltration prefix is excluded for exactly that reason:
+    # skipping a domain-bounded exfil shape is the same bypass --
+    # `?token=[REDACTED: suspicious URL to <secret>.co]` satisfies the domain
+    # class while carrying attacker-controlled bytes.
+    #
+    # ACCEPTED RESIDUAL: a genuine exfil tag value is redacted at its 10-byte
+    # `[REDACTED:` head, yielding
+    # `?token=[REDACTED: credential] suspicious URL to <domain>]`. That text is
+    # already redacted and contains no secret; it is stable on re-redaction
+    # because the second pass sees the exact credential literal and skips, and
+    # the bare domain tail cannot re-trigger the exfil pass (`_URL_RE` requires
+    # a scheme). One notice count moves from exfil to credential.
+    pass4: list[_RedactionSpan] = []
+    for m in _TOKEN_PARAM_RE.finditer(text):
+        value_start, value_end = m.start(1), m.end(1)
+        if any(text.startswith(tag, value_start) for tag in CREDENTIAL_REDACTION_TAGS):
+            continue
+        gaps = _uncovered(value_start, value_end, taken)
+        if not gaps:
+            continue
+        for start, end in gaps:
+            pass4.append((start, end, _REDACTED_CREDENTIAL_TAG))
+        warnings.append(f"Redacted token parameter value ({value_end - value_start} chars)")
+
+    if not taken and not pass4:
         return text, warnings
-    return _splice(text, sorted(taken + pass3)), warnings
+    return _splice(text, sorted(taken + pass4)), warnings
 
 
 # Absolute filesystem paths, POSIX and Windows. Deliberately narrow: anchored to

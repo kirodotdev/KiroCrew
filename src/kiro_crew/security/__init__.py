@@ -396,6 +396,9 @@ from .redaction import (
     _SECRET_MAX_SLASHES,
     _SECRET_MAX_VOWEL_RATIO,
     _SECRET_PRINTABLE_DECODE_RATIO,
+    _TOKEN_PARAM_PARTIAL_RE,
+    _TOKEN_PARAM_RE,
+    _TOKEN_PARAM_VALUE_CLASS,
     _VOWELS,
     CREDENTIAL_REDACTION_TAGS,
     REDACTED_CREDENTIAL_TAG,
@@ -858,6 +861,22 @@ _PEM_HOLD_RE = re.compile(
 # is rejoined before emission while still keeping the buffer bounded.
 _STREAM_HOLDBACK_JWT_MAX = 4096
 
+# A sticky discard consumes only bytes that the ARMING anchor defines as value
+# bytes. These two classes are the existing classes from the partial JWT and
+# Bearer anchors below, named so the anchors and discard cannot drift apart.
+_JWT_SEGMENT_VALUE_CLASS = r"[A-Za-z0-9_-]"
+_BEARER_VALUE_CLASS = r"[A-Za-z0-9._~+/=-]"
+_STREAM_DISCARD_RUN_RES = {
+    "token-param": re.compile(rf"{_TOKEN_PARAM_VALUE_CLASS}*"),
+    "jwt": re.compile(rf"(?:{_JWT_SEGMENT_VALUE_CLASS}|\.)*"),
+    "bearer": re.compile(rf"{_BEARER_VALUE_CLASS}*"),
+}
+# Bytes of terminator-less continuation dropped silently between two tags. It is
+# NOT an exit: at the bound the discard re-emits the tag, zeroes the counter and
+# keeps dropping, so the counter stays O(1) and a credential's continuation never
+# resumes raw. Only a byte outside the arming anchor's value class ends the discard.
+_STREAM_DISCARD_MAX = 1 << 20
+
 # The withheld tail is a partial JWT/JWE when it ends with the `eyJ` base64url
 # header prefix optionally followed by up to FOUR `.`-separated base64url segments
 # (the final segment may be empty mid-stream). Three segments = a JWS/JWT
@@ -865,7 +884,9 @@ _STREAM_HOLDBACK_JWT_MAX = 4096
 # `{0,4}` trailing quantifier admits the full JWE shape too — matching the batch
 # `_CREDENTIAL_PATTERNS` JWE ceiling — instead of bisecting a >512-char JWE at the
 # 512 floor. Anchored to the buffer end (`\Z`).
-_PARTIAL_JWT_TAIL_RE = re.compile(r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){0,4}\Z")
+_PARTIAL_JWT_TAIL_RE = re.compile(
+    rf"eyJ{_JWT_SEGMENT_VALUE_CLASS}+(?:\.{_JWT_SEGMENT_VALUE_CLASS}*){{0,4}}\Z"
+)
 
 # Trailing (possibly incomplete) `Authorization: Bearer <token>` anchor at the end
 # of the stream buffer. Unlike a bare credential run, this anchor embeds WHITESPACE
@@ -894,9 +915,22 @@ _PARTIAL_JWT_TAIL_RE = re.compile(r"eyJ[A-Za-z0-9_-]+(?:\.[A-Za-z0-9_-]*){0,4}\Z
 # and stream its raw tail.
 _BEARER_ANCHOR_PARTIAL_RE = re.compile(
     r"""Authorization["']?\s*[:=]\s*["']?"""
-    r"(?:Bearer(?:\s+[A-Za-z0-9._~+/=-]*)?|Beare|Bear|Bea|Be|B)?\Z",
+    rf"(?:Bearer(?:\s+{_BEARER_VALUE_CLASS}*)?|Beare|Bear|Bea|Be|B)?\Z",
     re.IGNORECASE,
 )
+
+
+def _complete_token_match_crossing(
+    matches: tuple[re.Match[str], ...], cut: int
+) -> re.Match[str] | None:
+    """Return the first token-parameter value strictly bisected by *cut*, if any."""
+    for match in matches:
+        # A cut at end(1) or end(1)+1 leaves the whole separator-name-equals-
+        # value inside the commit, where the batch pass redacts it whole. Only a
+        # cut inside the value strands an anchor-less suffix.
+        if match.start() < cut < match.end(1):
+            return match
+    return None
 
 
 class StreamRedactor:
@@ -910,60 +944,197 @@ class StreamRedactor:
     character, while a credential is a contiguous credential-class run.
     """
 
-    __slots__ = ("_buf", "_redact")
+    __slots__ = ("_buf", "_redact", "_discarding", "_discard_kind", "_discarded")
 
     def __init__(self, redactor: "Callable[[str], str] | None" = None) -> None:
         self._buf = ""
         # Resolve at call time so module-load order is irrelevant.
         self._redact = redactor or redact
+        self._discarding = False
+        self._discard_kind: str | None = None
+        self._discarded = 0
 
     def feed(self, chunk: str) -> str:
         """Accept a chunk; return the redacted prefix that is safe to emit now."""
         if not chunk:
             return ""
         self._buf += chunk
-        # Start of the maximal trailing credential-class run.
-        i = len(self._buf)
-        while i > 0 and self._buf[i - 1] in _CRED_CLASS:
-            i -= 1
+
+        # Invariant: `_buf` is always "" on entry when `_discarding` is true;
+        # this chunk is solely the continuation of the already-tagged drop.
+        # Only a terminator byte exits the discard. Reaching the bound with no
+        # terminator re-emits the tag and resets the counter but stays armed:
+        # clearing the flag there would hand the credential's remaining bytes
+        # to Phase A as an anchorless run, which the 512 floor streams raw.
+        if self._discarding:
+            assert self._discard_kind is not None
+            run_match = _STREAM_DISCARD_RUN_RES[self._discard_kind].match(self._buf)
+            assert run_match is not None
+            run = run_match.end()
+            self._discarded += run
+            if run == len(self._buf):
+                self._buf = ""
+                if self._discarded < _STREAM_DISCARD_MAX:
+                    return ""
+                self._discarded = 0
+                return _REDACTED_CREDENTIAL_TAG
+            self._discarding = False
+            self._discard_kind = None
+            self._buf = self._buf[run:]
+
+        # PHASE A -- SAFETY CUT.
+        # Invariant: every candidate can only move the cut backward. Bytes before
+        # the minimum do not bisect any known in-progress credential anchor.
+        natural_cut = len(self._buf)
+        while natural_cut > 0 and self._buf[natural_cut - 1] in _CRED_CLASS:
+            natural_cut -= 1
+        partial_jwt = _PARTIAL_JWT_TAIL_RE.search(self._buf)
+        safety_cuts = [natural_cut]
+
+        # Canonical credential tags are fixed points only when a batch-redaction
+        # call sees the WHOLE tag. Their interior space is outside `_CRED_CLASS`,
+        # so a chunk boundary inside a tag can otherwise commit its head and let
+        # token-parameter pass 4 re-redact that fragment. Hold only a STRICT tag
+        # prefix ending at the buffer tail. The nested search examines at most
+        # the longest module-owned tag and only defers the cut: it is not a
+        # credential anchor and therefore cannot escalate a cap or authorize a
+        # fail-closed drop.
+        partial_tag_start: int | None = None
+        for tag in CREDENTIAL_REDACTION_TAGS:
+            max_prefix = min(len(self._buf), len(tag) - 1)
+            for prefix_len in range(max_prefix, 0, -1):
+                if self._buf.endswith(tag[:prefix_len]):
+                    start = len(self._buf) - prefix_len
+                    partial_tag_start = (
+                        start if partial_tag_start is None else min(partial_tag_start, start)
+                    )
+                    break
         # PEM header hold-back (ported from the upstream project): the
-        # multi-word phrase "BEGIN RSA PRIVATE KEY" splits on whitespace.  If the
+        # multi-word phrase "BEGIN RSA PRIVATE KEY" splits on whitespace. If the
         # tail of the commit window contains an in-progress PEM header prefix,
         # refuse to commit at this boundary.
-        if i > 0 and _PEM_HOLD_RE.search(self._buf[max(0, i - 50) : i]):
-            i = 0
-        # Also withhold from the start of any trailing (possibly incomplete)
-        # `Authorization: Bearer <token>` anchor. Its embedded whitespace is not in
-        # _CRED_CLASS, so the run scan above would otherwise commit the anchor
-        # prefix and the opaque token in separate chunks — leaking the token, since
-        # the batch Bearer pattern only fires on the joined anchor.
-        anchor = _BEARER_ANCHOR_PARTIAL_RE.search(self._buf)
-        if anchor is not None:
-            i = min(i, anchor.start())
-        # Escalate the holdback cap to the JWT ceiling when the withheld tail is
-        # (the start of) a credential that legitimately exceeds the 512-char DoS
-        # floor: a partial JWT/JWE (`eyJ…`) OR a trailing `Authorization: Bearer`
-        # anchor. Bearer must be included alongside JWT — an opaque OAuth/refresh/
-        # SSO Bearer token > 512 chars has no `eyJ` prefix, so keying escalation on
-        # `_PARTIAL_JWT_TAIL_RE` alone left its 512-char tail streaming raw. Still
-        # bounded: a run with no credential anchor stays on the 512 floor.
-        cred_anchored = _PARTIAL_JWT_TAIL_RE.search(self._buf) is not None or anchor is not None
+        if natural_cut > 0 and _PEM_HOLD_RE.search(
+            self._buf[max(0, natural_cut - 50) : natural_cut]
+        ):
+            safety_cuts.append(0)
+
+        # Bearer anchors are STRONG: their embedded whitespace is not in
+        # _CRED_CLASS, so the natural cut could otherwise split anchor and value.
+        bearer_anchor = _BEARER_ANCHOR_PARTIAL_RE.search(self._buf)
+        if bearer_anchor is not None:
+            safety_cuts.append(bearer_anchor.start())
+
+        # A token-name prefix without '=' is WEAK. It still needs a short
+        # holdback so a chunk boundary cannot split the name, but it is not yet a
+        # credential and must never escalate the cap or authorize data loss.
+        token_anchor = _TOKEN_PARAM_PARTIAL_RE.search(self._buf)
+        weak_token_anchor = None
+        strong_token_anchor = False
+        if token_anchor is not None:
+            safety_cuts.append(token_anchor.start())
+            strong_token_anchor = token_anchor.group("eq") is not None
+            if not strong_token_anchor:
+                weak_token_anchor = token_anchor
+
+        i = min(safety_cuts)
+        complete_token_matches = tuple(_TOKEN_PARAM_RE.finditer(self._buf))
+        # Invariant: the complete-match crossing predicate is re-evaluated after
+        # every assignment to `i`; both Phase A and the Phase B floor call the
+        # same helper rather than letting their predicate copies drift.
+        complete_token_crossing = _complete_token_match_crossing(complete_token_matches, i)
+        if complete_token_crossing is not None:
+            i = min(i, complete_token_crossing.start())
+
+        strong_anchored = (
+            partial_jwt is not None
+            or bearer_anchor is not None
+            or complete_token_crossing is not None
+            or strong_token_anchor
+        )
+
+        # A partial canonical tag is already-redacted material. It lowers only
+        # the safety cut and is deliberately applied AFTER STRONG classification,
+        # so the tag prefix itself can neither raise a cap nor authorize a drop.
+        if partial_tag_start is not None:
+            i = min(i, partial_tag_start)
+
+        # PHASE B -- BOUNDS.
+        # Invariant: STRONG anchors may fail closed instead of exposing a secret;
+        # WEAK name prefixes never drop data. Any forced cut is repaired before
+        # emission so it cannot strand an anchor-less token-value suffix.
         cap = _STREAM_HOLDBACK_MAX
-        if len(self._buf) - i > cap and cred_anchored:
+        if len(self._buf) - i > cap and strong_anchored:
             cap = _STREAM_HOLDBACK_JWT_MAX
         if len(self._buf) - i > cap:
-            if cred_anchored:
-                # Fail closed: a credential-anchored tail (JWT/JWE/Bearer) has blown
-                # past the 4096 ceiling. Bisecting here would emit the token's head
-                # raw, so instead redact+emit the safe prefix, append the tag, and
-                # DROP the oversized tail. A plain cred-class run with no credential
-                # anchor falls through to the bisect below and is committed
-                # (bisecting an opaque non-credential run cannot leak a structured
-                # secret and preserves the DoS bound with no data loss).
-                commit, self._buf = self._buf[:i], ""
+            if strong_anchored:
+                # Preserve the fail-closed ceiling for a real credential anchor:
+                # redact the safe prefix, tag the event, and drop the oversized
+                # tail rather than bisecting it and exposing the token head.
+                # Only STRONG evidence arms the sticky discard. A WEAK trailing
+                # name prefix (`&tok`, no `=`) is held by the safety cut but is
+                # not yet a credential: it authorizes no drop and names no value
+                # class to drop with.
+                credential_reaches_end = (
+                    partial_jwt is not None
+                    or bearer_anchor is not None
+                    or strong_token_anchor
+                    or (
+                        complete_token_crossing is not None
+                        and complete_token_crossing.end(1) == len(self._buf)
+                    )
+                )
+                self._discarding = credential_reaches_end
+                self._discard_kind = None
+                if credential_reaches_end:
+                    # Every arming term above maps to exactly one kind, carrier
+                    # first: a STRONG token anchor or a complete crossing ending
+                    # the buffer -> "token-param"; a Bearer anchor -> "bearer";
+                    # a partial JWT -> "jwt". No other term can arm, so the
+                    # final `else` holds a true invariant.
+                    # Prefer an enclosing carrier over a token shape inside its
+                    # value: its value class defines where that credential ends.
+                    token_param_reaches_end = strong_token_anchor or (
+                        complete_token_crossing is not None
+                        and complete_token_crossing.end(1) == len(self._buf)
+                    )
+                    if token_param_reaches_end:
+                        self._discard_kind = "token-param"
+                    elif bearer_anchor is not None:
+                        self._discard_kind = "bearer"
+                    else:
+                        assert partial_jwt is not None
+                        self._discard_kind = "jwt"
+                self._discarded = 0
+                # A complete value may cross the safety cut yet end before a
+                # benign suffix in the same buffer. Drop only through the value;
+                # the suffix remains buffered for normal processing. Sticky
+                # discard is reserved for credential material that reaches the
+                # buffer end, where a continuation can still arrive.
+                drop_end = len(self._buf)
+                if complete_token_crossing is not None and not credential_reaches_end:
+                    drop_end = complete_token_crossing.end(1)
+                commit, self._buf = self._buf[:i], self._buf[drop_end:]
                 out = self._redact(commit) if commit else ""
                 return out + _REDACTED_CREDENTIAL_TAG
+
             i = len(self._buf) - cap
+
+            # The floor was computed after Phase A, so re-check complete token
+            # parameters against the actual cut. Advancing through the value is
+            # safe because the whole parameter reaches one batch-redaction call,
+            # and it shrinks the buffer rather than weakening the DoS bound.
+            floor_crossing = _complete_token_match_crossing(complete_token_matches, i)
+            if floor_crossing is not None:
+                i = floor_crossing.end(1)
+
+            # Repair the complete-match cut first, then preserve a trailing WEAK
+            # prefix if that repair crossed it. An encoded separator is at most
+            # 14 bytes and a name letter at most 42 (three `&#x0{0,8}HH;` slots),
+            # so the clamp is <=224 bytes -- still under
+            # `_STREAM_HOLDBACK_MAX = 512`.
+            if weak_token_anchor is not None and weak_token_anchor.start() < i:
+                i = weak_token_anchor.start()
+
         if i <= 0:
             return ""  # whole buffer is a (possibly partial) credential run — hold
         commit, self._buf = self._buf[:i], self._buf[i:]
@@ -971,6 +1142,11 @@ class StreamRedactor:
 
     def flush(self) -> str:
         """Redact and return the buffered remainder; clears the buffer."""
+        if self._discarding:
+            self._buf = ""
+            self._discarding = False
+            self._discard_kind = None
+            return ""
         out = self._redact(self._buf) if self._buf else ""
         self._buf = ""
         return out
@@ -978,6 +1154,9 @@ class StreamRedactor:
     def reset(self) -> None:
         """Discard the buffer without emitting (segment abandoned/cleared)."""
         self._buf = ""
+        self._discarding = False
+        self._discard_kind = None
+        self._discarded = 0
 
 
 def _deny_segment_views(segment: str, emit_self: bool = True) -> tuple[str, ...]:

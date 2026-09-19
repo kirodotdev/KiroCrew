@@ -38,7 +38,7 @@ from typing import Any, Callable, Optional
 from kiro_crew.acp.worker_pool import WorkerPool
 from kiro_crew.llm_helpers import ToolApprovalPolicy, stream_and_collect
 from kiro_crew.messaging.identity import publish_turn_identity
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact
 from kiro_crew.taskq.adapters.runner import (
     RunnerAdmission,
     RunnerAdmissionRefused,
@@ -79,8 +79,8 @@ async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = No
     ``_MAX_TURNS_PER_STEP`` tool-call ceiling, an optional per-task ``timeout``
     (via ``asyncio.wait_for`` — the pool passes its per-task bound here so a
     wedged turn is terminated instead of holding a permit until the run ceiling),
-    and the credential + exfiltration-URL output redaction pair (parity with
-    ``agent_exec`` — prevents credential leakage into workflow results stored in
+    and canonical output redaction (parity with ``agent_exec`` — prevents
+    credential or exfiltration-URL leakage into workflow results stored in
     history / injected into parent chat).
     """
     coro = stream_and_collect(
@@ -90,9 +90,7 @@ async def _run_step(provider: Any, prompt: str, *, timeout: Optional[float] = No
         max_turns=_MAX_TURNS_PER_STEP,
     )
     text = await (asyncio.wait_for(coro, timeout) if timeout is not None else coro)
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
-    return text
+    return redact(text)
 
 
 class _WorkflowSessionWorker:

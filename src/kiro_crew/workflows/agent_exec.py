@@ -33,7 +33,7 @@ import time
 from typing import Any, Callable, Optional
 
 from kiro_crew.llm_helpers import ToolApprovalPolicy, provider_last_turn_usage, stream_and_collect
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact
 
 logger = logging.getLogger(__name__)
 
@@ -169,10 +169,10 @@ def build_agent_fn(
                     )
                 except Exception:
                     logger.debug("workflow usage row persist failed", exc_info=True)
-            # Apply output redaction to prevent credential leakage
-            # in workflow results stored in history or injected into parent chat.
-            text, _ = redact_credentials(text)
-            text, _ = redact_exfiltration_urls(text)
+            # Apply canonical output redaction to prevent credential or
+            # exfiltration-URL leakage into workflow results stored in history
+            # or injected into parent chat.
+            text = redact(text)
             if memory_scope is not None:
                 await memory_scope.validate()
             return text

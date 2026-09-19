@@ -476,6 +476,24 @@ class TestSanitizeBannerAnchor:
     def test_short_text_is_returned_whole(self) -> None:
         assert _sanitize_banner("short", anchor="connection reset") == "short"
 
+    def test_banner_scrub_is_the_exfil_first_composition(self) -> None:
+        """A long-query exfil URL in a proxy banner loses its WHOLE url.
+
+        The banner buffer is proxy-controlled, and `redact_exfiltration_urls`
+        classifies partly by query length before replacing the entire url — a
+        hand-sequenced creds-first pair here would shorten `?token=<long>`
+        first and defeat it, leaving the destination and payload parameters in
+        the tunnel status detail. The scrub must stay the canonical
+        `security.redact()` composition (the seam `discover.py`'s
+        TestRedactExternalLayerOrder pins).
+        """
+        banner = (
+            "refused: https://collect.attacker.example/?token=" + "aB3" * 70 + "&host=corp-laptop"
+        )
+        out = _sanitize_banner(banner)
+        assert "corp-laptop" not in out
+        assert "?token=" not in out
+
     def test_no_anchor_takes_the_head(self) -> None:
         assert _sanitize_banner("a" * 300) == "a" * 200
 

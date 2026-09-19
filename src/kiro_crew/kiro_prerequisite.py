@@ -70,7 +70,7 @@ from kiro_crew.sandbox import (
     sandboxed_spawn_argv,
     shielded_prepare_off_loop,
 )
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import redact, redact_credentials, redact_exfiltration_urls
 
 logger = logging.getLogger(__name__)
 
@@ -642,8 +642,7 @@ def _probe_failure_text(result: ProcessResult | None) -> str:
     # sees), and this string travels to the status payload and the setup
     # screen, so it is redacted BEFORE the cut: truncating first could leave
     # the recognisable half of a secret in the kept tail.
-    text, _ = redact_credentials(text)
-    text, _ = redact_exfiltration_urls(text)
+    text = redact(text)
     if len(text) > _PROBE_ERROR_MAX_CHARS:
         text = text[-_PROBE_ERROR_MAX_CHARS:]
     return text

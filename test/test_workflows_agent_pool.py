@@ -89,10 +89,7 @@ async def _fake_stream(provider, prompt, **kwargs):
 def _patch_stream(monkeypatch):
     monkeypatch.setattr("kiro_crew.workflows.agent_pool.stream_and_collect", _fake_stream)
     # redaction is a no-op passthrough for these tests
-    monkeypatch.setattr("kiro_crew.workflows.agent_pool.redact_credentials", lambda t: (t, []))
-    monkeypatch.setattr(
-        "kiro_crew.workflows.agent_pool.redact_exfiltration_urls", lambda t: (t, [])
-    )
+    monkeypatch.setattr("kiro_crew.workflows.agent_pool.redact", lambda t: t)
 
 
 @pytest.mark.asyncio
