@@ -48,6 +48,7 @@ scan, so it costs the same on a crew log with ten lines and one with a million.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -494,8 +495,8 @@ def remove_unit(kind: str, unit_id: str, *, guard: "Callable[[Path], bool]") -> 
     return REMOVE_REMOVED
 
 
-def unit_header_slot(kind: str, unit_id: str) -> "str | None":
-    """The slot recorded in *unit_id*'s HEADER, or None when it cannot be proved.
+def _unit_header_object(kind: str, unit_id: str) -> "dict[str, Any] | None":
+    """*unit_id*'s header line, parsed FROM DISK, or None when it cannot be proved.
 
     An independent second answer to "whose crew log is this", for a caller that
     reached the unit id through a channel it does not fully trust. The header is
@@ -503,15 +504,14 @@ def unit_header_slot(kind: str, unit_id: str) -> "str | None":
     the fenced crew log tree, so it does not move when a mapping does.
 
     None for every reason a caller must not proceed on: no directory, no segment,
-    an unreadable or unparseable header, a header whose own id does not fold back
-    to this directory (the same refusal the sweep makes, since a directory
-    carrying another unit's id would answer for that other unit), or a header with
-    no slot at all. None is "cannot prove", never "no slot", so a caller that
-    requires a match refuses rather than guessing.
+    an unreadable or unparseable header, or a header whose own id does not fold
+    back to this directory (the same refusal the sweep makes, since a directory
+    carrying another unit's id would answer for that other unit). None is "cannot
+    prove", never "that field is absent", so a reader that requires a match
+    refuses rather than guessing.
 
     Read-only: it takes no lease and writes nothing. A concurrent append cannot
-    change a header, and the caller's own decision is re-made under the lease by
-    ``remove_unit``'s guard.
+    change a header, so what it reports stands for as long as that file lives.
     """
     require_kind(kind)
     try:
@@ -540,6 +540,14 @@ def unit_header_slot(kind: str, unit_id: str) -> "str | None":
         return None
     own_id = parsed.get("id")
     if not isinstance(own_id, str) or not own_id or _store_name(own_id) != directory.name:
+        return None
+    return parsed
+
+
+def unit_header_slot(kind: str, unit_id: str) -> "str | None":
+    """The slot recorded in *unit_id*'s HEADER, or None when it cannot be proved."""
+    parsed = _unit_header_object(kind, unit_id)
+    if parsed is None:
         return None
     slot = parsed.get("slot")
     return slot if isinstance(slot, str) and slot else None
@@ -681,6 +689,29 @@ def read_head(path: Path) -> "tuple[dict[str, Any] | None, Entry | None, bool]":
         return header, None, False
     entry = None if parsed is None else Entry.from_dict(parsed)
     return header, entry, True
+
+
+def unit_header_created_at(kind: str, unit_id: str) -> "int | None":
+    """*unit_id*'s creation stamp, read from the header ON DISK, or None.
+
+    The stamp is written once at create and never rewritten, so it separates a
+    RECREATED log from the one a reader started on -- including a recreation that
+    landed on the freed inode, where device and inode alone report the two files as
+    one. A caller holding an open handle cannot get this from the handle itself:
+    that header was parsed when the handle was opened, so it describes the file
+    that existed then and keeps answering for it after the file is replaced.
+
+    None for a header that cannot be proved, and for a stamp that is absent or not
+    an integer. None never matches a recorded identity, so an unprovable header
+    costs a rebuild instead of licensing a reuse.
+    """
+    parsed = _unit_header_object(kind, unit_id)
+    if parsed is None:
+        return None
+    created_at = parsed.get("createdAt")
+    if not isinstance(created_at, int) or isinstance(created_at, bool):
+        return None
+    return created_at
 
 
 def _remove_unit_contents(directory: Path) -> "tuple[int, int]":
@@ -1847,6 +1878,104 @@ class CrewLog:
         return entries
 
     # -- read --------------------------------------------------------------- #
+
+    def raw_prefix_digest(self, records: int) -> tuple[str, int]:
+        """SHA-256 of the first *records* raw entry records, and count hashed.
+
+        Segments are walked oldest first with the store's normal binary framing.
+        Each segment's header is excluded: log identity is checked separately,
+        while this digest proves that the entry bytes already consumed by a fold
+        have not changed. No JSON is decoded on this path.
+
+        *records* is a RAW record count and must come from
+        :meth:`raw_records_through`, never from a fold's entry span. The two differ
+        by every blank or unparseable interior line, and an entry span therefore
+        stops this walk short of the records the fold actually consumed.
+
+        Never raises. An invalid count, unreadable segment, framing failure, or
+        prefix shorter than requested returns a count other than *records*, which
+        makes a savepoint comparison fail closed.
+        """
+        if not isinstance(records, int) or isinstance(records, bool) or records < 0:
+            return ("", 0)
+        digest = hashlib.sha256()
+        hashed = 0
+        if records == 0:
+            return (digest.hexdigest(), hashed)
+        try:
+            paths = segment_paths(self._kind, self._id)
+            for path in paths:
+                with open(path, "rb") as source:
+                    for index, raw in enumerate(
+                        bounded_raw_records(source, path, cap=MAX_ENTRY_BYTES, label="crew log")
+                    ):
+                        if index == 0:
+                            continue
+                        digest.update(raw)
+                        hashed += 1
+                        if hashed == records:
+                            return (digest.hexdigest(), hashed)
+        except Exception:
+            logger.debug("crew log raw prefix for %s could not be read", self._id, exc_info=True)
+        return (digest.hexdigest(), hashed)
+
+    def raw_records_through(self, seq: int) -> int | None:
+        """How many raw entry records end at the entry numbered *seq*, or ``None``.
+
+        This is the boundary :meth:`raw_prefix_digest` has to be given, and it
+        exists because the two ways of measuring "how much of this file did a fold
+        consume" are NOT the same number. A fold counts ENTRIES, so its span is
+        ``last_seq - first_seq + 1``. The digest walks RAW records, and a blank or
+        unparseable interior line is a record to that walk while the fold skips it.
+        Handed the entry span, the walk therefore stops one record short per such
+        line, and the trailing records a fold did consume fall outside the digest --
+        where later damage to them passes verification, which is the one thing the
+        digest exists to prevent.
+
+        So the boundary is resolved here, once, by the same walk the digest uses,
+        and the record's own ``seq`` decides where it lies. That costs a JSON decode
+        per record, which is why only the WRITE path calls it: a savepoint is
+        written rarely, and the reader is handed the resolved count so its own
+        verification stays decode-free.
+
+        ``None`` when *seq* is not a real boundary in this log: a bad argument, an
+        unreadable or unframeable segment, or a file whose records do not reach it.
+        A savepoint is then not written, which costs a cold fold rather than
+        recording a boundary nothing can check.
+        """
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 1:
+            return None
+        seen = 0
+        try:
+            for path in segment_paths(self._kind, self._id):
+                with open(path, "rb") as source:
+                    for index, raw in enumerate(
+                        bounded_raw_records(source, path, cap=MAX_ENTRY_BYTES, label="crew log")
+                    ):
+                        if index == 0:
+                            continue  # the header
+                        seen += 1
+                        stripped = raw.strip()
+                        if not stripped:
+                            continue
+                        parsed = _parses_to_object(stripped)
+                        if parsed is None:
+                            continue
+                        own = parsed.get("seq")
+                        if not isinstance(own, int) or isinstance(own, bool):
+                            continue
+                        if own == seq:
+                            return seen
+                        if own > seq:
+                            # Past the boundary without landing on it, so the entry
+                            # is not in this log and no count describes it.
+                            return None
+        except Exception:
+            logger.debug(
+                "crew log prefix boundary for %s could not be read", self._id, exc_info=True
+            )
+            return None
+        return None
 
     def iter_from(self, seq: int = 1, *, known: Collection[str] | None = None) -> Iterator[Entry]:
         """Every entry from *seq* onward, OLDEST first -- the shape a fold wants.

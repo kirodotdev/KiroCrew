@@ -1049,6 +1049,92 @@ def test_fold_session_reuses_the_bundle_when_the_file_is_the_same():
     assert second.projection("usage").value == crew_log.fold_usage(_entries(handle))
 
 
+def _rewrite_in_place(target, lines: list[str]) -> None:
+    """Replace *target*'s whole content, keeping its device and inode.
+
+    A removal and a create would hand the new file a new inode on most runs, and
+    then device and inode refuse the reuse on their own -- so a test written that
+    way is decided by whether the filesystem recycled the inode, and passes
+    without the identity it means to exercise. Truncating in place is the
+    recycled-inode case made deterministic: same device, same inode, different
+    file. The assertion below is what keeps it that way.
+    """
+    before = target.stat()
+    with target.open("w", encoding="utf-8") as handle:
+        for line in lines:
+            handle.write(line + "\n")
+    after = target.stat()
+    assert (after.st_dev, after.st_ino) == (
+        before.st_dev,
+        before.st_ino,
+    ), "the rewrite moved the file, so device and inode alone would refuse it"
+
+
+def test_the_file_identity_reads_the_creation_stamp_from_disk_not_from_the_handle():
+    """A handle's own header describes the file that existed when it was opened.
+
+    The identity exists to separate a recreated log from the one a reader started
+    on. Taken from the open handle, the stamp cannot do that: it is parsed once at
+    open and keeps answering for the replaced file, leaving device and inode as the
+    only live signal -- and those agree whenever the new file landed on the freed
+    inode, which is the common case. Here they are held IDENTICAL on purpose, so
+    only a stamp read from disk can tell the two files apart.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=1.0)
+    before = crew_log.log_origin(handle)
+    assert before is not None
+
+    lines = handle.path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(lines[0])
+    header["createdAt"] = header["createdAt"] + 1
+    _rewrite_in_place(handle.path, [json.dumps(header), *lines[1:]])
+
+    after = crew_log.log_origin(handle)
+    assert after is not None, "a readable header is a provable identity"
+    assert after != before
+
+
+def test_a_log_recreated_under_a_held_handle_is_folded_again_rather_than_spliced():
+    """The caller passes its handle back in, so the reuse must not trust it.
+
+    ``fold_session`` takes ``log=`` from a caller that already holds one, which is
+    what makes this reachable without any race: the handle was opened before the
+    recreation, so a stamp read from it still names the retired file. The seq guard
+    passes because the new file is longer, so nothing else stands between the old
+    file's folded state and the new file's bytes -- the totals below are the old
+    turn plus part of the new ones, a number no file on disk ever held.
+    """
+    handle = _log()
+    _opened(handle)
+    _turn(handle, 1, credits=1.0)
+    first = crew_log.fold_session(SESSION, log=handle)
+
+    # A different, longer log, written over the first one's bytes: the same id, a
+    # fresh creation stamp, and turns whose credits could not come from the file
+    # the bundle was folded from.
+    donor = _log("s-recreated")
+    _opened(donor)
+    for turn in (1, 2, 3):
+        _turn(donor, turn, credits=99.0)
+    body = donor.path.read_text(encoding="utf-8").splitlines()
+    header = json.loads(body[0])
+    header["id"] = SESSION
+    retired = json.loads(handle.path.read_text(encoding="utf-8").splitlines()[0])
+    header["createdAt"] = retired["createdAt"] + 1
+    _rewrite_in_place(handle.path, [json.dumps(header), *body[1:]])
+
+    settled = CrewLog.open(lg.KIND_SESSION, SESSION)
+    assert first.last_seq <= settled.last_seq, "the seq guard alone would allow the reuse"
+    honest = crew_log.fold_usage(_entries(settled))
+
+    rebuilt = crew_log.fold_session(SESSION, since=first, log=handle)
+
+    assert rebuilt.projection("usage").value == honest
+    assert rebuilt.origin is not None and rebuilt.origin != first.origin
+
+
 # --------------------------------------------------------------------------- #
 # bounds on what a fold RETAINS, and on what one pass holds
 # --------------------------------------------------------------------------- #
