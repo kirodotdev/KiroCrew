@@ -54,7 +54,9 @@ from kiro_crew.messaging.renderer import (
     Renderer,
     _default_redactor,
     apply_options_cap,
+    count_redaction_tags,
     new_approval_nonce,
+    redaction_notice,
     split_options_trailer,
 )
 from kiro_crew.messaging.split import split_markdown_safe
@@ -409,6 +411,26 @@ class TeamsRenderer(Renderer):
             # After the text, so an image lands next to the prose that introduced
             # it rather than above the answer it belongs to.
             await self._send_inline_images(files)
+        cred_count, url_count = count_redaction_tags(content)
+        if cred_count or url_count:
+            # The answer above carries a redaction placeholder, so a follow-up
+            # notice tells the reader the text was rewritten. Counted over the
+            # DELIVERED body (a failed chunk raises out of the loop above, so
+            # reaching here means the text shipped), and best-effort by the
+            # shared contract: the answer is already out, so a failed notice
+            # send is logged, never raised. Posted before the options card so
+            # the card stays adjacent to the choices it asks about.
+            try:
+                await self._client.send_message(
+                    self._conversation_id,
+                    redaction_notice(cred_count, url_count),
+                    self._service_url,
+                )
+            except Exception:
+                logger.warning(
+                    "teams: could not deliver the redaction notice (answer already sent)",
+                    exc_info=True,
+                )
         if kept:
             # Chips ride their own card AFTER the answer, so a failed answer
             # delivery above never leaves buttons floating with nothing to act on.

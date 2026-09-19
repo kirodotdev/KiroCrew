@@ -52,7 +52,9 @@ from kiro_crew.messaging.outbound_files import (
 from kiro_crew.messaging.renderer import (
     Renderer,
     apply_options_cap,
+    count_redaction_tags,
     new_approval_nonce,
+    redaction_notice,
     split_options_trailer,
 )
 from kiro_crew.messaging.split import chunk_utf8_bytes
@@ -475,6 +477,26 @@ class WebexRenderer(Renderer):
                     self._room_id,
                     self._numbered_text("", kept).lstrip("\n"),
                     parent_id=self._thread_id,
+                )
+        # Post-answer redaction notice, counted over the assembled answer the
+        # chunks above were cut from (the reference shape iMessage uses). A
+        # follow-up chunk that failed already announced its truncation, so a
+        # count over the full content can at most describe a placeholder the
+        # reader did not receive — the safe direction. Best-effort by the
+        # shared contract: the answer is out, so a failed notice send is
+        # logged, never raised.
+        cred_count, url_count = count_redaction_tags(content)
+        if cred_count or url_count:
+            try:
+                await self._client.send_message(
+                    self._room_id,
+                    redaction_notice(cred_count, url_count),
+                    parent_id=self._thread_id,
+                )
+            except Exception:
+                logger.warning(
+                    "Webex: could not deliver the redaction notice (answer already sent)",
+                    exc_info=True,
                 )
 
     async def close(self) -> None:

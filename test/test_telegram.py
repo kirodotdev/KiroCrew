@@ -5378,3 +5378,59 @@ class TestClientClose:
             assert client._session is None
 
         asyncio.run(_run())
+
+
+class TestRedactionNotice:
+    """A rewritten answer is followed by one threaded notice; clean answers are not.
+
+    Telegram redacts at the seal against the rendered form, so a raw secret fed
+    to the renderer lands as a placeholder — the tally counts each landed frame.
+    Shared wording is pinned in ``test_credential_redaction_notice.py``.
+    """
+
+    _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"
+
+    def test_redacted_answer_is_followed_by_one_notice(self) -> None:
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+            await r.on_done()
+
+        asyncio.run(_go())
+        outbound = [t for t, _kb in cli.sent] + [t for _mid, t, _kb in cli.edits]
+        assert not any("SuperSecret123" in t for t in outbound)
+        notices = [t for t, _kb in cli.sent if "Security notice" in t]
+        assert len(notices) == 1
+        assert "SuperSecret123" not in notices[0]
+        assert cli.sent[-1][0] == notices[0], "the notice lands below the answer"
+
+    def test_clean_answer_sends_no_notice(self) -> None:
+        cli = FakeClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_text_chunk("All green, deploy finished.")
+            await r.on_done()
+
+        asyncio.run(_go())
+        assert not any("Security notice" in t for t, _kb in cli.sent)
+
+    def test_notice_send_failure_does_not_fail_a_delivered_turn(self) -> None:
+        class _NoticeFailsClient(FakeClient):
+            async def send_message(self, chat_id: int, text: str, **kw: Any) -> int:
+                if "Security notice" in text:
+                    raise RuntimeError("telegram down after the answer")
+                return await super().send_message(chat_id, text, **kw)
+
+        cli = _NoticeFailsClient()
+        r = TelegramRenderer(cli, 55, TELEGRAM_CAPABILITIES, session_key="telegram:1:0")  # type: ignore[arg-type]
+
+        async def _go() -> None:
+            await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+            await r.on_done()  # must not raise: the answer above already landed
+
+        asyncio.run(_go())
+        delivered = [t for t, _kb in cli.sent] + [t for _mid, t, _kb in cli.edits]
+        assert any("[REDACTED: credential]" in t for t in delivered)

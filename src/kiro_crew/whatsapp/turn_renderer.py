@@ -49,7 +49,7 @@ from kiro_crew.messaging.approval import (
     open_approval,
 )
 from kiro_crew.messaging.outbound_files import Rejection, hide_local_refs
-from kiro_crew.messaging.renderer import Renderer
+from kiro_crew.messaging.renderer import Renderer, count_redaction_tags, redaction_notice
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.whatsapp import client as wa_client
 from kiro_crew.whatsapp.files import (
@@ -524,6 +524,21 @@ class WhatsAppRenderer(Renderer):
             # Nothing reached the chat at all: the whole reply still has to.
             await self._send(body)
         await self._deliver_uploads()
+        # Post-answer redaction notice, counted over the converted chunks that
+        # shipped (streamed prefix included — those are chunks[:start], already
+        # delivered by earlier flushes). Best-effort by the shared contract:
+        # ``_send`` raises so the dispatcher can fail an undelivered TURN, but
+        # the answer is out by now, so the raise is contained here rather than
+        # allowed to convert a delivered turn into a failed one.
+        cred_count, url_count = count_redaction_tags("\n".join(chunks))
+        if cred_count or url_count:
+            try:
+                await self._send(redaction_notice(cred_count, url_count))
+            except Exception:
+                logger.warning(
+                    "whatsapp: could not deliver the redaction notice (answer already sent)",
+                    exc_info=True,
+                )
 
     async def _deliver_uploads(self) -> None:
         """Send the pictures the reply referenced, then name any it could not.

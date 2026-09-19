@@ -1478,3 +1478,78 @@ class TestOptionsFooterCancellationDefersFinalize:
             assert renderer.turn_finalized is True
 
         asyncio.run(scenario())
+
+
+class TestTransportRedactionNotice:
+    """The DEFAULT Slack path posts a redaction notice below a rewritten answer.
+
+    Driven through the real TurnDriver so the StreamRedactor writes the
+    placeholder exactly as production does. The tally counts the final
+    display-safe body plus the posted 💭 reasoning, mirroring the native
+    handler's per-turn count; shared wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"
+
+    def _run(self, rec, events):
+        renderer = SlackRenderer(rec, "C1", "t1", reactions_enabled=False)
+        provider = _Provider(events)
+        asyncio.run(TurnDriver(provider, renderer, approval_mode="auto").run("hi"))
+
+    def test_redacted_answer_is_followed_by_one_threaded_notice(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Run: psql {self._SECRET_URI}"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        outbound = [str(kw.get("text") or kw.get("final_text") or "") for _method, kw in rec.calls]
+        assert not any("SuperSecret123" in t for t in outbound)
+        notices = [
+            kw["text"]
+            for method, kw in rec.calls
+            if method == "post_message" and "Security notice" in str(kw.get("text"))
+        ]
+        assert len(notices) == 1
+        assert "SuperSecret123" not in notices[0]
+        # Below the answer: the stream is finalized before the notice posts.
+        methods = [m for m, _ in rec.calls]
+        last_post_message = max(i for i, m in enumerate(methods) if m == "post_message")
+        assert methods.index("stop_stream") < last_post_message
+
+    def test_clean_answer_posts_no_notice(self):
+        rec = _RecSlack()
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text="All green, deploy finished."),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        assert not any(
+            "Security notice" in str(kw.get("text"))
+            for method, kw in rec.calls
+            if method == "post_message"
+        )
+
+    def test_notice_send_failure_does_not_fail_a_delivered_turn(self):
+        class _NoticeFailsSlack(_RecSlack):
+            async def post_message(self, channel, text, thread_ts=None, **kw):
+                if "Security notice" in str(text):
+                    raise RuntimeError("slack down after the answer")
+                return await super().post_message(channel, text, thread_ts, **kw)
+
+        rec = _NoticeFailsSlack()
+        # Must not raise: the answer is already delivered when the notice fails.
+        self._run(
+            rec,
+            [
+                AcpEvent(kind=EVENT_TEXT_CHUNK, text=f"Run: psql {self._SECRET_URI}"),
+                AcpEvent(kind=EVENT_COMPLETE, stop_reason="end_turn"),
+            ],
+        )
+        stops = [kw for m, kw in rec.calls if m == "stop_stream"]
+        assert len(stops) == 1 and "[REDACTED: credential]" in str(stops[0]["final_text"])

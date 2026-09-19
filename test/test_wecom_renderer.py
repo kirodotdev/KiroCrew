@@ -327,3 +327,66 @@ class TestAnswerBodyRedaction:
         delivered = "".join(f["content"] for f in c.frames) + "".join(p[1] for p in c.pushed)
         for word in ("alpha", "beta", "gamma", "delta", "epsilon", "zeta", "eta", "theta"):
             assert word in delivered, word
+
+
+class TestRedactionNotice:
+    """A rewritten answer is followed by one notice, delivered from ``close()``.
+
+    The driver redacts text before it reaches this renderer, so these feed the
+    placeholder tag directly — what a production turn actually carries. WeCom's
+    answer can finish landing as late as the deferred-overflow release, so the
+    tally is taken at ``on_done`` and the notice goes out at ``close()``, the
+    one point every delivery path funnels through. Shared wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_redacted_answer_posts_one_notice_at_close(self) -> None:
+        client = FakeClient()
+        r = _renderer(client)
+        await r.on_text_chunk("Run: psql [REDACTED: credential]")
+        await r.on_done()
+        await r.close()
+
+        # No conversation id on this renderer, so the notice takes the
+        # response_url fallback.
+        notices = [c for _url, c in client.replies if "Security notice" in c]
+        assert len(notices) == 1
+
+    @pytest.mark.asyncio
+    async def test_clean_answer_sends_no_notice(self) -> None:
+        client = FakeClient()
+        r = _renderer(client)
+        await r.on_text_chunk("All green, deploy finished.")
+        await r.on_done()
+        await r.close()
+
+        assert not any("Security notice" in c for _url, c in client.replies)
+        assert not any("Security notice" in c for _cid, c in client.pushed)
+
+    @pytest.mark.asyncio
+    async def test_a_second_close_does_not_post_the_notice_twice(self) -> None:
+        client = FakeClient()
+        r = _renderer(client)
+        await r.on_text_chunk("Run: psql [REDACTED: credential]")
+        await r.on_done()
+        await r.close()
+        await r.close()
+
+        notices = [c for _url, c in client.replies if "Security notice" in c]
+        assert len(notices) == 1
+
+    @pytest.mark.asyncio
+    async def test_notice_send_failure_does_not_fail_the_teardown(self) -> None:
+        client = FakeClient()
+
+        async def failing_reply(url, content):
+            raise RuntimeError("wecom down after the answer")
+
+        client.send_reply = failing_reply  # type: ignore[method-assign]
+        r = _renderer(client)
+        await r.on_text_chunk("Run: psql [REDACTED: credential]")
+        # The sealing frame lands over the WS stream, so the raising
+        # response_url only ever carries the notice here.
+        await r.on_done()
+        await r.close()  # must not raise

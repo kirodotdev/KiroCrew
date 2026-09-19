@@ -28,7 +28,13 @@ import logging
 import time
 from typing import TYPE_CHECKING, Any
 
-from kiro_crew.messaging.renderer import Renderer, format_overflow, split_options_trailer
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    count_redaction_tags,
+    format_overflow,
+    redaction_notice,
+    split_options_trailer,
+)
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.wecom.client import WECOM_SAFE_REPLY_CHARS, new_stream_id
@@ -132,6 +138,10 @@ class WeComRenderer(Renderer):
         # Tail chunks held until close() knows whether the head landed, so a
         # recovered head cannot arrive after the text it precedes.
         self._pending_overflow: list[str] = []
+        # Redaction placeholders in the assembled answer, tallied at on_done and
+        # delivered as one notice from close(), where every delivery path ends.
+        self._notice_creds = 0
+        self._notice_urls = 0
         self._stream_id = new_stream_id()
         self._buf: list[str] = []
         self._last_send = 0.0
@@ -254,6 +264,12 @@ class WeComRenderer(Renderer):
         # remainder, so a roll that leaves nothing to say costs no message.
         self._roll_if_sealed()
         remainder = answer[self._carried :]
+        # Tallied here, delivered from ``close()``: this channel's answer can
+        # finish landing as late as the deferred-overflow release, and close()
+        # is the one point every delivery path funnels through (drive_turn
+        # calls it from its finally). Table rendering does not rewrite a
+        # redaction placeholder, so the pre-render text is the right subject.
+        self._notice_creds, self._notice_urls = count_redaction_tags(answer)
         if not answer:
             # Routed through _send_final_chunk like any other seal, so a refusal is
             # recovered rather than merely recorded. This is the branch that carries
@@ -419,6 +435,31 @@ class WeComRenderer(Renderer):
         # tail it precedes is released.
         head_ok = await self._recover_unconfirmed_seal()
         await self._release_pending_overflow(head_ok=head_ok)
+        # Post-answer redaction notice, after every delivery path has settled
+        # (the tally is taken in on_done, where the assembled answer exists).
+        # A CONFIRMED push when a conversation id exists, else the one-shot
+        # response_url. Best-effort by the shared contract: the answer is out,
+        # so a failed notice send is logged, never raised. Consumed on the
+        # first call so a second close() cannot post the notice twice.
+        creds, urls = self._notice_creds, self._notice_urls
+        self._notice_creds = self._notice_urls = 0
+        if creds or urls:
+            try:
+                notice = redaction_notice(creds, urls)
+                delivered = False
+                if self._chat_id:
+                    delivered = await self._client.send_proactive(self._chat_id, notice)
+                if not delivered:
+                    delivered = await self._client.send_reply(self._response_url, notice)
+                if not delivered:
+                    logger.warning(
+                        "WeCom: could not deliver the redaction notice (answer already sent)"
+                    )
+            except Exception:
+                logger.warning(
+                    "WeCom: could not deliver the redaction notice (answer already sent)",
+                    exc_info=True,
+                )
 
     async def _recover_unconfirmed_seal(self) -> bool:
         """Ask once more whether the sealing frame was accepted, and recover if not.

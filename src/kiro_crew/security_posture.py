@@ -1552,6 +1552,25 @@ NON_EGRESS_REDACTION_MODULES: frozenset[str] = frozenset(
         "imessage/client.py",
         "imessage/transport.py",
         "imessage/transport_dispatch.py",
+        # The WhatsApp turn lifecycle. What the scan matches here is the
+        # post-answer redaction NOTICE pair -- ``count_redaction_tags`` over the
+        # delivered chunks and ``redaction_notice`` to build the follow-up
+        # sentence -- which tallies placeholders already written by a redaction
+        # pass and rewrites no outbound byte itself. The pass that carries this
+        # channel's guarantee is ``whatsapp/renderer.py``'s render pipeline
+        # (``render_chunks`` / ``display_safe_text``), registered as the sink
+        # above; its row names this module as the wire-writer those screened
+        # forms ship through.
+        "whatsapp/turn_renderer.py",
+        # The Feishu renderer. Same shape as the WhatsApp entry above: the scan
+        # matches the post-answer redaction NOTICE pair -- ``count_redaction_tags``
+        # over the delivered reply body and ``redaction_notice`` to build the
+        # follow-up sentence -- which tallies placeholders already written by a
+        # redaction pass and rewrites no outbound byte itself. This channel
+        # delivers the TurnDriver's stream verbatim, so the pass that carries
+        # its guarantee is the driver's own StreamRedactor, registered as the
+        # sink above.
+        "feishu/renderer.py",
         # The tool-permission prompt and its SEL record. Neither crosses a
         # machine boundary: the prompt is written to the operator's OWN terminal
         # in their own process, and the audit line goes to the local SEL log. The

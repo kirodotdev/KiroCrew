@@ -44,7 +44,12 @@ from kiro_crew.constants import (
 from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.tables import render_tables, render_tables_with_metadata
 from kiro_crew.messaging.transport import TransportCapabilities
-from kiro_crew.security import redact_credentials, redact_exfiltration_urls
+from kiro_crew.security import (
+    CREDENTIAL_REDACTION_TAGS,
+    EXFILTRATION_REDACTION_TAG_PREFIX,
+    redact_credentials,
+    redact_exfiltration_urls,
+)
 
 # Abstract output event kinds.
 TEXT_CHUNK = "text_chunk"
@@ -366,6 +371,31 @@ def redaction_notice(cred_count: int, url_count: int) -> str:
         f"redaction placeholder. Any command or link shown will not work if you "
         f"paste it as-is; {remedy}"
     )
+
+
+def count_redaction_tags(text: str) -> tuple[int, int]:
+    """Count both redaction placeholder kinds in delivered text.
+
+    Returns ``(cred_count, url_count)`` — the two arguments
+    :func:`redaction_notice` takes, in its order. Every delivery surface that
+    posts a notice needs the same two tallies over the text that actually
+    shipped, and each kind counts differently: a credential tag is a CLOSED set
+    of constant strings (``CREDENTIAL_REDACTION_TAGS``), matched exactly and
+    summed so an encoded-credential-only answer is not missed, while the URL
+    tag interpolates the redacted domain and so has no constant form — it is
+    counted by ``EXFILTRATION_REDACTION_TAG_PREFIX`` prefix, never by equality.
+
+    One shared counter exists so a surface cannot adopt half the tally: a
+    site that counts credentials but forgets the URL prefix (or vice versa)
+    posts a notice worded for the wrong remedy, which is the gap the two-kind
+    notice closes. Count from the DELIVERED text rather than a redactor's
+    warnings list: chunked surfaces redact on the way out, so re-redacting the
+    assembled answer reports nothing while the placeholders are plainly
+    visible in what shipped.
+    """
+    cred_count = sum(text.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
+    url_count = text.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+    return cred_count, url_count
 
 
 def _choice_display_safe(text: str, capabilities: TransportCapabilities | None) -> str:

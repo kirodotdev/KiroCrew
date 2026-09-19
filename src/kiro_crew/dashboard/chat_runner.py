@@ -264,7 +264,7 @@ from kiro_crew.messaging.link import (
     parse_session_key,
     telemetry_channel_of,
 )
-from kiro_crew.messaging.renderer import chunk_for_transport
+from kiro_crew.messaging.renderer import chunk_for_transport, count_redaction_tags
 from kiro_crew.metrics.events import TURN_TIMEOUT_CAUSE, emit_counter
 from kiro_crew.metrics.provider import get_recorder
 from kiro_crew.metrics.turns import emit_turn_duration, emit_turn_usage, turn_outcome
@@ -304,8 +304,6 @@ from kiro_crew.recovery.ladder import (
 )
 from kiro_crew.safety_override import safety_override
 from kiro_crew.security import (
-    CREDENTIAL_REDACTION_TAGS,
-    EXFILTRATION_REDACTION_TAG_PREFIX,
     StreamRedactor,
     is_sensitive_path,
     oauth_url_contains_credential,
@@ -4043,8 +4041,7 @@ def _append_redaction_notice(slot: _ChatSlot, redacted: str) -> None:
     strings, stashed variants -- not text the user copies commands from) stay
     notice-free, deliberately.
     """
-    cred_count = sum(redacted.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-    url_count = redacted.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+    cred_count, url_count = count_redaction_tags(redacted)
     if cred_count or url_count:
         slot.append("notice", _redaction_notice(cred_count, url_count), "msg msg-info")
 

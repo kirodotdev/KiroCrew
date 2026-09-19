@@ -51,7 +51,12 @@ from kiro_crew.messaging.outbound_files import (
     hide_local_refs,
     protected_ref_spans,
 )
-from kiro_crew.messaging.renderer import Renderer, chunk_text
+from kiro_crew.messaging.renderer import (
+    Renderer,
+    chunk_text,
+    count_redaction_tags,
+    redaction_notice,
+)
 from kiro_crew.messaging.split import split_markdown_safe
 from kiro_crew.messaging.transport import TransportCapabilities
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -379,6 +384,11 @@ class SlackRenderer(Renderer):
         self._controller: Any = None
         self._tool_to_phase: Any = None
         self._finalized = False  # guards close() from double-finalizing
+        # Redaction placeholders in text this turn shipped: the final answer
+        # body counted once at on_done, plus the posted 💭 reasoning. Feeds the
+        # post-answer notice, mirroring the native handler's per-turn tally.
+        self._redacted_creds = 0
+        self._redacted_urls = 0
         self._t0 = 0.0
         self._started = False  # guards on_turn_start against double-fire
         # Outbound-upload gates. The root is the provider's resolved cwd, so it
@@ -992,13 +1002,22 @@ class SlackRenderer(Renderer):
         # Reasoning is unbounded, and Slack rejects an over-limit message outright
         # the whole 💭 reply, not its tail. Split it fence-safely so a long
         # chain of thought arrives as ordered replies instead of vanishing.
+        posted_any = False
         for chunk in await self._split_for_slack(f"💭 {reasoning}"):
             # Best-effort: MUST NOT raise. Reasoning is a
             # decorative side channel — the answer is delivered separately.
             try:
                 await self.slack.post_message(self.channel, chunk, self.thread_ts)
+                posted_any = True
             except Exception:
                 logger.warning("Failed to post thinking chunk", exc_info=True)
+        if posted_any:
+            # The reasoning reached the reader, so its placeholders count toward
+            # this turn's redaction notice (the native handler tallies its
+            # thinking text the same way).
+            cred_count, url_count = count_redaction_tags(reasoning)
+            self._redacted_creds += cred_count
+            self._redacted_urls += url_count
 
     async def on_tool_call(
         self, tool_call_id: str, title: str, tool_kind: str = "", tool_purpose: str = ""
@@ -1272,6 +1291,15 @@ class SlackRenderer(Renderer):
             # After the text, so the answer reads first and each picture lands
             # under the sentence that introduced it.
             await self._upload_files(files)
+        # The answer is out in one of the delivery forms above (stream finalize,
+        # placeholder update, or direct post — the direct post raises on
+        # failure, skipping this). Count its placeholders once, over the final
+        # display-safe body: the per-append stream scans run the same idempotent
+        # redactors, so this is the form the reader is left with.
+        if clean_text:
+            cred_count, url_count = count_redaction_tags(clean_text)
+            self._redacted_creds += cred_count
+            self._redacted_urls += url_count
         # Clear thread status now that the turn is complete. Best-effort, and
         # MUST NOT raise: the answer is already delivered above — a
         # raising status clear must not convert a delivered turn into a
@@ -1365,3 +1393,20 @@ class SlackRenderer(Renderer):
         # this un-set so the dispatcher books a failure), so finalize here. On a
         # non-OPTIONS turn this is already True from above, so this is a no-op.
         self._finalized = True
+        if self._redacted_creds or self._redacted_urls:
+            # One notice for the whole turn, threaded under the answer it
+            # describes. Best-effort by the shared contract: the answer is
+            # already delivered, so a failed notice send is logged, never
+            # raised.
+            try:
+                await self.slack.post_message(
+                    self.channel,
+                    redaction_notice(self._redacted_creds, self._redacted_urls),
+                    self.thread_ts,
+                )
+            except Exception:
+                logger.warning(
+                    "Slack transport: could not deliver the redaction notice "
+                    "(answer already sent)",
+                    exc_info=True,
+                )

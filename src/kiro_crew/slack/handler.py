@@ -108,7 +108,7 @@ from kiro_crew.messaging.display_safety import redact_for_display
 from kiro_crew.messaging.identity import channel_inbound_permitted, publish_turn_identity
 from kiro_crew.messaging.inbound_spool import InboundRoute
 from kiro_crew.messaging.link import canonical_key
-from kiro_crew.messaging.renderer import redaction_notice
+from kiro_crew.messaging.renderer import count_redaction_tags, redaction_notice
 from kiro_crew.messaging.session_trust import _trusted_sessions as _shared_trusted_sessions
 from kiro_crew.messaging.session_trust import add_trusted_session as _add_trusted_session
 from kiro_crew.messaging.session_trust import clear_trusted_sessions, is_session_trusted
@@ -132,8 +132,6 @@ from kiro_crew.safety_override import (
     yolo_policy_permits,
 )
 from kiro_crew.security import (
-    CREDENTIAL_REDACTION_TAGS,
-    EXFILTRATION_REDACTION_TAG_PREFIX,
     StreamRedactor,
     is_sensitive_path,
     redact,
@@ -4698,15 +4696,17 @@ async def handle_message(
         # artifact answers the question the user has -- "is what I am about to copy
         # still what the assistant wrote?" -- and stays correct wherever the
         # substitution happened (per-chunk, the StreamRedactor wire pass, the final
-        # render, or the post-decorator scan). Sum every tag the redactor can emit
-        # (`CREDENTIAL_REDACTION_TAGS`) so an encoded-credential-only reply is not
-        # missed.
+        # render, or the post-decorator scan). The shared ``count_redaction_tags``
+        # sums every tag the redactor can emit so an encoded-credential-only reply
+        # is not missed, and counts the exfiltration-URL tag by its prefix, because
+        # that tag interpolates the redacted domain and has no constant form to
+        # equality-compare. Kept as separate counts because the notice is worded
+        # by kind: the remedies differ (re-enter the secret vs re-check the URL).
         #
         # The thinking block (redacted separately below) adds to this SAME tally so a
         # single warning covers the turn if either the answer or the thinking was
         # rewritten -- one turn, one notice, never two identical warnings.
-        _cred_redactions = sum(clean_text.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-        _url_redactions = clean_text.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+        _cred_redactions, _url_redactions = count_redaction_tags(clean_text)
 
         # ── Review mode: ephemeral draft instead of public post ──
         if channel_activation == ACTIVATION_REVIEW:
@@ -4979,8 +4979,9 @@ async def handle_message(
             # review-mode branch). Count the fully redacted text before it is
             # condensed -- condensing can truncate, which would drop a placeholder
             # from the count even though the credential was still rewritten.
-            _cred_redactions += sum(thinking_mrkdwn.count(tag) for tag in CREDENTIAL_REDACTION_TAGS)
-            _url_redactions += thinking_mrkdwn.count(EXFILTRATION_REDACTION_TAG_PREFIX)
+            _thinking_creds, _thinking_urls = count_redaction_tags(thinking_mrkdwn)
+            _cred_redactions += _thinking_creds
+            _url_redactions += _thinking_urls
             thinking_block = _condense_thinking(thinking_mrkdwn)
             if thinking_ts:
                 try:

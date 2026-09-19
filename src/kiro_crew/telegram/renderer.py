@@ -52,7 +52,9 @@ from kiro_crew.messaging.renderer import (
     Renderer,
     _default_redactor,
     apply_options_cap,
+    count_redaction_tags,
     new_approval_nonce,
+    redaction_notice,
     session_provenance_tag,
     split_options_trailer,
 )
@@ -960,6 +962,12 @@ class TelegramRenderer(Renderer):
         self._shown = ""
         self._last_edit = 0.0
         self._seal_count = 0  # rotations so far == index into _steer_texts for chips
+        # Redaction placeholders in text that actually LANDED, tallied per
+        # delivered frame's final form (live edits supersede each other, so
+        # only sealed segments and the posted reasoning count). Feeds the
+        # post-answer notice at on_done.
+        self._redacted_creds = 0
+        self._redacted_urls = 0
         # Chip pending from the last rotation, NOT yet in _buf. It materializes
         # (prepends to the segment) only when real post-steer text arrives — so
         # an end-of-stream marker (no continuation text) never posts a chip-only
@@ -1655,6 +1663,7 @@ class TelegramRenderer(Renderer):
                         reply_to_message_id=self._consume_reply_to(),
                     )
                     if mid is not None:
+                        self._tally_redactions(text)
                         if self._stream_mid is not None:
                             # The rich message now carries this segment; drop the
                             # superseded plaintext bubble so the user sees one message.
@@ -1693,6 +1702,7 @@ class TelegramRenderer(Renderer):
                             reply_markup=keyboard,
                         )
                     if ok:
+                        self._tally_redactions(text)
                         return
                     # Both edits failed — the live message is gone (e.g. the user
                     # deleted it mid-turn). Fall through and SEND the final content so
@@ -1708,12 +1718,14 @@ class TelegramRenderer(Renderer):
                     reply_to_message_id=self._consume_reply_to(),
                 )
                 if mid is None:
-                    await self._client.send_message(
+                    mid = await self._client.send_message(
                         self._chat_id,
                         _strip_md(text),
                         reply_markup=keyboard,
                         message_thread_id=self._thread_id,
                     )
+                if mid is not None:
+                    self._tally_redactions(text)
 
             finally:
                 # Retire the live message: this segment is final, so nothing
@@ -1814,6 +1826,7 @@ class TelegramRenderer(Renderer):
                 message_thread_id=self._thread_id,
                 disable_notification=True,
             )
+            self._tally_redactions(inner)
         except Exception:
             logger.debug("Telegram: thinking post failed", exc_info=True)
 
@@ -1964,6 +1977,7 @@ class TelegramRenderer(Renderer):
             # the user — attach it to the placeholder instead of dropping it.
             if self._seal_count > 0 and keyboard is None:
                 await self._post_thinking()
+                await self._maybe_send_redaction_notice()
                 return
             placeholder = "…" if ok else (self._failure_reason or _GENERIC_ERROR_TEXT)
             if self._stream_mid is not None:
@@ -1981,10 +1995,12 @@ class TelegramRenderer(Renderer):
                     message_thread_id=self._thread_id,
                 )
             await self._post_thinking()
+            await self._maybe_send_redaction_notice()
             return
         await self._seal_current(keyboard=keyboard, footer=self._turn_footer())
         # After the answer, so the answer is what the push notification previews.
         await self._post_thinking()
+        await self._maybe_send_redaction_notice()
 
     def _limit(self) -> int:
         """Budget for PLAINTEXT frames (live typewriter edits), in source chars.
@@ -2094,6 +2110,35 @@ class TelegramRenderer(Renderer):
             t = _neutralize_md(self._steer_texts[i])
             return f"> {t}" if t else None
         return None
+
+    def _tally_redactions(self, text: str) -> None:
+        """Record the redaction placeholders in one LANDED frame's final text."""
+        cred_count, url_count = count_redaction_tags(text)
+        self._redacted_creds += cred_count
+        self._redacted_urls += url_count
+
+    async def _maybe_send_redaction_notice(self) -> None:
+        """One best-effort notice for the whole turn, after its answer landed.
+
+        Best-effort by the shared contract: the answer is already out, so a
+        failed notice send is logged, never raised — losing the notice is a
+        degraded warning, failing the turn would discard a delivered reply.
+        Threaded like the answer so the notice lands under the reply it
+        describes rather than in the chat root.
+        """
+        if not (self._redacted_creds or self._redacted_urls):
+            return
+        try:
+            await self._client.send_message(
+                self._chat_id,
+                redaction_notice(self._redacted_creds, self._redacted_urls),
+                message_thread_id=self._thread_id,
+            )
+        except Exception:
+            logger.warning(
+                "telegram: could not deliver the redaction notice (answer already sent)",
+                exc_info=True,
+            )
 
     async def close(self, failure_reason: str | None = None) -> None:
         """Idempotent teardown: stop the typing indicator and finalize the turn

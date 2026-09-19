@@ -301,3 +301,50 @@ class TestDisplayRedaction:
 
         delivered = client.sent[0]
         assert "AKIAIOSFODNN7EXAMPLE" not in delivered.replace("*", "")
+
+
+class TestRedactionNotice:
+    """A rewritten answer is followed by one notice message; clean answers are not.
+
+    Teams redacts at ``_display_text`` against the rendered form, so a raw
+    secret fed to the renderer arrives as a placeholder — the tally counts the
+    delivered body. Shared wording is pinned in
+    ``test_credential_redaction_notice.py``.
+    """
+
+    _SECRET_URI = "postgresql://user:SuperSecret123@db.example.com:5432/prod"
+
+    @pytest.mark.asyncio
+    async def test_redacted_answer_is_followed_by_one_notice(self) -> None:
+        client = _FakeClient()
+        r = _renderer(client)
+        await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+        await r.on_done()
+        assert not any("SuperSecret123" in m for m in client.sent)
+        notices = [m for m in client.sent if "Security notice" in m]
+        assert len(notices) == 1
+        assert client.sent[-1] == notices[0]  # below the answer
+
+    @pytest.mark.asyncio
+    async def test_clean_answer_sends_no_notice(self) -> None:
+        client = _FakeClient()
+        r = _renderer(client)
+        await r.on_text_chunk("All green, deploy finished.")
+        await r.on_done()
+        assert not any("Security notice" in m for m in client.sent)
+
+    @pytest.mark.asyncio
+    async def test_notice_send_failure_does_not_fail_a_delivered_turn(self) -> None:
+        client = _FakeClient()
+        real_send = client.send_message
+
+        async def send_but_fail_the_notice(conversation_id, content, service_url):
+            if "Security notice" in content:
+                raise TeamsSendError("teams down after the answer")
+            return await real_send(conversation_id, content, service_url)
+
+        client.send_message = send_but_fail_the_notice  # type: ignore[method-assign]
+        r = _renderer(client)
+        await r.on_text_chunk(f"Run: psql {self._SECRET_URI}")
+        await r.on_done()  # must not raise: the answer above already landed
+        assert any("[REDACTED: credential]" in m for m in client.sent)
