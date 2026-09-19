@@ -23,6 +23,22 @@ export const ALLOWED_PROTOCOLS = new Set([
  *  without a following separator (`c:foo`) is still rejected. */
 export const WINDOWS_ABS_PATH_RE = /^[A-Za-z]:[\\/]/
 
+/** A UNC prefix — ANY two leading separators, of either kind and in either
+ *  order (`\\host`, `//host`, `\/host`, `/\host`). Windows reads all four as a
+ *  UNC root, so the character class is the whole point: matching only two of
+ *  the SAME kind would leave the mixed pairs admitted, and those resolve to
+ *  the same share. Hoisted here (Design Review on #7969) so a path-classifying
+ *  predicate that is about to reach for `WINDOWS_ABS_PATH_RE` refuses this
+ *  shape from the SAME import rather than restating the line locally, which is
+ *  how it drifted into three separate copies before this one. Refuse it ahead
+ *  of any other path test: a UNC path names a HOST, and a stat/listing against
+ *  one is an outbound SMB connection on Windows — offering the host's NTLM
+ *  credentials to whatever `\\host` an attacker-authored string, or a raw
+ *  terminal token, happened to name. `WINDOWS_ABS_PATH_RE` above already
+ *  excludes this shape (it requires a drive letter first), so the two
+ *  constants are complementary, not overlapping. */
+export const UNC_PREFIX_RE = /^[/\\]{2}/
+
 /** Recover the on-disk path from a markdown-sourced image `src`.
  *
  *  micromark percent-encodes markdown destinations (a space in an `<…>`
