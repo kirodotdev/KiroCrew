@@ -46,6 +46,7 @@ from kiro_crew.pinned_fs import (
     supports_pinned_walk,
 )
 from kiro_crew.slugs import slug_hash_fallback
+from kiro_crew.validation import MAX_SHORT_STRING, sanitize_string
 
 logger = logging.getLogger(__name__)
 
@@ -287,8 +288,34 @@ _SLUG_RE = re.compile(r"^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?\Z")
 _TRACEABLE_MEMORY_MODES = frozenset({"persistent"})
 
 
+MEMBER_NAME_MAX_CHARS = MAX_SHORT_STRING
+
+
+class MemberNameError(ValueError):
+    """Raised when a Crew Member display name is unsafe or unusable."""
+
+
 class MemberSlugError(ValueError):
     """Raised when a member slug is unusable or cannot be allocated."""
+
+
+def validate_member_name(name: object) -> str:
+    """Return a safe, exact Crew Member display name, else raise MemberNameError."""
+    if not isinstance(name, str) or not name:
+        raise MemberNameError("name must be a non-empty string")
+    if len(name) > MEMBER_NAME_MAX_CHARS:
+        raise MemberNameError(f"name must be at most {MEMBER_NAME_MAX_CHARS} characters")
+    if name != name.strip():
+        raise MemberNameError("name must not start or end with whitespace")
+    try:
+        name.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        raise MemberNameError("name must be valid UTF-8 text") from exc
+    if len(name.splitlines()) != 1 or "\t" in name:
+        raise MemberNameError("name must not contain line breaks or tabs")
+    if sanitize_string(name) != name:
+        raise MemberNameError("name must not contain hidden or non-canonical characters")
+    return name
 
 
 def members_root() -> Path:

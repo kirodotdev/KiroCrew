@@ -50,6 +50,7 @@ from kiro_crew.members import (
     read_member_briefing,
     read_member_rules,
     slug_for_name,
+    validate_member_name,
 )
 from kiro_crew.memory import MemoryStore
 from kiro_crew.metrics.provider import get_recorder
@@ -3279,9 +3280,10 @@ class ContextBuilder:
         Blocking file IO inside — callers reach this via ``build_message``,
         which chat paths already run off-loop.
         """
+        member = validate_member_name(member)
         try:
             slug = slug_for_name(member)
-        except (MemberSlugError, ValueError):
+        except MemberSlugError:
             if strict:
                 raise
             return ""
@@ -3332,14 +3334,15 @@ class ContextBuilder:
         # Every VARIABLE payload is scrubbed before the genuine headers are
         # minted around it — see _MEMBER_MARKER_RES for why this runs at
         # content time rather than in the structural-marker scan.
+        display_member = _scrub_member_payload(member)
         description = _scrub_member_payload(description)
         triggers = _scrub_member_payload(triggers)
         rules = _scrub_member_payload(rules)
         briefing = _scrub_member_payload(briefing)
 
         identity = [
-            f"[MEMBER IDENTITY]\nYou are {member}. Not a generic assistant, and not an "
-            f"extension of the user: {member} is an identity of your own — your name, "
+            f"[MEMBER IDENTITY]\nYou are {display_member}. Not a generic assistant, and not an "
+            f"extension of the user: {display_member} is an identity of your own — your name, "
             "your role, your memory of this thread, and your track record belong to you."
         ]
         if description:

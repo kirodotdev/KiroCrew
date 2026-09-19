@@ -334,11 +334,19 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
         color_theme == "" or color_theme.startswith("custom-")
     ):
         color_theme = ""
-    if not isinstance(agent, str) or not (agent == "" or _AGENT_NAME_RE.match(agent)):
-        _emit_agent_assignment(str(slot_name or ""), str(agent), outcome="denied_invalid")
-        return web.json_response({"error": "invalid agent name"}, status=400)
     if not isinstance(slot_name, str) and slot_name is not None:
         slot_name = None  # coerce non-string slot to auto-generate
+    member_pin_match = False
+    if isinstance(agent, str) and agent and slot_name:
+        existing = state._slots.get(_normalize_slot_key(slot_name))
+        member_pin_match = bool(
+            existing and existing.mode == members_mod.DM_SLOT_MODE and agent == existing.agent
+        )
+    if not isinstance(agent, str) or not (
+        agent == "" or _AGENT_NAME_RE.fullmatch(agent) or member_pin_match
+    ):
+        _emit_agent_assignment(str(slot_name or ""), str(agent), outcome="denied_invalid")
+        return web.json_response({"error": "invalid agent name"}, status=400)
 
     # Honor memory_mode from the body when auto-creating a slot (e.g. AgentRock
     # skill dispatch defaults to "temporary"). Only validated values are passed
@@ -6528,7 +6536,14 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         return body_err
     assert body is not None  # read_bounded_json returns (dict, None) on success
     agent_name = body.get("agent", "")
-    if agent_name and not _AGENT_NAME_RE.match(agent_name):
+    member_pin_match = (
+        slot.mode == members_mod.DM_SLOT_MODE
+        and isinstance(agent_name, str)
+        and agent_name == slot.agent
+    )
+    if not isinstance(agent_name, str) or (
+        agent_name and not _AGENT_NAME_RE.fullmatch(agent_name) and not member_pin_match
+    ):
         return web.json_response({"error": "invalid agent name"}, status=400)
     if slot.mode == "member" and agent_name != slot.agent:
         # Member DM threads are pinned to their crew: refuse the switch before

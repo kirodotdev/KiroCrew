@@ -45,7 +45,7 @@ OTHER = "other-agent"
 
 def _fake_config(names, default=CREW):
     return SimpleNamespace(
-        agents={name: KiroCrewAgentConfig(kiro_agent=name) for name in names},
+        agents={name: KiroCrewAgentConfig(kiro_agent="kirocrew") for name in names},
         default_agent=default,
         memory_stores={},
         workspaces={"default": SimpleNamespace(dir="workspace")},
@@ -195,6 +195,42 @@ class TestMemberRoutes:
         assert rows[CREW]["avatar"] == {}
         # Unbound members have never talked: last activity reads as 0.
         assert rows[CREW]["last_active_ts"] == 0.0
+
+    @pytest.mark.asyncio
+    async def test_free_form_name_round_trips_roster_thread_and_activity(self, tmp_path):
+        name = "dr. eggbot"
+        state = _make_state(tmp_path)
+        from kiro_crew.members import record_activity
+
+        cfg = _fake_config([name], default=name)
+        assert record_activity(name, "dashboard_chat-1", "persistent", via="chat")
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=cfg):
+            async with TestClient(TestServer(_make_members_app(state))) as client:
+                roster_response = await client.get("/api/members")
+                assert roster_response.status == 200
+                roster = await roster_response.json()
+                assert [(row["name"], row["slug"]) for row in roster["members"]] == [
+                    ("dr. eggbot", "dr-eggbot")
+                ]
+
+                thread_response = await client.post("/api/members/dr-eggbot/thread")
+                assert thread_response.status == 200
+                assert await thread_response.json() == {
+                    "slot_key": "member-dr-eggbot",
+                    "slug": "dr-eggbot",
+                    "member": "dr. eggbot",
+                }
+
+                activity_response = await client.get(
+                    "/api/members/dr-eggbot/activity", params={"member": name}
+                )
+                assert activity_response.status == 200
+                activity = await activity_response.json()
+                assert activity["member"] == "dr. eggbot"
+                assert len(activity["entries"]) == 1
+
+        assert read_dm_binding("dr-eggbot")["member"] == "dr. eggbot"
+        assert state._slots["member-dr-eggbot"].agent == "dr. eggbot"
 
     @pytest.mark.asyncio
     async def test_roster_reports_last_activity_from_the_dm_transcript(self, tmp_path):
@@ -644,6 +680,20 @@ class TestPinEnforcement:
         assert slot.agent == CREW
 
     @pytest.mark.asyncio
+    async def test_agent_switch_endpoint_allows_free_form_same_name(self, tmp_path):
+        from chat_test_helpers import _make_app_with_agent_routes
+
+        name = "dr. eggbot"
+        state = _make_state(tmp_path)
+        slot = _member_slot(state, key="member-dr-eggbot", agent=name)
+        cfg = _fake_config([name], default=name)
+        with patch("kiro_crew.config.loader.KiroCrewConfig.load", return_value=cfg):
+            async with TestClient(TestServer(_make_app_with_agent_routes(state))) as client:
+                resp = await client.post(f"/api/chat/slots/{slot.key}/agent", json={"agent": name})
+                assert resp.status == 200
+        assert slot.agent == name
+
+    @pytest.mark.asyncio
     async def test_send_path_refuses_member_agent_mismatch(self, tmp_path):
         from chat_test_helpers import _make_app
 
@@ -683,6 +733,24 @@ class TestPinEnforcement:
                     assert resp.status == 400
                     assert (await resp.json()).get("code") != "member_thread_agent_pinned"
         assert slot.agent == CREW
+
+    @pytest.mark.asyncio
+    async def test_send_path_allows_matching_free_form_member(self, tmp_path):
+        from chat_test_helpers import _make_app
+
+        name = "dr. eggbot"
+        state = _make_state(tmp_path)
+        slot = _member_slot(state, key="member-dr-eggbot", agent=name)
+        cfg = _fake_config([name], default=name)
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=cfg):
+            async with TestClient(TestServer(_make_app(state))) as client:
+                resp = await client.post(
+                    "/api/chat", json={"slot": slot.key, "agent": name, "message": ""}
+                )
+                assert resp.status == 400
+                body = await resp.json()
+                assert body == {"error": "message is required", "code": "message_required"}
+        assert slot.agent == name
 
     @pytest.mark.asyncio
     async def test_send_path_fails_closed_on_binding_drift(self, tmp_path):
@@ -1220,8 +1288,8 @@ class TestOpenAiCompatPin:
         assert slot.agent == CREW
 
     @pytest.mark.asyncio
-    async def test_completions_fail_closed_on_binding_drift(self):
-        """The OpenAI-compat send also refuses when the binding vanished.
+    async def test_free_form_completion_reaches_binding_drift_guard(self):
+        """A free-form member pin reaches the existing binding-drift guard.
 
         Mirrors the chat_send binding-drift guard: a deleted/corrupt dm.json
         must not let a completion dispatch on the live member slot and
@@ -1242,9 +1310,10 @@ class TestOpenAiCompatPin:
                 del max_age_secs
                 return True
 
+        name = "dr. eggbot"
         slot = MagicMock()
-        slot.key = member_slot_key(CREW)
-        slot.agent = CREW
+        slot.key = member_slot_key("dr-eggbot", "member-dr-eggbot-generation")
+        slot.agent = name
         slot.mode = DM_SLOT_MODE
         slot.task = None
         slot.event = _asyncio.Event()
@@ -1257,8 +1326,8 @@ class TestOpenAiCompatPin:
         request = MagicMock()
         request.json = AsyncMock(
             return_value={
-                "model": CREW,  # model maps to agent: matching passes the pin, reaches drift checks
-                "id": slot.key,  # "id" (not "slot") is how existing slots are addressed here
+                "model": name,
+                "id": slot.key,
                 "messages": [{"role": "user", "content": "hi"}],
             }
         )
@@ -1268,7 +1337,8 @@ class TestOpenAiCompatPin:
         }
         request.get = MagicMock(side_effect=lambda k, d="": d)
 
-        with _patched_config([CREW]):
+        cfg = _fake_config([name], default=name)
+        with patch("kiro_crew.dashboard.handlers.members.KiroCrewConfig.load", return_value=cfg):
             resp = await api_completions(request)
         assert resp.status == 409
         body = json.loads(resp.body)
@@ -1622,10 +1692,6 @@ class TestMemberActivityRoute:
                 resp = await client.get("/api/members/code-reviewer/activity")
                 assert resp.status == 400
                 assert (await resp.json())["code"] == "missing_member"
-                bad = await client.get(
-                    "/api/members/code-reviewer/activity", params={"member": "no spaces!"}
-                )
-                assert bad.status == 400
 
     @pytest.mark.asyncio
     async def test_empty_log_and_invalid_slug(self, tmp_path):

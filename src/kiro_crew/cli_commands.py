@@ -87,6 +87,7 @@ from kiro_crew.hooks import safe_read_file
 from kiro_crew.learn import LessonStore
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.member_memory_auth import require_member_memory_creation
+from kiro_crew.members import MemberNameError, validate_member_name
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
@@ -1192,6 +1193,14 @@ def _handle_agent(args: argparse.Namespace) -> None:
             )
 
     elif action == "create":
+        try:
+            validate_member_name(args.name)
+        except MemberNameError as exc:
+            print(f"Error: invalid Crew Member name ({exc})", file=sys.stderr)
+            sys.exit(1)
+        if not _AGENT_NAME_RE.fullmatch(args.kiro_agent):
+            print("Error: invalid kiro agent name", file=sys.stderr)
+            sys.exit(1)
         if args.name in cfg.agents:
             print(f"Error: agent '{args.name}' already exists", file=sys.stderr)
             sys.exit(1)
@@ -1245,6 +1254,9 @@ def _handle_agent(args: argparse.Namespace) -> None:
                 sys.exit(1)
             agent.memory_store = DEFAULT_MEMORY_STORE
         if args.kiro_agent is not None:
+            if not _AGENT_NAME_RE.fullmatch(args.kiro_agent):
+                print("Error: invalid kiro agent name", file=sys.stderr)
+                sys.exit(1)
             agent.kiro_agent = args.kiro_agent
         if args.workspace is not None:
             agent.workspace = args.workspace
