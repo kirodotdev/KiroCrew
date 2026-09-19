@@ -1,6 +1,6 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
+import { useQuery, useMutation, useQueryClient, useIsMutating, useMutationState } from '@tanstack/react-query'
 import { Download, Loader2, RefreshCw, Sparkles } from 'lucide-react'
 import { api, ApiError } from '../../api/client'
 import ProjectSkillsTrustList from '../../components/ProjectSkillsTrustList'
@@ -633,6 +633,21 @@ interface PendingSkill {
   /** For updates: the live skill this proposes to change (e.g. 'auto/deploy'). */
   target?: string | null
   base_version?: number | null
+  /**
+   * When this candidate was staged. The queue has always returned it
+   * (`skills.py` `list_pending_skills`); it is declared here because it is the
+   * only thing that tells two GENERATIONS of one slug apart.
+   *
+   * A slug is reusable: the backend stages a distinct slug while one is in use,
+   * but once a candidate is approved or dismissed its slug is free, and a later
+   * candidate takes it with a fresh timestamp. Without the generation, that
+   * successor inherits its predecessor's row instance (so it renders already
+   * expanded) and its predecessor's cached detail (so the panel shows the OLD
+   * body while Approve promotes the NEW one, scripts and all) -- approving
+   * something nobody reviewed, which is the defect this whole surface exists to
+   * prevent.
+   */
+  created_at?: string
 }
 interface PendingDetail {
   name: string
@@ -648,10 +663,22 @@ interface PendingDetail {
   stale_base?: boolean
 }
 
-function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
+function PendingCandidateRow({ p, autoOpen, busy, busySelf, justRefused, heldByNotice, onApprove, onDismiss }: {
   p: PendingSkill
   /** True when a notification deep-linked at THIS candidate (?review=<slug>). */
   autoOpen?: boolean
+  /** An action is in flight SOMEWHERE in the queue — see the panel's comment. */
+  busy?: boolean
+  /** …and it is this row's own action, so this row shows the progress. */
+  busySelf?: boolean
+  /** True while this row's Approve must be withheld: either the queue read is
+   *  failing (nothing on screen is confirmed) or the server refused this
+   *  candidate and no successful read has reconciled the list since. */
+  justRefused?: boolean
+  /** True while the refusal notice ON SCREEN names this row — the one hold on
+   *  Approve the user lifts by closing that notice. Already folded into
+   *  `justRefused`; passed apart so the row can SAY so beside the button. */
+  heldByNotice?: boolean
   onApprove: (slug: string) => void
   onDismiss: (slug: string) => void
 }) {
@@ -672,11 +699,28 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
     rowRef.current?.scrollIntoView({ block: 'center', behavior: 'smooth' })
   }, [autoOpen])
   const isUpdate = p.kind === 'update'
-  const { data: detail } = useQuery<PendingDetail>({
-    queryKey: ['skills-pending-detail', p.slug],
+  const { data: detail, error: detailError } = useQuery<PendingDetail>({
+    // The generation is part of the key, so a successor under the same slug can
+    // never be served its predecessor's body -- on any path, including the 30s
+    // staleTime window and the deep link. The panel's `removeQueries` /
+    // `invalidateQueries` calls match on the `['skills-pending-detail', slug]`
+    // PREFIX, so they still reach every generation of a slug.
+    queryKey: ['skills-pending-detail', p.slug, p.created_at ?? ''],
     queryFn: () => api.skillPendingDetail(p.slug),
     enabled: open,
   })
+  // Why this candidate cannot be approved, as ONE value rather than a condition
+  // on the button and a notice somewhere else in the panel. The backend refuses
+  // both cases, so the same expression has to decide the disabled state and the
+  // sentence that explains it — computing them separately is how the two drift
+  // apart and a disabled button loses its caption.
+  const refusal = !isUpdate || !detail
+    ? null
+    : !detail.diff
+      ? i18nT('pages.overview.skillsTab.the_skill_this_update_targets_no_longer_exists_s')
+      : detail.stale_base
+        ? i18nT('pages.overview.skillsTab.this_skill_changed_after_this_update_was_written')
+        : null
   return (
     <div ref={rowRef} className={`p-2 rounded-md border ${autoOpen ? 'border-accent ring-1 ring-accent' : 'border-border'}`}>
       <div className="flex items-center gap-3">
@@ -701,15 +745,42 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
               : p.description}
           </div>
         </div>
-        <Btn onClick={() => setOpen(o => !o)}>{open ? i18nT('pages.overview.skillsTab.hide') : i18nT('pages.overview.skillsTab.review')}</Btn>
-        {/* An update whose target was archived/removed after staging has nothing
-            to apply, and a stale update (live moved on since the merge) would
-            replace the newer approved content — the backend refuses both, so keep
-            the button disabled and let the expanded panel explain. */}
-        <Btn primary disabled={!open || !detail || (isUpdate && (!detail.diff || !!detail.stale_base))} onClick={() => onApprove(p.slug)}>{i18nT('pages.overview.skillsTab.approve')}</Btn>
-        <Btn danger onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
+        {/* Review is the row's PRIMARY action while collapsed, and Approve is not
+            rendered at all until the panel is open. The previous layout showed a
+            greyed-out Approve beside Review on every collapsed row, which reads as
+            a broken button rather than as a rule: approval is gated on having seen
+            the content, and nothing said so. Moving Approve into the panel makes
+            the gate the shape of the UI instead of a disabled state needing a
+            caption, and keeps the row at the two-buttons-per-row maximum. */}
+        <Btn primary={!open} onClick={() => setOpen(o => !o)}>{open ? i18nT('pages.overview.skillsTab.hide') : i18nT('pages.overview.skillsTab.review')}</Btn>
+        {busySelf && <Loader2 size={14} className="animate-spin text-accent" aria-hidden="true" data-testid="pending-action-spinner" />}
+        {/* Pushed away from Review/Hide: one collapses a row, the other discards
+            a candidate, and at equal weight and adjacency a reader hesitates over
+            which is which. */}
+        <Btn danger className="ml-3" disabled={busy} onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_confirm', { name: p.name }))) onDismiss(p.slug) }}>{i18nT('pages.overview.skillsTab.dismiss')}</Btn>
       </div>
-      {open && detail && (
+      {/* The body could not be READ. Opening a row whose detail fetch fails used
+          to render an empty panel — no content, no Approve, no reason — and this
+          change made that worse, because Approve moving inside `open && detail`
+          means a failed read now shows nothing at all where a disabled button at
+          least used to be. The server's own message carries the reason, so no new
+          copy is needed to say it.
+
+          Keyed on the ERROR rather than on missing data, because a failed REFETCH
+          keeps the previous body in cache: `!detail` is false there, so the
+          failure would be silent in exactly the case that matters. While the read
+          is failing the body is withheld along with Approve — offering to approve
+          content the client could not re-read is the same bargain this surface
+          exists to refuse. */}
+      {open && detailError && (
+        <ErrorNotice
+          message={detailError.message}
+          askAgent
+          className="mt-2"
+          testId={`pending-detail-error-${p.slug}`}
+        />
+      )}
+      {open && detail && !detailError && (
         <div className="mt-2 space-y-2">
           {p.has_scripts && (
             /* Scripts are a hard security boundary: a script-bearing candidate
@@ -718,11 +789,6 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
                has no idea why the setting "didn't work". */
             <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn border border-border">
               {i18nT('pages.overview.skillsTab.scripts_always_require_review')}
-            </div>
-          )}
-          {isUpdate && detail.stale_base && (
-            <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn border border-border">
-              {i18nT('pages.overview.skillsTab.this_skill_changed_after_this_update_was_written')}
             </div>
           )}
           {isUpdate && detail.diff ? (
@@ -734,11 +800,7 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
               </div>
               <DiffBlock code={detail.diff} complete />
             </>
-          ) : isUpdate ? (
-            <div className="text-[11px] p-2 rounded bg-bg-elevated border border-border text-muted">
-              {i18nT('pages.overview.skillsTab.the_skill_this_update_targets_no_longer_exists_s')}
-            </div>
-          ) : (
+          ) : isUpdate ? null : (
             <>
               <div className="text-[11px] font-semibold text-muted">{i18nT('pages.overview.skillsTab.skill_md')}</div>
               <pre className="text-[11px] whitespace-pre-wrap max-h-64 overflow-auto p-2 rounded bg-bg-elevated border border-border">{detail.content}</pre>
@@ -750,11 +812,115 @@ function PendingCandidateRow({ p, autoOpen, onApprove, onDismiss }: {
               <pre className="text-[11px] whitespace-pre-wrap max-h-64 overflow-auto p-2 rounded bg-bg-elevated border border-border">{s.content}</pre>
             </div>
           ))}
+          {/* Approve sits at the END of the content it approves, so the click is
+              reached by scrolling past the body/diff rather than offered beside a
+              collapsed row. The refusal sentence sits in this same block, NOT at
+              the top of the panel: a stale update renders a full diff, and a
+              reason printed above that diff has scrolled out of view by the time
+              the user reaches the button it disables — which is the very
+              unexplained-disabled shape this row was changed to remove. */}
+          <div className="flex items-center justify-end gap-2 pt-0.5">
+            {refusal && (
+              <div className="text-[11px] p-2 rounded bg-warn-subtle text-warn border border-border flex-1">
+                {refusal}
+              </div>
+            )}
+            {/* The displayed refusal notice holds this row's Approve (the panel's
+                `displayedRefusalSlug`), and its release is that notice's close —
+                a control at the top of the panel that says nothing about what it
+                releases. A reader shown the held button concluded "I can't retry
+                from here", which is the unexplained-disabled shape this panel
+                exists to remove, re-created one layer in. So the hold names its
+                own release, HERE, in the same block as the button it describes —
+                for the same reason `refusal` renders here and not at the top of
+                the panel. An earlier version rendered it under the notice, keyed
+                on the notice alone: it then named an Approve that was not on
+                screen whenever the row was collapsed (the normal state after a
+                refused Dismiss), whenever its body had failed to read, and after
+                the queue had emptied — "the sentence talks about a button that
+                doesn't exist". Living inside `open && detail && !detailError`,
+                beside the button, it cannot describe a button that is not there.
+                Withheld when `refusal` is showing: that sentence already explains
+                the disabled state, and closing the notice would not lift it.
+
+                It says only that the button is held and how the hold is lifted —
+                not that the retry will be accepted, and nothing about where the
+                candidate ended up. "Close", not "dismiss": the row's own red
+                Dismiss discards a candidate, and a reader who took the two words
+                for one control would destroy what they meant to retry. */}
+            {heldByNotice && !refusal && (
+              <div className="text-[11px] text-muted flex-1" data-testid="pending-action-hold">
+                {i18nT('pages.overview.skillsTab.approve_held_while_refusal_shown', { slug: p.slug })}
+              </div>
+            )}
+            {/* `justRefused` covers two states, and the second is why it is not
+                keyed on the refusal record alone. While the QUEUE READ is failing
+                nothing on screen is confirmed, so no row offers Approve — that
+                also survives the errored mutation being garbage-collected out of
+                the cache, which would otherwise take the per-row lock with it and
+                bring back the enabled-Approve-under-a-stale-row contradiction. */}
+            <Btn primary disabled={!!refusal || busy || justRefused} onClick={() => onApprove(p.slug)}>{i18nT('pages.overview.skillsTab.approve')}</Btn>
+          </div>
         </div>
       )}
     </div>
   )
 }
+
+/**
+ * The one mutation key every queue action shares, so "is an action in flight"
+ * is a question about the mutation cache rather than about any one component's
+ * lifetime.
+ */
+const QUEUE_ACTION_KEY = ['skills-pending-action'] as const
+
+/**
+ * Which button the user pressed. It rides on the mutation key, under the shared
+ * prefix, so every cache read that filters on `QUEUE_ACTION_KEY` still sees all
+ * three (react-query matches keys by prefix) while a failure can say WHICH
+ * action was refused — the one thing about the outcome the client knows for
+ * certain, because it rendered the button.
+ */
+type QueueAction = 'approve' | 'dismiss' | 'dismiss-all'
+const queueActionKey = (action: QueueAction) => [...QUEUE_ACTION_KEY, action] as const
+
+/**
+ * The lead of a failed-action notice: the verb that was refused and the
+ * candidate it was for, as a complete sentence, so the server's own sentence
+ * reads as a separate clause after it. (A full stop rather than a colon: the
+ * catalog gate refuses a value ending in a connector as a sentence split across
+ * keys, and the sibling "could not be loaded." lead already takes this shape.)
+ *
+ * It names the ACTION, never the candidate's fate. The server's refusal is one
+ * 409 covering "not found", "a live skill already exists" and "script
+ * validation failed", and only some of those leave the candidate still pending —
+ * so the client cannot honestly say whether the skill was installed, discarded
+ * or is still there. It can say what the user asked for and that the server
+ * said no; a bare slug over the raw sentence left a blind reader unable to tell
+ * whether their approval had worked or failed.
+ */
+function failedActionTitle(action: QueueAction, slug: string | undefined): string {
+  switch (action) {
+    case 'approve':
+      return i18nT('pages.overview.skillsTab.couldnt_approve_slug', { slug })
+    case 'dismiss':
+      return i18nT('pages.overview.skillsTab.couldnt_dismiss_slug', { slug })
+    case 'dismiss-all':
+      return i18nT('pages.overview.skillsTab.couldnt_dismiss_all')
+  }
+}
+
+/**
+ * How long a settled queue action stays in the cache.
+ *
+ * Longer than the 5-minute default because an errored one carries the only
+ * explanation the user has for a refusal, and it must outlive a trip to another
+ * tab — `useMutationState` subscribes to the cache, not to individual mutations,
+ * so nothing else pins it. The refusal LOCK deliberately does not depend on this
+ * record surviving (a failing queue read withholds Approve on its own); this is
+ * about not losing the sentence that says why.
+ */
+const QUEUE_ACTION_GC_MS = 30 * 60 * 1000
 
 function PendingSkillsPanel() {
   const qc = useQueryClient()
@@ -783,7 +949,7 @@ function PendingSkillsPanel() {
       return next
     }, { replace: true })
   }, [reviewParam, setParams, qc])
-  const { data, isSuccess } = useQuery<{ pending: PendingSkill[] }>({
+  const { data, isSuccess, error: listError, dataUpdatedAt } = useQuery<{ pending: PendingSkill[] }>({
     queryKey: ['skills-pending'],
     queryFn: () => api.skillsPending(),
     // Skills tab is conditionally mounted (CapabilitiesPage), so it remounts on
@@ -795,8 +961,152 @@ function PendingSkillsPanel() {
     refetchOnMount: 'always',
   })
   const pending: PendingSkill[] = data?.pending ?? []
+  // ONE guard for "the queue takes one action at a time", and it lives in
+  // react-query's mutation cache rather than in this component.
+  //
+  // Two earlier attempts at this rule failed for the same reason: they were
+  // component state. `isPending` is render-derived, so it cannot see a second
+  // activation in the same task — measured: three synchronous Approve clicks
+  // sent three requests. A `useRef` latch fixed that but died with the
+  // component, so switching Capabilities tabs mid-request and coming back
+  // handed the queue a fresh, unlocked latch while the first request was still
+  // running. The mutation cache has neither problem: `isMutating` is registered
+  // synchronously by `mutate()` (verified) and outlives this panel's mount.
+  //
+  // Why one action at a time at all: each hook renders only its LATEST call, so
+  // a second attempt detaches the first, and the detached one can fail with
+  // nothing on screen saying so. Two attempts on one candidate is worse still —
+  // the loser is refused, and that refusal can be the only thing shown for an
+  // approval that in fact succeeded.
+  const queueBusy = useIsMutating({ mutationKey: QUEUE_ACTION_KEY }) > 0
+  // The slug of whatever attempt is in flight, from the cache rather than from a
+  // hook, for the same lifetime reason.
+  const pendingActionSlugs = useMutationState({
+    filters: { mutationKey: QUEUE_ACTION_KEY, status: 'pending' },
+    select: m => m.state.variables as string | undefined,
+  })
+  // …and the failures, for the same reason again. A hook's error dies with the
+  // component: leave the Skills tab while a request is in flight and the
+  // remounted hooks start idle, so the rejection that arrived meanwhile is never
+  // shown — the user is told nothing about an action they started. The cache
+  // outlives the mount, so the message survives being away from the tab.
+  //
+  // `submittedAt` comes along because it is what makes the refusal LOCK below
+  // cache-derived too: "refused more recently than the last successful queue
+  // read" is a comparison between two things the caches already know, so it needs
+  // no state of its own and survives a remount exactly as the message does.
+  const failedActions = useMutationState({
+    filters: { mutationKey: QUEUE_ACTION_KEY, status: 'error' },
+    select: m => ({
+      message: (m.state.error as Error | null)?.message,
+      slug: m.state.variables as string | undefined,
+      // Every queue mutation is keyed by `queueActionKey`, so the suffix is
+      // always one of the three verbs.
+      action: m.options.mutationKey?.[1] as QueueAction,
+      submittedAt: m.state.submittedAt,
+    }),
+  })
+  // The most recent one: insertion order, and only the latest attempt is the one
+  // the user is waiting on.
+  const latestFailure = failedActions[failedActions.length - 1]
+  // Dismissal is a DISPLAY decision, so it is mount-local on purpose and is kept
+  // strictly apart from the lock below. Conflating the two is what let a user
+  // switch off a safety property by tidying a message away; the lock now cannot
+  // see this value at all. A message reappearing after a remount is the honest
+  // cost, and it is the correct direction to fail in.
+  const [dismissedAt, setDismissedAt] = useState(0)
+  const failedAction = latestFailure && latestFailure.submittedAt > dismissedAt ? latestFailure : undefined
+  /**
+   * Rows whose Approve must be withheld because the queue on screen has not been
+   * confirmed since the server last refused something.
+   *
+   * `dataUpdatedAt` only advances on a SUCCESSFUL fetch, so a failed reconcile
+   * leaves it behind the refusal and the lock holds — which is what the queue on
+   * screen being stale should mean. It survives leaving the tab and coming back,
+   * because both halves of the comparison live in the caches rather than in this
+   * component: an earlier version held the refused slug in component state, and a
+   * remount while the queue was unreadable handed the stale row its Approve back
+   * with no successful read ever having happened.
+   */
+  const refusedSinceLastRead = failedActions.filter(a => a.submittedAt > dataUpdatedAt)
+  /**
+   * The row named by the refusal currently ON SCREEN.
+   *
+   * `refusedSinceLastRead` lifts as soon as a read confirms the row is still
+   * pending — correct on its own terms, since the server's current answer is that
+   * the row is actionable. But the sentence above it says the opposite ("this
+   * candidate is no longer pending"), and it outlives that read, so the panel ends
+   * up arguing with itself: the message says the candidate is gone, the button
+   * invites you to approve it. A blind reader shown exactly that frame said they
+   * had "no idea whether that Approve still works" and would not press it — the
+   * enabled button did not read as permission, it read as a broken screen.
+   *
+   * So a displayed refusal also withholds its own row's Approve. The two surfaces
+   * now change together: message up, button held; message dismissed, button live.
+   *
+   * This is deliberately keyed on the DISPLAYED message (`failedAction`, which
+   * respects `dismissedAt`) rather than on the retained cache records or on
+   * fetching state. Keying it on the records re-locks a reconciled row on every
+   * 30s poll for the 30 minutes they are retained — measured, and rejected. And
+   * the safety lock is untouched: `refusedSinceLastRead` never consults
+   * `dismissedAt`, so tidying the message away still cannot hand back an Approve
+   * over a queue that has not been read successfully since the refusal.
+   */
+  const displayedRefusalSlug = failedAction?.slug
+  // Cache-owned state has to be cleared deliberately, where a hook's error was
+  // discarded for us. Scoped to the slug being acted on: clearing every retained
+  // error would drop ANOTHER row's refusal record, and that row's Approve would
+  // re-enable for the gap until the next list fetch. The notice's dismiss only
+  // hides, so dismissing can never lift a refusal lock.
+  const clearFailedActions = (slug?: string) => {
+    const cache = qc.getMutationCache()
+    cache
+      .findAll({ mutationKey: QUEUE_ACTION_KEY, status: 'error' })
+      .filter(m => slug === undefined || m.state.variables === slug)
+      .forEach(m => cache.remove(m))
+  }
+  const startAction = (slug: string | undefined, run: () => void) => {
+    if (qc.isMutating({ mutationKey: QUEUE_ACTION_KEY })) return
+    clearFailedActions(slug)
+    run()
+  }
+  /**
+   * Reconcile the queue against the server when an action FAILS.
+   *
+   * Without this the refusal contradicts the screen: "this candidate is no
+   * longer pending" renders above the very row it names, still carrying a live
+   * Approve and the old count, until the 30s poll happens to catch up. A reader
+   * shown that state does not press the button — and cannot tell which half is
+   * lying. Refetching on failure is also the honest reading of a refusal: the
+   * server has just told us our list is wrong, so the row leaves and the notice
+   * is left as the explanation for where it went.
+   *
+   * Deliberately NOT awaited from `onError`. Handing this promise back would keep
+   * the mutation in `pending` until the read settles, covering the gap between a
+   * refusal and its reconcile landing via `busy` — but it was measured to suppress
+   * the failure MESSAGE: while an `onError` promise is unresolved the mutation
+   * reads `status: pending` with `error: null`, so nothing renders the refusal
+   * until an unrelated network call finishes, and a hanging read shows a spinner
+   * and no explanation at all. That trades away the thing this surface exists to
+   * fix, so the residual gap is accepted and recorded instead.
+   */
+  const reconcileAfterFailure = (slug?: string) => {
+    // INVALIDATE the detail rather than remove it: removing evicts the body the
+    // open panel is rendering, so Approve and the content vanish for a beat and
+    // come back — a flash of nothing on the row the user is reading. Invalidating
+    // refetches underneath the visible data. (The success paths do remove it, for
+    // a different reason: there the candidate is gone and its slug may be
+    // re-staged, so stale detail must not survive.)
+    if (slug) {
+      qc.invalidateQueries({ queryKey: ['skills-pending-detail', slug] })
+    }
+    qc.invalidateQueries({ queryKey: ['skills-pending'] })
+  }
   const approve = useMutation({
+    mutationKey: queueActionKey('approve'),
+    gcTime: QUEUE_ACTION_GC_MS,
     mutationFn: (slug: string) => api.approvePendingSkill(slug),
+    onError: (_e, slug) => reconcileAfterFailure(slug),
     onSuccess: (_data, slug) => {
       // Drop the deep-link latch when the user acts on the linked candidate
       // THEMSELVES. Without this, approving the row you arrived at makes the
@@ -818,7 +1128,10 @@ function PendingSkillsPanel() {
     },
   })
   const dismiss = useMutation({
+    mutationKey: queueActionKey('dismiss'),
+    gcTime: QUEUE_ACTION_GC_MS,
     mutationFn: (slug: string) => api.dismissPendingSkill(slug),
+    onError: (_e, slug) => reconcileAfterFailure(slug),
     onSuccess: (_data, slug) => {
       // Same reason as approve: a dismissal the user just performed must not
       // come back as "someone resolved this already".
@@ -831,13 +1144,29 @@ function PendingSkillsPanel() {
     },
   })
   const dismissAll = useMutation({
+    mutationKey: queueActionKey('dismiss-all'),
+    gcTime: QUEUE_ACTION_GC_MS,
     mutationFn: () => api.dismissAllPendingSkills(pending.map(p => p.slug)),
+    onError: () => reconcileAfterFailure(),
     onSuccess: () => {
       setReviewSlug(null)
       qc.removeQueries({ queryKey: ['skills-pending-detail'] })
       qc.invalidateQueries({ queryKey: ['skills-pending'] })
     },
   })
+  // The queue takes ONE action at a time. Each mutation hook holds the state of
+  // its latest call, so a second attempt started before the first settles
+  // detaches the first: that request can then fail with nothing rendering its
+  // failure, which is the silent-refusal defect this panel was changed to remove,
+  // reappearing only when two actions overlap. Serialising the controls removes
+  // the overlap rather than tracking it — with at most one attempt in flight,
+  // the hook's single error slot always belongs to the attempt the user is
+  // waiting on. The actions are one request long, so the lock is imperceptible
+  // except as the spinner on the row that owns it.
+  const busy = queueBusy
+  // The slug of the attempt in flight, read from the cache for the same reason:
+  // after a remount the hooks are fresh, but the request is not.
+  const busySlug = pendingActionSlugs[0]
   // Only claim a deep-linked candidate is gone once the queue has actually been
   // read -- `pending` is [] while the first fetch is in flight, which would
   // otherwise flash the notice on every deep link.
@@ -845,7 +1174,14 @@ function PendingSkillsPanel() {
   // Without the notice a deep link from a notification whose candidate was
   // already resolved lands on a Skills tab that looks completely normal, and
   // the user is left hunting for a row that no longer exists.
-  if (pending.length === 0 && !reviewMissing) return null
+  //
+  // The panel also stays rendered while it OWES the user a message. Approving the
+  // last candidate empties the queue, and a failure that lands after the queue
+  // went empty — another client resolved it, the refetch returned nothing — would
+  // otherwise have nowhere to appear: this early return would have already
+  // replaced the only surface that could carry it with null.
+  const owesMessage = busy || !!failedAction || !!listError
+  if (pending.length === 0 && !reviewMissing && !owesMessage) return null
   // No top margin on the root, for the same reason as the tab's heading below:
   // this panel is the Skills tab's FIRST in-flow element whenever it renders,
   // and the pane already owns the gap under the tab strip. It is also WHY that
@@ -861,7 +1197,7 @@ function PendingSkillsPanel() {
         <h4 className="text-sm font-semibold text-text-strong mb-2 flex items-center gap-2">
           {i18nT('pages.overview.skillsTab.pending_review_count', { count: pending.length })}
           <InfoTip text={i18nT('pages.overview.skillsTab.auto_generated_skill_candidates_awaiting_your_ap')} />
-          <Btn danger className="ml-auto text-[11px]" onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: pending.length }))) dismissAll.mutate() }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
+          <Btn danger disabled={busy} className="ml-auto text-[11px]" onClick={() => { if (confirm(i18nT('pages.overview.skillsTab.dismiss_all_confirm', { count: pending.length }))) startAction(undefined, () => dismissAll.mutate()) }}>{i18nT('pages.overview.skillsTab.dismiss_all')}</Btn>
         </h4>
       )}
       {pending.length > 0 && (
@@ -874,16 +1210,98 @@ function PendingSkillsPanel() {
           {i18nT('pages.overview.skillsTab.linked_candidate_no_longer_pending')}
         </div>
       )}
+      {/* The QUEUE itself could not be read. No `onDismiss`: this is live query
+          state rather than a one-off event, so a dismissal would be undone by the
+          next poll — and a control that will not stay dismissed reads as broken.
+
+          The title scopes the failure to THIS queue. The server's sentence
+          ("skills directory is unreadable") names the whole store, and the live
+          Skills list renders confidently right underneath it, so without the
+          scope the two read as contradicting each other — a reader could not
+          tell which half to believe. */}
+      <ErrorNotice
+        title={i18nT('pages.overview.skillsTab.pending_review_could_not_be_loaded')}
+        message={listError?.message}
+        askAgent
+        className="mb-2"
+        testId="pending-list-error"
+      />
+      {/* A failed approve / dismiss belongs to the ATTEMPT, not to a row, and
+          not to this component's mount either. Both were tried: a per-candidate
+          store had to be re-judged every time the queue moved under it (it
+          mis-attributed twice), and hook-held state was discarded the moment the
+          user left the tab. So the mutation cache owns it, and the sentence is
+          "Couldn't <verb> <slug>. <what the server said>", which stays true
+          however the queue has since changed and whichever tab the user is on
+          when it lands. The lead names the verb the user pressed and nothing
+          about where the candidate ended up — see `failedActionTitle`.
+
+          `askAgent` is on: the queue holds no draft input and the candidate is
+          already persisted server-side, so the hand-off destroys nothing — and a
+          refusal the user cannot act on is often one the agent can. */}
+      <ErrorNotice
+        message={failedAction?.message}
+        title={failedAction && failedActionTitle(failedAction.action, failedAction.slug)}
+        askAgent
+        onDismiss={() => setDismissedAt(Date.now())}
+        className="mb-2"
+        testId="pending-action-error"
+      />
+      {/* A refused APPROVE is the one refusal whose arc otherwise ends unresolved:
+          the server's single 409 covers "not found", "a live skill already
+          exists" and "script validation failed", and those leave the candidate in
+          three different places (installed, gone, still pending). The client
+          cannot say which — see `failedActionTitle` — but it can say WHERE to
+          look: the Skills list further down this tab is the list of what is live,
+          so it answers "is this among my skills" and nothing more. The line is
+          held to exactly that: it names the list and the one question the list
+          can settle. It must NOT promise the list explains what happened — an
+          earlier wording ("find out what happened to …") did, and after a
+          "not found" refusal the row leaves the queue while the list can read
+          "No skills yet", so the reader was sent somewhere that could not hold
+          the answer they were promised. It follows the notice's own display
+          decision (`failedAction`), so it goes when the notice is dismissed. */}
+      {failedAction?.action === 'approve' && (
+        <p className="text-[11px] text-muted mb-2" data-testid="pending-action-next-step">
+          {i18nT('pages.overview.skillsTab.approve_refused_check_skills_list', { slug: failedAction.slug })}
+        </p>
+      )}
+      {/* The queue is CONFIRMED empty and the panel is up only because it owes a
+          message. Without this line the panel is a lone error banner with no
+          heading and no list, and a reader cannot tell whether the list is hidden
+          because there is nothing in it or because it failed to load. Keyed on
+          `isSuccess`, not on `pending.length` alone: a failed read RETAINS the
+          previous data (so `pending` can be [] with the queue unreadable), and
+          claiming emptiness over a queue the client could not read is exactly the
+          ambiguity this line exists to remove. */}
+      {pending.length === 0 && isSuccess && owesMessage && (
+        <p className="text-[11px] text-muted mb-2" data-testid="pending-queue-empty">
+          {i18nT('pages.overview.skillsTab.no_candidates_pending')}
+        </p>
+      )}
       {pending.length > 0 && (
         <Card>
           <div className="space-y-2">
             {pending.map(p => (
               <PendingCandidateRow
-                key={p.slug}
+                // Generation in the key: a successor under a reused slug is a
+                // DIFFERENT candidate, so it must mount fresh and collapsed
+                // rather than inherit the expanded state of the row it replaced.
+                key={`${p.slug}@${p.created_at ?? ''}`}
                 p={p}
                 autoOpen={p.slug === reviewSlug}
-                onApprove={s => approve.mutate(s)}
-                onDismiss={s => dismiss.mutate(s)}
+                busy={busy}
+                busySelf={busySlug === p.slug}
+                justRefused={!!listError
+                  || refusedSinceLastRead.some(a => a.slug === p.slug)
+                  || displayedRefusalSlug === p.slug}
+                // Keyed on the SLUG the notice displays, not on the verb: a refused
+                // dismiss also names a slug and also holds that row's Approve, while
+                // a refused dismiss-all names none and holds nothing. The row renders
+                // the hold's explanation beside Approve only when this is true.
+                heldByNotice={displayedRefusalSlug === p.slug}
+                onApprove={s => startAction(s, () => approve.mutate(s))}
+                onDismiss={s => startAction(s, () => dismiss.mutate(s))}
               />
             ))}
           </div>
