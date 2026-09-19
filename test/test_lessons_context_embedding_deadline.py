@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from unittest.mock import MagicMock
 
@@ -28,10 +29,15 @@ async def test_slow_v1_query_embeds_fall_back_without_holding_prompt_build(monke
     store.write_lesson("always prefer orchid deployment checks")
     store.write_lesson("never discard unrelated release evidence")
 
+    # An embed with no carried deadline blocks until the test lets it go, so a
+    # build that waits for it never returns and ``wait_for`` below trips. The
+    # good path never opens this gate before the build is back.
+    no_deadline_release = threading.Event()
+
     def slow_queued_embed(_text: str, **_kwargs) -> None:
         work = embedding_work.get()
         if work is None:
-            time.sleep(0.35)
+            no_deadline_release.wait()
             return None
         while not work.expired():
             time.sleep(0.005)
@@ -64,7 +70,6 @@ async def test_slow_v1_query_embeds_fall_back_without_holding_prompt_build(monke
             await asyncio.sleep(0.01)
 
     ticker_task = asyncio.create_task(ticker())
-    started = time.monotonic()
     try:
         rendered, _ = await asyncio.wait_for(
             run_in_embed_pool(
@@ -76,12 +81,15 @@ async def test_slow_v1_query_embeds_fall_back_without_holding_prompt_build(monke
         )
     finally:
         done.set()
+        no_deadline_release.set()
         await ticker_task
         store.close()
 
-    elapsed = time.monotonic() - started
-    assert elapsed < 0.2
-    assert ticks >= 3
+    # The ticker is scheduled before the build is awaited, so the loop runs it
+    # the moment the build yields: one tick proves the build left the loop
+    # free, whatever the runner's scheduling; a build that ran inline records
+    # none. Any higher count would be a wall-clock claim.
+    assert ticks >= 1
     assert rendered.index("always prefer orchid deployment checks") < rendered.index(
         "never discard unrelated release evidence"
     )

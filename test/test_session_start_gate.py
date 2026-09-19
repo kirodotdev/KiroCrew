@@ -131,6 +131,27 @@ async def _gate() -> SessionStartGate:
     return await runtime_mod.session_start_gate()
 
 
+class _SteppedClock:
+    """``time`` stand-in whose ``monotonic`` only moves when the test says so.
+
+    Every other attribute is the real module's. asyncio keeps its own import
+    of ``time``, so the loop's timers are untouched.
+    """
+
+    def __init__(self, real) -> None:
+        self._real = real
+        self._now = 1000.0
+
+    def monotonic(self) -> float:
+        return self._now
+
+    def advance(self, secs: float) -> None:
+        self._now += secs
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
 # ── the gate ──────────────────────────────────────────────────────────────────
 
 
@@ -186,6 +207,10 @@ async def test_gate_exit_callback_reports_queue_wait_not_start_time(monkeypatch)
         return {}
 
     monkeypatch.setattr(rt, "_send_and_await", _fake_send)
+    # The gate reads ``time.monotonic`` through the runtime module; hand it a
+    # clock the test advances, so the wait it reports is the hold the test
+    # chose, not what a runner's sleep happened to deliver.
+    monkeypatch.setattr(runtime_mod, "time", _SteppedClock(runtime_mod.time))
     gate = await _gate()
     # Fill the gate so the observed start has to queue.
     permits = [await gate.acquire() for _ in range(gate.limit)]
@@ -195,12 +220,13 @@ async def test_gate_exit_callback_reports_queue_wait_not_start_time(monkeypatch)
     for _ in range(10):
         await asyncio.sleep(0)
     assert waits == [], "callback must not fire while queued"
-    await asyncio.sleep(0.02)
+    runtime_mod.time.advance(0.02)  # the start sits queued for 20ms
     for p in permits:
         p.release()
     release.set()
     await observed
-    assert len(waits) == 1 and waits[0] >= 15.0, waits  # ms; at least the 20ms we held it
+    assert len(waits) == 1, waits
+    assert waits[0] == pytest.approx(20.0), waits  # ms: exactly the hold
 
 
 # ── the collector ─────────────────────────────────────────────────────────────

@@ -1058,8 +1058,11 @@ class GatewayManager:
 
             def _left() -> float:
                 # Never zero or negative: wait_for(0) raises immediately, which
-                # would report a spent budget as a transport failure.
-                return max(0.001, deadline - loop.time())
+                # would report a spent budget as a transport failure. Never
+                # above the caller's bound either: ``deadline - now`` is a
+                # rounded float and can land a hair over ``timeout`` on the
+                # first step.
+                return min(timeout, max(0.001, deadline - loop.time()))
 
         try:
             reader, writer = await asyncio.wait_for(
