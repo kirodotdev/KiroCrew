@@ -6,10 +6,13 @@ both start.
 """
 
 import errno
+import json
 import os
 import stat
 import sys
+from itertools import islice
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -28,6 +31,195 @@ from kiro_crew.gateway_lock import (
     _read_pid,
     lock_holder,
 )
+
+
+@pytest.fixture
+def kernel_lock_home(tmp_path):
+    """Keep only kernel-owner tests off a runner's incompatible overlay.
+
+    The wrapper designates an existing tmpfs, never a new mount. Do not select
+    another path based on the production lookup's result: that would hide a
+    regression. Missing permissions or kernel owner evidence must still fail.
+    """
+    import tempfile
+
+    root = os.environ.get("KIROCREW_LOCK_TEST_ROOT")
+    if root is None:
+        yield tmp_path
+        return
+    with tempfile.TemporaryDirectory(prefix="kc-lock-", dir=root) as home:
+        yield Path(home)
+
+
+@pytest.mark.parametrize("designated", [False, True])
+def test_kernel_lock_home_is_scoped_and_cleaned(tmp_path, monkeypatch, designated):
+    root = tmp_path / "designated"
+    root.mkdir()
+    if designated:
+        monkeypatch.setenv("KIROCREW_LOCK_TEST_ROOT", str(root))
+    else:
+        monkeypatch.delenv("KIROCREW_LOCK_TEST_ROOT", raising=False)
+    fixture = kernel_lock_home.__wrapped__(tmp_path)
+    home = next(fixture)
+    try:
+        assert home.parent == root if designated else home == tmp_path
+        (home / "owned").write_text("fixture data")
+    finally:
+        fixture.close()
+    assert home.exists() is (not designated)
+    assert root.is_dir()
+
+
+def _collect_lock_evidence(path, pids):
+    """Read only this test's inode and explicitly supplied holder processes."""
+    evidence = {"pids": list(pids), "fdinfo": [], "proc_locks": [], "errors": []}
+
+    def rows(source):
+        try:
+            with source.open(encoding="utf-8") as stream:
+                text = stream.read(65537)
+            if len(text) > 65536:
+                evidence["errors"].append(f"{source}:truncated")
+            return text[:65536].splitlines()
+        except OSError as error:
+            evidence["errors"].append(f"{source}:{type(error).__name__}")
+            return []
+
+    info = path.stat()
+    key = f"{os.major(info.st_dev):02x}:{os.minor(info.st_dev):02x}:{info.st_ino}"
+    evidence["stat"] = {"device": info.st_dev, "inode": info.st_ino, "key": key}
+    # Do not expose mount options/sources (overlay lowerdirs can name user data).
+    mounts = []
+    for row in rows(Path("/proc/self/mountinfo")):
+        fields = row.split()
+        if len(fields) < 7 or "-" not in fields:
+            continue
+        mount = fields[4].replace(r"\040", " ").replace(r"\134", "\\")
+        if path.resolve().is_relative_to(mount):
+            mounts.append((len(mount), fields[0], fields[2], mount, fields[fields.index("-") + 1]))
+    if mounts:
+        _, mount_id, device, mount, filesystem = max(mounts)
+        evidence["mount"] = dict(id=mount_id, device=device, path=mount, filesystem=filesystem)
+
+    keys = {key}
+    for pid in pids:
+        directory = Path(f"/proc/{pid}/fd")
+        try:
+            descriptors = list(islice(directory.iterdir(), 129))
+        except OSError as error:
+            evidence["errors"].append(f"{directory}:{type(error).__name__}")
+            continue
+        if len(descriptors) > 128:
+            evidence["errors"].append(f"{directory}:truncated")
+        for fd in descriptors[:128]:
+            try:
+                opened = fd.stat()
+            except OSError:
+                continue
+            if (opened.st_dev, opened.st_ino) != (info.st_dev, info.st_ino):
+                continue
+            lock_rows = [
+                row[:512]
+                for row in rows(Path(f"/proc/{pid}/fdinfo/{fd.name}"))
+                if row.startswith("lock:")
+            ][:8]
+            evidence["fdinfo"].append(dict(pid=pid, fd=fd.name, rows=lock_rows))
+            # fdinfo can reveal the kernel device key even when stat differs.
+            for row in lock_rows:
+                fields = row.split()
+                if len(fields) >= 7 and fields[2] == "FLOCK":
+                    keys.add(fields[6])
+    # Every FLOCK row on this inode, whoever the kernel names: a row naming a
+    # pid the caller did not supply (a dead acquirer) is exactly the evidence a
+    # failure message needs, and the key scope keeps unrelated locks out.
+    for row in rows(Path("/proc/locks")):
+        fields = row.split()
+        if len(fields) >= 6 and fields[1] == "FLOCK" and fields[5] in keys:
+            evidence["proc_locks"].append(row[:512])
+            if len(evidence["proc_locks"]) == 8:
+                break
+    return evidence
+
+
+def _lock_failure_evidence(path, pids):
+    """Assertion-message evaluation is lazy; evidence must not change its verdict."""
+    try:
+        return json.dumps(_collect_lock_evidence(path, tuple(pids)[:3]), sort_keys=True)[:8192]
+    except Exception as error:
+        return f"lock evidence unavailable: {type(error).__name__}"
+
+
+@pytest.mark.parametrize("error_type", [PermissionError, RuntimeError])
+def test_lock_evidence_preserves_assertion_on_probe_error(tmp_path, monkeypatch, error_type):
+    def broken(*_args):
+        raise error_type("must not replace the original assertion")
+
+    monkeypatch.setattr(sys.modules[__name__], "_collect_lock_evidence", broken)
+    with pytest.raises(AssertionError, match="lock evidence unavailable"):
+        assert False, _lock_failure_evidence(tmp_path / "gateway.lock", (os.getpid(),))
+
+
+def test_lock_evidence_is_lazy_and_bounded(tmp_path, monkeypatch):
+    probe = MagicMock(return_value={"rows": "x" * 20000})
+    monkeypatch.setattr(sys.modules[__name__], "_collect_lock_evidence", probe)
+    assert True, _lock_failure_evidence(tmp_path, (os.getpid(),))
+    probe.assert_not_called()
+    assert len(_lock_failure_evidence(tmp_path, (os.getpid(),))) == 8192
+
+
+def test_lock_evidence_keeps_fdinfo_device_mismatch_but_not_other_locks(tmp_path, monkeypatch):
+    from io import StringIO
+    from types import SimpleNamespace
+
+    path = tmp_path / "gateway.lock"
+    path.write_text("42\n")
+    info = path.stat()
+    own_fd = Path("/proc/43/fd/7")
+    other_fd = Path("/proc/43/fd/8")
+    kernel_key = "ff:ff:987654"
+    own_row = f"1: FLOCK ADVISORY WRITE 42 {kernel_key} 0 EOF"
+    # The dead acquirer of an inherited descriptor is a pid nobody supplied.
+    dead_acquirer_row = f"3: FLOCK ADVISORY WRITE 41 {kernel_key} 0 EOF"
+    sources = {
+        "/proc/self/mountinfo": (
+            "1 0 8:0 / / rw - ext4 ignored rw\n"
+            f"2 1 0:9 / {tmp_path.as_posix()} rw - overlay private-source secret-options\n"
+        ),
+        "/proc/43/fdinfo/7": "lock:\t" + own_row + "\n",
+        "/proc/locks": (
+            own_row + "\n2: FLOCK ADVISORY WRITE 99 ff:ff:999 0 EOF\n" + dead_acquirer_row + "\n"
+        ),
+    }
+    sources = {Path(source): text for source, text in sources.items()}
+    opened = []
+    real_stat = Path.stat
+
+    def fake_stat(source, *args, **kwargs):
+        if source == own_fd:
+            return info
+        if source == other_fd:
+            return SimpleNamespace(st_dev=info.st_dev, st_ino=info.st_ino + 1)
+        return real_stat(source, *args, **kwargs)
+
+    def fake_open(source, **_kwargs):
+        opened.append(source)
+        return StringIO(sources[source])
+
+    with monkeypatch.context() as scoped:
+        scoped.setattr(Path, "stat", fake_stat)
+        scoped.setattr(Path, "open", fake_open)
+        scoped.setattr(Path, "iterdir", lambda _source: iter([own_fd, other_fd]))
+        scoped.setattr(os, "major", lambda _device: 8, raising=False)
+        scoped.setattr(os, "minor", lambda _device: 0, raising=False)
+        evidence = _collect_lock_evidence(path, (43,))
+    assert evidence["stat"]["key"] != kernel_key
+    assert evidence["proc_locks"] == [own_row, dead_acquirer_row]
+    assert evidence["fdinfo"] == [{"pid": 43, "fd": "7", "rows": ["lock:\t" + own_row]}]
+    assert evidence["mount"]["filesystem"] == "overlay"
+    assert "private-source" not in json.dumps(evidence)
+    assert "secret-options" not in json.dumps(evidence)
+    assert Path("/proc/43/fdinfo/8") not in opened
+    assert all(source in sources for source in opened)
 
 
 def test_acquire_creates_lock_file_with_pid(tmp_path):
@@ -496,7 +688,8 @@ class TestLockHolder:
         assert holder == LockHolder(pid=None, alive=False, source="none")
 
     @pytest.mark.skipif(sys.platform != "linux", reason="relies on /proc/locks")
-    def test_live_holder_is_named_and_alive(self, tmp_path):
+    def test_live_holder_is_named_and_alive(self, kernel_lock_home):
+        tmp_path = kernel_lock_home
         # /proc/locks names the acquirer only on Linux. On Windows the held
         # file cannot even be read (msvcrt.locking is mandatory), so there is
         # no recorded-pid fallback to assert either.
@@ -505,7 +698,9 @@ class TestLockHolder:
             holder = lock_holder(tmp_path)
             assert holder.pid == os.getpid()
             assert holder.alive is True
-            assert holder.source == "flock_owner"
+            assert holder.source == "flock_owner", _lock_failure_evidence(
+                tmp_path / LOCK_FILENAME, (os.getpid(),)
+            )
         finally:
             held.release()
 

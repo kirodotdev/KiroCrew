@@ -65,12 +65,9 @@ test/test_cron_cancel.py::TestSubprocessRegistry::test_run_command_sandboxed_can
 test/test_cron_cancel.py::TestSubprocessRegistry::test_sigkill_session_guard_refusal_still_kills_pid
 test/test_deploy_round1_fixes.py::test_staging_root_rejects_wrong_owner
 test/test_deploy_round1_fixes.py::test_staging_root_uses_config_dir
-test/test_deploy_round1_fixes.py::test_deploy_sh_passes_bash_syntax
 test/test_deploy_round2_fixes.py::test_artifact_branch_uses_single_thread_hop
 test/test_deploy_round2_fixes.py::test_both_slug_and_dir_returns_400
 test/test_deploy_round2_fixes.py::test_neither_slug_nor_dir_returns_400
-test/test_deploy_round2_fixes.py::test_deploy_sh_syntax
-test/test_deploy_round2_fixes.py::test_reaper_sh_syntax
 test/test_deploy_round3_fixes.py::test_list_concurrent_bounded
 test/test_deploy_round3_fixes.py::test_ttl_hours_bool_rejected
 test/test_deploy_round3_fixes.py::test_ttl_hours_float_rejected
@@ -208,6 +205,4 @@ src/kiro_crew/apps/builtins/auto_improvement/tests/test_pr_watchers.py::TestClon
 # property it guards (a repointed gitdir must be refused) is POSIX-shaped; the other
 # 12,782 tests on that shard pass.
 src/kiro_crew/apps/builtins/auto_improvement/tests/test_dogfood_learnings.py::TestRepoControlledGitHooksDoNotExecuteHostSide::test_a_repointed_worktree_gitdir_is_refused
-test/test_deploy_round16_fixes.py::TestF5ReaperRetryOnFailure::test_reaper_sh_bash_syntax_valid
-test/test_deploy_round29_fixes.py::TestF2BoundaryPreflight::test_bash_syntax_valid
 test/test_open_slots_persistence.py::test_persist_open_slots_handles_write_failure_gracefully

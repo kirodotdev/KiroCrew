@@ -1114,12 +1114,22 @@ def test_publish_respects_reserved_legacy_default_binding(editor):
     ["CON", "con", "Con.json", "PRN", "aux.txt", "NUL", "COM1", "com1.json", "lpt9", "LPT1.md"],
 )
 def test_publish_refuses_windows_device_names_in_any_case_or_extension(editor, name):
+    from unittest.mock import patch
+
+    from kiro_crew import agent_capabilities
+
     # One shared definition: constants.WINDOWS_DEVICE_STEMS, not an inline copy.
     service, home, specs, _ = editor
     save(service, enroll=True)
-    with pytest.raises(CapabilityError, match="invalid_template_name"):
-        service.publish("A", spec_for(home, specs)["name"], name)
-    assert not (specs / f"{name}.json").exists()
+    before = {p.name: p.read_bytes() for p in specs.iterdir()}
+    with patch.object(
+        agent_capabilities, "atomic_write", wraps=agent_capabilities.atomic_write
+    ) as writer:
+        with pytest.raises(CapabilityError, match="invalid_template_name"):
+            service.publish("A", spec_for(home, specs)["name"], name)
+    writer.assert_not_called()
+    # Device-name exists() is not evidence of a directory entry on Windows.
+    assert {p.name: p.read_bytes() for p in specs.iterdir()} == before
 
 
 @pytest.mark.parametrize("name", ["COM10", "lpt10", "console", "auxiliary"])

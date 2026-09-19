@@ -9,10 +9,20 @@ F6: API-only server registers deploy routes
 """
 from __future__ import annotations
 
+import os
+import shutil
 import subprocess
 from pathlib import Path
 
+from conftest import _find_posix_test_shell
 from kiro_crew.deploy import webapp_types
+
+
+def _bash():
+    shell = _find_posix_test_shell() if os.name == "nt" else shutil.which("bash")
+    assert shell, "Syntax checks require native Git Bash on Windows or Bash on POSIX"
+    return shell
+
 
 # ─── F1: reaper.sh OAC uses fullmatch not startswith ────────────────────────
 
@@ -117,8 +127,8 @@ class TestF5ReaperRetryOnFailure:
     def test_reaper_sh_bash_syntax_valid(self):
         """bash -n validates reaper.sh syntax."""
         result = subprocess.run(
-            ["bash", "-n", str(_REAPER_SH)],
-            capture_output=True, text=True,
+            [_bash(), "-n", str(_REAPER_SH)],
+            capture_output=True, text=True, encoding="utf-8", timeout=30,
         )
         assert result.returncode == 0, f"bash -n failed: {result.stderr}"
 

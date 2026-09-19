@@ -1189,6 +1189,7 @@ class TestDnsRebindingIsRefused:
         monkeypatch.setattr(cal.link_unfurl, "_reject_if_internal_ip", lambda _c: None)
         monkeypatch.setattr(cal.link_unfurl, "ALLOWED_PORTS", _AnyPort())
 
+    @pytest.mark.ipv6_required
     @pytest.mark.asyncio
     async def test_the_fetch_lands_on_the_vetted_address_not_the_rebound_one(
         self, local_server_allowed: None, monkeypatch: pytest.MonkeyPatch
@@ -1211,6 +1212,7 @@ class TestDnsRebindingIsRefused:
         assert "FIRST" in body
         assert "REBOUND" not in body
 
+    @pytest.mark.ipv6_required
     @pytest.mark.asyncio
     async def test_an_unpinned_connector_would_have_been_rebound(
         self, local_server_allowed: None, monkeypatch: pytest.MonkeyPatch
@@ -1267,6 +1269,7 @@ class TestDnsRebindingIsRefused:
             await server.cleanup()
         assert "PUBLIC OK" in body
 
+    @pytest.mark.ipv6_required
     @pytest.mark.asyncio
     async def test_a_redirect_hop_is_pinned_to_its_own_vetted_address(
         self, local_server_allowed: None, monkeypatch: pytest.MonkeyPatch

@@ -428,11 +428,20 @@ class FoldTest(unittest.TestCase):
     # ── ordering across items ────────────────────────────────────────────────
 
     def test_items_are_newest_progress_first(self):
-        _step(self.root, self.cid, 100, "claimed", "claim", "older")
-        _step(self.root, self.cid, 200, "claimed", "claim", "newer")
+        # Distinct progress timestamps establish recency independently of clock resolution.
+        with mock.patch.object(store, "_now_iso", return_value="2026-01-01T00:00:00.000000Z"):
+            _step(self.root, self.cid, 100, "claimed", "claim", "older")
+        with mock.patch.object(store, "_now_iso", return_value="2026-01-01T00:00:01.000000Z"):
+            _step(self.root, self.cid, 200, "claimed", "claim", "newer")
         numbers = [it["number"] for it in crew_store.fold_fabric(OWNER, REPO, self.root)]
         self.assertEqual(numbers[0], 200)
         self.assertIn(100, numbers)
+
+        # Progress on the older item must outrank creation time on the newer item.
+        with mock.patch.object(store, "_now_iso", return_value="2026-01-01T00:00:02.000000Z"):
+            _step(self.root, self.cid, 100, "implementing", "implement", "resumed work")
+        numbers = [it["number"] for it in crew_store.fold_fabric(OWNER, REPO, self.root)]
+        self.assertEqual(numbers, [100, 200])
 
 
 # ── route ────────────────────────────────────────────────────────────────────

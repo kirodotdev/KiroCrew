@@ -310,12 +310,23 @@ class TestList:
     def test_empty(self, store: ArtifactStore) -> None:
         assert store.list() == []
 
-    def test_returns_newest_first(self, store: ArtifactStore) -> None:
+    def test_returns_newest_first(self, store: ArtifactStore, monkeypatch) -> None:
+        from kiro_crew import artifacts
+
+        # All timestamp reads within a write share its explicit instant.
+        now = "2026-01-01T00:00:00.000001+00:00"
+        monkeypatch.setattr(artifacts, "_now_iso", lambda: now)
         store.create(name="alpha", content="a")
+        now = "2026-01-01T00:00:00.000002+00:00"
         store.create(name="bravo", content="b")
+        now = "2026-01-01T00:00:00.000003+00:00"
         store.create(name="charlie", content="c")
         items = store.list()
         assert [a.slug for a in items] == ["charlie", "bravo", "alpha"]
+
+        now = "2026-01-01T00:00:00.000004+00:00"
+        store.update("alpha", content="updated oldest artifact")
+        assert [a.slug for a in store.list()] == ["alpha", "charlie", "bravo"]
 
     def test_filter_by_tag(self, store: ArtifactStore) -> None:
         store.create(name="a", content="a", tags=["x"])

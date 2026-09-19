@@ -253,6 +253,10 @@ after Fast Gate rather than after the full CI run.
 ## Project profile — everything repo-specific
 
 Setup, gates, reviewers, and conventions come from a resolved profile, not from this prose.
+The Kiro Crew Black entry includes the CI worker budget and memory-diagnostic wrapper;
+it still runs the same formatting gate once, with unchanged scope and verdict.
+The first gate prints the active Python interpreter and rejects versions below
+Python 3.12 before any source-parsing gate runs; it never installs an interpreter.
 Resolve once per run and keep the JSON for Phases 1–3:
 
 ```bash

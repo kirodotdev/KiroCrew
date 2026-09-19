@@ -38,7 +38,13 @@ from kiro_crew import windows_acl
 @pytest.mark.skipif(
     sys.platform not in {"win32", "linux", "darwin"}, reason="supported kernel identity contract"
 )
-@pytest.mark.parametrize("family, host", [(socket.AF_INET, "127.0.0.1"), (socket.AF_INET6, "::1")])
+@pytest.mark.parametrize(
+    "family, host",
+    [
+        (socket.AF_INET, "127.0.0.1"),
+        pytest.param(socket.AF_INET6, "::1", marks=pytest.mark.ipv6_required),
+    ],
+)
 def test_native_tcp_peer_identifies_client_process_not_server(family, host):
     with socket.socket(family) as listener:
         listener.settimeout(10)
@@ -3507,6 +3513,7 @@ class TestFindListeningPidsErrors:
             pc.PortListener(55, "192.168.1.5", "4"),
         ]
 
+    @pytest.mark.ipv6_required
     @pytest.mark.skipif(not pc.IS_WINDOWS, reason="Windows netstat branch")
     def test_windows_finds_real_ipv6_loopback_listener(self):
         # End-to-end guard on a live host: bind AF_INET6 to ::1 at an ephemeral

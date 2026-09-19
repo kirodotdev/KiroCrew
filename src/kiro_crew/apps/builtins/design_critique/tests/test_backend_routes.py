@@ -274,6 +274,27 @@ def _bump(path: Path, seconds: float = 10.0) -> None:
     os.utime(path, (stamp, stamp))
 
 
+def _pin_capture_clock(monkeypatch, build: Path, offset_seconds: int = 1) -> None:
+    from types import SimpleNamespace
+
+    stamp_ns = 1_700_000_000_000_000_000
+    for path in [*build.rglob("*"), build]:
+        os.utime(path, ns=(stamp_ns, stamp_ns))
+    token = routes._served_signature(build)
+    assert token is not None
+    assert token.newest_mtime_ns == stamp_ns
+    # Only this module's capture clock moves; file and directory stats stay real.
+    monkeypatch.setattr(
+        routes,
+        "time",
+        SimpleNamespace(
+            time=time.time,
+            monotonic_ns=time.monotonic_ns,
+            time_ns=lambda: stamp_ns + offset_seconds * 1_000_000_000,
+        ),
+    )
+
+
 def _reset_probe_cache(monkeypatch) -> None:  # type: ignore[no-untyped-def]
     # Isolate BOTH module-level probe maps so a test neither leaks entries nor inherits
     # another test's ordering stamp — a leftover stamp for a shared handle would make
@@ -1751,9 +1772,10 @@ async def test_render_staleness_mismatch_recaptures_all(monkeypatch, tmp_path) -
 
 
 @pytest.mark.asyncio
-async def test_discover_from_dir_retains_probe_and_caches(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("capture_offset", [1, 0, -1], ids=["older-build", "equal", "future-build"])
+async def test_discover_from_dir_retains_probe_and_caches(monkeypatch, tmp_path, capture_offset) -> None:  # type: ignore[no-untyped-def]
     # A probe that produced a usable screen must RETAIN its dir and cache the
-    # route->PNG map keyed by the handle.
+    # route->PNG map keyed by the handle when the build predates capture.
     monkeypatch.setattr(routes, "_node", lambda: "/usr/bin/node")
     monkeypatch.setattr(routes, "_uploads_dir", lambda: tmp_path)
     _reset_probe_cache(monkeypatch)
@@ -1761,6 +1783,7 @@ async def test_discover_from_dir_retains_probe_and_caches(monkeypatch, tmp_path)
     build = proj / "dist"
     build.mkdir(parents=True)
     (build / "index.html").write_text("<html></html>", encoding="utf-8")
+    _pin_capture_clock(monkeypatch, build, capture_offset)
 
     async def fake_run(cmd, timeout, env=None):  # type: ignore[no-untyped-def]
         if any("discover-routes" in c for c in cmd):
@@ -1785,6 +1808,10 @@ async def test_discover_from_dir_retains_probe_and_caches(monkeypatch, tmp_path)
     out = await routes._discover_from_dir(proj, handle="clone-keep")
     assert out["handle"] == "clone-keep"
     rec = routes._probe_get("clone-keep")
+    if capture_offset <= 0:
+        assert rec is None
+        assert not any(p.name.startswith("dc-probe-") for p in tmp_path.iterdir())
+        return
     assert rec is not None
     assert "/" in rec["routes"]
     # The token is recorded over the build output, so /render compares the bytes the
@@ -1989,6 +2016,7 @@ async def test_discover_does_not_cache_when_a_file_is_deleted_mid_capture(monkey
     (build / "assets").mkdir(parents=True)
     (build / "index.html").write_text("<html></html>", encoding="utf-8")
     (build / "assets" / "legacy.js").write_text("old", encoding="utf-8")
+    _pin_capture_clock(monkeypatch, build)
 
     async def fake_run(cmd, timeout, env=None):  # type: ignore[no-untyped-def]
         if any("discover-routes" in c for c in cmd):
@@ -2004,7 +2032,13 @@ async def test_discover_does_not_cache_when_a_file_is_deleted_mid_capture(monkey
             json.dumps(
                 {
                     "buildDir": str(build),
-                    "screens": [{"route": "/", "path": os.path.join(out_dir, "home.png")}],
+                    "screens": [
+                        {
+                            "route": "/",
+                            "path": os.path.join(out_dir, "home.png"),
+                            "fullPageCoverage": True,
+                        }
+                    ],
                 }
             ),
             "",
@@ -2030,6 +2064,7 @@ async def test_discover_does_not_cache_when_a_build_lands_mid_capture(monkeypatc
     build = proj / "dist"
     build.mkdir(parents=True)
     (build / "index.html").write_text("<html>v1</html>", encoding="utf-8")
+    _pin_capture_clock(monkeypatch, build)
 
     async def fake_run(cmd, timeout, env=None):  # type: ignore[no-untyped-def]
         if any("discover-routes" in c for c in cmd):
@@ -2045,7 +2080,13 @@ async def test_discover_does_not_cache_when_a_build_lands_mid_capture(monkeypatc
             json.dumps(
                 {
                     "buildDir": str(build),
-                    "screens": [{"route": "/", "path": os.path.join(out_dir, "home.png")}],
+                    "screens": [
+                        {
+                            "route": "/",
+                            "path": os.path.join(out_dir, "home.png"),
+                            "fullPageCoverage": True,
+                        }
+                    ],
                 }
             ),
             "",
@@ -2061,7 +2102,8 @@ async def test_discover_does_not_cache_when_a_build_lands_mid_capture(monkeypatc
 
 
 @pytest.mark.asyncio
-async def test_discover_does_not_cache_a_gated_screen(monkeypatch, tmp_path) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("capture_offset", [1, 0, -1], ids=["older-build", "equal", "future-build"])
+async def test_discover_does_not_cache_a_gated_screen(monkeypatch, tmp_path, capture_offset) -> None:  # type: ignore[no-untyped-def]
     # A screen captured under a login / consent overlay must NOT be cached for reuse.
     # /render raises its gate warning from the capture it runs, and a fully-covered
     # render runs no capture — so reusing a gate screenshot would show the critic the
@@ -2075,6 +2117,7 @@ async def test_discover_does_not_cache_a_gated_screen(monkeypatch, tmp_path) -> 
     build = proj / "dist"
     build.mkdir(parents=True)
     (build / "index.html").write_text("<html></html>", encoding="utf-8")
+    _pin_capture_clock(monkeypatch, build, capture_offset)
 
     async def fake_run(cmd, timeout, env=None):  # type: ignore[no-untyped-def]
         if any("discover-routes" in c for c in cmd):
@@ -2113,6 +2156,10 @@ async def test_discover_does_not_cache_a_gated_screen(monkeypatch, tmp_path) -> 
     # Discovery still reports BOTH routes as seeable — the gated one did render.
     assert {s["ref"]: s["canSee"] for s in out["screens"]} == {"/": True, "/app": True}
     rec = routes._probe_get("clone-gated")
+    if capture_offset <= 0:
+        assert rec is None
+        assert not any(p.name.startswith("dc-probe-") for p in tmp_path.iterdir())
+        return
     assert rec is not None
     # ...but only the clean route is offered for reuse.
     assert list(rec["routes"]) == ["/"]
@@ -2120,7 +2167,8 @@ async def test_discover_does_not_cache_a_gated_screen(monkeypatch, tmp_path) -> 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("flag", [False, None])
-async def test_discover_does_not_cache_a_screen_taller_than_the_viewport(monkeypatch, tmp_path, flag) -> None:  # type: ignore[no-untyped-def]
+@pytest.mark.parametrize("capture_offset", [1, 0, -1], ids=["older-build", "equal", "future-build"])
+async def test_discover_does_not_cache_a_screen_taller_than_the_viewport(monkeypatch, tmp_path, flag, capture_offset) -> None:  # type: ignore[no-untyped-def]
     # The probe captures WITHOUT --full and /render captures WITH it, so a probe PNG of
     # a page taller than the viewport holds strictly less than the render it would
     # replace. Reuse is therefore confined to screens capture-build.mjs certified as
@@ -2134,6 +2182,7 @@ async def test_discover_does_not_cache_a_screen_taller_than_the_viewport(monkeyp
     build = proj / "dist"
     build.mkdir(parents=True)
     (build / "index.html").write_text("<html></html>", encoding="utf-8")
+    _pin_capture_clock(monkeypatch, build, capture_offset)
 
     async def fake_run(cmd, timeout, env=None):  # type: ignore[no-untyped-def]
         if any("discover-routes" in c for c in cmd):
@@ -2173,6 +2222,10 @@ async def test_discover_does_not_cache_a_screen_taller_than_the_viewport(monkeyp
     # reusability is withheld.
     assert {s["ref"]: s["canSee"] for s in out["screens"]} == {"/": True, "/tall": True}
     rec = routes._probe_get("clone-tall")
+    if capture_offset <= 0:
+        assert rec is None
+        assert not any(p.name.startswith("dc-probe-") for p in tmp_path.iterdir())
+        return
     assert rec is not None
     assert list(rec["routes"]) == ["/"]
 

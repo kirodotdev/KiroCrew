@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
@@ -227,12 +228,12 @@ def test_nested_folder_with_one_bad_component_is_refused(server, folder, monkeyp
 
 
 @pytest.mark.asyncio
-async def test_note_new_refuses_an_unportable_folder_on_posix(server, monkeypatch, tmp_path):
-    """Endpoint-level: POST /api/note/new with folder ``CON`` on a POSIX host
-    is a 400 ``path_not_a_note`` and creates nothing in the vault."""
+async def test_note_new_refuses_an_unportable_folder(server, monkeypatch, tmp_path):
+    """The native endpoint refuses CON before attempting any filesystem mutation."""
     from aiohttp.test_utils import make_mocked_request
 
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    (tmp_path / "keep.md").write_text("keep", encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     vault = {"id": "v1", "localPath": str(tmp_path)}
 
     async def _read_vaults():
@@ -248,11 +249,17 @@ async def test_note_new_refuses_an_unportable_folder_on_posix(server, monkeypatc
 
     request.read = _read  # type: ignore[method-assign]
 
-    with pytest.raises(server.ApiError) as excinfo:
-        await server.api_note_new(request)
+    with (
+        patch.object(Path, "mkdir", autospec=True, side_effect=Path.mkdir) as mkdir,
+        patch.object(server.os, "open", wraps=server.os.open) as writer,
+    ):
+        with pytest.raises(server.ApiError) as excinfo:
+            await server.api_note_new(request)
     assert excinfo.value.status == 400
     assert excinfo.value.code == "path_not_a_note"
-    assert not (tmp_path / "CON").exists()
+    mkdir.assert_not_called()
+    writer.assert_not_called()
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
 
 
 def test_folder_gate_still_covers_the_windows_arm(server, monkeypatch):
@@ -267,37 +274,53 @@ def test_folder_gate_still_covers_the_windows_arm(server, monkeypatch):
     assert excinfo.value.code == "path_not_a_note"
 
 
-def test_save_refuses_creating_unportable_components(server, monkeypatch, tmp_path):
-    """A save that would CREATE ``CON/`` or a dot-terminated dir is refused."""
+@pytest.mark.parametrize("rel", ["CON/x.md", "ok./x.md", "a<b.md", "NUL.md"])
+def test_save_refuses_creating_unportable_components(server, monkeypatch, tmp_path, rel):
+    """Missing POSIX components are rejected even on a Windows host."""
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
-    for rel in ("CON/x.md", "ok./x.md", "a<b.md"):
-        with pytest.raises(server.ApiError) as excinfo:
-            server._reject_unportable_new_components(tmp_path, rel)
-        assert excinfo.value.status == 400
-        assert excinfo.value.code == "path_not_a_note"
-    assert not (tmp_path / "CON").exists()
+    first = tmp_path / rel.split("/", 1)[0]
+    real_exists = Path.exists
+
+    def posix_exists(path):
+        # Model only the absent first component; keep every other stat real.
+        return False if path == first else real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", posix_exists)
+    before = list(tmp_path.iterdir())
+    with pytest.raises(server.ApiError) as excinfo:
+        server._reject_unportable_new_components(tmp_path, rel)
+    assert excinfo.value.status == 400
+    assert excinfo.value.code == "path_not_a_note"
+    assert list(tmp_path.iterdir()) == before
 
 
-def test_save_keeps_the_rename_escape_hatch(server, monkeypatch, tmp_path):
-    """An oddly-named note that ALREADY exists stays saveable on POSIX.
-
-    Re-saving is the only way a user can carry its content into a portable
-    name, so existing components are exempt — only new ones are gated.
-    """
+@pytest.mark.parametrize("model_exists", [False, True], ids=["host", "modeled-posix"])
+def test_save_keeps_the_rename_escape_hatch(server, monkeypatch, tmp_path, model_exists):
+    """Existing odd POSIX notes stay saveable; Windows models only that stat."""
+    odd = tmp_path / "NUL.md"
+    if os.name == "nt" or model_exists:
+        real_exists = Path.exists
+        monkeypatch.setattr(Path, "exists", lambda path: True if path == odd else real_exists(path))
+    else:
+        odd.write_text("old", encoding="utf-8")
+        assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == {"NUL.md": b"old"}
     monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
-    (tmp_path / "NUL.md").write_text("old", encoding="utf-8")
     server._reject_unportable_new_components(tmp_path, "NUL.md")  # no raise
     (tmp_path / "sub").mkdir()
     server._reject_unportable_new_components(tmp_path, "sub/new.md")  # no raise
+    # An existing parent must not exempt a NEW unportable child.
+    with pytest.raises(server.ApiError) as excinfo:
+        server._reject_unportable_new_components(tmp_path, "sub/a<b.md")
+    assert excinfo.value.code == "path_not_a_note"
 
 
 @pytest.mark.asyncio
-async def test_note_save_refuses_an_unportable_new_path_on_posix(server, monkeypatch, tmp_path):
-    """Endpoint-level: POST /api/note/save creating ``CON/x.md`` on POSIX is a
-    400 ``path_not_a_note`` and writes nothing."""
+async def test_note_save_refuses_an_unportable_new_path(server, monkeypatch, tmp_path):
+    """The native endpoint refuses CON/x.md before attempting a write."""
     from aiohttp.test_utils import make_mocked_request
 
-    monkeypatch.setattr(platform_compat, "IS_WINDOWS", False)
+    (tmp_path / "keep.md").write_text("keep", encoding="utf-8")
+    before = {p.name: p.read_bytes() for p in tmp_path.iterdir()}
     vault = {"id": "v1", "localPath": str(tmp_path)}
 
     async def _read_vaults():
@@ -313,11 +336,17 @@ async def test_note_save_refuses_an_unportable_new_path_on_posix(server, monkeyp
 
     request.read = _read  # type: ignore[method-assign]
 
-    with pytest.raises(server.ApiError) as excinfo:
-        await server.api_note_save(request)
+    with (
+        patch.object(Path, "mkdir", autospec=True, side_effect=Path.mkdir) as mkdir,
+        patch.object(server, "_save_note_contents", wraps=server._save_note_contents) as writer,
+    ):
+        with pytest.raises(server.ApiError) as excinfo:
+            await server.api_note_save(request)
     assert excinfo.value.status == 400
     assert excinfo.value.code == "path_not_a_note"
-    assert not (tmp_path / "CON").exists()
+    mkdir.assert_not_called()
+    writer.assert_not_called()
+    assert {p.name: p.read_bytes() for p in tmp_path.iterdir()} == before
 
 
 def test_folder_path_keeps_refusing_a_dotted_component(server, monkeypatch):
