@@ -19,6 +19,7 @@ from member_memory_helpers import write_member_home
 
 from kiro_crew import context
 from kiro_crew import embeddings as emb
+from kiro_crew import vector_memory
 from kiro_crew.config import loader
 from kiro_crew.executors import run_in_embed_pool, run_with_recall_deadline
 from kiro_crew.slack.gateway import GatewayOrchestrator
@@ -30,6 +31,27 @@ def deterministic_vector(text):
     values = [int.from_bytes(digest[i : i + 4], "little") / 2**31 - 1 for i in range(0, 32, 4)]
     norm = math.sqrt(sum(value * value for value in values))
     return [value / norm for value in values]
+
+
+def marker_for(name):
+    """The per-store marker every assertion in this module keys on."""
+    return "marker" + name.replace("-", "") + "end"
+
+
+def seed_known_records(store, marker):
+    """Seed one record of each kind so recall never depends on writer order.
+
+    The episodic seed alone cannot carry that guarantee. ``recall`` embeds the
+    bare marker, and :func:`deterministic_vector` derives every vector from a
+    SHA-256 digest, so a row's vector is uncorrelated with the query's by
+    construction: the seed row scores 0.10 raw cosine against the query, under
+    the 0.55 episodic relevance gate, and ``_filter_by_relevance`` drops it
+    before ranking whether or not it carries an embedding. Only the semantic
+    hybrid arm scores keyword overlap, so a committed fact row is the one thing
+    that makes the marker surface for a vector-armed recall.
+    """
+    store.write_episodic(f"{marker} initial deployment record", defer_embedding=True)
+    store.set_semantic("project.seed", f"{marker} initial fact record", 1.0, "user_explicit")
 
 
 @pytest.mark.asyncio
@@ -85,7 +107,7 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
     async def operation(name, kind, index):
         async with limiter:
             store = stores[name]
-            marker = "marker" + name.replace("-", "") + "end"
+            marker = marker_for(name)
             try:
                 if kind == "episode":
                     await run_in_embed_pool(
@@ -108,11 +130,7 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
                         marker in result["episodic_context"] or marker in result["semantic_context"]
                     )
                     body = result["episodic_context"] + result["semantic_context"]
-                    assert all(
-                        "marker" + other.replace("-", "") + "end" not in body
-                        for other in stores
-                        if other != name
-                    )
+                    assert all(marker_for(other) not in body for other in stores if other != name)
                 else:
                     await run_in_embed_pool(
                         store.backfill_missing_embeddings, pace=False, max_rows_per_kind=2
@@ -130,12 +148,10 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
         context._vector_stores.update(
             {name: store for name, store in stores.items() if name != "default"}
         )
-        # Seed one known record so recall correctness never depends on writer order.
+        # Seed one known record of each kind so recall correctness never depends
+        # on writer order. See seed_known_records for why both are needed.
         for name, store in stores.items():
-            marker = "marker" + name.replace("-", "") + "end"
-            await asyncio.to_thread(
-                store.write_episodic, f"{marker} initial deployment record", defer_embedding=True
-            )
+            await asyncio.to_thread(seed_known_records, store, marker_for(name))
         monitor = asyncio.create_task(sample())
         blocker = asyncio.create_task(asyncio.to_thread(backend.embed, "hold native worker"))
         assert await asyncio.to_thread(entered.wait, 5)
@@ -182,7 +198,7 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
                 )
                 dup = len(rows) - len({row["text"] for row in rows})
                 bad = missing = foreign = 0
-                marker = "marker" + name.replace("-", "") + "end"
+                marker = marker_for(name)
                 for text, blob in [(r["text"], r["embedding"]) for r in rows] + [
                     (f"{r['key']} {r['value_json']}", r["embedding"]) for r in facts
                 ]:
@@ -240,4 +256,56 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
         await asyncio.to_thread(emb.reset_shared_embedder)
         for store in stores.values():
             await asyncio.to_thread(store.close)
+        loader._invalidate_config_cache()
+
+
+def test_seeded_store_is_recall_visible_before_any_load_write(tmp_path, monkeypatch):
+    """A recall that beats every load writer still finds its own store's marker.
+
+    ``test_private_store_mixed_load`` asserts that every one of its 34 recalls
+    surfaces its own store's marker, and each store's recalls race that store's
+    four fact writes. The seeded state is therefore the worst case that count has
+    to hold for, and the episodic seed cannot hold it alone. The assertion below
+    pins the reason as arithmetic rather than as behaviour, so it stays correct
+    if the store's ranking policy changes.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    config = write_member_home(tmp_path, "store0")
+    config["memory"] = {"embedding_dim": 8, "embedding_bulk_duty": 1}
+    (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
+    loader._invalidate_config_cache()
+
+    marker = marker_for("default")
+    # Why the episodic seed cannot carry the guarantee: deterministic_vector
+    # derives each vector from a SHA-256 digest, so the query's vector and the
+    # seed row's are uncorrelated and the row sits under the raw-cosine gate
+    # _filter_by_relevance applies before ranking -- embedded or not.
+    query_vector = deterministic_vector(marker)
+    seed_vector = deterministic_vector(f"{marker} initial deployment record")
+    assert (
+        sum(a * b for a, b in zip(query_vector, seed_vector))
+        < vector_memory._EPISODIC_RELEVANCE_THRESHOLD
+    )
+
+    backend = emb.LlamaCppEmbedder(model_path=tmp_path / "fake.gguf", dim=8, model_id="test-space")
+    backend._llm = SimpleNamespace(
+        create_embedding=lambda texts: {
+            "data": [{"embedding": deterministic_vector(text)} for text in texts]
+        },
+        close=lambda: None,
+    )
+    emb.install_shared_embedder(backend)
+    store = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=8)
+    try:
+        store.init()
+        store.embed_fn = emb.make_sync_embed_fn()
+        emb.align_store_embedding_space(store)
+        seed_known_records(store, marker)
+
+        # Exactly the mixed-load readback, with no load write committed yet.
+        result = store.recall(marker)
+        assert marker in result["episodic_context"] or marker in result["semantic_context"]
+    finally:
+        store.close()
+        emb.reset_shared_embedder()
         loader._invalidate_config_cache()
