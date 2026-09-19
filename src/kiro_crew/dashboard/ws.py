@@ -550,6 +550,19 @@ async def api_ws(request: web.Request) -> web.WebSocketResponse:
             logger.warning("slots connect snapshot failed to serialize", exc_info=True)
             raise
         await ws.send_str(snapshot_payload)
+        # One-shot per-member event-log baseline, to THIS socket only, right
+        # after the connect snapshot and before any later broadcast can reach
+        # it -- so the client's held member_projection frames can be pruned
+        # against a lastSeqs baseline it received first. Owner surface only:
+        # app tokens never receive member_projection / members_subscribed (both
+        # are classified owner-only in ws_event_scope), so skip them here too.
+        if is_dashboard_user:
+            # Isolated: a failure to send this baseline must not take the
+            # provider refresh scheduling below down with it.
+            try:
+                await state.send_members_subscribed(ws)
+            except Exception:
+                logger.debug("members_subscribed baseline not sent", exc_info=True)
         if owner_request or is_dashboard_user:
             # Issue links carry no check status — skip them so the scheduler
             # never hands an issue URL to the pull-request-only chip fetch.

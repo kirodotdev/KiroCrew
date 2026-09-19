@@ -1,0 +1,850 @@
+"""Tests for the per-member append-only event log backend core."""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from kiro_crew.crew_log.errors import CrewLogError
+from kiro_crew.crew_log.schema import KIND_MEMBER
+from kiro_crew.crew_log.store import crew_log_path
+from kiro_crew.eventlog import types
+from kiro_crew.eventlog.log import LogCorrupt, MemberLog
+from kiro_crew.eventlog.members_projections import all_units
+from kiro_crew.eventlog.projection import ProjectionRegistry
+from kiro_crew.eventlog.service import MemberEventLogService
+
+
+# ---------------------------------------------------------------------------
+# MemberLog
+# ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):
+    """Every test writes into its own data home, never the live one.
+
+    A member log is a ``member``-kind crew log now, so the store derives its path
+    from the data home rather than taking one. Repointing the home is therefore
+    what isolates a test, and it is the same fixture the crew log's own suites use.
+    """
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path / "home"))
+    yield
+
+
+def _log(tmp_path, slug="alice"):
+    return MemberLog(slug)
+
+
+def test_create_writes_header_once(tmp_path):
+    log = _log(tmp_path)
+    log.create("Alice")
+    log.load()
+    assert log.header["type"] == "member"
+    assert log.header["version"] == 1
+    assert log.header["id"] == "alice"
+    assert log.header["name"] == "Alice"
+    assert isinstance(log.header["createdAt"], int)
+    before = log.path.read_bytes()
+    log.create("SomeoneElse")  # no-op
+    assert log.path.read_bytes() == before
+
+
+def test_append_assigns_seq_and_fsyncs(tmp_path):
+    log = _log(tmp_path)
+    log.create("Alice")
+    e0 = log.append(types.MEMBER_MESSAGE, {"ts": 1.0, "preview": "hi"})
+    e1 = log.append(types.MEMBER_MESSAGE, {"ts": 2.0, "preview": "yo"})
+    assert e0["seq"] == 1
+    assert e1["seq"] == 2
+    assert e0["type"] == types.MEMBER_MESSAGE
+    assert isinstance(e0["time"], int)
+
+    fresh = MemberLog("alice")
+    fresh.load()
+    assert [e["seq"] for e in fresh.events] == [1, 2]
+
+
+def test_interleaved_writers_on_the_same_file_keep_seq_contiguous(tmp_path):
+    """Two independent MemberLog instances (as two OS processes) append to the
+    same log without sharing in-memory state. Each append must re-read committed
+    state under the store's own cross-process lock, so each writer sees the
+    other's committed entries and takes the next seq -- otherwise both compute a
+    seq from a stale view and commit a duplicate."""
+    proc_a = MemberLog("alice")
+    proc_a.create("Alice")
+    # proc_b never shares proc_a's in-memory events list -- it is a separate
+    # instance, the way a separate process's singleton would be.
+    proc_b = MemberLog("alice")
+
+    a0 = proc_a.append(types.MEMBER_MESSAGE, {"ts": 1.0, "preview": "a0"})
+    b0 = proc_b.append(types.MEMBER_MESSAGE, {"ts": 2.0, "preview": "b0"})
+    a1 = proc_a.append(types.MEMBER_MESSAGE, {"ts": 3.0, "preview": "a1"})
+    b1 = proc_b.append(types.MEMBER_MESSAGE, {"ts": 4.0, "preview": "b1"})
+
+    # Each append re-loaded under the lock, so the four seqs are contiguous and
+    # distinct even though the writers alternated across instances.
+    assert [a0["seq"], b0["seq"], a1["seq"], b1["seq"]] == [1, 2, 3, 4]
+
+    # A cold reader parses all four in order (a duplicate seq would show up here
+    # as a repeated or missing number).
+    cold = MemberLog("alice")
+    cold.load()
+    assert [e["seq"] for e in cold.events] == [1, 2, 3, 4]
+    assert [e["data"]["preview"] for e in cold.events] == ["a0", "b0", "a1", "b1"]
+
+
+def test_append_rejects_unknown_type_and_unserializable(tmp_path):
+    log = _log(tmp_path)
+    log.create("Alice")
+    # A type in a RESERVED namespace that is not in the vocabulary is a typo'd
+    # built-in, not a contribution: a contributor's type is `<app>/<name>` with a
+    # namespace the built-ins do not own (see types.is_contributed_event_type),
+    # and an app cannot be named `member`.
+    with pytest.raises(ValueError):
+        log.append("member/bogus", {})
+    # No namespace at all is refused on either rule.
+    with pytest.raises(ValueError):
+        log.append("bogus", {})
+    with pytest.raises(ValueError):
+        log.append(types.MEMBER_MESSAGE, {"x": {1, 2, 3}})  # set not JSON
+    # File unchanged by the rejected writes (still just the header).
+    fresh = MemberLog("alice")
+    fresh.load()
+    assert fresh.events == []
+
+
+def test_load_torn_trailing_line_is_repaired(tmp_path):
+    log = _log(tmp_path)
+    log.create("Alice")
+    log.append(types.MEMBER_MESSAGE, {"ts": 1.0, "preview": "hi"})
+    committed = log.path.stat().st_size
+    # Simulate a torn partial write: bytes with no trailing newline.
+    with open(log.path, "a", encoding="utf-8") as fh:
+        fh.write('{"type":"member/message","seq":1,"time":123,"dat')
+
+    fresh = MemberLog("alice")
+    fresh.load()  # must not raise
+    assert [e["seq"] for e in fresh.events] == [1]
+    assert fresh.path.stat().st_size == committed  # truncated back
+
+
+def test_load_skips_a_damaged_committed_line_instead_of_refusing_the_file(tmp_path):
+    """A damaged line costs a reader THAT line, not the whole log.
+
+    The store this log is kept in makes that call inside one segment,
+    deliberately, and it is the right one for a record whose purpose is to be
+    readable after damage: refusing the file turns one unreadable entry into a
+    member whose whole history is unopenable, and the entry is not recoverable
+    either way. A gap ACROSS segments is still refused, because that is a missing
+    file rather than a bad line.
+    """
+    log = _log(tmp_path)
+    log.create("Alice")
+    log.append(types.MEMBER_MESSAGE, {"ts": 1.0, "preview": "kept"})
+    with open(log.path, "a", encoding="utf-8") as fh:
+        fh.write(json.dumps({"type": types.MEMBER_MESSAGE, "seq": 5, "time": 1, "data": {}}) + "\n")
+        fh.write("not json at all\n")
+
+    fresh = MemberLog("alice")
+    fresh.load()
+
+    assert [e["seq"] for e in fresh.events] == [1]
+    assert [e["data"]["preview"] for e in fresh.events] == ["kept"]
+    # Neither damaged line was rewritten or dropped from the file: this layer
+    # reads around them, it does not repair them.
+    assert "not json at all" in log.path.read_text(encoding="utf-8")
+
+
+def test_load_raises_corrupt_when_the_header_line_is_unreadable(tmp_path):
+    """``LogCorrupt`` survives for the one case that really is unreadable.
+
+    Without a header there is no proof the file belongs to this member, so every
+    entry in it is unattributable -- which is the difference from a single damaged
+    line. Callers catch this by name, so it stays this module's exception and
+    wraps the store's refusal rather than replacing it.
+    """
+    log = _log(tmp_path)
+    log.create("Alice")
+    log.append(types.MEMBER_MESSAGE, {"ts": 1.0, "preview": "hi"})
+    lines = log.path.read_text(encoding="utf-8").splitlines(keepends=True)
+    log.path.write_text("garbage header\n" + "".join(lines[1:]), encoding="utf-8")
+
+    with pytest.raises(LogCorrupt) as ei:
+        MemberLog("alice").load()
+    assert "no readable header line" in str(ei.value)
+
+
+def test_history_newest_first_and_before(tmp_path):
+    log = _log(tmp_path)
+    log.create("Alice")
+    for i in range(5):
+        log.append(types.MEMBER_MESSAGE, {"ts": float(i), "preview": str(i)})
+    h = log.history(before=None, limit=3)
+    assert [e["seq"] for e in h] == [5, 4, 3]
+    h2 = log.history(before=3, limit=10)
+    assert [e["seq"] for e in h2] == [2, 1]
+
+
+# ---------------------------------------------------------------------------
+# Projections
+# ---------------------------------------------------------------------------
+def _registry():
+    reg = ProjectionRegistry()
+    for u in all_units():
+        reg.register(u)
+    return reg
+
+
+def _ev(seq, type, data, time=1000):
+    return {"type": type, "seq": seq, "time": time, "data": data}
+
+
+def test_registry_duplicate_key_raises():
+    reg = _registry()
+    with pytest.raises(ValueError):
+        reg.register(all_units()[0])
+
+
+def test_drive_emits_only_on_change():
+    reg = _registry()
+    fired = []
+    reg.set_on_change(lambda slug, key, view, seq: fired.append((slug, key, seq)))
+    # A slot/opened touches driving only.
+    reg.drive("alice", _ev(0, types.SLOT_OPENED, {"slot_key": "s1"}))
+    keys = {f[1] for f in fired}
+    assert keys == {types.PROJ_DRIVING}
+
+
+def test_driving_open_set():
+    reg = _registry()
+    reg.prime(
+        "alice",
+        [
+            _ev(0, types.SLOT_OPENED, {"slot_key": "b"}),
+            _ev(1, types.SLOT_OPENED, {"slot_key": "a"}),
+            _ev(2, types.SLOT_CLOSED, {"slot_key": "b"}),
+        ],
+    )
+    snap = reg.snapshot("alice")
+    assert snap["values"][types.PROJ_DRIVING] == {"open": ["a"]}
+    assert snap["asOfSeq"] == 2
+
+
+def test_wake_states():
+    reg = _registry()
+    reg.prime("alice", [_ev(0, types.PATROL_STARTED, {"slot_key": "s1"}, time=42)])
+    assert reg.snapshot("alice")["values"][types.PROJ_WAKE] == {
+        "patrol": "armed",
+        "slot_key": "s1",
+        "since": 42,
+    }
+    reg.drive("alice", _ev(1, types.PATROL_STOPPED, {"slot_key": "s1", "reason": "done"}, time=99))
+    assert reg.snapshot("alice")["values"][types.PROJ_WAKE] == {
+        "patrol": "stopped",
+        "slot_key": "s1",
+        "stopped_reason": "done",
+        "since": 99,
+    }
+
+
+def test_roster_last_wins():
+    reg = _registry()
+    reg.prime(
+        "alice",
+        [
+            _ev(0, types.MEMBER_CONFIG, {"model": "m1", "starred": False}),
+            _ev(1, types.MEMBER_CONFIG, {"model": "m2"}),
+            _ev(2, types.MEMBER_BINDING, {"slot_key": "member-alice"}),
+            _ev(3, types.MEMBER_MESSAGE, {"ts": 5.0, "preview": "hey"}),
+        ],
+    )
+    roster = reg.snapshot("alice")["values"][types.PROJ_ROSTER]
+    assert roster["model"] == "m2"
+    assert roster["starred"] is False
+    assert roster["slot_key"] == "member-alice"
+    assert roster["last_message"] == "hey"
+
+
+def test_activity_ring_and_counts():
+    reg = _registry()
+    from datetime import datetime, timezone
+
+    now_iso = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    events = [_ev(i, types.ACTIVITY_RECORD, {"ts": now_iso, "member": "Alice"}) for i in range(60)]
+    reg.prime("alice", events)
+    view = reg.snapshot("alice")["values"][types.PROJ_ACTIVITY]
+    assert len(view["recent"]) == 50  # ring capped
+    assert view["today"] == 50
+    assert view["week"] == 50
+
+
+def test_disposer_removes_unit():
+    reg = ProjectionRegistry()
+    dispose = reg.register(all_units()[3])  # driving
+    reg.prime("alice", [_ev(0, types.SLOT_OPENED, {"slot_key": "s1"})])
+    assert types.PROJ_DRIVING in reg.snapshot("alice")["values"]
+    dispose()
+    assert types.PROJ_DRIVING not in reg.snapshot("alice")["values"]
+
+
+# ---------------------------------------------------------------------------
+# Service
+# ---------------------------------------------------------------------------
+def test_service_ensure_append_snapshot(tmp_path, monkeypatch):
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    svc = MemberEventLogService(root)
+    svc.ensure("alice", "Alice")
+    # The log lives under the fenced crew-log tree, not beside the member's other
+    # files: the store owns the layout, so the assertion asks it rather than
+    # rebuilding the path here and drifting from it.
+    assert crew_log_path(KIND_MEMBER, "alice").exists()
+    assert not (root / "alice" / "log.jsonl").exists()
+
+    svc.append("alice", types.MEMBER_CONFIG, {"model": "m1"})
+    svc.append("alice", types.SLOT_OPENED, {"slot_key": "member-alice"})
+    snap = svc.snapshot("alice")
+    assert snap["values"][types.PROJ_ROSTER]["model"] == "m1"
+    assert snap["values"][types.PROJ_ROSTER]["name"] == "Alice"
+    assert snap["values"][types.PROJ_ROSTER]["slug"] == "alice"
+    assert snap["values"][types.PROJ_DRIVING] == {"open": ["member-alice"]}
+    assert svc.last_seq("alice") == 2
+    assert svc.slugs() == ["alice"]
+    assert svc.last_seqs() == {"alice": 2}
+
+
+def test_service_folds_events_a_second_process_wrote_between_our_appends(tmp_path, monkeypatch):
+    """The gateway is not this log's only writer: ``kirocrew-core`` runs as its
+    own stdio subprocess and records member activity through this same service.
+
+    ``log.append`` re-reads the file, so the seq it returns can sit above the one
+    after what this process folded. Driving only that event advanced every cell's
+    ``observed_seq`` straight past the intervening seqs, and ``drive`` refuses
+    anything at or below that -- so they never folded, and the pushed projection
+    and ``snapshot`` undercounted them until a restart re-primed from the file.
+    """
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    svc = MemberEventLogService(root)
+    svc.ensure("erin", "Erin")
+    svc.append("erin", types.SLOT_OPENED, {"slot_key": "member-erin"})
+
+    # A second process appends straight to the file, so this service's registry
+    # never sees the event.
+    other = MemberLog("erin")
+    other.load()
+    stranger = other.append(types.SLOT_OPENED, {"slot_key": "worker-from-another-process"})
+
+    ours = svc.append("erin", types.SLOT_OPENED, {"slot_key": "member-erin-2"})
+    # The gap the fold has to cross: our seq is two above what we last folded.
+    assert ours["seq"] == stranger["seq"] + 1
+
+    assert svc.snapshot("erin")["values"][types.PROJ_DRIVING]["open"] == [
+        "member-erin",
+        "member-erin-2",
+        "worker-from-another-process",
+    ]
+
+
+def test_a_read_sees_events_another_process_committed(tmp_path, monkeypatch):
+    """A READ has to cross the same cross-process gap an append does.
+
+    The service held a loaded ``MemberLog`` per slug and every read short-circuited
+    on its cached events, so a ``select_crew`` subprocess appending through its own
+    service stayed invisible here: activity, history and the pushed projections all
+    reported the older state until this process happened to append or restart.
+    """
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    svc = MemberEventLogService(root)
+    svc.ensure("erin", "Erin")
+    svc.append("erin", types.SLOT_OPENED, {"slot_key": "member-erin"})
+    # Load the cache the way a live gateway would: a read before the other write.
+    assert svc.snapshot("erin")["values"][types.PROJ_DRIVING]["open"] == ["member-erin"]
+
+    # A second process appends straight to the file. This service is not told.
+    other = MemberLog("erin")
+    other.load()
+    stranger = other.append(types.SLOT_OPENED, {"slot_key": "worker-from-another-process"})
+
+    # No append of our own: the read itself must pick the event up.
+    assert svc.last_seq("erin") == stranger["seq"]
+    assert svc.snapshot("erin")["values"][types.PROJ_DRIVING]["open"] == [
+        "member-erin",
+        "worker-from-another-process",
+    ]
+    assert [e["seq"] for e in svc.history("erin")][:2] == [
+        stranger["seq"],
+        stranger["seq"] - 1,
+    ]
+
+
+def test_an_unchanged_log_is_not_reparsed_on_every_read(tmp_path, monkeypatch):
+    """The refresh must cost a stat, not a parse, or a roster read pays N parses.
+
+    Pinned because the cheap path is the whole reason the refresh is acceptable on
+    a hot read: ``last_seqs()`` asks once per member on every connect.
+    """
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    svc = MemberEventLogService(root)
+    svc.ensure("erin", "Erin")
+    svc.append("erin", types.SLOT_OPENED, {"slot_key": "member-erin"})
+    svc.snapshot("erin")
+
+    log = svc._logs["erin"]
+    loads = {"n": 0}
+    real_load = log.load
+
+    def counting_load():
+        loads["n"] += 1
+        real_load()
+
+    monkeypatch.setattr(log, "load", counting_load)
+    for _ in range(5):
+        svc.snapshot("erin")
+        svc.last_seq("erin")
+    assert loads["n"] == 0, "an unchanged log was reloaded"
+
+
+def test_the_log_reports_which_member_it_belongs_to(tmp_path, monkeypatch):
+    """Colliding names are SUPPORTED, so this is a query and not a refusal.
+
+    `Review_Agent` and `review-agent` both fold to `review-agent`, and the repo
+    keeps that working on purpose: each activity entry stores the exact name, which
+    is what `TestRecordActivity::test_colliding_names_stay_attributable` pins. What
+    cannot be shared is a whole-member PROJECTION, so a caller serving one needs to
+    know whose log it is reading -- and only the header can say.
+    """
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    svc = MemberEventLogService(root)
+    svc.ensure("review-agent", "review-agent")
+
+    assert svc.logged_name("review-agent") == "review-agent"
+    assert svc.logged_name("nobody") is None
+    # The second member shares the slug, and the log still names the first.
+    svc.ensure("review-agent", "Review_Agent")
+    assert svc.logged_name("review-agent") == "review-agent"
+
+
+def test_a_migration_interrupted_after_create_resumes(tmp_path, monkeypatch):
+    """`ensure()` returned early whenever the log existed, so a process that died
+    after creating the header never migrated the member's legacy bindings, rules or
+    activity -- permanently, because the log exists on every later call.
+
+    Written to fail on the EARLY RETURN specifically: it captures the log's seq
+    after the interrupted run and requires the next ensure to have appended, so a
+    version of ensure that returns without doing anything cannot satisfy it no
+    matter what the log happens to contain.
+    """
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    members.write_dm_binding("fran", member="Fran", slot_key="member-fran")
+
+    svc = MemberEventLogService(root)
+
+    def _die(*_a, **_k):
+        raise RuntimeError("process died mid-migration")
+
+    # Patched on the INSTANCE, and deliberately never undone:    # reverts the autouse crew-log-home fixture as well, which silently moves the
+    # second phase to a different (real) home where no log exists -- so the early
+    # return has nothing to return early from and the test passes for the wrong
+    # reason. A second service instance does not carry this instance's patch.
+    svc._migrate_legacy = _die  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError):
+        svc.ensure("fran", "Fran")
+
+    # The log EXISTS now -- that is the precondition the early return then made
+    # permanent -- and it carries nothing the migration was supposed to write.
+    log = MemberLog("fran")
+    assert log.exists(), "precondition: the interrupted run left a log behind"
+    fresh = MemberEventLogService(root)
+    seq_before = fresh.last_seq("fran")
+    assert not any(
+        e["type"] == types.MEMBER_BINDING for e in fresh.history("fran", limit=100)
+    ), "precondition: the interrupted run migrated nothing"
+
+    fresh.ensure("fran", "Fran")
+    seq_after = fresh.last_seq("fran")
+    assert seq_after > seq_before, (
+        f"ensure appended nothing on a log whose migration never ran "
+        f"(seq {seq_before} -> {seq_after}): an interrupted migration cannot resume"
+    )
+    types_seen = [e["type"] for e in fresh.history("fran", limit=100)]
+    assert types.MEMBER_BINDING in types_seen, f"migration did not resume: {types_seen}"
+
+    # And it does not run twice: a third ensure appends nothing further.
+    fresh.ensure("fran", "Fran")
+    assert fresh.last_seq("fran") == seq_after
+
+
+def test_activity_migration_resumes_row_by_row(tmp_path, monkeypatch):
+    """Skipping on "any activity record exists" loses every remaining legacy row.
+
+    A crash after the first append leaves exactly one record in the log, and a
+    per-TYPE guard reads that as "activity already migrated" -- so the rest of the
+    member's history is dropped for good on every later call. The guard is per ROW
+    for that reason.
+
+    The legacy rows are written as FILES by hand: ``record_activity`` now writes to
+    the event log, so building the fixture with it leaves no legacy file at all and
+    the migration under test reads nothing.
+    """
+    import json as _json
+
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    legacy_rows = [
+        {"ts": 1000 + i, "member": "Gale", "session": f"s{i}", "mode": "persistent"}
+        for i in range(4)
+    ]
+    dest = members.member_dir("gale") / members.ACTIVITY_FILE_NAME
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(
+        "".join(_json.dumps(r, sort_keys=True) + "\n" for r in legacy_rows), encoding="utf-8"
+    )
+
+    # Create the log WITHOUT migrating, then append only the first row: that is
+    # exactly the state a process leaves when it dies after one append.
+    svc = MemberEventLogService(root)
+    svc._migrate_legacy = lambda *a, **k: None  # type: ignore[method-assign]
+    svc.ensure("gale", "Gale")
+    log = svc._get_log("gale")
+    assert log is not None
+    svc.append("gale", types.ACTIVITY_RECORD, dict(legacy_rows[0]))
+
+    def _sessions() -> list[str]:
+        return sorted(
+            str(e["data"].get("session"))
+            for e in log.all_events()
+            if e["type"] == types.ACTIVITY_RECORD
+        )
+
+    assert _sessions() == ["s0"], "precondition: only the first row made it"
+
+    # The real migration has to pick up the REST, and add each row once.
+    del svc._migrate_legacy  # type: ignore[attr-defined]
+    svc._migrate_legacy("gale", "Gale", log)
+    assert _sessions() == ["s0", "s1", "s2", "s3"], _sessions()
+
+    # Running it again adds nothing: the dedupe is what makes it re-runnable.
+    svc._migrate_legacy("gale", "Gale", log)
+    assert _sessions() == ["s0", "s1", "s2", "s3"], _sessions()
+
+
+def test_service_broadcast_frames(tmp_path, monkeypatch):
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    frames = []
+    svc = MemberEventLogService(
+        root, broadcast=lambda name, payload: frames.append((name, payload))
+    )
+    svc.ensure("bob", "Bob")
+    svc.append("bob", types.PATROL_STARTED, {"slot_key": "member-bob"})
+    wake = [f for f in frames if f[1].get("key") == types.PROJ_WAKE]
+    assert wake and wake[-1][0] == types.WS_MEMBER_PROJECTION
+    assert wake[-1][1]["value"]["patrol"] == "armed"
+    assert wake[-1][1]["slug"] == "bob"
+
+
+def test_service_broadcast_redacts_project_before_egress(tmp_path, monkeypatch):
+    """An activity record's `project` can carry a credential/URL; the folded
+    projection must be redacted before it leaves over the dashboard WebSocket,
+    the same as the /history and /activity HTTP reads."""
+    import json
+
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    frames = []
+    svc = MemberEventLogService(
+        root, broadcast=lambda name, payload: frames.append((name, payload))
+    )
+    svc.ensure("dave", "Dave")
+    secret = "https://evil.example/x?token=AKIAIOSFODNN7EXAMPLE"
+    svc.append("dave", types.ACTIVITY_RECORD, {"ts": 1.0, "member": "Dave", "project": secret})
+    activity = [f for f in frames if f[1].get("key") == types.PROJ_ACTIVITY]
+    assert activity, "an activity append should broadcast an activity projection"
+    blob = json.dumps(activity[-1][1])
+    assert secret not in blob
+    assert "AKIAIOSFODNN7EXAMPLE" not in blob
+
+
+def test_redact_projection_value_scrubs_keys_not_just_values():
+    """A dict KEY can be agent-authored (a contributed projection key, a nested
+    data key), so a credential- or URL-shaped key must be scrubbed too -- redacting
+    only values would let it cross to the browser."""
+    from kiro_crew.eventlog.service import _redact_projection_value
+
+    secret = "https://evil.example/x?token=AKIAIOSFODNN7EXAMPLE"
+    out = _redact_projection_value({secret: {secret: "v"}})
+    blob = json.dumps(out)
+    assert secret not in blob
+    assert "AKIAIOSFODNN7EXAMPLE" not in blob
+
+
+def test_service_broadcast_never_raises(tmp_path, monkeypatch):
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    def boom(name, payload):
+        raise RuntimeError("nope")
+
+    svc = MemberEventLogService(root, broadcast=boom)
+    svc.ensure("carol", "Carol")
+    # Must not raise out of append.
+    svc.append("carol", types.SLOT_OPENED, {"slot_key": "member-carol"})
+
+
+def test_service_migrates_legacy(tmp_path, monkeypatch):
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    # Legacy binding + rules + activity for "Dave" (slug "dave").
+    members.write_dm_binding("dave", member="Dave", slot_key=members.member_slot_key("dave"))
+    members.write_member_rules("dave", member="Dave", text="be nice")
+    members.record_activity("Dave", "sess-1", "persistent", via="chat")
+
+    svc = MemberEventLogService(root)
+    svc.ensure("dave", "Dave")
+
+    events = svc.history("dave", before=None, limit=100)
+    etypes = [e["type"] for e in events]
+    assert types.MEMBER_BINDING in etypes
+    assert types.MEMBER_RULES in etypes
+    assert types.ACTIVITY_RECORD in etypes
+    snap = svc.snapshot("dave")
+    assert snap["values"][types.PROJ_ROSTER]["slot_key"] == members.member_slot_key("dave")
+
+
+def test_service_ensure_is_idempotent(tmp_path, monkeypatch):
+    import kiro_crew.members as members
+
+    monkeypatch.setattr(members, "data_home", lambda: tmp_path)
+    root = tmp_path / "members"
+    root.mkdir()
+
+    svc = MemberEventLogService(root)
+    svc.ensure("erin", "Erin")
+    svc.append("erin", types.MEMBER_CONFIG, {"model": "m1"})
+    seq_before = svc.last_seq("erin")
+    svc.ensure("erin", "Erin")  # no-op, must not re-migrate or reset
+    assert svc.last_seq("erin") == seq_before
+
+
+# ---------------------------------------------------------------------------
+# MemberLog: publishing the header, and the failures a real filesystem hands back
+# ---------------------------------------------------------------------------
+def test_create_is_a_no_op_when_another_writer_published_first(tmp_path, monkeypatch):
+    """Two spawns can call ``create`` for the same member at once.
+
+    The loser must not clobber the winner's header. The publish itself -- temp
+    file, hard link or rename, directory fsync -- belongs to the store now and is
+    covered by its own suites; what belongs HERE is the race the check leaves
+    open, because ``exists`` and ``create`` are two calls and a writer can publish
+    between them. The store refuses the second create with ``already_exists``, and
+    the log it refused to overwrite is the one this caller wanted, so the refusal
+    is an answer rather than a fault.
+    """
+    from kiro_crew.crew_log.store import CrewLog
+
+    log = _log(tmp_path)
+    log.create("Alice")
+    winner = log.path.read_bytes()
+
+    # The race: the existence check answers "absent" for a log that is there.
+    monkeypatch.setattr(CrewLog, "exists", classmethod(lambda cls, kind, unit_id: False))
+
+    log.create("Impostor")  # must not raise, must not rewrite
+
+    assert log.path.read_bytes() == winner
+
+
+def test_create_still_raises_a_refusal_that_is_not_the_race(tmp_path, monkeypatch):
+    """Only ``already_exists`` is swallowed; any other refusal is a real fault.
+
+    Swallowing every ``CrewLogError`` would make an unwritable home look like a
+    member who simply has a log, and the first read would then report an empty
+    history instead of the failure.
+    """
+    from kiro_crew.crew_log import store as store_mod
+
+    log = _log(tmp_path)
+
+    def _refuse(cls, kind, unit_id, **fields):
+        raise CrewLogError("disk is read-only", code="io_failed", field="path")
+
+    monkeypatch.setattr(store_mod.CrewLog, "create", classmethod(_refuse))
+
+    with pytest.raises(CrewLogError):
+        log.create("Alice")
+
+
+def test_contributed_type_round_trips_and_derives_its_emitter(tmp_path):
+    """An app's ``<app>/<action>`` is stored as ``app:<app>/<action>`` and read back plain.
+
+    The stored spelling is what lets the log's own ownership rule decide the
+    write: the guest namespace is the only one a non-gateway emitter may use, and
+    the emitter is DERIVED from the type so a caller cannot attribute an entry to
+    a different app than the one it is writing under. The protocol spelling is what
+    every app and frame already speaks, so the translation lives here and nothing
+    above this layer sees it.
+    """
+    log = _log(tmp_path)
+    log.create("Alice")
+
+    event = log.append("tetris/score", {"points": 7})
+
+    assert event["type"] == "tetris/score"
+    # On disk it carries the guest prefix, and the emitter matches the app that
+    # owns the type rather than the gateway.
+    raw = [
+        json.loads(line)
+        for line in log.path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert raw[-1]["type"] == "app:tetris/score"
+    assert raw[-1]["src"] == "app:tetris"
+    # A built-in stays unprefixed and is the gateway's own observation.
+    log.append(types.MEMBER_MESSAGE, {"ts": 1.0, "preview": "hi"})
+    raw = [
+        json.loads(line)
+        for line in log.path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
+    assert raw[-1]["type"] == types.MEMBER_MESSAGE
+    assert raw[-1]["src"] == "gateway"
+    # And a cold reader gives both back in the protocol's spelling.
+    cold = MemberLog("alice")
+    cold.load()
+    assert [e["type"] for e in cold.events] == ["tetris/score", types.MEMBER_MESSAGE]
+
+
+def test_the_member_log_is_fenced_the_same_way_every_other_crew_log_is(tmp_path):
+    """The reason the log lives under ``crew-log`` rather than beside the member.
+
+    Dispatch trust reads this file, so an agent that can rewrite it can rewrite
+    what the gateway believes about a member. Both fences are named at the
+    ``crew-log`` ROOT, so a kind under it inherits them: the tool gate refuses the
+    agent's own file tools, and the launcher hides the tree from a sandboxed
+    subprocess. A per-member log kept anywhere else needs its own entry in both
+    lists, and the next log added misses them the same way.
+
+    Asserted against the real gate on the real path, with the member's former
+    location as the control -- it is exactly the path that was NOT fenced.
+    """
+    from kiro_crew import sandbox, security
+    from kiro_crew.members import member_dir
+
+    log = _log(tmp_path)
+    log.create("Alice")
+
+    assert security.is_sensitive_path(str(log.path))
+    assert "crew-log" in set(security.paths._CREW_SECRET_LEAVES)
+    assert "crew-log" in set(sandbox._CREW_HIDDEN_LEAVES)
+
+    # The control: the old location, which neither list names.
+    former = member_dir("alice") / "log.jsonl"
+    assert not security.is_sensitive_path(str(former))
+    assert "members" not in set(security.paths._CREW_SECRET_LEAVES)
+
+
+def test_load_of_an_absent_log_is_an_empty_read_not_a_failure(tmp_path):
+    """Callers treat "no log for this slug" as an empty history, so absent is an answer.
+
+    The store says so with ``no_ledger``, which is the one refusal this layer
+    translates into emptiness; everything else it raises is damage.
+    """
+    log = MemberLog("nobody")
+
+    log.load()
+
+    assert log.header is None
+    assert log.events == []
+    assert log.last_seq() == 0
+    assert log.history(None, 10) == []
+
+
+def test_events_after_pages_oldest_first_from_a_cursor(tmp_path):
+    """The catch-up read, and the ORDER is the whole point.
+
+    A consumer that folded up to ``after`` asks for what came next and applies it
+    in sequence; handing it ``history``'s newest-first page would apply a later
+    event before an earlier one and leave the projection wrong rather than stale.
+    """
+    log = _log(tmp_path)
+    log.create("Alice")
+    for i in range(5):
+        log.append(types.MEMBER_CONFIG, {"i": i})
+
+    # ``seq`` starts at 0 on the first APPEND -- the header is not an event.
+    assert [e["seq"] for e in log.events_after(0, 10)] == [1, 2, 3, 4, 5]
+    # Oldest-first, which is the opposite of the timeline page.
+    assert [e["seq"] for e in log.history(None, 10)] == [5, 4, 3, 2, 1]
+    # Bounded by limit, still from the low end.
+    assert [e["seq"] for e in log.events_after(1, 2)] == [2, 3]
+    # A cursor past the end is empty rather than an error.
+    assert log.events_after(99, 10) == []
+
+
+def test_events_after_treats_a_negative_limit_as_unbounded(tmp_path):
+    """Matches ``history``'s own reading of a negative limit, so the two agree."""
+    log = _log(tmp_path)
+    log.create("Alice")
+    log.append(types.MEMBER_CONFIG, {"i": 0})
+    log.append(types.MEMBER_CONFIG, {"i": 1})
+
+    assert [e["seq"] for e in log.events_after(0, -1)] == [1, 2]
+
+
+def test_exists_answers_before_anything_is_written(tmp_path):
+    """Callers check this to decide whether to ensure a log, so it must not load."""
+    log = _log(tmp_path)
+
+    assert log.exists() is False
+
+    log.create("Alice")
+
+    assert log.exists() is True
