@@ -11692,7 +11692,10 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "Esforço de extração",
+        "effort_hint": "O padrão usa effort High até você escolher um nível.",
+        "effort_model_unknown_hint": "O modelo é escolhido em tempo de execução, então o effort só se aplica quando o modelo resolvido o suporta. O padrão usa effort High."
       }
     },
     "localStorageDebug": {

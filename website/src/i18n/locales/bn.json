@@ -11528,7 +11528,10 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "এক্সট্রাকশন এফোর্ট",
+        "effort_hint": "একটি স্তর বেছে নেওয়া পর্যন্ত ডিফল্ট High effort ব্যবহার করে।",
+        "effort_model_unknown_hint": "মডেল রান টাইমে বেছে নেওয়া হয়, তাই effort প্রযোজ্য হয় শুধুমাত্র যখন নির্ধারিত মডেল এটি সমর্থন করে। ডিফল্ট High effort ব্যবহার করে।"
       }
     },
     "localStorageDebug": {

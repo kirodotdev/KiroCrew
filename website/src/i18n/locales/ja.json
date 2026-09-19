@@ -11364,7 +11364,10 @@
         "auto_artifacts_label": "Auto-add saved artifacts",
         "auto_artifacts_desc": "Mirror documents you save as artifacts into the Knowledge Library.",
         "load_failed": "Failed to load settings.",
-        "retry": "Retry"
+        "retry": "Retry",
+        "extraction_effort_label": "抽出の effort",
+        "effort_hint": "「デフォルト」はレベルを選ぶまで High の effort で動きます。",
+        "effort_model_unknown_hint": "モデルは実行時に選択されるため、effort は解決されたモデルが対応している場合にのみ適用されます。デフォルトは High の effort で動きます。"
       }
     },
     "localStorageDebug": {

@@ -947,7 +947,7 @@ class TestLLMPoolReconfigure:
 
     @pytest.mark.asyncio
     async def test_a_tracking_pool_follows_the_configured_size(self) -> None:
-        pool = _pool(2, use_config_pool_size=True)
+        pool = _pool(2, config_pool_size_key="extraction_pool_size")
         with patch(
             "kiro_crew.knowledge.llm_pool._read_config",
             return_value={"knowledge": {"extraction_pool_size": 5}},
@@ -958,8 +958,8 @@ class TestLLMPoolReconfigure:
     @pytest.mark.asyncio
     async def test_a_fixed_width_pool_is_never_resized(self) -> None:
         """The URL-fetch pool is width 1 by its caller's choice, not by this key."""
-        pool = _pool(1, use_config_pool_size=False)
-        assert pool._track_config_pool_size is False
+        pool = _pool(1)
+        assert pool._config_pool_size_key is None
         with patch(
             "kiro_crew.knowledge.llm_pool._read_config",
             return_value={"knowledge": {"extraction_pool_size": 8}},
@@ -970,7 +970,7 @@ class TestLLMPoolReconfigure:
     @pytest.mark.asyncio
     async def test_track_config_pool_size_can_be_opted_into_independently(self) -> None:
         """The extraction pool seeds its own width yet still follows later writes."""
-        pool = _pool(3, use_config_pool_size=False, track_config_pool_size=True)
+        pool = _pool(3, config_pool_size_key="extraction_pool_size")
         with patch(
             "kiro_crew.knowledge.llm_pool._read_config",
             return_value={"knowledge": {"extraction_pool_size": 6}},
@@ -995,7 +995,7 @@ class TestLLMPoolReconfigure:
         """The extraction pool is built at route setup and started on the first
         ingest. A write in between must move the PERMITS with the width, or start()
         spawns 1 worker behind a 3-permit semaphore and over-admits acquire()."""
-        pool = _pool(3, use_config_pool_size=False, track_config_pool_size=True)
+        pool = _pool(3, config_pool_size_key="extraction_pool_size")
         with patch(
             "kiro_crew.knowledge.llm_pool._read_config",
             return_value={"knowledge": {"extraction_pool_size": 1}},
@@ -1008,7 +1008,7 @@ class TestLLMPoolReconfigure:
     async def test_start_sizes_the_semaphore_from_the_width_it_spawns(self) -> None:
         """Whichever path set ``_pool_size`` before start(), the permit count equals
         the worker count start() actually creates."""
-        pool = _pool(3, use_config_pool_size=False, track_config_pool_size=True)
+        pool = _pool(3, config_pool_size_key="extraction_pool_size")
         pool._pool_size = 1  # as a tracked reload would leave it
         pool._semaphore = asyncio.Semaphore(3)  # the stale constructor width
 
@@ -1057,7 +1057,7 @@ class TestLLMPoolReconfigure:
         """No idle TTL means no reaper, so a width change must find its own boundary:
         an idle pool is recycled at once, and the next acquire respawns at the new
         width."""
-        pool = _pool(2, track_config_pool_size=True)
+        pool = _pool(2, config_pool_size_key="extraction_pool_size")
         pool._started = True
         pool._idle_ttl = 0.0
         pool._workers = [MagicMock(shutdown=AsyncMock()), MagicMock(shutdown=AsyncMock())]
@@ -1080,7 +1080,7 @@ class TestLLMPoolReconfigure:
         write 2 drops the TTL to zero before the reaper fired. The second write
         carries no width delta of its own, so the resize must be armed off the
         RUNNING width, or the pool stays at the old width until a restart."""
-        pool = _pool(2, track_config_pool_size=True)
+        pool = _pool(2, config_pool_size_key="extraction_pool_size")
         pool._started = True
         pool._idle_ttl = 300.0
         pool._workers = [MagicMock(shutdown=AsyncMock()), MagicMock(shutdown=AsyncMock())]
@@ -1103,7 +1103,7 @@ class TestLLMPoolReconfigure:
 
     @pytest.mark.asyncio
     async def test_a_zero_ttl_pool_defers_the_recycle_until_the_last_release(self) -> None:
-        pool = _pool(2, track_config_pool_size=True)
+        pool = _pool(2, config_pool_size_key="extraction_pool_size")
         pool._started = True
         pool._idle_ttl = 0.0
         pool._workers = [MagicMock(shutdown=AsyncMock()), MagicMock(shutdown=AsyncMock())]
