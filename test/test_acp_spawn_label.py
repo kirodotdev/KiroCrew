@@ -1,4 +1,4 @@
-"""The adapter log label names the program that ran, not the seam."""
+"""Adapter log labels preserve the seam and identify the resolved program."""
 
 from unittest.mock import AsyncMock, patch
 
@@ -22,30 +22,29 @@ from kiro_crew.acp.client import (
             "claude-agent-acp via /usr/local/bin/claude-agent-acp",
         ),
         (["/usr/local/bin/codex-acp"], CODEX_ACP_BIN, "codex-acp via /usr/local/bin/codex-acp"),
-        # node carries the entry script, so the full path distinguishes default packages.
+        # Both vendored adapters resolve to dist/index.js through node. The
+        # stable seam identifies the adapter more usefully than that basename.
         (
-            ["/usr/bin/node", "/opt/acp/dist/index.js"],
+            [
+                "/usr/bin/node",
+                "/opt/acp/node_modules/@agentclientprotocol/claude-agent-acp/dist/index.js",
+            ],
             CLAUDE_ACP_BIN,
-            "claude-agent-acp via /opt/acp/dist/index.js",
+            "claude-agent-acp",
         ),
-        # The Windows launcher name is recognised too; the path separator is
-        # whatever the running platform's Path understands, so keep this POSIX.
+        # Launcher matching stays case-insensitive on Windows too.
         (
-            ["node.exe", "/opt/acp/dist/index.js"],
-            CLAUDE_ACP_BIN,
-            "claude-agent-acp via /opt/acp/dist/index.js",
-        ),
-        # The launcher name is matched case-insensitively: Windows reports it
-        # in whatever case the shim chose (node.EXE, Node.exe).
-        (
-            ["node.EXE", "/opt/acp/dist/index.js"],
-            CLAUDE_ACP_BIN,
-            "claude-agent-acp via /opt/acp/dist/index.js",
+            [
+                "node.EXE",
+                "/opt/acp/node_modules/@agentclientprotocol/codex-acp/dist/index.js",
+            ],
+            CODEX_ACP_BIN,
+            "codex-acp",
         ),
         # An empty argv cannot name anything; the seam constant stands alone.
         ([], CODEX_ACP_BIN, CODEX_ACP_BIN),
-        # A bare interpreter still identifies the exact command.
-        (["node"], CLAUDE_ACP_BIN, "claude-agent-acp via node"),
+        # A bare interpreter cannot identify an adapter.
+        (["node"], CLAUDE_ACP_BIN, "claude-agent-acp"),
     ],
 )
 def test_label_names_the_seam_and_resolved_adapter(argv, seam, expected):
@@ -62,6 +61,18 @@ def test_override_to_a_dispatch_shim_keeps_the_seam_and_names_the_shim():
     assert label == "claude-agent-acp via /home/u/.local/bin/acp-dispatch"
 
 
+def test_kiro_client_carries_no_adapter_label():
+    """Only the claude and codex spawn branches assign these.
+
+    The kiro path leaves both unset, so its spawn and stderr labels resolve
+    through the seam constants exactly as they did before.
+    """
+    client = AcpClient()
+
+    assert client._adapter_label is None
+    assert client._adapter_stderr_label is None
+
+
 def test_resolved_adapter_argv_is_not_confused_with_a_sandbox_launcher():
     resolved_argv = ["/opt/acp/codex-acp"]
     wrapped_argv = ["env", "-u", "PYTHONPATH", *resolved_argv]
@@ -71,24 +82,25 @@ def test_resolved_adapter_argv_is_not_confused_with_a_sandbox_launcher():
 
 
 @pytest.mark.asyncio
-async def test_kiro_stderr_uses_its_existing_prefix_explicitly():
+async def test_kiro_stderr_keeps_its_existing_prefix():
     client = AcpClient()
     reader = AsyncMock(spec=["readline"])
     reader.readline = AsyncMock(side_effect=[b"adapter warning\\n", b""])
 
     with patch("kiro_crew.acp.client.logger") as logger:
-        await client._drain_stderr(reader, label="kiro-cli")
+        await client._drain_stderr(reader)
 
     assert logger.warning.call_args.args[1] == "kiro-cli"
 
 
 @pytest.mark.asyncio
-async def test_adapter_stderr_uses_its_pre_wrap_label():
+async def test_adapter_stderr_uses_its_resolved_label():
     client = AcpClient()
+    client._adapter_stderr_label = "codex-acp via /opt/acp/codex-acp"
     reader = AsyncMock(spec=["readline"])
     reader.readline = AsyncMock(side_effect=[b"adapter warning\\n", b""])
 
     with patch("kiro_crew.acp.client.logger") as logger:
-        await client._drain_stderr(reader, label="codex-acp via /opt/acp/codex-acp")
+        await client._drain_stderr(reader)
 
     assert logger.warning.call_args.args[1] == "codex-acp via /opt/acp/codex-acp"

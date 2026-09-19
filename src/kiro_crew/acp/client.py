@@ -412,8 +412,16 @@ def _adapter_spawn_label(argv: Sequence[str], seam: str) -> str:
     if not argv:
         return seam
     program = argv[0]
-    if Path(program).name.casefold() in _ADAPTER_INTERPRETERS and len(argv) > 1:
+    if Path(program).name.casefold() in _ADAPTER_INTERPRETERS:
+        # A bare interpreter identifies no adapter at all.
+        if len(argv) <= 1:
+            return seam
         program = argv[1]
+        # Both vendored adapters resolve to `dist/index.js`, so the basename
+        # names the packaging rather than the adapter. The seam is the only
+        # useful identity there; a NAMED script still earns its suffix.
+        if Path(program).name.casefold() == "index.js":
+            return seam
     return f"{seam} via {program}" if program else seam
 
 
@@ -4457,6 +4465,12 @@ async def _run_preflight_bounded(
 class AcpClient:
     """JSON-RPC 2.0 client over stdio with kiro-cli acp."""
 
+    # Diagnostic labels for a resolved claude adapter, assigned on that spawn
+    # branch alone. Kiro never sets them, so its spawn and stderr labels resolve
+    # through the seam constants exactly as they did before.
+    _adapter_label: str | None = None
+    _adapter_stderr_label: str | None = None
+
     def __init__(
         self,
         work_dir: str | Path | None = None,
@@ -7158,6 +7172,8 @@ class AcpClient:
             argv: list[str] = claude_argv
             spawn_label = _adapter_spawn_label(argv, CLAUDE_ACP_BIN)
             stderr_label = _adapter_spawn_label(argv, "claude-acp")
+            self._adapter_label = spawn_label
+            self._adapter_stderr_label = stderr_label
         elif self._is_opencode:
             # This harness serves ACP from its own binary, so the argv is that binary
             # plus its ``acp`` subcommand: no adapter entry script, no node, and no
@@ -7735,7 +7751,7 @@ class AcpClient:
         # readable on every platform, so equality on a fresh random id is the
         # comparison that cannot false-match across spawns.
         self._process_instance = uuid.uuid4().hex[:16]
-        _spawn_label = spawn_label
+        _spawn_label = self._adapter_label or spawn_label
         # Everything from here to the end of _spawn runs with a LIVE subprocess
         # that nothing has recorded yet, so every step must be guarded. Without
         # this, any exception in the window — finish_suspended_spawn, the
@@ -7856,8 +7872,12 @@ class AcpClient:
             raise
 
     async def _drain_stderr(
-        self, stderr: asyncio.StreamReader, *, label: str = KIRO_CLI_BIN
+        self, stderr: asyncio.StreamReader, *, label: str | None = None
     ) -> None:
+        # Resolve HERE as well as at the call site: a caller that passes no label
+        # still gets the resolved adapter's, and only a client with none falls
+        # back to the kiro seam.
+        label = label or self._adapter_stderr_label or KIRO_CLI_BIN
         # Count of suppressed high-frequency marker lines (see
         # _SUPPRESSED_STDERR_MARKERS) and the monotonic timestamp of the last
         # throttled summary, so a thinking burst is observable in the log
