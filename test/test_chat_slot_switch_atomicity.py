@@ -29,6 +29,7 @@ from kiro_crew.dashboard.chat import (
     api_chat_slots_model,
 )
 from kiro_crew.dashboard.chat_handlers import _slot_switch_session_lock
+from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
 
 MOD = "kiro_crew.dashboard.chat_handlers"
@@ -68,6 +69,14 @@ def _mock_state(slot: _ChatSlot, provider: object = None) -> DashboardState:
     state.broadcast_context_usage = MagicMock()
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
+    # Async because it resolves a cleared project off-thread; a plain MagicMock returns a
+    # non-awaitable here and the handler answers 500 instead of exercising the switch.
+    state.sessions.note_project_change = AsyncMock()
+    # Resolve-only helper: async, and it must hand back a real path string because the arm
+    # sites record `slot.project or <this>`.
+    state.sessions.resolve_arm_cwd = AsyncMock(
+        side_effect=lambda key, cwd: cwd or "/workspace/_default"
+    )
     # No live AcpProvider by default → the model handler takes the reset path.
     state.sessions.get_provider = MagicMock(return_value=provider)
     return state
@@ -1931,20 +1940,20 @@ class TestLinkedSlotSessionKey:
             assert slot.agent == "old-agent"
 
     @pytest.mark.asyncio
-    async def test_rebind_during_project_save_rolls_back_and_answers_409(
+    async def test_rebind_during_the_save_transfers_the_arm_to_the_live_key(
         self, tmp_path, monkeypatch
     ):
-        # A binding that lands while the recent-project save awaits means the
-        # deferred-reset flag would name a session the slot does not run on
-        # (and the flag's consumer would tear down a session nobody is on
-        # while the actual session keeps the old CWD): the commit is rolled
-        # back, the flag stays unarmed, and the caller retries against the
-        # current binding.
+        # The save awaits AFTER the arm, so a binding landing there leaves the arm and
+        # pending key on the abandoned key while the key it now runs on is unarmed.
         import os
 
         slot = _ChatSlot("test")
         slot.project = "/workspace/old-ws"
         state = _mock_state(slot)
+        transfers: list = []
+        state.sessions.transfer_retire_arm = MagicMock(
+            side_effect=lambda frm, to, cwd: transfers.append((frm, to))
+        )
 
         def _save_and_rebind(_project):
             slot.linked_session_key = "cron:job-1"
@@ -1955,11 +1964,16 @@ class TestLinkedSlotSessionKey:
         new_dir = os.path.realpath(str(tmp_path))
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post("/api/chat/slots/test/project", json={"project": new_dir})
-            data = await resp.json()
-            assert resp.status == 409
-            assert data["code"] == "session_rebound"
-            assert slot.project == "/workspace/old-ws"
-            assert not slot._pending_reset_history_key
+            assert resp.status == 200
+
+        live = effective_session_key(slot)
+        assert slot._pending_reset_history_key == live, (
+            "the pending reset still names the abandoned key, so the reset lands on a "
+            "session nobody is on while the live key keeps the old directory"
+        )
+        assert (
+            transfers and transfers[-1][1] == live
+        ), "the arm was left on the abandoned key, so the live key runs unarmed"
 
     @pytest.mark.asyncio
     async def test_app_caller_project_denied_before_path_probing(self):

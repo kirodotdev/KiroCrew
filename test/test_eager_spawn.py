@@ -58,6 +58,8 @@ def _mock_state(slot: _ChatSlot) -> DashboardState:
     state.sessions.remove = AsyncMock()
     state.sessions.remove_if_unclaimed = AsyncMock(return_value=True)
     state.sessions.resumable_hint = MagicMock(return_value=True)
+    # Resolve-only helper: async, and must return a real path string for the arm sites.
+    state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
     return state
 
 
@@ -777,6 +779,8 @@ class TestProjectSetWiring:
         state = MagicMock(spec=DashboardState)
         state._slots = {slot.key: slot}
         state.push_slots_update = MagicMock()
+        state.sessions = MagicMock()  # same: set in __init__, so spec= omits it
+        state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/chat/slots/{slot}/project", api_chat_slot_project)
@@ -803,6 +807,8 @@ class TestProjectSetWiring:
         state = MagicMock(spec=DashboardState)
         state._slots = {slot.key: slot}
         state.push_slots_update = MagicMock()
+        state.sessions = MagicMock()  # same: set in __init__, so spec= omits it
+        state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
         app = web.Application()
         app["state"] = state
         app.router.add_post("/api/chat/slots/{slot}/project", api_chat_slot_project)

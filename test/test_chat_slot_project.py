@@ -27,6 +27,8 @@ def _mock_state(slot: _ChatSlot | None = None) -> DashboardState:
     state.push_slots_update = MagicMock()
     state.sessions = MagicMock()
     state.sessions.reset = AsyncMock()
+    # Resolve-only helper: async, and must return a real path string for the arm sites.
+    state.sessions.resolve_arm_cwd = AsyncMock(side_effect=lambda key, cwd: cwd or "/w/_default")
     state.file_indexes = MagicMock()
     state.file_indexes.acquire = AsyncMock()
     state.file_indexes.release = AsyncMock()
