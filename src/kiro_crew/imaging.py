@@ -181,7 +181,7 @@ def _downscale_within_limits(raw_bytes: bytes, mime: str, max_edge: int) -> tupl
     verified at all.
     """
     pil = _pil()
-    if pil is None or max_edge <= 0:
+    if pil is None:
         return raw_bytes, mime
     image_mod, imageops_mod = pil
     try:
@@ -189,7 +189,8 @@ def _downscale_within_limits(raw_bytes: bytes, mime: str, max_edge: int) -> tupl
             # Header read only for the dimension check -- no decompression --
             # so a within-cap image never pays for a decode.
             detected = img.format or ""
-            if max(img.width, img.height) <= max_edge and detected in _FORMAT_MIME:
+            within_edge = max_edge <= 0 or max(img.width, img.height) <= max_edge
+            if within_edge and detected in _FORMAT_MIME:
                 # Two conditions guard the byte-identical fast path. Dimension:
                 # over-cap images must shrink. Format: bytes in a format
                 # OUTSIDE the known-good table (e.g. TIFF from an MCP server)
@@ -224,7 +225,11 @@ def _downscale_within_limits(raw_bytes: bytes, mime: str, max_edge: int) -> tupl
                 # Within the cap but in a format outside the known-good table:
                 # a format conversion, not a resize.
                 resized = src
-            fmt = _PIL_SAVE_FORMAT.get(mime, "PNG")
+            # Re-encode according to the decoded format, never the caller's
+            # filename-derived claim. A JPEG named .png must stay JPEG rather
+            # than being silently converted because of its suffix.
+            detected_mime = _FORMAT_MIME.get(detected, "")
+            fmt = _PIL_SAVE_FORMAT.get(detected_mime, "PNG")
             if fmt in ("JPEG", "BMP") and resized.mode not in ("RGB", "L"):
                 # JPEG/BMP carry no alpha channel; flatten before encoding.
                 resized = resized.convert("RGB")

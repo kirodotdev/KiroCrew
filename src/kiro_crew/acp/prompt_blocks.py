@@ -57,6 +57,7 @@ from kiro_crew.imaging import (  # noqa: F401 -- constants re-exported, see comm
     MAX_IMAGE_EDGE_PX,
     downscale_image_block,
 )
+from kiro_crew.messaging.raster import SNIFF_BYTES, sniff_raster_mime
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 
 logger = logging.getLogger(__name__)
@@ -126,8 +127,8 @@ def build_prompt_blocks(
                 continue
             path = Path(raw)
             suffix = path.suffix.lower()
-            mime = IMAGE_MEDIA_TYPES.get(suffix)
-            if mime is None:
+            suffix_mime = IMAGE_MEDIA_TYPES.get(suffix)
+            if suffix_mime is None:
                 # Unreachable for regex-produced candidates today (_PATH_RE's
                 # suffix group and IMAGE_MEDIA_TYPES share one key set), kept
                 # as the lexical backstop should the two ever drift.
@@ -176,6 +177,28 @@ def build_prompt_blocks(
                 # stays in the text; it is NOT inlined.
                 logger.warning("acp prompt: image read refused for %s", path.name)
                 continue
+            # The suffix selects path CANDIDATES; the bytes decide what reaches
+            # the wire. Require a complete sniff window so a truncated header
+            # cannot become a pass-through image when Pillow is unavailable.
+            mime = (
+                sniff_raster_mime(raw_bytes[:SNIFF_BYTES])
+                if len(raw_bytes) >= SNIFF_BYTES
+                else None
+            )
+            if mime not in IMAGE_MEDIA_TYPES.values():
+                logger.warning(
+                    "acp prompt: %s is not a supported raster by content - "
+                    "sending path, not inline",
+                    path.name,
+                )
+                continue
+            if mime != suffix_mime:
+                logger.info(
+                    "acp prompt: %s is %s by content, not %s by suffix; using content",
+                    path.name,
+                    mime,
+                    suffix_mime,
+                )
             downscaled = downscale_image_block(
                 raw_bytes, mime, max_edge=max_image_edge, max_b64_bytes=max_image_b64_bytes
             )

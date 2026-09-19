@@ -1167,14 +1167,17 @@ The `audit_source` constructor param of `AcpClient` (default `None`) tags a clie
 `_send_prompt()` auto-detects image file paths in messages (`.png`, `.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`) via regex. When a valid image path is found:
 
 1. Reads the file (paths over `MAX_IMAGE_BYTES` = 10 MB stay as text, not inlined)
-2. Downscales so the longest edge is <= `MAX_IMAGE_EDGE_PX` (2000 px), preserving aspect ratio and re-encoding to the same format (an oversized GIF becomes a PNG still frame)
-3. Shrinks further while the base64 payload still exceeds `MAX_IMAGE_B64_BYTES` (5 MiB), stopping at `MIN_IMAGE_EDGE_PX` (256 px)
-4. Base64-encodes the (possibly downscaled) bytes
-5. Appends an image content block: `{"type": "image", "data": "<base64>", "mimeType": "image/png"}`
-6. Replaces the path in the text with `[image: filename.png]`
-7. Sends both text and image blocks in the `prompt` array
+2. Identifies the raster type from its leading bytes; unsupported or truncated content stays as a path
+3. Downscales so the longest edge is <= `MAX_IMAGE_EDGE_PX` (2000 px), preserving aspect ratio and re-encoding according to the decoded format (an oversized GIF becomes a PNG still frame)
+4. Shrinks further while the base64 payload still exceeds `MAX_IMAGE_B64_BYTES` (5 MiB), stopping at `MIN_IMAGE_EDGE_PX` (256 px)
+5. Base64-encodes the (possibly downscaled) bytes
+6. Appends an image content block with the content-derived `mimeType`
+7. Replaces the path in the text with `[image: filename.png]`
+8. Sends both text and image blocks in the `prompt` array
 
 This leverages kiro-cli's `promptCapabilities.image: true` capability. The LLM receives the image inline — no tool call needed.
+
+The suffix selects only which paths are candidates. `messaging.raster.sniff_raster_mime` derives the wire media type from the file content, and Pillow verifies the complete container when available. A real image with a misleading name is still inlined with truthful metadata; non-raster, unsupported, or truncated content fails closed and remains a path that a tool-capable agent can inspect.
 
 **Dimension backstop** (`build_prompt_blocks` in `acp/prompt_blocks.py`). This shared builder is the single funnel every channel's images cross before reaching kiro-cli, so the `MAX_IMAGE_EDGE_PX` (2000 px) downscale runs for all of them — dashboard upload/paste/screenshot, Slack, Discord. Anthropic rejects the ENTIRE request when a many-image conversation (>20 images) carries any image over 2000 px on a side; because kiro-cli replays the full message history every turn, one oversized image would otherwise sit at a fixed history index and wedge the session permanently (a follow-up resize cannot evict the original). The browser's client-side resize (1568 px, `website/src/utils/resizeImage.ts`) is a token-cost optimization on top; this server-side cap is the correctness guarantee that still holds when that resize is skipped or bypassed (e.g. the native `/api/screenshot` capture, or non-dashboard channels).
 

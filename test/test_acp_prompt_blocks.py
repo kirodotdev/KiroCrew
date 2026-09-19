@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-from kiro_crew import hooks
+from kiro_crew import hooks, imaging
 from kiro_crew.acp import prompt_blocks
 from kiro_crew.acp.prompt_blocks import (
     _POSIX_PATH_RE,
@@ -38,6 +38,13 @@ def _png(tmp_path, name="shot.png"):
     p = tmp_path / name
     p.write_bytes(_PNG)
     return p
+
+
+def _image_bytes(fmt="PNG", size=(2, 2)):
+    pil = pytest.importorskip("PIL.Image")
+    buf = io.BytesIO()
+    pil.new("RGB", size, (127, 127, 127)).save(buf, format=fmt)
+    return buf.getvalue()
 
 
 class TestBuildPromptBlocks:
@@ -137,6 +144,72 @@ class TestBuildPromptBlocks:
 
     def test_default_cap_is_ten_mib(self):
         assert MAX_IMAGE_BYTES == 10 * 1024 * 1024
+
+
+class TestMediaTypeFromContent:
+    def test_content_wins_over_a_misleading_suffix(self, tmp_path):
+        p = tmp_path / "actually-a-jpeg.png"
+        p.write_bytes(_image_bytes("JPEG"))
+
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert [block["type"] for block in blocks] == ["text", "image"]
+        assert blocks[1]["mimeType"] == "image/jpeg"
+
+    @pytest.mark.parametrize(
+        "name,raw",
+        [
+            ("notes.png", b"plain text"),
+            ("vector.png", b"<svg xmlns='http://www.w3.org/2000/svg'/>"),
+            ("cut.png", _PNG[:12]),
+        ],
+    )
+    def test_non_raster_or_truncated_content_stays_a_path(self, tmp_path, name, raw):
+        p = tmp_path / name
+        p.write_bytes(raw)
+
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert [block["type"] for block in blocks] == ["text"]
+        assert str(p) in blocks[0]["text"]
+
+    def test_riff_container_that_is_not_webp_stays_a_path(self, tmp_path):
+        p = tmp_path / "audio.webp"
+        p.write_bytes(b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"fmt ")
+
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert [block["type"] for block in blocks] == ["text"]
+
+    def test_no_pillow_path_uses_the_sniffed_mime(self, tmp_path, monkeypatch):
+        p = tmp_path / "renamed.png"
+        original = _image_bytes("JPEG")
+        p.write_bytes(original)
+        monkeypatch.setattr(imaging, "_pil", lambda: None)
+
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert blocks[1]["mimeType"] == "image/jpeg"
+        assert base64.b64decode(blocks[1]["data"]) == original
+
+    def test_downscale_reencodes_by_content_not_by_name(self, tmp_path):
+        p = tmp_path / "big.png"
+        p.write_bytes(_image_bytes("JPEG", (MAX_IMAGE_EDGE_PX + 40, 10)))
+
+        blocks = build_prompt_blocks(f"see {p}")
+
+        assert blocks[1]["mimeType"] == "image/jpeg"
+        assert base64.b64decode(blocks[1]["data"]).startswith(b"\xff\xd8\xff")
+
+    def test_zero_edge_still_corrects_the_wire_mime(self, tmp_path):
+        p = tmp_path / "renamed.png"
+        original = _image_bytes("JPEG")
+        p.write_bytes(original)
+
+        blocks = build_prompt_blocks(f"see {p}", max_image_edge=0)
+
+        assert blocks[1]["mimeType"] == "image/jpeg"
+        assert base64.b64decode(blocks[1]["data"]) == original
 
 
 class TestSensitivePathGate:
