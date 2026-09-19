@@ -15,6 +15,19 @@ the App Store takes effect without restarting the shell. Probe diagnostics are
 deduplicated per outcome for one minute, including alternating HTTP errors and
 disabled responses; actual enabled-state changes still log immediately.
 
+**A non-answer never creates a pet.** Every probe the reconcile tick makes is
+tri-state (`enabled` / `disabled` / `unknown`), including the remote instance's
+own Mochi flag (`instanceGate.remoteEnabledState`). `unknown` means keep
+whatever is on screen: it never tears a pet down, and it never opens one. With
+the host's Mochi disabled, a pet is created only on a definite `enabled` from
+the remote named by the shell's `petInstance` pointer; on a non-answer it is
+kept only if a pet window already exists, and a teardown resets the shown
+pointer to `self`. The pet overlay is a full-display window pinned at the
+`screen-saver` level on every Space, so an opaque page in it covers the whole
+machine with nothing to dismiss: a main-frame `did-fail-load` (gateway
+unreachable) and any `>=400` navigation both hide and latch the overlay, and
+the reconcile tick re-arms it once a target answers.
+
 ## Layout
 
 | Path | What it is |

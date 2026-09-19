@@ -390,6 +390,7 @@ const fs = require("node:fs");
 const {
   _isOverlayErrorPage,
   _handleOverlayNavigation,
+  _handleOverlayLoadFailure,
   hasBlankedOverlay,
   rearmBlankedOverlays,
   _registerOverlay,
@@ -442,6 +443,57 @@ test("handleOverlayNavigation hides+latches an error page and clears on a good l
 
     win.destroyed = true; // a destroyed window is a no-op, never throws
     assert.doesNotThrow(() => _handleOverlayNavigation(win, 200));
+  } finally {
+    _getOverlays().delete(DID);
+  }
+});
+
+// A TRANSPORT failure (gateway unreachable, tunnel gone) is the other way an
+// opaque page lands in the overlay: Chromium commits its own error document and
+// did-finish-load reveals it. The reported symptom was every display covered by
+// a screen-saver-level window after waking offline, above the Force Quit dialog.
+test("handleOverlayLoadFailure hides+latches a main-frame transport failure", () => {
+  const DID = 99314;
+  const win = fakeWin();
+  _registerOverlay(DID, win);
+  try {
+    _handleOverlayLoadFailure(win, -106 /* ERR_INTERNET_DISCONNECTED */, true);
+    assert.equal(win.hidden, true, "a failed main-frame load must hide the overlay");
+    assert.equal(hasBlankedOverlay(), true, "and latch it for the reconcile re-arm");
+
+    _handleOverlayNavigation(win, 200); // the re-arm landed
+    assert.equal(hasBlankedOverlay(), false, "a good load clears the latch");
+
+    _handleOverlayLoadFailure(win, -102 /* ERR_CONNECTION_REFUSED */, undefined);
+    assert.equal(hasBlankedOverlay(), true, "an unreported frame flag is treated as the main frame");
+
+    win.destroyed = true;
+    assert.doesNotThrow(() => _handleOverlayLoadFailure(win, -106, true));
+  } finally {
+    _getOverlays().delete(DID);
+  }
+});
+
+test("the did-fail-load listener routes through the latch, not just a log line", () => {
+  // The handler above is only a fix if the listener calls it: the previous
+  // listener logged the failure and did nothing, which is the bug.
+  const src = fs.readFileSync(require.resolve("../petOverlays"), "utf8");
+  const listener = src.slice(src.indexOf('on("did-fail-load"'), src.indexOf('on("did-navigate"'));
+  assert.ok(listener.includes("handleOverlayLoadFailure(win, code, isMainFrame)"), listener);
+});
+
+test("a sub-frame failure or a superseded (aborted) load leaves the pet page alone", () => {
+  const DID = 99315;
+  const win = fakeWin();
+  _registerOverlay(DID, win);
+  try {
+    _handleOverlayLoadFailure(win, -106, false);
+    assert.equal(win.hidden, false, "a sub-frame failure does not replace the document");
+    assert.equal(hasBlankedOverlay(), false);
+
+    _handleOverlayLoadFailure(win, -3 /* ERR_ABORTED */, true);
+    assert.equal(win.hidden, false, "an aborted load is a newer navigation taking over, not an error page");
+    assert.equal(hasBlankedOverlay(), false);
   } finally {
     _getOverlays().delete(DID);
   }
