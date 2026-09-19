@@ -19,7 +19,7 @@ unreachable in production because the caller's `X-Internal-Secret` is ignored.
 | `session_create` | `POST /api/session-control/create` | Open a new, empty session in the caller's workspace, optionally filed into a sidebar folder at creation |
 | `session_stop` | `POST /api/session-control/stop` | Stop another session's in-flight turn |
 | `session_close` | `POST /api/session-control/close` | Close (archive) another session, as the tab ✕ does — heavier than stop, and recoverable rather than a delete |
-| `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn |
+| `session_send` | `POST /api/session-control/send` | Deliver a message that another session runs as its next turn, or cut it into the turn already running (`steer`) |
 | `session_read_message` | `GET /api/session-control/read` | Read another session's transcript tail + liveness |
 
 **One verb here writes into another session's conversation: `session_send`.**
@@ -31,13 +31,108 @@ persisted, it is prefixed with a `[sent by session <caller> via session_send]`
 envelope so the target's transcript can never render it as something the person
 typed, and channel agents are blocked from it outright.
 
-**Delivery has two authorization moments, and only the first is enforced today.**
-An idle target runs the prompt immediately, under the authorization that admitted
-it. A busy target QUEUES it, and the generic drain re-runs no check — so a target
-that gains a channel mirror between enqueue and drain broadcasts the delivered
-text. That window is accepted, not overlooked: it is not specific to this module
-(a human-typed message into a busy session drains through the same ungated path),
-so it is fixed once at the drain rather than per caller. Tracked as issue #5911.
+**Delivery has two authorization moments, and both are enforced.** An idle target
+runs the prompt immediately, under the authorization that admitted it. A busy
+target QUEUES it, and the queue entry carries the containment that held at
+admission (`containment_meta`); the drain recomputes those constraints and drops
+any entry for which one is newly held (`newly_held_constraints`), so a target that
+gains a channel mirror between enqueue and drain never broadcasts the delivered
+text. The re-check is not specific to this module — a human-typed message into a
+busy session drains through the same path — which is why it lives at the drain
+rather than in each caller (#5911).
+
+**`steer: true` asks for a third outcome on a busy target.** Instead of waiting
+for the running turn, the message cuts into it (`steer_into_running_turn`, the
+same path the dashboard composer's mid-turn steer uses), so a caller watching a
+worker go the wrong way can say so while the work is still in flight rather than
+after it lands. The result names the outcome: `steered` for an injection,
+`started` for a turn begun, and neither for a queued message.
+
+Two properties keep the steer arm from being a hole in the queued arm's checks.
+The delivery happens NOW rather than later, which removes the queue's waiting
+window and replaces it with a narrower one: the steer RPC suspends on
+`stdin.drain()`, and containment can move under that suspension.
+
+- **Containment.** The drain re-check exists because a queued prompt runs later
+  than the moment it was authorized. Nothing suspends between `authorize_target`
+  and the steer call, so the text is committed against the containment the gate
+  cleared. Each of the three outcomes then closes the RPC's own window in the only
+  way still available to it. A steer that could not be injected re-runs the gate
+  before falling back to the queue, and a target that resolves to a different slot
+  OBJECT is refused (`target_moved`) — by identity, not by key string, because a
+  session closed and resumed under the same name compares equal while the delivery
+  would land on the replaced object. A requeued steer becomes an ordinary queued
+  entry and faces the drain's re-check, unexempted (see Provenance), and its
+  admission stamp comes from the SEND's gate rather than from reading the slot at
+  teardown. That distinction is the whole protection: the teardown runs past the
+  RPC's suspension, so a slot read there folds a mirror linked during the
+  suspension into the baseline, and the drain then reads the widened audience as
+  one the authorization saw. A SUCCESSFUL
+  steer cannot be recalled — kiro-cli has acknowledged consumption — so instead the
+  containment holding at admission is compared against the containment holding
+  after the RPC, and if a constraint newly holds, the turn is stopped. That is a
+  cooperative cancel with `escalate=False`: one automatic decision, not a person
+  who watched a stop fail to take. It matters because
+  `_deliver_cross_surface_reply` resolves the mirror LIVE at reply-delivery time,
+  so a mirror linked mid-turn is a real audience and not one fixed at turn start.
+  The delivery is still reported as successful — it happened, and an `ok: false`
+  would invite a retry that double-sends — with the constraint names recorded in
+  the audit trail under `steer_stopped_on`.
+
+  The stop alone would not be enough, because it reacts and the turn can finish
+  first: `_deliver_cross_surface_reply` runs from the turn's own completion path and
+  resolves the mirror LIVE, so a turn that completes inside the RPC's suspension
+  publishes before any post-RPC check resumes, and a sent reply cannot be recalled.
+  So the send also RECORDS the containment it was admitted under on the slot, before
+  the RPC and synchronously with the authorization, and that record stays for the
+  whole turn. The publisher then asks `cross_surface_withheld` at delivery: it
+  compares the containment holding THEN against each recorded admission and withholds
+  the cross-surface leg when a constraint newly holds.
+
+  The decision lives with the publisher because that is the only moment it cannot go
+  stale. A check the sender runs when its RPC returns says nothing about a mirror
+  bound between then and the reply, and the reply is what reaches the channel. So the
+  sender records and, on what it can see, stops the turn; whether the reply may be
+  published is the publisher's question, answered in the same synchronous moment it
+  publishes.
+
+  Two consequences worth stating. An ordinary steer costs the channel audience
+  nothing: the comparison is exact rather than precautionary, so a turn nobody
+  interfered with publishes normally. And the record is TURN-SCOPED -- the teardown
+  empties it unconditionally -- so one turn's withheld reply never judges the next by
+  an authorization that was never about it.
+- **Provenance.** Both arms hand over the same text: redacted through
+  `sanitize_outbound` and prefixed with the
+  `[sent by session <caller> via session_send]` envelope. So an injected steer
+  can no more pose as human typing than a queued delivery can. This is the
+  property the composer's own gate protects by keeping app-authenticated sends
+  off the steer path; here an explicit envelope answers it.
+
+  It reaches one level further down. `directive_user_origin` exempts a queue entry
+  from the drain's LINKED drop because "the author typed into the session's own
+  surface", and the requeue used to derive that from the slot — sound while the
+  composer was the only caller of `steer_into_running_turn`, wrong as soon as
+  `session_send` became the second. Provenance is now REPORTED by the caller
+  (`user_origin`) and recorded per in-flight steer, defaulting to false so a future
+  caller cannot acquire the human's exemption by saying nothing. The composer keeps
+  it; a peer's steer does not.
+
+A steer is a delivery MODE, not a permission: `authorize_target` decides who may
+send, unchanged, and a crew-bound (`executor == "remote"`) target stays refused
+before either arm is reached. `steer` is strictly typed at both entry points (the
+tool schema and the HTTP handler) and defaults false, so a caller that omits it
+keeps the queue-or-run behaviour.
+
+**A target mid-plan is busy even when `running` says otherwise.** Both arms read
+`slot.running or slot._in_stage_execution`, the predicate every producer that must
+not start a concurrent turn reads — the composer, the cron injection, the nudge arm
+and the transfer gate. Between a multi-stage plan's stages each stage's `_run_chat`
+closes its own turn, so `running` reads False while the plan is still live, and
+`enqueue_or_run_prompt` gates on `running` alone: handing it a prompt there starts a
+second turn racing the plan, with no recovery once two turns own the same slot. So
+an inter-stage send is queued with the same admission stamp that method applies and
+held until the plan ends. There is no steer client in that window either, so a steer
+falls through its own re-gate to the same queue branch.
 
 `session_create` earns its place on its own, not as the front half of a delivery
 design: an agent that has just worked out that a job needs its own session can
@@ -766,8 +861,8 @@ follow-up.
   into another session's conversation, but only one the same `authorize_target`
   guard admits: a channel-linked, channel-mirrored, incognito,
   app-scoped, unattended or cross-workspace target is refused, so the verb cannot
-  reach a conversation other people are party to. The residual is the queued arm's
-  second authorization moment, recorded above and tracked as #5911.
+  reach a conversation other people are party to. That holds for a steer too: the
+  mode changes when the message runs, never who may send it.
 - **No cross-workspace or cross-machine reach.** The boundary is one gateway's
   live sessions in one workspace.
 - **No waking closed sessions.** See above.

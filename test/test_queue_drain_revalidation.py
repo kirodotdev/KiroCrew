@@ -131,11 +131,18 @@ def test_channel_born_enqueue_records_linked_true(tmp_path):
 
 
 def test_requeued_steer_is_stamped(tmp_path):
-    """A steer degraded to a queue card is plain user speech re-entering the
-    queue; the requeue stamps it like any other plain producer."""
+    """A steer degraded to a queue card is plain user speech re-entering the queue,
+    and it is stamped with the containment its SEND was admitted under.
+
+    The stamp comes from the caller, not from reading the slot here: this requeue
+    runs in the turn's teardown, past the steer RPC's suspension, so a slot read
+    would fold a mirror linked during that suspension into the entry's own baseline
+    and the drain would then read the widened audience as one the authorization saw.
+    """
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     slot._pending_steers = ["steer me"]
+    slot._steer_admissions["steer me"] = sc.containment_meta(state, slot)
 
     cr._requeue_unconsumed_steers(state, slot)
 
@@ -612,16 +619,39 @@ async def test_mixed_origin_merge_keeps_channel_provenance(tmp_path, monkeypatch
 
 
 def test_requeued_steer_in_a_plain_slot_carries_human_provenance(tmp_path):
-    """The only steer producer is the api_chat composer branch, and app
-    isolation confines app requests to app slots — so a non-app slot's
-    requeued steer is human speech and keeps the audience exemption."""
+    """A COMPOSER steer keeps the audience exemption: its author typed into this
+    session's own surface, so linking the session is that owner's deliberate act.
+
+    Provenance is now reported by the steer's caller rather than derived from the
+    slot. It was derivable while ``steer_into_running_turn`` had exactly one caller
+    (the api_chat composer branch); ``session_send``'s steer is a second caller with
+    no such author, so the flag has to say which one produced the text. The composer
+    records ``True`` -- ``user_origin`` defaults to it -- which is what this asserts.
+    """
     state = _make_state(tmp_path)
     slot = state.get_or_create_slot("chat-1")
     slot._pending_steers = ["steer me"]
+    slot._steer_user_origin["steer me"] = True
 
     cr._requeue_unconsumed_steers(state, slot)
 
     assert slot._queue[0].get("_directive_user_origin") is True
+
+
+def test_a_requeued_steer_with_no_recorded_provenance_fails_closed(tmp_path):
+    """An unrecorded steer is not treated as the session owner's.
+
+    The exemption is the one thing a peer must not inherit, so the absent case has
+    to fall on the unexempted side: the entry faces the LINKED drop like any other
+    queued prompt rather than riding past it on an assumption nobody made.
+    """
+    state = _make_state(tmp_path)
+    slot = state.get_or_create_slot("chat-1")
+    slot._pending_steers = ["no provenance recorded"]
+
+    cr._requeue_unconsumed_steers(state, slot)
+
+    assert slot._queue[0].get("_directive_user_origin") is not True
 
 
 # ── The full drain path ──────────────────────────────────────────────────────

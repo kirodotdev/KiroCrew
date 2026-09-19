@@ -3119,6 +3119,12 @@ SESSION_SEND_SCHEMA = ToolSchema(
     fields=[
         FieldSpec("target", str, required=True, max_len=MAX_SHORT_STRING),
         FieldSpec("message", str, required=True, max_len=MAX_LONG_STRING),
+        # Delivery MODE, not a permission: a true value asks for the message to be
+        # injected into the target's running turn instead of waiting for the next
+        # one. Strictly typed (``bool`` is an allowed type here, so the int-guard
+        # in ``validate_field`` does not apply) and defaulted false, so a caller
+        # that omits it keeps the queue-or-run behaviour it has today.
+        FieldSpec("steer", bool, default=False),
     ],
 )
 
