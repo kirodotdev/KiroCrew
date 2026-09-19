@@ -210,7 +210,7 @@ def _invalidate_consolidation_offset(
     never consolidated. Those messages are then skipped forever: nothing
     re-examines a region the offset claims is done, so their content never
     reaches memory extraction. ``history.py`` documents the identical hazard for
-    rotation, which is why a rotation resets the offset and bumps
+    rotation, which rebases the offset by the dropped-row count and bumps
     ``rotation_generation``; a merge is the same class of structural rewrite and
     has to say so.
 

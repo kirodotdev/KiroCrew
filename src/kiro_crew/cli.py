@@ -813,7 +813,7 @@ def _consolidate_cmd(args) -> None:
                 if await consolidator.consolidate_now(key):
                     print(f"  {key}: done ✓")
                 else:
-                    print(f"  {key}: skipped (consolidation retry backoff)")
+                    print(f"  {key}: skipped (retryable; no consolidation pass ran)")
             except Exception:
                 logger.debug("consolidate (or SEL) failed for %s", key, exc_info=True)
 

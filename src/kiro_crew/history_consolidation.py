@@ -17,6 +17,7 @@ import re
 import time as _time
 from collections.abc import Awaitable, Callable
 from datetime import datetime
+from enum import Enum
 from typing import TYPE_CHECKING, Any, NamedTuple
 
 from kiro_crew.config import live
@@ -103,6 +104,14 @@ class _ConsolidationRefusedSentinel:
 
 
 _CONSOLIDATION_REFUSED = _ConsolidationRefusedSentinel()
+
+
+class _TranscriptPrivacy(Enum):
+    """Privacy decision from one transcript metadata read."""
+
+    LOCAL = "local"
+    PRIVATE = "private"
+    UNKNOWN = "unknown"
 
 
 class AttemptedSpan(NamedTuple):
@@ -774,10 +783,9 @@ class HistoryConsolidator:
         Unlike consolidate_session() which is fire-and-forget, this awaits
         completion. Used by the CLI command.
 
-        Returns ``False`` when the consolidation retry backoff refused the
-        span — so the CLI can report the skip instead of a false success —
-        and ``True`` for every other completion (including the nothing-to-do
-        and sensitive-session skips, which were already reported as done).
+        Returns ``False`` when a retryable gate refuses the span, so the CLI
+        reports a skip instead of false success. Returns ``True`` for every
+        completed pass, including nothing-to-do and private-session skips.
 
         Safety: defense-in-depth — the consolidation retry backoff is also
         checked inside _consolidate(), and _run_skill_detection() re-checks
@@ -792,15 +800,44 @@ class HistoryConsolidator:
         outcome = await self._consolidate(key, include_history=True)
         return outcome is not _CONSOLIDATION_REFUSED
 
+    def _transcript_privacy(self, key: str) -> _TranscriptPrivacy:
+        """Classify *key* from its slot-owned privacy metadata.
+
+        ``executor`` and ``memory_mode`` both belong to
+        :data:`kiro_crew.history.SLOT_OWNED_META_KEYS`, so a slot save clears a
+        stale value by omitting it. Remote execution and incognito/temporary
+        memory modes are private. Absent or unrecognized values read as local,
+        matching :func:`kiro_crew.history.is_incognito_transcript`; an unreadable
+        metadata header is unknown and therefore retryable rather than local.
+        """
+        try:
+            meta, readable = self._log.get_metadata_status(key)
+        except Exception:
+            return _TranscriptPrivacy.UNKNOWN
+        if not readable:
+            return _TranscriptPrivacy.UNKNOWN
+
+        # Local import avoids the history facade's import of this module while
+        # keeping one canonical classifier for incognito and temporary modes.
+        from kiro_crew.history import is_incognito_transcript
+
+        if str(meta.get("executor") or "").lower() == "remote":
+            return _TranscriptPrivacy.PRIVATE
+        if is_incognito_transcript(meta.get("memory_mode")):
+            return _TranscriptPrivacy.PRIVATE
+        return _TranscriptPrivacy.LOCAL
+
     async def _consolidate(
         self, key: str, include_history: bool = True
     ) -> _ConsolidationRefusedSentinel | None:
         """Run LLM consolidation for a session.
 
-        Returns :data:`_CONSOLIDATION_REFUSED` when the retry-eligibility gate
-        refuses the span or its transcript changes during extraction; every
-        other completion returns ``None``. A changed source remains pending
-        rather than consuming the failure/abandon budget of a different span.
+        Returns :data:`_CONSOLIDATION_REFUSED` when a retryable gate refuses
+        the span or its transcript changes during extraction; every completed
+        pass returns ``None``, including a private transcript whose rows are
+        fenced behind ``last_consolidated`` instead of distilled. A changed
+        source or unreadable privacy header remains pending without consuming
+        the failure/abandon budget.
         """
         # Capture the gateway loop so the thread-offloaded _process_auto_skills
         # can schedule the async dedupe judge back onto it.
@@ -816,6 +853,66 @@ class HistoryConsolidator:
         # itself raised, and that path is not billed.
         attempted = AttemptedSpan(0, 0, 0)
         try:
+            # Privacy choke point: a transcript produced on a remote peer, or
+            # one whose slot runs incognito/temporary, must never be summarised
+            # into LOCAL memory. Peer content is present on this machine because
+            # the relay mirrors frames through ordinary local ``slot.append``
+            # calls -- that is what makes the local transcript a true mirror,
+            # and it also lands peer-authored conversation in local history.
+            # Incognito/temporary transcripts are on disk for the live session
+            # and history.py defines them as never summarizable. Consolidating
+            # either would distil content into local semantic memory, re-inject
+            # it into unrelated local sessions, carry it into ``kirocrew
+            # snapshot``, and surface it in local full-text search.
+            #
+            # Enforced HERE, for exactly the reason the retry-eligibility gate
+            # below is: every entry point funnels through this function, so a
+            # caller carrying no check of its own still cannot leak. That is not
+            # hypothetical -- ``kirocrew consolidate --all`` globs every
+            # transcript on disk with no filter, and the session-expiry
+            # consolidator has no restricted-session check at all. Their absent
+            # checks stop mattering once the enforcement lives at the choke
+            # point. It sits INSIDE this try so the finally below releases
+            # ``self._running`` on every outcome; the callers claim the key
+            # before dispatching and rely on that release. One metadata read
+            # (blocking file I/O on a cache miss, so offloaded like the sibling
+            # transcript I/O) classifies the transcript before any transcript
+            # I/O. An unreadable header refuses this pass without charging retry
+            # or failure accounting; the refusal sentinel keeps caller
+            # bookkeeping pending so a later pass retries.
+            #
+            # A confirmed private skip is recorded in the SAME bookkeeping the
+            # success path writes: fence_consolidation advances
+            # ``last_consolidated`` to the current total (count, generation and
+            # marker write under one lock hold, without handing the rows to this
+            # function). Read-time refusal alone is not durable exclusion --
+            # both markers are slot-owned, so a slot that unbinds from its peer
+            # or flips its memory mode back to normal clears them, and the next
+            # pass would read the same private rows as local. Behind the
+            # marker they stay out of memory across that transition; only rows
+            # appended afterwards consolidate, and those are a local
+            # conversation. The fence also stops the idle sweep re-classifying
+            # the same private key every tick (it skips keys with nothing
+            # unconsolidated). The return value stays the completed-pass
+            # ``None``: the marker write IS the pass for a private transcript.
+            # It sits inside this try so a failed marker write takes the
+            # ordinary except path and the finally still releases the claim.
+            privacy = await asyncio.to_thread(self._transcript_privacy, key)
+            if privacy is _TranscriptPrivacy.PRIVATE:
+                fenced = await asyncio.to_thread(self._log.fence_consolidation, key)
+                self._logger.info(
+                    "consolidation skipped for %s: private transcript; %d rows fenced "
+                    "behind the consolidated offset",
+                    key,
+                    fenced,
+                )
+                return None
+            if privacy is _TranscriptPrivacy.UNKNOWN:
+                self._logger.info(
+                    "consolidation refused for %s: transcript privacy is unreadable", key
+                )
+                return _CONSOLIDATION_REFUSED
+
             # Atomically snapshot the unconsolidated tail, the total message
             # count (the absolute offset handed to mark_consolidated below), and
             # the rotation generation under ONE lock hold. Reading them as

@@ -778,15 +778,12 @@ class TestAccountingNeverResurrectsADeletedSession:
         assert not path.exists()
 
 
-class TestRotationDoesNotClearACappedBudget:
-    """mark_consolidated is also the abandon path, and a rotation resets to 0.
+class TestStaleWriteDoesNotClearACappedBudget:
+    """A stale completion preserves both the on-disk boundary and retry cap.
 
-    When the offset is not applied the span stays unconsolidated, so the write
-    must not drop the accounting: clearing it there would hand the span a fresh
-    budget every time a rewrite raced the marker, and the cap would never hold.
-    Whether a LATER read still counts those attempts is a separate question,
-    answered by span identity (see TestRotationReleasesTheBudgetForNewContent) —
-    these tests pin the durable write.
+    The caller offset is not applied, so its span accounting remains in place.
+    Span identity separately decides whether a later read still counts those
+    attempts; these tests pin the durable write.
     """
 
     @pytest.mark.asyncio
@@ -796,17 +793,18 @@ class TestRotationDoesNotClearACappedBudget:
             log.update_metadata(
                 KEY,
                 {
+                    "last_consolidated": 1,
                     "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
                     "consolidation_retry_at": time.time() + 3600,
                     "rotation_generation": 4,
                 },
             )
-            # The caller's snapshot generation (2) does not match, so
-            # mark_consolidated resets the offset to 0 instead of applying it.
+            # The caller's snapshot generation (2) does not match, so the
+            # on-disk boundary remains authoritative.
             log.mark_consolidated(KEY, 3, 2)
 
         meta = log.get_metadata(KEY)
-        assert meta["last_consolidated"] == 0
+        assert meta["last_consolidated"] == 1
         assert meta.get("consolidation_attempts") == _CONSOLIDATION_MAX_ATTEMPTS, (
             "an unapplied offset cleared the cap on an unmarked span, buying "
             "another billed attempt"
@@ -817,22 +815,55 @@ class TestRotationDoesNotClearACappedBudget:
     async def test_an_offset_beyond_the_message_count_retains_the_capped_state(
         self, tmp_path
     ):
-        """The count fallback also resets to 0 without advancing the marker."""
+        """The count fallback preserves the on-disk boundary and retry cap."""
         log = _seed_log(tmp_path)
         with history_mod.allow_on_loop_persist():
             log.update_metadata(
                 KEY,
                 {
+                    "last_consolidated": 1,
                     "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
                     "consolidation_retry_at": time.time() + 3600,
                 },
             )
             log.mark_consolidated(KEY, 999, 0)
 
-        assert log.get_metadata(KEY)["last_consolidated"] == 0
+        assert log.get_metadata(KEY)["last_consolidated"] == 1
         assert (
             log.consolidation_retry_state(KEY)[0] == _CONSOLIDATION_MAX_ATTEMPTS
         )
+
+    @pytest.mark.asyncio
+    async def test_a_stale_write_equal_to_the_preserved_offset_retains_the_cap(
+        self, tmp_path
+    ):
+        """Preserving a value equal to the stale offset is still not an apply.
+
+        The rotation owner had already settled the boundary at 3; a stale
+        completion that happens to carry 3 under an older generation applied
+        nothing, so releasing the span's accounting on value equality alone
+        would hand a capped span a fresh budget.
+        """
+        log = _seed_log(tmp_path)
+        with history_mod.allow_on_loop_persist():
+            log.update_metadata(
+                KEY,
+                {
+                    "last_consolidated": 3,
+                    "consolidation_attempts": _CONSOLIDATION_MAX_ATTEMPTS,
+                    "consolidation_retry_at": time.time() + 3600,
+                    "rotation_generation": 4,
+                },
+            )
+            log.mark_consolidated(KEY, 3, 2)
+
+        meta = log.get_metadata(KEY)
+        assert meta["last_consolidated"] == 3
+        assert meta.get("consolidation_attempts") == _CONSOLIDATION_MAX_ATTEMPTS, (
+            "a stale write released the cap because its rejected offset "
+            "happened to equal the preserved boundary"
+        )
+        assert meta.get("consolidation_retry_at")
 
     @pytest.mark.asyncio
     async def test_an_applied_offset_still_releases_the_budget(self, tmp_path):

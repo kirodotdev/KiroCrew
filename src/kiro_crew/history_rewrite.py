@@ -206,13 +206,18 @@ class HistoryRewriteCoordinator:
             )
             return
 
-        # Retained row offsets have changed.  Reset consolidation progress and
-        # advance the content identity so any in-flight consolidation or derived
-        # sidecar tied to the old body is rejected even though mtime is restored.
+        # Retained row offsets move left by exactly the number of dropped rows.
+        # Rebase the settled boundary before advancing the content identity, so
+        # fenced retained rows stay behind it while an in-flight consolidator is
+        # still rejected by the generation change.
         if metadata_line:
             try:
                 metadata = json.loads(metadata_line)
-                metadata["last_consolidated"] = 0
+                try:
+                    old_offset = int(metadata.get("last_consolidated", 0) or 0)
+                except (TypeError, ValueError, OverflowError):
+                    old_offset = 0
+                metadata["last_consolidated"] = max(0, old_offset - len(dropped))
                 metadata["rotated_at"] = _history_facade().metadata_now_iso()
                 metadata["rotation_generation"] = (
                     int(metadata.get("rotation_generation", 0) or 0) + 1

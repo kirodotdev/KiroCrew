@@ -663,21 +663,28 @@ no longer destroy older turns.
     archive-diff, not the foreign scan).
 - **Consolidation offset & rotation generation**: `last_consolidated` is an
   absolute message index the consolidator snapshots (as `total`) BEFORE its slow
-  LLM call and writes back via `mark_consolidated`. A rotation firing during that
-  await truncates the file and shifts every surviving index, so the stale offset
-  can no longer be applied. Detection uses a monotonically-increasing
-  `rotation_generation` counter in the metadata line (bumped by `_maybe_rotate`
-  on every rotation, carried forward by compaction, absent field == 0 for legacy
-  files): the consolidator snapshots it alongside the offset
-  (`rotation_generation()`) and `mark_consolidated(key, total, generation=…)`
-  resets `last_consolidated` to 0 whenever the generation changed — **regardless
-  of how many messages the rotation retained**. This closes the gap a pure
+  LLM call and writes back via `mark_consolidated`. A rotation subtracts the exact
+  number of dropped rows from the persisted offset, bounded at zero. A fully
+  fenced transcript therefore remains fully fenced within the retained live
+  tail, while local rows appended after the fence remain in front of it and
+  consolidate normally. Archived rows stay outside consolidation because every
+  consolidation entry point reads only the live sessions directory.
+  `rotation_generation` is a monotonically-increasing content identity in the
+  metadata line (bumped by `_maybe_rotate` on every rotation, carried forward by
+  compaction, absent field == 0 for legacy files). The consolidator snapshots it
+  alongside the offset (`rotation_generation()`), and
+  `mark_consolidated(key, total, generation=…)` rejects a stale caller offset
+  whenever the generation changed. On that mismatch, or when the caller offset
+  exceeds the current message count, the write preserves the current on-disk
+  offset bounded by the live message count; it never lowers the boundary chosen
+  by the rotation or rewrite owner. This closes the gap a pure
   `offset > msg_count` heuristic misses (a rotation retaining ≥ the offset leaves
-  `offset ≤ msg_count` true yet still shifted every index, silently marking
-  never-consolidated retained messages as done); the `offset > msg_count` check
-  remains as a defense-in-depth fallback for legacy callers that pass no
-  generation. Reconsolidating a few already-processed messages is harmless and
-  idempotent; dropping unprocessed ones is a persisted data-integrity failure.
+  `offset ≤ msg_count` true yet still shifted every index). The generation still
+  advances, so an in-flight consolidator cannot apply pre-rotation numbering.
+  For a dashboard edit racing consolidation, the stale completion is a no-op and
+  the edit owner is responsible for its offset. A non-racing `rewrite_session`
+  already carries that offset verbatim. The trade is that a replaced tail is not
+  automatically extracted again through the stale-write fallback.
 
 ## Session Archive (`history.py`, `history_rewrite.py`)
 

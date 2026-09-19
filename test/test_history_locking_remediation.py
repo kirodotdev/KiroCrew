@@ -710,48 +710,40 @@ class TestTabIdIndexInvalidation:
 
 # ── Bug 3: recompute consolidation offset after rotation-during-await ─────────
 class TestConsolidationOffsetAfterRotation:
-    def test_offset_reset_when_file_shrank(self, tmp_path: Path) -> None:
-        """The consolidator captures ``total`` before a (slow) LLM call. If a
-        rotation truncates the file during that await, the stale absolute offset
-        is in the pre-rotation numbering and is meaningless afterwards. Clamping
-        it to the surviving count would mark the retained tail (which may hold
-        brand-new, never-consolidated messages) as consolidated and skip them.
-        mark_consolidated must instead reset to 0 and let the retained tail be
-        reconsolidated — redoing a few messages is harmless; dropping any is not.
+    def test_offset_beyond_current_count_keeps_the_on_disk_boundary(self, tmp_path: Path) -> None:
+        """A stale absolute offset preserves the boundary owned by the rewrite.
+
+        The rewrite carries ``last_consolidated`` verbatim, so the fallback
+        bounds that on-disk value to the retained row count instead of lowering
+        it. This leaves the rewrite owner responsible for the replacement tail.
         """
         log = ConversationLog(base_dir=tmp_path)
         for i in range(10):
             log.append("k", "user", f"m{i}")
+        log.mark_consolidated("k", 7)
         total_before_llm = len(log._read_messages("k"))
         assert total_before_llm == 10
 
-        # Rotation fires during the await: file keeps only its newest 3 messages.
         keep = log._read_messages("k")[-3:]
         log.rewrite_session("k", keep)
         assert len(log._read_messages("k")) == 3
+        assert log.get_metadata("k")["last_consolidated"] == 7
 
-        # Consolidator marks the STALE pre-LLM total (10 > surviving 3).
         log.mark_consolidated("k", total_before_llm)
 
         meta = log.get_metadata("k")
-        # Reset to 0 rather than clamped to 3: the retained tail is reconsolidated
-        # so nothing that survived rotation is silently marked consolidated.
-        assert meta["last_consolidated"] == 0
-        assert log.unconsolidated_count("k") == 3
+        assert meta["last_consolidated"] == 3
+        assert log.unconsolidated_count("k") == 0
 
-    def test_new_message_in_retained_tail_not_skipped(self, tmp_path: Path) -> None:
-        """GPT-flagged race: a NEW message arrives during the LLM await and
-        rotation keeps it in the retained tail. Clamping the stale offset to the
-        surviving count would mark that never-consolidated message as done and
-        permanently drop it. The reset-to-0 path must keep it consolidatable.
-        """
+    def test_new_message_stays_pending_when_the_on_disk_boundary_is_zero(
+        self, tmp_path: Path
+    ) -> None:
+        """The fallback preserves a zero boundary and keeps every retained row pending."""
         log = ConversationLog(base_dir=tmp_path)
         for i in range(8):
             log.append("k", "user", f"m{i}")
-        total_before_llm = len(log._read_messages("k"))  # 8 processed by the LLM
+        total_before_llm = len(log._read_messages("k"))
 
-        # During the await: a brand-new message arrives, then rotation keeps the
-        # newest 3 — which now INCLUDES that new, never-consolidated message.
         log.append("k", "user", "brand-new")
         keep = log._read_messages("k")[-3:]
         assert keep[-1]["content"] == "brand-new"
@@ -759,7 +751,6 @@ class TestConsolidationOffsetAfterRotation:
 
         log.mark_consolidated("k", total_before_llm)
 
-        # The new message is still pending, not swallowed by a clamp.
         assert log.get_metadata("k")["last_consolidated"] == 0
         assert log.unconsolidated_count("k") == 3
         pending, _ = log.get_unconsolidated("k")
@@ -784,16 +775,12 @@ class TestConsolidationOffsetAfterRotation:
         assert log.get_metadata("k")["last_consolidated"] == 4
         assert log.unconsolidated_count("k") == 0
 
-    def test_offset_reset_when_rotation_retains_ge_offset(self, tmp_path: Path) -> None:
-        """The count-only heuristic is INCOMPLETE: a rotation that RETAINS
-        >= the snapshot offset leaves ``offset <= msg_count`` true, so the stale
-        offset sails through and is written verbatim — but every surviving index
-        shifted by the number of dropped lines, silently marking
-        never-consolidated retained messages as done. The rotation GENERATION
-        counter must force the reset regardless of retained count.
+    def test_generation_mismatch_keeps_the_on_disk_boundary(self, tmp_path: Path) -> None:
+        """A rotation generation change rejects the caller's stale numbering.
 
-        Fails pre-fix: with only ``offset > msg_count`` the offset is <= the
-        retained count and is stored verbatim (data-integrity failure).
+        This test uses an on-disk zero boundary, so preserving it leaves the
+        complete retained tail pending while still proving generation rejection
+        when the retained count is at least the caller offset.
         """
         log = ConversationLog(base_dir=tmp_path)
         # Bodies sized off the byte cap so 100 messages stay under it while
@@ -819,12 +806,12 @@ class TestConsolidationOffsetAfterRotation:
         # the case the count heuristic misses.
         assert retained >= total_at_snapshot
         assert log.rotation_generation("k") > generation_at_snapshot
-        # last_consolidated is 0 after the rotation itself…
+        # The on-disk boundary remains zero because this transcript has no
+        # settled prefix to rebase.
         assert log.get_metadata("k")["last_consolidated"] == 0
 
-        # …the consolidator now writes back its stale pre-rotation offset with
-        # the generation it snapshotted. The generation mismatch must force a
-        # reset instead of applying the shifted index.
+        # The stale completion carries pre-rotation numbering. The generation
+        # mismatch preserves the rotation-owned boundary instead of applying it.
         log.mark_consolidated(
             "k", total_at_snapshot, generation=generation_at_snapshot
         )

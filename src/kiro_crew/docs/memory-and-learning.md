@@ -136,6 +136,36 @@ Kiro Crew automatically consolidates conversations into memory:
 
 No manual action needed — it happens in the background.
 
+### Which transcripts consolidate
+
+Every consolidation pass — the message-count threshold, the idle sweep, the
+dashboard trigger and `kirocrew consolidate` — goes through one choke point
+that reads the transcript's slot-owned metadata header before it snapshots
+any messages. The header decides one of three outcomes:
+
+- **Local** — no privacy marker; the pass runs as described above.
+- **Private** — `executor` is `remote` (the transcript mirrors another
+  crew's conversation) or `memory_mode` is Incognito or Temporary. Nothing
+  is distilled and nothing is written to memory. Instead, the pass moves the
+  transcript's consolidated offset (`last_consolidated`) past every row on
+  disk, so those rows sit behind the same marker a completed pass leaves —
+  they never consolidate, even if the privacy marker later clears — and the
+  idle sweep stops re-checking a transcript with nothing left in front of the
+  marker. An absent or unrecognized value reads as local.
+- **Unknown** — the header cannot be read. No pass runs and the transcript
+  stays pending, so a later pass retries instead of treating it as local.
+  The CLI prints `skipped (retryable; no consolidation pass ran)`.
+
+Both markers are slot-owned: a slot that unbinds from its peer clears
+`executor`, and a session whose memory mode returns to normal clears
+`memory_mode`. Rows appended after such a transition read as local and
+consolidate on the next pass — by design, because from that point the
+transcript is a local conversation. The rows fenced before the transition
+stay behind the offset. Transcript rotation rebases the offset by the number
+of dropped rows, and a stale consolidator write never lowers the boundary
+chosen by the rotation or rewrite owner. Rows appended after a transition or
+a rotation remain in front of that boundary and consolidate normally.
+
 ## Reading Memory Programmatically
 
 The markdown layer is readable through the CLI, so consumers depend on an

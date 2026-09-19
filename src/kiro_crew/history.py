@@ -2379,46 +2379,87 @@ class ConversationLog:
             generation = int(meta.get("rotation_generation", 0) or 0)
             return list(messages[offset:]), len(messages), generation
 
+    def fence_consolidation(self, key: str) -> int:
+        """Put every message currently on disk behind ``last_consolidated``.
+
+        The consolidator calls this for a transcript it has classified as
+        private (remote executor, incognito or temporary memory mode) instead
+        of :meth:`snapshot_for_consolidation`: the rows must never reach the
+        consolidator, so this reads only their COUNT and the rotation
+        generation, then applies the count as the consolidated offset through
+        :meth:`mark_consolidated`. Count, generation and the marker write all
+        happen under ONE :meth:`_locked` hold (the lock is re-entrant), so no
+        append or rotation can land between the count and the write and pair a
+        stale offset with a fresh generation.
+
+        The write is what makes the skip durable. Both privacy markers are
+        slot-owned and clear when the slot unbinds from its peer or its memory
+        mode returns to normal; a later pass then reads the header as local, but
+        the fenced rows sit behind the offset and only rows appended after the
+        transition consolidate. It also stops the idle sweep re-classifying the
+        same private key every tick, because the sweep skips keys with no
+        unconsolidated rows. Returns the total message count that is now behind
+        the marker; nothing is written when the marker already covers it.
+        """
+        with self._locked(key):
+            total = len(self._read_messages(key))
+            meta = self._read_metadata(key)
+            generation = int(meta.get("rotation_generation", 0) or 0)
+            try:
+                offset = int(meta.get("last_consolidated", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                offset = 0
+            if total > offset:
+                self.mark_consolidated(key, total, generation)
+            return total
+
     def mark_consolidated(self, key: str, offset: int, generation: int | None = None) -> None:
         """Rewrite metadata line with updated ``last_consolidated`` offset.
 
         *offset* is an absolute message index captured by the caller BEFORE a
-        (potentially slow) LLM consolidation call. *generation* is the rotation
-        generation counter (:meth:`rotation_generation`) captured at the same
-        moment. It advances on anything that changes the content under a
-        consolidation in flight, and each case makes the caller's *offset*
-        meaningless in a different way:
+        (potentially slow) LLM consolidation call, or -- via
+        :meth:`fence_consolidation` -- the current total of a transcript the
+        consolidator deliberately skips as private. ``last_consolidated``
+        therefore means "every row below this index is settled": either
+        distilled into memory, or fenced off from it on purpose. *generation*
+        is the rotation generation counter (:meth:`rotation_generation`)
+        captured at the same moment as *offset*. It advances on anything that
+        changes the content under a consolidation in flight. A stale caller's
+        *offset* is never applied after such a change:
 
-        * A **rotation** truncated the file to its newest messages and reset
-          ``last_consolidated`` to 0, so every surviving index shifted by the
-          number of dropped lines and applying the offset would mark
+        * A **rotation** truncates the file to its newest messages, rebases the
+          persisted boundary by the number of dropped rows, and advances the
+          generation. Applying the caller's pre-rotation offset would mark
           never-consolidated retained messages as processed.
         * A **transcript edit** (the dashboard regenerate / rewind / fork save)
-          replaced the live window's tail with content this turn never read. The
-          message count, the marker and the extent can all be unchanged, so the
-          offset still *looks* applicable — and applying it would mark the
-          REPLACEMENT tail consolidated without ever extracting it.
-
-        Both are silent memory loss, and the generation is what distinguishes
-        them from a turn whose span is still intact.
+          replaces the live window's tail with content this turn never read. The
+          message count, marker and extent can all be unchanged, so the offset
+          can still look applicable even though it addresses different rows.
 
         Detection uses two independent signals:
 
         1. **Generation change** (primary, when *generation* is supplied):
            anything that changes the content between snapshot and write bumps the
-           counter, so a mismatch resets ``last_consolidated`` to 0. This closes
-           both cases a pure offset-vs-count heuristic misses — a rotation that
-           keeps >= *offset* messages, and an edit that keeps the count identical,
-           each leave ``offset <= msg_count`` true.
+           counter, so a mismatch rejects the caller offset. This covers both a
+           rotation that keeps at least *offset* messages and an edit that keeps
+           the count identical.
         2. **Offset exceeds current count** (fallback, always): the file shrank
-           below the captured offset (rotation truncated it). Retained if
-           *generation* is unavailable (legacy callers) or as defense-in-depth.
+           below the captured offset. This protects legacy callers that supply no
+           generation and remains a defense-in-depth check for other callers.
 
-        In either case ``last_consolidated`` is reset to 0 and the retained tail
-        is reconsolidated rather than clamping the offset to EOF (which would
-        silently mark post-rotation messages as already consolidated and drop
-        them from memory/history extraction). When neither trips, the offset is
-        applied as-is.
+        In either case the write preserves the current on-disk
+        ``last_consolidated`` value, bounded by the live message count. The
+        rotation or rewrite owner therefore remains authoritative for the new
+        numbering, and a stale consolidator never lowers a privacy fence. The
+        generation still rejects an in-flight caller's old numbering. Archived
+        rows remain outside this path because consolidation reads only live
+        transcripts.
+
+        This ownership has one completeness trade: a dashboard edit racing a
+        consolidation does not make the stale completion re-extract the replaced
+        tail. The edit owner is responsible for the offset, matching the ordinary
+        non-racing rewrite path, which carries ``last_consolidated`` verbatim.
+        When neither signal trips, the caller offset is applied as-is.
         """
         # Serialize behind the cross-process lock and resolve/re-read under it so
         # a concurrent append or restore cannot redirect this key after its path
@@ -2437,55 +2478,43 @@ class ConversationLog:
             # non-blank line is a message.
             msg_count = sum(1 for ln in lines[1:] if ln.strip())
             current_generation = int(meta.get("rotation_generation", 0) or 0)
+            try:
+                on_disk_offset = int(meta.get("last_consolidated", 0) or 0)
+            except (TypeError, ValueError, OverflowError):
+                on_disk_offset = 0
+            preserved_offset = min(max(0, on_disk_offset), msg_count)
+            offset_applied = False
             if generation is not None and current_generation != generation:
-                # PRIMARY signal: the content under this consolidation changed
-                # between the caller's snapshot and now (the generation counter
-                # advanced) — a rotation, or a dashboard rewrite that swapped the
-                # live window's tail. Either way the offset cannot be applied.
-                # After a rotation it is in the stale PRE-rotation numbering
-                # (every surviving index shifted by the number of dropped lines);
-                # after an edit the numbering still fits but the messages it would
-                # mark are the REPLACEMENT tail, which no turn has read. Neither
-                # is caught by the count heuristic below: a rotation that kept
-                # >= *offset* messages and an edit that kept the count identical
-                # both leave ``offset <= msg_count`` true, and marking either
-                # would drop never-consolidated content from memory/history
-                # extraction. Reset to 0 and reconsolidate the current tail
-                # (harmless, idempotent) rather than risk that loss.
+                # The content owner already chose the boundary for the current
+                # generation. A stale consolidation offset addresses an older
+                # row numbering or body, so preserve the bounded on-disk value.
                 logger.warning(
                     "mark_consolidated: rotation generation changed %s->%d for "
                     "%s (rotation or transcript edit during consolidation); "
-                    "resetting last_consolidated to 0 to avoid marking content "
-                    "no consolidation turn read",
+                    "keeping on-disk last_consolidated at %d",
                     generation,
                     current_generation,
                     key,
+                    preserved_offset,
                 )
-                safe_offset = 0
+                safe_offset = preserved_offset
             elif offset > msg_count:
-                # The file shrank below the captured offset — a rotation fired
-                # during the (slow) LLM await, truncating to the newest messages
-                # and resetting ``last_consolidated`` to 0. The caller's offset
-                # is in the PRE-rotation numbering and is now meaningless.
-                # Clamping it to ``msg_count`` would mark the retained tail —
-                # which now includes brand-new, never-consolidated messages that
-                # arrived after the snapshot — as consolidated, permanently
-                # skipping them (silent history/memory loss). Reset to 0 and let
-                # the retained tail be reconsolidated instead: redoing a handful
-                # of already-processed messages is harmless and idempotent,
-                # whereas dropping new ones is a data-integrity failure.
+                # The caller's absolute index is outside the current body. The
+                # rotation or rewrite owner has already published the only
+                # boundary expressed in the current numbering, so retain it
+                # rather than lowering a settled or privacy-fenced prefix.
                 logger.warning(
                     "mark_consolidated: offset %d exceeds current message count "
-                    "%d for %s (rotation during consolidation); resetting "
-                    "last_consolidated to 0 to avoid skipping post-rotation "
-                    "messages",
+                    "%d for %s; keeping on-disk last_consolidated at %d",
                     offset,
                     msg_count,
                     key,
+                    preserved_offset,
                 )
-                safe_offset = 0
+                safe_offset = preserved_offset
             else:
                 safe_offset = offset
+                offset_applied = True
             meta["last_consolidated"] = safe_offset
             meta["updated_at"] = metadata_now_iso()
             # The marker is the success signal for the retry accounting written
@@ -2495,13 +2524,11 @@ class ConversationLog:
             # one's failures. Dropped in the same locked write so no window
             # exists where the marker is applied but the budget is not released.
             #
-            # Only when the offset was actually APPLIED, though. Both branches
-            # above reset to 0 without advancing anything, so the span is still
-            # unconsolidated — and the abandon-at-cap path calls this method
-            # precisely to stop spending on it. Clearing the accounting there
-            # would hand a capped span a fresh budget every time a rotation
-            # raced the marker write, so the cap would never actually hold.
-            if safe_offset == offset:
+            # Only a caller offset accepted for the current body releases the
+            # charged span. A stale write preserves the content owner's marker
+            # and leaves that span's accounting intact, even when the preserved
+            # value happens to equal the stale caller's number.
+            if offset_applied:
                 for _acct_key in _CONSOLIDATION_META_KEYS:
                     meta.pop(_acct_key, None)
             lines[0] = json.dumps(meta) + "\n"

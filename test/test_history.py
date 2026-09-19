@@ -128,23 +128,31 @@ class TestConversationLog:
         assert path.stat().st_size <= _SESSION_MAX_BYTES
         assert len(lines) <= _SESSION_KEEP_LINES + 50
 
-    def test_rotation_resets_consolidated(self, tmp_path):
+    def test_rotation_rebases_consolidated(self, tmp_path, monkeypatch):
+        """Rotation subtracts dropped rows from the settled boundary.
+
+        The retained tail is not re-distilled after every rotation, reducing
+        duplicate local consolidation as well as preserving privacy fences.
+        """
+        from kiro_crew import history_rewrite
+
         log = ConversationLog(base_dir=tmp_path)
-        # Row size derived from the budget for the same reason as
-        # ``test_rotation``: the assertion below only means anything if the
-        # second loop actually re-crosses the byte cap after
-        # ``mark_consolidated``, at whatever the cap is set to.
-        rows = _SESSION_KEEP_LINES + 50
-        content = "x" * (_SESSION_MAX_BYTES // rows + 1024)
-        for i in range(rows):
-            log.append("t1", "user", f"{content} msg {i}")
-        log.mark_consolidated("t1", 200)
-        # Add more to trigger rotation again
-        for i in range(100):
-            log.append("t1", "user", f"{content} more {i}")
-        # After rotation, last_consolidated should be reset to 0
-        meta = log._read_metadata("t1")
-        assert meta.get("last_consolidated") == 0
+        for i in range(6):
+            log.append("t1", "user", f"message {i}")
+        log.mark_consolidated("t1", 5)
+        path = log._path("t1")
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        max_bytes = len(lines[0].encode("utf-8")) + sum(
+            len(line.encode("utf-8")) for line in lines[-4:]
+        )
+        monkeypatch.setattr(history_rewrite, "_facade_session_keep_lines", lambda: 3)
+        monkeypatch.setattr(history_rewrite, "_facade_session_max_bytes", lambda: max_bytes)
+
+        with log._locked("t1"):
+            log._maybe_rotate(path, "t1")
+
+        assert len(log.read_messages("t1")) == 3
+        assert log._read_metadata("t1").get("last_consolidated") == 2
 
     def test_corrupted_json_lines_skipped(self, tmp_path):
         log = ConversationLog(base_dir=tmp_path)
