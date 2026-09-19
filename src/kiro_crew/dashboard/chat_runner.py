@@ -12845,6 +12845,15 @@ async def _run_chat(
                         await drained_to_thread(restore_agent_selection, session_key, switch_change)
                         raise
                     slot.agent = new_agent
+                    # The pin and the fallback walk belong to the provider that
+                    # served the OLD agent, and kiro-cli has already switched:
+                    # nothing of the old provider's may survive into the next
+                    # cold start on the new binding.
+                    from kiro_crew.dashboard.chat_handlers import (
+                        clear_slot_model_binding,
+                    )
+
+                    clear_slot_model_binding(slot)
                     selected_binding = _current_binding()
                     assistant_text = ""
                     _wsred.reset()
