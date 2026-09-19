@@ -1545,16 +1545,35 @@ function JobDetailDialog({ job, prefill, prefillWrites, agents, defaultAgent, ro
             {job && job.script && <JobSecretsPanel job={job} onSaved={onSaved} />}
             {/* The run's persisted `last_error` is an error by origin (the job
                 FAILED), so it takes the shared surface with the 'Last Error'
-                label as its title. `whitespace-pre-wrap` on the notice body
-                keeps the log's line structure; `font-mono` keeps it reading as
-                output rather than prose. */}
-            {job?.script && job.last_error && (
+                label as its title. Shown for EVERY job kind, not just script
+                ones: a message job's skip reason (an agent that no longer
+                resolves, a bound directory that vanished, a project file
+                shadowing a Crew Member) is written to this same field and is the
+                only signal the operator gets, since those skips deliberately
+                spend no auto-pause strike. Gated on `script`, it rendered solely
+                as the status cell's `title` attribute -- a hover tooltip, which
+                is no signal at all in the desktop app. The log styling
+                (`whitespace-pre-wrap` to keep line structure, `font-mono` to
+                read as output) applies only to a script's captured output; a
+                skip reason is one prose sentence and is left as prose. */}
+            {job?.last_error && (
               <>
                 {/* No hand-off: JobForm draft */}
                 <ErrorNotice
                   title={i18nT('pages.schedulePage.last_error')}
                   message={job.last_error}
-                  className="max-h-[200px] overflow-y-auto font-mono"
+                  // `shrink-0` is load-bearing, not cosmetic: `DialogBody` is a
+                  // scrolling flex column, and per the flexbox spec a flex item
+                  // whose `overflow` is not `visible` gets an automatic minimum
+                  // size of ZERO — so this notice's own `overflow-y-auto` let the
+                  // form above it squeeze it to a single clipped 18px line. The
+                  // screenshot harness caught that; it renders its full height
+                  // now and scrolls within its own 200px cap as intended.
+                  className={
+                    job.script
+                      ? 'shrink-0 max-h-[200px] overflow-y-auto font-mono'
+                      : 'shrink-0 max-h-[200px] overflow-y-auto'
+                  }
                   testId="schedule-job-last-error"
                 />
               </>

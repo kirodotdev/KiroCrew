@@ -29,6 +29,7 @@ def _make_gateway():
     gw._owner_id = "U000"
     gw.subagent_mgr = None
     gw._cron_injecting = {}
+    gw._cron_session_binding = {}
     gw._no_crons = False
     gw.sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
     gw.sessions.release = MagicMock()
@@ -61,9 +62,10 @@ def _run_callback(gw, job, stream_result="done", stream_side_effect=None):
             raise stream_side_effect
         return stream_result
 
-    with patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream), patch(
-        "kiro_crew.slack.gateway.CronService"
-    ) as mock_cron_cls:
+    with (
+        patch("kiro_crew.slack.gateway.stream_and_collect", fake_stream),
+        patch("kiro_crew.slack.gateway.CronService") as mock_cron_cls,
+    ):
 
         def capture_cron(on_job=None, **kw):
             nonlocal captured_cb
@@ -119,9 +121,10 @@ class TestDashboardNotificationRedaction:
         gw.slack = None  # skip Slack path
         job = _make_job()
 
-        with patch("kiro_crew.slack.gateway.redact_exfiltration_urls") as mock_url, patch(
-            "kiro_crew.slack.gateway.redact_credentials"
-        ) as mock_cred:
+        with (
+            patch("kiro_crew.slack.gateway.redact_exfiltration_urls") as mock_url,
+            patch("kiro_crew.slack.gateway.redact_credentials") as mock_cred,
+        ):
             mock_url.return_value = ("redacted_url", False)
             mock_cred.return_value = ("fully_redacted", False)
             _run_callback(gw, job, stream_result="secret http://evil.com data")

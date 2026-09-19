@@ -427,6 +427,26 @@ rules make the tree a component without making its runtime state one:
   destination lacks -- a named store the destination lacks being exactly the case that
   would otherwise copy a torn `memory.db` verbatim). A refusal reaches the handler as
   `SourceComponentUnsound` and is answered `409` with the sentence, not `500`.
+- **An imported cron's `project_path` binding is re-validated, not trusted
+  verbatim.** `_sanitize_imported_crons` (`portability.py`) re-runs
+  `security.resolve_project_path` over every job's `project_path` exactly as
+  `cron_add`/`cron_update` would, because `_job_from_record` otherwise trusts an
+  imported binding as a bare string with no sensitivity check of its own. A
+  SENSITIVE path, or one that fails to resolve at all (e.g. an embedded null
+  byte), has the binding CLEARED. A path that merely does not exist as a
+  directory YET on the target machine — the ordinary "restore settings before
+  re-cloning the repo" migration — is neither of those, and is left INTACT
+  rather than cleared: clearing it would force every restored project-bound job
+  to be re-bound by hand even once the checkout shows up. Any job that still
+  names a directory after this check (cleared-and-recovered or merely absent)
+  is imported PAUSED, same as a `command`/`script` job, so re-arming a restored
+  project binding is always an explicit human action. A binding that is KEPT is
+  rewritten to its canonical `realpath` form, and a non-absolute spelling is
+  cleared outright: the fire-time guard (`_project_path_still_canonical`)
+  requires the stored string to equal its own `realpath` exactly — that is how
+  it detects a symlink retargeted under a saved binding — so storing the
+  archive's spelling verbatim would leave a job the operator can re-enable but
+  that can never fire.
 - **Named-store readers participate in replacement admission.** The dashboard's
   named V1 Markdown cache holds a shared store-use lock on POSIX without requiring a vector
   database. The lock is released when neither the cache nor an in-flight request

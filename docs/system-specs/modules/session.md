@@ -2737,8 +2737,7 @@ Tests: `test/test_session_health.py`, `test/test_sessions_health_cache.py`,
 | User chat | `slack:{thread_ts}` (legacy bare `{thread_ts}` folded) | Idle timeout (60 min) | Own kiro-cli |
 | Dashboard tab | `dashboard:{slot_key}` | Idle timeout (60 min) | Own kiro-cli (from warm pool) |
 | Cron job | `cron:{job_id}` | One-shot (reset after) | Own kiro-cli (from warm pool) |
-| Background | `_bg` | Entire runtime (recycled at 70%) | Shared kiro-cli |
-| Heartbeat | `_bg` | Shared | Shared kiro-cli |
+| Background | `_bg` | Entire runtime (recycled at 70%) | Shared kiro-cli || Heartbeat | `_bg` | Shared | Shared kiro-cli |
 | Lesson extract | `_bg` | Shared | Shared kiro-cli |
 | Subagent | `subagent:{uuid}` | Task duration | Own kiro-cli |
 | TaskRunner step | `taskrunner:{task_id}:step{N}` | Step duration (reset after) | Own kiro-cli (max 2 concurrent via semaphore) |
@@ -2746,6 +2745,16 @@ Tests: `test/test_session_health.py`, `test/test_sessions_health_cache.py`,
 | TaskRunner review | `taskrunner:{task_id}:review` | Seconds | Own kiro-cli |
 | TaskRunner acceptance | `taskrunner:{task_id}:acceptance` | Seconds | Own kiro-cli |
 | Warm spare | _(in pool queue)_ | Until assigned | Pre-started kiro-cli |
+
+**A cron key does not carry its binding.** `cron:{job_id}` is derived from the
+job id alone, so a project directory (`project_path`), a changed agent, or a
+changed crew alias does NOT change the key — a `persistent_session` job would
+otherwise reuse a live session built for the previous binding. The gateway keys
+`_cron_session_binding` on the resolved identity (folder, resolved agent, crew
+alias, and which source the definition came from) and resets the session when it
+changes, so the reuse decision, not the key, is where a rebinding is noticed.
+See [learn-cron-dashboard](learn-cron-dashboard.md) → "Project directory
+(`project_path`) and the project-bound job owner gate".
 
 **Cold-start admission**: `SessionManager._start_sem` bounds provider starts local
 to one manager. The narrower common runtime chokepoint adds a gateway-wide

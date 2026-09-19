@@ -4845,6 +4845,28 @@ class ResolvedBindings:
     # Revision observed before resolution: "" means no protected record;
     # None means no observation was made. Only automatic publication uses it.
     selection_revision: str | None = None
+    # WHICH definition answered, as a coarse provenance tag: ``"alias"`` (a
+    # ``config.agents`` entry), ``"project"`` (a ``<project>/.kiro/agents`` file that
+    # BEAT a same-named alias), ``"materialized"`` (the user-level
+    # ``~/.kiro/agents`` registry, which is how an app's agents resolve),
+    # ``"default"`` (nothing declared the name, so ``default_agent`` answered) or
+    # ``""`` for a bare no-name resolution. It exists because the other fields
+    # cannot always tell two SOURCES apart: a crew whose ``kiro_agent`` template is
+    # spelled like the crew itself, on a host whose ``default_agent`` is that same
+    # crew, produces an identical ``kiro_agent``/``resolved_alias`` pair whether the
+    # alias or a project file won — so a consumer deciding "did the answering
+    # definition change?" from those two fields alone has a blind spot exactly
+    # where a project agent appears or disappears beside a same-named alias.
+    # Defaults "" so constructions predating this field stay valid.
+    #
+    # Deliberately NOT part of :meth:`same_dispatch_binding`: that predicate asks
+    # whether two resolutions DISPATCH the same, and two sources that agree on the
+    # kiro agent, workspace, store and model do dispatch the same, so folding
+    # provenance in would make the slot guard reject a pairing that is genuinely
+    # identical at runtime. The cron session-reuse key asks a different question --
+    # "must I reset this warm session?" -- and answers it by carrying this tag in
+    # its own tuple instead.
+    resolved_source: str = ""
 
     def same_dispatch_binding(self, other: "ResolvedBindings") -> bool:
         """Whether two resolutions name the SAME dispatch target.
@@ -4863,6 +4885,8 @@ class ResolvedBindings:
         ``requested_resolved``/``effective_memory_config`` (the former is
         request metadata the caller checks separately; the latter is derived
         from ``memory_store_name`` plus global config shared by both sides).
+        Also deliberately not ``resolved_source``: see that field's own note --
+        provenance can differ while the dispatch target does not.
         """
         return (
             self.kiro_agent == other.kiro_agent

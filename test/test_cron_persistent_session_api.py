@@ -37,6 +37,12 @@ pytestmark = pytest.mark.asyncio
 
 
 def _app(handler, route: str, **store) -> web.Application:
+    # api_cron_update reads the PERSISTED job up front, before applying any field,
+    # so that a job which already carries a project_path is owner-gated as a whole
+    # (see handlers/cron.py). Every update fake therefore needs get_job_async;
+    # default it to an unbound job so each test below still exercises its own
+    # subject rather than that gate. A test may override it via **store.
+    store.setdefault("get_job_async", AsyncMock(return_value=_job()))
     app = web.Application()
     app["state"] = SimpleNamespace(
         crons=SimpleNamespace(**store),
