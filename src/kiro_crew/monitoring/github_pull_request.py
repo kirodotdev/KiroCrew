@@ -83,6 +83,27 @@ reviewThreads(first:PAGE_SIZE,after:$CURSOR){
   nodes{isResolved isOutdated}
 }
 """.replace("PAGE_SIZE", str(_REVIEW_THREAD_PAGE_SIZE)).strip()
+# GitHub meters GraphQL in points and REST in requests, and the two budgets are
+# SEPARATE. An exhausted point budget therefore refuses every read above while
+# these two paths keep answering, which is the whole reason the fallback exists.
+#
+# Both are built only from a validated target: `GitHubPullRequestTarget` admits
+# an owner and repository matching `_SEGMENT_RE` and a positive integer number,
+# and a revision reaching the second path has already passed
+# `_HEAD_REVISION_RE`. So no provider-controlled text is interpolated into a
+# request path.
+_REST_PULL_REQUEST_PATH = "repos/{owner}/{repo}/pulls/{number}"
+_REST_COMMIT_STATUS_PATH = "repos/{owner}/{repo}/commits/{revision}/status?per_page={page_size}"
+_REST_STATUS_PAGE_SIZE = 100
+#: GraphQL's ``mergeable`` enum, keyed by the REST boolean carrying the same fact.
+_REST_MERGEABLE = {True: "MERGEABLE", False: "CONFLICTING"}
+#: Reported for the one primary fact REST does not carry at all.
+#: ``_normalize_review_decision`` maps it to ``"unknown"``, which
+#: ``classify_pull_request_facts`` answers with PENDING -- so a REST-sourced
+#: observation can report a FAILING board but never a ready one. This is the
+#: fail-closed half of the fallback, and the test suite asserts it directly
+#: rather than leaving it to follow from the mapping.
+_REST_ABSENT_REVIEW_DECISION = "UNKNOWN"
 # GraphQL error types that name a cause this adapter's taxonomy already has. An
 # unlisted or absent type is not guessed at: it falls through to the message
 # classifier and then to TRANSIENT, so an unclassified failure still leaves this
@@ -328,6 +349,7 @@ class GitHubPullRequestProvider:
         """Read one chunk of subjects with one request per evidence kind."""
         results: dict[str, GitHubPullRequestProbeResult] = {}
         facts, primary_errors = self._primary(gh, host, members)
+        degraded = self._degrade_primary_to_rest(gh, host, members, facts, primary_errors)
         for raw_target, (kind, reason) in primary_errors.items():
             results[raw_target] = _provider_error(kind, reason)
         live: list[_BatchSubject] = []
@@ -339,11 +361,38 @@ class GitHubPullRequestProvider:
                 results[member.raw] = _build_result(response, previous.get(member.raw), None)
                 continue
             live.append(member)
-        checks = self._checks(gh, host, live, {m.raw: facts[m.raw].head_revision for m in live})
-        threads = self._review_threads(gh, host, live)
+        heads = {member.raw: facts[member.raw].head_revision for member in live}
+        # A subject whose primary facts came from REST is one the GraphQL bucket
+        # has already refused, so its supplemental documents are not spent: the
+        # same budget would refuse them in the same tick.
+        graphql_live = [member for member in live if member.raw not in degraded]
+        checks = self._checks(gh, host, graphql_live, heads)
+        threads = self._review_threads(gh, host, graphql_live)
+        rest_checks = self._checks_rest(
+            gh,
+            host,
+            [
+                member
+                for member in live
+                if member.raw in degraded or checks[member.raw][2] is ProviderErrorKind.RATE_LIMITED
+            ],
+            heads,
+        )
         for member in live:
-            check_rows, checks_complete, checks_error = checks[member.raw]
-            unresolved, threads_complete, threads_error = threads[member.raw]
+            if member.raw in rest_checks:
+                check_rows, checks_complete, checks_error = rest_checks[member.raw]
+            else:
+                check_rows, checks_complete, checks_error = checks[member.raw]
+            unresolved, threads_complete, threads_error = (
+                (0, False, None) if member.raw in degraded else threads[member.raw]
+            )
+            if threads_error is ProviderErrorKind.RATE_LIMITED:
+                # Thread resolution is the ONE signal REST cannot express, so a
+                # refused thread read is reported as an incomplete COUNT rather
+                # than as a provider error. Incompleteness already holds the
+                # subject at PENDING, and it does not spend the retirement budget
+                # that an exhausted point bucket would otherwise drain to zero.
+                threads_error = None
             response = replace(
                 facts[member.raw],
                 checks=check_rows,
@@ -357,6 +406,183 @@ class GitHubPullRequestProvider:
                 _combine_provider_errors(checks_error, threads_error),
             )
         return results
+
+    def _degrade_primary_to_rest(
+        self,
+        gh: str,
+        host: str,
+        members: Sequence[_BatchSubject],
+        facts: dict[str, GitHubPullRequestResponse],
+        primary_errors: dict[str, _Failure],
+    ) -> set[str]:
+        """Re-read the rate-limited subjects on REST and name the ones that recovered.
+
+        A watch reading only GraphQL retires on ``max_provider_errors`` whenever
+        the account's point budget is spent, with the REST bucket untouched and
+        answering. This is the one place that asymmetry is spent.
+
+        ONLY a rate limit is retried. Authentication, authorization, not-found and
+        transient failures each say something about the credential or the subject
+        that a second transport would answer identically, so they are charged
+        exactly as before.
+
+        A subject the fallback cannot read either KEEPS the rate limit it was
+        already charged. The REST failure is a second diagnosis of a subject
+        already known to be refused, and letting it replace the first could
+        substitute a terminal kind for a retryable one -- a REST ``404`` would
+        retire a watch that the GraphQL-only code would have retried. Bounding it
+        this way is what makes the fallback never worse than no fallback.
+
+        ``facts`` and ``primary_errors`` are corrected in place, because this is
+        the same answer they already hold rather than a third one beside it.
+        """
+        retry = [
+            member
+            for member in members
+            if primary_errors.get(member.raw, (None, ""))[0] is ProviderErrorKind.RATE_LIMITED
+        ]
+        if not retry:
+            return set()
+        recovered = self._primary_rest(gh, host, retry)
+        for raw_target, response in recovered.items():
+            facts[raw_target] = response
+            primary_errors.pop(raw_target, None)
+        return set(recovered)
+
+    def _primary_rest(
+        self,
+        gh: str,
+        host: str,
+        members: Sequence[_BatchSubject],
+    ) -> dict[str, GitHubPullRequestResponse]:
+        """Re-read the load-bearing facts on the REST bucket, one request per subject.
+
+        REST has no batching, so a chunk costs one request per subject instead of
+        one per chunk. The chunk is already bounded by ``_MAX_SUBJECTS_PER_QUERY``
+        and this runs only while the cheaper transport is refusing, so the bound is
+        the one the batched path already carries.
+        """
+        facts: dict[str, GitHubPullRequestResponse] = {}
+        for member in members:
+            target = member.target
+            payload, _ = self._rest(
+                gh,
+                host,
+                _REST_PULL_REQUEST_PATH.format(
+                    owner=target.owner,
+                    repo=target.repo,
+                    number=target.number,
+                ),
+            )
+            if payload is None:
+                continue
+            try:
+                facts[member.raw] = _normalize_response(
+                    target,
+                    _rest_primary_node(payload),
+                    checks=(),
+                    checks_complete=False,
+                    unresolved_review_threads=0,
+                    review_threads_complete=False,
+                )
+            except (KeyError, TypeError, ValueError):
+                continue
+        return facts
+
+    def _checks_rest(
+        self,
+        gh: str,
+        host: str,
+        members: Sequence[_BatchSubject],
+        expected_heads: Mapping[str, str],
+    ) -> dict[str, tuple[tuple[GitHubCheck, ...], bool, ProviderErrorKind | None]]:
+        """Read the REST-expressible half of each subject's board, one request each.
+
+        Commit statuses ONLY, and that is a measured bound rather than a choice.
+        REST names no workflow for a check run -- neither the run's own payload nor
+        its check suite carries one -- while the GraphQL rollup builds a check
+        run's identity as ``"<workflow> / <name>"``. A check run read here would
+        therefore carry a DIFFERENT identity for the same check, and the watch
+        would report one failure twice, once per transport. A commit status
+        carries ``context``, which IS its GraphQL identity, so the status half is
+        exactly the half that can be read without that drift.
+
+        The missing half is why every result here is incomplete. Incomplete
+        already means PENDING unless a check failed, so the degraded board still
+        wakes the session on a red status and still cannot call the subject
+        review-ready.
+
+        The read is PINNED to the revision the primary read reported, so the
+        mid-tick push that the GraphQL path detects by comparing heads cannot
+        arise: a status page for another commit is not reachable from here.
+        """
+        resolved: dict[str, tuple[tuple[GitHubCheck, ...], bool, ProviderErrorKind | None]] = {}
+        for member in members:
+            revision = expected_heads.get(member.raw, "")
+            if not revision:
+                # No revision to pin the read to. The primary facts stand and the
+                # board is reported unread, which classifies as PENDING.
+                resolved[member.raw] = ((), False, None)
+                continue
+            target = member.target
+            payload, failure = self._rest(
+                gh,
+                host,
+                _REST_COMMIT_STATUS_PATH.format(
+                    owner=target.owner,
+                    repo=target.repo,
+                    revision=revision,
+                    page_size=_REST_STATUS_PAGE_SIZE,
+                ),
+            )
+            if payload is None:
+                # Both buckets refused this subject, so there is no third
+                # transport to degrade to and the failure is charged as a failure.
+                resolved[member.raw] = (
+                    (),
+                    False,
+                    failure[0] if failure else ProviderErrorKind.TRANSIENT,
+                )
+                continue
+            try:
+                normalized = _normalize_checks(_rest_status_rows(payload))
+            except (KeyError, TypeError, ValueError):
+                resolved[member.raw] = ((), False, ProviderErrorKind.TRANSIENT)
+                continue
+            bounded, _ = _bounded_checks(normalized)
+            resolved[member.raw] = (bounded, False, None)
+        return resolved
+
+    def _rest(
+        self,
+        gh: str,
+        host: str,
+        path: str,
+    ) -> tuple[Mapping[str, Any] | None, _Failure | None]:
+        """Run one REST read on the bucket the GraphQL point budget does not share.
+
+        One request answers for one subject, so unlike :meth:`_graphql` there is no
+        partially-readable answer to preserve: a non-zero exit is about this
+        request and nothing else. The exit code is therefore read FIRST -- the
+        error body GitHub writes to stdout is itself a valid JSON object, so a
+        parse-led order would read a refusal as a response.
+        """
+        try:
+            proc = self._runner(
+                [gh, "api", path],
+                timeout=_PROBE_TIMEOUT_SECS,
+                audit_caller="core:monitor",
+                pin_host=host,
+            )
+        except (SetupError, FileNotFoundError, subprocess.TimeoutExpired, OSError) as exc:
+            return None, _exception_failure(exc)
+        if proc.returncode != 0:
+            stderr = proc.stderr if isinstance(proc.stderr, str) else ""
+            return None, _classified_failure(_classify_cli_error(stderr))
+        try:
+            return _json_object(proc.stdout), None
+        except ValueError:
+            return None, (ProviderErrorKind.TRANSIENT, "provider_malformed_response")
 
     def _primary(
         self,
@@ -863,6 +1089,76 @@ def _normalize_mergeability(mergeable: str, merge_state: str) -> str:
     if normalized_mergeable != "MERGEABLE" or normalized_state not in _MERGEABLE_SETTLED_STATES:
         return "pending"
     return "mergeable"
+
+
+def _rest_enum(value: object) -> object:
+    """Spell one REST enum the way GraphQL spells it, leaving a non-string alone.
+
+    The two transports use the same vocabulary in different case --
+    ``mergeable_state: "blocked"`` against ``mergeStateStatus: BLOCKED``, ``state:
+    "failure"`` against ``FAILURE`` -- so case is the whole translation.
+
+    A non-string is passed through so that ``_normalize_response`` and
+    ``_normalize_check`` reject it as malformed, which is the same answer the
+    GraphQL path gives for the same shape. Coercing it here would turn a response
+    this adapter cannot read into a confident verdict about the subject.
+    """
+    return value.upper() if isinstance(value, str) else value
+
+
+def _rest_primary_node(raw: Mapping[str, Any]) -> dict[str, Any]:
+    """Translate one REST pull request into the primary read's own node shape.
+
+    A translation, not a second normalizer. Every validation, enum mapping and
+    bound stays in ``_normalize_response`` and ``_normalize_mergeability``, so one
+    fact cannot come to mean two things depending on which bucket answered. What
+    REST genuinely spells differently is what this maps: ``merged`` is a boolean
+    beside ``state`` rather than a third state, ``mergeable`` is a boolean rather
+    than an enum, ``head.sha`` carries the revision, and ``mergeable_state`` is
+    the lowercase of ``mergeStateStatus``.
+
+    ``reviewDecision`` is the one primary fact REST does not carry AT ALL, so it
+    is reported as unknown rather than guessed at. That is the fail-closed half of
+    the fallback: an unknown review decision classifies as PENDING, so a
+    REST-sourced observation can report a failing board but never a ready one.
+    """
+    head = raw.get("head")
+    mergeable = raw.get("mergeable")
+    return {
+        "number": raw.get("number"),
+        "state": "MERGED" if raw.get("merged") is True else _rest_enum(raw.get("state")),
+        "isDraft": raw.get("draft"),
+        "headRefOid": head.get("sha") if isinstance(head, Mapping) else None,
+        "mergeable": _REST_MERGEABLE[mergeable] if isinstance(mergeable, bool) else "UNKNOWN",
+        "mergeStateStatus": _rest_enum(raw.get("mergeable_state")),
+        "reviewDecision": _REST_ABSENT_REVIEW_DECISION,
+    }
+
+
+def _rest_status_rows(payload: Mapping[str, Any]) -> list[dict[str, Any]]:
+    """Translate one combined-status response into the rollup's own row shape.
+
+    REST's combined status reports the latest status per context, which is the
+    same projection the GraphQL rollup reports, so each row becomes the
+    ``StatusContext`` row ``_normalize_check`` already reads and no second check
+    normalizer exists. Rows past the adapter's long-standing row budget are
+    dropped here for the same reason the paginated GraphQL path drops them.
+    """
+    statuses = payload.get("statuses")
+    if not isinstance(statuses, list):
+        raise ValueError("GitHub commit status is malformed")
+    rows: list[dict[str, Any]] = []
+    for row in statuses[:_MAX_CHECK_ROWS]:
+        if not isinstance(row, Mapping):
+            raise ValueError("GitHub commit status is malformed")
+        rows.append(
+            {
+                "__typename": "StatusContext",
+                "context": row.get("context"),
+                "state": _rest_enum(row.get("state")),
+            }
+        )
+    return rows
 
 
 def _batch_document(

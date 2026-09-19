@@ -202,9 +202,10 @@ one at a time is roughly 150 process invocations against one query.
 subject yet.** `GitHubPullRequestProvider.probe` spends one GraphQL document per
 evidence kind per chunk of at most 25 subjects, so a tick of any size up to that
 bound costs three requests instead of three per subject, and each further chunk
-adds three. It carries the (host, credential) rule as a check rather than as a
-grouping pass: the credential is the call's own argument, and a chunk is refused
-if it names two hosts. The
+adds three. A read the GraphQL point budget REFUSES costs more than that, because
+the fallback below is per subject rather than per chunk. It carries the (host,
+credential) rule as a check rather than as a grouping pass: the credential is the
+call's own argument, and a chunk is refused if it names two hosts. The
 other four adapters still loop internally and declare so in their own docstrings.
 What is missing is above the probe, not inside it: the in-session driver arms one
 `asyncio` task per loop in `autonudge.py`, so a tick structurally sees one
@@ -212,6 +213,42 @@ monitor, and the out-of-session poller runs one subject per cron job through
 `irq.Probe.observe`, which is singular. A batch therefore has no assembler; that
 is a driver change, and it belongs with the consolidation rather than with the
 probe.
+
+#### Two API budgets, not one
+
+GitHub meters GraphQL in points and REST in requests, and the two budgets are
+SEPARATE. A probe bound to one bucket therefore retires on
+`max_provider_errors` whenever that bucket is spent, while the other bucket is
+untouched and answering — a healthy subject reported as a provider outage. The
+GitHub pull-request adapter answers a **rate limit, and only a rate limit**, by
+re-reading the subject on the other bucket:
+
+| Fact | GraphQL | REST fallback |
+| --- | --- | --- |
+| lifecycle, draft, head, mergeability | primary document | `repos/{o}/{r}/pulls/{n}` |
+| review decision | `reviewDecision` | none — reported `unknown` |
+| commit statuses | rollup `StatusContext` | `commits/{sha}/status` |
+| check runs | rollup `CheckRun` | none — see below |
+| review threads | `reviewThreads` | none — count reported incomplete |
+
+Two bounds make this safe rather than merely more available:
+
+- **A degraded observation cannot be a ready one.** What REST cannot express is
+  reported as INCOMPLETE evidence, never guessed at, and
+  `classify_pull_request_facts` answers incomplete checks, incomplete threads and
+  an unknown review decision with `PENDING`. So the fallback can still wake a
+  session on a red board and can never call a subject review-ready on half of
+  one.
+- **Check runs are deliberately not read on REST.** REST names no workflow for a
+  check run, while the rollup builds a check run's identity as
+  `"<workflow> / <name>"`, so a check run read there would carry a different
+  identity for the same check and the watch would report one failure twice, once
+  per transport. A commit status carries `context`, which IS its GraphQL
+  identity, so the status half is exactly the half readable without that drift.
+
+A subject the fallback cannot read either KEEPS the rate limit it was already
+charged, so the second diagnosis can never substitute a terminal kind for a
+retryable one. That is what makes the fallback never worse than no fallback.
 
 Rules:
 
@@ -229,6 +266,11 @@ Rules:
   facts to a missing Checks permission.
 - A partial failure degrades only the subjects it covers. One unreadable subject
   must not fail the batch.
+- A refusal that names a spent BUDGET rather than a fault is retried on any other
+  budget the provider meters separately, before it is charged. Every other failure
+  is charged as it was: a missing subject is missing on both buckets and a rejected
+  credential is rejected on both, so a second transport only makes those slower to
+  report.
 - Every error is classified before it leaves this layer. An unclassified failure
   is `unknown` and counts as not passing.
 

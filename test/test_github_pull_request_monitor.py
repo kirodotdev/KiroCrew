@@ -23,6 +23,7 @@ from kiro_crew.monitoring.github_pull_request import (
 )
 from kiro_crew.monitoring.models import (
     DEFAULT_MONITOR_CADENCE_SECS,
+    DEFAULT_MONITOR_PROVIDER_ERRORS,
     DEFAULT_MONITOR_STALL_TICKS,
     MONITOR_STOP_VERDICT_STALL,
     MonitorBudgets,
@@ -35,6 +36,11 @@ from kiro_crew.monitoring.models import (
     MonitorState,
     ProviderErrorKind,
     monitor_state_to_dict,
+)
+from kiro_crew.monitoring.pull_request import (
+    PullRequestCheck,
+    PullRequestFacts,
+    classify_pull_request_facts,
 )
 from kiro_crew.monitoring.shadow import ShadowWakeDeliveryRefused, run_shadow_probe
 
@@ -2469,21 +2475,29 @@ class TestBatchedReads:
         Dropping an unattributable error would report a verdict from a response
         that carried none, so it fails the whole batch rather than silently
         passing.
+
+        Instanced on ``INTERNAL`` rather than a rate limit because a rate limit is
+        the ONE kind that is re-read on the REST bucket before it is charged
+        (``TestRestFallbackOnRateLimit``). A property that holds for every failure
+        has to be shown on a failure the fallback does not answer, or the test
+        measures the fallback instead of the property.
         """
         primary = _envelope(
             None,
             None,
-            errors=[{"type": "RATE_LIMITED", "message": "API rate limit exceeded"}],
+            errors=[{"type": "INTERNAL", "message": "something went wrong"}],
         )
-        runner = _CompletedRunner([_completed(primary, returncode=1, stderr="gh: rate limit")])
+        runner = _CompletedRunner(
+            [_completed(primary, returncode=1, stderr="HTTP 503: unavailable")]
+        )
         provider = GitHubPullRequestProvider(resolver=lambda: "/trusted/bin/gh", runner=runner)
 
         results = provider.probe(self._urls(2))
 
         assert len(results) == 2
         for result in results.values():
-            assert result.observation.provider_error is ProviderErrorKind.RATE_LIMITED
-            assert result.observation.reason_code == "provider_rate_limited"
+            assert result.observation.provider_error is ProviderErrorKind.TRANSIENT
+            assert result.observation.reason_code == "provider_transient"
         assert len(runner.calls) == 1
 
     def test_one_document_advances_subjects_on_different_pages(self) -> None:
@@ -2937,3 +2951,434 @@ def test_the_github_result_requires_its_response_explicitly() -> None:
             canonical={},
             observation=MonitorObservation("fp", MonitorObservationStatus.PENDING),
         )
+
+
+_GRAPHQL_RATE_LIMIT_STDERR = "HTTP 403: API rate limit exceeded"
+_REST_PULL_REQUEST_PATH = "repos/owner/repo/pulls/123"
+_REST_STATUS_PATH = f"repos/owner/repo/commits/{_HEAD}/status?per_page=100"
+
+
+def _rest_pull_request(**changes: object) -> dict[str, object]:
+    """One REST pull request in the field spellings GitHub actually answers with.
+
+    Measured against ``repos/kirodotdev/KiroCrew/pulls/11830``: ``merged`` is a
+    boolean BESIDE ``state`` rather than a third state, ``mergeable`` is a boolean
+    rather than an enum, ``mergeable_state`` is lowercase, and the revision is
+    reached through ``head.sha``. Writing the fixture in GraphQL's spellings would
+    make every test below pass against a translation that cannot read a real
+    response.
+    """
+    payload: dict[str, object] = {
+        "number": 123,
+        "state": "open",
+        "draft": False,
+        "merged": False,
+        "mergeable": True,
+        "mergeable_state": "clean",
+        "head": {"sha": _HEAD},
+    }
+    payload.update(changes)
+    return payload
+
+
+def _rest_statuses(*rows: tuple[str, str]) -> dict[str, object]:
+    """One REST combined-status response, carrying the latest state per context."""
+    return {
+        "state": "pending",
+        "total_count": len(rows),
+        "statuses": [{"context": context, "state": state} for context, state in rows],
+    }
+
+
+def _rest_board(**changes: object) -> dict[str, dict[str, object]]:
+    """The two REST reads one healthy fallback tick makes."""
+    return {
+        _REST_PULL_REQUEST_PATH: _rest_pull_request(**changes),
+        _REST_STATUS_PATH: _rest_statuses(("PR Readiness", "pending")),
+    }
+
+
+class _BucketRunner:
+    """Answer by BUCKET: the GraphQL document refuses, the REST paths answer.
+
+    Keyed on the REQUEST rather than on call order, because the property under
+    test is that one transport refuses while the other answers. An order-keyed
+    fake passes just as well when the probe sends its reads to the wrong buckets,
+    which is the mistake this whole fallback could make.
+    """
+
+    def __init__(
+        self,
+        *,
+        rest: Mapping[str, dict[str, object]] | None = None,
+        graphql_error: str = "RATE_LIMITED",
+        graphql_stderr: str = _GRAPHQL_RATE_LIMIT_STDERR,
+        rest_stderr: str = "",
+    ) -> None:
+        self._rest = dict(rest or {})
+        self._graphql_error = graphql_error
+        self._graphql_stderr = graphql_stderr
+        self._rest_stderr = rest_stderr
+        self.calls: list[list[str]] = []
+
+    def __call__(self, argv: Sequence[str], **kwargs: object) -> subprocess.CompletedProcess[str]:
+        self.calls.append(list(argv))
+        if list(argv[1:3]) == ["api", "graphql"]:
+            return _completed(
+                {"errors": [{"type": self._graphql_error, "message": "budget exhausted"}]},
+                returncode=1,
+                stderr=self._graphql_stderr,
+            )
+        if self._rest_stderr:
+            return _completed({"message": "refused"}, returncode=1, stderr=self._rest_stderr)
+        payload = self._rest.get(argv[2])
+        if payload is None:
+            raise AssertionError(f"unexpected REST path: {argv[2]}")
+        return _completed(payload)
+
+    @property
+    def graphql_calls(self) -> list[list[str]]:
+        return [call for call in self.calls if list(call[1:3]) == ["api", "graphql"]]
+
+    @property
+    def rest_paths(self) -> list[str]:
+        return [call[2] for call in self.calls if list(call[1:3]) != ["api", "graphql"]]
+
+
+def _bucket_provider(**kwargs: object) -> tuple[GitHubPullRequestProvider, _BucketRunner]:
+    runner = _BucketRunner(**kwargs)  # type: ignore[arg-type]
+    return GitHubPullRequestProvider(resolver=lambda: "/trusted/bin/gh", runner=runner), runner
+
+
+class TestRestFallbackOnRateLimit:
+    """GraphQL points and REST requests are separate budgets, and the watch reads both.
+
+    A spent GraphQL point budget refuses every read this monitor makes on that
+    bucket while the REST bucket stays untouched and answering, so a probe bound to
+    GraphQL alone retires a healthy pull request on ``max_provider_errors``.
+    """
+
+    def test_a_rate_limited_read_yields_facts_instead_of_a_provider_error(self) -> None:
+        """THE bug: the tick reports the subject rather than a refusal.
+
+        The two error fields are asserted together because the budget counts
+        ``provider_error or supplemental_provider_error`` as one value -- either
+        one left set spends the same retirement budget and retires the watch on
+        the same cadence.
+        """
+        provider, runner = _bucket_provider(rest=_rest_board())
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.PENDING
+        assert result.observation.provider_error is None
+        assert result.observation.supplemental_provider_error is None
+        assert result.canonical["state"] == "open"
+        assert result.canonical["head_revision"] == _HEAD
+        assert runner.rest_paths == [_REST_PULL_REQUEST_PATH, _REST_STATUS_PATH]
+
+    def test_a_degraded_board_is_pending_and_can_never_be_review_ready(self) -> None:
+        """Two independent reasons, so removing either one still leaves it closed.
+
+        REST carries only half the board and no review decision at all, so the
+        observation is held at PENDING by its incompleteness AND by its unknown
+        review decision. The classifier assertion keeps the second reason
+        load-bearing if the first ever stops applying.
+        """
+        provider, _ = _bucket_provider(
+            rest={
+                _REST_PULL_REQUEST_PATH: _rest_pull_request(),
+                _REST_STATUS_PATH: _rest_statuses(("PR Readiness", "success")),
+            },
+        )
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.PENDING
+        assert result.observation.reason_code == "checks_incomplete"
+        assert result.canonical["review_decision"] == "unknown"
+        assert result.canonical["checks_complete"] is False
+        assert result.canonical["review_threads_complete"] is False
+        status, reason = classify_pull_request_facts(
+            PullRequestFacts(
+                kind="github_pull_request",
+                target="github.com/owner/repo#123",
+                state="open",
+                draft=False,
+                head_revision=_HEAD,
+                mergeability="mergeable",
+                review_decision="unknown",
+                checks=(PullRequestCheck("PR Readiness", "passed"),),
+                checks_complete=True,
+                unresolved_review_threads=0,
+                review_threads_complete=True,
+            )
+        )
+        assert status is MonitorObservationStatus.PENDING
+        assert reason == "review_state_unknown"
+
+    def test_a_failing_commit_status_still_wakes_the_session(self) -> None:
+        """A degraded board is still worth waking on, which is the point of it.
+
+        The identity is the ``context`` verbatim -- the same string the GraphQL
+        rollup reports for the same status -- so the failure carries one identity
+        across both transports instead of being reported twice under two.
+        """
+        provider, _ = _bucket_provider(
+            rest={
+                _REST_PULL_REQUEST_PATH: _rest_pull_request(mergeable_state="blocked"),
+                _REST_STATUS_PATH: _rest_statuses(
+                    ("PR Readiness", "failure"),
+                    ("AWS CodeBuild us-east-1 (kirocrew-gha-linux)", "success"),
+                ),
+            },
+        )
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+        assert result.observation.reason_code == "checks_failed"
+        checks = result.canonical["checks"]
+        assert isinstance(checks, Mapping)
+        assert checks["failed"] == ["PR Readiness"]
+        assert checks["passed"] == ["AWS CodeBuild us-east-1 (kirocrew-gha-linux)"]
+
+    @pytest.mark.parametrize(
+        ("error_type", "stderr", "kind"),
+        [
+            ("NOT_FOUND", "HTTP 404: Not Found", ProviderErrorKind.NOT_FOUND),
+            ("FORBIDDEN", "HTTP 403: resource not accessible", ProviderErrorKind.AUTHORIZATION),
+            ("UNAUTHORIZED", "HTTP 401: Bad credentials", ProviderErrorKind.AUTHENTICATION),
+            ("INTERNAL", "HTTP 503: unavailable", ProviderErrorKind.TRANSIENT),
+        ],
+    )
+    def test_only_a_rate_limit_is_retried_on_the_other_bucket(
+        self,
+        error_type: str,
+        stderr: str,
+        kind: ProviderErrorKind,
+    ) -> None:
+        """Every other failure says something a second transport answers identically.
+
+        A missing subject is missing on both buckets and a rejected credential is
+        rejected on both, so retrying one would only make the failure slower to
+        report. Asserting no REST request was sent is what pins that.
+        """
+        provider, runner = _bucket_provider(graphql_error=error_type, graphql_stderr=stderr)
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.PROVIDER_ERROR
+        assert result.observation.provider_error is kind
+        assert runner.rest_paths == []
+
+    def test_a_refused_fallback_keeps_the_retryable_rate_limit(self) -> None:
+        """The fallback is never worse than no fallback.
+
+        A REST failure is a SECOND diagnosis of a subject already known to be
+        refused. Letting it replace the first would substitute a terminal kind for
+        a retryable one, so a REST ``404`` would retire on its first tick a watch
+        that the GraphQL-only code retried.
+        """
+        provider, runner = _bucket_provider(rest_stderr="HTTP 404: Not Found")
+
+        result = _probe_one(provider)
+
+        assert result.observation.provider_error is ProviderErrorKind.RATE_LIMITED
+        assert result.observation.reason_code == "provider_rate_limited"
+        assert runner.rest_paths == [_REST_PULL_REQUEST_PATH]
+
+    def test_a_malformed_fallback_body_keeps_the_rate_limit(self) -> None:
+        """A body this adapter cannot read leaves the charge exactly as it was."""
+        provider, _ = _bucket_provider(rest={_REST_PULL_REQUEST_PATH: {"number": 123}})
+
+        result = _probe_one(provider)
+
+        assert result.observation.provider_error is ProviderErrorKind.RATE_LIMITED
+
+    def test_a_degraded_subject_spends_no_further_graphql_document(self) -> None:
+        """The bucket that refused the first read is not asked twice in one tick."""
+        provider, runner = _bucket_provider(rest=_rest_board())
+
+        _probe_one(provider)
+
+        assert len(runner.graphql_calls) == 1
+        assert runner.rest_paths == [_REST_PULL_REQUEST_PATH, _REST_STATUS_PATH]
+
+    def test_the_fallback_path_carries_only_validated_segments(self) -> None:
+        """No provider-controlled text reaches a request path.
+
+        ``GitHubPullRequestTarget`` admits an owner and repository matching
+        ``_SEGMENT_RE`` and a positive integer number, and the revision has already
+        passed ``_HEAD_REVISION_RE`` on the primary read, so both paths are built
+        from validated segments alone.
+        """
+        provider, runner = _bucket_provider(rest=_rest_board())
+
+        _probe_one(provider)
+
+        assert runner.rest_paths == [
+            "repos/owner/repo/pulls/123",
+            f"repos/owner/repo/commits/{_HEAD}/status?per_page=100",
+        ]
+
+    @pytest.mark.parametrize(
+        ("mergeable", "merge_state", "expected"),
+        [
+            (False, "dirty", "conflicting"),
+            (True, "behind", "behind"),
+            (True, "blocked", "blocked"),
+            (True, "clean", "mergeable"),
+            (True, "unstable", "mergeable"),
+            (None, "unknown", "pending"),
+        ],
+    )
+    def test_rest_merge_state_reaches_the_same_mergeability_enum(
+        self,
+        mergeable: object,
+        merge_state: str,
+        expected: str,
+    ) -> None:
+        """One mapping, not one per transport.
+
+        REST spells ``mergeStateStatus`` in lowercase and ``mergeable`` as a
+        boolean, so the translation is case and type -- ``_normalize_mergeability``
+        stays the only place the enum is decided, and the two buckets cannot come
+        to disagree about what ``blocked`` means.
+        """
+        provider, _ = _bucket_provider(
+            rest={
+                _REST_PULL_REQUEST_PATH: _rest_pull_request(
+                    mergeable=mergeable,
+                    mergeable_state=merge_state,
+                ),
+                _REST_STATUS_PATH: _rest_statuses(),
+            },
+        )
+
+        result = _probe_one(provider)
+
+        assert result.canonical["mergeability"] == expected
+
+    def test_a_merged_subject_read_on_rest_is_terminal_as_merged(self) -> None:
+        """REST answers a merged pull request as ``state: closed`` with ``merged: true``.
+
+        Passing ``state`` through would report the merge as a CLOSE -- BLOCKED
+        rather than SUCCESS -- which is a wrong terminal verdict on a pull request
+        that landed. A terminal subject also issues no board read, on this
+        transport for the same reason as on the other.
+        """
+        provider, runner = _bucket_provider(
+            rest={_REST_PULL_REQUEST_PATH: _rest_pull_request(merged=True, state="closed")},
+        )
+
+        result = _probe_one(provider)
+
+        assert result.observation.status is MonitorObservationStatus.SUCCESS
+        assert result.observation.reason_code == "pull_request_merged"
+        assert runner.rest_paths == [_REST_PULL_REQUEST_PATH]
+
+    def test_a_rate_limited_rollup_alone_is_answered_from_rest_statuses(self) -> None:
+        """The second door, and it is reachable on its own.
+
+        GitHub prices a query in points, and the rollup document costs more than
+        the core selection, so near the end of the budget the primary read
+        succeeds while the rollup is refused -- persistently. That tick carries a
+        SUPPLEMENTAL rate limit, which the budget counts identically, so fixing
+        only the primary read would leave the watch retiring on the same cadence.
+        """
+        runner = _CompletedRunner(
+            [
+                _completed(_envelope(_pr_node(_primary()))),
+                _completed(
+                    {"errors": [{"type": "RATE_LIMITED", "message": "budget exhausted"}]},
+                    returncode=1,
+                    stderr=_GRAPHQL_RATE_LIMIT_STDERR,
+                ),
+                _completed(_threads()),
+                _completed(_rest_statuses(("PR Readiness", "failure"))),
+            ]
+        )
+        provider = GitHubPullRequestProvider(resolver=lambda: "/trusted/bin/gh", runner=runner)
+
+        result = _probe_one(provider)
+
+        assert result.observation.supplemental_provider_error is None
+        assert result.observation.status is MonitorObservationStatus.ACTIONABLE
+        assert result.observation.reason_code == "checks_failed"
+        checks = result.canonical["checks"]
+        assert isinstance(checks, Mapping)
+        assert checks["failed"] == ["PR Readiness"]
+        assert runner.calls[3][2] == _REST_STATUS_PATH
+
+    def test_a_rate_limited_thread_read_reports_incomplete_without_an_error(self) -> None:
+        """The one signal REST cannot express, degraded rather than charged.
+
+        Thread resolution has no REST projection, so a refused thread read is
+        reported as an incomplete COUNT. Incompleteness already holds the subject
+        at PENDING, which is what makes it safe to stop charging it: the watch
+        survives without ever being able to call the subject ready. No fourth
+        request is sent, because there is no endpoint to send it to.
+        """
+        runner = _CompletedRunner(
+            [
+                _completed(_envelope(_pr_node(_primary()))),
+                _completed(_envelope(_rollup_node(_primary()))),
+                _completed(
+                    {"errors": [{"type": "RATE_LIMITED", "message": "budget exhausted"}]},
+                    returncode=1,
+                    stderr=_GRAPHQL_RATE_LIMIT_STDERR,
+                ),
+            ]
+        )
+        provider = GitHubPullRequestProvider(resolver=lambda: "/trusted/bin/gh", runner=runner)
+
+        result = _probe_one(provider)
+
+        assert result.observation.supplemental_provider_error is None
+        assert result.observation.status is MonitorObservationStatus.PENDING
+        assert result.observation.reason_code == "review_threads_incomplete"
+        assert result.canonical["review_threads_complete"] is False
+        assert result.canonical["blocking_review"] == "unknown"
+        assert len(runner.calls) == 3
+
+    @pytest.mark.asyncio
+    async def test_consecutive_rate_limited_ticks_do_not_retire_the_watch(self) -> None:
+        """The reported stop, end to end.
+
+        ``max_provider_errors`` defaults to three, so three consecutive
+        GraphQL-refused ticks reached ``provider_error_budget`` and retired the
+        watch. Each tick now reads the REST bucket, reports facts, and CLEARS the
+        streak -- so the budget is not merely approached more slowly, it is never
+        charged at all.
+        """
+        provider, _ = _bucket_provider(rest=_rest_board())
+        state = MonitorState(
+            kind="github_pull_request",
+            target="https://github.com/owner/repo/pull/123",
+            objective="review_ready",
+            created_ts=1_000.0,
+        )
+
+        async def persist(updated: MonitorState) -> None:
+            return None
+
+        ticks = DEFAULT_MONITOR_PROVIDER_ERRORS + 1
+        for tick in range(ticks):
+            verdict = await run_shadow_probe(
+                state,
+                provider,
+                persist,
+                now=1_000.0 + tick * DEFAULT_MONITOR_CADENCE_SECS,
+            )
+
+        assert state.probe_count == ticks
+        assert state.provider_error_count == 0
+        assert state.consecutive_provider_errors == 0
+        assert state.last_provider_error is None
+        # The reported stop, named exactly: `outcome: budget` with
+        # `stopped_reason: provider_error_budget`. An unretired watch has recorded
+        # no outcome at all.
+        assert state.outcome is None
+        assert state.outcome is not MonitorOutcome.BUDGET
+        assert verdict.decision is not MonitorDecision.STOP_BLOCKED
