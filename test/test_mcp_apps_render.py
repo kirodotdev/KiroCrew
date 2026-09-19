@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import json
 import os
 import uuid
 from pathlib import Path
+from unittest import mock
 
 import pytest
 
@@ -63,6 +66,7 @@ def test_strip_marker_noop_without_marker():
 
 
 # ── load_spool ───────────────────────────────────────────────────────────────
+
 
 @pytest.fixture()
 def spool(tmp_path, monkeypatch):
@@ -146,6 +150,7 @@ def test_load_spool_oversized_ignored(spool, monkeypatch):
 
 # ── handle_tool_result (the hook) ────────────────────────────────────────────
 
+
 class _FakeState:
     def __init__(self):
         self.calls: list[tuple[str, dict]] = []
@@ -157,11 +162,14 @@ class _FakeState:
 @pytest.mark.asyncio
 async def test_handle_tool_result_no_marker_passthrough(spool):
     st = _FakeState()
-    out = await mcp_apps_render.handle_tool_result(
+    out, claimed = await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:1", tool_call_id="tc1", text="just output"
     )
     assert out == "just output"
     assert st.calls == []
+    # No marker means no app, and the caller must not persist a flag that would
+    # put an app notice on an ordinary tool row.
+    assert claimed is False
 
 
 @pytest.mark.asyncio
@@ -181,12 +189,14 @@ async def test_handle_tool_result_broadcasts_and_strips(spool):
     )
     st = _FakeState()
     text = f"result [kirocrew-mcp-app:{sid}] tail"
-    out = await mcp_apps_render.handle_tool_result(
+    out, claimed = await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:7", tool_call_id="tc42", text=text
     )
     # Marker stripped from transcript text.
     assert sid not in out
     assert out == "result  tail"
+    # This call took the record's one render, so the caller persists the flag.
+    assert claimed is True
     # Exactly one mcp_app_render broadcast with the contract payload.
     assert len(st.calls) == 1
     msg_type, data = st.calls[0]
@@ -212,13 +222,16 @@ async def test_handle_tool_result_marker_but_missing_spool_still_strips(spool):
     sid = _hex()  # no file written
     st = _FakeState()
     text = f"x [kirocrew-mcp-app:{sid}] y"
-    out = await mcp_apps_render.handle_tool_result(
+    out, claimed = await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:1", tool_call_id="tc", text=text
     )
     # No spool → no broadcast, but marker still stripped so the user never sees it.
     assert sid not in out
     assert out == "x  y"
     assert st.calls == []
+    # A marker whose record is gone produced no app at all, so there is nothing
+    # for a row to point at. This is why a caller cannot read marker presence.
+    assert claimed is False
 
 
 @pytest.mark.asyncio
@@ -232,10 +245,14 @@ async def test_handle_tool_result_broadcast_exception_degrades_gracefully(spool)
 
     text = f"a [kirocrew-mcp-app:{sid}] b"
     # Must not raise; still returns stripped text.
-    out = await mcp_apps_render.handle_tool_result(
+    out, claimed = await mcp_apps_render.handle_tool_result(
         _BoomState(), slot_key="dashboard:1", tool_call_id="tc", text=text
     )
     assert sid not in out
+    # The send raised, but the claim was already spent, so this app can never be
+    # shown for this call. A reader still needs to be told it exists, which is
+    # why the flag follows the CLAIM and not the dispatch.
+    assert claimed is True
 
 
 @pytest.mark.asyncio
@@ -256,11 +273,14 @@ async def test_handle_tool_result_offloads_spool_read(spool, monkeypatch):
 
     monkeypatch.setattr(mcp_apps_render, "load_spool", probe)
     st = _FakeState()
-    out = await mcp_apps_render.handle_tool_result(
-        st, slot_key="dashboard:1", tool_call_id="tc",
+    out, claimed = await mcp_apps_render.handle_tool_result(
+        st,
+        slot_key="dashboard:1",
+        tool_call_id="tc",
         text=f"pre [kirocrew-mcp-app:{sid}] post",
     )
     assert sid not in out
+    assert claimed is True
     assert "thread" in seen and seen["thread"] != loop_thread
     assert len(st.calls) == 1
 
@@ -285,17 +305,240 @@ async def test_handle_tool_result_replayed_marker_is_inert(spool):
     _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
     st = _FakeState()
     text = f"a [kirocrew-mcp-app:{sid}] b"
-    out1 = await mcp_apps_render.handle_tool_result(
+    out1, claimed1 = await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:1", tool_call_id="tc1", text=text
     )
-    out2 = await mcp_apps_render.handle_tool_result(
+    out2, claimed2 = await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:1", tool_call_id="tc2", text=text
     )
     assert len(st.calls) == 1  # exactly one render
     assert sid not in out1 and sid not in out2  # marker always stripped
+    # Only the call that took the claim reports it. The inert replay must not
+    # flag its own row: tc2 produced no app of its own.
+    assert (claimed1, claimed2) == (True, False)
     # The record itself survives the render claim — the app-call capability
     # path stays valid for the rendered app's lifetime.
     assert mcp_apps_render.load_spool(sid) is not None
+
+
+@pytest.mark.asyncio
+async def test_a_cancelled_redaction_leaves_the_record_claimable(spool):
+    """A turn cancelled inside the redaction offload must not spend the claim.
+
+    The claim is irreversible and makes every later replay inert, and
+    ``CancelledError`` is a ``BaseException`` that the seam's ``except
+    Exception`` does not catch, so a cancellation there returns nothing to the
+    caller: no ``app_claimed``, so no row records the app. The property that
+    keeps it recoverable is ORDER -- the claim is taken after the redaction, so a
+    cancellation in this window has nothing to give back. The very next call
+    renders for real. (A cancellation during the claim itself is the next test.)
+    """
+    sid = _hex()
+    _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
+    text = f"a [kirocrew-mcp-app:{sid}] b"
+
+    started = asyncio.Event()
+    real_to_thread = asyncio.to_thread
+
+    async def hang_on_redaction(fn, *args, **kwargs):
+        # The redaction call is the lambda; the filesystem step passes a named
+        # function, so this suspends exactly the window under test.
+        if getattr(fn, "__name__", "") == "<lambda>":
+            started.set()
+            await asyncio.Event().wait()  # never completes; the test cancels it
+        return await real_to_thread(fn, *args, **kwargs)
+
+    st = _FakeState()
+    with mock.patch.object(asyncio, "to_thread", hang_on_redaction):
+        task = asyncio.ensure_future(
+            mcp_apps_render.handle_tool_result(
+                st, slot_key="dashboard:1", tool_call_id="tc-cancelled", text=text
+            )
+        )
+        await asyncio.wait_for(started.wait(), timeout=5)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+    # Nothing was delivered and, crucially, the claim was not spent. Asserted
+    # after the task has finished unwinding, so a sidecar created by a stray
+    # worker thread would still be visible here.
+    assert st.calls == []
+    assert not (spool / f"{sid}.rendered").exists()
+
+    # So the app is not lost: the next call still renders it and reports the
+    # claim, which is the whole point of claiming last.
+    out, claimed = await mcp_apps_render.handle_tool_result(
+        st, slot_key="dashboard:1", tool_call_id="tc-retry", text=text
+    )
+    assert claimed is True
+    assert sid not in out
+    assert len(st.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_the_claim_is_offloaded_to_a_worker_thread(spool):
+    """Both filesystem steps are offloaded; neither runs on the event loop.
+
+    ``os.close()`` on a file descriptor is named by the ``blocking: true``
+    ``no-blocking-call-on-event-loop`` rule in ``AUTOSDE.yaml``, so the claim
+    cannot run inline however cheap its syscalls are on a local path: one stalled
+    spool filesystem freezes the user's turn and the liveness heartbeat together
+    until the watchdog kills the process. This run reaches the claim (it renders)
+    so the assertion is not vacuous.
+
+    Offloading alone would lose an app to a cancellation, because the worker
+    thread finishes whatever happens to the awaiting coroutine. The test below
+    pins the property that pays for that.
+    """
+    sid = _hex()
+    _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
+    real_to_thread = asyncio.to_thread
+    offloaded: list[str] = []
+
+    async def record(fn, *args, **kwargs):
+        offloaded.append(getattr(fn, "__name__", "") or repr(fn))
+        return await real_to_thread(fn, *args, **kwargs)
+
+    st = _FakeState()
+    with mock.patch.object(asyncio, "to_thread", record):
+        out, claimed = await mcp_apps_render.handle_tool_result(
+            st, slot_key="dashboard:1", tool_call_id="tc", text=f"[kirocrew-mcp-app:{sid}]"
+        )
+
+    # The claim WAS reached: this rendered for real.
+    assert claimed is True
+    assert len(st.calls) == 1
+    assert sid not in out
+    # The record read parses up to MAX_SPOOL_BYTES.
+    assert "_load_bound" in offloaded
+    # The claim's own os.open/os.close are named by the rule.
+    assert "_take_claim" in offloaded, f"the claim ran on the loop: {offloaded}"
+
+
+@pytest.mark.asyncio
+async def test_a_cancellation_during_the_claim_gives_the_claim_back(spool):
+    """A claim its caller can never record must be given back, not kept.
+
+    This is the window the offload reopens and the one an inline call did not
+    have: the worker thread runs to completion whatever happens to the awaiting
+    coroutine, so a cancellation delivered while it runs creates the sidecar
+    while the caller raises and records nothing. A kept claim makes every later
+    replay inert, so the app would be gone with no row saying it existed.
+
+    Shielding the call keeps the outcome knowable through the cancellation, so
+    the seam releases the claim it cannot use. Unlike the inline version's
+    property, this one IS schedulable: the sidecar provably exists at the moment
+    the test cancels, so the release is measured rather than inferred.
+    """
+    sid = _hex()
+    _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
+    text = f"a [kirocrew-mcp-app:{sid}] b"
+
+    taken = asyncio.Event()
+    real_to_thread = asyncio.to_thread
+
+    async def hold_after_claiming(fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_take_claim":
+            result = await real_to_thread(fn, *args, **kwargs)
+            # The claim is genuinely spent before the cancellation lands, which
+            # is what makes the release the thing under test.
+            assert (spool / f"{sid}.rendered").exists()
+            taken.set()
+            await asyncio.sleep(0.05)
+            return result
+        return await real_to_thread(fn, *args, **kwargs)
+
+    st = _FakeState()
+    with mock.patch.object(asyncio, "to_thread", hold_after_claiming):
+        task = asyncio.ensure_future(
+            mcp_apps_render.handle_tool_result(
+                st, slot_key="dashboard:1", tool_call_id="tc-cancelled", text=text
+            )
+        )
+        await asyncio.wait_for(taken.wait(), timeout=5)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        # Nothing was delivered, and the claim was handed back: the release runs
+        # inside the cancellation path, so the task finishing means it is done.
+        assert st.calls == []
+        assert not (spool / f"{sid}.rendered").exists()
+
+    # So the app is not lost: the next call renders it and reports the claim.
+    out, claimed = await mcp_apps_render.handle_tool_result(
+        st, slot_key="dashboard:1", tool_call_id="tc-retry", text=text
+    )
+    assert claimed is True
+    assert sid not in out
+    assert len(st.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_second_cancellation_still_gives_the_claim_back(spool):
+    """Cancelling twice must not strand the claim, which a shield alone allows.
+
+    ``asyncio.shield`` protects the inner future, NOT the awaiting coroutine, so
+    a second ``.cancel()`` raises out of the release path's own ``await`` and
+    skips the unlink -- ``CancelledError`` is a ``BaseException`` that the
+    handler's ``except Exception`` does not catch. The sidecar would stay taken
+    with nothing recorded, which makes every later replay inert: the app is gone
+    and no row says it existed. A turn deadline and a slot deletion firing on one
+    task is ordinary operation, not a contrived pair.
+
+    The claim is held on an event the TEST owns, so the second cancellation
+    provably lands while the claim is still in flight rather than after the
+    unlink has already been dispatched. That is what makes the drain the thing
+    under test instead of the scheduler.
+    """
+    sid = _hex()
+    _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h"})
+    text = f"a [kirocrew-mcp-app:{sid}] b"
+
+    taken = asyncio.Event()
+    finish_claim = asyncio.Event()
+    real_to_thread = asyncio.to_thread
+
+    async def hold_the_claim(fn, *args, **kwargs):
+        if getattr(fn, "__name__", "") == "_take_claim":
+            result = await real_to_thread(fn, *args, **kwargs)
+            assert (spool / f"{sid}.rendered").exists()
+            taken.set()
+            # The claim resolves only when the test says so, AFTER both
+            # cancellations have landed.
+            await finish_claim.wait()
+            return result
+        return await real_to_thread(fn, *args, **kwargs)
+
+    st = _FakeState()
+    with mock.patch.object(asyncio, "to_thread", hold_the_claim):
+        task = asyncio.ensure_future(
+            mcp_apps_render.handle_tool_result(
+                st, slot_key="dashboard:1", tool_call_id="tc-twice", text=text
+            )
+        )
+        await asyncio.wait_for(taken.wait(), timeout=5)
+
+        task.cancel()  # raises out of the claim's shielded await
+        for _ in range(3):
+            await asyncio.sleep(0)  # let the handler reach the release path
+        task.cancel()  # must be absorbed, not allowed to skip the unlink
+
+        finish_claim.set()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+        assert st.calls == []
+        assert not (spool / f"{sid}.rendered").exists()
+
+    # And the app is still renderable, which is the whole point of the release.
+    out, claimed = await mcp_apps_render.handle_tool_result(
+        st, slot_key="dashboard:1", tool_call_id="tc-after-twice", text=text
+    )
+    assert claimed is True
+    assert sid not in out
+    assert len(st.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -303,28 +546,45 @@ async def test_handle_tool_result_refuses_cross_session_marker(spool):
     """Slot binding: a record bound to session A must not render (nor arm its
     callback capability) when its marker lands in session B."""
     sid = _hex()
-    _write_spool(spool, sid, {
-        "server": "s", "tool": "t", "html": "h", "session_key": "dashboard:A",
-    })
+    _write_spool(
+        spool,
+        sid,
+        {
+            "server": "s",
+            "tool": "t",
+            "html": "h",
+            "session_key": "dashboard:A",
+        },
+    )
     st = _FakeState()
-    out = await mcp_apps_render.handle_tool_result(
+    out, claimed = await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:B", tool_call_id="tc", text=f"[kirocrew-mcp-app:{sid}]"
     )
     assert st.calls == []
     assert sid not in out
+    # Refused before the claim, so no flag: session B's row has no app.
+    assert claimed is False
 
 
 @pytest.mark.asyncio
 async def test_handle_tool_result_renders_in_bound_session(spool):
     sid = _hex()
-    _write_spool(spool, sid, {
-        "server": "s", "tool": "t", "html": "h", "session_key": "dashboard:A",
-    })
+    _write_spool(
+        spool,
+        sid,
+        {
+            "server": "s",
+            "tool": "t",
+            "html": "h",
+            "session_key": "dashboard:A",
+        },
+    )
     st = _FakeState()
-    await mcp_apps_render.handle_tool_result(
+    _text, claimed = await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:A", tool_call_id="tc", text=f"[kirocrew-mcp-app:{sid}]"
     )
     assert len(st.calls) == 1
+    assert claimed is True
 
 
 @pytest.mark.asyncio
@@ -333,9 +593,16 @@ async def test_wrong_slot_replay_does_not_burn_the_render_claim(spool):
     claim. A marker echoed into the WRONG session first must not consume the
     record's one render — the legitimate slot still renders afterwards."""
     sid = _hex()
-    _write_spool(spool, sid, {
-        "server": "s", "tool": "t", "html": "h", "session_key": "dashboard:A",
-    })
+    _write_spool(
+        spool,
+        sid,
+        {
+            "server": "s",
+            "tool": "t",
+            "html": "h",
+            "session_key": "dashboard:A",
+        },
+    )
     st = _FakeState()
     text = f"[kirocrew-mcp-app:{sid}]"
     # Wrong slot arrives first: refused, and the claim is NOT taken.
@@ -380,11 +647,17 @@ async def test_handle_tool_result_redacts_credentials_in_leaves(spool):
     """Credential/exfil-URL leaves in app-bound tool data are redacted before
     they cross into the server-authored iframe."""
     sid = _hex()
-    _write_spool(spool, sid, {
-        "server": "s", "tool": "t", "html": "h",
-        "tool_input": {"key": "AKIAIOSFODNN7EXAMPLE"},
-        "structured_content": {"note": "leaked AKIAIOSFODNN7EXAMPLE here"},
-    })
+    _write_spool(
+        spool,
+        sid,
+        {
+            "server": "s",
+            "tool": "t",
+            "html": "h",
+            "tool_input": {"key": "AKIAIOSFODNN7EXAMPLE"},
+            "structured_content": {"note": "leaked AKIAIOSFODNN7EXAMPLE here"},
+        },
+    )
     st = _FakeState()
     await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:1", tool_call_id="tc", text=f"[kirocrew-mcp-app:{sid}]"
@@ -400,21 +673,29 @@ async def test_binding_uses_producing_session_key_not_slot(spool):
     slot key — a real render is not silently refused, and a genuine mismatch
     still is."""
     sid = _hex()
-    _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h",
-                              "session_key": "dashboard:9"})
+    _write_spool(
+        spool, sid, {"server": "s", "tool": "t", "html": "h", "session_key": "dashboard:9"}
+    )
     st = _FakeState()
     await mcp_apps_render.handle_tool_result(
-        st, slot_key="9", tool_call_id="tc", text=f"[kirocrew-mcp-app:{sid}]",
+        st,
+        slot_key="9",
+        tool_call_id="tc",
+        text=f"[kirocrew-mcp-app:{sid}]",
         producing_session_key="dashboard:9",
     )
     assert len(st.calls) == 1
 
     sid2 = _hex()
-    _write_spool(spool, sid2, {"server": "s", "tool": "t", "html": "h",
-                               "session_key": "dashboard:9"})
+    _write_spool(
+        spool, sid2, {"server": "s", "tool": "t", "html": "h", "session_key": "dashboard:9"}
+    )
     st2 = _FakeState()
     await mcp_apps_render.handle_tool_result(
-        st2, slot_key="9", tool_call_id="tc", text=f"[kirocrew-mcp-app:{sid2}]",
+        st2,
+        slot_key="9",
+        tool_call_id="tc",
+        text=f"[kirocrew-mcp-app:{sid2}]",
         producing_session_key="dashboard:OTHER",
     )
     assert len(st2.calls) == 0
@@ -425,6 +706,7 @@ async def test_render_uses_owner_only_channel_not_generic(spool):
     """#418/#11: the render frame carries the callback_secret, so it MUST go to
     the owner-only WS channel and NEVER the generic broadcast. Reverting the
     channel selection would leak the capability to guest sockets."""
+
     class _OwnerState:
         def __init__(self):
             self.owner_calls: list[tuple[str, dict]] = []
@@ -437,8 +719,9 @@ async def test_render_uses_owner_only_channel_not_generic(spool):
             self.generic_calls.append((msg_type, data))
 
     sid = _hex()
-    _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h",
-                              "callback_secret": "cap-xyz"})
+    _write_spool(
+        spool, sid, {"server": "s", "tool": "t", "html": "h", "callback_secret": "cap-xyz"}
+    )
     st = _OwnerState()
     await mcp_apps_render.handle_tool_result(
         st, slot_key="dashboard:1", tool_call_id="tc", text=f"[kirocrew-mcp-app:{sid}]"
@@ -456,8 +739,7 @@ def test_load_spool_rejects_and_reaps_expired(spool, monkeypatch):
     import time as _time
 
     sid = _hex()
-    _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h",
-                              "callback_secret": "cap"})
+    _write_spool(spool, sid, {"server": "s", "tool": "t", "html": "h", "callback_secret": "cap"})
     rec = spool / f"{sid}.json"
     sidecar = spool / f"{sid}.rendered"
     sidecar.write_text("", encoding="utf-8")
