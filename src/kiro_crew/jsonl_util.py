@@ -71,7 +71,7 @@ import logging
 import os
 import re
 import stat
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from pathlib import Path
 from typing import IO, Any, cast
 
@@ -119,6 +119,9 @@ _BOUNDARY_RE = re.compile(rb"[\r\n]")
 # record is a header or one session's file list, and 8 MiB here would silently
 # truncate the biggest real sessions.
 RECORD_CAP = 128 * 1024 * 1024
+
+# Public so a caller can tell this refusal from an unrelated EINVAL, which shares its errno.
+NOT_REGULAR_FILE = "refusing a non-regular file"
 
 
 class UnreadableRecord(Exception):
@@ -544,7 +547,10 @@ class _CappedReader:
 
 @contextlib.contextmanager
 def open_regular_nofollow(
-    path: Path, *, max_bytes: int, dir_fd: int | None = None
+    path: str | os.PathLike[str],
+    *,
+    max_bytes: int,
+    authorize: Callable[[int], None] | None = None,
 ) -> Iterator[IO[bytes]]:
     """Open *path* for reading, refusing anything that is not a regular file.
 
@@ -555,24 +561,30 @@ def open_regular_nofollow(
     ``max_bytes`` is the byte ceiling: checked against the OPEN HANDLE's ``fstat``, then
     charged against every read, so growth after the open is still refused.
 
-    ``dir_fd`` settles only *path*'s FINAL COMPONENT against a directory the caller already
-    pinned; a caller whose parent is agent-writable must pin that parent and pass it here.
+    ``authorize`` receives the RAW descriptor once the node is known regular and within
+    the ceiling, and raises to refuse it. It runs before any content reader is built, so
+    a descriptor a caller rejects is closed having never been readable — the ordering
+    :mod:`test_safe_read_file_bytes_descriptor` pins. It sits AFTER the size check on
+    purpose: a callback that mutates the file would otherwise be caught by the open-time
+    ``fstat`` and never reach the per-read charge it is meant to exercise.
+
+    *path* is forwarded to the opener unchanged rather than coerced, because a caller's
+    own seam may discriminate on its type.
 
     Yields a binary handle, not bytes, so a caller keeps its per-record cap. Raises
     :class:`OSError` on every refusal.
     """
-    # RELATIVE ONLY WHERE THE PLATFORM RESOLVES AGAINST IT: os.open ignores dir_fd for an absolute
-    # path, and open_file_no_reparse ignores it entirely on Windows, resolving a basename at the CWD.
-    target = Path(path).name if dir_fd is not None and os.open in os.supports_dir_fd else path
-    fd = platform_compat.open_file_no_reparse(target, nonblocking=True, dir_fd=dir_fd)
+    fd = platform_compat.open_file_no_reparse(path, nonblocking=True)
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
-            raise OSError(errno.EINVAL, "refusing a non-regular file", str(path))
+            raise OSError(errno.EINVAL, NOT_REGULAR_FILE, str(path))
         if st.st_size > max_bytes:
             raise OSError(
                 errno.EFBIG, f"{st.st_size} bytes past the {max_bytes}-byte ceiling", str(path)
             )
+        if authorize is not None:
+            authorize(fd)
         if getattr(os, "O_NONBLOCK", 0):
             # Cleared once the node is known regular: O_NONBLOCK earned its place on the open, and
             # a regular-file read does not block, but a short read on a signal would be visible.
