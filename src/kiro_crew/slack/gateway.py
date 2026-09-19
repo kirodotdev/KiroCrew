@@ -3521,6 +3521,15 @@ class GatewayOrchestrator:
         # Trigger skill extraction when sessions expire (idle/orphan)
         self.sessions.on_session_expire = self.consolidator.consolidate_session
 
+        # Same expiry paths, the other direction: a parent with a completion
+        # injection in flight must not be expired under it. This counter is the
+        # only witness in the window between committing the injected turn and
+        # acquiring the session, which is why the three reset sites in this file
+        # consult it too.
+        self.sessions.set_injection_probe(
+            lambda key: self._cron_injecting.get(key, 0) > 0,
+        )
+
         # Channel history buffer. data_home(), not config_dir(): this method is
         # async and config_dir() re-runs start-of-process maintenance (mkdir,
         # breadcrumb refresh, archive sweep) on every call.
