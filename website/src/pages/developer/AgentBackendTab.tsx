@@ -230,6 +230,32 @@ const PROBE_REFRESH_MS = 30_000
  * one genuinely graded fact — how the harness is made to ask before running a tool
  * — arrives as the core's own five-mechanism enum and is rendered from it.
  *
+ * ## The MCP half, which a capability set cannot answer
+ *
+ * The lines above say what the harness can DO. They cannot say what happens to the
+ * user's own AGENT FILE on the way to it, and that is where these harnesses differ
+ * most: on one, switching a single tool off narrows that tool; on another it
+ * withholds the whole server, Crew's own control plane included. The permission
+ * mode a spec asks for is honoured on one and overridden on another. Hooks reach
+ * one and no other.
+ *
+ * Every one of those is a declared, defensible ruling that already existed in
+ * `providers/mirrors/registry.py` and reached no reader. The server projects it
+ * (`agent_sdk/backend_mcp_ability.py`) as a kind, a per-tool deny reach, and two
+ * lists of spec concerns — withheld, and no-channel-yet — and this file holds a
+ * label per KIND, per REACH and per CONCERN, never per agent.
+ *
+ * Two of its facts need no click. The KIND rides in the disclosure's own summary,
+ * because it decides whether the rest matters. And the whole-server tool-off cost
+ * renders OUTSIDE the disclosure beside the security notes, under the same rule they
+ * follow: it is the one fact here an operator meets by accident, since switching a
+ * tool off says nothing about servers until it removes one. The other two reaches
+ * stay inside, where reassurance belongs.
+ *
+ * It is ADVISORY: per-tool MCP deny is not a requirement on every agent, so the
+ * card's job is to say which form a reader is getting before a session runs, not to
+ * refuse the selection.
+ *
  * The status strip keeps its own job: it says whether this harness is live on this
  * machine, names what is absent, and prints the command that installs it. Those are
  * measurements this gateway took, not claims about capability.
@@ -752,6 +778,89 @@ export function AgentBackendTab() {
     [APPROVAL_UNVERIFIED]: i18nT('pages.developer.agentBackendTab.approval_unverified'),
   }
 
+
+  /**
+   * The deny-reach RULE for one agent, or `''` where it declares no reach.
+   *
+   * One sentence, same shape on every agent that has one: *turning off one MCP tool
+   * stops every tool on the same server*. It is on the card because it is a RISK the
+   * reader meets by accident — switching a tool off is an ordinary action that says
+   * nothing about servers — and it is worded as a rule so the exception below can be
+   * an exception to something.
+   *
+   * Only the reaches that can cost a whole server get a line. `settings-file` stops
+   * the tool it names and nothing else, which costs the reader nothing to know.
+   */
+  const mcpDenyRule = (value: string): string => {
+    if (!mcpCanCostWholeServer(value)) return ''
+    return i18nT('pages.developer.agentBackendTab.mcp_deny_rule', { name: nameOf(value) })
+  }
+
+  /**
+   * The EXCEPTION to that rule, where the agent has one, or `''`.
+   *
+   * `per-call` is the one reach that spares Crew's own servers: it refuses the call
+   * itself there, so `kirocrew-core` keeps working tool by tool and the session can
+   * still reply. Rendered directly under the rule and labelled as its exception,
+   * because two sentences that qualify each other without saying so read as a
+   * contradiction.
+   */
+  const mcpDenyException = (value: string): string => {
+    if (probe(value)?.mcp?.per_tool_deny !== 'per-call') return ''
+    return i18nT('pages.developer.agentBackendTab.mcp_deny_exception', {
+      name: nameOf(value),
+    })
+  }
+
+  /**
+   * The settings in the reader's agent config file that will not take effect here.
+   *
+   * ONE list, whatever the core ruled: a withhold is a settled decision and a
+   * no-channel is an open gap, which is a distinction for whoever maintains the
+   * mirror. The reader's question is the same either way — does the thing I wrote in
+   * my file happen — and each setting's own sentence answers it.
+   *
+   * An id with no phrase here renders as itself rather than being dropped, so a
+   * setting added to the core does not silently vanish from the card.
+   */
+  const mcpIneffective = (value: string) => probe(value)?.mcp?.ineffective ?? []
+
+  /**
+   * One label per SPEC CONCERN — the thing in the user's agent file, not the agent.
+   *
+   * Keyed by the concern, and an id with no label here renders as ITSELF rather than
+   * being dropped, so a setting added to the core does not vanish from the card. Which concerns reach a card at
+   * all is the SERVER's classification (`agent_sdk/backend_mcp_ability.py` records
+   * the reason per concern it leaves off), so this file cannot add one it thinks a
+   * reader wants.
+   */
+  const MCP_CONCERN_LABEL: Record<string, (name: string) => string> = {
+    mcp_servers: () => i18nT('pages.developer.agentBackendTab.mcp_concern_mcp_servers'),
+    tool_allowlist: () => i18nT('pages.developer.agentBackendTab.mcp_concern_tool_allowlist'),
+    denied_tools: () => i18nT('pages.developer.agentBackendTab.mcp_concern_denied_tools'),
+    auto_approve: (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_concern_auto_approve', { name }),
+    // Named rather than "this agent", under the same grounding rule the kind and deny
+    // phrases follow: the reader met agents inside agent config files and could not
+    // tell the two senses apart. A function per entry rather than a string, so the
+    // harness name is resolved when the row renders -- the record is declared above
+    // `nameOf`, and a value that read it eagerly would be a use-before-declaration.
+    permission_mode: (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_concern_permission_mode', { name }),
+    // Named, like the permission-mode line beside it: "your agent config file" and "this
+    // agent" in one sentence left a reader unable to tell whether the two senses of agent
+    // were the same thing, and the harness's own display name is the one spelling that
+    // cannot be read as the FILE.
+    model: (name: string) => i18nT('pages.developer.agentBackendTab.mcp_concern_model', { name }),
+    model_allowlist: (name: string) =>
+      i18nT('pages.developer.agentBackendTab.mcp_concern_model_allowlist', { name }),
+    hooks: () => i18nT('pages.developer.agentBackendTab.mcp_concern_hooks'),
+  }
+
+  /** One ineffective-setting line: this frontend's phrase, or the setting's own id. */
+  const mcpSettingLine = (value: string, id: string): string =>
+    MCP_CONCERN_LABEL[id]?.(nameOf(value)) ?? id
+
   /**
    * A label for any listed id, known to this frontend or not.
    *
@@ -800,6 +909,29 @@ export function AgentBackendTab() {
     const mechanism = probe(value)?.tool_approval
     return (mechanism && APPROVAL_LABEL[mechanism]) || ''
   }
+
+
+
+  /**
+   * Whether a tool-off on this agent can cost a WHOLE server rather than the tool.
+   *
+   * The SERVER's classification, read off the payload rather than re-derived here.
+   * `agent_sdk/backend_mcp_ability.COSTS_WHOLE_SERVER` holds which reaches cost a
+   * whole server, beside the record of which concerns reach a card at all, and a
+   * completeness test holds it against the vocabulary — so a reach added to the core
+   * arrives already classified instead of rendering as ordinary until someone edits
+   * this file. It holds for two of the three today: `whole-server`, and the case that
+   * hid, `per-call`, which stays per tool on Crew's OWN servers and withholds any
+   * other server whole.
+   *
+   * `false` when the payload carried no flag — an older gateway, a 403, a query in
+   * flight — which renders the deny line inside the disclosure, where it sat before
+   * any of this. Compared against `true` rather than coerced, so a reach this
+   * frontend has no label for is never promoted on the strength of a truthy string.
+   */
+  const mcpCanCostWholeServer = (value: string): boolean =>
+    probe(value)?.mcp?.costs_whole_server === true
+
 
   /**
    * The one status sentence a harness carries, derived rather than authored per agent.
@@ -1232,7 +1364,11 @@ export function AgentBackendTab() {
                 {NOTE_LABEL[id]}
               </p>
             ))}
-
+            {/* The MCP half renders BEFORE the tool-off cost below it, and the
+                order is the point: the cost line is the first place a reader meets
+                the word "MCP", and the summary is where it is explained. A gloss a
+                reader reaches only after the sentence that needed it arrived too
+                late. */}
             {capabilityLines(shown).length > 0 && (
               /* Open, not collapsed. It was a `<details>` because up to fifteen lines
                  times eight harnesses buried the control the panel exists for; with
@@ -1276,22 +1412,68 @@ export function AgentBackendTab() {
               </div>
             )}
 
-            {noteLines(shown).length > 0 && (
-              /* The one thing still behind a disclosure, and the only list that
-                 should be: a where-it-lives note is a fact you go looking for once,
-                 not one you compare harnesses on. The security notes above are the
-                 contrast -- they are never collapsed. */
-              <details className="mt-2 text-[11px] leading-relaxed">
-                <summary className="cursor-pointer text-muted">
-                  {i18nT('pages.developer.agentBackendTab.card_operator_notes')}
-                </summary>
-                <ul className="mt-0.5 mb-0 list-disc pl-4 space-y-0.5 text-muted">
-                  {noteLines(shown).map(id => (
-                    <li key={id}>{NOTE_LABEL[id]}</li>
+
+            {/* The MCP half, and the rule for what is on it: a line reaches the reader
+                only where switching to this agent costs them a feature, adds a risk, or
+                makes one of their own agent-file settings ineffective. Two things pass
+                that test, and the route Crew takes to the agent is not one of them.
+
+                First the RISK, as a rule with its exception directly under it. Switching
+                one tool off is an ordinary action that says nothing about servers, so a
+                reader meets this by accident -- and the exception is labelled as one,
+                because two sentences that qualify each other without saying so read as a
+                contradiction.
+
+                Weight, not colour: a permanent property of the agent, not a problem
+                awaiting a fix, and legible to a reader who cannot tell two colours
+                apart. */}
+            {mcpDenyRule(shown) && (
+              <p className="mt-2 mb-0 text-[11px] leading-relaxed text-text-strong">
+                {mcpDenyRule(shown)}
+              </p>
+            )}
+            {mcpDenyException(shown) && (
+              <p className="mt-1 mb-0 text-[11px] leading-relaxed text-muted">
+                {mcpDenyException(shown)}
+              </p>
+            )}
+
+            {/* Then the settings the reader wrote that will not take effect here. ONE
+                group however the core ruled them: a withhold is a settled decision and a
+                no-channel is an open gap, which is the mirror maintainer's distinction --
+                the reader's question is whether the thing they wrote happens, and each
+                line answers it. Open rather than behind a disclosure: with the route
+                lines gone there is nothing left to bury, and this is the half a reader
+                comparing two agents came for. */}
+            {mcpIneffective(shown).length > 0 && (
+              <>
+                <div className="mt-2 text-[11px] font-semibold leading-relaxed text-muted">
+                  {i18nT('pages.developer.agentBackendTab.card_mcp_ineffective', {
+                    name: nameOf(shown),
+                  })}
+                </div>
+                <ul className="mt-0.5 mb-0 list-disc pl-4 space-y-0.5 text-[11px] leading-relaxed text-muted">
+                  {mcpIneffective(shown).map(id => (
+                    <li key={id}>{mcpSettingLine(shown, id)}</li>
                   ))}
                 </ul>
-              </details>
+              </>
             )}
+
+            {/* The one where-it-lives fact left on the card, and it is here because it
+                is also the reader's: whose secret store this agent signs in against is a
+                risk they take on. The three that named a route Crew takes -- whose disk
+                holds the transcript, which registry fills the model picker, which channel
+                carries a slash command -- are recorded off the card in
+                `agent_sdk/backend_cards.py` and stated in `kirocrew doctor`.
+
+                A plain line rather than a disclosure: one line needs no toggle, and the
+                toggle's label was a heading for a list that no longer exists. */}
+            {noteLines(shown).map(id => (
+              <p key={id} className="mt-1 mb-0 text-[11px] leading-relaxed text-muted">
+                {NOTE_LABEL[id]}
+              </p>
+            ))}
 
             {/* The only control that switches anything, alone at the foot of the
                 detail. Absent rather than dead for a harness this build never offers:

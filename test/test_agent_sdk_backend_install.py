@@ -875,6 +875,17 @@ class TestEndpointPayloadShape:
                 "operator_notes",
                 "tool_approval",
                 "offered_by_build",
+                # The card's MCP half, and the one part of it that is NESTED rather
+                # than spread: its fields answer one question together, and a panel
+                # served by a gateway that predates them tests one absent object
+                # instead of several absent fields. Its own shape is pinned in
+                # ``test_backend_mcp_ability``.
+                "mcp",
+            }
+            assert set(row["mcp"]) == {
+                "per_tool_deny",
+                "costs_whole_server",
+                "ineffective",
             }
             # Sign-in is the harness's own third fact, so every row carries it --
             # including a row whose harness this build cannot serve, which is the

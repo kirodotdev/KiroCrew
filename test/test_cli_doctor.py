@@ -566,6 +566,207 @@ class TestUnresolvedMcpRefs:
         assert capsys.readouterr().out == ""
 
 
+class TestBackendAbilityCardRows:
+    """The MCP ability of the harness IN USE, and which others cost a whole server.
+
+    The class above answers for the configured harness only when something about it is
+    wrong. This is the other question -- what is my harness doing to my agent file, and
+    what would switching cost me -- and it is in a terminal report because the users most
+    likely to meet a projection gap are the ones already diagnosing one.
+
+    **Two lines on a stock run.** The full per-harness comparison belongs to the
+    dashboard, which has the room and the labels in thirteen languages; a row apiece for
+    six harnesses in a terminal report is a section readers learn to skip. What this
+    section carries is the in-use harness's own card and the one cross-harness fact a
+    chooser cannot act without: where a tool-off can withhold Crew's own servers.
+
+    It also carries what the CARD does not. The projection kind is a route Crew takes,
+    which costs a reader choosing a harness nothing, so the dashboard dropped it and this
+    report is where it is stated.
+
+    Every assertion reads the SHIPPED declarations. A row rendered from a stub would
+    prove the formatting and not the wiring, and a declaration nothing renders is the
+    state the issue reported.
+    """
+
+    def _cfg(self, backend: str):
+        return SimpleNamespace(agent=SimpleNamespace(acp_backend=backend))
+
+    def test_the_section_reports_the_install_and_the_cross_harness_cost(self, capsys):
+        """What the section claims to answer, and nothing wider."""
+        from kiro_crew.providers.mirrors import PROJECTIONS, PerToolDeny
+
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        assert "mcp ability:" in out
+        assert cli_doctor._backend_policy_label("claude") in out
+        for backend, declared in PROJECTIONS.items():
+            if declared.per_tool_deny is PerToolDeny.WHOLE_SERVER:
+                assert cli_doctor._backend_policy_label(backend) in out, backend
+
+    def test_only_the_harness_in_use_gets_a_row(self, capsys):
+        """One card, for the install being diagnosed, and none for the rest."""
+        from kiro_crew.acp_backends import selectable_backend_values
+
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        assert f"    {cli_doctor._backend_policy_label('claude')} (in use): " in out
+        for backend in selectable_backend_values():
+            if backend == "claude":
+                continue
+            label = cli_doctor._backend_policy_label(backend)
+            assert f"    {label} (in use): " not in out, label
+            assert f"    {label}: " not in out, label
+
+    def test_the_route_the_card_dropped_is_stated_here(self, capsys):
+        """The projection kind lives in this report, because the card does not carry it.
+
+        ``native`` / ``mirror`` / ``external`` costs a reader choosing a harness nothing:
+        no feature changes, no risk appears, no setting of theirs stops working. It is
+        exactly what a reader DIAGNOSING a session wants, so it prints here, as the
+        declaration's own value.
+        """
+        from kiro_crew.providers.mirrors import PROJECTIONS
+
+        for backend, declared in PROJECTIONS.items():
+            if backend not in set(__import__(
+                "kiro_crew.acp_backends", fromlist=["x"]
+            ).selectable_backend_values()):
+                continue
+            cli_doctor._doctor_backend_ability_cards(self._cfg(backend))
+            out = capsys.readouterr().out
+            assert f"projection: '{declared.kind.value}'" in out, backend
+
+    def test_the_in_use_row_states_the_declared_reach(self, capsys):
+        """The line the maintainer's ruling turned into a row."""
+        from kiro_crew.providers.mirrors import PROJECTIONS, PerToolDeny
+
+        declared = sorted(
+            backend
+            for backend, projection in PROJECTIONS.items()
+            if projection.per_tool_deny is PerToolDeny.WHOLE_SERVER
+        )
+        assert declared, "no harness declares the whole-server reach any more"
+        for backend in declared:
+            cli_doctor._doctor_backend_ability_cards(self._cfg(backend))
+            out = capsys.readouterr().out
+            label = cli_doctor._backend_policy_label(backend)
+            row = next(
+                line for line in out.splitlines() if line.strip().startswith(f"{label} (in use):")
+            )
+            assert "per-tool deny: 'whole-server'" in row, backend
+
+    def test_the_whole_server_reach_says_what_it_costs_once(self, capsys):
+        """The consequence a reader cannot recover from the declared value alone."""
+        import re as _re
+
+        from kiro_crew.providers.mirrors import PROJECTIONS, PerToolDeny
+
+        declared = sorted(
+            b for b, p in PROJECTIONS.items() if p.per_tool_deny is PerToolDeny.WHOLE_SERVER
+        )
+        assert declared, "no harness declares the whole-server reach any more"
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        flat = " ".join(out.split())
+        assert "where that server is kirocrew-core" in flat
+        assert flat.count("kirocrew-core") == 1, "one sentence, not one per harness"
+        named = _re.search(r"On (.+?), switching a single MCP tool off", flat)
+        assert named, flat
+        for backend in declared:
+            assert cli_doctor._backend_policy_label(backend) in named.group(1), backend
+
+    def test_a_harness_whose_tool_off_costs_one_tool_is_not_named_in_the_caveat(self, capsys):
+        """The sentence holds for the reach it describes, and for no other."""
+        import re as _re
+
+        from kiro_crew.providers.mirrors import PROJECTIONS, PerToolDeny
+
+        spared = sorted(
+            b
+            for b, p in PROJECTIONS.items()
+            if p.per_tool_deny in (PerToolDeny.SETTINGS_FILE, PerToolDeny.PER_CALL)
+        )
+        assert spared, "no harness keeps a tool-off per tool any more"
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        named = _re.search(
+            r"On (.+?), switching a single MCP tool off", " ".join(out.split())
+        )
+        assert named, out
+        for backend in spared:
+            assert cli_doctor._backend_policy_label(backend) not in named.group(1), backend
+
+    def test_a_withhold_is_named_by_the_key_the_spec_spells(self, capsys):
+        """The reader is holding the agent file, so the row names its own keys."""
+        cli_doctor._doctor_backend_ability_cards(self._cfg("opencode"))
+        out = capsys.readouterr().out
+        assert "not sent from your agent file:" in out
+        assert "permissions.defaultMode" in out
+        assert "no channel yet: hooks" in out
+
+    def test_a_harness_in_use_that_loses_nothing_still_gets_its_row(self, capsys):
+        """Silence is wrong for the harness in USE, however good its answer is."""
+        cli_doctor._doctor_backend_ability_cards(self._cfg(""))
+        out = capsys.readouterr().out
+        assert "(in use): projection: 'native'" in out
+
+    def test_the_row_never_moves_doctors_exit_code(self):
+        """It takes no ``issues`` list, so it structurally cannot append one."""
+        import inspect
+
+        params = list(inspect.signature(cli_doctor._doctor_backend_ability_cards).parameters)
+        assert params == ["cfg"]
+
+    def test_the_rows_are_reached_from_the_report_itself(self):
+        """The section runs, rather than existing for its own tests to call."""
+        import inspect
+
+        assert "_doctor_backend_ability_cards(cfg)" in inspect.getsource(cli_doctor._doctor)
+
+    def test_an_unreadable_config_does_not_break_triage(self, capsys):
+        """No harness in use, no report: the section is advisory either way."""
+
+        class _Boom:
+            @property
+            def agent(self):
+                raise RuntimeError("config unreadable")
+
+        cli_doctor._doctor_backend_ability_cards(_Boom())  # must not raise
+        assert capsys.readouterr().out == ""
+
+    def test_an_unreadable_registry_does_not_break_triage(self, monkeypatch, capsys):
+        """Advisory rows, so a broken tree is reported by something else."""
+        from kiro_crew.agent_sdk import backend_mcp_ability
+
+        def _boom(*_a, **_k):
+            raise RuntimeError("registry unreadable")
+
+        monkeypatch.setattr(backend_mcp_ability, "ability_for", _boom)
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))  # must not raise
+        assert capsys.readouterr().out == ""
+
+    def test_a_kind_this_build_has_no_phrase_for_prints_the_raw_value(self, monkeypatch, capsys):
+        """Honest rather than silent, and scrubbed on the way out."""
+        from kiro_crew.agent_sdk import backend_mcp_ability
+        from kiro_crew.agent_sdk.backend_mcp_ability import McpAbility
+
+        monkeypatch.setattr(
+            backend_mcp_ability,
+            "ability_for",
+            lambda _b: McpAbility(
+                projection="teleported\x1b]0;pwned\x07",
+                per_tool_deny="",
+                withheld=(),
+                no_channel=(),
+            ),
+        )
+        cli_doctor._doctor_backend_ability_cards(self._cfg("claude"))
+        out = capsys.readouterr().out
+        assert "teleported" in out
+        assert "\x1b" not in out
+
+
 class TestSelectedBackendProjectionRow:
     """The row for a harness whose transport carries none of Crew's own tools.
 
@@ -574,6 +775,12 @@ class TestSelectedBackendProjectionRow:
     server produces no row at all -- while a ``no-channel`` harness has no
     transport for Crew's servers whatever any spec says. That is a property of the
     harness, and the operator who selected it gets told once.
+
+    The per-tool deny reach is NOT this row's subject:
+    ``TestBackendAbilityCardRows`` owns it -- in the in-use harness's own row, and in
+    one sentence naming every harness the costly reach holds for. One declaration with
+    two readings in one report is how the two drift apart, so
+    ``test_the_deny_reach_is_stated_once_in_the_report`` holds that boundary.
     """
 
     def _cfg(self, backend: str):
@@ -592,17 +799,20 @@ class TestSelectedBackendProjectionRow:
         here rather than the test being deleted with the backend it happened to be
         demonstrated on.
         """
-        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+        from kiro_crew.agent_sdk import backend_mcp_ability
+        from kiro_crew.agent_sdk.backend_mcp_ability import McpAbility
 
         monkeypatch.setattr(
-            acp_driver,
-            "backend_mcp_projection",
-            lambda _b: (
-                "no-channel",
-                "an http or sse MCP endpoint the shared gateway serves",
-                "docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
+            backend_mcp_ability,
+            "ability_for",
+            lambda _b: McpAbility(
+                projection="no-channel",
                 # A no-channel backend has no mirror, so it declares no reach.
-                "",
+                per_tool_deny="",
+                withheld=(),
+                no_channel=(),
+                channel="an http or sse MCP endpoint the shared gateway serves",
+                tracking="docs/request-for-change/rfc-agent-config-mirror.md#5-migration",
             ),
         )
         cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
@@ -612,67 +822,24 @@ class TestSelectedBackendProjectionRow:
         assert "Would need:" in out
         assert "Tracked at:" in out
 
-    def test_a_whole_server_deny_backend_gets_a_row_about_the_consequence(self, capsys):
-        """The reader this declaration exists for.
+    def test_the_deny_reach_is_stated_once_in_the_report(self, capsys):
+        """The consequence of a whole-server reach is this report's, not this ROW's.
 
-        `per_tool_deny` is a claim about what a RESTRICTION costs, not about whether
-        the servers arrive, so it prints independently of the kind. It earns a row
-        because its consequence is the one an operator meets by accident: switching
-        one tool off is an ordinary dashboard action that says nothing about servers,
-        and on such a harness it removes the whole server — Crew's own control plane
-        included, which leaves that session unable to report back at all.
-        """
-        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+        It was stated twice: once per selectable harness by
+        ``_doctor_backend_ability_cards`` and again, in different words, for the
+        selected harness alone. Two readings of one declared field is how prose and
+        record drift, so the selected-harness row states the kind's own gap and
+        nothing about the reach.
 
-        monkeypatch = pytest.MonkeyPatch()
-        try:
-            monkeypatch.setattr(
-                acp_driver,
-                "backend_mcp_projection",
-                lambda _b: ("mirror", "", "", "whole-server"),
-            )
-            cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
-        finally:
-            monkeypatch.undo()
-        out = capsys.readouterr().out
-        assert "withholds the whole server" in out
-        assert "kirocrew-core" in out
-        # A mirror is not a no-channel backend, so the OTHER row must stay silent.
-        assert "carries none of Kiro Crew's own tools" not in out
-
-    def test_a_backend_whose_deny_reaches_one_tool_prints_no_such_row(self, capsys):
-        """Silence for the reaches that hold no surprise.
-
-        `settings-file` and `per-call` both honour the restriction per TOOL, so the
-        server stays available and there is nothing an operator needs warning about.
-        A row on every install is a row people stop reading.
-        """
-        from kiro_crew.agent_sdk.drivers import acp as acp_driver
-
-        monkeypatch = pytest.MonkeyPatch()
-        try:
-            for reach in ("settings-file", "per-call"):
-                monkeypatch.setattr(
-                    acp_driver,
-                    "backend_mcp_projection",
-                    lambda _b, _r=reach: ("mirror", "", "", _r),
-                )
-                cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
-                assert capsys.readouterr().out == "", reach
-        finally:
-            monkeypatch.undo()
-
-    def test_the_real_opencode_declaration_drives_that_row(self, capsys):
-        """Read off the SHIPPED declaration, not a stub.
-
-        The stubbed cases above pin the rendering; this pins that the field the
-        registry actually carries for opencode is the one that reaches this row. A
-        declaration nothing reads is what the first-principles lane flagged, so the
-        wiring is asserted end to end rather than assumed.
+        Driven on the shipped opencode declaration, which carries `whole-server`, so
+        the assertion is about the report rather than about a stub.
         """
         cli_doctor._doctor_selected_backend_projection(self._cfg("opencode"))
+        assert capsys.readouterr().out == ""
+
+        cli_doctor._doctor_backend_ability_cards(self._cfg("opencode"))
         out = capsys.readouterr().out
-        assert "withholds the whole server" in out
+        assert out.count("per-tool deny: 'whole-server'") == 1, out
 
     def test_the_shipped_tables_hold_exactly_the_declared_no_channel_backends(self):
         """The row's own subject, read off the SHIPPED tables rather than a stub.
@@ -724,12 +891,20 @@ class TestSelectedBackendProjectionRow:
         Same rule as the refs row: anything a party other than this file wrote
         goes through ``_safe_display`` before reaching a terminal.
         """
-        from kiro_crew.agent_sdk.drivers import acp as acp_driver
+        from kiro_crew.agent_sdk import backend_mcp_ability
+        from kiro_crew.agent_sdk.backend_mcp_ability import McpAbility
 
         monkeypatch.setattr(
-            acp_driver,
-            "backend_mcp_projection",
-            lambda _b: ("no-channel", "http\x1b]0;pwned\x07", "tracked", ""),
+            backend_mcp_ability,
+            "ability_for",
+            lambda _b: McpAbility(
+                projection="no-channel",
+                per_tool_deny="",
+                withheld=(),
+                no_channel=(),
+                channel="http\x1b]0;pwned\x07",
+                tracking="tracked",
+            ),
         )
         cli_doctor._doctor_selected_backend_projection(self._cfg("some-harness"))
         out = capsys.readouterr().out

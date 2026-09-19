@@ -156,7 +156,7 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
     projection lives OUTSIDE that folder (an ``external`` declaration) reports
     refs here that its own projection may well carry. ``has_mirror`` is what lets
     the caller say which case it is instead of collapsing the two, and
-    :func:`backend_mcp_projection` is what says which kind it is.
+    ``agent_sdk.backend_mcp_ability.ability_for`` is what says which kind it is.
 
     ``permission_surface_owned=True`` models the ordinary spawn: the claude mirror
     withholds its whole array when Crew did not author the session's native
@@ -190,50 +190,6 @@ def agent_spec_mcp_refs(agent: str) -> tuple[bool, list[tuple[str, list[str], bo
             continue
         rows.append((backend, unresolved, has_mirror(backend)))
     return True, sorted(rows)
-
-
-def backend_mcp_projection(backend: str) -> tuple[str, str, str, str] | None:
-    """How *backend* is declared to receive Crew's MCP servers, as plain data.
-
-    Returns ``(kind, channel, tracking, per_tool_deny)`` -- the kind spelled as its
-    wire value (``native`` / ``mirror`` / ``external`` / ``no-channel``) -- or
-    ``None`` for a backend with no declaration, which is a state the parity test
-    refuses rather than one a consumer should render.
-
-    ``per_tool_deny`` is the reach of the spec's per-TOOL MCP restriction on this
-    backend, ``""`` where the declaration carries none (every kind but ``mirror``).
-    It rides along because it answers an operator's question that the other three
-    fields cannot: whether switching ONE tool off removes that tool or the whole
-    server. The kind says the servers arrive; this says what a restriction on them
-    is worth when it does.
-
-    The record's ``reason`` is deliberately NOT projected. It is written for the
-    reader of the registry, at registry length, and the consumer renders the two
-    fields that answer an operator's question instead. A field nothing reads is a
-    field the next caller has to decide whether to trust.
-
-    Here rather than read by the consumer for the reason every function in this
-    module is here: the declaration lives in ``providers/mirrors``, and a consumer
-    importing it would take a boundary edge the agent-sdk-boundary gate refuses.
-    Plain strings only, so no mirror type crosses the boundary and a caller cannot
-    accidentally hold the record.
-
-    Never raises. A build whose registry cannot be imported is a broken tree, and
-    a diagnostic row is not the place to discover it.
-    """
-    try:
-        from kiro_crew.providers.mirrors import projection_for
-
-        declared = projection_for(backend)
-    except Exception:
-        return None
-    reach = declared.per_tool_deny
-    return (
-        str(declared.kind.value),
-        declared.channel,
-        declared.tracking,
-        str(reach.value) if reach is not None else "",
-    )
 
 
 def kiro_cli_resolves() -> bool:

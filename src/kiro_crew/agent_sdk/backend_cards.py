@@ -97,6 +97,16 @@ preference:
   exactly that). The patch would land on an attribute nothing reads, and the card
   would answer from production membership while the test believed otherwise.
 
+The MCP half, which is a projection over another source
+-------------------------------------------------------
+One question an operator asks is not answerable from a membership set: what
+happens to their AGENT SPEC on the way to this harness. That is declared per
+backend in ``providers/mirrors`` -- the projection KIND, the reach of a per-tool
+MCP restriction, and a disposition per spec concern -- and
+:mod:`kiro_crew.agent_sdk.backend_mcp_ability` projects it. :func:`card_payload`
+carries it as its own key so the panel and ``kirocrew doctor`` read one card, while
+each projection stays a projection over ONE source.
+
 Why this is not ``SessionCapabilities``, and not in ``backends.py``
 ------------------------------------------------------------------
 :class:`~kiro_crew.agent_sdk.capabilities.SessionCapabilities` answers what one
@@ -119,6 +129,7 @@ from dataclasses import dataclass
 from typing import Dict, FrozenSet, Mapping, Tuple
 
 from kiro_crew.agent_sdk import backends
+from kiro_crew.agent_sdk.backend_mcp_ability import ability_payload
 
 # ── Card line ids ──
 # Stable machine keys. The LABEL for each is the dashboard's, keyed off the id, so
@@ -157,10 +168,26 @@ NOTE_POD_HOME_RELOCATED = "pod_home_relocated"
 #: The harness holds its own entitlement, so it signs in separately.
 NOTE_OWN_CREDENTIAL_STORE = "own_credential_store"
 #: The harness keeps its own chat record, and a reopen restores from it.
+#: Off the card, in ``kirocrew doctor`` and ``providers/mirrors/README.md`` only:
+#: whose disk the transcript sits on. Crew holds a non-member's transcript under its
+#: own sessions tree and a reopened chat restores from there, so the conversation
+#: comes back either way -- no feature lost, no risk taken, no setting of the
+#: reader's stopped working.
 NOTE_KEEPS_OWN_CHAT_RECORD = "keeps_own_chat_record"
 #: The model list comes from the harness's own advertised select.
+#: Off the card, on the same terms: which registry fills the model picker. A
+#: non-member's list comes from Crew's own registry, which is a SOURCE rather than a
+#: shortfall -- the same models are offered and the same switch works. The agent
+#: file's own ``availableModels`` is a different question and IS on the card, as an
+#: ineffective setting where it holds.
 NOTE_HARNESS_MODEL_LIST = "harness_model_list"
 #: Slash commands travel on Crew's own command channel.
+#: Off the card, on the same terms: which channel carries a slash command. A
+#: non-member is not command-less -- opencode and pi publish their own built-ins as
+#: an ``available_commands_update`` -- so the difference is the channel rather than
+#: the feature. Its input set stays a capability-line input (it is the kiro-family
+#: marker), which is why the decision is recorded here rather than in
+#: :data:`OFF_CARD_SETS`.
 NOTE_CREW_COMMAND_CHANNEL = "crew_command_channel"
 
 #: The auth declaration, rather than a membership set, decides a line.
@@ -245,19 +272,10 @@ SECURITY_LINES: Tuple[_LineSpec, ...] = (
 #: behaviour, which is exactly why none of them is a capability line: a
 #: not-available mark would report a loss where there is none.
 OPERATOR_LINES: Tuple[_LineSpec, ...] = (
+    # Credentials are the one where-it-lives fact that is also the reader's: whose
+    # secret store a harness signs in against is a RISK they carry, not a route Crew
+    # happens to take.
     _LineSpec(NOTE_OWN_CREDENTIAL_STORE, (_FROM_AUTH_DECLARATION,)),
-    # For a non-member Crew holds the transcript under its own sessions tree and a
-    # reopened chat restores from there, so the conversation comes back either
-    # way. What changes is whose disk it is on.
-    _LineSpec(NOTE_KEEPS_OWN_CHAT_RECORD, ("ACP_BACKENDS_HARNESS_OWNED_SESSIONS",)),
-    # A non-member's picker is filled from Crew's own model registry, which is a
-    # source rather than a shortfall.
-    _LineSpec(NOTE_HARNESS_MODEL_LIST, ("ACP_BACKENDS_ADVERTISED_MODEL_SELECTION",)),
-    # The set names the ``_kiro.dev/commands/execute`` RPC, and a non-member is not
-    # command-less: opencode and pi publish their own built-ins as an
-    # ``available_commands_update``. So the card states which CHANNEL carries a
-    # command and claims nothing about a harness that carries its own.
-    _LineSpec(NOTE_CREW_COMMAND_CHANNEL, ("ACP_BACKENDS_KIRO_SLASH_COMMANDS",)),
 )
 
 #: Sets that reach no card line, each with the reason it does not.
@@ -267,6 +285,21 @@ OPERATOR_LINES: Tuple[_LineSpec, ...] = (
 #: DEFECT rather than an absent feature, and a card that listed defect classes in
 #: front of someone choosing a harness would be worse than one line shorter.
 OFF_CARD_SETS: Mapping[str, str] = {
+    "ACP_BACKENDS_HARNESS_OWNED_SESSIONS": (
+        "whose disk the transcript sits on. Crew holds a non-member's transcript under "
+        "its own sessions tree and a reopened chat restores from there, so the "
+        "conversation comes back either way -- the reader loses no feature, carries no "
+        "new risk, and no setting of theirs stops working. Where it lives is in "
+        "`kirocrew doctor` and `providers/mirrors/README.md`, for the reader diagnosing "
+        "a session rather than choosing a harness"
+    ),
+    "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION": (
+        "which registry fills the model picker. A non-member's list comes from Crew's "
+        "own registry, which is a SOURCE rather than a shortfall: the same models are "
+        "offered and the same switch works. The agent file's own `availableModels` is a "
+        "different question, and it is on the card as an ineffective setting where it "
+        "holds"
+    ),
     "ACP_BACKENDS_ACP_RUNTIME": (
         "which transport starts a session: one shared process demuxed by AcpRuntime, or "
         "one process per session. The user gets a session either way; a wrong membership "
@@ -529,4 +562,9 @@ def card_payload(backend: str) -> Dict[str, object]:
         # reader needs and a shipped gateway cannot withdraw.
         "tool_approval": card.tool_approval,
         "offered_by_build": card.offered_by_build,
+        # Its own GROUP rather than these further flat keys: the answer one
+        # question together (how the agent spec reaches this harness), they come
+        # from one source, and a reader on an older gateway gets an absent object
+        # it can test once instead of four fields it has to test apart.
+        "mcp": ability_payload(backend),
     }

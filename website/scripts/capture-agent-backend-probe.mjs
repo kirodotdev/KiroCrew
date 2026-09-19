@@ -22,6 +22,19 @@ import { mkdirSync } from 'node:fs'
 import { serveDist } from './lib/serve-dist.mjs'
 import { json, makeFixedApi, handleBootRoute } from './lib/boot-api.mjs'
 
+/**
+ * Open every `<details>` on the page, idempotently.
+ *
+ * Clicking each `<summary>` TOGGLES, so a scene that reuses a disclosure another scene
+ * already opened closes it again -- and the frame then documents a collapsed card while
+ * the log says it was opened. Setting `open` is the same end state whatever the current
+ * one is, which is what a capture harness needs: a frame is evidence only if the state
+ * it shows does not depend on the order the scenes ran in.
+ */
+async function openAllDisclosures(page) {
+  await page.$$eval('details', nodes => nodes.forEach(node => { node.open = true }))
+}
+
 const OUT = process.argv[2] || '../temp-screenshots/agent-backend-probe'
 const PROJECT = '/home/user/workspace/KiroCrew'
 
@@ -115,6 +128,8 @@ const AVAILABLE = {
     'reasoning_effort', 'model_switch',
   ],
   codex: ['crew_tools', 'reasoning_effort', 'model_switch'],
+  opencode: ['crew_tools', 'reasoning_effort', 'model_switch', 'markdown_agents'],
+  pi: ['reasoning_effort', 'model_switch'],
   deepseek: ['crew_tools', 'reasoning_effort', 'model_switch'],
 }
 
@@ -128,13 +143,19 @@ const SECURITY = {
   kas: ['host_credential_to_child'],
 }
 
-/** The where-it-lives notes each harness raises. Rendered inside the disclosure. */
+/** The where-it-lives note each harness raises. Rendered as a plain card line. */
 const NOTES = {
-  kiro: ['crew_command_channel'],
-  kas: ['crew_command_channel'],
-  claude: ['own_credential_store', 'keeps_own_chat_record', 'harness_model_list'],
-  codex: ['own_credential_store', 'keeps_own_chat_record', 'harness_model_list'],
-  deepseek: ['own_credential_store', 'keeps_own_chat_record', 'harness_model_list'],
+  // `OPERATOR_LINES` carries exactly one id: whose secret store an agent signs in
+  // against. The three that named a route Crew takes -- whose disk holds the transcript,
+  // which registry fills the model picker, which channel carries a slash command -- are
+  // off the card, so a fixture that still sent them would put lines in a frame that the
+  // server can no longer produce.
+  claude: ['own_credential_store'],
+  codex: ['own_credential_store'],
+  goose: ['own_credential_store'],
+  opencode: ['own_credential_store'],
+  pi: ['own_credential_store'],
+  deepseek: ['own_credential_store'],
 }
 
 /** Each harness's routing mechanism, from `ACP_BACKEND_ROUTING`. */
@@ -143,7 +164,50 @@ const APPROVAL = {
   kas: 'agent_spec',
   claude: 'seeded_settings',
   codex: 'session_config',
+  opencode: 'verified_gate_extension',
+  pi: 'verified_gate_extension',
   deepseek: 'unverified',
+}
+
+/**
+ * The card's MCP half, as GET /api/acp-backends now sends it per row.
+ *
+ * Copied from what `PROJECTIONS` in `providers/mirrors/registry.py` actually
+ * declares and each mirror's `rulings()` actually returns, so a frame documents a
+ * payload the server can genuinely produce. `whole-server` is the reach a frame has
+ * to show: it is the one an operator meets by accident, because switching a single
+ * tool off is an ordinary action that says nothing about servers.
+ *
+ * `costs_whole_server` is the server's own classification of the reach, sent beside it
+ * so no renderer decides for itself which reaches are dangerous. `ineffective` lists the
+ * agent-config settings that will not take effect, as one list however the core ruled
+ * them. The projection KIND is deliberately absent: the card does not carry the route
+ * Crew takes, so a fixture that sent one would document a payload the server no longer
+ * produces.
+ *
+ * Keyed by `policy_id`, like every table above. A harness with no entry sends the
+ * shape with an empty kind, which is what an undeclared harness answers.
+ */
+const MCP = {
+  kiro: { per_tool_deny: '', costs_whole_server: false, ineffective: [] },
+  kas: { per_tool_deny: '', costs_whole_server: false, ineffective: [] },
+  deepseek: { per_tool_deny: '', costs_whole_server: false, ineffective: [] },
+  claude: {
+    per_tool_deny: 'settings-file',
+    costs_whole_server: false,
+    ineffective: ['auto_approve', 'hooks'],
+  },
+  codex: {
+    per_tool_deny: 'per-call',
+    costs_whole_server: true,
+    ineffective: ['auto_approve', 'permission_mode', 'model_allowlist', 'hooks'],
+  },
+  pi: { per_tool_deny: '', costs_whole_server: false, ineffective: [] },
+  opencode: {
+    per_tool_deny: 'whole-server',
+    costs_whole_server: true,
+    ineffective: ['auto_approve', 'permission_mode', 'model_allowlist', 'hooks'],
+  },
 }
 
 const card = policy_id => ({
@@ -157,6 +221,7 @@ const card = policy_id => ({
   // deepseek is known and outside the selectable baseline: nothing establishes
   // that its tool calls reach the host gate, so the build never offers it.
   offered_by_build: policy_id !== 'deepseek',
+  ...(MCP[policy_id] ? { mcp: MCP[policy_id] } : {}),
 })
 
 /** One row of GET /api/acp-backends. */
@@ -313,6 +378,34 @@ const SCENE_NOT_OFFERED = {
   ],
 }
 
+/**
+ * Scene 9 — the card's MCP half, which is where these harnesses differ most.
+ *
+ * Three rows, one per answer a reader has to be able to tell apart: kiro-cli reads
+ * the agent file itself, codex has it copied across and keeps a per-tool channel,
+ * and opencode has no per-tool channel at all — so switching one tool off there
+ * withholds the whole server, Kiro Crew's own control plane included. Every value
+ * is the declaration's own; the panel authors none of it.
+ */
+const SCENE_MCP = {
+  schemaEnum: ['', 'kas', 'codex', 'opencode'],
+  backends: [
+    row('codex', 'codex'),
+    row('kas', 'kas'),
+    row('opencode', 'opencode'),
+    row('', 'kiro'),
+  ],
+}
+
+/**
+ * Scene 10 -- the two MCP renderings the other scenes do not reach: claude's
+ * settings-file reach and pi's no-channel kind.
+ */
+const SCENE_MCP_REST = {
+  schemaEnum: ['', 'claude', 'pi'],
+  backends: [row('claude', 'claude'), row('pi', 'pi'), row('', 'kiro')],
+}
+
 let scene = SCENE_LOCAL
 
 const { srv, base } = await serveDist()
@@ -364,18 +457,31 @@ const shoot = async (name) => {
   await page.screenshot({ path: `${OUT}/${name}` })
 }
 
+/**
+ * Put one harness's DETAIL on screen, which is where its own lines render.
+ *
+ * Highlighting is not selecting -- the row is a tab and only the Use button
+ * switches the backend -- so every scene below can walk the list read-only. The
+ * panel opens on the configured harness, so a frame about any other one starts
+ * here.
+ */
+const highlight = async (name) => {
+  await page.getByRole('tab', { name }).click()
+}
+
 const reloadScene = async (next) => {
   scene = next
   await page.reload({ waitUntil: 'domcontentloaded' })
 }
 
 await page.goto(`${base}/developer?tab=agent-backend`, { waitUntil: 'domcontentloaded' })
+await highlight('Claude Code')
 await page.getByText(CLAUDE_INSTALL, { exact: false }).waitFor({ timeout: 20000 })
 await shoot('agent-backend-local.png')
 
 await reloadScene(SCENE_DENIED)
 await page
-  .getByRole('button', { name: 'Claude Code' })
+  .getByRole('tab', { name: 'Claude Code' })
   .waitFor({ state: 'detached', timeout: 20000 })
 await shoot('agent-backend-denied.png')
 
@@ -383,22 +489,26 @@ await reloadScene(SCENE_UNKNOWN)
 await shoot('agent-backend-unknown.png')
 
 await reloadScene(SCENE_RESTART)
-await page.getByText('must restart', { exact: false }).waitFor({ timeout: 20000 })
+await highlight('Claude Code')
+await page.getByText('Press Check again to pick it up', { exact: false }).first().waitFor({ timeout: 20000 })
 await shoot('agent-backend-restart.png')
 
 // Both Claude lines must be on screen before the shutter, so the frame cannot
 // document a half-rendered row.
 await reloadScene(SCENE_CLAUDE_BOTH)
+await highlight('Claude Code')
 await page.getByText("pre-approved in Claude's own settings", { exact: false }).waitFor({ timeout: 20000 })
 await page.getByText('Claude Code is a separate app you sign into yourself', { exact: false }).waitFor({ timeout: 20000 })
 await shoot('agent-backend-claude-both-lines.png')
 
 await reloadScene(SCENE_CODEX)
+await highlight('codex')
 await page.getByText('Codex is a separate tool that signs in on its own', { exact: false }).waitFor({ timeout: 20000 })
 await shoot('agent-backend-codex-signin.png')
 
 await reloadScene(SCENE_CODEX_MISSING)
-await page.getByText('codex-acp', { exact: false }).waitFor({ timeout: 20000 })
+await highlight('codex')
+await page.getByText('npm i -g @agentclientprotocol/codex-acp', { exact: false }).waitFor({ timeout: 20000 })
 await shoot('agent-backend-codex-missing.png')
 
 // Scene 5's payload again, this time with the cards CLOSED and then OPEN. The
@@ -407,15 +517,53 @@ await shoot('agent-backend-codex-missing.png')
 // notes can be seen at all.
 await reloadScene(SCENE_CLAUDE_BOTH)
 await page.getByText('Kiro CLI supports 9 of 11 features', { exact: false }).waitFor({ timeout: 20000 })
-await shoot('agent-backend-cards-collapsed.png')
+await shoot('agent-backend-cards-closed-disclosures.png')
 
-for (const summary of await page.locator('summary').all()) await summary.click()
-await page.getByText('Good to know').first().waitFor({ timeout: 20000 })
+await openAllDisclosures(page)
+// Nothing of the MCP half is behind a toggle now -- the card carries a rule, its
+// exception and one settings group, all open -- so this frame waits on a line every
+// card has rather than on a disclosure's contents.
+await page.getByText('supports 9 of 11 features', { exact: false }).first().waitFor({ timeout: 20000 })
 await shoot('agent-backend-cards-open.png')
 
+// Scene 9: the MCP half, once per state it can render. The card carries two kinds of
+// line -- what a tool-off COSTS and which of the reader's own settings will not take
+// effect -- and nothing else, so there is no summary or disclosure frame to shoot and
+// no frame for the route Crew takes.
+await reloadScene(SCENE_MCP)
+await highlight('opencode')
+// Every string a frame is EVIDENCE for is waited on individually, so the shutter cannot
+// fire on a half-rendered card and the frame cannot document an older draft of the copy.
+await page.getByText('stops every tool on the same server', { exact: false }).waitFor({ timeout: 20000 })
+await page.getByText('will not take effect on opencode', { exact: false }).waitFor({ timeout: 20000 })
+await page.getByText('The hooks your agent config file defines', { exact: false }).waitFor({ timeout: 20000 })
+await shoot('agent-backend-mcp-whole-server.png')
+
+// codex is the one agent with an exception to that rule, and it is the piece a reader
+// called a contradiction until it named itself.
+await highlight('codex')
+await page.getByText('stops every tool on the same server', { exact: false }).waitFor({ timeout: 20000 })
+await page.getByText('One exception', { exact: false }).waitFor({ timeout: 20000 })
+await shoot('agent-backend-mcp-per-call.png')
+
+// kiro-cli reads the agent config file itself: no rule, no ineffective setting, so the
+// MCP half renders nothing at all. The frame is the evidence for that -- a card with no
+// MCP lines rather than a card with reassuring ones.
+await highlight('Kiro CLI')
+await page.getByText('supports 9 of 11 features', { exact: false }).first().waitFor({ timeout: 20000 })
+await shoot('agent-backend-mcp-none.png')
+
+// claude keeps the settings group with no rule above it: its tool-off stops the tool it
+// names, which costs the reader nothing to be told.
+await reloadScene(SCENE_MCP_REST)
+await highlight('Claude Code')
+await page.getByText('will not take effect on Claude Code', { exact: false }).waitFor({ timeout: 20000 })
+await shoot('agent-backend-mcp-settings-file.png')
+
 await reloadScene(SCENE_NOT_OFFERED)
-await page.getByText('This build does not offer this agent.').waitFor({ timeout: 20000 })
-for (const summary of await page.locator('summary').all()) await summary.click()
+await highlight('deepseek')
+await page.getByText('This build does not offer this agent.').first().waitFor({ timeout: 20000 })
+await openAllDisclosures(page)
 await shoot('agent-backend-not-offered.png')
 
 await browser.close()
@@ -425,4 +573,4 @@ if (errors.length) {
   console.error('console/page errors:\n' + errors.join('\n'))
   process.exit(1)
 }
-console.log(`wrote 10 frames to ${OUT}`)
+console.log(`wrote 14 frames to ${OUT}`)

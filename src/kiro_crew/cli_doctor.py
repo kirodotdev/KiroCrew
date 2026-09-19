@@ -1407,13 +1407,12 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     noise on every stock install — and the refs row already speaks when a
     projection drops something.
 
-    A SECOND row, independent of the kind, prints when the selected backend's
-    declared per-tool MCP deny reach is ``whole-server``. That one is not about
-    whether the servers arrive but about what a RESTRICTION on them costs, and it
-    is here because its consequence is the kind an operator meets by accident:
-    switching one tool off is an ordinary action that says nothing about servers,
-    and on such a harness it removes the whole server — Crew's own control plane
-    included. Same terms as the row above: report only, no ``issues`` entry.
+    **The per-tool deny reach is NOT stated here.**
+    :func:`_doctor_backend_ability_cards` above states it once -- in this harness's own
+    ability row, and in the one sentence that says what the costly reach costs -- and a
+    second phrasing for the same harness is how one declaration ends up with two
+    readings that can disagree. What is left here is the part no other line carries:
+    the gap's own address, which is maintainer-facing detail at maintainer length.
 
     Reports only, and appends NO entry to ``issues``, on the terms
     :func:`_doctor_strict_identity` and :func:`_doctor_unresolved_mcp_refs` both
@@ -1422,40 +1421,27 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     failing doctor's exit code on it would make a deliberate choice read as a
     fault.
 
-    Asks ``agent_sdk`` rather than reading the declaration here, for the reason
-    every other backend question in this module does: the record lives in
-    ``providers/mirrors`` and reaching it from a consumer would take a boundary
-    edge the agent-sdk-boundary gate refuses.
+    Asks ``agent_sdk`` for the declaration rather than reading it here -- see
+    :func:`_doctor_backend_ability_cards` below for why, and
+    ``providers/mirrors/README.md`` ("Fill the card") for what the two sections owe a
+    reader between them.
     """
-    from kiro_crew.agent_sdk.drivers.acp import backend_mcp_projection
+    # circular import -- see agent_sdk.backend_mcp_ability._declaration; the same
+    # edge, reached from this consumer instead.
+    from kiro_crew.agent_sdk.backend_mcp_ability import ability_for
 
     try:
         backend = cfg.agent.acp_backend
     except Exception:
         return
-    declared = backend_mcp_projection(backend)
-    if declared is None:
+    try:
+        declared = ability_for(backend)
+    except Exception:
         return
-    kind, channel, tracking, per_tool_deny = declared
+    if not declared.projection:
+        return
+    kind, channel, tracking = declared.projection, declared.channel, declared.tracking
     label = _backend_policy_label(backend)
-    if per_tool_deny == _WHOLE_SERVER_DENY:
-        # The one reach whose consequence an operator meets by accident. Switching a
-        # tool off is an ordinary dashboard action that says nothing about servers,
-        # and on this harness it removes the SERVER -- so a session can lose its
-        # control plane without anything having looked like a mistake. Printed for
-        # the selected backend only, and report-only like every row here.
-        print(f"  mcp per-tool deny: \u23f9 {label} withholds the whole server")
-        _print_wrapped(
-            "This harness has no channel for a per-TOOL MCP restriction: no deny "
-            "slot on the session/new element, no settings file of Crew's, and no "
-            "per-call MCP identity for Crew to refuse a single tool by. So "
-            "switching one tool off (an agent spec's disabledTools, or the "
-            "dashboard's tool-off action) withholds that server ENTIRELY from this "
-            "harness's sessions rather than just that tool -- Crew's own "
-            "kirocrew-core included, which leaves such a session unable to report "
-            "back to its channel. The restriction is honoured, at the cost of the "
-            "server; narrowing nothing leaves every server mounted."
-        )
     if kind != "no-channel":
         return
     print(f"  mcp projection: \u23f9 {label} carries none of Kiro Crew's own tools")
@@ -1473,11 +1459,127 @@ def _doctor_selected_backend_projection(cfg: KiroCrewConfig) -> None:
     _print_wrapped(f"Tracked at: {_safe_display(tracking)}")
 
 
-#: The ``PerToolDeny`` member whose consequence is worth a row. Compared as a
-#: plain string because the value crosses the agent-sdk boundary as one -- the
-#: enum lives in ``providers/mirrors`` and importing it here is the edge the
-#: boundary gate refuses.
-_WHOLE_SERVER_DENY = "whole-server"
+def _doctor_backend_ability_cards(cfg: KiroCrewConfig) -> None:
+    """The MCP ability of the harness IN USE, and which others cost a whole server.
+
+    The rows above answer for the selected harness only when something about it is
+    wrong. This answers what a reader asks before switching, and what the selected
+    harness is doing to their agent file right now: these harnesses are not
+    interchangeable, and every way they differ over the spec has until now lived in
+    source, in a spec document, or in a log line nobody reads.
+
+    **Two lines on a stock run, not a table.** The full per-harness comparison is the
+    dashboard's job -- it has the room, the labels in thirteen languages, and a reader
+    who came to compare. A terminal report is read by someone diagnosing one install,
+    and a row apiece for six harnesses on every run is a section people learn to skip,
+    which costs the report more than the comparison was worth. So exactly two facts
+    print here:
+
+    * the ability card of the harness IN USE -- its projection kind, the reach of a
+      per-tool MCP restriction, and the spec keys it withholds or has no channel for.
+      This one is not a comparison: it is what the reader's own sessions are doing;
+    * the harnesses where switching one tool off can withhold CREW'S OWN servers, named
+      on one line, because that is the fact a chooser needs before they switch and the
+      one an operator otherwise meets by accident. Narrower than "costs a whole server"
+      on purpose: a ``per-call`` harness withholds a third-party server whole and still
+      refuses per tool on Crew's own, so its session keeps the channel it came from and
+      the panel is where that difference has room to be explained.
+
+    Everything else about the harnesses not in use -- their withholds, their gaps,
+    their kinds -- is in the panel, which is where a reader comparing harnesses is: this
+    report answers for the install in front of it and names the one cross-harness cost
+    that a chooser cannot act without.
+
+    **Values, not prose, and the ROUTE lives here.** The row prints what the
+    declaration says -- the kind and the reach in the registry's own spelling -- rather
+    than an English gloss of it. The panel owns the prose, and it deliberately owns
+    LESS: ``native``/``mirror``/``external`` costs a reader choosing a harness nothing,
+    so the card does not carry it and this report is where it is stated. The register
+    suits that reader anyway: they are in a terminal and the next thing they do is read
+    ``providers/mirrors/registry.py``.
+
+    **One consequence sentence, for one reach.** The exception, and it is not a gloss
+    of the row: ``whole-server`` means switching a single tool off withholds the whole
+    server that tool belongs to, and where that server is ``kirocrew-core`` that
+    session cannot report back to the channel it came from. Conditional because the
+    condition is real -- a narrowed third-party server costs that server and not the
+    channel -- and a reader who only ever sees the declared value recovers neither.
+    Which reaches carry the cost at all is the projection's judgement
+    (``McpAbility.costs_control_plane``), not this report's.
+
+    Nothing is authored per harness, so a newly onboarded backend is covered the moment
+    its ``PROJECTIONS`` entry exists.
+
+    Reports only, and appends NO entry to ``issues``, on the terms every row in this
+    neighbourhood sets: a declared difference between harnesses is what the
+    declaration is FOR, and failing doctor's exit code on one would make choosing a
+    harness read as a fault. It declares; it changes nothing and gates nothing.
+
+    Asks ``agent_sdk`` rather than reading ``providers/mirrors`` here: the declaration
+    lives below the boundary and reaching it from a consumer would take an edge the
+    agent-sdk-boundary gate refuses. Both surfaces of this card, and what each owes a
+    reader, are written down once in ``providers/mirrors/README.md`` ("Fill the card").
+    """
+    from kiro_crew.acp_backends import selectable_backend_values
+
+    # circular import -- see agent_sdk.backend_mcp_ability._declaration. Every other
+    # backend question in this module is asked the same way and for the same reason.
+    from kiro_crew.agent_sdk.backend_mcp_ability import ability_for, spec_keys
+
+    try:
+        selected = cfg.agent.acp_backend
+    except Exception:
+        return
+    try:
+        rows = [(backend, ability_for(backend)) for backend in selectable_backend_values()]
+        keys = spec_keys()
+    except Exception:
+        # Triage must survive an unreadable registry; this section is advisory.
+        return
+    if not rows:
+        return
+    in_use: str = ""
+    costly: list[str] = []
+    for backend, ability in rows:
+        label = _backend_policy_label(backend)
+        if ability.costs_control_plane:
+            costly.append(label)
+        if backend != selected:
+            continue
+        if not ability.projection:
+            continue
+        # The DECLARATION's own words, not a second English gloss of them. The panel
+        # already phrases these for a reader who wants prose, in thirteen languages; a
+        # rival wording here would be one declaration with two voices, and the one
+        # nobody could review. Scrubbed because a plugin-registered backend authors its
+        # own values.
+        parts = [f"projection: {_safe_display(ability.projection)}"]
+        if ability.per_tool_deny:
+            parts.append(f"per-tool deny: {_safe_display(ability.per_tool_deny)}")
+        if ability.withheld:
+            named = ", ".join(keys.get(cid, cid) for cid in ability.withheld)
+            parts.append(f"not sent from your agent file: {named}")
+        if ability.no_channel:
+            named = ", ".join(keys.get(cid, cid) for cid in ability.no_channel)
+            parts.append(f"no channel yet: {named}")
+        in_use = "; ".join(parts)
+    if not in_use and not costly:
+        return
+    print("  mcp ability:")
+    if in_use:
+        print(f"    {_backend_policy_label(selected)} (in use): {in_use}")
+    if costly:
+        # What the reach COSTS, once, for the one value whose consequence an operator
+        # meets by accident -- and naming the harnesses, because a chooser cannot act
+        # on a warning that does not say where it holds.
+        _print_wrapped(
+            "On "
+            + ", ".join(costly)
+            + ", switching a single MCP tool off withholds the whole server that tool "
+            "belongs to rather than the tool alone -- and where that server is "
+            "kirocrew-core, that session cannot report back to the channel it came "
+            "from."
+        )
 
 
 def _backend_policy_label(backend: str) -> str:
@@ -4252,6 +4354,7 @@ def _doctor(platform_boot_error: "Exception | None" = None, bundle: bool = False
     _doctor_strict_identity(cfg)
     _doctor_mcp_gateway_daemon(issues)
     _doctor_unresolved_mcp_refs()
+    _doctor_backend_ability_cards(cfg)
     _doctor_selected_backend_projection(cfg)
 
     # ── Credentials (AWS / credential-vending MCP) ──

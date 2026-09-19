@@ -347,21 +347,39 @@ def test_effort_reads_available_on_the_harness_that_uses_a_slash_command() -> No
     assert ACP_BACKEND_KIRO not in sdk_backends.ACP_BACKENDS_EFFORT_VIA_CONFIG_OPTION
 
 
-def test_the_command_channel_is_a_note_and_not_a_capability_line() -> None:
-    """A harness off the kiro RPC is not command-less, so no line may say it is.
+def test_the_command_channel_reaches_no_card_line_at_all() -> None:
+    """A harness off the kiro RPC is not command-less, so the card says nothing.
 
-    opencode and pi publish their own built-ins as an ``available_commands_update``
-    -- so "slash commands stop working" would be false for exactly them. The card
-    states the CHANNEL as a note on the harnesses that use Crew's, and says nothing
-    about a harness carrying its own.
+    opencode and pi publish their own built-ins as an ``available_commands_update``,
+    so "slash commands stop working" would be false for exactly them -- and stating
+    WHICH channel carries a command instead answers a question the reader did not
+    ask: they lose no feature, carry no new risk, and no setting of theirs stops
+    working. It is recorded off the card with that reason, and the channel itself is
+    in ``kirocrew doctor`` and ``providers/mirrors/README.md``.
     """
     line_ids = {spec.id for spec in cards_mod.USER_FACING_LINES}
     assert cards_mod.NOTE_CREW_COMMAND_CHANNEL not in line_ids
-    for backend in (ACP_BACKEND_OPENCODE, ACP_BACKEND_PI):
-        card = cards_mod.card_for(backend)
-        assert cards_mod.NOTE_CREW_COMMAND_CHANNEL not in card.operator_notes
-    kiro = cards_mod.card_for(ACP_BACKEND_KIRO)
-    assert cards_mod.NOTE_CREW_COMMAND_CHANNEL in kiro.operator_notes
+    note_ids = {spec.id for spec in cards_mod.OPERATOR_LINES}
+    assert cards_mod.NOTE_CREW_COMMAND_CHANNEL not in note_ids
+    for backend in (ACP_BACKEND_OPENCODE, ACP_BACKEND_PI, ACP_BACKEND_KIRO):
+        assert cards_mod.NOTE_CREW_COMMAND_CHANNEL not in cards_mod.card_for(backend).operator_notes
+
+
+def test_the_only_where_it_lives_line_left_is_the_credential_store() -> None:
+    """The card carries a where-it-lives fact only where it is also the reader's.
+
+    Whose secret store a harness signs in against is a risk the reader takes on.
+    Whose disk holds the transcript, and which registry fills the model picker, are
+    routes Crew takes: the conversation comes back either way and the same models are
+    offered, so neither costs a feature, adds a risk, or stops a setting of theirs
+    from working. Both are recorded in ``OFF_CARD_SETS`` with that reason.
+    """
+    assert {spec.id for spec in cards_mod.OPERATOR_LINES} == {cards_mod.NOTE_OWN_CREDENTIAL_STORE}
+    for name in (
+        "ACP_BACKENDS_HARNESS_OWNED_SESSIONS",
+        "ACP_BACKENDS_ADVERTISED_MODEL_SELECTION",
+    ):
+        assert name in cards_mod.OFF_CARD_SETS, name
 
 
 def test_the_ungatable_harness_is_named_as_not_offered_and_says_why() -> None:
@@ -424,6 +442,12 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
         "operator_notes",
         "tool_approval",
         "offered_by_build",
+        # The MCP half, projected from the mirror declarations rather than from a
+        # membership set, and carried as its own GROUP: its fields answer one question
+        # together, and a panel on an older gateway tests one absent object instead of
+        # several absent fields. Its own shape is pinned in
+        # ``test_backend_mcp_ability``.
+        "mcp",
     }
     capabilities = payload["capabilities"]
     assert isinstance(capabilities, list)
@@ -440,7 +464,17 @@ def test_the_payload_carries_every_field_the_panel_reads() -> None:
     # The two note lists are separate ON THE WIRE, because the panel renders them
     # in two places: one outside every disclosure, one behind it.
     assert cards_mod.NOTE_CREW_SANDBOX_STANDS_DOWN in payload["security_notes"]
-    assert cards_mod.NOTE_CREW_COMMAND_CHANNEL in payload["operator_notes"]
+    # One where-it-lives note is left on the card, and it is the reader's own risk:
+    # whose secret store the harness signs in against. The three that named a route
+    # Crew takes -- transcript disk, model registry, command channel -- are off it.
+    assert payload["operator_notes"] == []
+    signs_in_itself = cards_mod.card_payload("codex")
+    assert cards_mod.NOTE_OWN_CREDENTIAL_STORE in signs_in_itself["operator_notes"]
+    for backend in sorted(sdk_backends.ACP_BACKENDS_KNOWN):
+        notes = cards_mod.card_payload(backend)["operator_notes"]
+        assert cards_mod.NOTE_CREW_COMMAND_CHANNEL not in notes, backend
+        assert cards_mod.NOTE_KEEPS_OWN_CHAT_RECORD not in notes, backend
+        assert cards_mod.NOTE_HARNESS_MODEL_LIST not in notes, backend
 
 
 def test_the_payload_is_json_native() -> None:

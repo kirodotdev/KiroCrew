@@ -75,6 +75,11 @@ function card(
     operator_notes: string[]
     tool_approval: string
     offered_by_build: boolean
+    mcp: {
+      per_tool_deny: string
+      costs_whole_server?: boolean
+      ineffective: string[]
+    }
   }> = {},
 ) {
   return {
@@ -87,6 +92,38 @@ function card(
     tool_approval: 'agent_spec',
     offered_by_build: true,
     ...over,
+  }
+}
+
+/**
+ * The MCP half of a card, defaulted to the dull answer: projected by a mirror, a
+ * tool-off that stays per tool, nothing withheld.
+ *
+ * Deliberately NOT part of `card()`'s default. A gateway that predates the field
+ * sends no `mcp` at all, so the uninteresting row is the one that carries none and
+ * every test below opts in to the half it is about — the same arrangement as `auth`.
+ */
+function mcp(
+  over: Partial<{
+    per_tool_deny: string
+    costs_whole_server: boolean
+    ineffective: string[]
+  }> = {},
+) {
+  const reach = over.per_tool_deny ?? 'settings-file'
+  return {
+    mcp: {
+      per_tool_deny: reach,
+      // The server ships its classification beside the reach
+      // (`backend_mcp_ability.COSTS_WHOLE_SERVER`), so the fixture ships one too and
+      // a test that states only a reach gets the payload the gateway would send.
+      // Overridable, because the point of a server-side flag is that the two can be
+      // stated independently — an unclassified reach, or one this frontend has never
+      // heard of, is a payload only an override can build.
+      costs_whole_server: reach === 'whole-server' || reach === 'per-call',
+      ineffective: [] as string[],
+      ...over,
+    },
   }
 }
 
@@ -108,6 +145,11 @@ function probeRow(
     operator_notes: string[]
     tool_approval: string
     offered_by_build: boolean
+    mcp: {
+      per_tool_deny: string
+      costs_whole_server?: boolean
+      ineffective: string[]
+    }
   }> = {},
 ) {
   return {
@@ -1344,31 +1386,34 @@ describe('AgentBackendTab detail card', () => {
 
   it('states the operator notes the server sent, and only those', async () => {
     // A note is raised or absent, never raised-and-negated: the server sends the
-    // ids that HOLD, so the panel has no negative form to render.
+    // ids that HOLD, so the panel has no negative form to render. They render as plain
+    // lines rather than behind a heading: the card keeps one where-it-lives fact, the
+    // credential store, and one line needs no toggle to hide it.
     acpBackendsMock.mockResolvedValue({
-      backends: [probeRow('', card({ operator_notes: ['keeps_own_chat_record'] }))],
+      backends: [probeRow('', card({ operator_notes: ['own_credential_store'] }))],
     })
     schemaMock.mockReturnValue(schemaWith(['']))
     wrap()
-    await waitFor(() => expect(screen.getByText('Good to know')).toBeInTheDocument())
-    expect(screen.getByText(/keeps its own copy of the chat/)).toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByText(/Signs in with its own file/)).toBeInTheDocument(),
+    )
     expect(screen.queryByText(/home folder moves into the pod/)).toBeNull()
+    expect(screen.queryByText('Good to know')).toBeNull()
   })
 
-  it('states a security note OUTSIDE the disclosure, not inside it', async () => {
+  it('opens nothing for a security note or a credential note', async () => {
     // "Kiro Crew's sandbox is not confining this child" is as material as how the
-    // harness is made to ask, and both fail OPEN. A reader comparing agents must
-    // not have to open anything to find either, so the security notes render beside
-    // the approval line while the where-it-lives notes stay collapsed. The server
-    // decides which notes are which; this asserts the panel honours the split rather
-    // than re-deriving it.
+    // harness is made to ask, and both fail OPEN. A reader comparing agents must not
+    // have to open anything to find either -- and the same now holds for the one
+    // where-it-lives note the card keeps, since whose secret store an agent signs in
+    // against is a risk the reader takes on rather than a fact they look up once.
     acpBackendsMock.mockResolvedValue({
       backends: [
         probeRow(
           '',
           card({
             security_notes: ['crew_sandbox_stands_down'],
-            operator_notes: ['keeps_own_chat_record'],
+            operator_notes: ['own_credential_store'],
           }),
         ),
       ],
@@ -1377,8 +1422,7 @@ describe('AgentBackendTab detail card', () => {
     wrap()
     await waitFor(() => expect(screen.getByText(/Has its own sandbox/)).toBeInTheDocument())
     expect(screen.getByText(/Has its own sandbox/).closest('details')).toBeNull()
-    // The contrast, in the same render: a where-it-lives note IS inside.
-    expect(screen.getByText(/keeps its own copy of the chat/).closest('details')).not.toBeNull()
+    expect(screen.getByText(/Signs in with its own file/).closest('details')).toBeNull()
   })
 
   it('renders no card at all when the gateway sent none', async () => {
@@ -1432,6 +1476,188 @@ describe('AgentBackendTab detail card', () => {
       expect(screen.getByText('Kiro CLI supports 1 of 2 features')).toBeInTheDocument(),
     )
     expect(screen.queryByRole('tab', { name: 'Claude Code' })).toBeNull()
+  })
+})
+
+describe('AgentBackendTab MCP ability card', () => {
+  /**
+   * The MCP half of the card, narrowed to what switching COSTS the reader.
+   *
+   * A line belongs here only where switching to this agent takes a feature away, adds
+   * a risk, or makes one of the reader's own agent-file settings ineffective. Two
+   * things pass: the deny reach (a risk met by accident) and the settings that will not
+   * take effect. The route Crew takes to the agent — native, mirror, external — is true
+   * and costs the reader nothing, so it is not on the card at all; `kirocrew doctor`
+   * states it for whoever is diagnosing a route.
+   */
+  beforeEach(() => {
+    schemaMock.mockReturnValue(schemaWith(['']))
+  })
+
+  it('states the deny rule outside any disclosure, on an agent that can lose a server', async () => {
+    // THE risk this card exists for: switching one tool off is an ordinary action that
+    // says nothing about servers, so a reader meets the difference by accident unless
+    // the card states it before they pick.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('', { ...card(), ...mcp({ per_tool_deny: 'whole-server' }) })],
+    })
+    wrap()
+    const rule = await screen.findByText(/stops every tool on the same server/)
+    expect(rule.closest('details')).toBeNull()
+    expect(rule.textContent).toContain('Kiro CLI')
+  })
+
+  it('marks the per-call exception as an exception, right under the rule', async () => {
+    // Two sentences that qualify each other without saying so read as a contradiction,
+    // which is what a reader reported. The exception names itself and follows the rule.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('', { ...card(), ...mcp({ per_tool_deny: 'per-call' }) })],
+    })
+    wrap()
+    const rule = await screen.findByText(/stops every tool on the same server/)
+    const exception = panel().getByText(/One exception/)
+    expect(exception.textContent).toContain('kirocrew-core')
+    expect(exception.closest('details')).toBeNull()
+    expect(rule.compareDocumentPosition(exception) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('says nothing about a reach that costs the reader nothing', async () => {
+    // `settings-file` stops the tool it names and nothing else. A line saying so would
+    // be a caveat that always fires, which is a line nobody reads.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('', { ...card(), ...mcp({ per_tool_deny: 'settings-file' }) })],
+    })
+    wrap()
+    await waitFor(() => expect(panel().getByText(/Crew tools/)).toBeInTheDocument())
+    expect(panel().queryByText(/stops every tool on the same server/)).toBeNull()
+    expect(panel().queryByText(/One exception/)).toBeNull()
+  })
+
+  it('names the agent-file settings that will not take effect here', async () => {
+    // The reader's own settings, one consequence sentence each, under one heading that
+    // says what the group IS. Withheld and no-channel arrive as one list: the split is
+    // the mirror maintainer's, and the reader's question is the same either way.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('', {
+          ...card(),
+          ...mcp({ ineffective: ['auto_approve', 'permission_mode', 'hooks'] }),
+        }),
+      ],
+    })
+    wrap()
+    await waitFor(() =>
+      expect(
+        panel().getByText('These settings in your agent config file will not take effect on Kiro CLI'),
+      ).toBeInTheDocument(),
+    )
+    expect(panel().getByText(/The auto-approve rules your agent config file sets/)).toBeInTheDocument()
+    expect(panel().getByText(/The permission mode your agent config file asks for/)).toBeInTheDocument()
+    expect(panel().getByText(/The hooks your agent config file defines/)).toBeInTheDocument()
+  })
+
+  it('renders no heading for an agent that honours the whole file', async () => {
+    // Stated only where it holds: a reader never reads a row of "delivered" marks that
+    // mean "as expected".
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('', { ...card(), ...mcp({ ineffective: [] }) })],
+    })
+    wrap()
+    await waitFor(() => expect(panel().getByText(/Crew tools/)).toBeInTheDocument())
+    expect(panel().queryByText(/will not take effect on/)).toBeNull()
+  })
+
+  it('falls back to the setting id for one this frontend has no phrase for', async () => {
+    // A setting added to the core must not vanish here: the id is a machine word but it
+    // is searchable, where a dropped line tells the reader nothing exists.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('', { ...card(), ...mcp({ ineffective: ['auto_approve', 'some_future_setting'] }) }),
+      ],
+    })
+    wrap()
+    await waitFor(() => expect(panel().getByText('some_future_setting')).toBeInTheDocument())
+    expect(panel().getByText(/The auto-approve rules your agent config file sets/)).toBeInTheDocument()
+  })
+
+  it('never puts the route Crew takes on the card', async () => {
+    // The narrowing rule, asserted from the reader's side: `mirror` / `native` /
+    // `external` costs them no feature, adds no risk, and stops no setting of theirs
+    // working, so no line states it and no phrase for it survives in this file.
+    for (const reach of ['whole-server', 'per-call', 'settings-file']) {
+      acpBackendsMock.mockResolvedValue({
+        backends: [probeRow('', { ...card(), ...mcp({ per_tool_deny: reach }) })],
+      })
+      wrap()
+      await waitFor(() => expect(panel().getByText(/Crew tools/)).toBeInTheDocument())
+      const text = screen.getByRole('tabpanel').textContent ?? ''
+      expect(text).not.toContain('copies them across')
+      expect(text).not.toContain('reads that file itself')
+      expect(text).not.toMatch(/\bmirror\b/)
+      cleanup()
+    }
+  })
+
+  it('leaves no raw {{placeholder}} and no navigation path on any reach', async () => {
+    // The defect class this pins: a label whose STRING names {{name}} while its record
+    // passes no vars. And no wayfinding: the same screen carries more than one MCP
+    // surface, so a path spelled here reads as another place rather than as directions.
+    for (const reach of ['whole-server', 'per-call', 'settings-file']) {
+      acpBackendsMock.mockResolvedValue({
+        backends: [
+          probeRow('', {
+            ...card(),
+            ...mcp({ per_tool_deny: reach, ineffective: ['auto_approve', 'hooks'] }),
+          }),
+        ],
+      })
+      wrap()
+      await waitFor(() => expect(panel().getByText(/Crew tools/)).toBeInTheDocument())
+      const text = screen.getByRole('tabpanel').textContent ?? ''
+      expect(text).not.toContain('{{')
+      expect(text).not.toContain('Connections')
+      cleanup()
+    }
+  })
+
+  it('shows the MCP half for the harness on screen and no other', async () => {
+    // Highlight is not selection, and this half follows the same rule as the capability
+    // half: one card at a time, so the reader can compare by arrowing.
+    acpBackendsMock.mockResolvedValue({
+      backends: [
+        probeRow('', { ...card(), ...mcp({ per_tool_deny: 'settings-file' }) }),
+        probeRow('opencode', { ...card(), ...mcp({ per_tool_deny: 'whole-server' }) }),
+      ],
+    })
+    schemaMock.mockReturnValue(schemaWith(['', 'opencode']))
+    wrap()
+    await waitFor(() => expect(row('opencode')).toBeInTheDocument())
+    expect(screen.queryByText(/stops every tool on the same server/)).toBeNull()
+    highlight('opencode')
+    await waitFor(() =>
+      expect(panel().getByText(/stops every tool on the same server/)).toBeInTheDocument(),
+    )
+  })
+
+  it('renders nothing MCP for a gateway that sent no mcp group', async () => {
+    // An older gateway sends no group at all, and the card then says nothing about MCP
+    // rather than guessing.
+    acpBackendsMock.mockResolvedValue({ backends: [probeRow('', { ...card() })] })
+    wrap()
+    await waitFor(() => expect(panel().getByText(/Crew tools/)).toBeInTheDocument())
+    expect(panel().queryByText(/stops every tool on the same server/)).toBeNull()
+    expect(panel().queryByText(/will not take effect on/)).toBeNull()
+  })
+
+  it('reads one card and writes no config', async () => {
+    // The whole half is advisory: nothing on it refuses a selection and nothing on it
+    // saves one.
+    acpBackendsMock.mockResolvedValue({
+      backends: [probeRow('', { ...card(), ...mcp({ per_tool_deny: 'whole-server' }) })],
+    })
+    wrap()
+    await screen.findByText(/stops every tool on the same server/)
+    expect(patchConfigMock).not.toHaveBeenCalled()
   })
 })
 
@@ -1653,8 +1879,11 @@ describe('AgentBackendTab new backend', () => {
     expect(screen.getByText(/through an add-on Kiro Crew loads and checks/)).toBeInTheDocument()
     // The security note, never behind the disclosure.
     expect(screen.getByText(/Signs in with its own file/).closest('details')).toBeNull()
-    // The where-it-lives note, behind it.
-    expect(screen.getByText(/keeps its own copy of the chat/).closest('details')).not.toBeNull()
+    // A where-it-lives note the server DID send renders, and as a plain line: which
+    // notes reach the card is the server's classification (`OPERATOR_LINES`), and the
+    // panel renders what arrives rather than re-deciding it. Nothing is behind a
+    // toggle now that the group is one line for a stock harness.
+    expect(screen.getByText(/keeps its own copy of the chat/).closest('details')).toBeNull()
     // The server's remedy, verbatim.
     expect(screen.getByText('Run: wireweave auth')).toBeInTheDocument()
 

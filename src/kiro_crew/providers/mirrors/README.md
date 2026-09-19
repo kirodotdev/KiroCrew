@@ -175,9 +175,72 @@ structural reason the same missing-tools defect shipped on four harnesses in a r
    measurement no lane runs is a measurement that stops being true without telling
    anyone. Dependabot bumps the manifest weekly, and that bump PR's run of the lane
    is where a new release's drift shows up -- re-measure there, never relax.
+8. **Fill the card.** Nothing to write — the section below is what the declaration
+   you just wrote already renders. Read it back as the operator will, because that
+   is the step that catches a kind or a reach you did not mean.
 
 The folder makes a mirror easy to find and easy to copy. The test is what asks
 the question. Both are needed — a folder alone is just a tidier place to forget.
+
+## Fill the card: what this declaration shows the operator
+
+Every field of the declaration above is read back to the person CHOOSING the
+backend. That is the last step of onboarding a harness here, and it costs nothing
+to write: the card is a projection
+(`src/kiro_crew/agent_sdk/backend_mcp_ability.py`), so a harness with a
+`PROJECTIONS` entry has a complete card and a harness without one has a card that
+says nothing rather than a card that is quietly wrong.
+
+It renders in two places, from one projection, and they carry DIFFERENT amounts of
+it — the card is narrower than the record on purpose:
+
+- **Developer > Agent Backend**, in the detail for the highlighted harness, and only
+  where switching costs the reader something: the deny reach as a rule with its
+  exception, and the spec settings that will not take effect. Not the projection KIND
+  — `native`/`mirror`/`external` names the route Crew takes, which no reader can act
+  on. Labels are keyed by `PerToolDeny` reach and by `Concern`, never by backend,
+  which is why a new harness needs no frontend edit and no locale edit.
+- **`kirocrew doctor`**, in two lines rather than a table: the ability card of the
+  harness IN USE — naming the withheld concerns by the key the agent spec itself
+  spells (`permissions.defaultMode`, not the card's machine id), because the reader
+  there is holding the file — and one sentence naming every harness where a tool-off
+  can withhold Crew's own control plane, which is the fact a chooser needs before
+  switching. The row
+  prints declared values; the sentence says what the `whole-server` reach COSTS,
+  because that consequence reaches Crew's own control plane and no reading of the
+  value supplies it. The full per-harness comparison is the panel's: it has the room,
+  and a row apiece on every terminal run is a section readers learn to skip.
+
+Six things reach the card, and one deliberately does not:
+
+The admission rule is one line: a fact reaches the CARD only where switching to this
+harness costs the reader a feature, adds a risk, or makes one of their own agent-file
+settings ineffective. Everything else the declaration knows is true, useful to a
+maintainer, and stays in `kirocrew doctor` and this file.
+
+| On the card | From | Reads as |
+|---|---|---|
+| **Not** the projection kind | `McpProjection.kind` | the route Crew takes — no feature lost, no risk taken, no setting of theirs stopped. `kirocrew doctor` states it |
+| The per-tool deny reach | `McpProjection.per_tool_deny` | what switching ONE tool off costs here — that tool, or the whole server |
+| Whether that reach costs a whole server | `COSTS_WHOLE_SERVER` in `backend_mcp_ability.py`, shipped beside the reach as `costs_whole_server` | which reaches earn the prominent slot, decided once for every surface rather than re-derived per renderer — true of `whole-server` and of `per-call`, which withholds any non-Crew server whole |
+| Whether it costs CREW's servers | `McpAbility.costs_control_plane` in `backend_mcp_ability.py`, read by the terminal report and not shipped | the narrower question: only `whole-server` takes `kirocrew-core` with it, which is what leaves a session unable to report back. `per-call` refuses per tool on Crew's own servers, so it costs a third-party server and not the channel |
+| Concerns ruled `withheld` | the mirror's `rulings()` | a settled decision that a part of the spec is not sent |
+| Concerns ruled `no-channel` | the mirror's `rulings()` | a gap the transport cannot carry yet, with an address recorded for it |
+| **Not** the `reason` prose | — | written for the reader of this folder, at this folder's length. A user-facing reason would be a NEW field every mirror fills in, not this one re-registered |
+
+Two facts an operator might expect are absent on purpose. **Transports** are not a
+per-backend constant and must not be rendered as one: they are read from the live
+session's `initialize` answer (`codex.drop_unadvertised_transports`), precisely so a
+released adapter that gains or drops one is not silently contradicted by a table.
+And the card is **advisory** — it does not refuse a selection. Per-tool MCP deny is
+not a requirement on every provider, so declaring the `whole-server` form before a
+session runs is the whole obligation; enforcing a per-call deny on a transport that
+has no per-call identity is not.
+
+`test/test_backend_mcp_ability.py` holds this: every selectable backend answers,
+every `Concern` is either on the card or recorded off it with a reason, and every
+kind and reach reaches a reader. A concern added to the vocabulary fails that test
+until somebody decides which of the two it is.
 
 ## Where the translation logic lives
 

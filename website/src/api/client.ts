@@ -1380,6 +1380,39 @@ export interface AcpBackendProbe {
    * standing fact the tool-approval line explains.
    */
   offered_by_build?: boolean
+  /**
+   * What switching to this harness COSTS the reader, from the mirror declarations
+   * `providers/mirrors/registry.py` already carries (`agent_sdk/backend_mcp_ability.py`).
+   * OPTIONAL, like every other card field, because a gateway that predates it sends
+   * none.
+   *
+   * A user-consequence subset rather than a projection dump: a line is here only where
+   * switching costs a feature, adds a risk, or makes one of the reader's own agent-file
+   * settings ineffective. Which ROUTE Crew takes to the harness -- native, mirror,
+   * external -- is deliberately absent: it is true, and it costs the reader nothing.
+   * `kirocrew doctor` states it for the reader diagnosing a route.
+   *
+   * `per_tool_deny` is `PerToolDeny`'s value (`settings-file` / `per-call` /
+   * `whole-server`), `''` where the declaration carries none, and
+   * `costs_whole_server` is the server's own classification of it: `true` where
+   * switching ONE tool off can cost a whole server rather than that tool, which is
+   * `whole-server` and `per-call` alike. The panel renders the rule only where that
+   * flag holds, and the `per-call` exception under it.
+   *
+   * `ineffective` lists the spec settings that will not take effect here, as one list
+   * however the core ruled them -- a withhold is a settled decision, a no-channel an
+   * open gap, and both answer the reader's one question the same way. Stated only where
+   * they hold, so a harness that honours the whole file renders nothing.
+   *
+   * It is ADVISORY. Per-tool MCP deny is not a requirement on every provider: a harness
+   * with no per-call deny channel withholds the whole server instead, and this is where
+   * it says so before a session runs. Nothing here refuses a selection.
+   */
+  mcp?: {
+    per_tool_deny: string
+    costs_whole_server?: boolean
+    ineffective: string[]
+  }
 }
 
 let _sessionExpiredShown = false
