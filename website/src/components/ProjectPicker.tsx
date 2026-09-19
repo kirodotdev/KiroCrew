@@ -5,6 +5,7 @@ import { FolderOpen, ChevronRight, ChevronLeft, Clock, Search } from 'lucide-rea
 import { api } from '../api/client'
 import { useListKeyboardNav } from '../hooks/useListKeyboardNav'
 import ErrorNotice from './ErrorNotice'
+import { RetryControl } from './RetryControl'
 import { findReport, type ErrorReport } from '../utils/errorReport'
 import { endsWithSeparator, isWindowsPath, lastSegment, parentIsDriveList, pathSeparator, stripTrailingSeparator } from '../utils/browsePath'
 
@@ -34,6 +35,10 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const [browseParent, setBrowseParent] = useState('')
   const [browseDirs, setBrowseDirs] = useState<{ name: string; path: string }[]>([])
   const [recentDirs, setRecentDirs] = useState<string[]>([])
+  // Separate from the retry flag: clearing it on success would unmount the notice mid-click.
+  const [recentFailed, setRecentFailed] = useState(false)
+  const [retryingRecent, setRetryingRecent] = useState(false)
+  const [picked, setPicked] = useState(false)
   const [recentQuery, setRecentQuery] = useState('')
   const [browseSel, setBrowseSel] = useState(0)
   // Which listing failed last, if any: a directory (`browse`) or the drive
@@ -66,6 +71,7 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const dropRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const recentSearchRef = useRef<HTMLInputElement>(null)
+  const recentTabRef = useRef<HTMLButtonElement>(null)
   const browseItemRefs = useRef<(HTMLElement | null)[]>([])
   const anchorRectRef = useRef<DOMRect | null>(anchorRect ?? null)
   anchorRectRef.current = anchorRect ?? null
@@ -136,16 +142,28 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
   const canGoUp = atDriveRoot || (!!browseParent && browseParent !== browsePath)
   const goUp = () => { if (atDriveRoot) browseDrives(); else browse(browseParent) }
 
+  const loadRecents = useCallback(() => api.recentProjects().then(
+    d => {
+      const dirs = d.dirs || []
+      setRecentDirs(dirs)
+      setRecentFailed(false)
+      return { ok: true, rows: dirs.length }
+    },
+    () => {
+      setRecentFailed(true)
+      return { ok: false, rows: 0 }
+    },
+  ), [])
+
   useEffect(() => {
     if (!open) return
     setRecentQuery('')
     setListFailed(null)
-    api.recentProjects().then(d => {
-      setRecentDirs(d.dirs || [])
-      setTab(d.dirs?.length ? 'recent' : 'browse')
-    }).catch(() => setTab('browse'))
+    setPicked(false)
+    setRecentFailed(false)
+    loadRecents().then(({ ok, rows }) => setTab(ok && rows > 0 ? 'recent' : 'browse'))
     browse()
-  }, [open, browse])
+  }, [open, browse, loadRecents])
 
   useEffect(() => {
     if (!open) return
@@ -288,13 +306,37 @@ export default function ProjectPicker({ open, onOpenChange, anchorRef, anchorRec
     })()}>
       {/* Tabs */}
       <div className="flex border-b border-border">
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('recent') }}>
+        <button ref={recentTabRef} className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'recent' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setPicked(true); setTab('recent') }}>
           <Clock size={12} /> {i18nT('components.projectPicker.recent')}
         </button>
-        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setTab('browse') }}>
+        <button className={`flex-1 px-3 py-2 text-[12px] font-medium flex items-center justify-center gap-1.5 transition-colors ${tab === 'browse' ? 'text-accent border-b-2 border-accent' : 'text-muted hover:text-text'}`} onMouseDown={e => { e.preventDefault(); setPicked(true); setTab('browse') }}>
           <FolderOpen size={12} /> {i18nT('components.projectPicker.browse')}
         </button>
       </div>
+
+      {/* Also on Browse until she picks a tab: the failure is what selected Browse. */}
+      {(tab === 'recent' || !picked) && (recentFailed || retryingRecent) && (
+        <div className="px-3 py-2 border-b border-border flex items-center gap-2">
+          {/* No hand-off: it navigates to the chat, unmounting this popover mid-recovery. */}
+          <ErrorNotice variant="inline" message={i18nT('components.projectPicker.recent_unavailable')} />
+          <RetryControl
+            busy={retryingRecent}
+            label={i18nT('components.projectPicker.retry')}
+            cause={i18nT('components.projectPicker.recent_unavailable')}
+            onRetry={() => {
+              setRetryingRecent(true)
+              return loadRecents().then(({ ok, rows }) => {
+                setRetryingRecent(false)
+                if (!ok) return
+                if (!picked && rows > 0) setTab('recent')
+                // The search input mounts only with rows, `inputRef` only on Browse.
+                const target = recentSearchRef.current ?? inputRef.current ?? recentTabRef.current
+                target?.focus()
+              })
+            }}
+          />
+        </div>
+      )}
 
       {tab === 'recent' ? (
         <>

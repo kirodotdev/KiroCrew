@@ -7458,6 +7458,8 @@
       "project_directory_path": "Путь к каталогу проекта",
       "recent": "Недавние",
       "recent_projects": "Недавние проекты",
+      "recent_unavailable": "Недавние проекты недоступны",
+      "retry": "Повторить",
       "search_recent_projects": "Поиск по недавним проектам",
       "search_recent_projects_2": "Поиск по недавним проектам…",
       "select": "Выбрать",
