@@ -327,10 +327,7 @@ def service_path(home: str) -> str:
 class Platform(enum.Enum):
     """Supported service-management platforms."""
 
-    # System-level systemd. Unit lives at /etc/systemd/system/, write
-    # and control commands require sudo. The name reflects the privilege
-    # model: a user-level (~/.config/systemd/user/) variant doesn't work
-    # on older systemd (e.g. 219), so we don't ship one.
+    # systemd on Linux; the Linux backend selects user or system scope.
     SYSTEMD = "systemd"
     LAUNCHD = "launchd"
     UNSUPPORTED = "unsupported"
@@ -357,18 +354,16 @@ def restart_command_hint() -> str:
     scopes are not interchangeable — printing the wrong one sends the user
     down a dead end:
 
-    * ``SYSTEMD`` — the unit is **system-level** at
-      ``/etc/systemd/system/kirocrew.service`` (see
-      :mod:`kiro_crew.service.linux`). ``systemctl --user`` fails on AL2
-      (no per-user systemd manager), so the working command needs sudo:
-      ``sudo systemctl restart kirocrew``.
+    * ``SYSTEMD`` — use the installed unit's user or system scope.
     * ``LAUNCHD`` / ``UNSUPPORTED`` — defer to the service-aware
       ``kirocrew restart`` CLI, which resolves the right mechanism itself.
 
-    Centralised so the update path and the Slack restart-failure hint share
-    one source of truth and can never drift back to the broken
-    ``systemctl --user`` string.
+    Centralised so the update path and Slack use the same scope.
     """
     if current_platform() is Platform.SYSTEMD:
+        from kiro_crew.service import linux
+
+        if linux.user_unit_path().is_file():
+            return f"systemctl --user restart {SERVICE_NAME}"
         return f"sudo systemctl restart {SERVICE_NAME}"
     return "kirocrew restart"

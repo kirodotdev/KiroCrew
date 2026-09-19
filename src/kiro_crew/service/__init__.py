@@ -1,13 +1,11 @@
 """Service management for the KiroCrew gateway.
 
-Provides ``install``, ``uninstall``, ``status`` for systemd (Linux,
-system-level unit at ``/etc/systemd/system/``) and launchd (macOS,
-LaunchAgent under ``~/Library/LaunchAgents/``).
+Provides ``install``, ``uninstall``, ``status`` for systemd (Linux, preferring
+the per-user manager) and launchd (macOS, LaunchAgent under
+``~/Library/LaunchAgents/``).
 
 The gateway always runs as the invoking user — never root. On Linux,
-sudo is needed only to write the unit file and invoke ``systemctl``;
-no kirocrew / MCP / LLM code is ever invoked under sudo. On macOS no
-sudo is required at all because LaunchAgents live in the user's home.
+sudo is only needed by the system-scope fallback and optional host hardening.
 
 Public entry points used by the CLI:
     install_service()

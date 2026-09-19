@@ -10,8 +10,6 @@ workstation, and a test must never be in a position to write to selinuxfs.
 from __future__ import annotations
 
 import os
-import shlex
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -431,6 +429,12 @@ class TestStartFailureCoversWhatThePreflightCannotProve:
     def _restart_fails(monkeypatch, *, enforcing):
         monkeypatch.setenv("USER", "tester")
         monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(svc_linux, "_user_manager_available", lambda: False)
+        monkeypatch.setattr(
+            svc_linux,
+            "user_unit_path",
+            lambda: svc_linux.UNIT_PATH.parent / ".missing-user.service",
+        )
         # The gate finds nothing: this is precisely the wrapper case.
         monkeypatch.setattr(svc_linux.selinux, "blocks_system_unit", lambda _p: (False, "allowed"))
         monkeypatch.setattr(svc_linux.selinux, "is_enforcing", lambda: enforcing)
@@ -442,7 +446,7 @@ class TestStartFailureCoversWhatThePreflightCannotProve:
 
         return run
 
-    def test_enforcing_host_gets_the_selinux_hypothesis_and_remedy(self, monkeypatch):
+    def test_enforcing_host_gets_the_selinux_hypothesis(self, monkeypatch):
         run = self._restart_fails(monkeypatch, enforcing=True)
         with (
             patch(
@@ -478,25 +482,6 @@ class TestStartFailureCoversWhatThePreflightCannotProve:
         assert "systemctl --user enable --now" not in msg
         assert "loginctl enable-linger" not in msg
 
-    def test_the_hint_is_much_shorter_than_the_proven_refusal(self, monkeypatch):
-        """A hypothesis must not cost the operator as much text as a finding."""
-        monkeypatch.setenv("USER", "tester")
-        monkeypatch.setattr(svc_linux.selinux, "is_enforcing", lambda: True)
-        with (
-            patch(
-                "kiro_crew.service.common.shutil.which",
-                return_value="/home/tester/.local/bin/kirocrew",
-            ),
-            patch.object(svc_linux, "_home_for_user", return_value="/home/tester"),
-        ):
-            hint = svc_linux.selinux_start_failure_hint()
-            refusal = svc_linux.selinux_refusal("a proven denial")
-
-        # Measured on this tree: 15 lines vs 68. The bound is what stops the
-        # remedy (or another wall of prose) drifting back onto the guess path.
-        assert len(hint.splitlines()) <= 20, "the hypothesis path must stay compact"
-        assert len(refusal.splitlines()) > len(hint.splitlines()) * 3
-
     def test_non_enforcing_host_gets_no_selinux_noise(self, monkeypatch):
         """A restart failure on a host without SELinux must read exactly as before."""
         run = self._restart_fails(monkeypatch, enforcing=False)
@@ -519,21 +504,6 @@ class TestStartFailureCoversWhatThePreflightCannotProve:
         monkeypatch.setattr(svc_linux.selinux, "is_enforcing", lambda: False)
         assert svc_linux.selinux_start_failure_hint() == ""
 
-    def test_only_the_proven_refusal_carries_the_remedy(self, monkeypatch):
-        """The remedy belongs behind a proven denial, not ahead of a guess."""
-        monkeypatch.setenv("USER", "tester")
-        monkeypatch.setattr(svc_linux.selinux, "is_enforcing", lambda: True)
-        with (
-            patch(
-                "kiro_crew.service.common.shutil.which",
-                return_value="/home/tester/.local/bin/kirocrew",
-            ),
-            patch.object(svc_linux, "_home_for_user", return_value="/home/tester"),
-        ):
-            remedy = svc_linux._user_scope_remedy()
-            assert remedy in svc_linux.selinux_refusal("some proven denial")
-            assert remedy not in svc_linux.selinux_start_failure_hint()
-
 
 class TestInstallRefusesAnUnstartableSystemUnit:
     """install() must stop BEFORE the first write, not after enabling a
@@ -543,6 +513,12 @@ class TestInstallRefusesAnUnstartableSystemUnit:
     def _blocked(monkeypatch, blocked=True):
         monkeypatch.setenv("USER", "tester")
         monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(svc_linux, "_user_manager_available", lambda: False)
+        monkeypatch.setattr(
+            svc_linux,
+            "user_unit_path",
+            lambda: svc_linux.UNIT_PATH.parent / ".missing-user.service",
+        )
         monkeypatch.setattr(
             svc_linux.selinux,
             "blocks_system_unit",
@@ -571,7 +547,7 @@ class TestInstallRefusesAnUnstartableSystemUnit:
         assert "203/EXEC" in msg
         assert "policy denies init_t execute on user_home_t" in msg
 
-    def test_refusal_carries_a_pasteable_user_unit(self, monkeypatch):
+    def test_refusal_points_to_the_user_manager(self, monkeypatch):
         self._blocked(monkeypatch)
         with patch(
             "kiro_crew.service.common.shutil.which",
@@ -581,135 +557,8 @@ class TestInstallRefusesAnUnstartableSystemUnit:
                 svc_linux.install()
 
         msg = str(exc.value)
-        # The remedy must be the user-scope unit, complete and self-contained.
-        assert "systemctl --user enable --now" in msg
-        assert "loginctl enable-linger" in msg
-        assert str(svc_linux.USER_UNIT_SUBDIR) in msg
-        assert "WantedBy=default.target" in msg
-        assert "ExecStart=" in msg
-        # Every command named must exist. `kirocrew service` has only
-        # install/uninstall/status, so the remedy may not invent a subcommand.
-        assert "kirocrew service print-unit" not in msg
-
-    def test_refusal_names_only_real_service_subcommands(self, monkeypatch):
-        """Guards the class of bug where a remedy prints a command we do not
-        ship, which sends the operator into `invalid choice`."""
-        self._blocked(monkeypatch)
-        with patch(
-            "kiro_crew.service.common.shutil.which",
-            return_value="/home/tester/.local/bin/kirocrew",
-        ):
-            with pytest.raises(svc_linux.ServiceInstallError) as exc:
-                svc_linux.install()
-
-        real = {"install", "uninstall", "status"}
-        for token in str(exc.value).split("kirocrew service ")[1:]:
-            word = token.split()[0].strip("`.,\n")
-            # A pipe-joined hint like `status|uninstall` names several at once.
-            assert set(word.split("|")) <= real, f"unknown subcommand: {word}"
-
-    def test_refusal_never_lets_the_pasting_shell_pick_the_account(self, monkeypatch):
-        """A user unit has no User=, so whoever's manager loads it runs the agent.
-
-        `service install` runs under sudo, so the shell reading this refusal is
-        usually root's. If the remedy said `~` or `$USER` it would name /root and
-        root, and the operator would end up running untrusted agent tools as root
-        -- the exact thing install() refuses outright a few lines earlier. Nothing
-        in the remedy may be resolved by the shell that pastes it.
-        """
-        self._blocked(monkeypatch)
-        with (
-            patch(
-                "kiro_crew.service.common.shutil.which",
-                return_value="/home/tester/.local/bin/kirocrew",
-            ),
-            patch.object(svc_linux, "_home_for_user", return_value="/home/tester"),
-        ):
-            with pytest.raises(svc_linux.ServiceInstallError) as exc:
-                svc_linux.install()
-
-        msg = str(exc.value)
-        assert "$USER" not in msg, "the pasting shell must not choose the account"
-        assert "~/" not in msg, "the pasting shell must not choose the home"
-        # Joined the same way the code joins it rather than hard-coded with
-        # forward slashes: this file is collected on Windows, where Path renders
-        # separators as backslashes, and a POSIX-spelled literal here fails there
-        # for a reason that has nothing to do with the property being tested.
-        expected_unit = (
-            Path("/home/tester") / svc_linux.USER_UNIT_SUBDIR / (f"{SERVICE_NAME}.service")
-        )
-        assert str(expected_unit) in msg
-        assert "loginctl enable-linger tester" in msg
-
-    def test_refusal_warns_that_a_root_shell_would_run_the_agent_as_root(self, monkeypatch):
-        """The path names alone are not enough -- an operator pasting into the
-        wrong shell must be told what goes wrong, since a user unit gives no
-        error, it just silently runs as the wrong account."""
-        self._blocked(monkeypatch)
-        with (
-            patch(
-                "kiro_crew.service.common.shutil.which",
-                return_value="/home/tester/.local/bin/kirocrew",
-            ),
-            patch.object(svc_linux, "_home_for_user", return_value="/home/tester"),
-        ):
-            with pytest.raises(svc_linux.ServiceInstallError) as exc:
-                svc_linux.install()
-
-        msg = str(exc.value)
-        assert "AS tester" in msg
-        assert "ROOT" in msg
-        # `sudo -u` looks like the obvious way to run as another account and
-        # cannot work here (no session, so no user manager to talk to).
-        assert "sudo -u tester` is NOT" in msg
-        assert "machinectl shell tester@" in msg
-
-    def test_remedy_quotes_a_home_containing_a_space(self, monkeypatch):
-        """The remedy is copy-pasted verbatim, so an unquoted path word-splits.
-
-        `mkdir -p /home/tester with space/.config/systemd/user` would create two
-        wrong directories and the redirect would land the unit where systemd never
-        looks -- an operator following the instructions exactly would end up with
-        no service and no error explaining why.
-        """
-        self._blocked(monkeypatch)
-        spaced_home = "/home/tester with space"
-        with (
-            patch(
-                "kiro_crew.service.common.shutil.which",
-                return_value="/home/tester/.local/bin/kirocrew",
-            ),
-            patch.object(svc_linux, "_home_for_user", return_value=spaced_home),
-        ):
-            with pytest.raises(svc_linux.ServiceInstallError) as exc:
-                svc_linux.install()
-
-        msg = str(exc.value)
-        quoted = shlex.quote(str(Path(spaced_home) / svc_linux.USER_UNIT_SUBDIR))
-        assert f"mkdir -p {quoted}" in msg
-        # The bare, splittable form must be gone entirely.
-        assert f"mkdir -p {spaced_home}" not in msg
-
-    @pytest.mark.skipif(
-        os.name == "nt",
-        reason="shlex.quote is POSIX and quotes the backslashes in a Windows path, "
-        "so 'needs no quoting' is only meaningful on POSIX -- and what this renders "
-        "is a Linux shell snippet either way",
-    )
-    def test_ordinary_paths_are_not_needlessly_quoted(self, monkeypatch):
-        """shlex.quote leaves simple paths alone; the common case must stay clean."""
-        self._blocked(monkeypatch)
-        with (
-            patch(
-                "kiro_crew.service.common.shutil.which",
-                return_value="/home/tester/.local/bin/kirocrew",
-            ),
-            patch.object(svc_linux, "_home_for_user", return_value="/home/tester"),
-        ):
-            with pytest.raises(svc_linux.ServiceInstallError) as exc:
-                svc_linux.install()
-
-        assert "'" not in str(exc.value).split("mkdir -p ")[1].splitlines()[0]
+        assert "systemctl --user" in msg
+        assert "login session" in msg
 
     def test_install_proceeds_normally_when_not_blocked(self, monkeypatch):
         """The overwhelmingly common host must be completely unaffected."""
@@ -733,6 +582,12 @@ class TestInstallRefusesAnUnstartableSystemUnit:
         """It must judge the SAME binary render_unit puts in ExecStart."""
         monkeypatch.setenv("USER", "tester")
         monkeypatch.setattr(svc_linux.os, "geteuid", lambda: 1000, raising=False)
+        monkeypatch.setattr(svc_linux, "_user_manager_available", lambda: False)
+        monkeypatch.setattr(
+            svc_linux,
+            "user_unit_path",
+            lambda: svc_linux.UNIT_PATH.parent / ".missing-user.service",
+        )
         asked: list[str] = []
         monkeypatch.setattr(
             svc_linux.selinux,

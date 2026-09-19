@@ -187,9 +187,10 @@ kirocrew service status
 kirocrew service uninstall
 ```
 
-The service survives an SSH disconnect, restarts on crash, and starts on boot.
-On Linux the install prompts for `sudo` once to write the unit; the gateway
-itself then runs as your own user. macOS needs no `sudo`.
+The service runs detached and restarts on crash. Linux prefers a per-user
+systemd unit and falls back to a system unit when the user manager is
+unavailable; enable lingering if the user unit must survive logout. macOS uses
+a launchd agent.
 
 Tail its output with `kirocrew logs -f`.
 

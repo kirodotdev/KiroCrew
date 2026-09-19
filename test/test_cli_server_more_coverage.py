@@ -633,6 +633,29 @@ class TestLogsCmdSystemd:
         unit.write_text("[Unit]\n", encoding="utf-8", newline="\n")
         monkeypatch.setattr(cli_server, "current_platform", lambda: Platform.SYSTEMD)
         monkeypatch.setattr(svc_linux, "UNIT_PATH", unit)
+        monkeypatch.setattr(
+            svc_linux,
+            "user_unit_path",
+            lambda: tmp_path / "missing-user.service",
+        )
+
+    def test_user_journal_is_execed_without_sudo(
+        self, monkeypatch, tmp_path, sel_rec, fake_execvp
+    ) -> None:
+        unit = tmp_path / "user" / "kirocrew.service"
+        unit.parent.mkdir()
+        unit.write_text("[Unit]\n", encoding="utf-8", newline="\n")
+        monkeypatch.setattr(svc_linux, "user_unit_path", lambda: unit)
+
+        def unreachable(*_a, **_k):  # pragma: no cover - proves no permission probe
+            raise AssertionError("user journal must not use the system-journal probe")
+
+        monkeypatch.setattr(subprocess, "run", unreachable)
+        with pytest.raises(_ExecCalled) as exc:
+            cli_server._logs_cmd(argparse.Namespace(follow=True, lines=42))
+        assert exc.value.file == "journalctl"
+        assert exc.value.argv[:2] == ["journalctl", "--user"]
+        assert "-f" in exc.value.argv
 
     def test_unprivileged_journal_is_execed_when_probe_returns_rows(
         self, monkeypatch, sel_rec, fake_execvp

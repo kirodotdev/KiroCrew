@@ -761,10 +761,11 @@ open "$URL"
 kirocrew service install
 ```
 
-On Linux this writes a **system-level** systemd unit at
-`/etc/systemd/system/kirocrew.service` and enables it, so the gateway survives
-SSH disconnects, restarts on failure, and starts on boot
-(`WantedBy=multi-user.target`). On macOS it writes a launchd LaunchAgent at
+On Linux this prefers a per-user systemd unit at
+`~/.config/systemd/user/kirocrew.service`, falling back to
+`/etc/systemd/system/kirocrew.service` when the user manager is unavailable.
+Enable lingering if the user unit must survive logout or run before login. On
+macOS it writes a launchd LaunchAgent at
 `~/Library/LaunchAgents/dev.kirocrew.gateway.plist` with `RunAtLoad`,
 `KeepAlive=true`, and a finite `ExitTimeOut`, so it starts at login, relaunches
 after exit, and force-kills only after the graceful stop deadline. An explicit
@@ -778,106 +779,11 @@ kirocrew restart             # restart (service-aware)
 kirocrew service uninstall   # remove the unit / plist
 ```
 
-**Sudo scope on Linux:** the install shells out to `sudo install` (to place the
-unit as root-owned `0644`) and `sudo systemctl` (daemon-reload, enable,
-restart). No kirocrew, MCP, or LLM code path runs under sudo. Once started the
-gateway runs as `User=$USER Group=$(id -gn)`, not root. The unit also caps
-crash-looping with `StartLimitBurst=3` / `StartLimitIntervalSec=300` and pins
-`LimitNOFILE=65536`, because a stock 1024 FD limit fails the frontend
-production build with `EMFILE`.
-
-**Why system-level rather than `systemctl --user`:** older distros (systemd 219
-era) have no working per-user manager, and `systemctl --user` there fails with
-`Failed to get D-Bus connection`. A system unit behaves the same on every
-systemd since 2015.
-
-### Hosts without a working `systemd --user`
-
-If you specifically want a **user** unit and `systemctl --user status` errors
-out, the per-user manager is not running. Enable it once (needs sudo), then
-install the user unit:
-
-```bash
-sudo tee /etc/systemd/system/user@$(id -u).service << 'EOF'
-[Unit]
-Description=User Manager for UID %i
-After=systemd-user-sessions.service
-After=user-runtime-dir@%i.service
-Wants=user-runtime-dir@%i.service
-
-[Service]
-LimitNOFILE=infinity
-LimitNPROC=infinity
-User=%i
-PAMName=systemd-user
-Type=notify
-PermissionsStartOnly=true
-ExecStartPre=/bin/loginctl enable-linger %i
-ExecStart=/usr/lib/systemd/systemd --user
-Slice=user-%i.slice
-KillMode=mixed
-Delegate=yes
-TasksMax=infinity
-Restart=always
-RestartSec=15
-
-[Install]
-WantedBy=default.target
-EOF
-
-sudo systemctl daemon-reload
-sudo systemctl enable user@$(id -u).service
-sudo systemctl start user@$(id -u).service
-```
-
-`ExecStartPre=/bin/loginctl enable-linger` is the load-bearing line: without
-lingering, the user manager (and everything under it) is torn down when your
-last login session ends, which defeats the entire point of running 24/7.
-
-Verify with `systemctl --user status`, then install the user unit with the helper
-script [`assets/setup.sh`](assets/setup.sh). It resolves the `kirocrew` binary
-and the Node version, renders [`assets/kirocrew.service`](assets/kirocrew.service)
-into `~/.config/systemd/user/`, and enables it. It reads the template from its
-own directory, so run it from there, and it refuses to proceed if a gateway is
-already running (that port conflict again):
-
-```bash
-cd docs/guides/assets && ./setup.sh
-```
-
-Either way, read the rendered `Environment=PATH=` line before you start the
-service and drop any entry that does not exist on your host, then add whatever
-does: the unit gets exactly this `PATH` and nothing from your shell profile.
-
-Or do it by hand:
-
-```bash
-mkdir -p ~/.config/systemd/user
-cp docs/guides/assets/kirocrew.service ~/.config/systemd/user/
-sed -i "s|KIROCREW_BIN|$(command -v kirocrew)|g" ~/.config/systemd/user/kirocrew.service
-sed -i "s/%u/$(whoami)/g" ~/.config/systemd/user/kirocrew.service
-sed -i "s/NVM_NODE_VERSION/$(node --version)/g" ~/.config/systemd/user/kirocrew.service
-systemctl --user daemon-reload
-systemctl --user enable kirocrew
-systemctl --user start kirocrew
-```
-
-`systemctl --user status kirocrew` should report `active (running)`.
-
-> **`Failed to get D-Bus connection` while running `systemctl --user`?** Your
-> shell has no `XDG_RUNTIME_DIR`, which is how the client finds the per-user bus
-> socket. This is normal in a non-login shell, in a `cron` job, and inside an
-> agent-spawned subprocess. Export it and retry:
-> `export XDG_RUNTIME_DIR=/run/user/$(id -u)`.
-
-Manage a user unit:
-
-| Action | Command |
-|---|---|
-| Status | `systemctl --user status kirocrew` |
-| Restart | `systemctl --user restart kirocrew` |
-| Logs | `journalctl --user -u kirocrew -f` |
-| Uninstall | `systemctl --user disable --now kirocrew` |
+**Linux scope:** user installs run `systemctl --user` without sudo. The system
+fallback retains the root-owned unit and sudo-backed `systemctl` calls. The unit
+also caps crash-looping with `StartLimitBurst=3` /
+`StartLimitIntervalSec=300` and pins `LimitNOFILE=65536`, because a stock 1024
+FD limit fails the frontend production build with `EMFILE`.
 
 ### Hand-rolled system unit
 
