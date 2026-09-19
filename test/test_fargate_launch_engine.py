@@ -30,6 +30,7 @@ from kiro_crew.cloud.fargate import (
     Placement,
     SecretRef,
     TaskDefinitionSpec,
+    credential_recipient,
     default_log_spec,
     revision_fingerprint,
 )
@@ -722,17 +723,30 @@ def _secret() -> SecretRef:
     )
 
 
-def _spec() -> FargateLaunchSpec:
-    return FargateLaunchSpec(
+_IMAGE = "123456789012.dkr.ecr.us-west-2.amazonaws.com/crew@sha256:" + "a" * 64
+
+
+def _spec(**over: object) -> FargateLaunchSpec:
+    """A launchable spec: every field set, INCLUDING the operator's confirmation.
+
+    ``confirmed_recipient`` is derived through the shipped renderer rather than written out,
+    so a change to how a recipient is rendered cannot leave this fixture confirming a string
+    the engine does not produce -- the fixture would then test the renderer's output against
+    itself, and every test through it would refuse for a reason none of them is about.
+    """
+    fields: dict = dict(
         placement=Placement(
             cluster="crews",
             subnets=("subnet-aaaa",),
             security_groups=("sg-bbbb",),
         ),
-        image="123456789012.dkr.ecr.us-west-2.amazonaws.com/crew@sha256:" + "a" * 64,
+        image=_IMAGE,
         secrets=(_secret(),),
         cpu_architecture="X86_64",
+        confirmed_recipient=credential_recipient(_IMAGE, (_secret(),)),
     )
+    fields.update(over)
+    return FargateLaunchSpec(**fields)
 
 
 class _EcsDouble:
@@ -748,9 +762,14 @@ class _EcsDouble:
         self.tasks_for_teardown: list[dict] = []
         self.described_fingerprint: str | None = "USE_REAL"
         self.run_requests: list[dict] = []
+        #: Every ECS operation reached, in order. A test that must show an operation did
+        #: NOT happen needs the whole sequence: asserting on `run_requests` alone would
+        #: pass for a launch that registered a durable task definition and then stopped.
+        self.ops: list[str] = []
 
     def checked_json(self, args, profile="", region="", *, action, timeout=60):
         op = args[1]
+        self.ops.append(op)
         if op == "register-task-definition":
             return {"taskDefinition": {"revision": 1}}
         if op == "run-task":
@@ -1259,3 +1278,105 @@ def test_mutation_teardown_returns_the_plan_confirmation(monkeypatch) -> None:
     ]
     _patch_aws(monkeypatch, double)
     assert FargateLaunchEngine(_spec()).teardown(tag=TAG, profile="p", region="us-west-2") is False
+
+
+class TestTheCredentialRecipientIsConfirmed:
+    """A launch delivers the model credential into a container ``cloud.json`` names, so the
+    operator confirms WHICH container before it is handed over.
+
+    This is what makes the file safe to leave as an ordinary file. Every alternative defends
+    the file itself -- a read-only seal, a hidden mount, an alias check -- and each of those
+    is a protection over a NAME that has to be complete across every platform and every way a
+    name can be aliased. The confirmation comes from the launch request instead, so no
+    filesystem property is load-bearing and rewriting the file produces a refusal that names
+    both values rather than a launch nobody was asked about.
+    """
+
+    def test_an_unconfirmed_launch_is_refused_and_shows_the_recipient(self, monkeypatch):
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+        engine = FargateLaunchEngine(_spec(confirmed_recipient=""))
+
+        with pytest.raises(ValueError) as exc:
+            engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+        # The refusal has to SHOW the recipient, or the operator cannot confirm it: the
+        # value they must supply is derived from a file they may not have written.
+        assert credential_recipient(_IMAGE, (_secret(),)) in str(exc.value)
+        # And it must be THIS refusal, not the mismatch one. An empty confirmation also
+        # fails the mismatch comparison, so the two checks overlap and nothing unconfirmed
+        # gets through either way -- but an operator who confirmed nothing needs to be told
+        # to confirm, not told that their confirmation disagrees with the file. Asserting
+        # only "some ValueError naming the recipient" cannot tell the two apart, and a
+        # mutation that deletes this branch then survives.
+        assert "nothing in the request confirmed" in str(exc.value), str(exc.value)
+        assert double.ops == [], "an unconfirmed launch reached AWS"
+
+    def test_a_recipient_that_changed_since_it_was_confirmed_is_refused(self, monkeypatch):
+        """The tampering case, which is the whole point.
+
+        The operator confirms the image they chose; the block then names another. Both values
+        appear in the refusal, because "does not match" without them leaves an operator
+        unable to see WHAT was substituted.
+        """
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+        theirs = credential_recipient(_IMAGE, (_secret(),))
+        substituted = "public.ecr.aws/attacker/x@sha256:" + "b" * 64
+        engine = FargateLaunchEngine(_spec(image=substituted, confirmed_recipient=theirs))
+
+        with pytest.raises(ValueError) as exc:
+            engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+        message = str(exc.value)
+        assert theirs in message and substituted in message, message
+        assert double.ops == [], "a substituted recipient reached AWS"
+
+    def test_a_confirmed_launch_proceeds(self, monkeypatch):
+        """The complement, so neither test above can be satisfied by refusing everything."""
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+
+        engine = FargateLaunchEngine(_spec())
+        engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+        assert "run-task" in double.ops, double.ops
+
+    def test_nothing_is_registered_before_the_recipient_is_confirmed(self, monkeypatch):
+        """Refused before ``RegisterTaskDefinition``, not only before ``RunTask``.
+
+        A revision is DURABLE in the account and carries the secret ARNs, so a confirmation
+        checked only at run time would already have written the recipient down where a later
+        launch could name the revision number directly.
+        """
+        double = _EcsDouble()
+        _patch_aws(monkeypatch, double)
+        engine = FargateLaunchEngine(_spec(confirmed_recipient="something else entirely"))
+
+        with pytest.raises(ValueError):
+            engine.provision(tag=TAG, size_key="1024/2048", profile="p", region="us-west-2")
+
+        assert "register-task-definition" not in double.ops, double.ops
+
+    def test_the_check_runs_before_every_other_refusal_provision_makes(self):
+        """Ordered FIRST, pinned structurally.
+
+        The tag and architecture checks refuse too, and a recipient check sitting after them
+        would let a launch with a malformed tag report the tag and never mention that its
+        credential recipient was also unconfirmed -- so an operator fixing the tag would meet
+        the real refusal only on the second attempt.
+        """
+        import ast
+        import inspect
+        import textwrap
+
+        source = textwrap.dedent(inspect.getsource(FargateLaunchEngine.provision))
+        body = ast.parse(source).body[0].body
+        raising = [
+            n
+            for n in body
+            if isinstance(n, ast.If) and any(isinstance(x, ast.Raise) for x in ast.walk(n))
+        ]
+        assert raising, "provision refuses nothing, so this pin measures nothing"
+        first = ast.dump(raising[0])
+        assert "confirmed_recipient" in first, ast.unparse(raising[0])

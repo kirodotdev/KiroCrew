@@ -489,6 +489,28 @@ _CREW_READONLY_LEAVES: tuple[str, ...] = (
     # an owner address-bar launch. The gateway installer runs outside the agent
     # sandbox, so it can still replace the managed copy.
     "playwright-cli",
+    # The cloud launcher's config. In-sandbox code READS it (the provisioner selector calls
+    # ``CloudConfig.load()``, and so does the launch record's legacy fallback, which every
+    # ``cloud`` verb reaches through ``LaunchState.load``), and a WRITE would let an
+    # agent choose the container image a Fargate launch runs -- the task's execution
+    # role delivers the model credential into that image before it starts, so a
+    # rewritten ``fargate.image`` turns the owner's next launch into credential
+    # delivery to an image the owner never chose. The digest rule constrains the
+    # reference's FORM, not who owns the registry, so it is no obstacle. Same
+    # both-layers treatment ``playwright-cli`` gets, for the reason the READONLY note
+    # gives: ``is_sensitive_write_path`` covers the leaf on the file-tool path, while
+    # a sandboxed shell's ``open(..., "w")`` reaches it however the write is spelled,
+    # and only a kernel denial holds there. Nothing in the product writes this file at
+    # all -- the launch path's own fields live in ``cloud.launch_state`` -- so the seal
+    # costs no writer anything; it is the operator's file and only they write it.
+    "cloud.json",
+    # The launch RECORD. Sealed for a reason of its own rather than by association: the tag
+    # in it is what ``cloud destroy`` resolves without ``--tag``, so a writable copy lets a
+    # sandboxed process choose which stack a ``destroy --yes`` deletes. The write gate above
+    # covers the agent's file-edit tool; only a kernel denial covers a sandboxed shell's
+    # ``open(..., "w")``, however the write is spelled. Absent-file coverage is the
+    # pre-create list below, because a name nothing occupies is a name an agent creates.
+    "cloud_launch_state.json",
     # The app dev-mode AUTHORIZATION record (operator grants binding each dev
     # app to its resolved ui root — see apps/dev_mode.py). Sealing it makes
     # "operator, not agent" kernel-enforced: a sandboxed process cannot mint,
@@ -979,7 +1001,47 @@ _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
 #: replaceable, which would let an agent choose the executable the gateway runs.
 _CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = ("playwright-cli",)
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
+#: Read-only FILE leaves whose NAME must remain the sealed name, for the same reason
+#: as the directory list above and needing its own entry because the file loop below
+#: only WARNS on an alias where the directory loop REFUSES. A bind mount seals the
+#: link's REFERENT, so a leaf that resolves leaves the lexical name replaceable in a
+#: writable parent: a sandboxed process unlinks it and drops its own file there, and
+#: the seal is intact around a name that now means something else. For ``cloud.json``
+#: that name decides which container image a Fargate launch runs, and the task's
+#: execution role delivers the model credential into it.
+_CREW_NOFOLLOW_READONLY_FILE_LEAVES: tuple[str, ...] = ("cloud.json",)
+
+#: Every strict no-alias crew-home leaf a DELEGATED spawn's workspace must not overlap, with
+#: the wording that names which seal an operator is looking at. The refusal's target list is
+#: DERIVED from these keys rather than from one of the two lists above, because a list-shaped
+#: derivation covers one SHAPE and leaves the other uncovered with nothing saying so: a leaf
+#: sealed as a DIRECTORY is not reached by a derivation over the FILE leaves, and a workspace
+#: set to it keeps the write its seal denies. The assert below makes drift loud in both
+#: directions -- a sealed leaf with no wording, and wording for a leaf nothing seals.
+_DELEGATED_OVERLAP_LEAF_REASONS: "dict[str, tuple[str, str]]" = {
+    "cloud.json": (
+        "sealed cloud configuration",
+        "the agent could choose the container image a Fargate launch runs, and the task's "
+        "execution role delivers the model credential into it",
+    ),
+    "playwright-cli": (
+        "sealed browser runtime",
+        "the agent could replace the browser executable the gateway runs",
+    ),
+}
+assert set(_DELEGATED_OVERLAP_LEAF_REASONS) == set(_CREW_NOFOLLOW_READONLY_FILE_LEAVES) | set(
+    _CREW_NOFOLLOW_READONLY_DIR_LEAVES
+)
+
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
+    # The launch record. Criterion 1 (an EMPTY document means what an ABSENT one means) is
+    # met by ``LaunchState.load`` treating a document carrying none of its three keys as no
+    # record at all and consulting the legacy fields, which is exactly what it does for an
+    # absent file -- so a pre-created ``{}`` cannot strand an install whose pointer still
+    # lives in ``cloud.json``. Criterion 2 (a stale sealed read fails toward refusal) holds
+    # too: a sandboxed reader frozen at ``{}`` sees no tag and the command exits with "no
+    # previous launch found" rather than acting on one, which is narrower than the truth.
+    "cloud_launch_state.json",
     "computer_use.json",
     "oauth_endpoints.json",
     "aws_service_consent.json",
@@ -1003,6 +1065,18 @@ _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     # namespace sandbox.
     "ssh_auth_sock_consent.json",
     "settings_seeds.json",
+    # The cloud launcher's config, and the leaf where an ABSENT file is the more
+    # dangerous case: with no file there is no seal, so an agent could CREATE the
+    # whole ``fargate`` block -- its own image beside the owner's real secret ARNs --
+    # and the owner's next launch would deliver the model credential into it.
+    # Criterion 1: ``CloudConfig.load()`` returns the same defaults for ``{}`` as for
+    # an absent or unparseable file, and ``fargate_config()`` reads ``{}`` as no
+    # block, so an empty document means exactly what an absent one means.
+    # Criterion 2: a stale sealed read fails toward refusal. A pinned ``{}`` leaves a
+    # sandboxed reader seeing no Fargate block and no saved profile even after the
+    # operator writes one, so the lane stays UNREGISTERED and an in-sandbox launch
+    # reads as unconfigured -- narrower than the truth, never wider.
+    "cloud.json",
     # The fork-lineage sidecar satisfies both criteria the way
     # ``file_delivery_consent.json`` does: ``agent_state._read`` returns ``{}``
     # for absent, unreadable, AND an empty document alike, so a pre-created
@@ -1369,6 +1443,71 @@ def _require_real_dir_nofollow(target: str) -> None:
         )
 
 
+def _require_real_file_nofollow(target: str, *, harm: str, remedy: str) -> None:
+    """Confirm *target* is a lone regular file, else refuse. For strict file leaves only.
+
+    The file analogue of :func:`_require_real_dir_nofollow`, and stricter than
+    :func:`_warn_if_alias_backed` on purpose. That function only WARNS about the two
+    shapes an ``MS_RDONLY`` bind cannot cover -- a symlink whose NAME stays replaceable,
+    and a regular file carrying a second hardlink whose alias sits outside the mount --
+    because refusing them for every ceiling would turn an ordinary dotfile manager or
+    snapshot tool into a hard spawn failure, a wider blast radius than the exposure.
+
+    That trade is right for a ceiling whose worst case is a stale policy, and wrong for a
+    leaf whose contents pick an unrecoverable action. Two do: an aliased ``cloud.json``
+    picks the container image a Fargate launch runs, and the task's execution role
+    delivers the model credential into it; an aliased launch record picks which stack a
+    ``cloud destroy --yes`` deletes. Both refuse, and both refuse at the seam that
+    CONSUMES the file rather than on the spawn path, so the cost is one command's refusal
+    instead of every sandboxed spawn on a host whose files legitimately carry a second
+    name. Callers keep using :func:`_warn_if_alias_backed` for every other leaf.
+
+    *harm* names what a write through the second name buys, and *remedy* is the one
+    command that clears it. They come from the CALLER, with no default, because the two
+    strict leaves are refused for different reasons and a message naming the wrong
+    consequence sends an operator at the wrong file -- and because a third leaf must state
+    its own reason rather than silently inherit the first one's.
+
+    UNCONDITIONAL, and an earlier version of this was not. It exempted a file that
+    carried no Fargate block, on the reasoning that an alias selects no image when there
+    is no image -- which is wrong, because the agent does not need to swap a field it can
+    CREATE. Given a writable alias and no block, an agent writes a COMPLETE block through
+    the alias and the owner's next launch runs the image it chose. That is the same
+    reasoning that already put this leaf in the pre-create list, where an ABSENT file is
+    the dangerous case for exactly this reason; the exemption failed to carry it one step
+    further. Any rule that reads the file's current contents has the same hole, because
+    contents are what the attacker supplies, so this rule reads no contents at all.
+    """
+    try:
+        info = os.lstat(target)
+    except FileNotFoundError:
+        return
+    except OSError as exc:
+        raise SandboxCeilingUnsealable(
+            f"cannot stat the strict governance ceiling {target}: {exc}"
+        ) from exc
+    if stat.S_ISLNK(info.st_mode):
+        pointed_at = "(unreadable)"
+        with contextlib.suppress(OSError):
+            pointed_at = os.readlink(target)
+        raise SandboxCeilingUnsealable(
+            f"the strict governance ceiling {target} is a SYMLINK -> {pointed_at}. The seal "
+            "binds the file it resolves to while the link name stays in a writable "
+            f"directory, so a sandboxed process could replace the name and {harm}. {remedy}"
+        )
+    if not stat.S_ISREG(info.st_mode):
+        raise SandboxCeilingUnsealable(
+            f"cannot seal {target}: it is not a regular file, so the read-only bind would "
+            f"not cover what a reader resolves there. {remedy}"
+        )
+    if info.st_nlink > 1:
+        raise SandboxCeilingUnsealable(
+            f"the strict governance ceiling {target} has {info.st_nlink} hardlinks. A bind "
+            "mount seals a MOUNT, not an inode, so a write through the other name reaches "
+            f"the very inode this ceiling exposes and can {harm}. {remedy}"
+        )
+
+
 def _publish_empty_ceiling(
     target: str, parent: str, content: bytes = _EMPTY_CEILING_DOCUMENT
 ) -> bool:
@@ -1501,6 +1640,20 @@ def _materialize_sealable_ceilings() -> list[str]:
         parent = os.path.dirname(target)
         _refuse_if_dangling_symlink(target)
         if os.path.exists(target):
+            # WARNS for every leaf, strict ones included. This function runs from
+            # ``namespace_argv`` on every Linux sandboxed spawn, so refusing here refuses the
+            # whole host's agent work -- a chat turn, a cron job, a subagent -- whenever a
+            # governance leaf carries a second name, and a second name is what stow, chezmoi
+            # and ``rsync --link-dest`` leave behind. That cost is not paid for the residual:
+            # each strict leaf's real harm is answered at the seam that CONSUMES the file --
+            # ``require_unaliased_cloud_config`` from the provisioner seam for ``cloud.json``,
+            # whose alias would choose the container a launch hands the model credential to,
+            # and ``require_unaliased_launch_state`` from ``LaunchState.load`` for the launch
+            # record, whose alias would choose the stack a ``destroy --yes`` deletes.
+            # The seal is defence in depth here, not the property the design rests on.
+            #
+            # The warn still fires, because the alias really is outside the read-only bind:
+            # a silent skip would leave the log claiming a seal that another name reaches.
             _warn_if_alias_backed(target)
             continue
         if not os.path.isdir(parent):
@@ -1516,8 +1669,132 @@ def _materialize_sealable_ceilings() -> list[str]:
                 f"cannot publish the governance ceiling {target}; it would stay writable "
                 "inside the sandbox"
             )
+        else:
+            # A competing creator won the publish. Re-checked on the same terms as the
+            # present-file branch above -- warned, not refused -- because the reason is the
+            # same: this path decides whether every spawn on the host runs, and the alias
+            # harm is answered where a launch consumes the file.
+            _warn_if_alias_backed(target)
 
     return created
+
+
+def _warn_aliased_strict_leaves() -> None:
+    """Report an aliased strict leaf on the universal spawn path, without refusing.
+
+    Same two shapes :func:`_warn_if_alias_backed` covers, over the strict leaves, and
+    reported for the same reason: a second name on a configuration file is what a dotfile
+    manager or a hardlinking backup leaves behind, and refusing it here refuses EVERY
+    sandboxed spawn on the host. The seal is still not covering that alias, so saying
+    nothing would leave a log claiming a seal that is reachable under another name.
+
+    The refusal for the one leaf whose alias picks a credential recipient lives at the point
+    that consumes it, :func:`require_unaliased_cloud_config`, so the consequence lands on the
+    launch rather than on everything else the host does.
+    """
+    for leaf in _CREW_NOFOLLOW_READONLY_FILE_LEAVES:
+        _warn_if_alias_backed(os.path.join(str(config_dir()), leaf))
+
+
+def require_unaliased_cloud_config() -> None:
+    """Refuse an aliased ``cloud.json`` at the point a launch consumes it.
+
+    PUBLIC, and called from ``platform.defaults.DefaultRemoteProvisionerProvider`` where the
+    saved block becomes a `FargateLaunchEngine`. That is the only place the alias matters: a
+    write through an unsealed second name picks the container image a launch runs, and the
+    task's execution role delivers the model credential into it.
+
+    Placed here rather than on the spawn path so the refusal costs one lane's launch instead
+    of every sandboxed spawn on a host whose files legitimately carry a second name. It is
+    still unconditional on CONTENT -- an agent that can write through an alias does not need
+    to swap a block it can create -- and reads no file contents, only ``lstat``.
+
+    Platform-independent, and that is why it is one function rather than a check inside each
+    launcher: the refusal is a fact about the NAME and never depended on the sealing
+    mechanism, so a per-launcher copy would only give the two platforms something to drift
+    on. Both mechanisms are name-based and neither follows a link -- a read-only bind seals a
+    mount, a Seatbelt ``deny file-write*`` matches a pathname -- so in each case the alias
+    reaches the same inode by a name the rule does not cover.
+    """
+    for leaf in _CREW_NOFOLLOW_READONLY_FILE_LEAVES:
+        _require_real_file_nofollow(
+            os.path.join(str(config_dir()), leaf),
+            harm=(
+                "choose the container image a Fargate launch runs, which is what the task's "
+                "execution role delivers the model credential into"
+            ),
+            remedy=(
+                "Make the path a lone regular file: replace a link with a regular file, or "
+                "break the extra hardlink."
+            ),
+        )
+
+
+def _delete_file_command(target: str, *, windows: "bool | None" = None) -> str:
+    """The command an operator runs to delete *target*, in the shell they are actually in.
+
+    A refusal's whole value is that the person reading it can act on it, so the remedy has to
+    be a command that exists on their box. ``rm`` is not one on Windows outside PowerShell, and
+    POSIX single quotes are not quoting characters to ``cmd`` at all -- so ``shlex.quote`` on a
+    ``C:\\...`` path produces ``rm 'C:\\Users\\...'``, which names a command they do not have,
+    quoted in a way their shell would not accept, for a file they do have.
+
+    ``del`` is the one spelling that works in both shells a Windows operator is plausibly in:
+    a ``cmd`` builtin, and a PowerShell alias for ``Remove-Item``. Double quotes are what both
+    accept, and a Windows path cannot contain ``"``, so no escaping question arises.
+
+    *windows* defaults to this host and exists as a PARAMETER so BOTH renderings are
+    exercisable from one platform. Every platform defect in this area came from the same shape:
+    a string written once, verified where it was written, and asserted as general. A default-only
+    reading of ``IS_WINDOWS`` would leave the Windows branch measurable on Windows alone, which
+    is how this one reached CI.
+    """
+    on_windows = platform_compat.IS_WINDOWS if windows is None else windows
+    if on_windows:
+        return f'del "{target}"'
+    return f"rm {shlex.quote(target)}"
+
+
+def require_unaliased_launch_state(path: str) -> None:
+    """Refuse an alias-backed launch record at the point a command consumes its tag.
+
+    PUBLIC, and called from ``cloud.launch_state.LaunchState.load`` -- the one read every
+    tag-consuming verb goes through, and the read ``cloud destroy`` resolves its target
+    from. The harm is narrower than ``cloud.json``'s and just as unrecoverable: a write
+    through an unsealed second name puts any tag in the record, and ``cloud destroy --yes``
+    deletes the stack it names. ``cloud launch`` re-attaching to a forged tag is the same
+    substitution, quieter.
+
+    The record is sealed against agent writes on three layers already -- the file-write
+    gate, the kernel read-only seal, and pre-creation so an absent name cannot be squatted
+    -- and every one of those covers a PATH. An alias reaches the same inode by a name none
+    of them names, which is exactly the gap this refuses; the layers are what keep an agent
+    from creating the alias in the first place, and this is what stops a tag being consumed
+    from one that already exists.
+
+    Takes the path being READ rather than deriving it, so the file this checks and the file
+    the caller goes on to consume cannot be two different files. A window still remains
+    between the check and the consume -- an inode swap in between is not visible to any
+    ``lstat``-based rule, and no rule can close the hardlink shape at all -- which is why
+    this is one layer of several rather than the only one.
+
+    NOT added to :data:`_CREW_NOFOLLOW_READONLY_FILE_LEAVES`. That list is walked where a
+    spawn is prepared, so a leaf in it refuses every sandboxed spawn on a host whose files
+    legitimately carry a second name (stow, chezmoi, ``rsync --link-dest``) -- the whole box
+    for one command's exposure, and the regression a review already blocked once. The warn
+    on the spawn path stays a warn.
+    """
+    _require_real_file_nofollow(
+        path,
+        harm=(
+            "choose which stack `kirocrew cloud destroy --yes` deletes, and a deleted stack "
+            "and its data do not come back"
+        ),
+        remedy=(
+            f"Remove the aliased name with `{_delete_file_command(path)}`; `kirocrew cloud list` "
+            "finds your instance again."
+        ),
+    )
 
 
 def _materialize_maskable_dirs() -> list[str]:
@@ -7163,20 +7440,33 @@ def kiro_internal_sandbox_switch() -> tuple[str, str]:
     return _KIRO_INTERNAL_SETTINGS_PATH, _KIRO_INTERNAL_SANDBOX_KEY
 
 
-def delegated_workspace_exposes_agents_dir(work_dir: "str | os.PathLike[str] | None") -> str | None:
-    """Reason a kiro-cli spawn must be refused because its workspace would leave
-    the sealed kiro agents tree writable, or ``None`` when it may proceed.
+def delegated_workspace_exposes_sealed_target(
+    work_dir: "str | os.PathLike[str] | None",
+) -> str | None:
+    """Reason a kiro-cli spawn must be refused because its workspace would leave a
+    SEALED target writable, or ``None`` when it may proceed.
 
-    The agents-tree seal (:func:`_resolved_kiro_agents_targets`) is a rule of
-    Kiro Crew's OWN launcher. A spawn delegated to kiro-cli's internal sandbox
-    (macOS with that sandbox enabled, every first-party Windows spawn) never
-    passes through that launcher, and the delegated sandbox treats the
-    workspace as writable — so a workspace that IS, CONTAINS or sits INSIDE the
-    agents directory lets the child rewrite fork/template specs and hand its
-    next spawn forged grants. Refusing here, before the spawn, is the only
-    enforcement point left on those paths. Where Kiro Crew's launcher does
-    wrap the child the seal holds regardless of workspace, so this returns
-    ``None`` and keeps ``$HOME``-rooted workspaces working there.
+    Two targets, one guard. Both seals are rules of Kiro Crew's OWN launcher: the
+    kiro agents tree (:func:`_resolved_kiro_agents_targets`), whose fork and
+    template specs decide what the next spawn may do, and the strict no-alias
+    config leaf (``cloud.json``), which names the container image a Fargate launch
+    runs and therefore the image the task's execution role hands the model
+    credential to.
+
+    A spawn delegated to kiro-cli's internal sandbox (macOS with that sandbox
+    enabled, every first-party Windows spawn) never passes through that launcher,
+    and the delegated sandbox treats the workspace as writable — so a workspace
+    that IS, CONTAINS or sits INSIDE either target lets the child rewrite it.
+    Refusing here, before the spawn, is the only enforcement point left on those
+    paths. Where Kiro Crew's launcher does wrap the child both seals hold
+    regardless of workspace, so this returns ``None`` and keeps ``$HOME``-rooted
+    workspaces working there.
+
+    Deliberately NOT conditioned on what the config currently CONTAINS. An agent
+    does not need to swap a field it can create: given a writable path and no
+    Fargate block, it writes a complete one and the owner's next launch runs the
+    image it chose. A rule that reads the file's contents has that hole whatever
+    the contents are, because the contents are what the attacker supplies.
 
     Same three-layer comparison as :func:`assert_voice_runtime_outside_agent_workspace`:
     the lexical spelling AND the canonical (``realpath``) spelling of both sides,
@@ -7194,17 +7484,29 @@ def delegated_workspace_exposes_agents_dir(work_dir: "str | os.PathLike[str] | N
     )
     if not delegated:
         return None
-    targets = _resolved_kiro_agents_targets()
+    targets = _resolved_kiro_agents_targets() + [
+        os.path.join(str(config_dir()), leaf) for leaf in _DELEGATED_OVERLAP_LEAF_REASONS
+    ]
     if not targets:
         return None
 
     def _reason(target: str, how: str) -> str:
+        # Named per target: the consequences differ, and an operator reading this needs to
+        # know which seal they are looking at. Looked up in the same mapping the target list
+        # is built from, so a covered leaf cannot render another leaf's consequence.
+        named = _DELEGATED_OVERLAP_LEAF_REASONS.get(os.path.basename(target))
+        if named is not None:
+            what, consequence = named
+        else:
+            what = "kiro agents directory"
+            consequence = (
+                "the agent could rewrite template/fork specs and forge its next session's " "grants"
+            )
         return (
-            f"workspace '{os.fspath(work_dir)}' overlaps the kiro agents directory "
+            f"workspace '{os.fspath(work_dir)}' overlaps the {what} "
             f"'{target}' ({how}); on this platform the spawn is delegated to kiro-cli's "
-            "internal sandbox, which treats the workspace as writable, so the agent "
-            "could rewrite template/fork specs and forge its next session's grants. "
-            "Choose a workspace outside the agents directory."
+            f"internal sandbox, which treats the workspace as writable, so {consequence}. "
+            f"Choose a workspace that does not contain '{target}'."
         )
 
     def _norm(path: str) -> str:
@@ -7241,7 +7543,7 @@ def delegated_workspace_exposes_agents_dir(work_dir: "str | os.PathLike[str] | N
         try:
             agents_spellings = _spellings(target)
         except Exception:
-            return _reason(target, "agents directory path could not be resolved")
+            return _reason(target, "sealed target path could not be resolved")
         # Layer 1+2: every spelling of one side against every spelling of the other.
         for work in work_spellings:
             for agents in agents_spellings:
@@ -10170,6 +10472,33 @@ def wrap_argv(
     # "cc" hides .aws (exposes only .aws/config for Bedrock credential_process).
     # "strict" hides everything.
     sandbox_level = _mode_to_level(mode)
+
+    # The ONE place an aliased strict leaf is REPORTED, covering every spawn this function can
+    # produce: the Linux namespace wrap, the macOS Seatbelt wrap, the delegated kiro-cli spawn,
+    # and the Windows no-backend path. A rule stated once per platform branch is a rule each
+    # branch can be edited out of independently, and this one belongs to none of them: it is a
+    # fact about a NAME, settled before any mechanism is chosen. What stays platform-specific
+    # below is the mechanism that enforces a seal.
+    #
+    # It WARNS and lets the spawn through. The refusal lives where the file is CONSUMED --
+    # `provisioners.engine_for` for `cloud.json`, `LaunchState.load` for the launch record --
+    # because refusing here refused every sandboxed spawn on the host, a chat turn, a cron job,
+    # a subagent, whenever a leaf carried a second name, and an install laid down by stow,
+    # chezmoi or `rsync --link-dest` has that shape for reasons that have nothing to do with
+    # Fargate. The blast radius was the whole box; the exposure is one command. The alias harm
+    # is a refused command either way, and nothing else stops working.
+    #
+    # The warning matters most on the path that applies no seal of ours. A delegated spawn is
+    # confined by kiro-cli's own sandbox and Crew wraps nothing, so a write reaching
+    # `cloud.json` through an alias whose target sits outside the data home chooses the
+    # container image a Fargate launch runs, and the task's execution role hands the model
+    # credential to it. The check reads no file contents, so it needs no knowledge of which
+    # layer owns isolation and there is no encoding to bypass. Absent leaves cost nothing:
+    # `_warn_if_alias_backed` returns when the lstat fails.
+    #
+    # The passthrough tiers above return before this point, which is deliberate: with no
+    # sandbox at all Crew claims no seal, so there is nothing here to be bypassed.
+    _warn_aliased_strict_leaves()
 
     # macOS sandbox mutual exclusion: kiro-cli >= 2.13's internal sandbox cannot
     # initialize nested inside KiroCrew's seatbelt (kernel EPERM even under an

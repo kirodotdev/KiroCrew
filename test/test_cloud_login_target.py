@@ -1215,9 +1215,13 @@ class TestWizardTargetCompletion:
         from kiro_crew.cloud import wizard
 
         monkeypatch.setattr(
-            wizard.CloudConfig,
+            wizard.LaunchState,
             "load",
-            staticmethod(lambda: SimpleNamespace(profile="p", region="r")),
+            # The wizard reads its profile and region from the launch record now, so that is
+            # what this stubs. `last_tag` is supplied too: this case returns before the resume
+            # path reads it, and a stub missing a field the code may reach would fail for a
+            # reason that has nothing to do with the region completion under test.
+            staticmethod(lambda *a: SimpleNamespace(profile="p", region="r", last_tag="")),
         )
         provisioned = []
         monkeypatch.setattr(wizard.ui, "fail", lambda m: provisioned.append(("fail", m)))

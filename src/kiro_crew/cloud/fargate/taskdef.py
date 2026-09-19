@@ -205,15 +205,21 @@ class TaskDefinitionSpec:
     log: LogSpec
 
 
-def secret_destinations(spec: TaskDefinitionSpec) -> dict[str, SecretRef]:
-    """Each container variable this spec delivers, mapped to the secret behind it.
+def secret_destinations_for(secrets: Sequence[SecretRef]) -> dict[str, SecretRef]:
+    """Each container variable *secrets* delivers, mapped to the secret behind it.
 
-    Refuses two references whose derived variable is the same. Two secrets
-    competing for one destination have no defined winner, and the container would
-    read whichever the document happened to list first.
+    Takes the REFERENCES rather than a whole spec, because that is all the rule needs. It
+    is split out so a caller holding only secrets -- the launcher's config gate, deciding
+    whether a saved block names the model credential -- can apply this exact rule instead
+    of approximating it. Approximating it is what registered a lane the engine then
+    refused, three separate times.
+
+    Refuses two references whose derived variable is the same. Two secrets competing for
+    one destination have no defined winner, and the container would read whichever the
+    document happened to list first.
     """
     destinations: dict[str, SecretRef] = {}
-    for ref in spec.secrets:
+    for ref in secrets:
         name = secret_env_name(ref, source="secrets[].valueFrom")
         if name in destinations:
             raise DocumentRefused(
@@ -223,6 +229,38 @@ def secret_destinations(spec: TaskDefinitionSpec) -> dict[str, SecretRef]:
             )
         destinations[name] = ref
     return destinations
+
+
+def secret_destinations(spec: TaskDefinitionSpec) -> dict[str, SecretRef]:
+    """Each container variable this spec delivers, mapped to the secret behind it.
+
+    The spec-shaped spelling of :func:`secret_destinations_for`, kept because every
+    engine-side caller has a spec in hand. It DELEGATES rather than repeating the rule.
+    """
+    return secret_destinations_for(spec.secrets)
+
+
+def credential_recipient(image: str, secrets: Sequence[SecretRef]) -> str:
+    """Who a launch with this *image* and these *secrets* hands the model credential to.
+
+    ONE renderer, called by both sides of the confirmation: the launcher's config renders
+    what it will show an operator (``CloudConfig.fargate_config().credential_recipient()``)
+    and the engine renders what it is about to launch
+    (``fargate_engine.FargateLaunchEngine.provision``). A second spelling anywhere would let
+    the two disagree over the same pair of values, and a comparison between two renderings is
+    a comparison of the renderings, not of the recipient.
+
+    Two values, because two of them together decide who receives it: the image, which is the
+    container the credential lands in, and the ARN of the secret whose value the task's
+    execution role fetches and delivers there. Which reference that is comes from
+    :func:`secret_destinations_for`, not from a name match, so it is the same reference the
+    task definition will actually carry.
+
+    Raises ``DocumentRefused`` for a secret set this module already refuses, and ``KeyError``
+    for one that delivers no model credential -- both are sets no lane is registered for.
+    """
+    credential = secret_destinations_for(secrets)[MODEL_CREDENTIAL_ENV]
+    return f"{image} <- {credential.arn}"
 
 
 def spec_binding(spec: TaskDefinitionSpec) -> CrewBinding:

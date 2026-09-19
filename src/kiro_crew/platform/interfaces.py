@@ -1384,6 +1384,20 @@ class RemoteProvisioner:
     label: str
     posix_only: bool = True
     step_labels: Tuple[Tuple[str, str], ...] = ()
+    #: What the operator must SEE and confirm before this lane may launch, resolved by the
+    #: provider, or ``""`` for a lane with nothing to confirm.
+    #:
+    #: It rides on the DESCRIPTOR because the descriptor is what a launch card is drawn from,
+    #: and the point of the confirmation is that the operator reads the value and recognises
+    #: a wrong one. A value obtainable only by attempting a launch and reading the refusal
+    #: would make confirming a copy-paste ritual rather than a decision.
+    #:
+    #: ``POST /api/cloud/launch`` requires ``confirm_recipient`` exactly when the resolved
+    #: descriptor carries this, so the requirement is derived from the lane rather than
+    #: hard-coded to one id, and a client cannot obtain the value without first reading the
+    #: list. The built-in EC2 lane leaves it empty: nothing in a configuration file chooses
+    #: what its credential reaches.
+    confirm_before_launch: str = ""
 
 
 class RemoteProvisionerProvider(Protocol):
@@ -1407,13 +1421,23 @@ class RemoteProvisionerProvider(Protocol):
         """
         ...
 
-    def engine_for(self, provisioner_id: str) -> Any:
+    def engine_for(self, provisioner_id: str, *, confirmed_recipient: str = "") -> Any:
         """Return the ``cloud.launch_job.LaunchEngine`` that drives *provisioner_id*.
 
         Raise ``KeyError`` for an id not in :meth:`provisioners`; the handler
         answers 400 ``unknown_provisioner``. Typed ``Any`` here only to keep
         this module import-light (``cloud/launch_job.py`` is heavy); the
         contract is the five-method ``LaunchEngine`` Protocol.
+
+        ``confirmed_recipient`` is what the OPERATOR confirmed this launch may hand a
+        credential to, taken from the launch request (``confirm_recipient`` on
+        ``POST /api/cloud/launch``) and passed through to the engine unresolved and
+        unchecked. A lane whose launch delivers a credential to something its own
+        configuration names must refuse an empty or mismatched value, and must do the
+        comparison against what it is about to run rather than against the configuration it
+        just read -- otherwise the configuration confirms itself. A lane with no such
+        choice to make ignores it. Default empty so an implementation that has nothing to
+        confirm needs no signature change.
 
         WIRED: ``dashboard/handlers_cloud.py::_engine``.
         """

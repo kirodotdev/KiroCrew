@@ -887,6 +887,42 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     for prefix in _CREW_HOME_PREFIXES
 ]
 _WRITE_PROTECTED_HOME_PATHS += [
+    # The cloud launcher's config. WRITE-protected for the same reason as
+    # ``playwright-cli-config.json`` above and by the same placement-not-logic fix:
+    # it holds no credential (its own module docstring is explicit that it stores a
+    # profile NAME, and the Fargate block stores secret names and ARNs, never
+    # values), and the gateway must READ it on every request to build the remote
+    # provisioner list, so sealing it against reads would break the Set-up tab.
+    #
+    # But it is an INPUT TO A SECURITY DECISION. ``fargate.image`` chooses the
+    # container image a launch runs, and the task's execution role delivers the
+    # model credential into that container before it starts. An agent that could
+    # rewrite this file could name a digest-pinned image of its own -- the digest
+    # rule constrains the FORM of the reference, not who owns the registry -- and
+    # leave every other field the owner wrote intact, so the owner's next launch
+    # hands the credential to an image the owner never chose.
+    #
+    # Nothing in the product writes it: the launch path's own profile, region and tag
+    # live in ``cloud.launch_state``, so this leaf has no product writer to exempt.
+    f"{prefix}/cloud.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
+    # The cloud launcher's LAUNCH RECORD (``cloud/launch_state.py``): the profile, region
+    # and tag the last launch decided. WRITE-protected on the same footing as
+    # ``cloud.json`` above, and for a reason that is specific rather than inherited: the
+    # tag in it is what ``kirocrew cloud destroy`` resolves when no ``--tag`` is given, so
+    # an agent that could write this file could choose which of the owner's CloudFormation
+    # stacks a ``destroy --yes`` deletes. Interactive ``destroy`` describes the instance
+    # and asks first, but ``--yes`` is exactly the path that does not.
+    #
+    # Readable, like ``cloud.json``: every ``cloud`` subcommand resolves the tag from it,
+    # and sealing it against reads would break them all. The gateway and the CLI write it
+    # outside the agent's file-edit gate, so the launch path is unaffected.
+    f"{prefix}/cloud_launch_state.json"
+    for prefix in _CREW_HOME_PREFIXES
+]
+_WRITE_PROTECTED_HOME_PATHS += [
     # The Ops Mission Control incident INDEX, for the same reason as the schedule above and
     # with the same read/write asymmetry: every teammate's instance reads it constantly (it is
     # the claim ledger and the board), so classifying it sensitive would break the app, but it

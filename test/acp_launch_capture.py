@@ -284,7 +284,9 @@ def _stub_common(stack: list, rec: _Recorder, tmp_path: Path) -> None:
             patch.object(client_mod, "ensure_agent_materialized", return_value=None),
             patch.object(client_mod, "require_fresh_derived_spec", return_value=None),
             patch.object(client_mod, "require_fork_governance", return_value=None),
-            patch.object(client_mod, "delegated_workspace_exposes_agents_dir", return_value=None),
+            patch.object(
+                client_mod, "delegated_workspace_exposes_sealed_target", return_value=None
+            ),
             # The adapter resolvers.
             patch.object(
                 client_mod,

@@ -22,10 +22,11 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import inspect
 import logging
 import sys
 import threading
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING, Mapping, Optional
 
 from aiohttp import web
 
@@ -44,6 +45,7 @@ from kiro_crew.dashboard.handlers.source_providers import (
 )
 from kiro_crew.loop_lock import LoopBoundLock
 from kiro_crew.platform.interfaces import BUILTIN_PROVISIONER_ID
+from kiro_crew.sandbox import SandboxCeilingUnsealable
 from kiro_crew.sel import sel
 from kiro_crew.validation import ValidationError
 
@@ -178,10 +180,77 @@ def _provisioner_dict(p) -> dict:
         "label": getattr(p, "label", "") or p.id,
         "posix_only": bool(getattr(p, "posix_only", True)),
         "steps": [s.to_dict() for s in lj.default_steps(labels)],
+        # Present on every row, empty for a lane with nothing to confirm, so a client reads
+        # one shape rather than branching on whether the key exists.
+        "confirm_before_launch": str(getattr(p, "confirm_before_launch", "") or ""),
     }
 
 
-def _engine(state: "DashboardState", provider_id: str = BUILTIN_PROVISIONER_ID) -> lj.LaunchEngine:
+class LaunchUnavailable(Exception):
+    """This lane cannot be launched right now, and the reason is the OPERATOR's to act on.
+
+    Distinct from ``KeyError``, which means the id does not exist. This means the id exists and
+    something about the host or the deployment stops it: a configuration reachable under a
+    second name, or a provisioner that cannot receive the confirmation its own row demands.
+    Both were reaching the client as HTTP 500 -- a bug report shape -- for conditions with a
+    remedy the operator can carry out. ``code`` is the machine-readable tag the response
+    carries so a client can branch without parsing prose.
+    """
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+def _call_engine_for(provider, provisioner_id: str, confirmed_recipient: str):
+    """Ask *provider* for an engine, passing the confirmation only if it can receive one.
+
+    The seam's ``engine_for`` takes ``confirmed_recipient`` keyword-only WITH a default, so a
+    provider written against the older signature is still conforming -- and calling it with the
+    keyword raises ``TypeError``, which is not a launch failure any client can act on. The
+    signature decides, rather than a try/except around the call: an exception-driven retry
+    cannot tell a binding error from a ``TypeError`` raised inside the provider's own body, and
+    retrying the latter would run half of it twice.
+
+    A provider that cannot receive the value is called with the id alone, exactly as before the
+    keyword existed. But if its row DECLARED a recipient to confirm, the launch is refused
+    instead: a lane that publishes a credential recipient and then cannot be handed the
+    operator's answer to it is the silent-substitution shape the confirmation exists to remove,
+    and accepting the launch would leave the operator believing they had confirmed something.
+    """
+    accepts = False
+    # Declared once, so the two branches share one type rather than the except branch having
+    # to fit the shape `.parameters` happens to return (a MappingProxyType).
+    params: Mapping[str, inspect.Parameter]
+    try:
+        params = inspect.signature(provider.engine_for).parameters
+    except (TypeError, ValueError):
+        # Not introspectable (a C callable, a wrapper with no signature). Treated as NOT
+        # accepting, which is the conservative direction: the call still works, and a lane
+        # that needs the confirmation is refused below rather than launched without it.
+        params = {}
+    if "confirmed_recipient" in params:
+        accepts = True
+    elif any(q.kind is inspect.Parameter.VAR_KEYWORD for q in params.values()):
+        accepts = True
+
+    if accepts:
+        return provider.engine_for(provisioner_id, confirmed_recipient=confirmed_recipient)
+    if confirmed_recipient:
+        raise LaunchUnavailable(
+            "lane_cannot_confirm",
+            f"provisioner {provisioner_id!r} publishes a credential recipient to confirm, but "
+            "its provider cannot accept the confirmation (its engine_for takes no "
+            "confirmed_recipient). Nothing was launched",
+        )
+    return provider.engine_for(provisioner_id)
+
+
+def _engine(
+    state: "DashboardState",
+    provider_id: str = BUILTIN_PROVISIONER_ID,
+    confirmed_recipient: str = "",
+) -> lj.LaunchEngine:
     """The engine that drives *provider_id*, from the CPP ``remote_provisioners`` seam.
 
     Tests inject a fake via ``state.cloud_launch_engine``; that hook outranks the
@@ -190,6 +259,12 @@ def _engine(state: "DashboardState", provider_id: str = BUILTIN_PROVISIONER_ID) 
     not know (the caller answers 400); a degraded seam read falls back to the
     built-in engine for the built-in id only, never to a guessed engine for an
     edition's id.
+
+    ``confirmed_recipient`` is the credential recipient the operator confirmed in this
+    request, forwarded to the seam untouched (see
+    ``platform.interfaces.RemoteProvisionerProvider.engine_for``). It is POSITIONAL here
+    rather than keyword-only so ``functools.partial`` in the handler stays one call; the
+    seam takes it keyword-only.
     """
     injected = getattr(state, "cloud_launch_engine", None)
     if injected is not None:
@@ -205,7 +280,15 @@ def _engine(state: "DashboardState", provider_id: str = BUILTIN_PROVISIONER_ID) 
         if provider_id != BUILTIN_PROVISIONER_ID:
             raise KeyError(provider_id)
         return RealLaunchEngine()
-    return provider.engine_for(provider_id)
+    try:
+        return _call_engine_for(provider, provider_id, confirmed_recipient)
+    except SandboxCeilingUnsealable as exc:
+        # The strict no-alias refusal on ``cloud.json``, raised where a launch consumes the
+        # file. It is a real refusal and stays, but it describes a HOST setup an operator
+        # chose -- a dotfile manager or a hardlinking backup leaves exactly this shape -- so it
+        # belongs to them to fix, with the file and the remedy named. Uncaught it became a 500,
+        # which reads as "the gateway is broken" for a condition one command clears.
+        raise LaunchUnavailable("config_alias_refused", str(exc)) from exc
 
 
 def _launch_lock(state: "DashboardState") -> LoopBoundLock:
@@ -285,7 +368,11 @@ async def api_cloud_preflight(request: web.Request) -> web.Response:
     plugin_cmd = "" if plugin else await _in_executor(ssm.session_manager_plugin_install_command)
     _audit("preflight", "success")
     return web.json_response(
-        {**reach, "session_manager_plugin": bool(plugin), "session_manager_plugin_command": plugin_cmd}
+        {
+            **reach,
+            "session_manager_plugin": bool(plugin),
+            "session_manager_plugin_command": plugin_cmd,
+        }
     )
 
 
@@ -403,7 +490,11 @@ async def api_cloud_launch_get(request: web.Request) -> web.Response:
 async def api_cloud_launch_create(request: web.Request) -> web.Response:
     """POST /api/cloud/launch — start a launch job.
 
-    Body: ``{provider_id?, profile, region, size_key, login_target?}``. ``provider_id`` names a
+    Body: ``{provider_id?, profile, region, size_key, login_target?, confirm_recipient?}``.
+    ``confirm_recipient`` is the credential recipient the operator confirmed, required by any
+    lane whose launch delivers a credential to something its own configuration names (the
+    Fargate lane refuses an empty or stale one and names both values); the built-in EC2 lane
+    makes no such choice and ignores it. ``provider_id`` names a
     row of ``GET /api/cloud/provisioners`` and defaults to the built-in EC2 lane,
     so a pre-seam client body launches exactly what it always did. ``login_target``
     is ``{license, start_url, region}`` — the Kiro identity the crew signs in as
@@ -427,6 +518,12 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
         )
     size_key = str(body.get("size_key") or "").strip()
     provider_id = str(body.get("provider_id") or BUILTIN_PROVISIONER_ID).strip()
+    # The credential recipient the OPERATOR confirmed for this launch, verbatim. Passed to
+    # the engine and compared there against what the launch would actually deliver to; a
+    # lane that hands out no credential of its own ignores it. Not validated here: this
+    # handler has no way to know what a lane's recipient looks like, and a check that
+    # guessed would be a second rule to keep in step with the engine's.
+    confirm_recipient = str(body.get("confirm_recipient") or "")
     # The Kiro identity the crew signs in as — validated HERE, at the owner-only
     # HTTP boundary, before anything is persisted or reaches a remote shell.
     # An absent block is the Builder ID default (a pre-seam client body launches
@@ -447,15 +544,36 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
     except LoginTargetError as e:
         _audit("launch_create", "denied", error=f"invalid login target: {e}")
         return web.json_response({"error": str(e), "code": "invalid_login_target"}, status=400)
-    provisioner = next(
-        (p for p in await _in_executor(_provisioners) if p.id == provider_id), None
-    )
+    provisioner = next((p for p in await _in_executor(_provisioners) if p.id == provider_id), None)
     if provisioner is None:
         _audit("launch_create", "denied", error=f"unknown provisioner {provider_id!r}")
         return web.json_response(
             {
                 "error": f"no provisioner {provider_id!r} on this deployment",
                 "code": "unknown_provisioner",
+            },
+            status=400,
+        )
+    required = str(getattr(provisioner, "confirm_before_launch", "") or "")
+    if required and confirm_recipient != required:
+        # DERIVED from the row this request named, not hard-coded to one lane: a lane that
+        # hands a credential to something its own configuration chooses says so on its
+        # descriptor, and this is the same value `GET /api/cloud/provisioners` publishes. So a
+        # client cannot reach a launch without having read what it must confirm, which is the
+        # difference between the operator judging the recipient and echoing a string back.
+        #
+        # The engine refuses again with what it is ABOUT to launch, which is the check that
+        # cannot be skipped by another caller; this one exists so the refusal arrives before a
+        # job file is persisted, and it names the value so a stale client can correct itself.
+        _audit("launch_create", "denied", error="credential recipient not confirmed")
+        return web.json_response(
+            {
+                "error": (
+                    f"this launch would hand the model credential to {required}; confirm that "
+                    "recipient in the request (confirm_recipient) before launching"
+                ),
+                "code": "recipient_not_confirmed",
+                "confirm_before_launch": required,
             },
             status=400,
         )
@@ -491,7 +609,14 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
         # cannot back must not leave a PENDING job file that a restart then reaps
         # as "interrupted" for a launch that never started.
         try:
-            engine = _engine(state, provider_id)
+            # Off the loop like every other disk-touching call in this handler. The
+            # built-in id resolves without reading anything, but the Fargate id reads
+            # cloud.json through the seam, and a slow disk on that read would stall
+            # the gateway's other requests and its heartbeat behind it -- the reason
+            # the store calls above are wrapped.
+            engine = await _in_executor(
+                functools.partial(_engine, state, provider_id, confirm_recipient)
+            )
         except KeyError:
             _audit("launch_create", "denied", error=f"no engine for {provider_id!r}")
             return web.json_response(
@@ -501,6 +626,12 @@ async def api_cloud_launch_create(request: web.Request) -> web.Response:
                 },
                 status=400,
             )
+        except LaunchUnavailable as exc:
+            # 400, not 500: the id exists and the request is well formed, but the deployment or
+            # the host stops this launch and the message says what to change. A 500 would tell
+            # the operator to file a bug over a symlink they created on purpose.
+            _audit("launch_create", "denied", error=f"{exc.code}: {exc}")
+            return web.json_response({"error": str(exc), "code": exc.code}, status=400)
         try:
             # create() does mkdir + a temp-write + os.replace; keep it off the event
             # loop like every other store call here (see _astore), so a slow disk
@@ -680,9 +811,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
             # as a no-op, resolves no id, and skips the unregister AGAIN, so the row can
             # never be cleared from this panel. The launch job that created this tag
             # persists its instance id: still server-owned state, never caller input.
-            iid = next(
-                (j.instance_id for j in store.list() if j.tag == tag and j.instance_id), ""
-            )
+            iid = next((j.instance_id for j in store.list() if j.tag == tag and j.instance_id), "")
         # destroy: issue the delete and return; do not block the request on
         # DELETE_COMPLETE (minutes). A later status / the reaper reflects it.
         out = ec2.destroy(tag, profile, region, wait=False)
@@ -703,9 +832,7 @@ async def _mutate_instance(request: web.Request, op: str) -> web.Response:
         # without this arm a malformed tag in the URL path becomes a 500 instead of
         # telling the caller what was wrong with their input.
         _audit(op, "denied", request_id=tag, error=str(e))
-        return web.json_response(
-            {"error": str(e), "code": "invalid_cloud_parameter"}, status=400
-        )
+        return web.json_response({"error": str(e), "code": "invalid_cloud_parameter"}, status=400)
     except CloudActionDenied as e:
         _audit(op, "denied", request_id=tag, error=str(e))
         return web.json_response({"error": str(e), "code": "cloud_action_denied"}, status=403)

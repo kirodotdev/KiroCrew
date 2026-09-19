@@ -20,7 +20,8 @@ from kiro_crew.cloud import ec2, iam
 from kiro_crew.cloud import login as login_mod
 from kiro_crew.cloud import sizes, ssm, ui, wizard
 from kiro_crew.cloud.aws import AWSError, CloudActionDenied
-from kiro_crew.cloud.config import DEFAULT_REGION, CloudConfig
+from kiro_crew.cloud.config import DEFAULT_REGION
+from kiro_crew.cloud.launch_state import LaunchState
 from kiro_crew.cloud.login_target import (
     KiroLoginTarget,
     LoginTargetError,
@@ -28,14 +29,20 @@ from kiro_crew.cloud.login_target import (
     target_from_whoami,
 )
 from kiro_crew.deploy.engine import resolve_aws_bin
+from kiro_crew.sandbox import SandboxCeilingUnsealable
 from kiro_crew.validation import ValidationError
 
 
 def _resolve(args: argparse.Namespace) -> tuple[str, str]:
-    """Resolve (profile, region) from args, falling back to saved config."""
-    cfg = CloudConfig.load()
-    profile = getattr(args, "profile", "") or cfg.profile
-    region = getattr(args, "region", "") or cfg.region or DEFAULT_REGION
+    """Resolve (profile, region) from args, falling back to the launch record.
+
+    From ``launch_state``, not from ``cloud.json``: these two are what a LAUNCH decided, so
+    they are the launch path's to write. The record falls back to the legacy fields in
+    ``cloud.json`` when it holds none, so an install that predates it answers as it did.
+    """
+    state = LaunchState.load()
+    profile = getattr(args, "profile", "") or state.profile
+    region = getattr(args, "region", "") or state.region or DEFAULT_REGION
     return profile, region
 
 
@@ -44,12 +51,12 @@ def _resolve_tag(args: argparse.Namespace) -> str:
     tag = getattr(args, "tag", "") or ""
     if tag:
         return tag
-    cfg = CloudConfig.load()
-    if not cfg.last_tag:
+    state = LaunchState.load()
+    if not state.last_tag:
         ui.fail("No instance tag given and no previous launch found.")
         ui.detail("Pass --tag <tag>, or run `kirocrew cloud list` to see instances.")
         sys.exit(1)
-    return cfg.last_tag
+    return state.last_tag
 
 
 def _resolve_login_target(args: argparse.Namespace, *, inherit: bool) -> "KiroLoginTarget":
@@ -317,7 +324,9 @@ def _cloud_logout(args: argparse.Namespace) -> int:
         ui.detail("The session may still be active — retry, or check with: kirocrew cloud connect")
         return 1
     ui.ok("Signed out on the instance.")
-    ui.detail("Any in-flight chats/cron sessions were stopped (their kiro-cli runtimes were killed).")
+    ui.detail(
+        "Any in-flight chats/cron sessions were stopped (their kiro-cli runtimes were killed)."
+    )
     ui.detail("Sign in with another account: kirocrew cloud login")
     return 0
 
@@ -410,10 +419,32 @@ def _cloud_destroy(args: argparse.Namespace) -> int:
             ui.detail(f"Remove it manually: aws s3 rm {src['uri']}")
         if src.get("error"):
             ui.detail(src["error"])
-    cfg = CloudConfig.load()
-    if cfg.last_tag == tag:
-        cfg.last_tag = ""
-        cfg.save()
+    # The launch RECORD, not the operator's configuration: this command owns the pointer to
+    # the stack it just deleted and owns nothing in `cloud.json`.
+    #
+    # The precondition travels with the clear because this command owns the pointer only
+    # while it still names the stack it deleted: a launch that recorded its own tag in
+    # between must not have that pointer wiped by a command which never saw it.
+    #
+    # The RETURN is deliberately ignored here, and by the same test that makes a declined
+    # clear abort a LAUNCH: if this command carries on, whose stack does a later no-tag
+    # destroy name? A declined clear means the pointer now names the concurrent launch's own
+    # live stack, which is the correct pointer for it -- so carrying on is right, and there is
+    # nothing after this line but the success message. On the launch side the answer is the
+    # opposite, because provisioning would then make the saved tag name someone else's stack.
+    #
+    # A write FAILURE is not an error here either, and it is the same decision
+    # `wizard._record_launch` already makes on the launch side. The stack is gone by now, so a
+    # full disk, a read-only filesystem or a lock that could not be taken must not turn a
+    # completed removal into a traceback and a non-zero exit: the AWS work cannot be retried,
+    # and automation reading that exit code would conclude the teardown failed while the
+    # resources are actually deleted. What is left behind is a stale pointer, so the warning
+    # names it rather than swallowing it.
+    try:
+        LaunchState.clear_tag(tag)
+    except OSError as exc:
+        ui.warn(f"Removed the stack, but could not clear the saved pointer to it: {exc}")
+        ui.detail("The pointer is stale, not harmful: `kirocrew cloud list` shows what exists.")
 
     ui.ok(f"Removed '{tag}' — all AWS resources deleted. You won't be billed for it.")
     return 0
@@ -550,6 +581,16 @@ def handle_cloud(args: argparse.Namespace) -> int:
         return 1
     try:
         return fn(args)
+    except SandboxCeilingUnsealable as exc:
+        # The launch record is reachable under a second name, refused where a verb consumes
+        # its tag (``LaunchState.load``). A real refusal and it stays -- the tag decides which
+        # stack ``destroy --yes`` deletes -- but it describes a HOST setup, so it belongs to
+        # the operator to fix and the message names the file, the shape and the one command.
+        # Caught for the whole dispatch table rather than per verb: every verb resolves the
+        # tag or the region through that read, ``launch`` re-attaches through it too, and a
+        # verb added later would otherwise print a traceback until someone noticed.
+        ui.fail(str(exc))
+        return 1
     except CloudActionDenied as exc:
         # A mutating cloud verb was reached from an agent session (the in-layer
         # preflight fired). Human/installer action only.
