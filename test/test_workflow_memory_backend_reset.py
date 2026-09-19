@@ -130,9 +130,10 @@ def test_workflow_backend_routes_each_session_to_its_own_projection(tmp_path, mo
 def test_workflow_worker_publishes_identity_before_mcp_http(tmp_path, monkeypatch):
     """Real child + _post transport; not a replacement for private namespace E2E.
 
-    The model process has no ambient key, as with AcpRuntime. The HTTP observer
-    reports only whether the worker's own key arrived. Publishing through the
-    normal host writer is the positive control; neither resolver is mocked.
+    The model host and its MCP child have no ambient key, as with AcpRuntime.
+    The HTTP observer reports only whether the worker's own key arrived.
+    Publishing through the normal host writer is the positive control; neither
+    resolver is mocked.
     """
     import asyncio
     import os
@@ -193,10 +194,14 @@ def test_workflow_worker_publishes_identity_before_mcp_http(tmp_path, monkeypatc
             child = await asyncio.create_subprocess_exec(
                 sys.executable,
                 "-c",
-                "import json,sys\nfrom kiro_crew.mcp_core import _api_port, _post\n"
+                "import subprocess,sys\nfrom kiro_crew.mcp_core import _api_port\n"
                 "assert _api_port() == int(sys.argv[1])\n"
+                'code = "import json; from kiro_crew.mcp_core import _post; '
+                "print(json.dumps(_post('/identity-probe', {}, timeout=5)))\"\n"
                 "for line in sys.stdin:\n"
-                " print(json.dumps(_post('/identity-probe', {}, timeout=5)), flush=True)\n",
+                " result = subprocess.run([sys.executable, '-c', code], "
+                "capture_output=True, text=True, check=True, timeout=8)\n"
+                " print(result.stdout.strip(), flush=True)\n",
                 port,
                 cwd=tmp_path,
                 env=env,
@@ -225,6 +230,8 @@ def test_workflow_worker_publishes_identity_before_mcp_http(tmp_path, monkeypatc
                         return child.pid
 
                 sessions = Sessions()
+                unpublished = [event async for event in Model().stream("unpublished probe")]
+                assert json.loads(unpublished[0].text) == {"worker_identity": False}
                 worker = _WorkflowSessionWorker(
                     sessions, key=key, agent=None, model=None, cwd=str(tmp_path)
                 )

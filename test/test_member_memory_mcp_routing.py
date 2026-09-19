@@ -1,16 +1,14 @@
-"""Private providers retain direct MCP tools across every session entry point."""
+"""Member context uses ordinary MCP projection on new, resumed and rekeyed sessions."""
 
 from __future__ import annotations
 
 import asyncio
 import json
-import sys
 from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 from kiro_crew.acp import client as client_mod
-from kiro_crew.acp import runtime as runtime_mod
 from kiro_crew.acp.client import AcpClient
 from kiro_crew.acp.runtime import AcpRuntime
 from kiro_crew.acp.types import (
@@ -52,14 +50,12 @@ def broker_overlay(tmp_path):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("private", [False, True])
 @pytest.mark.parametrize("backend", [ACP_BACKEND_KIRO, ACP_BACKEND_CLAUDE])
 @pytest.mark.parametrize("entry", ["new", "load", "reset-and-rekey"])
-async def test_client_session_requests_do_not_restore_private_broker_routing(
+async def test_client_session_requests_preserve_ordinary_broker_routing(
     tmp_path,
     monkeypatch,
     broker_overlay,
-    private,
     backend,
     entry,
 ):
@@ -68,7 +64,6 @@ async def test_client_session_requests_do_not_restore_private_broker_routing(
         work_dir=tmp_path,
         agent="kirocrew",
         acp_backend=backend,
-        private_memory=private,
         mcp_gateway_overlay=broker_overlay,
         mcp_gateway_socket=socket,
     )
@@ -77,11 +72,11 @@ async def test_client_session_requests_do_not_restore_private_broker_routing(
     # separately below. Kiro reads its original agent spec without an injection.
     # The claude mirror now places the pooled broker stubs INTO the projection
     # (held to the spec's `tools` allowlist), so the post-spawn cache carries the
-    # stub for a non-private session; the shared _pooled_mcp_servers append is
+    # stub for a session using the broker; the shared _pooled_mcp_servers append is
     # inert for mirrored backends and must not re-add it at the call site.
     def _projected_cache() -> list:
         cache = [{"name": "direct", "command": "local-mcp", "args": [], "env": []}]
-        if backend == ACP_BACKEND_CLAUDE and not private:
+        if backend == ACP_BACKEND_CLAUDE:
             cache.append({"name": "builder", "command": "broker-stub", "args": [], "env": []})
         return cache
 
@@ -93,7 +88,7 @@ async def test_client_session_requests_do_not_restore_private_broker_routing(
         client.rekey("dashboard:next", channel_id="next-channel")
         client._agent = "another-agent"
         client._session_mcp_cache = _projected_cache()
-        assert claims.call_args.args[0] == (None if private else str(socket))
+        assert claims.call_args.args[0] == str(socket)
 
     sent = []
 
@@ -125,24 +120,21 @@ async def test_client_session_requests_do_not_restore_private_broker_routing(
     assert len(sent) == 1
     assert sent[0][0] == (METHOD_SESSION_LOAD if entry == "load" else METHOD_SESSION_NEW)
     entries = sent[0][1]["mcpServers"]
-    assert any(e["command"] == "broker-stub" for e in entries) is (not private)
+    assert any(e["command"] == "broker-stub" for e in entries)
     assert any(e["command"] == "local-mcp" for e in entries) is (backend == ACP_BACKEND_CLAUDE)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("private", [False, True])
 @pytest.mark.parametrize("entry", ["new", "load"])
-async def test_runtime_session_requests_keep_private_tools_out_of_the_broker(
+async def test_runtime_session_requests_preserve_broker_routing(
     tmp_path,
     monkeypatch,
     broker_overlay,
-    private,
     entry,
 ):
     runtime = AcpRuntime(
         work_dir=tmp_path,
         agent="kirocrew",
-        private_memory=private,
         mcp_gateway_overlay=broker_overlay,
         mcp_gateway_socket=broker_overlay.parent / "gateway.sock",
     )
@@ -166,13 +158,13 @@ async def test_runtime_session_requests_keep_private_tools_out_of_the_broker(
     assert len(sent) == 1
     assert sent[0][0] == (METHOD_SESSION_NEW if entry == "new" else METHOD_SESSION_LOAD)
     entries = sent[0][1]["mcpServers"]
-    assert any(e["command"] == "broker-stub" for e in entries) is (not private)
+    assert any(e["command"] == "broker-stub" for e in entries)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("private", [False, True])
-async def test_kas_projection_preserves_direct_private_server(
-    tmp_path, monkeypatch, broker_overlay, private
+@pytest.mark.parametrize("pooled", [False, True])
+async def test_kas_projection_preserves_direct_or_pooled_tools(
+    tmp_path, monkeypatch, broker_overlay, pooled
 ):
     agents = tmp_path / "original-agents"
     agents.mkdir()
@@ -198,15 +190,15 @@ async def test_kas_projection_preserves_direct_private_server(
     runtime = AcpRuntime(
         work_dir=tmp_path,
         acp_backend=ACP_BACKEND_KAS,
-        private_memory=private,
-        mcp_gateway_overlay=broker_overlay,
+        mcp_gateway_overlay=broker_overlay if pooled else None,
+        member_context=True,
     )
     extras = await asyncio.wait_for(runtime._kas_custom_agents("kirocrew"), timeout=5)
     projected = extras.custom_agents
     assert projected
     server = projected[0].get("mcpServers", {}).get("builder")
-    assert (server is not None) is private
-    if private:
+    assert (server is not None) is (not pooled)
+    if not pooled:
         assert server["command"] == "local-mcp"
         assert server["args"] == ["serve"]
         # KAS deliberately strips credential-bearing env during projection.
@@ -214,180 +206,7 @@ async def test_kas_projection_preserves_direct_private_server(
 
 
 @pytest.mark.parametrize("constructor", [AcpClient, AcpRuntime])
-@pytest.mark.parametrize("private", [False, True])
-@pytest.mark.parametrize(
-    "configured,effective", [("", "codex"), ("codex", ""), ("codex", "claude"), ("codex", "kas")]
-)
-def test_private_backend_override_is_checked_before_allocation(
-    tmp_path,
-    monkeypatch,
-    constructor,
-    private,
-    configured,
-    effective,
-):
-    from types import SimpleNamespace
-
-    from kiro_crew.config.loader import KiroCrewConfig
-    from kiro_crew.memory_stores import UnknownMemoryStore
-
-    monkeypatch.setattr(
-        KiroCrewConfig,
-        "load",
-        lambda: SimpleNamespace(
-            agent=SimpleNamespace(acp_backend=configured, member_acp_backend=configured),
-        ),
-    )
-    if private and effective == "codex":
-        with pytest.raises(UnknownMemoryStore, match="Codex ACP.*Use Kiro, Claude Code or KAS"):
-            constructor(work_dir=tmp_path, acp_backend=effective, private_memory=private)
-    else:
-        instance = constructor(work_dir=tmp_path, acp_backend=effective, private_memory=private)
-        assert instance._process is None
-
-
-class _SandboxLaunchReached(Exception):
-    """The real preparation accepted the endpoint, before any OS launch."""
-
-
-@pytest.fixture
-def launch_boundary(monkeypatch):
-    from kiro_crew import sandbox
-    from kiro_crew.config.paths import config_dir
-
-    home = config_dir()
-    monkeypatch.setattr(sandbox, "_private_memory_roots", lambda: [str(home.resolve())])
-    monkeypatch.setattr(sandbox, "_governance_sandbox_floor", lambda: "")
-    monkeypatch.setattr(sandbox, "_inside_kirocrew_sandbox", lambda: False)
-    monkeypatch.setattr(sandbox, "detect_backend", lambda **kwargs: "namespace")
-    monkeypatch.setattr(sandbox, "kiro_internal_sandbox_enabled", lambda: False)
-    monkeypatch.delenv("KIROCREW_MCP_SOCKET", raising=False)
-    monkeypatch.delenv("MC_MCP_SOCKET", raising=False)
-    accepted = Mock(side_effect=_SandboxLaunchReached)
-    monkeypatch.setattr(sandbox, "namespace_argv", accepted)
-    spawned = AsyncMock(
-        side_effect=AssertionError("A provider process must never start in this test")
-    )
-    import kiro_crew.agent as agent_mod
-
-    # The binary search and the agent-spec materialization are stubbed at the
-    # modules that DEFINE them: the runtime's spawn reaches both through its
-    # harness, so a stub on the runtime module would not be the code that runs.
-    monkeypatch.setattr(
-        client_mod, "_resolve_kiro_bin_for_spawn", AsyncMock(return_value=sys.executable)
-    )
-    monkeypatch.setattr(agent_mod, "ensure_agent_materialized", lambda _agent: True)
-    for module in (client_mod, runtime_mod):
-        monkeypatch.setattr(
-            module, "assert_voice_runtime_outside_agent_workspace", lambda _path: None
-        )
-        monkeypatch.setattr(module, "apply_pod_bundle_spawn", lambda argv, **kwargs: (argv, False))
-        monkeypatch.setattr(module, "create_subprocess_limited", spawned)
-    return home, accepted, spawned
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("private", [False, True])
-@pytest.mark.parametrize("placement", ["reserved", "outside"])
-async def test_public_factory_checks_persisted_socket_with_no_stubbed_servers(
-    tmp_path,
-    launch_boundary,
-    private,
-    placement,
-):
-    from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
-    from kiro_crew.history import ConversationLog
-    from kiro_crew.member_memory_auth import bind_private_session_store
-    from kiro_crew.memory_stores import provision_member_memory
-
-    home, accepted, spawned = launch_boundary
-    endpoint = (home / "mcp-gateway" if placement == "reserved" else tmp_path) / "custom.sock"
-
-    def build_provider():
-        config = KiroCrewConfig.load()
-        config.agent.sandbox = "standard"
-        config.agent.acp_backend = ACP_BACKEND_KIRO
-        config.agent.member_acp_backend = ACP_BACKEND_KIRO
-        config.mcp_gateway.stub_servers = []
-        config.mcp_gateway._stub_roster = []
-        config.mcp_gateway.stub_overrides = {}
-        config.mcp_gateway.socket_path = str(endpoint)
-        key = "dashboard:legacy"
-        if private:
-            config.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
-            store = provision_member_memory(config, "writer")
-            key = "dashboard:member-writer"
-        config.save()
-        if private:
-            ConversationLog().update_metadata(key, {"memory_store": store})
-            bind_private_session_store(key, store)
-        loaded = KiroCrewConfig.load()
-        assert loaded.mcp_gateway.stub_servers == []
-        assert loaded.mcp_gateway.socket_path == str(endpoint)
-        return loaded.create_provider_factory()(key, agent="kirocrew", cwd=str(tmp_path))
-
-    provider = await asyncio.to_thread(build_provider)
-    await asyncio.wait_for(provider.prepare_private_memory(), timeout=5)
-    assert provider._client._mcp_gateway_socket is None
-    assert provider._client._private_memory is private
-    if private and placement == "outside":
-        with pytest.raises(RuntimeError, match="reserved mcp-gateway"):
-            await asyncio.wait_for(provider._client._spawn(), timeout=5)
-        accepted.assert_not_called()
-    else:
-        with pytest.raises(_SandboxLaunchReached):
-            await asyncio.wait_for(provider._client._spawn(), timeout=5)
-        accepted.assert_called_once()
-    spawned.assert_not_awaited()
-    assert not endpoint.exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("constructor", [AcpClient, AcpRuntime])
-@pytest.mark.parametrize("private", [False, True])
-@pytest.mark.parametrize("variable", ["KIROCREW_MCP_SOCKET", "MC_MCP_SOCKET"])
-@pytest.mark.parametrize("placement", ["reserved", "outside"])
-async def test_private_spawn_checks_child_socket_overrides_before_launch(
-    tmp_path,
-    monkeypatch,
-    launch_boundary,
-    constructor,
-    private,
-    variable,
-    placement,
-):
-    from kiro_crew import sandbox
-
-    home, accepted, spawned = launch_boundary
-    endpoint = (home / "mcp-gateway" if placement == "reserved" else tmp_path) / "child.sock"
-    instance = constructor(
-        work_dir=tmp_path,
-        sandbox_mode="standard",
-        private_memory=private,
-        extra_env={variable: str(endpoint), "UNRELATED_TOKEN": "synthetic-secret"},
-    )
-    captured = []
-    original = sandbox.wrap_argv
-
-    def prepare(argv, **kwargs):
-        captured.append(kwargs)
-        return original(argv, **kwargs)
-
-    module = client_mod if constructor is AcpClient else runtime_mod
-    monkeypatch.setattr(module, "wrap_argv", prepare)
-    operation = instance._spawn() if constructor is AcpClient else instance._spawn_admitted()
-    if private and placement == "outside":
-        with pytest.raises(RuntimeError, match="reserved mcp-gateway"):
-            await asyncio.wait_for(operation, timeout=5)
-        accepted.assert_not_called()
-    else:
-        with pytest.raises(_SandboxLaunchReached):
-            await asyncio.wait_for(operation, timeout=5)
-        accepted.assert_called_once()
-    assert len(captured) == 1
-    assert captured[0].get("private_mcp_gateway_socket_overrides", ()) == (
-        (str(endpoint),) if private else ()
-    )
-    assert "synthetic-secret" not in json.dumps(captured)
-    spawned.assert_not_awaited()
-    assert not endpoint.exists()
+@pytest.mark.parametrize("backend", ["", "codex", "claude", "kas"])
+def test_memory_does_not_add_backend_admission(constructor, backend, tmp_path):
+    instance = constructor(work_dir=tmp_path, acp_backend=backend)
+    assert instance._process is None

@@ -1118,12 +1118,10 @@ class TestAgentResolution:
 # ──────────────────────────────────────────────────────────────────────
 class TestThreadOverrideHydration:
     @pytest.mark.asyncio
-    async def test_private_identity_reads_run_off_loop_and_live_maps_stay_on_loop(
+    async def test_execution_identity_reads_run_off_loop_and_live_maps_stay_on_loop(
         self, monkeypatch
     ):
-        from kiro_crew import memory_stores
-        from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
-        from kiro_crew.config.sections import MemoryStoreConfig
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
         loop_thread = threading.get_ident()
 
@@ -1134,35 +1132,23 @@ class TestThreadOverrideHydration:
 
         monkeypatch.setattr(h, "_thread_agents", LoopOwnedMap())
         monkeypatch.setattr(h, "_thread_projects", LoopOwnedMap())
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig(
-            kiro_agent="kirocrew", memory_store="member-reviewer"
+        execution = ExecutionContext(
+            "reviewer-id", MemoryStoreRef("member-reviewer", "reviewer-id"), "member", "kirocrew"
         )
-        cfg.memory_stores["member-reviewer"] = MemoryStoreConfig(
-            owner_member="reviewer", memory_version=2
-        )
-        monkeypatch.setattr(KiroCrewConfig, "load", lambda: cfg)
-        original = memory_stores.require_member_memory_not_archived
-        archive_reads = []
-
-        def read_archive(store):
-            with pytest.raises(RuntimeError, match="no running event loop"):
-                asyncio.get_running_loop()
-            archive_reads.append(store)
-            return original(store)
-
-        monkeypatch.setattr(memory_stores, "require_member_memory_not_archived", read_archive)
 
         def read_metadata(_key):
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
-            return {"agent": "reviewer", "memory_store": "member-reviewer", "project": "/srv/app"}
+            return {
+                "agent": "reviewer",
+                "execution_context": execution.to_record(),
+                "project": "/srv/app",
+            }
 
         log = MagicMock(get_metadata=MagicMock(side_effect=read_metadata))
         await h._hydrate_thread_overrides("t1", log)
         await h._hydrate_thread_overrides("t1", log)
         log.get_metadata.assert_called_once_with("t1")
-        assert archive_reads == ["member-reviewer"]
         assert h._thread_agents["t1"] == "kirocrew"
         assert h._thread_projects["t1"] == "/srv/app"
         assert "t1" in h._hydrated_sessions

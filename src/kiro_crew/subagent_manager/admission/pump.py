@@ -114,6 +114,7 @@ class _PumpMixin(ManagerComponent):
 
     async def _drain_queue_pass_impl(self) -> None:
         admission = self._manager._admission
+        retain_error_detail = True
         try:
             store = admission.taskq_store()
             if store is not None:
@@ -151,10 +152,11 @@ class _PumpMixin(ManagerComponent):
                     # may have work for it now.
                     self._manager._drain_queue()
             for params in picked:
+                retain_error_detail = params.get("_memory_mode", "persistent") == "persistent"
                 drained = await self._dispatch_async_impl(params)
                 self._after_dispatch_impl(params, drained, refill=lambda **_kw: 0)
         except Exception:
-            logger.exception("drain pump failed")
+            logger.error("drain pump failed", exc_info=retain_error_detail)
 
     async def _dispatch_async_impl(self, params: dict[str, Any]) -> "SubagentInfo | None":
         """Start a picked window row with its claim (``store.claim``) on the
@@ -323,7 +325,11 @@ class _PumpMixin(ManagerComponent):
                 return
         logger.info(
             "Draining queue: spawning '%s' (%d left)",
-            str(params.get("task", ""))[:40],
+            (
+                str(params.get("task", ""))[:40]
+                if params.get("_memory_mode", "persistent") == "persistent"
+                else queued_id
+            ),
             len(self._manager._queue),
         )
         # The popped item's parent just lost one waiting agent — re-emit its
@@ -476,7 +482,9 @@ class _PumpMixin(ManagerComponent):
             # The raiser names the missing SURFACE; the rungs are this gate's own
             # cascade. Keeping the split means the sentence does not go stale
             # when a channel learns to deliver the prompt itself.
-            detail = str(unreachable).strip() or "no interactive surface is attached"
+            detail = (
+                str(unreachable).strip() if info.memory_mode == "persistent" else ""
+            ) or "no interactive surface is attached"
             # TWO AUDIENCES, and which text each gets is a security decision, not
             # a formatting one. The rung list is the OPERATOR's: it names two
             # `config.json` keys, and `security.py` records that `config.json` is
@@ -509,7 +517,9 @@ class _PumpMixin(ManagerComponent):
                 "auto-approval."
             )
         except Exception:
-            logger.exception("Spawn approval failed for %s", info.id)
+            logger.error(
+                "Spawn approval failed for %s", info.id, exc_info=info.memory_mode == "persistent"
+            )
             approved = False
 
         if not approved:
@@ -573,11 +583,16 @@ class _PumpMixin(ManagerComponent):
                 max_turns=info.max_turns,
                 context_groups=_context_groups_field(info),
                 memory_store=info.memory_store,
+                execution_context=info.execution_context,
                 memory_mode=info.memory_mode,
                 app=info.app,
             )
         except Exception:
-            logger.warning("Failed to create agent folder for %s", info.id, exc_info=True)
+            logger.warning(
+                "Failed to create agent folder for %s",
+                info.id,
+                exc_info=info.memory_mode == "persistent",
+            )
             # The run task may already be registered. Its normal terminal path
             # settles the failure before allocating a provider, for every store.
             info.error = "memory_unavailable: could not persist this run's memory binding"
@@ -614,19 +629,24 @@ class _PumpMixin(ManagerComponent):
                 },
             )
         except Exception:
-            logger.debug("subagent spawned counter failed", exc_info=True)
+            logger.debug(
+                "subagent spawned counter failed", exc_info=info.memory_mode == "persistent"
+            )
         sel().log_tool_invocation(
             session_key=info.parent_session_key,
             source="subagent",
             tool_name="spawn_run",
             outcome="spawned",
-            metadata={
-                "subagent_id": info.id,
-                "agent": info.agent or "kirocrew",
-                "cwd": info.cwd,
-            },
+            metadata=(
+                {"subagent_id": info.id, "agent": info.agent or "kirocrew", "cwd": info.cwd}
+                if info.memory_mode == "persistent"
+                else {"subagent_id": info.id}
+            ),
         )
-        logger.info("Subagent %s spawned: %s", info.id, info.task[:80])
+        if info.memory_mode == "persistent":
+            logger.info("Subagent %s spawned: %s", info.id, info.task[:80])
+        else:
+            logger.info("Subagent %s spawned", info.id)
 
     #: ``taskq_claim`` reason: the store exists but could not be reached for
     #: the claim. The row is NOT started -- an unclaimed start would run at

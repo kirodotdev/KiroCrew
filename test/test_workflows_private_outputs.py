@@ -1,7 +1,5 @@
 """Private output remains scoped in fallback slots and TaskRunner persistence."""
 
-import json
-
 import pytest
 from test_workflows_inject import _FakeSlot, _FakeState
 from test_workflows_private_execution import world as _world
@@ -9,7 +7,7 @@ from test_workflows_private_execution import world as _world
 from kiro_crew.dashboard.workflow_inject import inject_bound_workflow_result
 from kiro_crew.task_models import Project, Task, TaskStatus
 from kiro_crew.taskrunner import TaskRunner
-from kiro_crew.workflow_memory import WorkflowScope, task_snapshot_path
+from kiro_crew.workflow_memory import WorkflowScope
 
 world = _world
 
@@ -33,6 +31,7 @@ async def test_private_fallback_is_bound_before_any_output(world):
         "run_id": scope.run_id,
         "status": "finished",
         "result": "PRIVATE_RESULT",
+        "execution_context": scope.execution_context.to_record(),
     }
     assert await inject_bound_workflow_result(state, scope.run_id, snapshot)
     slot = state.get_slot("workflow-wf_fallback")
@@ -59,6 +58,7 @@ async def test_private_fallback_never_rebinds_colliding_slot(world, linked):
         "run_id": scope.run_id,
         "status": "finished",
         "result": "PRIVATE_RESULT",
+        "execution_context": scope.execution_context.to_record(),
     }
     assert not await inject_bound_workflow_result(state, scope.run_id, snapshot)
     assert slot.agent == "bob" and slot.memory_store == world.stores["bob"]
@@ -67,67 +67,38 @@ async def test_private_fallback_never_rebinds_colliding_slot(world, linked):
 
 
 @pytest.mark.asyncio
-async def test_private_task_snapshot_has_only_public_reference_and_restores(world, tmp_path):
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+async def test_task_snapshot_owns_context_and_omits_restricted_bodies(world, tmp_path, mode):
     scope = await WorkflowScope.admit("wf_task_snapshot", world.builder, "dashboard:alice")
-    await scope.prepare(world.builder, "taskrunner:private-task:runtime")
+    execution = scope.execution_context.with_mode(mode)
     runner = TaskRunner(
         sessions=world.sessions, context_builder=world.builder, work_dir=tmp_path / "tasks"
     )
-    private = Project(
-        spec_path="", spec_content="PRIVATE_SOURCE", task_id="private-task", status="completed"
+    member = Project(
+        "", "MEMBER_SOURCE", task_id="member-task", status="completed", execution_context=execution
     )
-    private.original_input = "PRIVATE_INPUT"
-    private.error = "PRIVATE_ERROR"
-    private.tasks = [
-        Task(
-            index=1,
-            title="PRIVATE_TITLE",
-            description="PRIVATE_DESC",
-            status=TaskStatus.PASSED,
-            result="PRIVATE_OUTPUT",
-        )
+    member.original_input = "MEMBER_INPUT"
+    member.error = "MEMBER_ERROR"
+    member.tasks = [
+        Task(1, "MEMBER_TITLE", "MEMBER_DESC", status=TaskStatus.PASSED, result="MEMBER_OUTPUT")
     ]
-    public = Project(
-        spec_path="", spec_content="PUBLIC_SOURCE", task_id="global-task", status="completed"
-    )
-    runner._runs = {private.task_id: private, public.task_id: public}
+    public = Project("", "PUBLIC_SOURCE", task_id="global-task", status="completed")
+    runner._runs = {member.task_id: member, public.task_id: public}
     await runner._apersist_runs()
-    visible = runner._runs_path().read_text(encoding="utf-8")
-    assert "PRIVATE_" not in visible
-    assert "PUBLIC_SOURCE" in visible
-    assert {"task_id": "private-task", "private_payload": True} in json.loads(visible)
-    hidden = task_snapshot_path(runner._runs_path()).read_text(encoding="utf-8")
-    for marker in (
-        "PRIVATE_SOURCE",
-        "PRIVATE_INPUT",
-        "PRIVATE_ERROR",
-        "PRIVATE_TITLE",
-        "PRIVATE_DESC",
-        "PRIVATE_OUTPUT",
-    ):
-        assert marker in hidden
+    payload = runner._runs_path().read_text(encoding="utf-8")
+    assert "PUBLIC_SOURCE" in payload
+    assert "private_payload" not in payload
+    assert ("MEMBER_SOURCE" in payload) == (mode == "persistent")
     restored = TaskRunner(
         sessions=world.sessions, context_builder=world.builder, work_dir=tmp_path / "tasks"
     )
-    assert restored._runs["private-task"].spec_content == "PRIVATE_SOURCE"
-    assert restored._runs["private-task"].tasks[0].result == "PRIVATE_OUTPUT"
-    # A public row cannot replace the hidden private content with edited metadata.
-    rows = json.loads(visible)
-    rows[0] = {
-        "task_id": "private-task",
-        "spec_content": "FORGED_PUBLIC",
-        "status": "completed",
-        "spec_path": "",
-    }
-    runner._runs_path().write_text(json.dumps(rows), encoding="utf-8")
+    if mode == "persistent":
+        assert restored._runs[member.task_id].execution_context == execution
+        assert restored._runs[member.task_id].tasks[0].result == "MEMBER_OUTPUT"
+    else:
+        assert member.task_id not in restored._runs
+    assert await runner.delete_run(member.task_id)
     restored = TaskRunner(
         sessions=world.sessions, context_builder=world.builder, work_dir=tmp_path / "tasks"
     )
-    assert restored._runs["private-task"].spec_content == "PRIVATE_SOURCE"
-    runner._runs = {public.task_id: public}
-    await runner._apersist_runs()
-    assert "PRIVATE_SOURCE" in task_snapshot_path(runner._runs_path()).read_text(encoding="utf-8")
-    restored = TaskRunner(
-        sessions=world.sessions, context_builder=world.builder, work_dir=tmp_path / "tasks"
-    )
-    assert "private-task" not in restored._runs
+    assert member.task_id not in restored._runs

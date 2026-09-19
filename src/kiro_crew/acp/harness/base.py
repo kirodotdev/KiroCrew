@@ -75,8 +75,8 @@ class SpawnContext:
     home: Path
     """One snapshot of the home directory, for the same reason."""
 
-    private_memory: bool = field(default=False, kw_only=True)
-    """Trusted private execution flag; never supplied by an agent-controlled spec."""
+    member_context: bool = field(default=False, kw_only=True)
+    """Capture native member context sources for session delivery deduplication."""
 
     sandbox_mode: str = "auto"
     """The sandbox tier this spawn will use, as configured.

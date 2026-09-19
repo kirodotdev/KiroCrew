@@ -107,37 +107,6 @@ def test_memory_backup_enabled_requires_json_boolean_without_jsonschema(
 logger = logging.getLogger("kiro_crew.config.loader")
 
 
-@pytest.mark.parametrize("without_jsonschema", [False, True])
-@pytest.mark.parametrize(
-    "memory_data,expected",
-    [
-        ({}, True),
-        ({"private_provisioning_enabled": True}, True),
-        ({"private_provisioning_enabled": False}, False),
-        ({"private_provisioning_enabled": "false"}, False),
-        ({"private_provisioning_enabled": 1}, False),
-        ({"private_provisioning_enabled": None}, False),
-    ],
-)
-def test_private_provisioning_control_round_trip_and_invalid_value_pause(
-    tmp_path, monkeypatch, memory_data, expected, without_jsonschema
-):
-    from kiro_crew.config import validation
-
-    path = tmp_path / "config.json"
-    path.write_text(json.dumps({"memory": memory_data}), encoding="utf-8")
-    monkeypatch.setattr(loader_module, "config_path", lambda: path)
-    monkeypatch.setattr(loader_module, "config_local_path", lambda: tmp_path / "absent.local.json")
-    if without_jsonschema:
-        monkeypatch.setattr(validation, "_HAS_JSONSCHEMA", False)
-    config = KiroCrewConfig.load()
-    assert config.memory.private_provisioning_enabled is expected
-    config.save()
-    saved = json.loads(path.read_text(encoding="utf-8"))
-    assert saved["memory"]["private_provisioning_enabled"] is expected
-    assert KiroCrewConfig.load().memory.private_provisioning_enabled is expected
-
-
 # ---------------------------------------------------------------------------
 # Helpers / Strategies
 # ---------------------------------------------------------------------------
@@ -1800,7 +1769,7 @@ class TestMemoryStoreBindingFloor:
         assert "default" not in config.memory_stores, "the floor must not be declared here"
 
         assert resolve_agent_bindings(config, agent_name="default").memory_store_name == "default"
-        with pytest.raises(UnknownMemoryStore, match="missing or invalid"):
+        with pytest.raises(UnknownMemoryStore, match="is unavailable; Global was not used"):
             resolve_agent_bindings(config, agent_name="broken")
         if bound == "":
             with pytest.raises(UnknownMemoryStore, match="invalid memory store name"):
@@ -6524,6 +6493,8 @@ _DISPATCH_EXEMPT = {
     "selection_revision",
     # Derived from memory_store_name plus global config shared by both sides.
     "effective_memory_config",
+    # Session selection validates admitted member/mode before this target comparison.
+    "execution_context",
 }
 
 
@@ -6545,6 +6516,7 @@ def _dispatch_field_mutations() -> dict[str, object]:
         "selection_kind": "template",
         "selection_revision": "observed-selection-revision",
         "effective_memory_config": {"embedding_provider": "drift-pin-other"},
+        "execution_context": object(),
     }
 
 

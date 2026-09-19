@@ -14,22 +14,23 @@ Several are selectable on a plain public build, so "one provider" never meant
 
 ### Architecture
 
-Private V2 process isolation is a trusted provider preparation decision. The
-synchronous factory leaves identity reads to `AcpProvider.prepare_private_memory`,
-which resolves persisted/protected session memory in a worker before `start`
-chooses a runtime or starts a process. Session allocation also calls preparation
-before its existing pre-start privacy comparison. The result updates provider
-and client flags together on the event loop, removes shared MCP routing for a
-private provider, and retains the original socket for private-path validation.
-Successful preparation is reused by `start` and recovery; failure or cancellation
-does not publish it. `private_memory=True` is preserved through `AcpProvider`,
-`AcpClient` and `AcpRuntime`, including a recovery respawn. Caller extra kwargs and
-environment variables cannot opt into or out of that decision. The actual sandbox
-spawn applies the member-specific Global V1 masks
-and refuses an unenforced mode; the earlier context check is not a substitute.
-Private sessions bypass the global warm/shared runtime inventory. Dedicated
-private consolidation uses the same preparation boundary; V1 factory call shapes
-and background/pool behavior remain unchanged.
+Member execution carries one immutable member/store selection into provider
+allocation. `member_context` controls native instruction deduplication; it is not
+a security capability and does not choose a database. Memory access uses the
+Gateway's captured execution record and ordinary authenticated transport.
+
+Retention mode is established before provider startup. Restricted sessions bypass
+resumable warm providers, suppress Crew raw frame recording and discard known
+native transcript files on teardown, including a declined late startup. A shared
+runtime suppresses recording once it receives a restricted session. Provider
+stderr and reader-exception text are also excluded from restricted diagnostics;
+exit codes and the authentication-failure signal remain available. Provider
+engines can still write their own files during a live process; teardown cleanup
+cannot guarantee removal after a crash or for undocumented engine storage.
+
+The ordinary host sandbox and backend capability checks apply independently.
+Member memory requires no extra OS filesystem view, HMAC capability or platform
+isolation admission. See [the memory contract](memory-skills-hooks.md).
 
 ```
 ┌─────────────────────────────────────────────┐
@@ -81,8 +82,10 @@ receipt needs; the receipt stream preserves the caller's concrete event type.
 `kiro_crew.agent_sdk.drivers.acp.projected_session_mcp_servers(agent, *, work_dir=None)`
 is a synchronous driver helper for the deterministic workflow test scenario,
 not a top-level SDK export. It returns the existing filtered list of dictionaries
-and preserves resolver errors; async callers offload it. Projection itself neither grants private authority nor
-starts a server, and does not replace protected-session admission.
+and preserves resolver errors; async callers offload it. Projection itself neither
+authenticates the caller nor starts a server. Ordinary provider capability checks
+and authenticated transport remain responsible for admission; canonical execution
+records supply memory routing.
 
 A caller holding its normal session lease supplies the actual `LLMProvider` as
 `context_provider=provider` to `ContextBuilder.build_message`, together with the
@@ -413,14 +416,15 @@ outcome. A successful result is still returned, and the body's own exception
 propagates unchanged; `CancelledError` is not caught, so a cancel still
 propagates after the teardown attempt. The failure is logged at WARNING with
 the exception TYPE only, no message and no `exc_info`, because this logger sits
-under the private-task diagnostics filter and a session error's text can carry
-private-memory detail. Pinned by `test/test_workflows_agent_pool_unpooled_teardown.py`.
+on the task diagnostics path and a session error's text can carry conversation
+content or credentials. Pinned by `test/test_workflows_agent_pool_unpooled_teardown.py`.
 
 #### Workflow sessions publish their own turn identity
 
 A workflow worker's kiro-cli process has no ambient `KIROCREW_SESSION_KEY`
-(`AcpRuntime` does not export one), so its managed MCP calls carry a session key
-only through the gateway PID-walk. Every workflow send surface therefore calls
+(`AcpRuntime` does not export one). Its eligible managed MCP elements carry an
+ordinary signed per-session token, including when the broker is disabled.
+Every workflow send surface also calls
 `messaging.identity.publish_turn_identity(sessions, key)` at the same point in
 the turn as the chat and channel dispatchers: after `get_or_create` returned the
 session, before the prompt is built or streamed. `_WorkflowSessionWorker.send_message`

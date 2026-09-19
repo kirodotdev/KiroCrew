@@ -17,6 +17,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from kiro_crew.execution_context import execution_for_store
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 
 # ``SubagentManager.spawn`` refuses while the host looks short of memory, which
@@ -79,7 +80,13 @@ async def test_provenance_written_once_before_the_spawn_event() -> None:
         is_yolo=lambda: True,
     )
     # Per-spawn pin: becomes the requested side of the downgrade comparison.
-    info = SubagentInfo(id="prov01", task="provenance task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="prov01",
+        task="provenance task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     # Ordered trace of every update_state call and every fired event, so the
@@ -147,7 +154,13 @@ async def test_provenance_write_retries_once_on_transient_failure() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="prov02", task="provenance retry task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="prov02",
+        task="provenance retry task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     trace: list[tuple[str, dict[str, Any]]] = []
@@ -206,7 +219,13 @@ async def test_provenance_write_retries_on_silently_skipped_merge() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="prov03", task="provenance skip task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="prov03",
+        task="provenance skip task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     provenance_attempts = {"n": 0}
@@ -288,7 +307,13 @@ async def test_per_turn_diagnostics_write_is_drained_on_cancellation() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="turnw04", task="per-turn cancel task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="turnw04",
+        task="per-turn cancel task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     entered = asyncio.Event()
@@ -378,7 +403,13 @@ async def test_no_recovery_scheduled_while_diagnostics_worker_is_live() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="turnw07", task="per-turn run-cancel task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="turnw07",
+        task="per-turn run-cancel task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     entered = asyncio.Event()
@@ -452,7 +483,13 @@ async def test_recovery_gate_respects_live_drain_latch() -> None:
             ctx_builder=_mock_ctx_builder(),
             is_yolo=lambda: True,
         )
-        info = SubagentInfo(id=f"turnw08-{latch}", task="gate task", model="model-req")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id=f"turnw08-{latch}",
+            task="gate task",
+            model="model-req",
+        )
+        manager._log_spawned(info)
         manager._agents[info.id] = info
         info._state_drain_active = latch
         recovery_calls: list[Any] = []
@@ -501,7 +538,13 @@ async def test_per_turn_diagnostics_drain_is_bounded() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="turnw05", task="per-turn wedge task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="turnw05",
+        task="per-turn wedge task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     entered = asyncio.Event()
@@ -573,7 +616,13 @@ async def test_abandoned_diagnostics_worker_exception_is_retrieved() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="turnw06", task="per-turn zombie-raise task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="turnw06",
+        task="per-turn zombie-raise task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     entered = asyncio.Event()
@@ -665,7 +714,10 @@ async def test_unpinned_spawn_records_requested_model_auto() -> None:
         is_yolo=lambda: True,
     )
     # No per-spawn model pin; simulate no role-model config pin either.
-    info = SubagentInfo(id="prov-auto01", task="unpinned task", model="")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""), id="prov-auto01", task="unpinned task", model=""
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     provenance: list[dict[str, Any]] = []
@@ -712,7 +764,13 @@ async def test_provenance_write_is_drained_on_cancellation() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="provdr1", task="provenance cancel task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="provdr1",
+        task="provenance cancel task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     entered = asyncio.Event()
@@ -792,7 +850,10 @@ async def test_cc_refinement_write_is_drained_on_cancellation() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="ccdrn1", task="cc refinement cancel task")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""), id="ccdrn1", task="cc refinement cancel task"
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     entered = asyncio.Event()
@@ -864,7 +925,13 @@ async def test_an_abandoned_state_writer_holds_the_conversation() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="aband01", task="abandoned writer task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="aband01",
+        task="abandoned writer task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
     conv_key = f"subagent:{info.id}"
 
@@ -1050,7 +1117,13 @@ async def test_the_conversation_hold_covers_the_whole_drain_not_only_expiry() ->
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="middrn1", task="mid-drain hold task", model="model-req")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="middrn1",
+        task="mid-drain hold task",
+        model="model-req",
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
     conv_key = f"subagent:{info.id}"
 
@@ -1149,7 +1222,10 @@ async def test_pid_and_session_records_are_written_off_loop() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="offloop1", task="off-loop record task")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""), id="offloop1", task="off-loop record task"
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     loop_thread = threading.current_thread()
@@ -1208,7 +1284,10 @@ async def test_pid_record_write_is_drained_on_cancellation() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="piddr1", task="pid cancel task")
+    info = SubagentInfo(
+        execution_context=execution_for_store(""), id="piddr1", task="pid cancel task"
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     entered = asyncio.Event()
@@ -1268,7 +1347,13 @@ async def test_session_record_write_is_drained_on_cancellation() -> None:
         ctx_builder=_mock_ctx_builder(),
         is_yolo=lambda: True,
     )
-    info = SubagentInfo(id="sessdr1", task="session record cancel task", keep=True)
+    info = SubagentInfo(
+        execution_context=execution_for_store(""),
+        id="sessdr1",
+        task="session record cancel task",
+        keep=True,
+    )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     entered = asyncio.Event()
@@ -1329,8 +1414,12 @@ async def test_shared_session_pid_write_is_drained_on_cancellation() -> None:
         is_yolo=lambda: True,
     )
     info = SubagentInfo(
-        id="sharedpid1", task="shared session task", parent_session_key="dashboard:1"
+        execution_context=execution_for_store(""),
+        id="sharedpid1",
+        task="shared session task",
+        parent_session_key="dashboard:1",
     )
+    manager._log_spawned(info)
     manager._agents[info.id] = info
 
     runtime = MagicMock()

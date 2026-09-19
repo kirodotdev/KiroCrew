@@ -490,7 +490,7 @@ class TestVolatileLessonWriteBoundary:
                 ),
                 patch.object(
                     cron,
-                    "_prepare_private_lesson_store",
+                    "_prepare_member_lesson_store",
                     new=AsyncMock(return_value=None),
                 ),
                 patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
@@ -1255,7 +1255,7 @@ class TestLessonsRouteReportsTheOutcome:
             ),
             patch.object(
                 cron,
-                "_prepare_private_lesson_store",
+                "_prepare_member_lesson_store",
                 new=AsyncMock(return_value=None),
             ),
             patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
@@ -1296,7 +1296,7 @@ class TestLessonsRouteReportsTheOutcome:
                 ),
                 patch.object(
                     cron,
-                    "_prepare_private_lesson_store",
+                    "_prepare_member_lesson_store",
                     new=AsyncMock(return_value=None),
                 ),
                 patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),
@@ -1342,7 +1342,7 @@ class TestLessonsRouteReportsTheOutcome:
                 ),
                 patch.object(
                     cron,
-                    "_prepare_private_lesson_store",
+                    "_prepare_member_lesson_store",
                     new=AsyncMock(return_value=None),
                 ),
                 patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=store)),

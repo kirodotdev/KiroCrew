@@ -1315,38 +1315,40 @@ class TestLinkedWorkspaceAncestorGate:
 
 
 # ---------------------------------------------------------------------------
-# Private (member) store read and index guards
+# Member manual-profile guards and database history/index integrity
 #
 # The default store above degrades an unreadable file to an empty entry. A
-# member's private store refuses instead: its readers raise, its index rebuild
-# keeps the previous index, and nothing from a file outside the binding is
-# ever returned. These exercise ``MemoryStore`` through the dashboard's
+# member's manual-profile reader refuses instead. Learned history and its FTS
+# index are held in SQLite, independent of any old file copies. These exercise
+# ``MemoryStore`` through the dashboard's
 # ``markdown_memory_for_store`` so the store is the one the handlers bind.
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_owner_markdown_loader_retains_private_history_without_vector_attachment(env):
+async def test_owner_loader_retains_member_database_history(env):
     from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
-    assert memory.vector_store is None
-    path = env.home / "memory_stores" / "member-alice" / "memory" / "history" / "2000-01-01.md"
-    path.write_text(
-        "# 2000-01-01\n#### decision\nKeep the original project contract.", encoding="utf-8"
-    )
+    store = memory.vector_store
+    assert store is env.tiers["member-alice"]
+    with store.db:
+        store._write_history("2000-01-01", "Keep the original project contract.")
     assert memory.prune_history(keep_days=1) == 0
-    assert "original project contract" in memory.read_recent_history()
+    assert "original project contract" in memory.read_history_entries()[0]["content"]
+    assert not memory._history_dir.exists()
     assert await markdown_memory_for_store(env.state, "member-alice") is memory
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("escape", ["hardlink", "opened_path"])
-async def test_private_history_reader_refuses_inodes_outside_its_binding(env, monkeypatch, escape):
+async def test_member_history_ignores_old_file_copies(env, monkeypatch, escape):
     from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
     path = env.home / "memory_stores" / "member-alice" / "memory" / "history" / "2000-01-01.md"
+    path.parent.mkdir(parents=True)
+    memory.append_history("Current database history.")
     other = env.home / "other-member-evidence.txt"
     other.write_text("Private evidence belonging elsewhere.", encoding="utf-8")
     if escape == "hardlink":
@@ -1354,7 +1356,8 @@ async def test_private_history_reader_refuses_inodes_outside_its_binding(env, mo
     else:
         path.write_text("This member's own content.", encoding="utf-8")
         monkeypatch.setattr("kiro_crew.memory.fd_real_path", lambda descriptor: str(other))
-    assert memory.read_recent_history() == ""
+    assert "Current database history" in memory.read_recent_history()
+    assert "Private evidence" not in memory.read_recent_history()
     assert other.read_text(encoding="utf-8") == "Private evidence belonging elsewhere."
 
 
@@ -1368,6 +1371,8 @@ async def test_private_anchor_read_refuses_unsafe_present_files(
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
     path = memory._memory_dir / f"{document}.md"
+    path.parent.mkdir(exist_ok=True)
+    path.touch()
     other = env.home / "memory_stores" / "member-bob" / "private-evidence.txt"
     other.write_text("Evidence belongs only to Bob.", encoding="utf-8")
     if failure == "hardlink":
@@ -1396,7 +1401,8 @@ async def test_private_anchor_missing_and_empty_remain_valid_initial_states(env,
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
     path = memory._memory_dir / f"{document}.md"
-    path.unlink()
+    path.parent.mkdir(exist_ok=True)
+    path.unlink(missing_ok=True)
     reader = getattr(memory, f"read_{document}")
     assert reader() == ""
     path.write_text("", encoding="utf-8")
@@ -1413,9 +1419,10 @@ async def test_private_anchor_get_returns_scoped_unavailable_reason_without_cont
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
     path = memory._memory_dir / f"{document}.md"
+    path.parent.mkdir(exist_ok=True)
     other = env.home / "memory_stores" / "member-bob" / "private-evidence.txt"
     other.write_text("DO-NOT-EXPOSE-THIS-PRIVATE-CONTENT", encoding="utf-8")
-    path.unlink()
+    path.unlink(missing_ok=True)
     os.link(other, path)
     handler = getattr(memory_handlers, f"api_memory_{document}")
     response = await handler(request(env, query={"store": "member-alice"}, owner=True))
@@ -1430,16 +1437,17 @@ async def test_private_anchor_get_returns_scoped_unavailable_reason_without_cont
 @pytest.mark.parametrize(
     "failure", ["hardlink", "invalid_utf8", "vanished", "unsafe_root", "linked_root"]
 )
-async def test_private_index_rebuild_refusal_preserves_previous_search(env, monkeypatch, failure):
+async def test_member_index_rebuild_ignores_old_file_sources(env, monkeypatch, failure):
     from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
-    memory.write_preferences("# Preferences\nOriginal searchable sentinel.")
+    memory.append_history("Original searchable sentinel.")
     memory.rebuild_index()
     before = memory.search("sentinel")
     count = memory.index_row_count()
     assert before
     path = memory._history_dir / "2000-01-01.md"
+    path.parent.mkdir(parents=True)
     if failure == "hardlink":
         other = env.home / "memory_stores" / "member-bob" / "secret-evidence.txt"
         other.write_text("foreignclassifiedrecord", encoding="utf-8")
@@ -1467,101 +1475,110 @@ async def test_private_index_rebuild_refusal_preserves_previous_search(env, monk
     else:
         monkeypatch.setattr(memory, "_read_root_guard", lambda: False)
     with monkeypatch.context() as traversal_guard:
-        if failure in {"unsafe_root", "linked_root"}:
-            traversal_guard.setattr(
-                "kiro_crew.memory.os.scandir",
-                lambda *args: pytest.fail("unsafe root was traversed"),
-            )
-        with pytest.raises(OSError, match="refused"):
-            memory.rebuild_index()
+        traversal_guard.setattr(
+            "kiro_crew.memory.os.scandir",
+            lambda *args: pytest.fail("old file sources were traversed"),
+        )
+        assert memory.rebuild_index() == count
     assert memory.search("sentinel") == before
     assert memory.search("foreignclassifiedrecord") == []
     assert memory.index_row_count() == count
 
 
 @pytest.mark.asyncio
-async def test_private_index_database_failure_rolls_back_and_is_explicit(env, monkeypatch):
+async def test_member_index_database_failure_rolls_back_and_is_explicit(env, monkeypatch):
     from kiro_crew._sqlite_compat import sqlite3
     from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
-    memory.write_preferences("# Preferences\nOriginal searchable sentinel.")
+    memory.append_history("Original searchable sentinel.")
     memory.rebuild_index()
     before = memory.search("sentinel")
-    original_get_db = memory._get_db
+    store = memory.vector_store
+    original = store.db
 
     class FailingInsert:
-        def __init__(self):
-            self.connection = original_get_db()
+        def __enter__(self):
+            original.__enter__()
+            return self
+
+        def __exit__(self, *args):
+            return original.__exit__(*args)
 
         def execute(self, sql, *args):
             if sql.startswith("INSERT INTO memory_fts"):
                 raise sqlite3.OperationalError("injected disk write failure")
-            return self.connection.execute(sql, *args)
-
-        def commit(self):
-            self.connection.commit()
-
-        def close(self):
-            self.connection.close()
-
-        def rollback(self):
-            self.connection.rollback()
+            return original.execute(sql, *args)
 
     with monkeypatch.context() as database_guard:
-        database_guard.setattr(memory, "_get_db", FailingInsert)
+        database_guard.setattr(store, "_db", FailingInsert())
         with pytest.raises(sqlite3.OperationalError, match="disk write failure"):
             memory.rebuild_index()
     assert memory.search("sentinel") == before
 
 
 @pytest.mark.asyncio
-async def test_private_index_readers_keep_previous_index_until_all_sources_are_read(
-    env, monkeypatch
-):
+async def test_member_index_readers_keep_previous_index_until_commit(env, monkeypatch):
     from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
-    memory.write_preferences("# Preferences\nOriginal searchable sentinel.")
+    memory.append_history("Original searchable sentinel.")
     memory.rebuild_index()
     previous = memory.search("sentinel")
-    memory._preferences_file.write_text("Replacement searchable record.", encoding="utf-8")
-    later = memory._history_dir / "2000-01-01.md"
-    later.write_bytes(b"\xff")
-    original_read = memory._guarded_entry
+    store = memory.vector_store
+    original = store.db
+    with original:
+        original.execute("UPDATE memory_history SET content='Replacement searchable record.'")
+    from kiro_crew.vector_memory import open_member_database
+
+    reader = open_member_database(store._db_path, member_id="alice", store_id="member-alice")
     checked = []
 
-    def read_with_concurrent_query(path, **kwargs):
-        if path == later:
-            checked.append(path)
-            assert memory.search("sentinel") == previous
-            assert memory.search("Replacement") == []
-        return original_read(path, **kwargs)
+    class ObserveRebuild:
+        def __enter__(self):
+            original.__enter__()
+            return self
 
-    monkeypatch.setattr(memory, "_guarded_entry", read_with_concurrent_query)
-    with pytest.raises(OSError, match="UTF-8"):
-        memory.rebuild_index()
-    assert checked == [later]
-    assert memory.search("sentinel") == previous
-    assert memory.search("Replacement") == []
+        def __exit__(self, *args):
+            return original.__exit__(*args)
+
+        def execute(self, sql, *args):
+            result = original.execute(sql, *args)
+            if sql.startswith("INSERT INTO memory_fts"):
+                checked.append(sql)
+                assert reader.search_memory("sentinel") == previous
+                assert reader.search_memory("Replacement") == []
+            return result
+
+    try:
+        with monkeypatch.context() as database_guard:
+            database_guard.setattr(store, "_db", ObserveRebuild())
+            memory.rebuild_index()
+        assert len(checked) == 2
+        assert reader.search_memory("sentinel") == []
+        assert reader.search_memory("Replacement")
+    finally:
+        reader.close()
 
 
 @pytest.mark.asyncio
-async def test_private_index_covers_retained_days_beyond_snapshot_limit(env):
+async def test_member_index_covers_database_history_beyond_snapshot_limit(env):
     from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
     first_day = date(2000, 1, 1)
     total_days = memory._HISTORY_SNAPSHOT_MAX_ENTRIES + 1
-    for index in range(total_days):
-        path = memory._history_dir / f"{(first_day + timedelta(days=index)).isoformat()}.md"
-        text = "oldestevidencesentinel" if index == 0 else f"Retained decision number {index}."
-        path.write_text(text, encoding="utf-8")
-    (memory._history_dir / "notes.md").write_text("notadailysentinel", encoding="utf-8")
-    assert memory.rebuild_index() == total_days + 2
+    store = memory.vector_store
+    with store.db:
+        for index in range(total_days):
+            day = (first_day + timedelta(days=index)).isoformat()
+            text = "oldestevidencesentinel" if index == 0 else f"Retained decision number {index}."
+            store._write_history(day, text)
+    assert memory.rebuild_index() == total_days
     assert memory.search("oldestevidencesentinel")
-    assert memory.search("notadailysentinel") == []
     assert len(memory.read_history_entries()) == memory._HISTORY_SNAPSHOT_MAX_ENTRIES
-    assert (memory._history_dir / "2000-01-01.md").read_text(
-        encoding="utf-8"
-    ) == "oldestevidencesentinel"
+    assert (
+        store.db.execute("SELECT content FROM memory_history WHERE day='2000-01-01'").fetchone()[0]
+        == "oldestevidencesentinel"
+    )
+    assert not memory._history_dir.exists()

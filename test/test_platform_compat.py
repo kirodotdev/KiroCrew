@@ -6393,7 +6393,7 @@ class TestStripExtendedLengthPrefix:
 
         assert session_ledger.strip_extended_length_prefix is pc.strip_extended_length_prefix
 
-    def test_the_workflow_guard_shares_the_one_fold(self, monkeypatch):
+    def test_the_workflow_guard_shares_the_one_fold(self, monkeypatch, tmp_path):
         """``workflow_memory`` must reach the same helper on its guarded path."""
         from kiro_crew import workflow_memory
 
@@ -6405,5 +6405,5 @@ class TestStripExtendedLengthPrefix:
             return real(path)
 
         monkeypatch.setattr(pc, "strip_extended_length_prefix", record)
-        workflow_memory.binding_path("wf_shared_fold")
+        workflow_memory._allocator_path(tmp_path / "run-ids.json")
         assert calls, "workflow_memory did not reach the shared fold"

@@ -54,11 +54,12 @@ async def test_missing_store_directory_is_refused_and_not_recreated(home):
 @pytest.mark.asyncio
 async def test_intact_declared_store_still_builds(home):
     """The reorder must not refuse a healthy store."""
-    from kiro_crew.vector_memory import VectorMemoryStore
+    from kiro_crew.vector_memory import open_member_database
 
     db = home / "memory_stores" / "member-alice" / "memory.db"
-    seed = VectorMemoryStore(db_path=db)
-    seed.init()
+    # V2 databases are provisioned by the fixture; open the existing database
+    # through the canonical member opener.
+    seed = open_member_database(db, member_id="alice", store_id="member-alice")
     seed.close()
 
     store = await context._build_store_vectors("member-alice")
@@ -72,16 +73,21 @@ async def test_intact_declared_store_still_builds(home):
 
 @pytest.mark.asyncio
 async def test_store_removed_during_init_is_refused_at_publication(home, monkeypatch):
-    """The publication-edge admission: a store that vanishes after ``init()``
-    but before the cache hands it out is refused and not cached."""
-    from kiro_crew import embeddings
+    """The publication-edge admission rejects a store changed after ``init()``
+    but before the cache hands it out."""
+    from kiro_crew import memory_stores
 
-    store_dir = home / "memory_stores" / "member-alice"
+    original_require = memory_stores.require_memory_store
+    calls = 0
 
-    def vanish(store):
-        shutil.rmtree(store_dir)
+    def vanish(name, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise UnknownMemoryStore("the declaration changed during initialization")
+        return original_require(name, **kwargs)
 
-    monkeypatch.setattr(embeddings, "reconcile_store_embedding_space", vanish)
+    monkeypatch.setattr(memory_stores, "require_memory_store", vanish)
 
     with pytest.raises(UnknownMemoryStore):
         await context._build_store_vectors("member-alice")

@@ -1202,6 +1202,12 @@ TaskRunner steps and workflow `ctx.agent()` calls run on `SessionManager`
 sessions, not on `SubagentManager.spawn`, so they cannot share that code path;
 this module gives them the same contract over the same store.
 
+Incognito and Temporary executions use `RunnerAdmission.in_memory()`: the
+existing storeless admission path shares the same live lane, pressure checks and
+retry timing. It does not attach the durable store or dependency coordinator, so
+parameters, outcomes and waits cannot create task rows or replay after restart.
+Persistent executions retain write-before-ack and lease-fenced settlement.
+
 | Piece | What it is |
 |---|---|
 | `lane_for(session_key, source)` | `lanes.lane_key_for(session_key)` (the ONE lane-key policy) plus the runner's launch `source`: a `cron` / `hook` root is `system` whatever its key says. Stored on the row as `params.lane` and honoured by `_lane_in_tx`. |

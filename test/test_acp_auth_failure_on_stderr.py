@@ -63,6 +63,7 @@ def _runtime(lines):
     from kiro_crew.acp.runtime import AcpRuntime
 
     runtime = AcpRuntime.__new__(AcpRuntime)
+    runtime.recording_allowed = True
     runtime._stderr_lines = []
     runtime._saw_auth_failure = False
     runtime._process = _FakeProcess(lines)

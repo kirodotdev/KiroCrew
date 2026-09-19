@@ -81,6 +81,7 @@ def build(env, target, fresh=False, **kwargs):
         fresh,
         kwargs.pop("session_key", "dashboard:private"),
         memory_store=env.store,
+        member=env.member,
         agent=kwargs.pop("agent", "writer-template"),
         context_provider=target,
         **kwargs,
@@ -105,6 +106,7 @@ async def test_wire_without_receipt_fresh_and_twenty_warm_turns(env):
             turn == 0,
             "dashboard:private",
             memory_store=env.store,
+            member=env.member,
             agent="writer-template",
             project=str(env.project),
             provider_type="claude_code",
@@ -534,7 +536,11 @@ async def test_startup_captures_native_inputs_after_real_private_binding(env, mo
     bind_private_session_store(key, env.store)
     ConversationLog().update_metadata(key, {"memory_store": env.store, "agent": "writer"})
     target = AcpProvider(
-        work_dir=env.project, agent="writer-template", session_key=key, acp_backend=backend
+        work_dir=env.project,
+        agent="writer-template",
+        session_key=key,
+        acp_backend=backend,
+        member_context=True,
     )
     inputs = []
 
@@ -548,7 +554,7 @@ async def test_startup_captures_native_inputs_after_real_private_binding(env, mo
 
     monkeypatch.setattr(target, "_start_kiro_runtime", start_transport)
     await target.start()
-    assert target._private_memory is True
+    assert target.member_context is True
     assert target.native_context_documents == {}
     await send(target, build(env, target, fresh=True, session_key=key))
     combined = target.client.messages[-1]
@@ -557,23 +563,29 @@ async def test_startup_captures_native_inputs_after_real_private_binding(env, mo
 
 
 @pytest.mark.asyncio
-async def test_existing_receipt_cannot_bypass_changed_protected_binding(env):
+async def test_existing_receipt_preserves_captured_store_after_legacy_metadata_changes(env):
     from kiro_crew.context import session_store_for_turn
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.history import ConversationLog
     from kiro_crew.member_memory_auth import bind_private_session_store
-    from kiro_crew.memory_stores import UnknownMemoryStore
 
     key = "dashboard:private"
     bind_private_session_store(key, env.store)
     log = ConversationLog()
     log.update_metadata(key, {"memory_store": env.store, "agent": "writer"})
     env.builder.conversation_log = log
+    execution = read_session_execution(key, required=True)
     target = provider(env.project)
-    await send(target, build(env, target, fresh=True))
+    await send(target, build(env, target, fresh=True, execution_context=execution))
     log.update_metadata(key, {"memory_store": "default"})
-    with pytest.raises(UnknownMemoryStore, match="protected member binding"):
-        await session_store_for_turn(env.builder, key)
-    assert len(target.client.messages) == 1
+    assert await session_store_for_turn(env.builder, key) == env.store
+    assert read_session_execution(key, required=True) == execution
+    await send(target, build(env, target, execution_context=execution))
+    assert [message.count(HEADER) for message in target.client.messages] == [1, 0]
+    env.memory.write_preferences("CAPTURED_MEMBER_PREFERENCE")
+    await send(target, build(env, target, execution_context=execution))
+    assert target.client.messages[-1].count(HEADER) == 1
+    assert "CAPTURED_MEMBER_PREFERENCE" in target.client.messages[-1]
 
 
 def command_target(env, shared):
@@ -771,7 +783,7 @@ async def test_native_launch_and_activation_own_exact_sources(
     agents.mkdir(parents=True, exist_ok=True)
     (agents / path.name).write_text(json.dumps(spec), encoding="utf-8")
     rt = AcpRuntime(
-        work_dir=env.project, agent="writer-template", acp_backend=backend, private_memory=True
+        work_dir=env.project, agent="writer-template", acp_backend=backend, member_context=True
     )
     if backend == ACP_BACKEND_KIRO:
         monkeypatch.setattr(
@@ -856,6 +868,7 @@ async def test_non_native_selector_includes_full_guide_only_at_trigger(env, text
             "dashboard:selectors",
             agent="writer-template",
             memory_store=env.store,
+            member=env.member,
             project=str(env.project),
             context_provider=target,
         )[0]
@@ -889,6 +902,7 @@ async def test_hooks_spans_and_abandoned_preparation_keep_receipt_correct(env):
         "dashboard:scope",
         agent="writer-template",
         memory_store=env.store,
+        member=env.member,
         project=str(env.project),
         context_provider=target,
         user_text_range=(start, len(original)),
@@ -906,6 +920,7 @@ async def test_hooks_spans_and_abandoned_preparation_keep_receipt_correct(env):
         "dashboard:scope",
         agent="writer-template",
         memory_store=env.store,
+        member=env.member,
         project=str(env.project),
         context_provider=target,
     )

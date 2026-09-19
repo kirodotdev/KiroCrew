@@ -17,7 +17,6 @@ from kiro_crew.acp.session_handle import AcpSessionHandle
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.dashboard.handlers import cron, memory_member
 from kiro_crew.history import is_incognito_transcript
-from kiro_crew.member_memory_auth import issue_member_session_proof
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.session import SessionManager
 from kiro_crew.subagent import SubagentInfo, SubagentManager
@@ -29,8 +28,8 @@ env = _member_env
 @pytest.mark.parametrize(
     "key", ["subagent:private-child", "subagent:original-child", "wf-pool:wf_900002:0"]
 )
-async def test_registered_child_private_memory_and_teardown(env, tmp_path, monkeypatch, key):
-    """Real process publisher/proof and manager lifecycle; no sandbox proof mock."""
+async def test_registered_child_member_memory_and_teardown(env, tmp_path, monkeypatch, key):
+    """Real ordinary identity publication and manager lifecycle."""
     from kiro_crew import context
 
     monkeypatch.setattr(context, "_vector_stores", dict(env.tiers))
@@ -43,9 +42,7 @@ async def test_registered_child_private_memory_and_teardown(env, tmp_path, monke
         def provider_factory(session_key, **kwargs):
             provider = factory(session_key, **kwargs)
             provider.client = SimpleNamespace(_pid=child.pid)
-            # Model transport is a stub, not evidence of kernel isolation.
-            # The actual PID publication and private proof below are unpatched.
-            provider._private_memory = True
+            provider.member_context = True
             return provider
 
         sessions = SessionManager(KiroCrewConfig(), provider_factory=provider_factory)
@@ -60,17 +57,10 @@ async def test_registered_child_private_memory_and_teardown(env, tmp_path, monke
             )
             manager._agents[info.id] = info
             await asyncio.to_thread(create_agent_folder, info.id, memory_store="member-alice")
-        else:
-            from kiro_crew.workflow_memory import publish_binding
-
-            # Seed the admitted run identity; kernel admission is exercised in E2E.
-            await asyncio.to_thread(publish_binding, "wf_900002", "member-alice", "dashboard:alice")
         await asyncio.to_thread(env.bind_session, key, "member-alice")
         try:
             await sessions.get_or_create(key)
             await publish_turn_identity(sessions, key)
-            proof = issue_member_session_proof(key, child.pid)
-            assert proof
             assert sessions.has_session(key)
             assert not sessions.has_session(key.split(":", 1)[1])
             response = await cron.api_lessons_create(
@@ -80,7 +70,6 @@ async def test_registered_child_private_memory_and_teardown(env, tmp_path, monke
                     body={"rule": "child private lesson", "category": "knowledge"},
                     session=key,
                     internal=True,
-                    proof=proof,
                 )
             )
             assert response.status == 200, response.text
@@ -91,12 +80,11 @@ async def test_registered_child_private_memory_and_teardown(env, tmp_path, monke
                     query={"q": "child private lesson"},
                     session=key,
                     internal=True,
-                    proof=proof,
                 )
             )
             assert response.status == 200, response.text
             assert "child private lesson" in response.text
-            # Recognized does not mean authorized: a key alone is not private proof.
+            # Repeat the ordinary authenticated read without a memory capability.
             response = await memory_member.api_memory_recall(
                 make_request(
                     env.state,
@@ -106,8 +94,7 @@ async def test_registered_child_private_memory_and_teardown(env, tmp_path, monke
                     internal=True,
                 )
             )
-            assert response.status == 403
-            assert json.loads(response.text)["code"] == "member_session_unverified"
+            assert response.status == 200
             sessions.release(key, cleanup=False)
             await sessions.destroy(key)
             assert not sessions.has_session(key)
@@ -125,18 +112,19 @@ async def test_registered_child_private_memory_and_teardown(env, tmp_path, monke
             )
             assert response is None
             sessions.release(key, cleanup=False)
+            env.bind_session("dashboard:bob", "member-bob")
+            env.state._slots["bob"] = SimpleNamespace(is_restricted=False, blocks_reads=False)
             foreign = await memory_member.api_memory_recall(
                 make_request(
                     env.state,
                     "/api/memory/recall",
                     query={"q": "child private lesson"},
-                    session="dashboard:alice",
+                    session="dashboard:bob",
                     internal=True,
-                    proof=proof,
                 )
             )
-            assert foreign.status == 403
-            assert json.loads(foreign.text)["code"] == "member_session_unverified"
+            assert foreign.status == 200
+            assert "child private lesson" not in foreign.text
         finally:
             await sessions.close_all()
 
@@ -172,7 +160,12 @@ async def test_shared_handle_recognition_ends_at_unregister(tmp_path):
     start_kwargs = dict(runtime.create_session.await_args.kwargs)
     assert callable(start_kwargs.pop("on_gate_acquired", None))
     assert callable(start_kwargs.pop("late_adopter", None))
-    assert start_kwargs == {"cwd": str(tmp_path), "agent": "kirocrew", "session_key": key}
+    assert start_kwargs == {
+        "cwd": str(tmp_path),
+        "agent": "kirocrew",
+        "session_key": key,
+        "memory_mode": "persistent",
+    }
     assert runtime.create_session.await_args.args == ()
     state = SimpleNamespace(
         sessions=sessions,
@@ -319,18 +312,35 @@ async def test_live_child_checks_origin_privacy_without_child_markers(env, mode,
         manager._agents[info.id] = info
         key = info.conversation_key or f"subagent:{info.id}"
     else:
-        from kiro_crew.dashboard.handlers._shared import resolve_session_memory_mode
+        from kiro_crew.dashboard.handlers._shared import (
+            live_session_memory_mode,
+            resolve_session_memory_mode,
+        )
+        from kiro_crew.execution_context import execution_from_record, read_session_execution
 
-        admitted_context = SimpleNamespace(
-            _session_memory_modes={},
-            memory_mode_for_session=lambda key: resolve_session_memory_mode(env.state, key),
+        # Admission and route recognition use the same gateway-owned builder.
+        admitted_context = env.state.context_builder
+        admitted_context._session_memory_modes = {}
+        admitted_context.live_memory_mode_for_session = lambda key: live_session_memory_mode(
+            env.state, key
+        )
+        admitted_context.memory_mode_for_session = lambda key: resolve_session_memory_mode(
+            env.state, key
         )
         scope = await WorkflowScope.admit("wf_900001", admitted_context, parent)
         key = scope.worker_key("privacy-child")
+        await scope.prepare(admitted_context, key)
     assert key not in env.state._restricted_keys
     assert key.split(":", 1)[1] not in env.state._slots
     try:
         await sessions.get_or_create(key)
+        if kind == "workflow":
+            execution = await asyncio.to_thread(read_session_execution, key, required=True)
+            assert execution == scope.execution_context
+            assert execution.memory_mode == mode
+            metadata = await asyncio.to_thread(env.history.get_metadata, key)
+            durable = execution_from_record(metadata, required=False)
+            assert durable == (execution if mode == "persistent" else None)
         for read_only in (False, True):
             response = await cron._recognize_session(
                 env.state,
@@ -372,12 +382,12 @@ async def test_headless_birth_authority_survives_origin_loss(env, origin_state):
     run_id = f"origin-check-{origin_state}"
     key = f"subagent:{run_id}"
     if origin_state != "missing":
-        from kiro_crew.subagent_persistence import _run_memory_identity_path, create_agent_folder
+        from kiro_crew.subagent_persistence import create_agent_folder
 
-        await asyncio.to_thread(
+        run_folder = await asyncio.to_thread(
             create_agent_folder,
             run_id,
-            memory_mode="persistent" if origin_state == "parentless" else "temporary",
+            memory_mode="temporary" if origin_state == "archived" else "persistent",
         )
         if origin_state == "archived":
             await asyncio.to_thread(
@@ -386,7 +396,7 @@ async def test_headless_birth_authority_survives_origin_loss(env, origin_state):
     try:
         await sessions.get_or_create(key)
         if origin_state == "corrupt":
-            _run_memory_identity_path(run_id).write_text("not json", encoding="utf-8")
+            (run_folder / "state.json").write_text("not json", encoding="utf-8")
         response = await cron._recognize_session(
             env.state, key, "learn_add", blocks_persisted_mode=is_incognito_transcript
         )

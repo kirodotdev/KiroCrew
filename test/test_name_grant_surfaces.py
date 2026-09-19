@@ -37,6 +37,7 @@ from kiro_crew.acp.types import (
     AcpEvent,
 )
 from kiro_crew.context import ContextBuilder
+from kiro_crew.execution_context import execution_for_store
 from kiro_crew.hooks import TOOL_AUTO_APPROVE, HookManager, ToolHookResult
 from kiro_crew.messaging import (
     APPROVAL_INTERACTIVE,
@@ -341,7 +342,13 @@ class TestSubagentSurface:
         ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult(action=TOOL_AUTO_APPROVE))
 
         manager = SubagentManager(sessions=sessions, ctx_builder=ctx, default_turn_limit=1)
-        info = SubagentInfo(id="ng01", task="t", parent_session_key="dashboard:default")
+        info = SubagentInfo(
+            execution_context=execution_for_store(""),
+            id="ng01",
+            task="t",
+            parent_session_key="dashboard:default",
+        )
+        manager._log_spawned(info)
         manager._agents["ng01"] = info
         return manager, info, provider
 

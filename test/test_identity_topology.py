@@ -227,10 +227,7 @@ def test_mcp_shared_policy_walk_reaches_gateway(topo, monkeypatch, view) -> None
     monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_failure_count", 0)
 
-    cfg = MagicMock()
-    cfg.dashboard.url = "http://localhost:5476/"
-    monkeypatch.setattr(mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
-    monkeypatch.setattr(mcp_shared, "parse_dashboard_url", lambda url: ("localhost", 5476))
+    monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
     monkeypatch.setattr(mcp_shared, "config_dir", lambda: topo.cfg_dir)
     (topo.cfg_dir / ".local_secret").write_text("s")
 
@@ -383,10 +380,7 @@ def test_mcp_shared_refuses_symlinked_pid_file(topo, monkeypatch) -> None:
     monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
     monkeypatch.setattr(mcp_shared, "_failure_count", 0)
 
-    cfg = MagicMock()
-    cfg.dashboard.url = "http://localhost:5476/"
-    monkeypatch.setattr(mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
-    monkeypatch.setattr(mcp_shared, "parse_dashboard_url", lambda url: ("localhost", 5476))
+    monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
     monkeypatch.setattr(mcp_shared, "config_dir", lambda: topo.cfg_dir)
     (topo.cfg_dir / ".local_secret").write_text("s")
 
@@ -641,6 +635,70 @@ def test_reflexive_tools_route_through_the_strict_gate() -> None:
         "check (fix the tool) or it is gone (remove it from "
         "mcp_core.REFLEXIVE_TOOL_MODULES)."
     )
+
+
+@pytest.mark.parametrize("identified", [True, False])
+@pytest.mark.parametrize(
+    "tool_name,args",
+    [
+        ("kiro_cli_logs", {}),
+        ("search_chat_history", {"query": "sharedmarker"}),
+        ("get_chat_session", {"session_key": "dashboard:target"}),
+        ("list_sessions", {"summarize": True}),
+    ],
+)
+def test_session_reads_require_and_reuse_strict_identity(
+    tmp_path, monkeypatch, identified, tool_name, args
+):
+    from kiro_crew import mcp_core
+    from kiro_crew.history import ConversationLog
+    from kiro_crew.mcp_tools import logs, sessions
+
+    caller_key = "dashboard:child"
+    refusal = "Error: session identity unavailable. Fixture diagnosis."
+    gate = MagicMock(return_value=(caller_key, "") if identified else ("", refusal))
+    monkeypatch.setattr(mcp_core, "require_strict_session_key", gate)
+    monkeypatch.setattr(
+        mcp_core,
+        "_resolve_session_key",
+        MagicMock(side_effect=AssertionError("must not fall back to parent identity")),
+    )
+    audit = MagicMock()
+    monkeypatch.setattr(mcp_core, "sel", lambda: audit)
+    gateway = MagicMock(return_value={"summaries": {}})
+    monkeypatch.setattr(mcp_core, "_post", gateway)
+
+    history = ConversationLog(base_dir=tmp_path / "sessions")
+    history.update_metadata(caller_key, {"workspace": "child"})
+    for key, workspace, body in (
+        ("dashboard:target", "child", "CHILD-HISTORY sharedmarker"),
+        ("dashboard:parent", "parent", "PARENT-HISTORY sharedmarker"),
+    ):
+        history.append(key, "user", body)
+        history.update_metadata(key, {"workspace": workspace, "title": body})
+    history_reader = MagicMock(return_value=history)
+    monkeypatch.setattr(sessions, "ConversationLog", history_reader)
+    log_reader = MagicMock(return_value="READABLE PROTOCOL")
+    monkeypatch.setattr(logs.diagnostics, "read_kiro_cli_logs", log_reader)
+
+    handler = logs.kiro_cli_logs if tool_name == "kiro_cli_logs" else getattr(sessions, tool_name)
+    result = handler(tool_name, args)
+
+    gate.assert_called_once()
+    if not identified:
+        assert result == refusal
+        history_reader.assert_not_called()
+        log_reader.assert_not_called()
+        gateway.assert_not_called()
+        return
+    assert ("READABLE PROTOCOL" if tool_name == "kiro_cli_logs" else "CHILD-HISTORY") in result
+    assert "PARENT-HISTORY" not in result
+    assert audit.log_tool_invocation.call_args.kwargs["session_key"] == caller_key
+    if tool_name == "list_sessions":
+        gateway.assert_called_once()
+        assert gateway.call_args.args[0] == "/api/sessions/summarize"
+        assert set(gateway.call_args.args[1]["keys"]) == {"dashboard_target", "dashboard_child"}
+        assert gateway.call_args.kwargs == {"timeout": 120, "session_key": caller_key}
 
 
 @pytest.mark.parametrize("identified", [True, False])

@@ -5,11 +5,13 @@
 The Slack integration (`kiro_crew/slack/`) connects KiroCrew to Slack via Socket Mode. DMs are routed through ACP to kiro-cli with real-time streaming and interactive tool approval.
 
 Independently scheduled agent runs admit their exact execution key as durable
-work before provider allocation, publishing its privacy mode in the existing
-protected runtime-policy tree. Single and sequential-agent paths share that
+work before provider allocation, publishing its privacy mode in the canonical
+session execution record. Single and sequential-agent paths share that
 admission, so first-turn child creation does not require a dashboard slot or a
 previous transcript. A damaged committed mode refuses allocation; a key prefix
 alone never grants a mode. Origin-chat injection keeps the chat's own policy.
+Cron execution binding is published off the event loop before mode admission
+and provider allocation, using the run's already captured execution context.
 
 Startup wires memory objects behind one gateway-lifetime in-process barrier.
 Both dashboard and API-only servers receive the orchestrator's existing context
@@ -90,9 +92,9 @@ file timestamps do not establish completed recovery or safe deletion order.
 During operation, member cron jobs, linked DMs, nudges and completion injections validate
 their own recorded memory identity before acquiring a provider. Completion
 injections use the parent conversation's memory; delegates keep their target's
-private memory for the delegated run and retries.
+member-scoped memory for the delegated run and retries.
 
-Private-memory refusals retain their named recovery reason in channel replies,
+Memory-operation refusals retain their named recovery reason in channel replies,
 but pass through the shared credential/exfiltration and local-path redactors
 before truncation. Both native Slack and its transport dispatcher apply the same
 protection as Discord and Telegram. Native Slack sanitizes the accumulated reply

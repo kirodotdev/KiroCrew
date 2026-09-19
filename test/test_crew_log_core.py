@@ -2050,7 +2050,6 @@ def test_the_log_root_is_restricted_even_when_the_home_cannot_be(tmp_path, monke
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setattr(paths, "config_dir", lambda: home)
-    monkeypatch.setattr(paths, "private_runtime_log_dir", lambda: None)
 
     real = platform_compat.restrict_dir_to_owner
     refused: list[object] = []

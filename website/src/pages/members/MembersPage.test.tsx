@@ -579,26 +579,31 @@ describe('MembersPage thread', () => {
 })
 
 describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
-  it('shows the read-only config summary and the usable V1 migration choice', async () => {
+  it('shows the read-only V1 config summary with one crew editor destination', async () => {
     await renderPage([row({ bound: true, slot_key: 'member-oncall', model: 'claude-opus-5', memory_version: 1 })])
     fireEvent.click(await rosterRow('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
     expect(drawer).toHaveTextContent('kirocrew')
     expect(drawer).toHaveTextContent('claude-opus-5')
-    expect(drawer).toHaveTextContent('This member uses its current memory (V1).')
+    expect(drawer).toHaveTextContent('This member keeps its current memory (V1). Member memory (V2) is only available when creating a new crew member.')
     expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
     expect(drawer).not.toHaveTextContent('Existing data and chats stay.')
-    expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
+    expect(within(drawer).queryByRole('button', { name: 'Open crew manager' })).toBeNull()
+    expect(within(drawer).queryByRole('button', { name: 'Manage memory' })).toBeNull()
+    expect(within(drawer).getAllByRole('button', { name: 'Edit in crew manager' })).toHaveLength(1)
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Edit in crew manager' }))
+    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')
   })
 
-  it('shows private V2 only when owner metadata matches the member', async () => {
+  it('shows member memory V2 when owner metadata matches the member', async () => {
     await renderPage([
       row({ bound: true, slot_key: 'member-oncall', memory_store: 'oncall-own', memory_version: 2, memory_owner: 'oncall' }),
     ])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
-    expect(drawer).toHaveTextContent(/only this member can use it/i)
-    expect(screen.getByRole('button', { name: 'Manage memory' })).toBeInTheDocument()
+    expect(drawer).toHaveTextContent('This member uses Member memory (V2).')
+    fireEvent.click(screen.getByRole('button', { name: 'Manage memory' }))
+    expect(navigateSpy).toHaveBeenCalledWith('/settings/overview?view=memory&store=oncall-own')
   })
 
   it('does not describe a legacy shared named store as private V2', async () => {
@@ -608,9 +613,13 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     ])
     fireEvent.click(await screen.findByText('oncall'))
     const drawer = await screen.findByTestId('member-crew-summary')
-    expect(drawer).toHaveTextContent('This member uses its current memory (V1).')
+    expect(drawer).toHaveTextContent('This member keeps its current memory (V1). Member memory (V2) is only available when creating a new crew member.')
     expect(drawer).not.toHaveTextContent('Private memory (V2) starts empty in a new chat')
-    expect(within(drawer).getByRole('button', { name: 'Set up private memory' })).toBeVisible()
+    expect(within(drawer).queryByRole('button', { name: 'Open crew manager' })).toBeNull()
+    expect(within(drawer).queryByRole('button', { name: 'Manage memory' })).toBeNull()
+    expect(within(drawer).getAllByRole('button', { name: 'Edit in crew manager' })).toHaveLength(1)
+    fireEvent.click(within(drawer).getByRole('button', { name: 'Edit in crew manager' }))
+    expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')
     expect(drawer).not.toHaveTextContent(/only this member can use it/i)
   })
 
@@ -624,7 +633,7 @@ describe('MembersPage side panel (Crew summary tab) and edit jump', () => {
     const drawer = await screen.findByTestId('member-crew-summary')
     expect(drawer).toHaveTextContent(reason)
     expect(drawer).not.toHaveTextContent(/unavailable or belongs/i)
-    expect(drawer).not.toHaveTextContent(/This member uses its current memory \(V1\)\./)
+    expect(drawer).not.toHaveTextContent(/This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\./)
     expect(drawer).not.toHaveTextContent(/only this member can use it/i)
     fireEvent.click(screen.getByRole('button', { name: 'Open crew manager' }))
     expect(navigateSpy).toHaveBeenCalledWith('/capabilities?tab=crews&crew=oncall')

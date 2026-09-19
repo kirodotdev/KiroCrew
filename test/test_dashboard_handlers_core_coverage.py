@@ -2052,6 +2052,19 @@ class TestAdvertisedModelGuards:
 
 
 class TestLocalToken:
+    @pytest.fixture
+    def verified_owner_process(self, monkeypatch) -> None:
+        from kiro_crew import member_memory_auth as auth
+
+        peer_pid = 12345
+        monkeypatch.setattr(auth, "_request_peer_pid", lambda _request: peer_pid)
+        monkeypatch.setattr(
+            auth.platform_compat,
+            "get_process_start_id",
+            lambda pid: "synthetic-start" if pid == peer_pid else None,
+        )
+        monkeypatch.setattr(auth, "_verified_host_process", lambda pid: pid == peer_pid)
+
     @pytest.mark.asyncio
     async def test_non_loopback_is_refused(self, monkeypatch, fake_sel) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: False)
@@ -2084,7 +2097,7 @@ class TestLocalToken:
 
     @pytest.mark.asyncio
     async def test_issues_credential_with_requested_ttl_and_embed_claim(
-        self, monkeypatch, fake_sel
+        self, monkeypatch, fake_sel, verified_owner_process
     ) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
         minted: dict = {}
@@ -2108,7 +2121,7 @@ class TestLocalToken:
 
     @pytest.mark.asyncio
     async def test_unix_peer_match_with_valid_secret_issues_a_token(
-        self, monkeypatch, fake_sel
+        self, monkeypatch, fake_sel, verified_owner_process
     ) -> None:
         """A kernel-verified same-uid AF_UNIX peer is admitted.
 
@@ -2210,7 +2223,27 @@ class TestLocalToken:
         assert json.loads(resp.body)["error"] == "loopback only"
 
     @pytest.mark.asyncio
-    async def test_bad_embed_port_is_dropped(self, monkeypatch, fake_sel) -> None:
+    async def test_valid_secret_without_verified_owner_process_is_refused(
+        self, monkeypatch, fake_sel
+    ) -> None:
+        from kiro_crew import member_memory_auth as auth
+
+        monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
+        monkeypatch.setattr(auth, "_request_peer_pid", lambda _request: None)
+        minted = MagicMock()
+        monkeypatch.setattr(core_mod, "generate_token", minted)
+        resp = await core_mod.api_token_local(
+            _req(app={"local_secret": "right"}, headers={"X-Local-Secret": "right"})
+        )
+        assert resp.status == 403
+        assert json.loads(resp.body)["code"] == "member_owner_token_refused"
+        assert fake_sel.log_api_access.call_args.kwargs["resources"] == "unverified-owner-process"
+        minted.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_bad_embed_port_is_dropped(
+        self, monkeypatch, fake_sel, verified_owner_process
+    ) -> None:
         monkeypatch.setattr("kiro_crew.dashboard.handlers.is_loopback", lambda _r: True)
         minted: dict = {}
 

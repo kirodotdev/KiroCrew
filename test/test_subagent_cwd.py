@@ -398,4 +398,4 @@ class TestSpawnCwd:
 
         assert info is not None
         assert info.done is True
-        assert "disabled" in info.error
+        assert "memory_unavailable: config unreadable" == info.error

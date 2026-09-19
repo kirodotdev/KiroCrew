@@ -642,6 +642,7 @@ async def test_a_claim_the_store_cannot_take_is_pinned_before_the_row_is_left_qu
     sessions.get_pid = MagicMock(return_value=None)
     sessions.get_or_create = AsyncMock()
     sessions.get_agent = MagicMock(return_value="")
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.get_approval_policy = MagicMock(return_value="auto")
     ctx = MagicMock()
     ctx.hooks.auto_approve_subagent_spawn = True

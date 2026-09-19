@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useInfiniteQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { useTranslation } from 'react-i18next'
 import { useNavigate } from 'react-router-dom'
-import { Brain, Copy, LockKeyhole, History, SlidersHorizontal, BookOpen, ArrowUpRight } from 'lucide-react'
+import { Brain, Copy, History, SlidersHorizontal, BookOpen, ArrowUpRight } from 'lucide-react'
 import { api } from '../../api/client'
 import { Card, CardTitle, Btn, Input } from '../../components/ui'
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs'
@@ -147,7 +147,7 @@ export default function MemberMemoryPanel({ store, summary, onDirtyChange }: { s
     <Card className="mb-0 min-w-0 py-4">
       <div className="flex min-w-0 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 items-center gap-3">
-          <div className="relative shrink-0 rounded-md shadow-[0_0_24px_var(--accent-glow)]"><MemoryStoreAvatar summary={summary} size={48} />{privateMemory && <span className="absolute -bottom-1 -right-1 flex h-5 w-5 items-center justify-center rounded-full border border-border bg-card text-[10px] text-text"><LockKeyhole className="lucide-inline" /></span>}</div>
+          <div className="relative shrink-0 rounded-md shadow-[0_0_24px_var(--accent-glow)]"><MemoryStoreAvatar summary={summary} size={48} /></div>
           <div className="min-w-0 space-y-2"><CardTitle className="mb-0 min-w-0 text-lg leading-snug"><span className="min-w-0 break-words">{t('memoryV2.title', { member: summary.owner_member || summary.name })}</span></CardTitle><ul className="m-0 flex list-none flex-wrap items-center gap-x-3 gap-y-1 p-0 text-[12px] text-muted"><li>{privateMemory ? t('memoryV2.private_status') : summary.is_default ? t('pages.kiroCrewAgentsPage.global_memory_v1') : t('pages.kiroCrewAgentsPage.legacy_memory_v1')}</li>{total !== undefined && <li>{t('memoryV2.remembered_count', { count: fmtNumber(total) })}</li>}</ul></div>
         </div>
         {copyAction && <div className="shrink-0">{copyAction}</div>}

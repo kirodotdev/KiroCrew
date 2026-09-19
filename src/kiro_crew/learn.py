@@ -148,6 +148,11 @@ class LessonStore:
         from kiro_crew.security import is_sensitive_path
 
         if base_dir:
+            from kiro_crew.memory_stores import memory_store_version, named_store_of_db
+
+            store_name = named_store_of_db(base_dir / "memory.db")
+            if store_name and memory_store_version(store_name) == 2:
+                raise ValueError("Member lessons are stored only in the member database")
             if _is_owned_store_root(base_dir):
                 # A named memory store's own root. It is inside the keystone
                 # ``memory_stores/`` fence, so ``is_sensitive_path`` answers True

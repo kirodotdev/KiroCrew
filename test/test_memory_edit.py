@@ -9,7 +9,7 @@ import pytest
 
 from kiro_crew import memory_edit, memory_stores
 from kiro_crew.config import loader
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
 
 @pytest.fixture(params=["v1", "v2"])
@@ -17,15 +17,15 @@ def store(tmp_path, monkeypatch, request):
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
     if request.param == "v2":
         name = "member-alice"
-        record = {"memory_version": 2, "owner_member": "alice"}
+        record = {"memory_version": 2, "owner_member": "alice", "owner_member_id": "alice"}
         directory = tmp_path / "memory_stores" / name
         directory.mkdir(parents=True)
-        (directory / "member-memory.json").write_text(json.dumps(record), encoding="utf-8")
+        create_member_database(directory / "memory.db", member_id="alice", store_id=name)
         (tmp_path / "config.json").write_text(
             json.dumps(
                 {
                     "memory_stores": {"default": {}, name: record},
-                    "agents": {"alice": {"memory_store": name}},
+                    "agents": {"alice": {"memory_store": name, "member_id": "alice"}},
                 }
             ),
             encoding="utf-8",
@@ -34,8 +34,11 @@ def store(tmp_path, monkeypatch, request):
         directory = tmp_path
     loader._invalidate_config_cache()
     monkeypatch.setattr(memory_stores, "_DECLARED_MEMO", None)
-    instance = VectorMemoryStore(db_path=directory / "memory.db")
-    instance.init()
+    if request.param == "v2":
+        instance = open_member_database(directory / "memory.db", member_id="alice", store_id=name)
+    else:
+        instance = VectorMemoryStore(db_path=directory / "memory.db")
+        instance.init()
     try:
         yield instance
     finally:

@@ -12,7 +12,7 @@ from kiro_crew import context
 from kiro_crew import embeddings as emb
 from kiro_crew.config import loader
 from kiro_crew.dashboard.handlers import memory
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
 @pytest.fixture
@@ -36,8 +36,13 @@ def rebuild_home(tmp_path, monkeypatch):
     handles = []
 
     def open_store(path):
-        store = VectorMemoryStore(db_path=path, embedding_dim=2)
-        store.init()
+        if path.parent.name == "member-late":
+            store = open_member_database(
+                path, member_id="late", store_id="member-late", embedding_dim=2
+            )
+        else:
+            store = VectorMemoryStore(db_path=path, embedding_dim=2)
+            store.init()
         store.embed_fn = emb.make_sync_embed_fn()
         handles.append(store)
         return store
@@ -386,14 +391,18 @@ async def test_status_has_stable_error_and_warning_codes(rebuild_home, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_store_opened_after_final_snapshot_handles_request_before_use(
-    rebuild_home, monkeypatch
+@pytest.mark.parametrize("name", ["legacy", "member-late"])
+async def test_store_opened_after_final_snapshot_requires_current_vectors(
+    rebuild_home, monkeypatch, name
 ):
     import threading
 
     home = rebuild_home
     entered, release = threading.Event(), threading.Event()
     align = memory.reconcile_store_embedding_space
+    original = home.late[1] if name == "member-late" else home.late[0]
+    old_vectors = await asyncio.to_thread(vector_blobs, original)
+    old_generation = original.recorded_rebuild_generation()
     for store in home.late:
         await asyncio.to_thread(store.close)
 
@@ -415,16 +424,28 @@ async def test_store_opened_after_final_snapshot_handles_request_before_use(
         assert await asyncio.to_thread(entered.wait, 5)
         generation = emb.embedding_rebuild_generation()
         assert generation
-        late = await asyncio.wait_for(context.ContextBuilder.ensure_store("member-late"), 5)
-        assert late.recorded_rebuild_generation() == generation
-        assert await asyncio.to_thread(vector_blobs, late) == [None, None]
+        late = await asyncio.wait_for(context.ContextBuilder.ensure_store(name), 5)
+        if name == "member-late":
+            # Read-time V2 preparation must not acknowledge a rebuild or mutate
+            # old vectors; they remain unusable until explicit maintenance.
+            assert late.recorded_rebuild_generation() == old_generation
+            assert await asyncio.to_thread(vector_blobs, late) == old_vectors
+            assert late.db.total_changes == 0
+        else:
+            assert late.recorded_rebuild_generation() == generation
+            assert await asyncio.to_thread(vector_blobs, late) == [None, None]
     finally:
         release.set()
         await asyncio.wait_for(task, 10)
+    if name == "member-late":
+        assert await asyncio.to_thread(late._try_embed, "pending rebuild") is None
+        await asyncio.to_thread(emb.align_store_embedding_space, late)
+        assert late.recorded_rebuild_generation() == generation
+        assert await asyncio.to_thread(vector_blobs, late) == [None, None]
     await asyncio.to_thread(late.backfill_missing_embeddings, pace=False)
     before = await asyncio.to_thread(vector_blobs, late)
     assert all(before)
-    assert await context.ContextBuilder.ensure_store("member-late") is late
+    assert await context.ContextBuilder.ensure_store(name) is late
     assert await asyncio.to_thread(vector_blobs, late) == before
     await asyncio.to_thread(late.close)
 

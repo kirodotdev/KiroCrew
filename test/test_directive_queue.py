@@ -470,11 +470,13 @@ class TestEndpoint:
         assert directive_queue.depth("dashboard:slot-a") == 0
 
     @pytest.mark.asyncio
-    async def test_missing_session_key_is_400_with_a_code(self):
+    async def test_missing_session_key_is_refused_without_parking(self):
         resp = await api_session_directive(
             _request({}, self._body("monitor_start", {"message": "x"}))
         )
-        assert resp.status == 400
+        assert resp.status == 409
+        assert json.loads(resp.body)["code"] == "member_identity_unavailable"
+        assert directive_queue.depth("") == 0
 
     @pytest.mark.asyncio
     async def test_a_pre_call_input_body_is_named_as_a_stale_backend(self, caplog):

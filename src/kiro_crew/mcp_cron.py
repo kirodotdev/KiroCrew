@@ -1184,7 +1184,7 @@ def _list_tools() -> list[dict[str, Any]]:
                     "member_id": {
                         "type": "string",
                         "description": "Crew Member responsible for this schedule. Uses that "
-                        "member's private memory. Omit to inherit the creating conversation's "
+                        "member's memory. Omit to inherit the creating conversation's "
                         "member; ordinary conversations retain global V1 memory.",
                     },
                     "silent": {
@@ -1869,15 +1869,15 @@ def _validate_args(name: str, args: dict[str, Any]) -> dict[str, Any]:
 
 def _call_tool(name: str, raw_args: dict[str, Any]) -> str:
     """Execute a cron tool and return the result as text."""
-    from kiro_crew.config.paths import private_runtime_log_dir
-
-    if private_runtime_log_dir() is not None:
-        # This marker selects a transport only. The gateway independently
-        # verifies the process/session/store before opening the cron store.
+    # Managed callers use ordinary authenticated gateway routing, including
+    # live restricted sessions whose execution record intentionally is not on disk.
+    if current_caller() is not None or _resolve_session_key():
+        # The gateway authenticates the request and resolves its captured session
+        # execution before opening the cron store.
         from kiro_crew.mcp_core import _post
 
         session_key, refusal = require_strict_session_key(
-            "Cannot verify this private cron caller. Reopen the member conversation.",
+            "Cannot identify this cron caller. Reopen the conversation.",
             server="kirocrew-cron",
         )
         if refusal:

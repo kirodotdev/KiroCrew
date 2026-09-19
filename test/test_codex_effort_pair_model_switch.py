@@ -463,7 +463,6 @@ class TestPersistedPairAndSlotEffortAgree:
         provider._client = client
         provider._start_kiro_runtime = _start_runtime  # type: ignore[method-assign]
         provider._effort_per_model = {"openai.gpt-6-astra[max]": "high"}
-        provider._private_memory_prepared = True
 
         assert provider.is_acp_runtime_backend is True
 

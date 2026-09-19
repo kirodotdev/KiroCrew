@@ -226,8 +226,10 @@ def _mgr(*, running: int, max_concurrent: int, last_ts: float, stagger: float = 
 
     from kiro_crew.subagent import SubagentManager
 
+    sessions = MagicMock()
+    sessions.get_agent_selection.return_value = ("template", "")
     m = SubagentManager(
-        sessions=MagicMock(),
+        sessions=sessions,
         ctx_builder=MagicMock(),
         max_concurrent=max_concurrent,
     )

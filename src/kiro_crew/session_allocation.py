@@ -20,7 +20,6 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, cast
 
 from kiro_crew.agent_spec_format import iter_agent_spec_files
-from kiro_crew.member_memory_auth import private_memory_store_for_session
 from kiro_crew.metrics.sessions import (
     END_REASON_EVICTED,
     discard_session_start,
@@ -455,8 +454,6 @@ class SessionAllocationService:
 
     async def get_subagent_runtime(self, parent_session_key: str, agent: str | None = None) -> Any:
         """Get or spawn the canonical shared companion runtime for a parent."""
-        if await asyncio.to_thread(private_memory_store_for_session, parent_session_key):
-            raise RuntimeError("Private member memory requires a dedicated runtime")
         runtime_type, runtime_dead = self._deps.runtime_types()
         max_retries = 1
         attempt = 0
@@ -534,8 +531,6 @@ class SessionAllocationService:
         cwd: str | None = None,
     ) -> Any:
         """Adopt a configured bootstrap provider's runtime for a task run."""
-        if await asyncio.to_thread(private_memory_store_for_session, parent_session_key):
-            raise RuntimeError("Private member memory requires a dedicated runtime")
         owner = self._owner
         if not owner._provider_factory:
             # Outside the per-key lock: get_subagent_runtime takes that lock and
@@ -648,19 +643,15 @@ class SessionAllocationService:
 
         owner = self._owner
         key = owner._fold_key(session_key)
-        private_stores = await asyncio.gather(
-            asyncio.to_thread(private_memory_store_for_session, key),
-            asyncio.to_thread(private_memory_store_for_session, parent_session_key),
-        )
-        if private_stores[1] and not private_stores[0]:
-            raise RuntimeError(
-                "A private member task requires a trusted child memory binding before execution"
-            )
-        if any(private_stores):
+        from kiro_crew.execution_context import read_session_execution
+
+        execution = await asyncio.to_thread(read_session_execution, key)
+        if execution is not None and execution.memory_mode != "persistent":
+            # A restricted task starts a fresh native conversation whose
+            # retention policy is fixed before launch; do not borrow a parent.
             return await owner.get_or_create(
                 key, agent=agent, approval_policy=approval_policy, cwd=cwd
             )
-
         async with self._lock:
             existing = self._sessions.get(key)
             if existing is not None:
@@ -691,6 +682,7 @@ class SessionAllocationService:
                 # resolve to nothing (fail closed), and before the token they
                 # resolved to the run's parent session.
                 session_key=key,
+                memory_mode=execution.memory_mode if execution is not None else "persistent",
             )
         except AcpWorkspaceBindingError:
             return await owner.get_or_create(
@@ -700,6 +692,11 @@ class SessionAllocationService:
                 cwd=cwd,
             )
         provider = self._deps.session_provider_type()(handle, runtime)
+        setattr(
+            provider,
+            "memory_mode",
+            execution.memory_mode if execution is not None else "persistent",
+        )
 
         duplicate: LLMProvider | None = None
         won_race_session: Any | None = None
@@ -777,8 +774,6 @@ class SessionAllocationService:
         # Exact-key lookup is current behavior; do not fold this seam here.
         session = self._sessions.get(parent_session_key)
         if session is None:
-            return False
-        if getattr(session.provider, "_private_memory", False) is True:
             return False
         if session.loaded_capabilities is not None:
             return False
@@ -1314,9 +1309,11 @@ class SessionAllocationService:
         owner = self._owner
         constants = self._deps.constants
         key = owner._fold_key(key)
-        # A binding can belong to any session kind (cron, delegated run, or
-        # consolidation), and must be checked before even reusing a live client.
-        private_memory = bool(await asyncio.to_thread(private_memory_store_for_session, key))
+        from kiro_crew.execution_context import read_session_execution
+
+        execution = await asyncio.to_thread(read_session_execution, key)
+        member_context = execution is not None and execution.member_id is not None
+        memory_mode = execution.memory_mode if execution is not None else "persistent"
         stale_provider: LLMProvider | None = None
         stale_session: Any | None = None
         claimed: Any | None = None
@@ -1333,12 +1330,9 @@ class SessionAllocationService:
                 recycling = existing is not None and owner._recycling.get(key) is existing
                 if existing is not None and not recycling:
                     session = existing
-                    if (
-                        getattr(session.provider, "_private_memory", False) is True
-                    ) != private_memory:
+                    if getattr(session.provider, "memory_mode", "persistent") != memory_mode:
                         raise RuntimeError(
-                            "Session runtime memory isolation does not match its trusted binding; "
-                            "restart the session before continuing"
+                            "This conversation's privacy mode changed; open a new conversation"
                         )
                     alive = session.provider.is_process_alive()
                     if not alive:
@@ -1470,8 +1464,6 @@ class SessionAllocationService:
             pool_decision = "disabled"
         elif preparation.revision:
             pool_decision = "bypass_member_capabilities"
-        elif private_memory:
-            pool_decision = "bypass_private_memory"
         elif resume_sid:
             pool_decision = "bypass_resume"
         elif is_stateless:
@@ -1484,6 +1476,12 @@ class SessionAllocationService:
             # its tools; cold-starting through the factory is what makes the
             # member route real. String check — as cheap as the arms above.
             pool_decision = "bypass_member"
+        elif memory_mode != "persistent":
+            pool_decision = "bypass_restricted_context"
+        elif member_context:
+            # Native launch documents are captured before session creation.
+            # An already launched generic pool cannot supply that receipt.
+            pool_decision = "bypass_member_context"
         elif cwd_blocks_pool:
             pool_decision = "bypass_cwd"
         elif extra_env:
@@ -1508,6 +1506,9 @@ class SessionAllocationService:
         owner._record_pool_decision(pool_decision, key)
         if pooled is not None:
             provider = pooled
+            cast(Any, provider).memory_mode = memory_mode
+            if self._deps.is_acp_provider(provider):
+                cast(Any, provider).member_context = member_context
             try:
                 if self._deps.is_acp_provider(provider):
                     claim_kwarg = extra_factory_kwargs.get("crew_agent")
@@ -1637,10 +1638,11 @@ class SessionAllocationService:
                 extra_env=extra_env,
                 **extra_factory_kwargs,
             )
+            cast(Any, provider).memory_mode = memory_mode
             if self._deps.is_acp_provider(provider):
-                await cast(Any, provider).prepare_private_memory()
-            if (getattr(provider, "_private_memory", False) is True) != private_memory:
-                raise RuntimeError("Provider does not match the session's memory isolation")
+                cast(Any, provider).member_context = member_context
+            if memory_mode != "persistent":
+                resume_sid = None
             provider_switched = False
             if resume_sid:
                 is_claude_now = self._deps.is_claude_provider(
@@ -1729,12 +1731,6 @@ class SessionAllocationService:
                 recycling = existing is not None and owner._recycling.get(key) is existing
                 if existing is not None and not recycling:
                     session = existing
-                    if (
-                        getattr(session.provider, "_private_memory", False) is True
-                    ) != private_memory:
-                        raise RuntimeError(
-                            "Concurrent session runtime has incompatible memory isolation"
-                        )
                     session.last_used = time.monotonic()
                     if approval_policy:
                         session.approval_policy = approval_policy

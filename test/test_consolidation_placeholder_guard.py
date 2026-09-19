@@ -96,9 +96,7 @@ class TestIsPlausibleMemoryFile:
         # No size floor: a single tiny bullet is a legitimate memory file, and
         # rejecting it would silently lose the learned preference while the
         # consolidation marker advances past it (GPT 5.6 review finding).
-        assert _is_plausible_memory_file(
-            "# User Preferences\n\n- Vim\n", _PREFS_HEADER
-        )
+        assert _is_plausible_memory_file("# User Preferences\n\n- Vim\n", _PREFS_HEADER)
 
     def test_header_with_substantive_body_passes(self):
         assert _is_plausible_memory_file(
@@ -229,7 +227,7 @@ async def test_only_v1_legacy_consolidation_can_replace_core_documents(
     from kiro_crew.context import ContextBuilder
     from kiro_crew.memory import MemoryStore
     from kiro_crew.memory_stores import memory_store_dir_for, provision_member_memory
-    from kiro_crew.vector_memory import VectorMemoryStore
+    from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
     store_name = None
     directory = tmp_path / "global"
@@ -239,10 +237,14 @@ async def test_only_v1_legacy_consolidation_can_replace_core_documents(
         store_name = provision_member_memory(cfg, "writer")
         cfg.save()
         directory = memory_store_dir_for(store_name)
-        monkeypatch.setattr(
-            "kiro_crew.member_memory_auth.require_private_memory_execution", lambda: None
+    if version == 2:
+        vectors = open_member_database(
+            directory / "memory.db", member_id=cfg.agents["writer"].member_id, store_id=store_name
         )
-    memory = MemoryStore(workspace=directory, memory_version=version)
+    else:
+        vectors = VectorMemoryStore(db_path=directory / "memory.db")
+        vectors.init()
+    memory = MemoryStore(workspace=directory, memory_version=version, vector_store=vectors)
     memory.init()
     old_prefs = "# User Preferences\n\n- Preserve every original user quotation.\n"
     old_projects = "# Active Projects\n\n- Longstanding project guide: review before release.\n"
@@ -250,8 +252,6 @@ async def test_only_v1_legacy_consolidation_can_replace_core_documents(
     memory.write_projects(old_projects)
     old_prefs = memory.read_preferences()
     old_projects = memory.read_projects()
-    vectors = VectorMemoryStore(db_path=directory / "memory.db")
-    vectors.init()
     try:
         c = _make_consolidator(memory)
         c._vector_store = vectors

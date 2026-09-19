@@ -1029,17 +1029,8 @@ def _setup_cli_logging(command: str | None, verbose: int) -> None:
     else:
         level = logging.WARNING
 
-    from kiro_crew.config.paths import private_runtime_log_dir
-
     log_home = config_dir()
-    private_logs = private_runtime_log_dir()
-    if private_logs is not None:
-        # A private namespace deliberately seals loose data-home files. Keep
-        # durable rotating logs in the live directory prepared by its launcher;
-        # never reopen the root or silently drop MCP diagnostics.
-        log_file = private_logs / f"member-{os.getpid()}.log"
-    else:
-        log_file = log_home / "gateway.log"
+    log_file = log_home / "gateway.log"
     # Detect BEFORE the boot rotation below: rotation renames the file, and
     # the inode comparison must see the file stderr actually inherited.
     detached = _fd_targets_file(2, log_file)
@@ -2741,7 +2732,7 @@ Examples:
     agent_create.add_argument(
         "--memory-store",
         default="default",
-        help="Compatibility flag; private memory is allocated automatically",
+        help="Create a fresh member store (already enabled for explicit member creation)",
     )
     agent_update = agent_sub.add_parser("update", help="Update a Kiro Crew agent")
     agent_update.add_argument("name", help="Agent name to update")
@@ -2753,11 +2744,6 @@ Examples:
             "Existing memory store identity (cannot be changed, except to 'default' "
             "from a store name the config refuses)"
         ),
-    )
-    agent_update.add_argument(
-        "--provision-memory",
-        action="store_true",
-        help="Initialize empty private V2 memory for a legacy member; never copies V1",
     )
     agent_delete = agent_sub.add_parser("delete", help="Delete a Kiro Crew agent")
     agent_delete.add_argument("name", help="Agent name to delete")

@@ -24,6 +24,7 @@ from kiro_crew.config.loader import (
 from kiro_crew.dashboard import chat_runner
 from kiro_crew.dashboard.chat_runner import _eager_spawn, schedule_eager_spawn
 from kiro_crew.dashboard.state import DashboardState, _ChatSlot
+from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.session import FirstTurnState
 
 
@@ -83,6 +84,13 @@ def _bindings(
         requested_resolved=True,
         memory_store_name=memory_store,
         selection_kind="member",
+        execution_context=(
+            ExecutionContext(
+                None, MemoryStoreRef(memory_store), "member", agent, selection_name=alias
+            )
+            if memory_store in ("default", "legacy-v1")
+            else None
+        ),
     )
 
 
@@ -256,7 +264,9 @@ class TestEagerSpawn:
             ) as resolve,
         ):
             await _eager_spawn(state, slot, allow_resume=allow_resume)
-        resolve.assert_called_once_with(cfg, agent or None)
+        resolve.assert_called_once_with(
+            cfg, agent or cfg.default_agent, validate_memory_files=False
+        )
         state.sessions.get_or_create.assert_not_awaited()
         state.sessions.release.assert_not_called()
         state.sessions.remove.assert_not_awaited()
@@ -344,11 +354,11 @@ class TestEagerSpawn:
         original = chat_runner.resolve_agent_bindings
         calls = []
 
-        def resolve(cfg, agent):
+        def resolve(cfg, agent, **kwargs):
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
             calls.append(agent)
-            result = original(cfg, agent)
+            result = original(cfg, agent, **kwargs)
             if change == "store":
                 loop.call_soon_threadsafe(setattr, slot, "memory_store", "member-new")
             elif change == "replacement":
@@ -364,7 +374,7 @@ class TestEagerSpawn:
             patch.object(chat_runner, "resolve_agent_bindings", side_effect=resolve),
         ):
             await _eager_spawn(state, slot)
-        assert calls == [None]
+        assert calls == [""]
         if change == "none":
             state.sessions.get_or_create.assert_awaited_once()
             state.sessions.release.assert_called_once()

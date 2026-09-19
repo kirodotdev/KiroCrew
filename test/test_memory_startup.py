@@ -687,6 +687,7 @@ def test_global_repair_readiness_failure_does_not_starve_a_named_store(env, monk
     gateway._memory_startup.fail_store("default", ValueError("Global restore failed"))
     gateway._memory_startup.complete()
     named = env.tiers["member-bob"]
+    gateway.vector_memory = env.tiers[""]
     monkeypatch.setattr(
         "kiro_crew.context.cached_vector_store_entries", lambda: (("member-bob", named),)
     )
@@ -784,6 +785,9 @@ async def test_recovery_starting_after_tier_lookup_is_still_a_structured_503(
         memory = MemoryStore()
         memory.init()
         env.state.context_builder.memory = memory
+    else:
+        memory._preferences_file.parent.mkdir(parents=True, exist_ok=True)
+        memory._preferences_file.write_text("Keep these manual member rules.\n", encoding="utf-8")
     original = getattr(memory, reader)
 
     def begin_recovery_then_read():
@@ -798,10 +802,15 @@ async def test_recovery_starting_after_tier_lookup_is_still_a_structured_503(
     response = await getattr(handlers, f"api_memory_{surface}")(
         request(env, owner=True, query={"store": store})
     )
-    assert response.status == 503
     body = json.loads(response.text)
-    assert body["code"] == "store_unavailable"
-    assert "restored and prepared" in body["error"]
+    if store == "member-alice":
+        # Manual member rules remain readable independently of learned DB recovery.
+        assert response.status == 200
+        assert body == {"content": original(), "content_redacted": False}
+    else:
+        assert response.status == 503
+        assert body["code"] == "store_unavailable"
+        assert "restored and prepared" in body["error"]
 
 
 @pytest.mark.asyncio

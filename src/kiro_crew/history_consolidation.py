@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import copy
+import hashlib
 import json
 import logging
 import math
@@ -816,6 +817,16 @@ class HistoryConsolidator:
         # itself raised, and that path is not billed.
         attempted = AttemptedSpan(0, 0, 0)
         try:
+            from kiro_crew.execution_context import read_session_execution
+            from kiro_crew.history import is_incognito_transcript
+
+            execution = await asyncio.to_thread(read_session_execution, key)
+            if execution is not None and execution.memory_mode != "persistent":
+                return _CONSOLIDATION_REFUSED
+
+            metadata = await asyncio.to_thread(self._log.get_metadata, key)
+            if isinstance(metadata, dict) and is_incognito_transcript(metadata.get("memory_mode")):
+                return _CONSOLIDATION_REFUSED
             # Atomically snapshot the unconsolidated tail, the total message
             # count (the absolute offset handed to mark_consolidated below), and
             # the rotation generation under ONE lock hold. Reading them as
@@ -868,31 +879,27 @@ class HistoryConsolidator:
                 offset=total - len(unconsolidated),
             )
 
-            # Resolve this session's memory target from its metadata. A NAMED
-            # memory store is the tighter scope and takes all three handles --
-            # markdown, lessons and vectors -- because the vector handle is what
-            # actually creates isolation: without it a crew reads its own markdown
-            # and writes its semantic, episodic and lesson rows into the global
-            # table. The workspace arm below is byte-identical to the v1 path.
+            # Resolve the owning execution once. V2 learning requires its exact
+            # database; only V1 retains Markdown and JSONL learning handles.
             from kiro_crew.context import store_of_session
             from kiro_crew.memory_stores import memory_store_version
 
             # Resolve through the same strict metadata reader as interactive
             # turns before any consolidation provider or memory write starts.
             def _resolve_memory_identity() -> tuple[str, bool]:
-                store_name = store_of_session(self._log, key)
+                store_name = (
+                    execution.store.legacy_name
+                    if execution is not None
+                    else store_of_session(self._log, key)
+                )
                 return store_name, bool(store_name and memory_store_version(store_name) == 2)
 
-            store_name, private_memory = await asyncio.to_thread(_resolve_memory_identity)
+            store_name, member_memory = await asyncio.to_thread(_resolve_memory_identity)
             # V2 anchors are owner-managed essentials. Extract proposed facts
             # through the revision-aware structured path; never let a legacy
             # whole-file rewrite remove their rules or age out project guides.
-            allow_markdown_updates = not self._migrated and not private_memory
-            if private_memory:
-                from kiro_crew.member_memory_auth import require_private_memory_execution
-
-                await asyncio.to_thread(require_private_memory_execution)
-            meta = self._log.get_metadata(key)
+            allow_markdown_updates = not self._migrated and not member_memory
+            meta = metadata
             facets = _session_facets(meta, key)
             ws_name = meta.get("workspace")
             lessons_store = self._lesson_store
@@ -903,8 +910,12 @@ class HistoryConsolidator:
                 memory = await asyncio.to_thread(
                     ContextBuilder.get_memory_for, memory_store=store_name
                 )
-                lessons_store = await asyncio.to_thread(
-                    ContextBuilder.get_lessons_for, memory_store=store_name
+                lessons_store = (
+                    None
+                    if member_memory
+                    else await asyncio.to_thread(
+                        ContextBuilder.get_lessons_for, memory_store=store_name
+                    )
                 )
                 # May be None when the store could not be stood up; the writes
                 # below then skip the vector tier rather than falling back to the
@@ -918,6 +929,45 @@ class HistoryConsolidator:
             else:
                 memory = self._memory
                 vector_store = self._vector_store
+
+            source_id = ""
+            if member_memory:
+                if vector_store is None:
+                    raise RuntimeError("Member memory database is unavailable")
+                source_id = hashlib.sha256(
+                    json.dumps(
+                        [
+                            key,
+                            generation_at_snapshot,
+                            attempted.offset,
+                            include_history,
+                            None if include_history else total,
+                        ]
+                    ).encode("utf-8")
+                ).hexdigest()
+                committed = await asyncio.to_thread(vector_store.consolidation_receipt, source_id)
+                if committed is not None:
+                    from kiro_crew.vector_memory import consolidation_source_digest
+
+                    count = committed["source_count"]
+                    if (
+                        len(unconsolidated) < count
+                        or await asyncio.to_thread(
+                            consolidation_source_digest, unconsolidated[:count]
+                        )
+                        != committed["source_digest"]
+                    ):
+                        raise ValueError(
+                            "Committed consolidation source changed before acknowledgement"
+                        )
+                    if include_history:
+                        await asyncio.to_thread(
+                            self._log.mark_consolidated,
+                            key,
+                            committed["source_total"],
+                            generation_at_snapshot,
+                        )
+                    return None
 
             conversation = "\n".join(_fmt_message(m) for m in unconsolidated)
 
@@ -1089,8 +1139,8 @@ class HistoryConsolidator:
             ]
             if has_vector:
                 prompt_parts.append(f"\n\n## Current Semantic Memory\n{semantic_json}")
-            if allow_markdown_updates or private_memory:
-                if private_memory:
+            if allow_markdown_updates or member_memory:
+                if member_memory:
                     prompt_parts.append(
                         "\n\nThe following member anchors are read-only. Do not return "
                         "preferences_update or projects_update; preserve the owner's core "
@@ -1106,7 +1156,7 @@ class HistoryConsolidator:
             try:
                 result = (
                     await self._call_llm(prompt, memory_store=store_name, session_key=key)
-                    if private_memory
+                    if member_memory
                     else await self._call_llm(prompt, session_key=key)
                 )
             except _ConsolidationNotDispatched as exc:
@@ -1150,7 +1200,21 @@ class HistoryConsolidator:
                 )
                 return _CONSOLIDATION_REFUSED
 
-            if entry := result.get("history_entry"):
+            if member_memory:
+                if vector_store is None:
+                    raise RuntimeError("Member memory database is unavailable")
+                await run_in_embed_pool(
+                    vector_store.apply_consolidation,
+                    source_id=source_id,
+                    session_key=key,
+                    source_total=total,
+                    result=result,
+                    snapshot={row["key"]: row for row in current_semantic},
+                    messages=unconsolidated,
+                    facets=facets,
+                )
+
+            if not member_memory and (entry := result.get("history_entry")):
                 # Offloaded to a worker thread: append_history takes a blocking
                 # advisory file lock (cross-process) and does synchronous file
                 # IO, and _consolidate runs on the event loop thread (fired via
@@ -1164,7 +1228,7 @@ class HistoryConsolidator:
             # to the in-process embedder, and _consolidate runs on the event loop thread (fired via
             # asyncio.create_task). Running it inline stalls the whole gateway loop
             # if the embedding endpoint is slow/hung (heartbeats, Slack, dashboard).
-            if vector_store:
+            if vector_store and not member_memory:
                 await run_in_embed_pool(
                     self._write_structured_memory,
                     result,
@@ -1231,7 +1295,11 @@ class HistoryConsolidator:
             # Lesson extraction: _save_lessons calls write_lesson which embeds
             # each rule (+ up to 5 lazy backfills) via blocking urllib to Ollama.
             # Same rationale as _write_structured_memory above — must offload.
-            if (lessons_store or vector_store) and (raw_lessons := result.get("lessons")):
+            if (
+                not member_memory
+                and (lessons_store or vector_store)
+                and (raw_lessons := result.get("lessons"))
+            ):
                 await run_in_embed_pool(
                     self._save_lessons,
                     raw_lessons,
@@ -1247,7 +1315,7 @@ class HistoryConsolidator:
             # Auto-skills are shared install-wide. Private member experience
             # must not be published or contribute to another member's skills.
             if (
-                not private_memory
+                not member_memory
                 and include_history
                 and self._auto_skills_enabled
                 and self._skills_loader is not None
@@ -1263,7 +1331,7 @@ class HistoryConsolidator:
             # the existing idle/periodic path; throttle to at most once/hour
             # across all sessions so frequent consolidations don't rescan the set.
             if (
-                not private_memory
+                not member_memory
                 and self._skills_loader is not None
                 and (_time.time() - self._last_lifecycle) > 3600
             ):

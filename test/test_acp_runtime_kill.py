@@ -20,6 +20,7 @@ from kiro_crew.acp import runtime as rt
 def _bare_runtime(pid: int = 54321) -> rt.AcpRuntime:
     """Construct an AcpRuntime with just the state kill() touches."""
     r = rt.AcpRuntime.__new__(rt.AcpRuntime)
+    r.recording_allowed = True
     r._dead = False
     r._pending_requests = {}
     r._pending_init_notifications = deque()

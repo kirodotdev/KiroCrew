@@ -65,12 +65,10 @@ async def api_portability_export(request: web.Request) -> web.Response:
     """GET /api/portability/export — download Kiro Crew state as zip.
 
     Owner-only. The archive is the whole install -- config, every workspace file, the
-    default store's memory and every named store's private memory -- so a dashboard
+    default store's memory and every named store's memory -- so a dashboard
     subject that is not the owner (an allow-listed messaging user holding a
-    ``!dashboard`` token, say) must not be able to pull it. The named stores make this
-    unambiguous: the tree is fenced precisely so one member cannot read another's memory,
-    and an export a non-owner could download would hand every member's memory to whoever
-    asked.
+    ``!dashboard`` token, say) must not be able to pull it. This aggregate export
+    requires owner permission independently of member memory visibility.
     """
     if "user" not in request or not request["user"]:
         return web.json_response({"error": "authentication required"}, status=401)

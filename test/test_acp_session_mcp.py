@@ -592,12 +592,12 @@ class TestClientSeam:
         client = self._seeded(tmp_path, agent="kirocrew", acp_backend=ACP_BACKEND_CLAUDE)
         assert "foo" in _by_name(client._session_mcp_servers())
 
-    @pytest.mark.parametrize("private", [False, True])
-    def test_private_claude_keeps_the_original_server_in_its_projection(
+    @pytest.mark.parametrize("pooled", [False, True])
+    def test_claude_projects_the_admitted_direct_or_pooled_server(
         self,
         tmp_path,
         agents_dir,
-        private,
+        pooled,
     ):
         from kiro_crew.mcp_gateway.rewriter import _WRAPPER_MARKER
 
@@ -628,15 +628,12 @@ class TestClientSeam:
             tmp_path,
             agent="kirocrew",
             acp_backend=ACP_BACKEND_CLAUDE,
-            private_memory=private,
-            mcp_gateway_overlay=overlay,
+            mcp_gateway_overlay=overlay if pooled else None,
         )
         original = _by_name(client._session_mcp_servers()).get("foo")
-        # Present either way: privately as the spec's own entry, pooled as the
-        # broker stub the MIRROR appended (the spec's `tools` references foo, so
-        # the allowlist grants the stub).
+        # The mirror keeps the allowlisted entry in both supported transports.
         assert original is not None
-        if private:
+        if not pooled:
             assert original["command"] == "/bin/foo"
             assert original["args"] == ["serve"]
             assert original["env"] == [{"name": "K", "value": "V"}]

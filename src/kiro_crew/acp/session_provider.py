@@ -151,6 +151,7 @@ class AcpSessionProvider(LLMProvider):
         new_handle = await self._runtime.create_session(
             cwd=self._runtime._work_dir,
             agent=self._runtime._agent or None,
+            memory_mode=self.memory_mode,
         )
         # Re-apply the configured non-default model to the fresh session. A new
         # session/new reverts to the agent-config default model, so a warm worker
@@ -198,6 +199,19 @@ class AcpSessionProvider(LLMProvider):
         except Exception:
             logger.debug("new_conversation: old session destroy failed", exc_info=True)
 
+    @property
+    def memory_mode(self) -> str:
+        return self._handle.memory_mode
+
+    @memory_mode.setter
+    def memory_mode(self, value: str) -> None:
+        from kiro_crew.execution_context import stricter_memory_mode
+
+        self._handle.memory_mode = stricter_memory_mode(self._handle.memory_mode, value)
+        if self.memory_mode != "persistent":
+            self._handle.keep_transcript = False
+            self._runtime.recording_allowed = False
+
     def set_keep_transcript(self, value: bool) -> None:
         """Mark the underlying session handle to keep (or delete) its
         transcript files at destroy(). Set True by SubagentManager before
@@ -205,7 +219,7 @@ class AcpSessionProvider(LLMProvider):
         material; the tombstone pruner / conversation TTL sweep owns its
         eventual deletion."""
         try:
-            self._handle.keep_transcript = value
+            self._handle.keep_transcript = value and self.memory_mode == "persistent"
         except Exception:  # pragma: no cover - handle types without the attr
             logger.debug("set_keep_transcript: handle rejected attribute", exc_info=True)
 
@@ -228,7 +242,13 @@ class AcpSessionProvider(LLMProvider):
         """
         if self._owns_runtime:
             try:
-                await self._runtime.kill(expected=True)  # deliberate session teardown
+                if self.memory_mode != "persistent":
+                    try:
+                        await self._handle.destroy()
+                    finally:
+                        await self._runtime.kill(expected=True)
+                else:
+                    await self._runtime.kill(expected=True)
             except Exception:
                 logger.debug("AcpSessionProvider.shutdown: runtime kill failed", exc_info=True)
         else:

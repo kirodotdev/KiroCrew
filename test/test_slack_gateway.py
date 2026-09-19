@@ -1582,6 +1582,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -1656,6 +1657,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.script = ""
         job.command = ""
         job.id = "j1"
@@ -1731,6 +1733,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -1806,6 +1809,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -1897,6 +1901,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -1982,6 +1987,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2059,6 +2065,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2127,6 +2134,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2194,6 +2202,7 @@ class TestInitCron:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2768,6 +2777,7 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2840,6 +2850,7 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -2912,6 +2923,7 @@ class TestCronFailurePaths:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -3567,6 +3579,7 @@ class TestCronSuccessReminder:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -5927,6 +5940,7 @@ class TestCronAcpRetry:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -6409,6 +6423,7 @@ class TestCronAckedItems:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""
@@ -7250,6 +7265,7 @@ class TestCronSlackDeliveryFailure:
         callback = mock_cs.create.call_args[1]["on_job"]
 
         job = MagicMock()
+        job.execution_context = None
         job.member_id = ""
         job.memory_store = ""
         job.script = ""

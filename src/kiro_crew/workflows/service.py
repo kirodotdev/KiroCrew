@@ -171,27 +171,6 @@ Author the workflow for this task:
 """
 
 
-async def _memory_admission_error(*session_keys: str) -> Optional[dict[str, Any]]:
-    """Validate trusted gateway selections without accepting conflicting scopes."""
-    try:
-        stores = [
-            await asyncio.to_thread(private_memory_store_for_session, key)
-            for key in dict.fromkeys(key for key in session_keys if key)
-        ]
-        if len(set(stores)) > 1:
-            raise WorkflowMemoryError("Workflow caller and delivery memory differ")
-    except Exception:
-        message = "The workflow's memory binding could not be verified. No agents were started."
-        return {
-            "ok": False,
-            "error": message,
-            "errors": [message],
-            "code": "workflow_memory_unavailable",
-            "admission_rejected": True,
-        }
-    return None
-
-
 class WorkflowService:
     """Owns the shared run registry + runner for the gateway process."""
 
@@ -350,6 +329,7 @@ class WorkflowService:
         author: str = "",
         session_key: str = "",
         expected_store: str | None = None,
+        execution_context=None,
         capabilities: tuple[str, ...] = (),
         workflow_id: str = "",
         workflow_slug: str = "",
@@ -362,9 +342,19 @@ class WorkflowService:
         Host runs publish lifecycle and progress only. Their driver keeps all
         product semantics, including planning, approvals, retries, and cleanup.
         """
+        from kiro_crew.workflow_memory import capture_admission_execution
+
+        captured_execution = await capture_admission_execution(
+            self._context_builder, session_key, author, execution_context=execution_context
+        )
         run_id = await self._new_run_id()
         memory_scope = await WorkflowScope.admit(
-            run_id, self._context_builder, session_key, author, expected_store=expected_store
+            run_id,
+            self._context_builder,
+            session_key,
+            author,
+            expected_store=expected_store,
+            execution_context=captured_execution,
         )
         handle = RunHandle(
             run_id=run_id,
@@ -372,6 +362,8 @@ class WorkflowService:
             author=author,
             session_key=memory_scope.origin,
             execution_binding_version=1,
+            execution_context=memory_scope.execution_context,
+            memory_mode=memory_scope.memory_mode,
             source=source,
             source_format=source_format,
             driver=driver,
@@ -798,8 +790,11 @@ class WorkflowService:
         # lane (not the pool's semaphore alone) is what the adaptive controller
         # moves, and the row is what survives a restart.
         if self._task_admission is not None:
+            admission = self._task_admission
+            if memory_scope is not None and memory_scope.memory_mode != "persistent":
+                admission = admission.in_memory()
             agent_fn = admitted_agent_fn(
-                agent_fn, self._task_admission, run_id=run_id, session_key=session_key
+                agent_fn, admission, run_id=run_id, session_key=session_key
             )
 
         async def _teardown() -> None:
@@ -834,12 +829,18 @@ class WorkflowService:
         ``on_progress(msg)`` streams human-readable authoring progress (each
         attempt, retries) so author-in-run can surface it live in the sidebar/chat.
         """
-        refused = await _memory_admission_error(author)
-        if refused is not None:
-            return refused
-        memory_scope = _memory_scope or await WorkflowScope.admit(
-            await self._new_run_id(), self._context_builder, author, expected_store=expected_store
-        )
+        memory_scope = _memory_scope
+        if memory_scope is None:
+            from kiro_crew.workflow_memory import capture_admission_execution
+
+            execution = await capture_admission_execution(self._context_builder, author)
+            memory_scope = await WorkflowScope.admit(
+                await self._new_run_id(),
+                self._context_builder,
+                author,
+                expected_store=expected_store,
+                execution_context=execution,
+            )
 
         def _say(msg: str) -> None:
             if on_progress is not None:
@@ -987,6 +988,7 @@ class WorkflowService:
         author: str = "",
         session_key: str = "",
         expected_store: str | None = None,
+        execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
     ) -> dict:
@@ -1002,14 +1004,21 @@ class WorkflowService:
         """
         if not intent.strip():
             return {"error": "intent is required"}
-        refused = await _memory_admission_error(session_key, author)
-        if refused is not None:
-            return refused
+        from kiro_crew.workflow_memory import capture_admission_execution
+
+        captured_execution = await capture_admission_execution(
+            self._context_builder, session_key, author, execution_context=execution_context
+        )
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
         run_id = await self._new_run_id()
         memory_scope = await WorkflowScope.admit(
-            run_id, self._context_builder, session_key, author, expected_store=expected_store
+            run_id,
+            self._context_builder,
+            session_key,
+            author,
+            expected_store=expected_store,
+            execution_context=captured_execution,
         )
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
@@ -1019,7 +1028,7 @@ class WorkflowService:
         ) -> dict:
             return await self.author(
                 it,
-                author=memory_scope.anchor if memory_scope.store else author,
+                author=author,
                 on_progress=on_progress,
                 _memory_scope=memory_scope,
             )
@@ -1034,6 +1043,8 @@ class WorkflowService:
             registry=self.registry,
             admission_closed=self._admission_closed,
             execution_binding_version=1,
+            execution_context=memory_scope.execution_context,
+            memory_mode=memory_scope.memory_mode,
             run_id=run_id,
             now=self._now_fn(),
             name=name or run_id,
@@ -1058,6 +1069,7 @@ class WorkflowService:
         author: str = "",
         session_key: str = "",
         expected_store: str | None = None,
+        execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
         workflow_id: str = "",
@@ -1072,14 +1084,21 @@ class WorkflowService:
         vr = validate(source)
         if not vr.ok:
             return {"error": "; ".join(vr.errors), "errors": vr.errors}
-        refused = await _memory_admission_error(session_key, author)
-        if refused is not None:
-            return refused
+        from kiro_crew.workflow_memory import capture_admission_execution
+
+        captured_execution = await capture_admission_execution(
+            self._context_builder, session_key, author, execution_context=execution_context
+        )
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
         run_id = await self._new_run_id()
         memory_scope = await WorkflowScope.admit(
-            run_id, self._context_builder, session_key, author, expected_store=expected_store
+            run_id,
+            self._context_builder,
+            session_key,
+            author,
+            expected_store=expected_store,
+            execution_context=captured_execution,
         )
         if self._admission_closed():
             return {"error": "gateway admission is closed"}
@@ -1093,6 +1112,8 @@ class WorkflowService:
             registry=self.registry,
             admission_closed=self._admission_closed,
             execution_binding_version=1,
+            execution_context=memory_scope.execution_context,
+            memory_mode=memory_scope.memory_mode,
             run_id=run_id,
             now=self._now_fn(),
             name=name or (vr.meta or {}).get("name", "") or run_id,
@@ -1307,21 +1328,24 @@ class WorkflowService:
         author: str = "",
         session_key: str = "",
         expected_store: str | None = None,
+        execution_context=None,
         budget_total: Optional[int] = None,
         timeout_secs: Optional[int] = None,
     ) -> dict[str, Any]:
         """Run the exact current revision of a named saved workflow."""
-        refused = await _memory_admission_error(session_key, author)
-        if refused is not None:
-            return refused
+        from kiro_crew.workflow_memory import capture_admission_execution
+
+        captured_execution = await capture_admission_execution(
+            self._context_builder, session_key, author, execution_context=execution_context
+        )
         definition = await asyncio.to_thread(self.get_definition, workflow_ref)
         if definition is None:
             return {"error": f"no such saved workflow: {workflow_ref}", "not_found": True}
         run_args = dict(args or {})
         effective_input = input_text or str(run_args.get("input", ""))
         if definition.get("format") == SOURCE_FORMAT_TASK_PLAN:
-            private_store = await asyncio.to_thread(
-                private_memory_store_for_session, session_key or author
+            private_store = (
+                captured_execution.store.legacy_name if captured_execution.member_id else ""
             )
             if expected_store is not None and private_store != expected_store:
                 raise WorkflowMemoryError("Workflow caller memory changed during admission")
@@ -1337,6 +1361,7 @@ class WorkflowService:
                 input_text=effective_input,
                 author=author,
                 session_key=session_key or author,
+                execution_context=captured_execution,
             )
             if "run_id" in started:
                 started.update(
@@ -1352,6 +1377,7 @@ class WorkflowService:
         started = await self.start(
             source=str(definition["source"]),
             expected_store=expected_store,
+            execution_context=captured_execution,
             name=str(definition.get("name", "")),
             args=run_args,
             author=author,
@@ -1418,6 +1444,7 @@ class WorkflowService:
             caller_session,
             owner=owner,
             required=bool(prior.execution_binding_version),
+            record=prior.to_store_json(),
         )
         if prior_scope is None:
             # Legacy source is executable input, never a private assignment.
@@ -1464,7 +1491,7 @@ class WorkflowService:
         memory_scope = await WorkflowScope.admit(
             new_id,
             self._context_builder,
-            prior_scope.anchor if prior_scope is not None and prior_scope.store else "",
+            execution_context=prior_scope.execution_context if prior_scope is not None else None,
             origin=origin,
             inherited_modes=inherited_modes,
         )
@@ -1485,6 +1512,8 @@ class WorkflowService:
             registry=self.registry,
             admission_closed=self._admission_closed,
             execution_binding_version=1,
+            execution_context=memory_scope.execution_context,
+            memory_mode=memory_scope.memory_mode,
             run_id=new_id,
             now=self._now_fn(),
             name=f"{prior.name} ({label})",

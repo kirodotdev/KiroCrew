@@ -17,7 +17,12 @@ from kiro_crew import (
 )
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.config import loader
-from kiro_crew.vector_memory import SemanticRejectCode, VectorMemoryStore
+from kiro_crew.vector_memory import (
+    SemanticRejectCode,
+    VectorMemoryStore,
+    create_member_database,
+    open_member_database,
+)
 
 
 @pytest.fixture(params=["v1", "named-v1", "v2"])
@@ -27,17 +32,26 @@ def store(request, tmp_path, monkeypatch):
     private = request.param == "v2"
     directory = tmp_path if name == "default" else tmp_path / "memory_stores" / name
     directory.mkdir(parents=True, exist_ok=True)
-    declaration = {"memory_version": 2, "owner_member": "alice"} if private else {}
+    declaration = (
+        {"memory_version": 2, "owner_member": "alice", "owner_member_id": "alice"}
+        if private
+        else {}
+    )
     config = {"memory_stores": {"default": {}, name: declaration}, "agents": {}}
     if private:
-        config["agents"] = {"alice": {"memory_store": name}}
-        (directory / "member-memory.json").write_text(json.dumps(declaration), encoding="utf-8")
+        config["agents"] = {"alice": {"memory_store": name, "member_id": "alice"}}
+        create_member_database(directory / "memory.db", member_id="alice", store_id=name)
     (tmp_path / "config.json").write_text(json.dumps(config), encoding="utf-8")
     loader._invalidate_config_cache()
     monkeypatch.setattr(memory_stores, "_DECLARED_MEMO", None)
-    tier = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=2)
-    try:
+    if private:
+        tier = open_member_database(
+            directory / "memory.db", member_id="alice", store_id=name, embedding_dim=2
+        )
+    else:
+        tier = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=2)
         tier.init()
+    try:
         assert tier.algorithm_version == ("v2" if private else "v1")
         if request.param == "named-v1":
             assert tier._lineage == "crew"
@@ -205,10 +219,14 @@ def test_populated_pre_metadata_v1_open_avoids_newer_sql(store, monkeypatch):
         store.db.execute("DROP TABLE memory_record_meta")
     real_connect = sqlite3.connect
     opened = []
+    probes = []
 
     def compatible_connect(*args, **kwargs):
         compatible = _LegacySyntaxConnection(real_connect(*args, **kwargs))
-        opened.append(compatible)
+        if kwargs.get("uri") and str(args[0]).endswith("?mode=ro"):
+            probes.append(compatible)
+        else:
+            opened.append(compatible)
         return compatible
 
     store.close()
@@ -220,6 +238,8 @@ def test_populated_pre_metadata_v1_open_avoids_newer_sql(store, monkeypatch):
     assert current["revision"] == 1
     assert current["source_ref"] == "user_explicit"
     assert len(opened) == 1
+    assert len(probes) == 1
+    assert probes[0].statements == ["SELECT 1 FROM sqlite_schema WHERE name='member_database'"]
     assert any(
         statement.startswith("UPDATE memory_record_meta") for statement in opened[0].statements
     )
@@ -244,11 +264,20 @@ def test_existing_journal_catchup_keeps_latest_evidence_before_reconcile(
             (json.dumps("external@example.net"), "user.email"),
         )
         store.db.commit()
+    persisted = _state(store)
     store.close()
     store.init()
     current = metadata.get_record_metadata(store.db, "key:user.email")
-    assert current["revision"] == 25 + older_writer_changed
-    if older_writer_changed:
+    if store.algorithm_version == "v2":
+        # V2 has no older-binary repair on open. Existing rows and their complete
+        # journal survive unchanged, including deliberately untracked fixture data.
+        assert _state(store) == persisted
+        assert current == before
+        assert len(_accepted(store)) == 25
+        assert _proposals(store) == proposals
+    else:
+        assert current["revision"] == 25 + older_writer_changed
+    if older_writer_changed and store.algorithm_version == "v1":
         latest = _accepted(store)[-1]
         assert latest["source"] == "legacy_untracked"
         assert (
@@ -336,8 +365,9 @@ def test_failed_init_pruning_rolls_back_reconciliation_while_v2_still_opens(stor
     store.close()
     if private:
         store.init()
-        assert metadata.get_record_metadata(store.db, "key:user.email")["revision"] == 26
-        assert len(_accepted(store)) == 26
+        assert _state(store) == before
+        assert metadata.get_record_metadata(store.db, "key:user.email")["revision"] == 25
+        assert len(_accepted(store)) == 25
         store.db.execute("DROP TRIGGER fail_retention")
     else:
         with pytest.raises(sqlite3.IntegrityError, match="history unavailable"):

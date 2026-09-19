@@ -389,35 +389,16 @@ from kiro_crew.dashboard.chat_utils import (  # noqa: E402
 
 
 def _require_session_memory_assignment(session_key: str, memory_store: str | None) -> None:
-    """A persisted private assignment outranks a later V1 member declaration."""
-    from kiro_crew.member_memory_auth import read_private_session_store
+    """A captured execution outranks a later mutable member declaration."""
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.memory_stores import UnknownMemoryStore
 
-    try:
-        protected = read_private_session_store(session_key)
-    except (OSError, ValueError) as exc:
-        raise UnknownMemoryStore("The protected conversation binding is unreadable") from exc
-    if protected is not None and protected != memory_store:
+    execution = read_session_execution(session_key)
+    if execution is not None and execution.store.store_id != (memory_store or "default"):
         raise UnknownMemoryStore(
-            "This conversation retains its private memory assignment. "
-            "Restore that member binding or open a new conversation; V1 was not used."
+            "This conversation retains its member memory assignment. "
+            "Restore that member binding or open a new conversation."
         )
-
-
-def _bind_private_slot_memory(session_key: str, memory_store: str) -> None:
-    """Confirm an existing private assignment; never grant one from a turn."""
-    from kiro_crew.member_memory_auth import (
-        bind_private_session_store,
-        read_private_session_store,
-    )
-    from kiro_crew.memory_stores import UnknownMemoryStore
-
-    if read_private_session_store(session_key) is None:
-        raise UnknownMemoryStore(
-            "This conversation has no verified assignment to private memory and retains its V1 context. "
-            "Open the member from Members or create a new conversation for private memory."
-        )
-    bind_private_session_store(session_key, memory_store)
 
 
 def _empty_auto_continue_enabled() -> bool:
@@ -5568,24 +5549,21 @@ async def _eager_spawn(
                     slot.agent,
                 )
                 return
-            # Private V2 authority belongs to the first real turn: it validates
-            # the store, pins the session-to-store binding and persists the
-            # slot before provider allocation. Registering an ordinary eager
-            # provider first would make SessionAllocationService correctly
-            # refuse that provider when the real turn later becomes private.
+            # A member's native launch documents must be captured from its
+            # admitted identity before startup. Leave member sessions to the
+            # first real turn instead of borrowing an ordinary eager provider.
             #
             # A restored slot's recorded store is independently authoritative.
             # If it disagrees with today's resolver (deleted/renamed member,
             # stale alias, or an in-flight switch), stand down rather than
             # warming a provider with either identity. The real turn owns the
             # fail-loud explanation. Valid named V1 stores keep the legacy eager
-            # path; classification uses the validated config and the protected
-            # assignment above. This never creates a protected binding here.
+            # path; classification uses the config and captured execution.
             from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE
 
             resolved_store = bindings.memory_store_name
             restored_store = slot.memory_store
-            if not isinstance(resolved_store, str) or not resolved_store:
+            if not isinstance(resolved_store, str):
                 logger.info(
                     "Eager spawn: slot %s has no resolved memory store; leaving to first turn",
                     slot.key,
@@ -5600,13 +5578,13 @@ async def _eager_spawn(
                     slot.key,
                 )
                 return
-            selected_store = restored_store or resolved_store
+            selected_store = restored_store or resolved_store or DEFAULT_MEMORY_STORE
             if selected_store != DEFAULT_MEMORY_STORE:
                 record = cfg.memory_stores.get(selected_store)
                 version = getattr(record, "memory_version", None)
                 owner = getattr(record, "owner_member", None)
                 if version == 2 and isinstance(owner, str) and owner:
-                    logger.info("Eager spawn: private V2 slot %s left to first turn", slot.key)
+                    logger.info("Eager spawn: member context slot %s left to first turn", slot.key)
                     return
                 if version != 1 or owner != "":
                     logger.info(
@@ -5631,7 +5609,13 @@ async def _eager_spawn(
                 or _slot_binding(slot) != _bound
             ):
                 return
-            await asyncio.to_thread(record_agent_selection, session_key, _bound[0], bindings)
+            await asyncio.to_thread(
+                record_agent_selection,
+                session_key,
+                _bound[0],
+                bindings,
+                memory_mode=slot.memory_mode,
+            )
             if (
                 state.get_slot(slot.key) is not slot
                 or slot.running
@@ -8786,6 +8770,7 @@ async def _run_chat(
         kiro_agent: str | None = None
         memory_store: str | None = None
         private_member = ""
+        execution_context = None
         # The KiroCrew agent's own default model ("" = inherit). Ranks below the
         # slot's explicit pick and above the bound kiro agent's pin / the global
         # agent.model fallback.
@@ -8840,7 +8825,7 @@ async def _run_chat(
             cfg = KiroCrewConfig.load()
             loaded_cfg = cfg
             provider_name = cfg.agent.provider
-            # Project discovery and private memory validation both access files.
+            # Project discovery and canonical session reads both access files.
             # Resolve the captured selection off-loop, then reject any concurrent
             # change before publishing memory authority or allocating a provider.
             # source="unknown", not "dashboard": Slack-triggered turns reach
@@ -8933,61 +8918,62 @@ async def _run_chat(
                 raise _MemoryUnavailable(f"memory_unavailable: {exc}") from exc
 
         _require_current_binding()
-        try:
-            await asyncio.to_thread(_require_session_memory_assignment, session_key, memory_store)
-        except Exception as exc:
-            raise _MemoryUnavailable(f"memory_unavailable: {exc}") from exc
-        _require_current_binding()
-        if slot.memory_store:
-            from kiro_crew.memory_stores import require_memory_store
-
-            # Persisted identity wins over an unresolved/deleted member alias.
-            # A deliberate member switch updates the slot binding atomically.
-            await asyncio.to_thread(require_memory_store, slot.memory_store)
-            _require_current_binding()
-            if memory_store != slot.memory_store:
-                raise _MemoryUnavailable(
-                    "memory_unavailable: this conversation's member binding changed; "
-                    "restore the member or open a new conversation"
-                )
-        if memory_store and memory_store != "default":
-            from kiro_crew.memory_stores import require_memory_store
-
-            if loaded_cfg is None:
-                raise _MemoryUnavailable(
-                    "memory_unavailable: cannot verify this conversation's owner"
-                )
-            # Freeze the validated V2 owner before acquiring a provider. Schema
-            # migrations also apply to V1, so schema lineage cannot identify a
-            # private turn. Missing ownership must fail before classification.
-            await asyncio.to_thread(require_memory_store, memory_store, config=loaded_cfg)
-            _require_current_binding()
-            record = loaded_cfg.memory_stores[memory_store]
-            if record.memory_version == 2:
-                private_member = record.owner_member
-                await asyncio.to_thread(_bind_private_slot_memory, session_key, memory_store)
-                _require_current_binding()
-            # Bind writes before allocating a provider as well as reads. This
-            # also initializes a legacy member chat after explicit V2 setup.
-            slot.memory_store = memory_store
-            selected_binding = _current_binding()
-            if state.conversation_log is None:
-                raise _MemoryUnavailable(
-                    "memory_unavailable: cannot persist this conversation's binding"
-                )
-            await asyncio.to_thread(
-                state.conversation_log.update_metadata,
-                session_key,
-                {"memory_store": memory_store, "agent": crew_alias},
-            )
-            await prepare_store_vectors(
-                state.context_builder, memory_store, session_key=session_key
-            )
-        _require_current_binding()
         if bindings is not None:
-            await asyncio.to_thread(
-                record_agent_selection, session_key, selected_binding[0], bindings
+            from kiro_crew.execution_context import (
+                ExecutionContext,
+                MemoryStoreRef,
+                bind_session_execution,
+                read_session_execution,
+                resolve_member_execution,
             )
+
+            previous_execution = await asyncio.to_thread(read_session_execution, session_key)
+            _require_current_binding()
+            if previous_execution is not None:
+                execution_context = previous_execution.with_mode(slot.memory_mode)
+                if execution_context.store.store_id != (memory_store or "default"):
+                    raise _MemoryUnavailable(
+                        "memory_unavailable: this conversation's member binding changed; "
+                        "open a new conversation"
+                    )
+            elif bindings.selection_kind == "member":
+                execution_context = resolve_member_execution(
+                    loaded_cfg,
+                    crew_alias,
+                    memory_mode=slot.memory_mode,
+                    app=slot._app or "",
+                    validate_memory_files=False,
+                )
+            else:
+                execution_context = ExecutionContext(
+                    None,
+                    MemoryStoreRef(memory_store or "default"),
+                    "template",
+                    kiro_agent or "kirocrew",
+                    slot.memory_mode,
+                    slot._app or "",
+                    selected_binding[0] or kiro_agent or "kirocrew",
+                )
+            bindings.execution_context = execution_context
+            private_member = execution_context.member_id or ""
+            slot.memory_store = execution_context.store.legacy_name
+            selected_binding = _current_binding()
+            if selected_binding[0] or bindings.resolved_alias:
+                await asyncio.to_thread(
+                    record_agent_selection,
+                    session_key,
+                    selected_binding[0],
+                    bindings,
+                    memory_mode=slot.memory_mode,
+                )
+            else:
+                await asyncio.to_thread(
+                    bind_session_execution,
+                    session_key,
+                    execution_context,
+                    expected=previous_execution,
+                    replace_existing=previous_execution is not None,
+                )
             _require_current_binding()
 
         # FAIL-LOUD: an app-owned slot whose agent STILL did not resolve after the
@@ -9686,12 +9672,20 @@ async def _run_chat(
             # IO (sqlite connect, migrations, a FAISS load) that build_message's
             # sync resolver may not perform. A no-op for the default store.
             #
-            # V2 preparation is required: unavailable ownership, files or vector
-            # storage stop the turn. Legacy V1 named stores retain their existing
-            # Markdown/keyword preparation fallback within that same store.
-            await prepare_store_vectors(
-                state.context_builder, memory_store, session_key=session_key
-            )
+            # Learned V2 memory is optional here: an unavailable member database
+            # leaves manual essentials available and the builder reports that
+            # learned memory could not be loaded. Temporary turns skip preparation.
+            # Legacy V1 named stores retain their Markdown/keyword fallback.
+            if not slot.blocks_reads:
+                try:
+                    await prepare_store_vectors(
+                        state.context_builder, memory_store, session_key=session_key
+                    )
+                except (OSError, ValueError):
+                    if execution_context is None or execution_context.member_id is None:
+                        raise
+                    # The builder keeps essentials and reports unavailable learned memory.
+                    logger.info("Member learned memory unavailable for context preparation")
             full_message, _ = await run_in_embed_pool(
                 state.context_builder.build_message,
                 message,
@@ -9717,6 +9711,7 @@ async def _run_chat(
                 # the `agent=` above is the TEMPLATE it resolved to, which is
                 # why the member identity travels separately.
                 member=slot.agent if slot.mode == "member" and slot.agent else "",
+                execution_context=execution_context,
                 user_text_range=user_text_span(
                     _user_prepend_offset,
                     user_typed_len,

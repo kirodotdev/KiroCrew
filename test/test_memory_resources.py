@@ -24,26 +24,33 @@ env = _member_env
 
 
 @pytest.mark.asyncio
-async def test_private_snapshot_validates_once_but_rechecks_each_opened_file(env, monkeypatch):
+async def test_member_snapshot_combines_guarded_manual_files_and_database_history(env, monkeypatch):
     import kiro_crew.memory as module
 
     memory = await markdown_memory_for_store(env.state, "member-alice")
-    for day in ("2026-09-01", "2026-09-02"):
-        (memory._history_dir / f"{day}.md").write_text(f"Decision on {day}", encoding="utf-8")
+    memory._memory_dir.mkdir(exist_ok=True)
+    memory._preferences_file.write_text("Prefer concise replies", encoding="utf-8")
+    memory._projects_file.write_text("Project Atlas", encoding="utf-8")
+    memory.append_history("Decision from the member database")
     validate = MagicMock(wraps=memory_stores.require_memory_store)
     opened = MagicMock(wraps=module.fd_real_path)
     monkeypatch.setattr(memory_stores, "require_memory_store", validate)
     monkeypatch.setattr(module, "fd_real_path", opened)
     snapshot = memory.markdown_snapshot()
-    assert len(snapshot["history"]) == 2
-    validate.assert_called_once_with("member-alice")
+    assert len(snapshot["history"]) == 1
+    assert "Decision from the member database" in snapshot["history"][0]["content"]
+    assert not memory._history_dir.exists()
+    assert snapshot["preferences"]["content"] == "Prefer concise replies"
+    assert snapshot["projects"]["content"] == "Project Atlas"
+    validate.assert_not_called()
     assert opened.call_count >= 2
-    config = KiroCrewConfig.load()
-    del config.agents["alice"]
-    config.save()
-    with pytest.raises(memory_stores.UnknownMemoryStore, match="exclusively"):
-        memory.read_history_entries()
-    assert validate.call_count == 2  # no admission survives into another request
+    unavailable = MagicMock(side_effect=AssertionError("manual profile read consulted database"))
+    monkeypatch.setattr(module, "require_memory_ready", unavailable)
+    monkeypatch.setattr(memory_stores, "require_memory_store", unavailable)
+    memory.vector_store = None
+    assert memory.read_preferences() == "Prefer concise replies"
+    assert memory.read_projects() == "Project Atlas"
+    unavailable.assert_not_called()
 
 
 def test_eviction_releases_private_resident_data_without_touching_peer_or_disk(env, monkeypatch):
@@ -73,12 +80,12 @@ async def test_late_named_store_construction_cannot_republish_after_eviction(env
     loop = asyncio.get_running_loop()
     store = MagicMock()
 
-    def initialize():
+    def initialize(*args, **kwargs):
         loop.call_soon_threadsafe(entered.set)
         assert release.wait(5)
+        return store
 
-    store.init.side_effect = initialize
-    monkeypatch.setattr("kiro_crew.vector_memory.VectorMemoryStore", lambda **kwargs: store)
+    monkeypatch.setattr("kiro_crew.vector_memory.open_member_database", initialize)
     monkeypatch.setattr("kiro_crew.embeddings.model_file_present", lambda: False)
     monkeypatch.setattr("kiro_crew.embeddings.reconcile_store_embedding_space", lambda store: 0)
     monkeypatch.setattr(context, "_vector_stores", {})
@@ -98,7 +105,7 @@ async def test_late_named_store_construction_cannot_republish_after_eviction(env
         await asyncio.gather(task, return_exceptions=True)
 
 
-def test_archived_private_store_stays_visible_but_is_not_a_routine_backup_target(env):
+def test_unreferenced_member_store_is_retained_but_not_a_routine_backup_target(env):
     config = KiroCrewConfig.load()
     del config.agents["alice"]
     config.save()
@@ -183,7 +190,7 @@ def test_automatic_backups_cover_default_and_named_v1_and_preserve_archived_back
     [active_backup] = memory_backup.list_backups(active_path)
     with zipfile.ZipFile(active_backup) as archive:
         manifest = json.loads(archive.read("snapshot-manifest.json"))
-        assert manifest["store"] == "member-alice" and manifest["owner_member"] == "alice"
+        assert manifest["store"] == "member-alice" and manifest["member_id"] == "alice"
         assert archive.read("memory/preferences.md") == preferences.read_bytes()
         assert "memory.db" in archive.namelist()
 

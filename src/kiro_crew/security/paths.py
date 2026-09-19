@@ -400,7 +400,6 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``workspace/`` was itself replaceable with one ``ln -s``, and the app opens the
     # path directly (as keystone writers must), so it would have followed the link.
     "trust",
-    "member-memory-bindings",
     "security_events.jsonl",
     # Rotated SEL segments. sel.py closes the live log at a size cap and renames
     # it into this directory, so a segment holds exactly the same audit records
@@ -744,32 +743,12 @@ _CREW_SECRET_LEAVES: list[str] = [
     # ``identity_stores`` and opens it directly, not through this gate.
     AUTH_SQLITE_DB,
     *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
-    # Named memory stores. Each subdirectory is ONE crew's private memory silo --
-    # its markdown tree, its FTS index and its vector-store SQLite file -- and the
-    # whole point of a named store is that a crew reaches only its own. Agent file
-    # tools run as the same UID as every store on disk, so owner-only modes decide
-    # nothing here: without this entry any crew's agent could read another crew's
-    # preferences and lessons straight off disk, or rewrite them, which is the
-    # boundary the split exists to draw. Read AND write, because reading another
-    # crew's memory is the primary harm and writing it is steering that crew's
-    # future turns.
-    #
-    # A DIRECTORY entry, for the reason ``routing`` and ``webhooks`` above are:
-    # markdown files are published through ``atomic_write``'s ``mkstemp`` sibling,
-    # so fencing final names only would leave a writable path to the same bytes
-    # under a random temp name.
-    #
-    # DELIBERATE ASYMMETRY, do not "tidy" it: the DEFAULT store's own ``memory.db``
-    # and ``workspace/memory/`` stay readable, because that is the agent's own
-    # memory and reading it is the product working. Fencing them would be a
-    # default-path behaviour change, which the coexistence constraint forbids. So
-    # ``is_sensitive_path(<home>/memory.db)`` is False and
-    # ``is_sensitive_path(<home>/memory_stores/work/memory.db)`` is True, on
-    # purpose. Full reasoning: docs/system-specs/modules/security.md.
-    #
-    # Every legitimate reader opens a store path DIRECTLY rather than through this
-    # gate -- the established keystone-reader pattern -- so the memory subsystem is
-    # unaffected.
+    # Managed memory uses bound tools. This directory guard keeps ordinary raw
+    # file operations away from DB/WAL/SHM and manual context publication files;
+    # glob-based project guidance skips it. It is a best-effort path guard, not
+    # confidentiality against arbitrary code run by the same OS user. Memory
+    # services open their captured store directly. Global V1 retains its existing
+    # file access behavior. See docs/system-specs/modules/security.md.
     MEMORY_STORES_DIR_NAME,
 ]
 _SENSITIVE_HOME_DIRS += [
@@ -865,7 +844,16 @@ _WRITE_PROTECTED_HOME_PATHS: list[str] = [
     # turn the browser sandbox OFF for every later browse, and the change persists
     # until the next gateway start re-converges the file. Kiro Crew generates it
     # directly and does NOT route through this gate, so its own write still works.
-    for leaf in ("config.json", "config.local.json", "playwright-cli-config.json")
+    # Cold continuation restores app ownership from canonical run records, or
+    # the retained V1 sidecar. Gateway writers bypass this tool gate; agents
+    # may read results but cannot turn an app-owned run into a personal run.
+    for leaf in (
+        "config.json",
+        "config.local.json",
+        "playwright-cli-config.json",
+        "subagents",
+        "member-memory-bindings",
+    )
 ] + [
     # Ops Mission Control's on-call schedule. WRITE-protected, not read+write
     # sensitive: it holds no secret and every teammate's instance must READ it to

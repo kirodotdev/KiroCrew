@@ -2738,7 +2738,7 @@ class TestScenarioParallelGroupAllPass:
             Step(index=3, title="C", description="d"),
         ]
 
-        with patch.object(runner, "self_review", return_value=True):
+        with patch("kiro_crew.task_executor.self_review", return_value=True):
             await runner._execute_tasks(run, "taskrunner:run:test")
 
         assert all(s.status == StepStatus.PASSED for s in run.tasks)
@@ -2793,7 +2793,7 @@ class TestScenarioParallelGroupMiddleFails:
         ]
 
         with (
-            patch.object(runner, "self_review", return_value=True),
+            patch("kiro_crew.task_executor.self_review", return_value=True),
             patch.object(runner, "_try_replan", return_value=False),
         ):
             await runner._execute_tasks(run, "taskrunner:run:test")

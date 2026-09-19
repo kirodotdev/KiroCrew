@@ -22,7 +22,7 @@ from kiro_crew import embeddings as emb
 from kiro_crew.config import loader
 from kiro_crew.executors import run_in_embed_pool, run_with_recall_deadline
 from kiro_crew.slack.gateway import GatewayOrchestrator
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
 def deterministic_vector(text):
@@ -69,8 +69,13 @@ async def test_private_store_mixed_load(tmp_path, monkeypatch, concurrency):
             if name == "default"
             else tmp_path / "memory_stores" / name / "memory.db"
         )
-        store = VectorMemoryStore(db_path=path, embedding_dim=8)
-        store.init()
+        if name == "default":
+            store = VectorMemoryStore(db_path=path, embedding_dim=8)
+            store.init()
+        else:
+            store = open_member_database(
+                path, member_id=name.removeprefix("member-"), store_id=name, embedding_dim=8
+            )
         store.embed_fn = emb.make_sync_embed_fn()
         emb.align_store_embedding_space(store)
         return store

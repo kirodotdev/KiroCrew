@@ -5466,8 +5466,8 @@ def _without_identity_env(elements):
 class TestAcpRuntimeLoadSession:
     """load_session() must mirror AcpClient._initialize_session's resume path:
     issue session/load DIRECTLY (no session/new first) under the ORIGINAL sid,
-    with the same cwd + mcpServers (pooled broker stubs re-declared; [] when no
-    overlay is configured) + _kiro.dev/session_file _meta. The double-session
+    with the same cwd + mcpServers (pooled stubs and managed direct tools)
+    + _kiro.dev/session_file _meta. The double-session
     drift it replaces produced stopReason='refusal'."""
 
     @pytest.mark.asyncio
@@ -5499,12 +5499,13 @@ class TestAcpRuntimeLoadSession:
         assert methods[0] == METHOD_SESSION_LOAD
 
         load_params = sent[0][1]
+        servers = load_params["mcpServers"]
+        assert [entry["name"] for entry in servers] == ["kirocrew-core", "kirocrew-cron"]
+        assert all(_identity_tokens(servers))
         assert load_params == {
             "sessionId": "sid-123",
             "cwd": "/work",
-            # [] because _make_runtime configures no MCP-gateway overlay — the
-            # non-pooled path is unchanged by the stub re-declaration.
-            "mcpServers": [],
+            "mcpServers": servers,
             "_meta": {"_kiro.dev/session_file": "/home/u/.kiro/sessions/cli/sid-123.json"},
         }
         # Handle adopts the ORIGINAL sid and its queue is registered.
@@ -5769,12 +5770,15 @@ class TestAcpRuntimeLoadSession:
         await rt.load_session("/k/sid.json", "sid", cwd="/w", agent="kirocrew")
 
         # Mirror of AcpClient's kiro-branch load_params (client.py step 2).
-        # mcpServers is [] on BOTH paths here because no overlay is configured;
+        # Direct managed tools retain per-session caller attribution on resume;
         # the pooled case is covered by test_load_session_redeclares_pooled_stubs.
+        servers = captured["mcpServers"]
+        assert [entry["name"] for entry in servers] == ["kirocrew-core", "kirocrew-cron"]
+        assert all(_identity_tokens(servers))
         expected = {
             "sessionId": "sid",
             "cwd": "/w",
-            "mcpServers": [],
+            "mcpServers": servers,
             "_meta": {"_kiro.dev/session_file": "/k/sid.json"},
         }
         assert captured == expected
@@ -5854,7 +5858,11 @@ class TestAcpRuntimeLoadSession:
 
         await rt.load_session("/k/sid.json", "sid-r", cwd="/w", agent="kirocrew")
         load_params = next(p for m, p in sent if m == METHOD_SESSION_LOAD)
-        assert [e["name"] for e in load_params["mcpServers"]] == ["builder-mcp"]
+        assert [e["name"] for e in load_params["mcpServers"]] == [
+            "builder-mcp",
+            "kirocrew-core",
+            "kirocrew-cron",
+        ]
 
         # Parity with create_session for the same agent + overlay: the two
         # injection paths must never diverge.

@@ -6,7 +6,7 @@ import os
 import pytest
 
 from conftest import make_dir_link
-from kiro_crew.workflow_memory import publish_binding
+from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.workflows.registry import RunHandle, RunRegistry
 from kiro_crew.workflows.store import WorkflowRunStore
 
@@ -14,9 +14,10 @@ from kiro_crew.workflows.store import WorkflowRunStore
 def _save(base, run_id="wf_000001"):
     store = WorkflowRunStore(base_dir=base)
     registry = RunRegistry(store=store)
-    publish_binding(run_id, "", "dashboard:test")
     handle = RunHandle(run_id=run_id, name="restart", source="large source " * 1000)
-    handle.execution_binding_version = 1
+    handle.execution_context = ExecutionContext(
+        None, MemoryStoreRef("default"), "template", "kirocrew"
+    )
     registry.register(handle)
     registry.mark_terminal(run_id, "finished", result={"saved": True})
     return store
@@ -76,33 +77,6 @@ def test_restart_refuses_ancestor_swap_outside_resolved_root(tmp_path, monkeypat
     assert RunRegistry(store=store).load_persisted() == 0
 
 
-@pytest.mark.parametrize("private", [False, True])
-@pytest.mark.parametrize("damage", ["missing", "malformed"])
-def test_restart_requires_surviving_protected_binding(tmp_path, private, damage):
-    from kiro_crew.workflow_memory import binding_path, private_payload_path
-
-    run_id = "wf_000001"
-    if private:
-        store = WorkflowRunStore(base_dir=tmp_path / "workflows")
-        publish_binding(run_id, "member-alice", "dashboard:test")
-        handle = RunHandle(run_id=run_id, name="PRIVATE_RUN_SENTINEL", execution_binding_version=1)
-        store.save(run_id, handle.to_store_json())
-        path = private_payload_path(run_id)
-    else:
-        store = _save(tmp_path / "workflows")
-        path = store.runs_dir / f"{run_id}.json"
-    saved = path.read_bytes()
-    if damage == "missing":
-        binding_path(run_id).unlink()
-    else:
-        binding_path(run_id).write_text("PRIVATE_BINDING_SENTINEL", encoding="utf-8")
-    with pytest.raises(OSError, match="inventory unavailable") as error:
-        RunRegistry(store=store).load_persisted()
-    assert path.read_bytes() == saved
-    assert "PRIVATE_" not in str(error.value)
-    assert str(tmp_path) not in str(error.value)
-
-
 def test_restart_isolates_unresolvable_discovery_root(tmp_path, monkeypatch):
     from pathlib import Path
 
@@ -119,31 +93,7 @@ def test_restart_isolates_unresolvable_discovery_root(tmp_path, monkeypatch):
         store.load_all()
 
 
-def test_restart_refuses_partial_inventory_when_private_root_discovery_fails(tmp_path, monkeypatch):
-    from kiro_crew.workflows import store as store_module
-
-    store = _save(tmp_path / "workflows")
-    original = store_module.private_payload_path
-
-    def private_path(run_id):
-        if run_id == "discovery":
-            raise OSError("private discovery unavailable")
-        return original(run_id)
-
-    path = store.runs_dir / "wf_000001.json"
-    saved = path.read_bytes()
-    monkeypatch.setattr(store_module, "private_payload_path", private_path)
-    with pytest.raises(OSError, match="inventory unavailable") as error:
-        RunRegistry(store=store).load_persisted()
-    assert str(tmp_path) not in str(error.value)
-    assert "private discovery unavailable" not in str(error.value)
-    assert path.read_bytes() == saved
-    monkeypatch.setattr(store_module, "private_payload_path", original)
-    rows = store.load_all()
-    assert len(rows) == 1 and rows[0]["run_id"] == "wf_000001"
-
-
-@pytest.mark.parametrize("failure", ["private-root", "root", "record"])
+@pytest.mark.parametrize("failure", ["root", "record"])
 def test_discovery_diagnostics_never_log_private_text(tmp_path, monkeypatch, caplog, failure):
     import logging
     from pathlib import Path
@@ -152,13 +102,7 @@ def test_discovery_diagnostics_never_log_private_text(tmp_path, monkeypatch, cap
 
     store = _save(tmp_path / "workflows")
     sentinel = "PRIVATE_DISCOVERY_SECRET_SENTINEL"
-    if failure == "private-root":
-
-        def fail_private_path(_run_id):
-            raise OSError(sentinel)
-
-        monkeypatch.setattr(store_module, "private_payload_path", fail_private_path)
-    elif failure == "root":
+    if failure == "root":
         real_resolve = Path.resolve
 
         def resolve(path, *args, **kwargs):
@@ -179,7 +123,7 @@ def test_discovery_diagnostics_never_log_private_text(tmp_path, monkeypatch, cap
 
         monkeypatch.setattr(store_module.platform_compat, "open_file_no_reparse", open_record)
     with caplog.at_level(logging.DEBUG, logger=store_module.__name__):
-        if failure in ("root", "private-root"):
+        if failure == "root":
             with pytest.raises(OSError, match="inventory unavailable") as error:
                 store.load_all()
             assert sentinel not in str(error.value)
@@ -219,24 +163,6 @@ def test_unreadable_record_with_surrogate_name_does_not_abort_recovery(tmp_path,
     monkeypatch.setattr(store_module.platform_compat, "open_file_no_reparse", open_record)
     rows = store.load_all()
     assert len(rows) == 1 and rows[0]["run_id"] == "wf_000001"
-
-
-def test_private_root_redirect_cannot_return_public_only_inventory(tmp_path):
-    from kiro_crew.workflow_memory import private_payload_path
-
-    store = _save(tmp_path / "workflows")
-    public_file = store.runs_dir / "wf_000001.json"
-    saved = public_file.read_bytes()
-    root = private_payload_path("discovery").parent
-    root.parent.mkdir(parents=True, exist_ok=True)
-    outside = tmp_path / "redirected-private-inventory"
-    outside.mkdir()
-    make_dir_link(root, outside)
-    with pytest.raises(OSError, match="inventory unavailable") as error:
-        store.load_all()
-    assert str(root) not in str(error.value)
-    assert str(outside) not in str(error.value)
-    assert public_file.read_bytes() == saved
 
 
 @pytest.mark.parametrize("status", ["running", "finished", "cancelled"])
@@ -286,3 +212,15 @@ def test_genuinely_missing_inventory_accepts_first_boot(tmp_path):
     store = WorkflowRunStore(base_dir=tmp_path / "not-created" / "workflows")
     assert store.load_all() == []
     assert not store.runs_dir.exists()
+
+
+@pytest.mark.parametrize("damaged", [{}, {"member_id": 7}])
+def test_restart_skips_malformed_canonical_identity_without_rewriting_source(tmp_path, damaged):
+    store = _save(tmp_path / "workflows")
+    path = store.runs_dir / "wf_000001.json"
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    payload["execution_context"] = damaged
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    original = path.read_bytes()
+    assert RunRegistry(store=store).load_persisted() == 0
+    assert path.read_bytes() == original

@@ -131,8 +131,6 @@ LINE_CREW_TOOLS = "crew_tools"
 LINE_MEMBER_THREAD_TOOLS = "member_thread_tools"
 #: An enrolled member's whole saved agent spec is loaded at spawn.
 LINE_MEMBER_SAVED_AGENT = "member_saved_agent"
-#: A private member session runs its own tools inside the owned sandbox.
-LINE_PRIVATE_MEMBER_SESSIONS = "private_member_sessions"
 #: A Side Chat turn may execute read-only tools.
 LINE_SIDE_CHAT_TOOLS = "side_chat_tools"
 #: A subagent chat survives teardown, so it can be continued later.
@@ -204,7 +202,6 @@ USER_FACING_LINES: Tuple[_LineSpec, ...] = (
     ),
     _LineSpec(LINE_MEMBER_THREAD_TOOLS, ("ACP_BACKENDS_MEMBER_DISPATCH",)),
     _LineSpec(LINE_MEMBER_SAVED_AGENT, ("ACP_BACKENDS_MEMBER_CAPABILITIES",)),
-    _LineSpec(LINE_PRIVATE_MEMBER_SESSIONS, ("ACP_BACKENDS_PRIVATE_MEMORY_MCP",)),
     _LineSpec(LINE_SIDE_CHAT_TOOLS, ("ACP_BACKENDS_SIDE_READONLY",)),
     _LineSpec(LINE_SUBAGENT_CONTINUATION, ("ACP_BACKENDS_SESSION_SHARING",)),
     _LineSpec(LINE_MID_TURN_STEER, ("ACP_BACKENDS_STEER",)),

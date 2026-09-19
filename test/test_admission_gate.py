@@ -246,8 +246,10 @@ class TestSpawnAdmissionGate:
     def _mgr(self):
         from kiro_crew.subagent import SubagentManager
 
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
         return SubagentManager(
-            sessions=MagicMock(),
+            sessions=sessions,
             ctx_builder=MagicMock(),
             on_done=MagicMock(),
             max_concurrent=3,
@@ -672,8 +674,10 @@ class TestCronExprPassthrough:
         async def _on_done(info) -> None:
             announced.append(info)
 
+        sessions = MagicMock()
+        sessions.get_agent_selection.return_value = ("template", "")
         mgr = SubagentManager(
-            sessions=MagicMock(),
+            sessions=sessions,
             ctx_builder=MagicMock(),
             on_done=_on_done,
             max_concurrent=3,

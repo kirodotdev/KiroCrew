@@ -14,7 +14,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from chat_test_helpers import _make_app_with_agent_routes, _make_state, drain_background_tasks
 from dashboard_owner_helpers import as_owner
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew import agent, agent_discovery, agent_state
 from kiro_crew.acp.mcp_session_report import McpSessionReport
@@ -56,7 +55,7 @@ class FakeProvider(LLMProvider):
         self.template = template
         self._cwd = cwd
         self.specs = specs
-        self._private_memory = private
+        self.member_context = private
         self.incarnation = ""
         self.sid = ""
         self.active = ""
@@ -142,7 +141,7 @@ def world(tmp_path, monkeypatch):
     monkeypatch.setenv("KIRO_HOME", str(tmp_path / "kiro"))
     monkeypatch.setattr(agent, "KIRO_AGENTS_DIR", specs)
     monkeypatch.setattr(agent_state, "_state_path", lambda: home / "agent_model_state.json")
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
     cfg = KiroCrewConfig.load()
     cfg.workspaces[cfg.default_workspace] = WorkspaceConfig(dir=str(project))
     stores = {}
@@ -219,7 +218,7 @@ def dashboard_capability_world(world, tmp_path, monkeypatch):
             provider = factory(key, **kwargs)
             # The external double declares the isolation requested by this
             # fixture. Allocation still validates the real protected assignment.
-            provider._private_memory = key == "dashboard:A"
+            provider.member_context = key == "dashboard:A"
             provider.supported = supported
 
             async def stream(message, **stream_kwargs):
@@ -330,7 +329,7 @@ async def test_dashboard_template_keeps_namespace_through_real_manager(
         provider = world.made[0]
         assert provider.active == world.template
         assert provider.starts == 1
-        assert not provider._private_memory
+        assert not provider.member_context
         assert await asyncio.to_thread(read_private_session_store, key) is None
         assert (
             state.sessions.capability_runtime_view("A", world.prepared["revision"])["sessions"]
@@ -369,7 +368,7 @@ async def test_dashboard_enrolled_member_controls_through_real_manager(
         assert len(world.made) == 1
         provider = world.made[0]
         assert provider.template == world.prepared["template"]
-        assert provider._private_memory is True
+        assert provider.member_context is True
         assert await asyncio.to_thread(read_private_session_store, key) == world.stores["A"]
         view = state.sessions.capability_runtime_view("A", world.prepared["revision"])
         if supported:

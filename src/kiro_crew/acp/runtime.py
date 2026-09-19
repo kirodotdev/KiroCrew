@@ -595,6 +595,7 @@ class StartCollector:
         permit: "StartPermit | None",
         timeout: float,
         context: dict[str, Any] | None = None,
+        memory_mode: str = "persistent",
     ) -> None:
         self._runtime = runtime
         self.req_id = req_id
@@ -602,6 +603,7 @@ class StartCollector:
         self._permit = permit
         self.timeout = float(timeout)
         self.context = dict(context or {})
+        self.memory_mode = memory_mode
         self._adopter: StartAdopter | None = None
         self.outcome: str | None = None
         self.session_id: str = ""
@@ -719,7 +721,11 @@ class StartCollector:
             if adopted:
                 outcome = START_OUTCOME_ADOPTED
                 return
-            await self._runtime._teardown_late_session(session_id)
+            try:
+                await self._runtime._teardown_late_session(session_id)
+            finally:
+                if self.memory_mode != "persistent":
+                    await asyncio.to_thread(AcpSessionHandle.cleanup_transcript_files, session_id)
             outcome = START_OUTCOME_TORN_DOWN
         finally:
             self.outcome = outcome
@@ -1365,7 +1371,8 @@ class AcpRuntime:
         expect_mcp_reports: bool = True,
         acp_backend: str = ACP_BACKEND_KIRO,
         crew_agent: str = "",
-        private_memory: bool = False,
+        member_context: bool = False,
+        memory_mode: str = "persistent",
         tool_search: ToolSearchSettings | None = None,
     ):
         if work_dir:
@@ -1417,22 +1424,14 @@ class AcpRuntime:
                 )
         self._model = model
         self._sandbox_mode = sandbox_mode
-        self._private_memory = private_memory is True
+        self._member_context = member_context
+        if memory_mode not in {"persistent", "incognito", "temporary"}:
+            raise ValueError("Invalid session memory mode")
+        self.recording_allowed = memory_mode == "persistent"
         self._native_launch_sources: dict[str, str] = {}
-        if self._private_memory:
-            from kiro_crew.member_memory_auth import require_private_memory_mcp_backend
-
-            require_private_memory_mcp_backend(acp_backend)
         self._extra_env = extra_env or {}
-        # Keep private MCP subprocesses inside this runtime's sandbox, including
-        # after resume. An older shared broker cannot attest their member origin.
-        self._private_mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else ""
-        self._mcp_gateway_overlay = (
-            str(mcp_gateway_overlay) if mcp_gateway_overlay and not self._private_memory else None
-        )
-        self._mcp_gateway_socket = (
-            str(mcp_gateway_socket) if mcp_gateway_socket and not self._private_memory else None
-        )
+        self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
+        self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         # Whether sessions on this runtime should hold drain_init() open for
         # slow MCP servers (the no-report ceiling). A runtime whose agent is
         # KNOWN to have zero MCP servers — the kirocrew-lite background runtime,
@@ -1945,7 +1944,7 @@ class AcpRuntime:
                 environ=dict(os.environ),
                 home=Path.home(),
                 sandbox_mode=self._sandbox_mode,
-                private_memory=self._private_memory,
+                member_context=self._member_context,
             )
         )
         # The ONE derived-spec gate on this path, and the one host-level gate that is
@@ -2126,27 +2125,10 @@ class AcpRuntime:
         argv, delegate_internal_sandbox = await asyncio.to_thread(
             apply_pod_bundle_spawn, argv, backend=self._acp_backend
         )
-        private_kwargs: dict[str, Any] = (
-            {
-                "private_memory": True,
-                "private_mcp_gateway_socket": self._private_mcp_gateway_socket,
-                "private_mcp_gateway_socket_overrides": tuple(
-                    self._extra_env[name]
-                    for name in ("KIROCREW_MCP_SOCKET", "MC_MCP_SOCKET")
-                    if self._extra_env.get(name)
-                ),
-            }
-            if self._private_memory
-            else {}
-        )
         # The host's credential mask, resolved with its argv and applied here.
         # Empty for a host whose privileged tools ask by construction; for one this
         # core's tool gate ENFORCES it is the compensating control, so a spawn that
         # dropped it would hand a third-party binary the operator's credential homes.
-        # Passed positionally into the sandbox rather than merged into
-        # ``private_kwargs``: that dict is the private-memory socket bundle and is
-        # empty on the ordinary path, so folding an unrelated concern into it would
-        # make the mask disappear whenever private memory is off.
         # Per-process scratch containment (twin of acp/client.py). Allocated
         # BEFORE the wrap: the scratch ROOT is masked for every sandboxed
         # process, so this runtime's own directory is carved back out.
@@ -2178,7 +2160,6 @@ class AcpRuntime:
             extra_private_dirs=scratch_window,
             extra_expose_files=plan.extra_expose_files,
             _prepare=wrap_argv,
-            **private_kwargs,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -3375,7 +3356,8 @@ class AcpRuntime:
                 try:
                     data = json.loads(line)
                 except json.JSONDecodeError:
-                    logger.debug("non-JSON stdout line: %s", line[:200])
+                    if self.recording_allowed:
+                        logger.debug("non-JSON stdout line: %s", line[:200])
                     continue
 
                 # Valid JSON is not necessarily a JSON-RPC object: a bare scalar
@@ -3385,7 +3367,8 @@ class AcpRuntime:
                 # down EVERY multiplexed session. Skip anything that isn't an
                 # object so one stray line can't kill the demux.
                 if not isinstance(data, dict):
-                    logger.debug("non-object JSON stdout line: %s", line[:200])
+                    if self.recording_allowed:
+                        logger.debug("non-object JSON stdout line: %s", line[:200])
                     continue
 
                 # Opt-in raw-frame recording for the replay corpus. A no-op
@@ -3396,7 +3379,8 @@ class AcpRuntime:
                 # because a filesystem syscall on this loop stalls every
                 # multiplexed session. It never raises -- see
                 # kiro_crew.acp._frame_record.
-                await record_frame(self._acp_backend, data, len(line))
+                if self.recording_allowed:
+                    await record_frame(self._acp_backend, data, len(line))
 
                 msg = JsonRpcMessage.from_dict(data)
 
@@ -3696,7 +3680,11 @@ class AcpRuntime:
         except asyncio.CancelledError:
             return
         except Exception as exc:
-            logger.error("Reader loop crashed: %s", exc, exc_info=True)
+            logger.error(
+                "Reader loop crashed: %s",
+                exc if self.recording_allowed else type(exc).__name__,
+                exc_info=self.recording_allowed,
+            )
             self._mark_dead(f"reader crash: {exc}")
         finally:
             # Report the residual count on EVERY exit (EOF, overrun, cancel,
@@ -3832,6 +3820,8 @@ class AcpRuntime:
         stdout closed is not seen here, and the reason then stays ``rc=N``.
         """
         reason = f"process exited (rc={rc})"
+        if not self.recording_allowed:
+            return reason
         last = next((ln for ln in reversed(self._stderr_lines) if ln.strip()), "")
         if not last:
             return reason
@@ -3887,7 +3877,14 @@ class AcpRuntime:
         # Diagnostic context: process returncode + tail of captured stderr so
         # operators can tell an OOM/crash from a clean exit without DEBUG logs.
         rc = self._process.returncode if self._process else None
-        tail = " | ".join(self._stderr_lines[-5:]) if self._stderr_lines else "<none>"
+        if self.recording_allowed:
+            tail = " | ".join(self._stderr_lines[-5:]) if self._stderr_lines else "<none>"
+        else:
+            # Reader exceptions and child stderr can echo session content.
+            # Restricted runs retain lifecycle facts, including the exit code.
+            reason = "runtime stopped" if expected else "runtime failed"
+            tail = "<not retained>"
+            self._stderr_lines.clear()
         # Redact BEFORE composing: the summary outlives this method — it is
         # retained for death_summary(), appended to AcpProcessDied, and a
         # cron turn's failure stringifies that exception into job.last_error,
@@ -4876,6 +4873,23 @@ class AcpRuntime:
             )
         return entries, token
 
+    async def _unpooled_control_planes(
+        self, entries: list[dict[str, Any]], agent: str | None, work_dir: str | Path
+    ) -> list[dict[str, Any]]:
+        # A shared Kiro process has no session-valued environment. Its native
+        # managed servers need per-element identity even with the broker off.
+        if self.acp_backend == ACP_BACKEND_KIRO:
+            from kiro_crew.acp.session_mcp import kiro_control_plane_servers
+
+            native = await asyncio.to_thread(
+                kiro_control_plane_servers,
+                agent,
+                work_dir=work_dir,
+                existing_names={str(entry.get("name")) for entry in entries},
+            )
+            return [*entries, *native]
+        return entries
+
     async def create_session(
         self,
         cwd: str | Path | None = None,
@@ -4885,6 +4899,7 @@ class AcpRuntime:
         member_session_key: str = "",
         session_key: str = "",
         channel_id: str = "",
+        memory_mode: str = "persistent",
         on_gate_acquired: Callable[[float], None] | None = None,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None" = None,
     ) -> AcpSessionHandle:
@@ -4921,6 +4936,13 @@ class AcpRuntime:
         the raised :class:`AcpSessionStartTimeout` carries that collector. The
         gate permit is released exactly once on every path.
         """
+        if memory_mode not in {"persistent", "incognito", "temporary"}:
+            raise ValueError("Invalid session memory mode")
+        if memory_mode != "persistent":
+            # A mixed runtime cannot attribute every raw diagnostic frame to a
+            # session. Latch recording off before session/new can emit a payload.
+            self.recording_allowed = False
+            self._stderr_lines.clear()
         if not self._initialized:
             raise AcpRuntimeError("Runtime not initialized — call spawn() first")
 
@@ -4965,7 +4987,10 @@ class AcpRuntime:
                     self.acp_backend,
                     session_work_dir,
                 )
-                mcp_servers, stub_token = await self._own_stub_session(pooled, session_key)
+                mcp_servers = await self._unpooled_control_planes(
+                    pooled, agent or self._agent, session_work_dir
+                )
+                mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         else:
             # An explicit array is the caller's own composition (a mirror's
             # projection, a test double); it is not this method's to re-key, and it
@@ -5036,7 +5061,7 @@ class AcpRuntime:
         )
 
         projected_sources: dict[str, str] = {}
-        if self._private_memory:
+        if self._member_context:
             from kiro_crew.member_essential_context import projected_resource_documents
 
             for definition in kas_agents or ():
@@ -5096,6 +5121,7 @@ class AcpRuntime:
                 projected_sources=projected_sources,
                 payload_snapshot=payload_snapshot,
                 late_adopter=late_adopter,
+                memory_mode=memory_mode,
             )
             if collector is None:
                 permit.release()
@@ -5111,6 +5137,7 @@ class AcpRuntime:
             session_id,
             resp,
             buffered_init=buffered_init,
+            memory_mode=memory_mode,
             agent=agent,
             crew_agent=crew_agent,
             kas_agents=kas_agents,
@@ -5145,6 +5172,7 @@ class AcpRuntime:
         projected_sources: dict[str, str],
         payload_snapshot: Any,
         late_adopter: "Callable[[AcpSessionHandle], Awaitable[bool]] | None",
+        memory_mode: str = "persistent",
     ) -> StartCollector | None:
         """Hand a timed-out ``session/new`` to a :class:`StartCollector`.
 
@@ -5177,6 +5205,7 @@ class AcpRuntime:
             permit=permit,
             timeout=timeout,
             context={"agent": agent or "", "crew_agent": crew_agent or ""},
+            memory_mode=memory_mode,
         )
         # Seeded and registered with no await in between, so the reader loop
         # cannot stage a frame into only one of the two holders: what this start
@@ -5192,6 +5221,7 @@ class AcpRuntime:
                     session_id,
                     resp,
                     buffered_init=collector.take_init_frames(session_id),
+                    memory_mode=memory_mode,
                     agent=agent,
                     crew_agent=crew_agent,
                     kas_agents=kas_agents,
@@ -5298,6 +5328,7 @@ class AcpRuntime:
         session_work_dir: str | Path,
         projected_sources: dict[str, str],
         payload_snapshot: Any,
+        memory_mode: str = "persistent",
     ) -> AcpSessionHandle:
         """Everything after a successful ``session/new``: queue, handle, mode, drain.
 
@@ -5326,6 +5357,7 @@ class AcpRuntime:
             watchdog=_wd,
             crew_agent=_crew,
         )
+        handle.memory_mode = memory_mode
         # The token this session's stubs carry, so a later claim (warm-pool
         # rekey) can name THIS session instead of every session on the runtime.
         handle.stub_session_token = stub_token
@@ -5646,7 +5678,10 @@ class AcpRuntime:
                 self.acp_backend,
                 session_work_dir,
             )
-            mcp_servers, stub_token = await self._own_stub_session(pooled, session_key)
+            mcp_servers = await self._unpooled_control_planes(
+                pooled, active_agent, session_work_dir
+            )
+            mcp_servers, stub_token = await self._own_stub_session(mcp_servers, session_key)
         if member_session_key:
             # circular import: members' module graph is heavy; resolved at call
             # time, same as create_session().
@@ -6051,9 +6086,10 @@ class AcpRuntime:
                     break
                 text = line.decode(errors="replace").strip()
                 if text:
-                    self._stderr_lines.append(text)
-                    if len(self._stderr_lines) > 20:
-                        self._stderr_lines = self._stderr_lines[-20:]
+                    if self.recording_allowed:
+                        self._stderr_lines.append(text)
+                        if len(self._stderr_lines) > 20:
+                            self._stderr_lines = self._stderr_lines[-20:]
                     # Latch here, at the sink, because this is the only point at
                     # which every line is guaranteed to have been seen. The
                     # trim above is what makes it necessary: nobody asks about
@@ -6066,7 +6102,8 @@ class AcpRuntime:
                     # surfaced where it is actionable instead -- as AcpAuthRequired.
                     if not self._saw_auth_failure and is_auth_failure_output(text):
                         self._saw_auth_failure = True
-                    logger.debug("stderr: %s", text[:200])
+                    if self.recording_allowed:
+                        logger.debug("stderr: %s", text[:200])
         except asyncio.CancelledError:
             raise
         except Exception as exc:
@@ -6074,4 +6111,8 @@ class AcpRuntime:
             # readline when no newline fits the buffer) or a low-level read
             # error must not kill this task with an unhandled exception. Log and
             # exit the drain cleanly rather than leaving a dead task behind.
-            logger.debug("stderr drain task exiting on error: %s", exc, exc_info=True)
+            logger.debug(
+                "stderr drain task exiting on error: %s",
+                exc if self.recording_allowed else type(exc).__name__,
+                exc_info=self.recording_allowed,
+            )

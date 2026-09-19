@@ -67,7 +67,6 @@ from kiro_crew.acp_backends import (
     ACP_BACKENDS_MEMBER_CAPABILITIES,
     ACP_BACKENDS_MODEL_EFFORT_PAIR_IDS,
     ACP_BACKENDS_MODEL_VIA_CONFIG_OPTION,
-    ACP_BACKENDS_PRIVATE_MEMORY_MCP,
     ACP_BACKENDS_SIDE_READONLY,
     ACP_BACKENDS_TOOL_SEARCH_OVERLAY,
     BASELINE_SELECTABLE_BACKENDS,
@@ -386,7 +385,6 @@ def test_capability_sets_are_subsets_of_known_backends() -> None:
         ("ACP_BACKENDS_ACP_RUNTIME", ACP_BACKENDS_ACP_RUNTIME),
         ("ACP_BACKENDS_COMPACT", ACP_BACKENDS_COMPACT),
         ("ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD", ACP_BACKENDS_MCP_CONFIG_HOT_RELOAD),
-        ("ACP_BACKENDS_PRIVATE_MEMORY_MCP", ACP_BACKENDS_PRIVATE_MEMORY_MCP),
         ("ACP_BACKENDS_SIDE_READONLY", ACP_BACKENDS_SIDE_READONLY),
         ("ACP_BACKENDS_STRUCTURED_REFUSAL", ACP_BACKENDS_STRUCTURED_REFUSAL),
         ("ACP_BACKENDS_HOST_AUTH_CALLBACK", ACP_BACKENDS_HOST_AUTH_CALLBACK),
@@ -961,6 +959,12 @@ _RUNTIME_PATH_MODULES = (
 #: comparison against an ``ACP_BACKEND_*`` constant that is not listed here fails
 #: :func:`test_every_runtime_path_identity_test_is_declared`.
 _DECLARED_IDENTITY_TESTS: dict[tuple[str, str], str] = {
+    (
+        "src/kiro_crew/acp/runtime.py",
+        "_unpooled_control_planes",
+    ): "Kiro alone loads its native agent spec without a mirror or wire agent. "
+    "Its unpooled managed stdio declarations need a per-session token override; "
+    "other harnesses already carry identity through their own projections.",
     (
         "src/kiro_crew/acp/runtime.py",
         "load_session",

@@ -14,6 +14,8 @@ binding as interactive turns, before starting an extraction provider. A named
 member store must be declared, readable and prepared; malformed or unavailable
 identity aborts the pass without writing to Global Memory V1. Sessions with no
 memory binding retain the V1 consolidation path.
+The async consolidation pass reads that execution record in a worker thread,
+before applying privacy policy or allocating the extraction provider.
 
 Owned V2 consolidation never publishes or refines shared auto-skills and does
 not run the global skill lifecycle. Member experience remains in that member's
@@ -34,13 +36,14 @@ consumers refuse the operation; the legacy `get_metadata()` projection still
 returns an empty dictionary for callers that only display history.
 
 Template-versus-member selection survives recent-session restore, explicit
-resume and dormant-slot rehydration through the protected, exact-session record
-owned by `session_agent_selection.py`; transcript fields cannot manufacture that
-provenance. Restoring a template conversation after discovery imports a member
-with the same name keeps its original namespace. This record is separate from
-the protected private-store assignment and cannot authorize V2 memory. Old
-conversations without it keep strict legacy resolution rather than guessing
-from missing private bindings. See [session](session.md#agent-selection-provenance).
+resume and dormant-slot rehydration through the canonical execution context in
+the owning session metadata. `session_agent_selection.py` preserves that record
+instead of inferring selection from display fields. Restoring a template
+conversation after discovery imports a member with the same name keeps its
+original namespace. The same record carries member/store identity; ordinary
+authorization remains independent. Old V1 conversations retain legacy resolution,
+while missing member identity refuses routing.
+See [session](session.md#agent-selection-provenance).
 
 Bulk clear excludes transcripts whose metadata cannot be read, including Global
 V1 transcripts. Their owner and pinned state cannot safely be inferred. An exact
@@ -222,12 +225,12 @@ the same provenance ledger entry.
 
 ## Dashboard History Persistence — Frozen Prefix + Live Window (`dashboard/chat_persistence.py`)
 
-Dashboard restoration reads an existing protected agent selection before applying
+Dashboard restoration reads an existing canonical execution context before applying
 the transcript's agent field. A provisional history write left by an interrupted
 switch therefore cannot replace the committed choice, even if its rollback could
 not acquire the history lock. Missing selection records retain legacy resolution;
-unreadable records remain execution refusals. Private-store authority is still
-checked independently. Async restore prefetches this record off-loop alongside
+unreadable records remain execution refusals. Member/store integrity and ordinary
+authorization are still checked. Async restore prefetches this record off-loop alongside
 the transcript and applies the resulting name on the event loop.
 
 `_save_slot_to_history` persists dashboard chat slots. It models the session
@@ -306,17 +309,19 @@ no longer destroy older turns.
   value outside the allowlist on a live parent, and passing it through would
   raise out of the slot constructor as a 500. The fork instead answers 409
   `fork_source_memory_mode_invalid` (SEL `denied`), and no child exists.
-- **Private-member fork identity**: a V2 fork also inherits the parent's
-  protected memory assignment before the child receives copied history. The
-  parent assignment must match the currently configured member and store;
-  missing, damaged or mismatched evidence refuses. Transcript metadata cannot
-  authorize that inheritance. Persistent, incognito and temporary forks keep
+  This refusal precedes execution-identity and database lookup, preserving the
+  named mode error even when the source's other metadata is unavailable.
+- **Member fork identity**: a V2 fork also inherits the parent's canonical
+  execution context before the child receives copied history. The captured
+  member/store identity must be valid; missing, damaged or mismatched identity
+  refuses routing. Ordinary owner/app authorization is checked independently.
+  Persistent, incognito and temporary forks keep
   their existing mode guarantees, and Global or named V1 history is never
   relabeled as private V2 by forking it.
   Cancellation waits for an in-flight binding publication before removing the
   empty child. Any published assignment remains attached to that unique key,
-  including after a later save failure, so partial private history cannot become
-  unprotected. This can leave an unused protected identity record.
+  including after a later save failure, so partial history cannot lose its
+  recorded owner. This can leave an unused session identity record.
 - **Concurrency**: `_flush_dirty_slots` runs the save in an executor thread while
   `_run_chat` mutates `slot.messages` on the event loop. `slot._lock` is an
   asyncio lock (unusable from the thread), so the save instead takes a

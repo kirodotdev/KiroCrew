@@ -47,7 +47,6 @@ from kiro_crew.atomic_write import refuse_linked_parent
 from kiro_crew.config.paths import config_dir, kiro_agents_dir
 from kiro_crew.constants import KIROCREW_SPAWNED_ENV, KIROCREW_SPAWNED_VALUE
 from kiro_crew.identity_stores import AUTH_SQLITE_DB, AUTH_SQLITE_SIDECAR_SUFFIXES
-from kiro_crew.memory_stores import EXECUTION_LOGS_DIR_NAME, MEMORY_STORES_DIR_NAME
 from kiro_crew.pinned_fs import fd_real_path
 from kiro_crew.platform import current_context
 from kiro_crew.terminal_safe import safe_terminal_line
@@ -404,19 +403,6 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     _LIVE_TARGET_STAGING_LEAF,
     "backup",
     "mcp-apps",
-    # Named memory stores (``memory_stores.py``): one subdirectory per crew, each
-    # holding that crew's private markdown memory, FTS index and vector database.
-    # HIDDEN rather than read-only, and the reason is the direction the harm runs in:
-    # the value of the fence is that a crew cannot READ another crew's memory, so
-    # exposing the tree read-only would preserve exactly the exposure. Nothing inside
-    # the sandbox opens a store — the consolidator and the context builder run in the
-    # gateway, and the in-sandbox MCP servers reach memory through gateway endpoints
-    # rather than constructing a store — so masking it costs no live consumer.
-    #
-    # Default assistants retain Global V1 access. Private member executions
-    # additionally mask Global V1 through the trusted private_memory spawn flag;
-    # no environment variable can opt out of that member-only boundary.
-    "memory_stores",
     # Auth stores and signing keys owned by the gateway web server alone.
     "token_signing.key",
     "refresh_chains.json",
@@ -438,14 +424,19 @@ _CREW_HIDDEN_LEAVES: tuple[str, ...] = (
     *(f"{AUTH_SQLITE_DB}{suffix}" for suffix in AUTH_SQLITE_SIDECAR_SUFFIXES),
 )
 
-#: Crew-home CEILINGS: read by in-sandbox code, never writable by it. Exposed
-#: read-only rather than hidden — see the READONLY note above for why hiding a
-#: ceiling inverts its effect.
+#: Crew-home ceilings and gateway-managed data: readable by sandboxed code,
+#: never writable by it. See the READONLY note above for why hiding a ceiling
+#: inverts its effect; named memory stores need write integrity, not secrecy.
 _CREW_READONLY_LEAVES: tuple[str, ...] = (
-    # Durable member identity must be readable to sandboxed cron metadata
-    # lookup, but never writable by an agent shell. A top-level directory is
-    # required: the writable trust parent could be renamed around a child seal.
+    # Gateway-owned run records restore app authorization on cold continuation.
+    # Keep results readable, but agent code must not rewrite its app owner.
+    # The second root holds the same authority for retained V1 runs only.
+    "subagents",
     "member-memory-bindings",
+    # Built-in named-store writes run in the gateway. Keep arbitrary sandboxed
+    # code from rewriting that learning authority while allowing reads; this
+    # ordinary sandbox rule is not a cross-member confidentiality boundary.
+    "memory_stores",
     # The governance ceiling and its trust root. ``boot_platform()`` resolves both
     # inside the sandbox for a script cron, and an absent file means "no ceiling".
     "security_policy.json",
@@ -916,9 +907,9 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 #: 1. An EMPTY document must mean what an ABSENT file means to the reader:
 #:
 #:    * ``profiles`` — an empty dir yields no profile, same as no dir;
-#:    * ``member-memory-bindings`` — an empty dir identifies no runs; its
-#:      directory bind shows records the gateway publishes later without
-#:      granting agent processes the ability to create or replace one;
+#:    * ``memory_stores`` — an empty root declares or provisions no store. The
+#:      gateway can later create named stores inside the directory bind; no
+#:      database, member configuration or Global V1 path is created here;
 #:    * ``playwright-cli`` — an empty dir means the launcher is absent,
 #:      exactly as a missing dir does; its directory bind shows a later gateway
 #:      install while withholding every agent-side write;
@@ -970,14 +961,22 @@ def carveout_shadowed_by_foreign_mask(path: str, mode: str = "standard") -> bool
 #: name), and ``_CREW_HIDDEN_LEAVES`` has no reader to prove an empty document is
 #: absent-equivalent, so each leaf needs its own argument.
 _CREW_PRECREATE_READONLY_DIR_LEAVES: tuple[str, ...] = (
-    "profiles",
+    # Empty roots confer no run authority; directory mounts expose later
+    # gateway records without letting a sandbox create the missing root.
+    "subagents",
     "member-memory-bindings",
+    "memory_stores",
+    "profiles",
     "playwright-cli",
 )
 #: Read-only directory leaves whose NAME must remain the mounted name. A resolving
 #: symlink is unsafe here: the mount follows its target and leaves the lexical name
 #: replaceable, which would let an agent choose the executable the gateway runs.
-_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = ("playwright-cli",)
+_CREW_NOFOLLOW_READONLY_DIR_LEAVES: tuple[str, ...] = (
+    "playwright-cli",
+    "subagents",
+    "member-memory-bindings",
+)
 assert set(_CREW_NOFOLLOW_READONLY_DIR_LEAVES) <= set(_CREW_PRECREATE_READONLY_DIR_LEAVES)
 _CREW_PRECREATE_READONLY_FILE_LEAVES: tuple[str, ...] = (
     "computer_use.json",
@@ -1070,9 +1069,6 @@ _CREW_PRECREATE_HIDDEN_DIR_LEAVES: tuple[str, ...] = (
     # first spawn so the mask has a mount target, and the temp the materialiser stages
     # in it is never visible to a running namespace.
     _LIVE_TARGET_STAGING_LEAF,
-    # Private memory has the same late-creation hazard: an agent spawned before
-    # the first member must never gain access when that member's database appears.
-    "memory_stores",
     # Append-only per-unit crew logs, and the hazard is the sharpest here: the
     # record is the AUTHORITY a reader trusts instead of re-deriving, and the
     # store creates this root on its first write. A sandbox spawned before that
@@ -4903,467 +4899,9 @@ def _ssh_supports_accept_new() -> bool:
     return False
 
 
-def _private_memory_roots() -> list[str]:
-    """Administrative roots whose global-memory leaves a member cannot inherit."""
-    roots = {str(config_dir().resolve())}
-    for prefix in _CREW_HOME_PREFIXES:
-        candidate = Path.home() / prefix
-        if candidate.is_dir():
-            roots.add(str(candidate.resolve()))
-    return sorted(roots)
-
-
-class _PrivateMemoryLayout(NamedTuple):
-    homes: tuple[str, ...]
-    workspaces: tuple[str, ...]
-    required_workspaces: tuple[str, ...]
-
-
-def _private_memory_layout() -> _PrivateMemoryLayout:
-    """Snapshot the configured V1 roots before installing a private OS view.
-
-    Read both configuration documents without the loader's degraded-default
-    fallback. A missing declaration is different from an unreadable one: the
-    latter cannot establish which existing workspace memories must be hidden.
-    """
-    from kiro_crew.config.resolution import _deep_merge
-
-    homes = tuple(_private_memory_roots())
-    workspaces: set[str] = set()
-    required_workspaces: set[str] = set()
-    for home in homes:
-        fallback = Path(home) / "workspace"
-        try:
-            resolved_fallback = fallback.resolve(strict=True)
-            if not resolved_fallback.is_dir():
-                raise ValueError("implicit workspace must be a directory")
-        except FileNotFoundError:
-            if platform_compat.is_link_or_junction(fallback):
-                raise RuntimeError(
-                    f"memory_unavailable: implicit workspace {fallback} is a dangling link; "
-                    "repair it before starting a private member"
-                )
-            resolved_fallback = fallback
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise RuntimeError(
-                f"memory_unavailable: cannot verify implicit workspace {fallback}"
-            ) from exc
-        workspaces.add(str(resolved_fallback))
-        if resolved_fallback != fallback:
-            required_workspaces.add(str(resolved_fallback))
-        config: dict = {}
-        for filename in ("config.json", "config.local.json"):
-            path = Path(home) / filename
-            try:
-                try:
-                    document = json.loads(path.read_text(encoding="utf-8"))
-                except FileNotFoundError:
-                    if path.is_symlink():
-                        raise ValueError("dangling configuration link")
-                    continue
-                if not isinstance(document, dict):
-                    raise ValueError("configuration must be an object")
-                config = _deep_merge(config, document)
-            except (OSError, UnicodeError, ValueError) as exc:
-                raise RuntimeError(
-                    f"memory_unavailable: cannot verify workspace configuration {path}; "
-                    "repair it before starting a private member"
-                ) from exc
-        declared = config.get("workspaces", {})
-        if not isinstance(declared, dict):
-            raise RuntimeError(
-                f"memory_unavailable: workspaces in {home} must be an object; "
-                "repair the configuration before starting a private member"
-            )
-        for name, entry in declared.items():
-            directory = entry.get("dir", "workspace") if isinstance(entry, dict) else entry
-            try:
-                if not isinstance(directory, str):
-                    raise ValueError("workspace dir must be a string")
-                path = Path(directory or "workspace").expanduser()
-                if not path.is_absolute():
-                    path = Path(home) / path
-                resolved = path.resolve(strict=True)
-                if not resolved.is_dir():
-                    raise ValueError("workspace dir must be a directory")
-                workspaces.add(str(resolved))
-                required_workspaces.add(str(resolved))
-            except (OSError, RuntimeError, ValueError) as exc:
-                raise RuntimeError(
-                    f"memory_unavailable: configured workspace {name!r} ({directory!r}) "
-                    f"under {home} is unavailable; create or correct its directory, "
-                    "then start the private member again"
-                ) from exc
-    return _PrivateMemoryLayout(
-        homes, tuple(sorted(workspaces)), tuple(sorted(required_workspaces))
-    )
-
-
-_PRIVATE_MCP_GATEWAY_LEAVES = (
-    "mcp-gateway",
-    "kirocrew-mcp-gateway.sock",
-    "mc-mcp-gateway.sock",
-)
-
-
-def _validate_private_mcp_gateway_socket(
-    socket_path: str = "", socket_overrides: tuple[str, ...] = ()
-) -> None:
-    """Refuse broker endpoints outside the member's durable hidden namespaces."""
-    homes = _private_memory_roots()
-    reserved = [Path(home) / leaf for home in homes for leaf in _PRIVATE_MCP_GATEWAY_LEAVES]
-
-    def hidden(path: Path) -> bool:
-        return any(
-            path == target or (target.name == "mcp-gateway" and path.is_relative_to(target))
-            for target in reserved
-        )
-
-    candidates = [str(path) for path in reserved]
-    # Routing may be disabled while an older broker still owns its endpoint.
-    # Read the persisted path directly: the config loader can default on errors.
-    for home in homes:
-        path = Path(home) / "config.json"
-        try:
-            try:
-                contents = path.read_text(encoding="utf-8")
-            except FileNotFoundError:
-                if path.is_symlink():
-                    raise ValueError("Configured data home has a dangling config link")
-                continue
-            config = json.loads(contents)
-            if not isinstance(config, dict):
-                raise ValueError("Config must be an object")
-            gateway = config.get("mcp_gateway", {})
-            if not isinstance(gateway, dict):
-                raise ValueError("MCP gateway config must be an object")
-            configured_socket = gateway.get("socket_path", "")
-            if not isinstance(configured_socket, str):
-                raise ValueError("MCP socket path must be a string")
-            if configured_socket:
-                candidates.append(configured_socket)
-        except (OSError, UnicodeError, ValueError) as exc:
-            raise RuntimeError(
-                "Private member memory cannot verify the configured MCP socket"
-            ) from exc
-    candidates.extend(
-        value
-        for value in (
-            socket_path,
-            *socket_overrides,
-            os.environ.get("KIROCREW_MCP_SOCKET", ""),
-            os.environ.get("MC_MCP_SOCKET", ""),
-        )
-        if value
-    )
-    for candidate in candidates:
-        try:
-            if not isinstance(candidate, str):
-                raise ValueError("MCP socket path must be a string")
-            path = Path(candidate)
-            safe = path.is_absolute() and hidden(path.resolve())
-        except (OSError, RuntimeError, ValueError) as exc:
-            raise RuntimeError(
-                "Private member memory cannot resolve the shared MCP socket"
-            ) from exc
-        if not safe:
-            raise RuntimeError(
-                "Private member memory requires the shared MCP socket to stay inside "
-                "the data home's reserved mcp-gateway directory or legacy socket paths, "
-                "using an absolute path"
-            )
-
-
-def _private_memory_scan_failure(
-    operation: Literal["root_iterdir", "entry_stat", "entry_iterdir"],
-    tree: Literal["root_tmp", "sessions", "snapshots", "memory"],
-    exc: OSError,
-) -> RuntimeError:
-    """Describe a failed scan without copying exception text or filesystem names."""
-    fields = [f"operation={operation}", f"tree={tree}"]
-    for name in ("errno", "winerror"):
-        value = getattr(exc, name, None)
-        if type(value) is int and 0 <= value <= 0xFFFFFFFF:
-            fields.append(f"{name}={value}")
-    return RuntimeError(
-        "memory_unavailable: cannot verify protected memory hardlinks (" + " ".join(fields) + ")"
-    )
-
-
-def _validate_private_memory_hardlinks(layout: _PrivateMemoryLayout | None = None) -> None:
-    """A path mask cannot hide another name for the same protected inode."""
-    remaining = 100_000
-    visited: set[tuple[int, int]] = set()
-    pending = []
-    layout = layout or _private_memory_layout()
-    for root_name in dict.fromkeys((*layout.homes, *layout.workspaces)):
-        root = Path(root_name)
-        try:
-            available = root.is_dir()
-        except OSError as exc:
-            raise RuntimeError(
-                f"memory_unavailable: cannot verify workspace directory {root}; "
-                "repair it before starting a private member"
-            ) from exc
-        if not available:
-            if root_name in layout.required_workspaces:
-                raise RuntimeError(
-                    f"memory_unavailable: required workspace directory {root} is unavailable; "
-                    "create or correct it, then start the private member again"
-                )
-            continue
-        try:
-            for entry in root.iterdir():
-                name = entry.name
-                if (
-                    name in ("memory", "backups")
-                    or name.startswith(("memory.", "memory_", "lessons.", ".memory", ".lessons"))
-                    or name.endswith(".tmp")
-                    or (root_name in layout.homes and name in ("snapshots", "sessions"))
-                ):
-                    tree: Literal["root_tmp", "sessions", "snapshots", "memory"] = "memory"
-                    if name == "sessions":
-                        tree = "sessions"
-                    elif name == "snapshots":
-                        tree = "snapshots"
-                    elif name.endswith(".tmp"):
-                        tree = "root_tmp"
-                    pending.append((entry, tree))
-        except OSError as exc:
-            raise _private_memory_scan_failure("root_iterdir", "memory", exc) from exc
-    while pending:
-        path, tree = pending.pop()
-        remaining -= 1
-        if remaining < 0:
-            raise RuntimeError(
-                "memory_unavailable: private memory hardlink verification exceeded its file limit"
-            )
-        try:
-            info = path.stat()
-        except OSError as exc:
-            raise _private_memory_scan_failure("entry_stat", tree, exc) from exc
-        inode = (info.st_dev, info.st_ino)
-        if inode in visited:
-            continue
-        visited.add(inode)
-        if stat.S_ISREG(info.st_mode) and info.st_nlink > 1:
-            raise RuntimeError(
-                "memory_unavailable: protected memory has a hardlink alias; "
-                "remove the extra link before starting this private member"
-            )
-        if stat.S_ISDIR(info.st_mode):
-            try:
-                pending.extend((entry, tree) for entry in path.iterdir())
-            except OSError as exc:
-                raise _private_memory_scan_failure("entry_iterdir", tree, exc) from exc
-
-
-def _prepare_private_log_dir(layout: _PrivateMemoryLayout | None = None) -> str:
-    try:
-        for attempt in range(3):
-            try:
-                _validate_private_memory_hardlinks(layout)
-                break
-            except (FileNotFoundError, RuntimeError) as exc:
-                # Gateway atomic writes can retire a .tmp file between the
-                # directory snapshot and stat. Recheck the entire boundary;
-                # never skip an unverified path or accept an incomplete scan.
-                # Sanitized scan errors retain the filesystem cause.
-                disappeared = isinstance(exc, FileNotFoundError) or isinstance(
-                    exc.__cause__, FileNotFoundError
-                )
-                if not disappeared or attempt == 2:
-                    raise
-    except OSError as exc:
-        raise RuntimeError("memory_unavailable: cannot verify protected memory hardlinks") from exc
-    home = config_dir().resolve()
-    root = home / MEMORY_STORES_DIR_NAME / EXECUTION_LOGS_DIR_NAME
-    if root.resolve() != root:
-        raise RuntimeError("Private execution log directory is redirected")
-    platform_compat.make_owner_only_dir(root)
-    # Only a mountpoint on the host: no private text lives in this V1-visible
-    # directory. The real logs stay beneath the existing named-memory fence.
-    platform_compat.make_owner_only_dir(home / "agent-logs")
-    directory = tempfile.mkdtemp(prefix="member-", dir=root)
-    platform_compat.restrict_dir_to_owner(directory)
-    return directory
-
-
-def _private_memory_view_setup(
-    log_directory: str = "", layout: _PrivateMemoryLayout | None = None
-) -> str:
-    """Linux setup only; no host placeholders and no caller-controlled opt-out.
-
-    File bind masks track a dentry: a host atomic replacement bypasses them.
-    A namespace-owned directory view instead withholds the entire reserved
-    namespace, including future sidecars, superseded files and temporary copies.
-    Nonmemory directories pass through; loose administrative files are readonly
-    bindings. Late identity publication uses member-memory-bindings, never an
-    unbounded read-through of the data-home root.
-    """
-    layout = layout or _private_memory_layout()
-    roots = repr(layout.homes)
-    views = sorted(
-        set((*layout.homes, *layout.workspaces)), key=lambda root: (len(Path(root).parts), root)
-    )
-    return f"""        # Private member view: Global V1 remains exclusively gateway-owned.
-        _private_cwd = os.getcwd()
-        _private_roots = {roots}
-        _private_log_home = {str(config_dir().resolve())!r}
-        _private_log_directory = {log_directory!r}
-        _private_broker_leaves = {_PRIVATE_MCP_GATEWAY_LEAVES!r}
-        _private_content_leaves = ("snapshots", "sessions")
-        def _private_leaf(_name):
-            return (_name in ("memory", "backups", ".private-member-runtime")
-                    or _name.startswith(("memory.", "memory_", "lessons.", ".memory", ".lessons"))
-                    or _name.endswith(".tmp"))
-        _private_views = {views!r}
-        _private_required_workspaces = {layout.required_workspaces!r}
-        for _root in _private_views:
-            if not os.path.isdir(_root):
-                if _root in _private_required_workspaces:
-                    sys.exit("memory_unavailable: required workspace directory " + _root
-                             + " is unavailable; create or correct it, then start the private member again")
-                continue
-            _stage = tempfile.mkdtemp(dir=_tmpfs_src, prefix=_src_prefix)
-            _lower = os.path.join(_stage, "source")
-            _view = os.path.join(_stage, "view")
-            os.mkdir(_lower, 0o700); os.mkdir(_view, 0o700)
-            _mount_or_die(_root.encode(), _lower.encode(), _MS_BIND,
-                          "pinning private memory view source")
-            _files_to_seal = []
-            for _name in os.listdir(_lower):
-                # These are product-owned administrative leaves, not project
-                # code. Anonymous atomic-write staging also ends in .tmp.
-                if (_private_leaf(_name)
-                        or (_root in _private_roots
-                            and _name in _private_broker_leaves + _private_content_leaves)):
-                    continue
-                _source = os.path.join(_lower, _name)
-                if _name == "agent-logs":
-                    if _root != _private_log_home or not _private_log_directory:
-                        continue
-                    _source = _private_log_directory
-                _resolved = os.path.realpath(os.path.join(_root, _name))
-                _forbidden_alias = False
-                for _memory_root in _private_views:
-                    if _resolved == _memory_root and _memory_root in _private_roots:
-                        _forbidden_alias = True
-                        break
-                    _prefix = _memory_root.rstrip(os.sep) + os.sep
-                    if _resolved.startswith(_prefix):
-                        _relative = _resolved[len(_prefix):]
-                        _parts = _relative.split(os.sep)
-                        _first = _parts[0]
-                        if (_private_leaf(_first)
-                                or (_memory_root in _private_roots
-                                    and (_first in _private_broker_leaves + _private_content_leaves
-                                         or (_first == "agent-logs" and _name != "agent-logs")))):
-                            _forbidden_alias = True
-                            break
-                if _forbidden_alias:
-                    continue
-                _destination = os.path.join(_view, _name)
-                if os.path.islink(_source) and os.path.isdir(_source):
-                    # Keep path resolution through the final views. Binding a
-                    # directory symlink here would pin an unfiltered ancestor
-                    # before a nested configured workspace receives its view.
-                    os.symlink(os.readlink(_source), _destination)
-                elif os.path.isdir(_source):
-                    os.mkdir(_destination)
-                    _mount_or_die(_source.encode(), _destination.encode(), _MS_BIND,
-                                  "preserving nonmemory directory " + _name)
-                elif os.path.exists(_source) and (os.path.isfile(_source)
-                      or stat.S_ISSOCK(os.stat(_source).st_mode)
-                      or stat.S_ISFIFO(os.stat(_source).st_mode)):
-                    with open(_destination, "xb"):
-                        pass
-                    _mount_or_die(_source.encode(), _destination.encode(), _MS_BIND,
-                                  "preserving administrative file " + _name)
-                    _files_to_seal.append(_destination)
-                elif os.path.islink(_source):
-                    # A dangling nonmemory alias carries no global data.
-                    os.symlink(os.readlink(_source), _destination)
-            if _root == _private_log_home:
-                with open(os.path.join(_view, ".private-member-runtime"), "x") as _marker:
-                    _marker.write("1")
-                os.chmod(os.path.join(_view, ".private-member-runtime"), 0o400)
-            for _file in _files_to_seal:
-                _mount_or_die(_file.encode(), _file.encode(),
-                              _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(_file),
-                              "sealing administrative file")
-            # Recursive bind preserves the directory/file submounts above.
-            _mount_or_die(_view.encode(), _root.encode(), _MS_BIND | _MS_REC,
-                          "installing private memory directory view")
-            _mount_or_die(_root.encode(), _root.encode(),
-                          _MS_REMOUNT | _MS_BIND | _MS_RDONLY | _locked_mount_flags(_root),
-                          "sealing private memory directory view")
-            # Hide EVERY source/view alias; otherwise a shell could walk into
-            # the source mount, or mutate the writable staging-directory alias.
-            _empty = tempfile.mkdtemp(dir=_tmpfs_src, prefix=_src_prefix)
-            _mount_or_die(_empty.encode(), _stage.encode(), _MS_BIND,
-                          "hiding private memory view source aliases")
-        # chdir re-resolves the working directory through the installed view;
-        # an inherited cwd inode must not retain the hidden original parent.
-        os.chdir(_private_cwd)
-
-"""
-
-
-def _private_memory_seatbelt_rules(
-    log_directory: str = "", layout: _PrivateMemoryLayout | None = None
-) -> list[str]:
-    """Path predicates also cover files created after this profile is installed."""
-    layout = layout or _private_memory_layout()
-    rules = []
-    for root in dict.fromkeys((*layout.homes, *layout.workspaces)):
-        literal = root.replace('"', '\\"')
-        rules.append(f'(deny file-write* (literal "{literal}"))')
-        escaped = re.escape(root.rstrip("/"))
-        pattern = (
-            "^"
-            + escaped
-            + r"/(memory($|[._/])|lessons[.]|[.]memory|[.]lessons|backups($|/)|[^/]+[.]tmp$)"
-        )
-        predicate = f"(regex {json.dumps(pattern, ensure_ascii=False)})"
-        if log_directory:
-            # memory_stores matches this regex too. Every overlapping deny
-            # must exempt this execution's logs; a separate exception in
-            # the hidden-root rule cannot cancel this predicate's denial.
-            predicate = (
-                f"(require-all {predicate} " f"(require-not (subpath {json.dumps(log_directory)})))"
-            )
-        for operation in ("file-read*", "file-write*", "file-link"):
-            rules.append(f"(deny {operation} {predicate})")
-    for home in layout.homes:
-        for leaf in ("snapshots", "sessions"):
-            target = json.dumps(home + "/" + leaf)
-            for operation in ("file-read*", "file-write*", "file-link"):
-                rules.append(f"(deny {operation} (subpath {target}))")
-        for leaf in _PRIVATE_MCP_GATEWAY_LEAVES:
-            target = json.dumps(home + "/" + leaf)
-            predicate = f"(subpath {target})" if leaf == "mcp-gateway" else f"(literal {target})"
-            for operation in ("file-read*", "file-write*", "file-link"):
-                rules.append(f"(deny {operation} {predicate})")
-            rules.append(f"(deny network-outbound (remote unix-socket {predicate}))")
-        # Task text in a diagnostic belongs only to its execution. The path
-        # hint does not grant access; these OS predicates are the authority.
-        log_root = json.dumps(f"{home}/{MEMORY_STORES_DIR_NAME}/{EXECUTION_LOGS_DIR_NAME}")
-        exception = f" (require-not (subpath {json.dumps(log_directory)}))" if log_directory else ""
-        for operation in ("file-read*", "file-write*", "file-link"):
-            rules.append(f"(deny {operation} (require-all (subpath {log_root}){exception}))")
-        for leaf in ("gateway.log", "security_events.jsonl", "security_events.d"):
-            expression = json.dumps("^" + re.escape(home + "/" + leaf) + r"($|[./])")
-            rules.append(f"(deny file-write* (regex {expression}))")
-    return rules
-
-
 def _build_launcher_script(
     sandbox_level: str = "strict",
     *,
-    private_memory: bool = False,
-    private_log_dir: str = "",
-    private_layout: _PrivateMemoryLayout | None = None,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
@@ -5547,16 +5085,8 @@ def _build_launcher_script(
     ssh_dir = json.dumps(os.path.join(home, ".ssh"))
     ssh_known_hosts = json.dumps(os.path.join(home, ".ssh", "known_hosts"))
     sandbox_level_json = json.dumps(sandbox_level)
-    # Read at build time so the launcher and the gateway publisher share one bound.
-    from kiro_crew import member_process_records as _records
-
-    record_lock_wait_secs = float(_records.LOCK_WAIT_SECS)
-    record_lock_poll_secs = float(_records._LOCK_POLL_SECS)
     strict_host_key_opt = (
         " -o StrictHostKeyChecking=accept-new" if _ssh_supports_accept_new() else ""
-    )
-    private_setup = (
-        _private_memory_view_setup(private_log_dir, private_layout) if private_memory else ""
     )
 
     return f'''#!/usr/bin/env python3
@@ -5574,13 +5104,10 @@ import sys
 # from the filesystem.
 sys.path[:] = [p for p in sys.path if p not in ("", sys.path[0])]
 import ctypes
-import fcntl
 import json
 import os
-import signal
 import stat
 import tempfile
-import time
 
 # Hoisted from Steps 5/6 (used only AFTER unshare()+mount isolation): a
 # FIRST-TIME stdlib import reads module files off disk, and once the child has
@@ -5743,89 +5270,6 @@ SSH_DIR = {ssh_dir}
 SSH_KNOWN_HOSTS = {ssh_known_hosts}
 HIDE_SSH = {hide_ssh}
 SANDBOX_LEVEL = {sandbox_level_json}
-# Bounded contention wait shared with member_process_records (the gateway side).
-RECORD_LOCK_WAIT_SECS = {record_lock_wait_secs!r}
-RECORD_LOCK_POLL_SECS = {record_lock_poll_secs!r}
-
-def _namespace_record_directory():
-    """Pin the protected directory; never follow a replaced path component."""
-    home = {str(config_dir().resolve())!r}
-    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
-    fd = os.open("/", flags)
-    try:
-        for component in home.strip("/").split("/"):
-            next_fd = os.open(component, flags, dir_fd=fd)
-            os.close(fd)
-            fd = next_fd
-        for component in (None, "member-memory-bindings", "pids"):
-            if component is not None:
-                try:
-                    os.mkdir(component, mode=0o700, dir_fd=fd)
-                except FileExistsError:
-                    pass
-                next_fd = os.open(component, flags, dir_fd=fd)
-                os.close(fd)
-                fd = next_fd
-            info = os.fstat(fd)
-            if info.st_uid != REAL_UID or info.st_mode & 0o022:
-                raise PermissionError("unsafe namespace record directory")
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
-
-def _namespace_record_lock(directory, wait=0.0):
-    """Same stable lock/flags as member_process_records.record_lock (Linux).
-
-    ``wait`` bounds a retry on contention only (BlockingIOError: the gateway
-    sweep or another publisher holds the lock). Unsafe/replaced lock objects
-    raise at once. The lock call itself never blocks, so the bound holds.
-    """
-    fd = os.open(".reclaim.lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW
-                 | os.O_NONBLOCK | os.O_CLOEXEC, 0o600, dir_fd=directory)
-    try:
-        info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != REAL_UID
-                or info.st_nlink != 1 or info.st_mode & 0o022):
-            raise PermissionError("unsafe process record lock")
-        deadline = time.monotonic() + wait
-        while True:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                break
-            except BlockingIOError:
-                if time.monotonic() >= deadline:
-                    raise
-                time.sleep(RECORD_LOCK_POLL_SECS)
-        current = os.stat(".reclaim.lock", dir_fd=directory, follow_symlinks=False)
-        if (not stat.S_ISREG(current.st_mode) or current.st_nlink != 1
-                or (current.st_dev, current.st_ino) != (info.st_dev, info.st_ino)):
-            raise PermissionError("process record lock changed")
-        return fd
-    except BaseException:
-        os.close(fd)
-        raise
-
-def _retire_namespace_record(directory, name, owned_fd):
-    """Retire only our inode, under the common publication/reclamation lock."""
-    if name is None or owned_fd is None:
-        return
-    lock = None
-    try:
-        lock = _namespace_record_lock(directory)
-        expected = os.fstat(owned_fd)
-        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
-        if (stat.S_ISREG(current.st_mode) and current.st_uid == REAL_UID
-                and current.st_nlink == 1
-                and (current.st_dev, current.st_ino) == (expected.st_dev, expected.st_ino)):
-            os.unlink(name, dir_fd=directory)
-    except FileNotFoundError:
-        pass
-    except OSError:
-        sys.stderr.write("sandbox: WARNING -- namespace record retirement skipped\\n")
-    finally:
-        if lock is not None:
-            os.close(lock)
 
 def main():
     argv = sys.argv[1:]
@@ -5850,107 +5294,19 @@ def main():
         # ── Parent: write identity UID/GID map ──
         os.close(c2p_w)
         os.close(p2c_r)
-        _directory = _owned_fd = _temporary = _published = None
-        _shutdown_signal = None
-        _waiting = False
-
-        def _request_shutdown(signum, frame):
-            nonlocal _shutdown_signal, _waiting
-            _shutdown_signal = signum
-            if _waiting:
-                _waiting = False
-                raise SystemExit(128 + signum)
-
-        def _parent_wait(operation, *args):
-            # Only interrupt pipe/wait calls, never inode acquisition,
-            # publication or retirement. The inner finally disarms raising
-            # before the outer finally, including on repeated signals.
-            nonlocal _waiting
-            try:
-                _waiting = True
-                if _shutdown_signal is not None:
-                    raise SystemExit(128 + _shutdown_signal)
-                return operation(*args)
-            finally:
-                _waiting = False
-
-        signal.signal(signal.SIGTERM, _request_shutdown)
-        signal.signal(signal.SIGINT, _request_shutdown)
-        try:
-            _parent_wait(os.read, c2p_r, 1)  # wait for child to unshare(NEWUSER)
-            with open(f"/proc/{{pid}}/setgroups", "w") as f:
-                f.write("deny")
-            with open(f"/proc/{{pid}}/uid_map", "w") as f:
-                f.write(f"{{REAL_UID}} {{REAL_UID}} 1\\n")
-            with open(f"/proc/{{pid}}/gid_map", "w") as f:
-                f.write(f"{{REAL_GID}} {{REAL_GID}} 1\\n")
-            _parent_wait(os.write, p2c_w, b"x")  # signal child to proceed
-            # Publish from the trusted parent before releasing the child.
-            if _parent_wait(os.read, c2p_r, 1) != b"n":
-                sys.exit("sandbox: FATAL - child did not publish its namespace readiness")
-            # Optional authority publication: an unsafe/unavailable root skips
-            # at once; a lock the gateway sweep holds is waited for, bounded.
-            # Neither ever runs an unlocked writer.
-            _lock = None
-            try:
-                _directory = _namespace_record_directory()
-                _lock = _namespace_record_lock(_directory, wait=RECORD_LOCK_WAIT_SECS)
-            except BlockingIOError:
-                sys.stderr.write(
-                    "sandbox: WARNING -- skipping namespace record publication; "
-                    f"process record lock held for more than {{RECORD_LOCK_WAIT_SECS:g}}s "
-                    "by another publisher or the reclaim sweep (member memory denied "
-                    "for this launch).\\n"
-                )
-            except OSError:
-                sys.stderr.write(
-                    "sandbox: WARNING -- skipping namespace record publication; "
-                    "protected directory/lock unavailable (member memory denied). "
-                    "Check ownership and chmod 0700 on the protected directories.\\n"
-                )
-            if _lock is not None:
-                try:
-                    _namespaces = []
-                    for _kind in ("user", "mnt"):
-                        _info = os.stat(f"/proc/{{pid}}/ns/{{_kind}}")
-                        _namespaces.append([_info.st_dev, _info.st_ino])
-                    with open("/proc/self/stat") as _handle:
-                        _stat = _handle.read()
-                    _start = _stat[_stat.rfind(")") + 2:].split()[19]
-                    _target = f"{{os.getpid()}}.namespace.json"
-                    try:
-                        _existing = os.stat(_target, dir_fd=_directory, follow_symlinks=False)
-                    except FileNotFoundError:
-                        pass
-                    else:
-                        if (not stat.S_ISREG(_existing.st_mode) or _existing.st_uid != REAL_UID
-                                or _existing.st_nlink != 1):
-                            raise PermissionError("unsafe namespace record target")
-                    # mkstemp has no dir_fd parameter. procfs reaches the pinned
-                    # directory, not a path that can redirect after validation.
-                    _owned_fd, _path = tempfile.mkstemp(
-                        dir=f"/proc/self/fd/{{_directory}}", suffix=".tmp")
-                    _temporary = os.path.basename(_path)
-                    with os.fdopen(os.dup(_owned_fd), "w") as _handle:
-                        json.dump({{"process_start": _start, "namespaces": _namespaces,
-                                   "private_memory": {private_memory!r}}}, _handle)
-                    os.replace(
-                        _temporary, _target, src_dir_fd=_directory, dst_dir_fd=_directory)
-                    _published = _target
-                finally:
-                    os.close(_lock)
-            _parent_wait(os.write, p2c_w, b"n")
-            _, status = _parent_wait(os.waitpid, pid, 0)
-            code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
-            sys.exit(code)
-        finally:
-            # Keep the inode open until retirement so inode reuse cannot
-            # mistake a replacement for ours. SIGKILL cannot run this block.
-            _retire_namespace_record(_directory, _published, _owned_fd)
-            _retire_namespace_record(_directory, _temporary, _owned_fd)
-            for _close_fd in (_owned_fd, _directory, c2p_r, p2c_w):
-                if _close_fd is not None:
-                    os.close(_close_fd)
+        os.read(c2p_r, 1)  # wait for child to unshare(NEWUSER)
+        with open(f"/proc/{{pid}}/setgroups", "w") as f:
+            f.write("deny")
+        with open(f"/proc/{{pid}}/uid_map", "w") as f:
+            f.write(f"{{REAL_UID}} {{REAL_UID}} 1\\n")
+        with open(f"/proc/{{pid}}/gid_map", "w") as f:
+            f.write(f"{{REAL_GID}} {{REAL_GID}} 1\\n")
+        os.write(p2c_w, b"x")  # signal child to proceed
+        os.close(c2p_r)
+        os.close(p2c_w)
+        _, status = os.waitpid(pid, 0)
+        code = os.WEXITSTATUS(status) if os.WIFEXITED(status) else 1
+        sys.exit(code)
     else:
         # ── Child: unshare, wait for maps, mount, exec ──
         os.close(c2p_r)
@@ -5960,16 +5316,13 @@ def main():
         if _libc.unshare(_CLONE_NEWUSER) != 0:
             sys.exit(f"sandbox: unshare(NEWUSER) failed: errno {{ctypes.get_errno()}}")
         os.write(c2p_w, b"x")  # tell parent
+        os.close(c2p_w)
         os.read(p2c_r, 1)  # wait for maps
+        os.close(p2c_r)
 
         # Step 2: enter mount namespace (now we have a mapped UID)
         if _libc.unshare(_CLONE_NEWNS) != 0:
             sys.exit(f"sandbox: unshare(NEWNS) failed: errno {{ctypes.get_errno()}}")
-        os.write(c2p_w, b"n")
-        os.close(c2p_w)
-        if os.read(p2c_r, 1) != b"n":
-            sys.exit("sandbox: FATAL - parent did not publish namespace identity")
-        os.close(p2c_r)
 
         # Private mount propagation
         _mount_or_die(None, b"/", _MS_REC | _MS_PRIVATE,
@@ -6060,7 +5413,7 @@ def main():
                         file=sys.stderr,
                     )
 
-{private_setup}        # Private windows: a directory INSIDE a hidden tree that stays
+        # Private windows: a directory INSIDE a hidden tree that stays
         # visible read-write for THIS spawn only (the process's own scratch
         # under the masked scratch root). Staged before its parent is masked,
         # because the mask shadows the real path; the window is then bound
@@ -6629,7 +5982,6 @@ def namespace_argv(
     argv: list[str],
     sandbox_level: str = "strict",
     *,
-    private_memory: bool = False,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
@@ -6647,12 +5999,6 @@ def namespace_argv(
     resolved_argv = list(argv)
     if resolved_argv:
         resolved_argv[0] = _resolve_agent_executable(resolved_argv[0])
-    if private_memory:
-        # Refuse a broker endpoint outside the hidden namespaces before any
-        # private path is composed; every private spawn passes through here.
-        _validate_private_mcp_gateway_socket()
-    private_layout = _private_memory_layout() if private_memory else None
-    private_log_dir = _prepare_private_log_dir(private_layout) if private_memory else ""
 
     # Give the seal something to mount ON, or refuse the spawn. ``READONLY_DIRS`` is
     # guarded on
@@ -6681,18 +6027,8 @@ def namespace_argv(
     # the macOS path calls it too.
     _sweep_legacy_md_notebook_temps()
 
-    private_options: dict[str, Any] = (
-        {
-            "private_memory": True,
-            "private_log_dir": private_log_dir,
-            "private_layout": private_layout,
-        }
-        if private_memory
-        else {}
-    )
     script = _build_launcher_script(
         sandbox_level,
-        **private_options,
         strip_python_env=strip_python_env,
         forward_ssh_auth_sock=forward_ssh_auth_sock,
         extra_hidden_dirs=extra_hidden_dirs,
@@ -6826,9 +6162,6 @@ _SEATBELT_PROFILE = """\
 def _build_seatbelt_profile(
     sandbox_level: str = "strict",
     *,
-    private_memory: bool = False,
-    private_log_dir: str = "",
-    private_layout: _PrivateMemoryLayout | None = None,
     extra_hidden_dirs: tuple[str, ...] = (),
     extra_visible_dirs: tuple[str, ...] = (),
     extra_private_dirs: tuple[str, ...] = (),
@@ -6892,19 +6225,8 @@ def _build_seatbelt_profile(
             # A private window (the spawn's own scratch) inside a masked tree:
             # deny the tree except the window, in every direction, so siblings
             # stay hidden while the process keeps read-write on its own dir.
-            # Same shape as the private-memory log leaf below.
             exceptions = " ".join(f"(require-not (subpath {json.dumps(w)}))" for w in windows)
             predicate = f"(require-all (subpath {json.dumps(target)}) {exceptions})"
-            for operation in ("file-read*", "file-write*", "file-link"):
-                rules.append(f"(deny {operation} {predicate})")
-            continue
-        if private_memory and private_log_dir.startswith(target.rstrip("/") + "/"):
-            # The new host log backing directory is under the existing hidden
-            # memory root. Expose only this execution's leaf, never that root.
-            predicate = (
-                f"(require-all (subpath {json.dumps(target)}) "
-                f"(require-not (subpath {json.dumps(private_log_dir)})))"
-            )
             for operation in ("file-read*", "file-write*", "file-link"):
                 rules.append(f"(deny {operation} {predicate})")
             continue
@@ -7064,9 +6386,6 @@ def _build_seatbelt_profile(
         escaped = spelling.replace('"', '\\"')
         rules.append(f'(allow file-write* (subpath "{escaped}"))')
 
-    if private_memory:
-        # Last so caller-visible carve-outs cannot reopen Global V1 memory.
-        rules.extend(_private_memory_seatbelt_rules(private_log_dir, private_layout))
     return _SEATBELT_PROFILE.format(deny_rules="\n".join(rules))
 
 
@@ -7393,7 +6712,6 @@ def sandbox_exec_argv(
     argv: list[str],
     sandbox_level: str = "strict",
     *,
-    private_memory: bool = False,
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
@@ -7421,24 +6739,8 @@ def sandbox_exec_argv(
     # that does not exist yet — but an orphan already on disk needs sweeping here too.
     _sweep_legacy_md_notebook_temps()
 
-    if private_memory:
-        # Refuse a broker endpoint outside the hidden namespaces before any
-        # private path is composed; every private spawn passes through here.
-        _validate_private_mcp_gateway_socket()
-    private_layout = _private_memory_layout() if private_memory else None
-    private_log_dir = _prepare_private_log_dir(private_layout) if private_memory else ""
-    private_options: dict[str, Any] = (
-        {
-            "private_memory": True,
-            "private_log_dir": private_log_dir,
-            "private_layout": private_layout,
-        }
-        if private_memory
-        else {}
-    )
     profile = _build_seatbelt_profile(
         sandbox_level,
-        **private_options,
         extra_hidden_dirs=extra_hidden_dirs,
         extra_visible_dirs=extra_visible_dirs,
         extra_private_dirs=extra_private_dirs,
@@ -7466,9 +6768,6 @@ def sandbox_exec_argv(
     # position so the scrub cannot drop it — an in-sandbox wrap_argv
     # passthrough compares it against the requested tier to detect downgrades.
     level_assign = f"{_IN_SANDBOX_LEVEL_VAR}={sandbox_level}"
-    private_log_hint = (
-        [f"_KIROCREW_PRIVATE_LOG_DIRECTORY={private_log_dir}"] if private_memory else []
-    )
     # SECURITY: BOTH wrappers this function prepends are pinned here, at the layer
     # that prepends them, so no spawn site has to remember to re-pin (the caller's
     # ``env`` may carry a config-declared PATH, and CPython resolves a slash-less
@@ -7491,7 +6790,6 @@ def sandbox_exec_argv(
             *unset_args,
             marker,
             level_assign,
-            *private_log_hint,
             sandbox_exec,
             "-f",
             path,
@@ -9865,9 +9163,6 @@ def wrap_argv(
     argv: list[str],
     mode: str = "auto",
     *,
-    private_memory: bool = False,
-    private_mcp_gateway_socket: str = "",
-    private_mcp_gateway_socket_overrides: tuple[str, ...] = (),
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
@@ -9885,13 +9180,6 @@ def wrap_argv(
         mode: ``"auto"``/``"standard"`` (expose .aws/.ssh/.kube),
               ``"cc"`` (hide .aws but expose .aws/config for Bedrock auth),
               ``"strict"`` (hide everything), ``"off"`` (no sandbox).
-        private_memory: Trusted gateway-resolved owned V2 execution. Withhold
-            Global V1 filesystem memory as well as named stores, and refuse
-            any mode/backend that cannot establish this additional boundary.
-        private_mcp_gateway_socket: Original trusted shared-broker endpoint,
-            retained only to validate that the private filesystem view hides it.
-        private_mcp_gateway_socket_overrides: Explicit child socket paths that
-            must remain inside the same hidden broker namespaces.
         extra_hidden_dirs: Additional absolute directory trees to deny.
         extra_visible_dirs: Trusted paths that must remain visible when an
             otherwise-hidden parent contains them (the whole parent's mask is lifted).
@@ -9962,11 +9250,6 @@ def wrap_argv(
     # the carve-out condition can never disagree about the same host.
     governance_floor = _governance_sandbox_floor()
     mode = _clamp_sandbox_mode_to_floor(mode, governance_floor)
-
-    if private_memory and (mode == "off" or _inside_kirocrew_sandbox()):
-        raise RuntimeError(
-            "Private member memory requires a fresh outer OS sandbox; Global V1 was not exposed"
-        )
 
     if mode == "off":
         # Fix #2: verify kiro-cli delegation before honoring "off". The
@@ -10187,8 +9470,6 @@ def wrap_argv(
     delegate_to_kiro = (
         sys.platform == "darwin" and kiro_spawn and kiro_internal_sandbox_enabled()
     ) or (sys.platform == "win32" and is_kiro_cli is True)
-    if private_memory:
-        delegate_to_kiro = False
     if delegate_to_kiro:
         # ``extra_private_dirs`` is deliberately NOT in this test: a private
         # window only RELAXES a mask owned by Kiro Crew (the scratch root) for the
@@ -10203,7 +9484,6 @@ def wrap_argv(
                 return sandbox_exec_argv(
                     argv,
                     sandbox_level,
-                    **({"private_memory": True} if private_memory else {}),
                     strip_python_env=strip_python_env,
                     forward_ssh_auth_sock=forward_ssh_auth_sock,
                     extra_hidden_dirs=extra_hidden_dirs,
@@ -10233,14 +9513,6 @@ def wrap_argv(
 
     backend = detect_backend(config_mode=mode)
 
-    if private_memory and backend not in {"namespace", "sandbox-exec"}:
-        raise RuntimeError("Private member memory cannot run without its OS filesystem boundary")
-
-    if private_memory:
-        _validate_private_mcp_gateway_socket(
-            private_mcp_gateway_socket, private_mcp_gateway_socket_overrides
-        )
-    private_options: dict[str, Any] = {"private_memory": True} if private_memory else {}
     if backend == "namespace":
         if (
             extra_hidden_dirs
@@ -10252,7 +9524,6 @@ def wrap_argv(
             wrapped = namespace_argv(
                 argv,
                 sandbox_level,
-                **private_options,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 extra_hidden_dirs=extra_hidden_dirs,
@@ -10265,7 +9536,6 @@ def wrap_argv(
             wrapped = namespace_argv(
                 argv,
                 sandbox_level,
-                **private_options,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
             )
@@ -10285,7 +9555,6 @@ def wrap_argv(
             return sandbox_exec_argv(
                 argv,
                 sandbox_level,
-                **private_options,
                 strip_python_env=strip_python_env,
                 forward_ssh_auth_sock=forward_ssh_auth_sock,
                 extra_hidden_dirs=extra_hidden_dirs,
@@ -10297,7 +9566,6 @@ def wrap_argv(
         return sandbox_exec_argv(
             argv,
             sandbox_level,
-            **private_options,
             strip_python_env=strip_python_env,
             forward_ssh_auth_sock=forward_ssh_auth_sock,
         )
@@ -10592,9 +9860,6 @@ async def wrap_argv_async(
     argv: list[str],
     mode: str = "auto",
     *,
-    private_memory: bool = False,
-    private_mcp_gateway_socket: str = "",
-    private_mcp_gateway_socket_overrides: tuple[str, ...] = (),
     strip_python_env: bool = False,
     forward_ssh_auth_sock: bool = False,
     extra_hidden_dirs: tuple[str, ...] = (),
@@ -10617,12 +9882,6 @@ async def wrap_argv_async(
     :func:`wrap_argv`, and the default is this module's implementation.
     """
     options: dict[str, Any] = {"mode": mode}
-    if private_memory:
-        options["private_memory"] = True
-        if private_mcp_gateway_socket:
-            options["private_mcp_gateway_socket"] = private_mcp_gateway_socket
-        if private_mcp_gateway_socket_overrides:
-            options["private_mcp_gateway_socket_overrides"] = private_mcp_gateway_socket_overrides
     if strip_python_env:
         options["strip_python_env"] = True
     if forward_ssh_auth_sock:

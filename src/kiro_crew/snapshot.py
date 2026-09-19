@@ -4546,7 +4546,7 @@ def _clear_store_directories(root: Path) -> None:
     """Remove everything under ``memory_stores/`` that a bundle can carry, keep the rest.
 
     What stays is exactly `is_host_local_store_state`'s answer for a direct child: the
-    member signing key, execution logs, retirement records and member backup directory --
+    historical host credential and runtime-log filenames, and the member backup directory --
     the last of which holds the lifetime locks the replace is holding. Everything else is a store
     directory (or something an operator left there) that the archive's copy replaces.
     """

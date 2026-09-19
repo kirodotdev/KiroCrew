@@ -1876,13 +1876,11 @@ async def _cleanup_memory_consolidation_session(
         logger.debug("memory consolidation session retirement failed", exc_info=True)
         return
     try:
-        from kiro_crew.member_memory_auth import retire_memory_consolidation_binding
 
         # remove() waits for retirement but preserves resumable mappings. This
         # generated UUID has no user continuation, so discard that mapping too.
         await sessions.destroy(key)
         await asyncio.to_thread(log.delete_memory_consolidation_session, key, memory_store)
-        await asyncio.to_thread(retire_memory_consolidation_binding, key, memory_store)
     except Exception:
         logger.debug("memory consolidation artifact cleanup failed", exc_info=True)
 
@@ -1937,8 +1935,8 @@ async def background_turn(
     if memory_store:
         from uuid import uuid4
 
+        from kiro_crew.execution_context import bind_session_execution, execution_for_store
         from kiro_crew.history import ConversationLog
-        from kiro_crew.member_memory_auth import bind_private_session_store
         from kiro_crew.memory_stores import memory_store_version, require_memory_store
 
         await asyncio.to_thread(require_memory_store, memory_store)
@@ -1947,8 +1945,8 @@ async def background_turn(
         key = f"memory-consolidation:{memory_store}:{uuid4().hex}"
         log = ConversationLog()
         try:
-            await asyncio.to_thread(log.update_metadata, key, {"memory_store": memory_store})
-            await asyncio.to_thread(bind_private_session_store, key, memory_store)
+            execution = execution_for_store(memory_store, template_id=agent or "kirocrew")
+            await asyncio.to_thread(bind_session_execution, key, execution)
         except BaseException:
             await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
             raise

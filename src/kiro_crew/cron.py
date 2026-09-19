@@ -719,6 +719,7 @@ class CronJob:
     # These fields survive reload; omitted legacy records remain on V1.
     member_id: str = ""
     memory_store: str = ""
+    execution_context: dict[str, Any] | None = None
     approval_mode: str = ""  # "" (default/hook-based) | "auto" (auto-approve all tools)
     acked_items: list[str] = field(default_factory=list)
     created_by: str = ""  # Slack user ID of the creator (for DM fallback)
@@ -1663,113 +1664,58 @@ def _is_representable_number(value: Any) -> bool:
 
 
 def resolve_cron_memory(job: CronJob, *, validate_memory_files: bool = True) -> tuple[str, str]:
-    """Resolve the durable member identity without changing legacy V1 jobs.
+    """Dispatch the job's captured execution, never its current display alias."""
+    from kiro_crew.execution_context import execution_from_record, validate_execution
+    from kiro_crew.memory_stores import memory_store_version, require_memory_store
 
-    The provider template never identifies a member. A newly-created job may
-    inherit its creator's recorded store; after first persistence its own
-    binding is authoritative even when the originating chat has been closed.
-    """
-    from kiro_crew.config.loader import KiroCrewConfig, resolve_agent_bindings
-    from kiro_crew.memory_stores import require_memory_store
-
+    if job.execution_context is not None:
+        execution = execution_from_record({"execution_context": job.execution_context})
+        if validate_memory_files:
+            validate_execution(execution)
+        return execution.store.legacy_name, execution.template_id
     if not isinstance(job.member_id, str) or not isinstance(job.memory_store, str):
-        raise ValueError("memory_unavailable: scheduled memory identity is malformed")
-    if job.member_id:
-        cfg = KiroCrewConfig.load()
-        if job.member_id not in cfg.agents or job.member_id == "default":
-            raise ValueError(f"memory_unavailable: unknown Crew Member '{job.member_id}'")
-        bindings = resolve_agent_bindings(
-            cfg, job.member_id, validate_memory_files=validate_memory_files
-        )
-        if job.memory_store and job.memory_store != bindings.memory_store_name:
-            raise ValueError("memory_unavailable: scheduled member's memory binding changed")
-        store, agent = bindings.memory_store_name, job.agent_id or bindings.kiro_agent
-    elif job.memory_store:
-        store = require_memory_store(job.memory_store, require_directory=validate_memory_files)
-        agent = job.agent_id
-    else:
-        store, agent = "", job.agent_id
-    # Deterministic runners lack the member provider's protected runtime identity.
-    # Reject before persistence and again before dispatch, including imported jobs.
-    if (job.command or job.script) and store:
-        record = KiroCrewConfig.load().memory_stores.get(store)
-        if record and record.memory_version == 2:
-            raise ValueError(
-                "memory_unavailable: private Crew Member schedules require an agent task; "
-                "command and script jobs cannot use member memory"
-            )
-    return store, agent
+        raise ValueError("memory_unavailable: malformed schedule identity")
+    # A V2 schedule must carry the captured execution record: its member ID is
+    # an immutable database identity and cannot be reconstructed from a name.
+    # Older V1 schedules may still carry the historical member selector beside
+    # their explicit legacy store; keep dispatching that store instead of
+    # silently auto-pausing it after an upgrade.
+    if memory_store_version(job.memory_store) == 2 or (job.member_id and not job.memory_store):
+        raise ValueError("memory_unavailable: schedule has no canonical execution context")
+    store = (
+        require_memory_store(job.memory_store, require_directory=validate_memory_files)
+        if job.memory_store
+        else ""
+    )
+    return store, job.agent_id
 
 
 def bind_cron_memory(job: CronJob) -> None:
-    """Pin a new schedule to its creator or explicitly selected member."""
-    creator_store = ""
-    creator_cfg = None
-    if job.session_key:
-        from kiro_crew.config.loader import KiroCrewConfig
-        from kiro_crew.history import ConversationLog
-        from kiro_crew.member_memory_auth import read_private_session_store
-        from kiro_crew.memory_stores import require_memory_store
+    """Capture existing member or creator once inside the new job record."""
+    from dataclasses import replace
 
-        creator_cfg = KiroCrewConfig.load()
-        if job.session_key.startswith("subagent:"):
-            from kiro_crew.subagent_persistence import read_run_memory_store
+    from kiro_crew.execution_context import (
+        derive_execution,
+        execution_for_store,
+        read_session_execution,
+    )
 
-            creator_store = read_run_memory_store(
-                job.session_key.removeprefix("subagent:"), validate_memory_files=False
-            )
-        else:
-            protected = read_private_session_store(job.session_key)
-            if protected is not None:
-                # Protected assignment remains readable inside a sandbox whose
-                # private DB and transcripts are hidden. Dispatch checks files.
-                creator_store = require_memory_store(
-                    protected, config=creator_cfg, require_directory=False
-                )
-            else:
-                meta, readable = ConversationLog().get_metadata_status(job.session_key)
-                if not readable:
-                    raise ValueError(
-                        "memory_unavailable: originating session metadata is unreadable"
-                    )
-                store = meta.get("memory_store", "")
-                if not isinstance(store, str):
-                    raise ValueError("memory_unavailable: invalid originating memory binding")
-                creator_store = (
-                    require_memory_store(store, config=creator_cfg, require_directory=False)
-                    if store not in ("", "default")
-                    else ""
-                )
-                # Scheduling may run inside a member sandbox where the private
-                # directory is intentionally hidden. Classify the declaration
-                # from the same validated config rather than reopening its
-                # ownership manifest; dispatch validates the files before use.
-                record = creator_cfg.memory_stores.get(creator_store)
-                if creator_store and record and record.memory_version == 2:
-                    raise ValueError(
-                        "memory_unavailable: private schedules require a trusted member assignment"
-                    )
-        if not job.member_id:
-            if job.memory_store and job.memory_store != creator_store:
-                raise ValueError(
-                    "memory_unavailable: a schedule cannot change its creator's memory"
-                )
-            job.memory_store = creator_store
-    if job.member_id or job.memory_store:
-        job.memory_store, _ = resolve_cron_memory(job, validate_memory_files=False)
-        if creator_store:
-            assert creator_cfg is not None
-            record = creator_cfg.memory_stores.get(creator_store)
-            if record and record.memory_version == 2 and job.memory_store != creator_store:
-                raise ValueError(
-                    "memory_unavailable: a Crew Member can schedule only its own private memory"
-                )
-        if not job.member_id and job.memory_store:
-            from kiro_crew.config.loader import KiroCrewConfig
-
-            cfg = creator_cfg or KiroCrewConfig.load()
-            store_cfg = cfg.memory_stores[job.memory_store]
-            job.member_id = store_cfg.owner_member
+    if job.execution_context is not None:
+        resolve_cron_memory(job, validate_memory_files=False)
+        return
+    creator = read_session_execution(job.session_key) if job.session_key else None
+    execution = creator or execution_for_store(
+        job.memory_store, template_id=job.agent_id or "kirocrew"
+    )
+    if job.member_id:
+        execution = derive_execution(execution, target_member=job.member_id)
+    if execution.memory_mode != "persistent":
+        raise ValueError("Restricted sessions cannot create persistent schedules")
+    if job.agent_id:
+        execution = replace(execution, template_id=job.agent_id)
+    job.execution_context = execution.to_record()
+    job.member_id = execution.member_id or ""
+    job.memory_store = execution.store.legacy_name
 
 
 def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> CronJob:
@@ -1961,6 +1907,7 @@ def _job_from_record(j: dict[str, Any], *, warn_on_coercion: bool = True) -> Cro
         # strip a member binding and run the job unbound.
         member_id=_selector_str("member_id"),
         memory_store=_selector_str("memory_store"),
+        execution_context=j.get("execution_context"),
         approval_mode=_guard_str("approval_mode"),
         acked_items=j.get("acked_items", []),
         created_by=_guard_str("created_by"),
@@ -6102,6 +6049,7 @@ class CronService:
                     "agent_id": j.agent_id,
                     "member_id": j.member_id,
                     "memory_store": j.memory_store,
+                    "execution_context": j.execution_context,
                     "approval_mode": j.approval_mode,
                     "acked_items": j.acked_items,
                     "created_by": j.created_by,

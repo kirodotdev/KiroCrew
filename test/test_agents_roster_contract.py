@@ -63,8 +63,10 @@ ROSTER_ROW_KEYS = frozenset(
 # roster does not render, ``telegram_account`` is deprecated and inert, and
 # ``starred`` is a Crew Members roster preference that only ``GET /api/members``
 # renders (the crew manager has no star affordance).
+# ``member_id`` is execution attribution, not a template-picker field.
 WITHHELD_RECORD_FIELDS = frozenset(
     {
+        "member_id",
         "watchdog_tool_stall_suspect_secs",
         "watchdog_tool_stall_hard_cap_secs",
         "telegram_account",
@@ -103,6 +105,7 @@ def _seed_config_with_every_field_set() -> dict:
                 "source": "kirocrew",
                 "session_color": "#abcdef",
                 # Withheld — must NOT appear in the response.
+                "member_id": "member-roster-probe",
                 "watchdog_tool_stall_suspect_secs": 111.0,
                 "watchdog_tool_stall_hard_cap_secs": 222.0,
                 "telegram_account": "probe-telegram-binding",

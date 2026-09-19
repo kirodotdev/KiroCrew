@@ -9,7 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from member_memory_helpers import env as _member_env
-from member_memory_helpers import make_request, patch_private_memory_supported
+from member_memory_helpers import make_request
 from test_subagent_continuable import _manager, _mock_sessions
 
 from kiro_crew import context, member_memory_auth, platform_compat, subagent_persistence
@@ -58,12 +58,18 @@ async def test_app_continuations_preserve_scope_through_two_runs(monkeypatch, re
             "kiro_crew.messaging.identity.publish_turn_identity", wraps=publish_turn_identity
         ) as publisher,
     ):
-        original = manager.spawn("initial task", agent="example-app--worker", app="example-app")
+        original = manager.spawn(
+            "initial task", agent="example-app--worker", app="example-app", keep=True
+        )
         assert original is not None and not original.error
         await asyncio.wait_for(manager._tasks[original.id], timeout=10)
         assert not original.error
         assert original.memory_mode == "incognito"
         publisher.assert_awaited_once_with(sessions, f"subagent:{original.id}")
+        # Restricted runs keep only the retained conversation owner's routing
+        # record.  Each follow-up has its own transient run id, whose body and
+        # state are intentionally discarded after terminal writers settle.
+        owner_id = original.id
         previous = original
         for requested_mode in ("temporary", "persistent"):
             if restore == "restart":
@@ -76,7 +82,7 @@ async def test_app_continuations_preserve_scope_through_two_runs(monkeypatch, re
             provider = sessions.get_or_create.return_value[0]
             sessions.get_or_create.return_value = (provider, True, True)
             claims = []
-            key = f"subagent:{previous.id}"
+            key = f"subagent:{owner_id}"
 
             async def stream(*args, **kwargs):
                 claims.append(await _grant(key, {}, subagents=manager._agents))
@@ -86,22 +92,21 @@ async def test_app_continuations_preserve_scope_through_two_runs(monkeypatch, re
             provider.stream.side_effect = stream
             governance.reset_mock()
             publisher.reset_mock()
-            followup = manager.continue_conversation(previous.id, "continue the task")
+            followup = manager.continue_conversation(owner_id, "continue the task")
             assert followup is not None and not followup.error
             await asyncio.wait_for(manager._tasks[followup.id], timeout=10)
             assert not followup.error
             publisher.assert_awaited_once_with(sessions, followup.conversation_key)
             assert followup.app == "example-app"
             assert followup.memory_mode == "temporary" and followup._memory_mode_ready
-            for run_id in (previous.id, followup.id):
-                assert (
-                    await asyncio.to_thread(subagent_persistence.read_run_memory_mode, run_id)
-                    == "temporary"
-                )
-                assert (
-                    await asyncio.to_thread(subagent_persistence.read_run_app, run_id)
-                    == "example-app"
-                )
+            assert (
+                await asyncio.to_thread(subagent_persistence.read_run_memory_mode, owner_id)
+                == "temporary"
+            )
+            assert (
+                await asyncio.to_thread(subagent_persistence.read_run_app, owner_id)
+                == "example-app"
+            )
             assert manager._ctx_builder.build_message.call_args.kwargs["blocks_reads"] is True
             assert claims and all(claim["app"] == "example-app" for claim in claims)
             assert governance.called
@@ -116,9 +121,9 @@ async def test_unknown_app_ownership_cannot_resume_as_the_user(monkeypatch, agen
 
     monkeypatch.setattr("kiro_crew.subagent._validate_agent", lambda name, cwd: (name, "", ""))
     await asyncio.to_thread(subagent_persistence.create_agent_folder, "legacy-app")
-    path = subagent_persistence._run_memory_identity_path("legacy-app")
+    path = subagent_persistence._agent_dir("legacy-app") / "state.json"
     payload = json.loads(path.read_text(encoding="utf-8"))
-    del payload["app"]
+    del payload["execution_context"]["app"]
     path.write_text(json.dumps(payload), encoding="utf-8")
     # An agent-writable claim and an explicit template cannot reconstruct the
     # owner that older gateways never persisted.
@@ -128,7 +133,7 @@ async def test_unknown_app_ownership_cannot_resume_as_the_user(monkeypatch, agen
     with patch("kiro_crew.subagent.sel"):
         followup = manager.continue_conversation("legacy-app", "follow-up", agent=agent)
     assert followup is not None and followup.done
-    assert followup.error.startswith("resume_failed: protected app ownership unavailable")
+    assert "malformed execution context" in followup.error
     sessions.get_or_create.assert_not_called()
     assert caller_record_is_missing("subagent:legacy-app", subagents=manager._agents)
     assert not manager._conversations
@@ -175,7 +180,7 @@ async def test_native_chained_continuations_record_the_project(
 
 @pytest.mark.asyncio
 async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypatch) -> None:
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
     monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: f"test-start-{pid}")
     monkeypatch.setattr("kiro_crew.session_pid_sig._load_hmac_key", lambda: b"test-key" * 4)
     monkeypatch.setattr("kiro_crew.subagent._validate_agent", lambda name, cwd: (name, "", ""))
@@ -242,41 +247,37 @@ async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypat
         internal_secret=secret,
     )
 
-    async def call(path, handler, *, body=None, proof="", session=key):
+    async def call(path, handler, *, body=None, authenticated=True, session=key):
         request = make_request(
             env.state,
             path,
             body=body,
             query={"q": "retained audit"} if path == "/api/memory/recall" else None,
             session=session,
-            proof=proof,
         )
         request = request.clone(
-            headers={**request.headers, "X-Internal-Secret": secret}, remote="127.0.0.1"
+            headers={
+                **request.headers,
+                "X-Internal-Secret": secret if authenticated else "invalid-secret",
+            },
+            remote="127.0.0.1",
         )
         response = await middleware(request, handler)
         claims.append(request.get("app"))
         return response
 
     async def stream(*args, **kwargs):
-        proof = await asyncio.to_thread(
-            member_memory_auth.issue_member_session_proof, key, os.getpid()
-        )
-        assert proof
         responses.append(
             await call(
                 "/api/lessons",
                 cron.api_lessons_create,
                 body={"rule": "the retained audit passed", "category": "knowledge"},
-                proof=proof,
             )
         )
-        responses.append(
-            await call("/api/memory/recall", memory_member.api_memory_recall, proof=proof)
-        )
+        responses.append(await call("/api/memory/recall", memory_member.api_memory_recall))
         # A matching live run is not private-memory authority by itself.
         responses.append(
-            await call("/api/memory/recall", memory_member.api_memory_recall, proof="invalid-proof")
+            await call("/api/memory/recall", memory_member.api_memory_recall, authenticated=False)
         )
         if False:
             yield
@@ -304,14 +305,13 @@ async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypat
         await asyncio.to_thread(
             member_memory_auth.read_private_session_store, f"subagent:{followup.id}"
         )
-        is None
+        == store
     )
     assert len(responses) == 3
     assert [response.status for response in responses] == [200, 200, 403], [
         response.text for response in responses
     ]
     assert "the retained audit passed" in responses[1].text
-    assert json.loads(responses[2].text)["code"] == "member_session_unverified"
     assert all(claim is None for claim in claims)
     assert [json.loads(row["value_json"])["rule"] for row in env.tiers[store].get_lessons()] == [
         "the retained audit passed"
@@ -320,7 +320,8 @@ async def test_restart_continuation_keeps_canonical_memory_caller(env, monkeypat
     assert env.tiers["member-bob"].get_lessons() == []
 
     restored._agents.pop(followup.id)
-    proof = await asyncio.to_thread(member_memory_auth.issue_member_session_proof, key, os.getpid())
-    denied = await call("/api/memory/recall", memory_member.api_memory_recall, proof=proof)
+    denied = await call("/api/memory/recall", memory_member.api_memory_recall)
+    # The canonical record survives; completed children lack a live caller
+    # under the ordinary session-recognition contract.
     assert denied.status == 403
-    assert json.loads(denied.text)["code"] == "caller_record_missing"
+    assert "the retained audit passed" not in denied.text

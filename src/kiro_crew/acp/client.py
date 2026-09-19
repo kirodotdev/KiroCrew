@@ -4471,7 +4471,6 @@ class AcpClient:
         mcp_gateway_overlay: str | Path | None = None,
         mcp_gateway_socket: str | Path | None = None,
         permission_mode: str | None = None,
-        private_memory: bool = False,
     ):
         if work_dir:
             self._work_dir = Path(work_dir)
@@ -4488,11 +4487,7 @@ class AcpClient:
         self._model = model or DEFAULT_MODEL
         self._agent = agent
         self._sandbox_mode = sandbox_mode
-        self._private_memory = private_memory is True
-        if self._private_memory:
-            from kiro_crew.member_memory_auth import require_private_memory_mcp_backend
-
-            require_private_memory_mcp_backend(acp_backend)
+        self.memory_mode = "persistent"
         self._acp_backend = acp_backend
         # Claude backend permission mode (Auto-mode / permission-UI parity).
         # Inert on the kiro-cli path. None = the backend's own default
@@ -4593,16 +4588,10 @@ class AcpClient:
         # are injected into this session at ACP session/new, where they outrank
         # the same-named entries in the agent spec. Nothing is written to the
         # user's project or to ~/.kiro/agents. None = pooling off.
-        # Private tools must be descendants of the member's sandbox. A shared
-        # broker can outlive an upgrade and lack current caller verification.
-        # Retain its path only for the sandbox's socket-placement validation.
-        self._private_mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else ""
-        self._mcp_gateway_overlay = (
-            str(mcp_gateway_overlay) if mcp_gateway_overlay and not self._private_memory else None
-        )
-        self._mcp_gateway_socket = (
-            str(mcp_gateway_socket) if mcp_gateway_socket and not self._private_memory else None
-        )
+        # Broker requests carry the owning session through ordinary transport
+        # authentication; member memory uses that session's execution record.
+        self._mcp_gateway_overlay = str(mcp_gateway_overlay) if mcp_gateway_overlay else None
+        self._mcp_gateway_socket = str(mcp_gateway_socket) if mcp_gateway_socket else None
         # Token this client's injected broker-stub entries carry, so gatewayd can
         # tell this session's stub connections from those of another session on
         # the same runtime PID (``mcp_gateway.claim.mint_stub_session_token``).
@@ -7509,19 +7498,6 @@ class AcpClient:
         argv, delegate_internal_sandbox = await asyncio.to_thread(
             apply_pod_bundle_spawn, argv, backend=self.backend
         )
-        private_kwargs: dict[str, Any] = (
-            {
-                "private_memory": True,
-                "private_mcp_gateway_socket": self._private_mcp_gateway_socket,
-                "private_mcp_gateway_socket_overrides": tuple(
-                    self._extra_env[name]
-                    for name in ("KIROCREW_MCP_SOCKET", "MC_MCP_SOCKET")
-                    if self._extra_env.get(name)
-                ),
-            }
-            if self._private_memory
-            else {}
-        )
         # Per-process scratch containment -- see acp/runtime.py's twin block.
         # Allocated BEFORE the sandbox is built: the scratch ROOT is masked for
         # every sandboxed process (``sandbox._CREW_HIDDEN_LEAVES``), so this
@@ -7562,7 +7538,6 @@ class AcpClient:
             extra_expose_files=adapter_expose,
             is_kiro_cli=delegate_internal_sandbox,
             _prepare=wrap_argv,
-            **private_kwargs,
         )
         # cgroup v2 scope (OUTERMOST): bound this agent + all its MCP-server /
         # tool descendants with pids.max (fork bomb) + memory.max (RSS balloon).
@@ -7887,10 +7862,11 @@ class AcpClient:
                     suppressed = 0
                     last_summary = now
                 continue
-            self._stderr_lines.append(text)
-            redacted, _ = redact_exfiltration_urls(text)
-            redacted, _ = redact_credentials(redacted)
-            logger.warning("%s stderr: %s", label, redacted)
+            if self.memory_mode == "persistent":
+                self._stderr_lines.append(text)
+                redacted, _ = redact_exfiltration_urls(text)
+                redacted, _ = redact_credentials(redacted)
+                logger.warning("%s stderr: %s", label, redacted)
         if suppressed:
             # Flush the residual count once the stream closes so the final burst
             # is still accounted for.
@@ -8966,7 +8942,9 @@ class AcpClient:
                         await asyncio.wait_for(self._stderr_task, timeout=0.5)
                     except (Exception, asyncio.CancelledError):
                         pass
-                stderr_tail = "; ".join(self._stderr_lines) if self._stderr_lines else ""
+                stderr_tail = (
+                    "; ".join(self._stderr_lines) if self.memory_mode == "persistent" else ""
+                )
                 if stderr_tail:
                     from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 
@@ -8986,7 +8964,8 @@ class AcpClient:
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            logger.debug("Skipping non-JSON line from ACP: %.100s", text)
+            if self.memory_mode == "persistent":
+                logger.debug("Skipping non-JSON line from ACP: %.100s", text)
             return None
 
         # Opt-in raw-frame recording for the replay corpus. A no-op unless
@@ -8995,7 +8974,7 @@ class AcpClient:
         # kiro_crew.acp._frame_record. Placed after the buffer early-return
         # above so a frame is recorded once, when it comes off the wire, not
         # again when a turn loop replays it out of _buffer.
-        if isinstance(data, dict):
+        if isinstance(data, dict) and self.memory_mode == "persistent":
             await record_frame(self.backend, data, len(line))
 
         return JsonRpcMessage(
@@ -12073,7 +12052,8 @@ class AcpClient:
         # to grep for server-side. See Mesh compaction-spam investigation.
         s_type = status.get("type", "") if isinstance(status, dict) else str(status)
         if s_type == "failed":
-            logger.warning("Compaction failed — raw notification params: %s", params)
+            if self.memory_mode == "persistent":
+                logger.warning("Compaction failed — raw notification params: %s", params)
             # Arm the bounded post-failure wait (see
             # _COMPACTION_FAILED_TURN_BUDGET): kiro-cli may never answer the
             # prompt this compaction was for.

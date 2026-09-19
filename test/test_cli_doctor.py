@@ -2531,8 +2531,13 @@ class TestEffectiveModelSection:
         out = capsys.readouterr().out
         assert "default agent binding unavailable" in issues
         assert "See the member memory binding diagnostics below." in out
-        assert "missing or invalid memory binding" in out
-        assert "writer" in out
+        assert "Memory store 'missing-store' is unavailable; Global was not used" in out
+        # The model section points to the subsequent binding section, which
+        # retains the member name as well as its unavailable store.
+        cli_doctor._doctor_member_memory_bindings(cfg, issues)
+        bindings_out = capsys.readouterr().out
+        assert "'writer' -> 'missing-store': unavailable" in bindings_out
+        assert "member memory binding unavailable: 'writer' -> 'missing-store'" in issues
 
 
 class TestWhatsAppSection:

@@ -284,7 +284,7 @@ class TestEveryDeclaredStoreIsCovered:
             mb.back_up_all_stores(keep=3)
         finally:
             default.close()
-        assert mb.list_backups(stray / "memory.db") == []
+        assert list(stray.iterdir()) == [stray / "memory.db"]
 
     def test_one_unreadable_store_does_not_cost_another_its_backup(self, home: Path) -> None:
         """Fail soft PER STORE. The whole point of the loop being inside the module."""
@@ -549,18 +549,9 @@ class TestRestoreIsNonDestructive:
         try:
             if source_kind in ("v2", "owner_only"):
                 db.executescript(memory_schema.CREW_SCHEMA_SQL)
-                db.execute(
-                    "INSERT INTO memory_meta VALUES (?, ?, ?)",
-                    (
-                        (
-                            memory_schema.PRIVATE_MEMORY_VERSION_META_KEY
-                            if source_kind == "v2"
-                            else memory_schema.OWNER_MEMBER_META_KEY
-                        ),
-                        "2" if source_kind == "v2" else "alice",
-                        "2026-09-09",
-                    ),
-                )
+                db.executescript(memory_schema.MEMBER_SCHEMA_SQL)
+                if source_kind == "v2":
+                    db.execute("INSERT INTO member_database VALUES (1, 1, 'alice', 'member-alice')")
                 db.commit()
             elif source_kind == "unrelated":
                 db.execute("CREATE TABLE unrelated (value TEXT)")
@@ -574,7 +565,12 @@ class TestRestoreIsNonDestructive:
             if (path := Path(str(target) + suffix)).exists()
         }
 
-        with pytest.raises(ValueError, match="V1 restore requires a V1 memory database"):
+        error = (
+            "V1 restore cannot install a member memory database"
+            if source_kind in ("v2", "owner_only") and store_name != DEFAULT_MEMORY_STORE
+            else "V1 restore requires a V1 memory database"
+        )
+        with pytest.raises(ValueError, match=error):
             mb.restore_from_backup(candidate, store_name)
 
         assert candidate.read_bytes() == candidate_before

@@ -95,10 +95,10 @@ def private_switch_state():
     state.sessions.reset.return_value = True
     state.conversation_log = ConversationLog()
     key = effective_session_key(slot)
+    bind_private_session_store(key, slot.memory_store)
     state.conversation_log.update_metadata(
         key, {"agent": slot.agent, "memory_store": slot.memory_store}
     )
-    bind_private_session_store(key, slot.memory_store)
     return state, slot, key
 
 
@@ -121,7 +121,7 @@ class TestPrivateChatMemberSwitch:
                 )
                 assert response.status == 409
                 result = await response.json()
-                assert result["code"] == "private_memory_session_pinned"
+                assert result["code"] == "member_session_pinned"
                 assert "Start a new conversation" in result["error"]
         assert (slot.agent, slot.memory_store, slot.workspace, slot.project) == before
         assert await asyncio.to_thread(state.conversation_log.get_metadata, key) == metadata
@@ -142,7 +142,7 @@ class TestPrivateChatMemberSwitch:
                 f"/api/chat/slots/{slot.key}/agent", json={"agent": "reviewer"}
             )
             assert response.status == 409
-            assert (await response.json())["code"] == "private_memory_session_pinned"
+            assert (await response.json())["code"] == "member_session_pinned"
         assert slot.agent == "writer"
         state.sessions.reset.assert_not_awaited()
 
@@ -163,7 +163,7 @@ class TestPrivateChatMemberSwitch:
     async def test_unreadable_pin_refuses_without_reset(self, private_switch_state):
         state, slot, _ = private_switch_state
         with patch(
-            "kiro_crew.member_memory_auth.read_private_session_store",
+            "kiro_crew.execution_context.read_session_execution",
             side_effect=ValueError("invalid binding"),
         ):
             async with TestClient(TestServer(as_owner(_make_app(state)))) as client:
@@ -171,7 +171,7 @@ class TestPrivateChatMemberSwitch:
                     f"/api/chat/slots/{slot.key}/agent", json={"agent": "reviewer"}
                 )
                 assert response.status == 503
-                assert (await response.json())["code"] == "private_memory_binding_unavailable"
+                assert (await response.json())["code"] == "member_binding_unavailable"
         assert slot.agent == "writer"
         state.sessions.reset.assert_not_awaited()
 
@@ -1885,7 +1885,14 @@ class TestLinkedSlotSessionKey:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: MagicMock(workspace_dir="/tmp/ws2"),
+            lambda cfg, name, project_dir=None, **kwargs: MagicMock(
+                workspace_dir="/tmp/ws2",
+                memory_store_name="",
+                kiro_agent=name,
+                selection_kind="template",
+                resolved_alias="",
+                requested_resolved=True,
+            ),
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir",

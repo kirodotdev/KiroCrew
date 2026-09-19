@@ -60,10 +60,9 @@ logger = logging.getLogger(__name__)
 def _log_unpooled_teardown_failure(action: str, exc: BaseException) -> None:
     """Record a failed unpooled ``release``/``destroy`` without leaking detail.
 
-    Type name only — no ``str(exc)``, no ``exc_info`` — so a session error whose
-    text carries private-memory detail stays out of the log even when the
-    private-task diagnostics filter is not active for this scope. A leaked
-    lease or provider process is operator-relevant, hence WARNING.
+    Type name only — no ``str(exc)``, no ``exc_info`` — because provider errors
+    can echo conversation text. A leaked lease or provider process is
+    operator-relevant, hence WARNING.
     """
     logger.warning(
         "workflow pool: unpooled session teardown (%s) failed: %s",
@@ -369,14 +368,13 @@ def build_pooled_agent_fn(
             # Best-effort teardown. An exception raised from this ``finally``
             # would REPLACE the step's real outcome: a successful ``result``
             # would vanish behind a session error, and the body's own exception
-            # (provider failure, a private ``validate()`` rejection) would be
+            # (provider failure, a scope ``validate()`` rejection) would be
             # swallowed. So a teardown failure is logged and dropped; the body's
             # outcome always wins. ``CancelledError`` is a BaseException and is
             # deliberately NOT caught, so a cancel still propagates.
             #
-            # Log the exception TYPE only (no message, no traceback): this
-            # logger is under the private-task diagnostics filter and the
-            # session error text can carry private-memory detail.
+            # Log the exception TYPE only (no message, no traceback): session
+            # error text can carry restricted conversation content.
             if named is not None:
                 # Release the turn lease, not the named conversation.
                 try:

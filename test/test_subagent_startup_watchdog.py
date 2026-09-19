@@ -13,6 +13,7 @@ message, while never touching an agent that is merely awaiting spawn approval.
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -78,6 +79,9 @@ def test_stalled_false_after_first_provider_stream_begins():
 @pytest.mark.asyncio
 async def test_recovery_execution_resets_the_first_stream_marker():
     """A recovered run must be eligible for its own startup watchdog window."""
+    from kiro_crew.execution_context import execution_for_store
+    from kiro_crew.subagent_persistence import create_agent_folder
+
     sessions = MagicMock()
     provider = AsyncMock()
     provider.start = AsyncMock()
@@ -110,7 +114,8 @@ async def test_recovery_execution_resets_the_first_stream_marker():
     ctx.hooks.auto_approve_subagent_tools = False
     mgr = SubagentManager(sessions=sessions, ctx_builder=ctx)
     mgr._should_use_session_sharing = MagicMock(return_value=False)  # type: ignore[method-assign]
-    info = _info(_first_stream_started=1.0)
+    info = _info(_first_stream_started=1.0, execution_context=execution_for_store(""))
+    await asyncio.to_thread(create_agent_folder, info.id, execution_context=info.execution_context)
 
     await mgr._run_inner(info, "subagent:a1b2c3d4")
 

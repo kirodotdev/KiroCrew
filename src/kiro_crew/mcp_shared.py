@@ -21,8 +21,8 @@ from typing import Any, Callable, NamedTuple, Optional
 
 from kiro_crew import platform_compat
 from kiro_crew.acp.types import JSONRPC_METHOD_NOT_FOUND
-from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_local_secret
-from kiro_crew.dashboard.origin import parse_dashboard_url
+from kiro_crew.config.loader import KiroCrewConfig, config_dir, read_local_secret  # noqa: F401
+from kiro_crew.dashboard.origin import parse_dashboard_url  # noqa: F401
 from kiro_crew.loopback_http import loopback_urlopen
 from kiro_crew.mcp_caller import (
     CallerContext,
@@ -31,6 +31,7 @@ from kiro_crew.mcp_caller import (
     set_current_tenant_nonce,
     tenant_nonce_from_meta,
 )
+from kiro_crew.port_resolution import resolve_client_port_src
 from kiro_crew.sel import sel
 from kiro_crew.session_directive import neutralize_markers
 from kiro_crew.session_token_sig import session_key_from_env_token
@@ -70,18 +71,6 @@ def set_internal_caller(name: str | None) -> None:
 def internal_caller() -> str | None:
     """The declared component identity for internal HTTP requests, if any."""
     return _internal_caller_name
-
-
-def member_proof_header_value(proof: str) -> str:
-    """Return ``proof`` when it is safe to send as a header value, else ``""``.
-
-    A gateway-minted member proof is ASCII alphanumerics plus ``-_.``; anything
-    else (CR/LF, separators, non-ASCII) earns no header rather than a header
-    injection surface. One charset rule for every proof-forwarding client.
-    """
-    if proof and proof.isascii() and all(c.isalnum() or c in "-_." for c in proof):
-        return proof
-    return ""
 
 
 # Max tools/call requests buffered while a tool worker is busy.
@@ -300,8 +289,8 @@ _excluded_tools_by_session: dict[str, set[str]] = {}
 # Two separate negative caches with different TTLs so the long-TTL
 # HTTP-error path doesn't keep fail-open active when only a brief
 # startup race triggered the failure.
-_last_failure_time: float = 0.0           # gateway unreachable / non-404 HTTP error
-_last_startup_race_time: float = 0.0      # no session key or 404 — recovers fast
+_last_failure_time: float = 0.0  # gateway unreachable / non-404 HTTP error
+_last_startup_race_time: float = 0.0  # no session key or 404 — recovers fast
 # The identity the short window was opened FOR: ``""`` when no session key could be
 # resolved, or the resolved key whose policy request the gateway answered 404. The
 # window debounces a race that belongs to ONE identity, and it is process-global,
@@ -417,11 +406,12 @@ def _policy_session_key() -> str | None:
        no token and no protected binding this resolves exactly as it did before.
     """
     try:
+        # This is an ordinary MCP identity extension only.  Memory V2 does not
+        # use PID ancestry, namespaces, or proof records to authorize a store.
         from kiro_crew.member_memory_auth import protected_member_session_for_pid
 
         protected = protected_member_session_for_pid(os.getpid())
         if protected is not None:
-            # Including the empty string: an invalid record stops resolution here.
             return protected
         from_token = session_key_from_env_token()
         if from_token:
@@ -438,8 +428,11 @@ def _policy_session_key() -> str | None:
                 libproc = ctypes.CDLL("libproc.dylib", use_errno=True)
                 libproc.proc_pidinfo.restype = ctypes.c_int
                 libproc.proc_pidinfo.argtypes = [
-                    ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
-                    ctypes.c_void_p, ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_int,
+                    ctypes.c_uint64,
+                    ctypes.c_void_p,
+                    ctypes.c_int,
                 ]
                 buf = ctypes.create_string_buffer(buf_size)
                 n = libproc.proc_pidinfo(pid, proc_pidtbsdinfo, 0, buf, buf_size)
@@ -508,7 +501,6 @@ def _policy_session_key() -> str | None:
 def _resolve_tool_policy(
     caller_session: str = "",
     *,
-    member_memory_proof: str = "",
     ignore_negative_cache: bool = False,
 ) -> ToolPolicy:
     """Query the gateway for the current session's managedToolPolicy.exclude.
@@ -520,8 +512,6 @@ def _resolve_tool_policy(
     RESOLVED session keys the cache either way — the policy returned and the policy
     stored are then the same session's, which is what stops a caller the gateway
     could not name from inheriting a co-tenant's or its own pre-rekey policy.
-    ``member_memory_proof`` belongs only to that request. It is forwarded to
-    the policy endpoint and is never retained in a policy or connection cache.
 
     Returns the set of tool names to hide from this session, together with the
     reason the policy could not be read when it could not. Caches on success
@@ -561,9 +551,7 @@ def _resolve_tool_policy(
             return ToolPolicy(frozenset(_cached), "")
 
     now = time.monotonic()
-    _failure_cached = bool(
-        _last_failure_time and (now - _last_failure_time) < _NEGATIVE_CACHE_TTL
-    )
+    _failure_cached = bool(_last_failure_time and (now - _last_failure_time) < _NEGATIVE_CACHE_TTL)
     _race_cached = bool(
         not caller_session
         and _last_startup_race_time
@@ -600,8 +588,7 @@ def _resolve_tool_policy(
         return ToolPolicy(frozenset(), _reason)
 
     try:
-        cfg = KiroCrewConfig.load()
-        _host, port = parse_dashboard_url(cfg.dashboard.url)
+        port, _source = resolve_client_port_src(None)
         api_base = f"http://localhost:{port}"
 
         # Credential for the port this function DIALS (parsed just above), not for
@@ -643,11 +630,6 @@ def _resolve_tool_policy(
 
         headers: dict[str, str] = {"X-Internal-Secret": secret}
         headers["X-Session-Key"] = session_key
-        proof_value = member_proof_header_value(member_memory_proof) if caller_session else ""
-        if proof_value:
-            from kiro_crew.member_memory_auth import PROOF_HEADER
-
-            headers[PROOF_HEADER] = proof_value
 
         req = urllib.request.Request(
             f"{api_base}/api/session-tool-policy",
@@ -736,7 +718,8 @@ def _resolve_tool_policy(
                 logger.warning(
                     "Tool policy endpoint answered %s for session %s; treating it "
                     "as a boundary the gateway holds, not a failure to read",
-                    http_exc.code, session_key,
+                    http_exc.code,
+                    session_key,
                 )
                 sel().log_api_access(
                     caller=session_key,
@@ -769,7 +752,8 @@ def _resolve_tool_policy(
             logger.warning(
                 "Tool policy for session %s has a malformed exclude (%s); "
                 "refusing calls rather than enforcing the part that parses",
-                session_key, _shape,
+                session_key,
+                _shape,
             )
             sel().log_api_access(
                 caller=session_key,
@@ -783,9 +767,7 @@ def _resolve_tool_policy(
         # FIFO bound: dicts preserve insertion order; drop the oldest
         # session's entry when full (pooled backends serve churning sessions).
         while len(_excluded_tools_by_session) >= _EXCLUDED_TOOLS_CACHE_MAX:
-            _excluded_tools_by_session.pop(
-                next(iter(_excluded_tools_by_session))
-            )
+            _excluded_tools_by_session.pop(next(iter(_excluded_tools_by_session)))
         _excluded_tools_by_session[session_key] = resolved
         return ToolPolicy(frozenset(resolved), "")
     except Exception as exc:
@@ -827,6 +809,16 @@ def _resolve_tool_policy(
             source="mcp_shared",
         )
         return ToolPolicy(frozenset(), "resolution_failed")
+
+
+def _resolve_excluded_tools(caller_session: str = "") -> set[str]:
+    """Return the ordinary tool-policy exclusions for compatibility callers.
+
+    The policy resolver keeps the unresolved reason so ``tools/call`` can retain
+    its fail-closed behavior. Diagnostics that only need exclusions use this
+    narrow projection; it carries no member-memory capability or proof.
+    """
+    return set(_resolve_tool_policy(caller_session).excluded)
 
 
 # Which unresolved reasons refuse a ``tools/call``.
@@ -942,6 +934,19 @@ def respond(req_id: Any, result: Any, error: dict | None = None) -> None:
         sys.stdout.flush()
 
 
+def _audit_safe_args(value: Any) -> Any:
+    """Keep argument shape for SEL while excluding caller-supplied values."""
+    if isinstance(value, dict):
+        return {str(key): _audit_safe_args(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_audit_safe_args(item) for item in value]
+    if isinstance(value, tuple):
+        return [_audit_safe_args(item) for item in value]
+    if isinstance(value, str):
+        return "<redacted>"
+    return value
+
+
 def call_tool_with_logging(
     name: str,
     raw_args: dict[str, Any],
@@ -969,7 +974,7 @@ def call_tool_with_logging(
             tool_name=name,
             outcome="failed",
             downstream_service=downstream_service,
-            error=str(e),
+            error="validation_failed",
         )
         # A rejection is BY CONSTRUCTION not a directive, and this message
         # interpolates content this process does not control: an unknown-field
@@ -993,7 +998,7 @@ def call_tool_with_logging(
     if args:
         from kiro_crew.platform import redact_via_context
 
-        resources = redact_via_context(json.dumps(args))[:500]
+        resources = redact_via_context(json.dumps(_audit_safe_args(args)))[:500]
     sel().log_tool_invocation(
         session_key=session_key,
         source="mcp",
@@ -1002,7 +1007,7 @@ def call_tool_with_logging(
         outcome=outcome,
         downstream_service=downstream_service,
         resources=resources,
-        error=result[:500] if outcome == "failed" else "",
+        error="execution_failed" if outcome == "failed" else "",
     )
     return result
 
@@ -1168,9 +1173,7 @@ def _run_stdio_dispatch_loop(
                 ids.add(str(_pcid))
         return ids
 
-    def _sel_audit(
-        outcome: str, tool_name: str, req_id: Any, session_key: str = ""
-    ) -> None:
+    def _sel_audit(outcome: str, tool_name: str, req_id: Any, session_key: str = "") -> None:
         """Emit a SEL audit event for a tool invocation outcome.
 
         ``session_key`` should be the request's parsed caller identity when
@@ -1193,7 +1196,10 @@ def _run_stdio_dispatch_loop(
         except Exception as sel_exc:
             logger.warning(
                 "SEL audit failed for %s tool %s (request %s): %s",
-                outcome, tool_name, req_id, sel_exc,
+                outcome,
+                tool_name,
+                req_id,
+                sel_exc,
             )
 
     def _req_caller(request: dict) -> "CallerContext | None":
@@ -1214,10 +1220,6 @@ def _run_stdio_dispatch_loop(
         to tell "the operator excluded nothing" apart from "we could not read
         what the operator excluded".
         """
-        if caller is not None and caller.from_gateway and caller.member_memory_proof:
-            return _resolve_tool_policy(
-                caller.session_key, member_memory_proof=caller.member_memory_proof
-            )
         return _resolve_tool_policy(caller.session_key if caller else "")
 
     def _listable_tools(caller: "CallerContext | None") -> list[dict]:
@@ -1235,11 +1237,7 @@ def _run_stdio_dispatch_loop(
         if policy.unresolved:
             try:
                 sel().log_api_access(
-                    caller=(
-                        caller.session_key
-                        if caller is not None
-                        else _ambient_audit_session()
-                    ),
+                    caller=(caller.session_key if caller is not None else _ambient_audit_session()),
                     operation="tool_policy.unfiltered_listing",
                     outcome="unresolved",
                     source="mcp",
@@ -1426,11 +1424,11 @@ def _run_stdio_dispatch_loop(
                     # Boxed result dropped due to cancellation (cancel arrived
                     # after the worker delivered) -- audit it.
                     _sel_audit(
-                                "cancelled",
-                                _current_tool_name,
-                                _current_req_id,
-                                _current_caller_key,
-                            )
+                        "cancelled",
+                        _current_tool_name,
+                        _current_req_id,
+                        _current_caller_key,
+                    )
                 _result_box.clear()
                 # Consumed: drop the id so a completed request never lingers
                 # in the cancelled set.
@@ -1525,9 +1523,7 @@ def _run_stdio_dispatch_loop(
             # the LLM somehow attempts to call them (hallucination).
             # Per-call caller identity keys the policy in pooled backends.
             _policy = _caller_tool_policy(_caller_ctx)
-            _policy_session = (
-                _caller_ctx.session_key if _caller_ctx else _ambient_audit_session()
-            )
+            _policy_session = _caller_ctx.session_key if _caller_ctx else _ambient_audit_session()
             if _policy.unresolved and _policy.unresolved not in _UNRESOLVED_REFUSES_CALL:
                 # An identity reason: no agent was named, so no operator
                 # exclusion is known to exist for this call to bypass. The call
@@ -1558,7 +1554,9 @@ def _run_stdio_dispatch_loop(
                 # is not a hole; a tool that is unlisted but runs is.
                 logger.warning(
                     "Refusing tool call %r: session %s tool policy unresolved (%s)",
-                    tool_name, _policy_session, _policy.unresolved,
+                    tool_name,
+                    _policy_session,
+                    _policy.unresolved,
                 )
                 sel().log_tool_invocation(
                     session_key=_policy_session,
@@ -1620,9 +1618,7 @@ def _run_stdio_dispatch_loop(
                 _cancel_event = threading.Event()
                 _current_req_id = req_id
                 _current_tool_name = tool_name
-                _current_caller_key = (
-                    _caller_ctx.session_key if _caller_ctx else ""
-                )
+                _current_caller_key = _caller_ctx.session_key if _caller_ctx else ""
                 _worker_audited[0] = False
                 _result_ready.clear()
                 _result_box.clear()

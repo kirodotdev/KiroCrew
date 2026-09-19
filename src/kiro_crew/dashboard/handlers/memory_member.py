@@ -1,8 +1,4 @@
-"""Explicit member-memory recall and owner-directed, selected-item inheritance.
-
-Recall derives authority from a recorded session. Copying is an owner action:
-neither an agent nor a source document may choose another member's memory.
-"""
+"""Explicit member-scoped recall and owner-directed selected-item copying."""
 
 from __future__ import annotations
 
@@ -40,7 +36,7 @@ def _error(message: str, code: str, status: int = 400) -> web.Response:
 
 async def _private_tier(request: web.Request, name: str) -> tuple[Any, web.Response | None]:
     if not name:
-        return None, _error("Select a member's private V2 memory.", "member_memory_required")
+        return None, _error("Select a member's V2 memory.", "member_memory_required")
     try:
         tier = await vector_memory_for_store(request.app["state"], name)
     except (ValueError, OSError, sqlite3.Error):
@@ -49,7 +45,7 @@ async def _private_tier(request: web.Request, name: str) -> tuple[Any, web.Respo
         return None, _store_unavailable(name)
     if tier.algorithm_version != "v2":
         return None, _error(
-            "This memory is V1. Create private memory for the member first; no migration was performed.",
+            "This memory is V1. Create member memory first; no migration was performed.",
             "member_memory_required",
             409,
         )

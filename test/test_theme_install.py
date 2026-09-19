@@ -856,7 +856,13 @@ class TestCopyInstalledTheme:
         theme, err, status = th_mod._do_install("local", {"path": str(case_variant)})
 
         assert theme is None and status == 400, (theme, err, status)
-        assert err is not None and "inside the install destination" in err
+        # Two fail-closed refusals are possible, both before promotion touches
+        # the destination: the ancestor guard names the destination, or the
+        # staging read's within_root containment (fd real path in on-disk case
+        # vs the caller-cased source root) refuses the file first.
+        assert err is not None and (
+            "inside the install destination" in err or "unreadable/unsafe file" in err
+        ), err
         assert (src / "theme.json").is_file(), "install deleted its own source"
         assert sibling.is_file(), "install deleted an unrelated sibling"
         assert not any(p.name.startswith(".install-staging-") for p in themes_root.iterdir())

@@ -17,7 +17,7 @@ from member_memory_helpers import MEMBERS, forget_declared_stores, write_member_
 from kiro_crew import member_memory_backup as member_backup
 from kiro_crew import memory_backup, memory_stores
 from kiro_crew.config import loader
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 pytestmark = pytest.mark.xdist_group("member_memory_backup")
 
@@ -32,18 +32,15 @@ def env(tmp_path, monkeypatch):
     }
     tiers = {}
     for owner, path in paths.items():
-        tier = VectorMemoryStore(db_path=path)
-        tier.init()
+        tier = open_member_database(path, member_id=owner, store_id=path.parent.name)
         tier.set_semantic("project.database", "PostgreSQL", 1.0, "user_explicit")
         tiers[owner] = tier
     home = paths["alice"].parent
-    (home / "memory" / "history").mkdir(parents=True)
+    (home / "memory").mkdir(parents=True)
     (home / "memory" / "preferences.md").write_text("Use concise answers", encoding="utf-8")
     (home / "memory" / "projects.md").write_text("Project lantern", encoding="utf-8")
-    (home / "memory" / "history" / "2026-09-07.md").write_text(
-        "Initial deployment", encoding="utf-8"
-    )
-    (home / "lessons.jsonl").write_text('{"rule":"Check backups"}\n', encoding="utf-8")
+    tiers["alice"].append_history("Initial deployment")
+    tiers["alice"].write_lesson("Check backups before restore")
     try:
         yield SimpleNamespace(paths=paths, tiers=tiers, home=home, root=tmp_path)
     finally:
@@ -53,15 +50,16 @@ def env(tmp_path, monkeypatch):
 
 
 def read_value(path):
-    tier = VectorMemoryStore(db_path=path)
-    tier.init()
+    tier = open_member_database(
+        path, member_id=path.parent.name.removeprefix("member-"), store_id=path.parent.name
+    )
     try:
         return json.loads(tier.get_semantic("project.database")["value_json"])
     finally:
         tier.close()
 
 
-def test_complete_private_snapshot_includes_wal_and_all_memory_layers(env):
+def test_complete_member_snapshot_includes_wal_and_all_memory_layers(env):
     backup = memory_backup.backup_store(env.paths["alice"])
     assert backup.suffix == ".zip"
     assert backup.parent == env.root / "memory_stores" / ".member-backups" / "member-alice"
@@ -71,17 +69,27 @@ def test_complete_private_snapshot_includes_wal_and_all_memory_layers(env):
             "memory.db",
             "memory/preferences.md",
             "memory/projects.md",
-            "memory/history/2026-09-07.md",
-            "lessons.jsonl",
         }
         manifest = json.loads(archive.read("snapshot-manifest.json"))
-        assert manifest["owner_member"] == "alice"
+        assert manifest["member_id"] == "alice"
         assert manifest["store"] == "member-alice"
         assert all(
             hashlib.sha256(archive.read(name)).hexdigest() == digest
             for name, digest in manifest["files"].items()
         )
         assert archive.read("memory/preferences.md") == b"Use concise answers"
+        captured = env.root / "captured.db"
+        captured.write_bytes(archive.read("memory.db"))
+        with closing(member_backup.sqlite3.connect(captured)) as db:
+            assert (
+                "Initial deployment"
+                in db.execute("SELECT content FROM memory_history").fetchone()[0]
+            )
+            assert (
+                db.execute("SELECT COUNT(*) FROM memory_items WHERE kind='directive'").fetchone()[0]
+                == 1
+            )
+            assert db.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
 
 
 def test_journal_permission_failure_precedes_content_and_allows_retry(env, monkeypatch):
@@ -147,15 +155,19 @@ def test_lost_directory_restore_recovers_crash_after_install_without_prior_tree(
     assert read_value(env.paths["alice"]) == "PostgreSQL"
 
 
-def test_existing_directory_with_missing_owner_marker_is_not_adopted_by_restore(env):
+def test_changed_member_binding_is_not_adopted_by_restore(env):
     backup = memory_backup.backup_store(env.paths["alice"])
-    (env.home / memory_stores.MEMBER_MEMORY_MANIFEST).unlink()
-    with pytest.raises(ValueError, match="metadata"):
+    config_path = env.root / "config.json"
+    config = json.loads(config_path.read_text())
+    config["agents"]["alice"]["member_id"] = "someone-else"
+    config_path.write_text(json.dumps(config))
+    loader._invalidate_config_cache()
+    with pytest.raises(ValueError, match="bound"):
         memory_backup.restore_from_backup(backup, "member-alice")
     assert not (backup.parent / member_backup.PENDING).exists()
 
 
-def test_corrupt_private_database_can_be_restored_without_opening_it(env):
+def test_corrupt_member_database_can_be_restored_without_opening_it(env):
     backup = memory_backup.backup_store(env.paths["alice"])
     env.tiers["alice"].close()
     env.paths["alice"].write_bytes(b"corrupt database")
@@ -173,9 +185,7 @@ def test_restore_is_pending_until_explicit_startup_barrier_and_preserves_old_tre
     backup = memory_backup.backup_store(path)
     env.tiers["alice"].set_semantic("project.database", "SQLite", 1.0, "user_explicit")
     (env.home / "memory" / "preferences.md").write_text("Long answers", encoding="utf-8")
-    (env.home / "memory" / "history" / "2026-09-08.md").write_text(
-        "A later memory", encoding="utf-8"
-    )
+    env.tiers["alice"].append_history("A later memory")
     memory_backup.restore_from_backup(backup, "member-alice")
     assert json.loads(env.tiers["alice"].get_semantic("project.database")["value_json"]) == "SQLite"
     assert (env.home / "memory" / "preferences.md").read_text() == "Long answers"
@@ -186,10 +196,14 @@ def test_restore_is_pending_until_explicit_startup_barrier_and_preserves_old_tre
     assert set(restored) == {"member-alice"}
     assert read_value(path) == "PostgreSQL"
     assert (env.home / "memory" / "preferences.md").read_text() == "Use concise answers"
-    assert not (env.home / "memory" / "history" / "2026-09-08.md").exists()
+    with closing(member_backup.sqlite3.connect(path)) as db:
+        assert (
+            "A later memory" not in db.execute("SELECT content FROM memory_history").fetchone()[0]
+        )
     prior = backup.parent / restored["member-alice"]
     assert (prior / "memory" / "preferences.md").read_text() == "Long answers"
-    assert (prior / "memory" / "history" / "2026-09-08.md").read_text() == "A later memory"
+    with closing(member_backup.sqlite3.connect(prior / "memory.db")) as db:
+        assert "A later memory" in db.execute("SELECT content FROM memory_history").fetchone()[0]
     assert memory_backup.list_backups(path) == [backup]
     assert memory_backup.apply_pending_member_restores() == {}
 
@@ -218,9 +232,9 @@ def rewrite_bundle(source, target, mutate):
 
 @pytest.mark.parametrize(
     "key,value",
-    [("private_memory_version", "broken"), ("owner_member", "bob"), ("owner_member", None)],
+    [("format_version", 99), ("member_id", "bob"), ("store_id", "member-bob")],
 )
-def test_snapshot_private_marker_is_checked_before_displacing_current_memory(env, key, value):
+def test_snapshot_database_identity_is_checked_before_displacing_current_memory(env, key, value):
     backup = memory_backup.backup_store(env.paths["alice"])
     damaged = backup.parent / "damaged-identity.zip"
 
@@ -228,24 +242,21 @@ def test_snapshot_private_marker_is_checked_before_displacing_current_memory(env
         database = env.root / "edited-snapshot.db"
         database.write_bytes(content["memory.db"])
         with closing(member_backup.sqlite3.connect(database)) as db, db:
-            if value is None:
-                db.execute("DELETE FROM memory_meta WHERE key=?", (key,))
-            else:
-                db.execute("UPDATE memory_meta SET value=? WHERE key=?", (value, key))
+            db.execute(f"UPDATE member_database SET {key}=?", (value,))
         content["memory.db"] = database.read_bytes()
         manifest = json.loads(content[member_backup.MANIFEST])
         manifest["files"]["memory.db"] = hashlib.sha256(content["memory.db"]).hexdigest()
         content[member_backup.MANIFEST] = json.dumps(manifest).encode()
 
     rewrite_bundle(backup, damaged, mutate)
-    with pytest.raises(ValueError, match="private database ownership"):
+    with pytest.raises(ValueError, match="member|Unsupported"):
         memory_backup.restore_from_backup(damaged, "member-alice")
     assert not (backup.parent / member_backup.PENDING).exists()
     assert not list(backup.parent.glob("superseded-*"))
     assert read_value(env.paths["alice"]) == "PostgreSQL"
 
 
-def test_snapshot_before_durable_private_marker_remains_restorable(env):
+def test_snapshot_without_database_identity_is_refused(env):
     backup = memory_backup.backup_store(env.paths["alice"])
     legacy = backup.parent / "legacy-identity.zip"
 
@@ -253,18 +264,16 @@ def test_snapshot_before_durable_private_marker_remains_restorable(env):
         database = env.root / "legacy-snapshot.db"
         database.write_bytes(content["memory.db"])
         with closing(member_backup.sqlite3.connect(database)) as db, db:
-            db.execute(
-                "DELETE FROM memory_meta WHERE key IN ('private_memory_version', 'owner_member')"
-            )
+            db.execute("DELETE FROM member_database")
         content["memory.db"] = database.read_bytes()
         manifest = json.loads(content[member_backup.MANIFEST])
         manifest["files"]["memory.db"] = hashlib.sha256(content["memory.db"]).hexdigest()
         content[member_backup.MANIFEST] = json.dumps(manifest).encode()
 
     rewrite_bundle(backup, legacy, mutate)
-    memory_backup.restore_from_backup(legacy, "member-alice")
-    env.tiers["alice"].close()
-    memory_backup.apply_pending_member_restores()
+    with pytest.raises(ValueError, match="Unsupported"):
+        memory_backup.restore_from_backup(legacy, "member-alice")
+    assert not (backup.parent / member_backup.PENDING).exists()
     assert read_value(env.paths["alice"]) == "PostgreSQL"
 
 
@@ -351,7 +360,7 @@ def test_pending_restore_refuses_an_open_v2_generation(env):
 
 
 @pytest.mark.asyncio
-async def test_markdown_only_private_open_holds_restore_admission(env):
+async def test_member_document_facade_open_holds_restore_admission(env):
     from kiro_crew.context import cached_vector_store_entries, release_cached_memory_store
     from kiro_crew.dashboard.handlers._shared import (
         markdown_memory_for_store,
@@ -500,11 +509,11 @@ def test_cancel_refuses_owner_mismatch_or_started_activation(env):
     out = member_backup.backup_directory(path)
     pending = out / member_backup.PENDING
     journal = json.loads(pending.read_text())
-    journal["owner_member"] = "bob"
+    journal["member_id"] = "bob"
     pending.write_text(json.dumps(journal))
-    with pytest.raises(ValueError, match="ownership"):
+    with pytest.raises(ValueError, match="member"):
         member_backup.cancel_pending_restore(path)
-    journal["owner_member"] = "alice"
+    journal["member_id"] = "alice"
     pending.write_text(json.dumps(journal))
     (out / journal["aside"]).mkdir()
     with pytest.raises(ValueError, match="activation has started"):

@@ -18,7 +18,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from overload_fakes import Clock, ManagerHarness, open_task_store
@@ -200,6 +200,233 @@ def h(quiet):
     yield make
     for hz in made:
         hz.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+@pytest.mark.parametrize("older_store_only", [False, True])
+async def test_restricted_queue_survives_a_full_durable_window(h, mode, older_store_only) -> None:
+    hz = await h(max_concurrent=1)
+    hz.store._window = 1
+    blocker = hz.spawn("blocker", parent="dash:blocker")
+    await hz.settle()
+    older = [hz.spawn("older", parent="dash:older")]
+    if older_store_only:
+        older.append(hz.spawn("older on disk", parent="dash:older"))
+    queued = hz.spawn("restricted queue sentinel", parent="dash:restricted", _memory_mode=mode)
+    assert queued.queued and not queued.done, queued.error
+    queued_ids = {p["_preassigned_id"] for p in hz.mgr._queue}
+    if mode == "persistent":
+        assert queued.id not in queued_ids
+        assert hz.store.get(queued.id).state == model.QUEUED
+    else:
+        assert queued.id in queued_ids
+        assert hz.store.get(queued.id) is None
+    all_infos = [blocker, *older, queued]
+    for _ in all_infos:
+        await hz.settle()
+        active = [info for info in hz.mgr._agents.values() if not info.done]
+        assert len(active) == hz.mgr._running_count == 1
+        await hz.end(active[0])
+    assert sorted(hz.started) == sorted(info.id for info in all_infos)
+    assert hz.mgr._running_count == 0 and not hz.mgr._queue
+    if mode != "persistent":
+        assert hz.store.get(queued.id) is None and not hz.store.events(queued.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_refill_preserves_memory_only_entries_and_keeps_durable_room_bounded(h, mode) -> None:
+    hz = await h(max_concurrent=1)
+    hz.store._window = 1
+    blocker = hz.spawn("blocker", parent="dash:blocker")
+    await hz.settle()
+    restricted = [
+        hz.spawn(f"restricted {index}", parent="dash:restricted", _memory_mode=mode)
+        for index in range(2)
+    ]
+    durable = hz.spawn("durable other lane", parent="dash:durable")
+    await hz.mgr._admission.taskq_refill_window_async()
+    queued_ids = {p["_preassigned_id"] for p in hz.mgr._queue}
+    assert {info.id for info in restricted} <= queued_ids
+    assert durable.id in queued_ids
+    assert len([p for p in hz.mgr._queue if p["_memory_mode"] == "persistent"]) == 1
+    room, _ = hz.mgr._admission._refill_make_room(hz.store, [])
+    assert room == 0
+    assert hz.mgr._admission._evict_for_lanes(5) == 1
+    assert {p["_preassigned_id"] for p in hz.mgr._queue} == {info.id for info in restricted}
+    # A queued stop must remove the only copy and never run that work later.
+    assert await hz.mgr.cancel(restricted[1].id)
+    await hz.end(blocker)
+    for _ in range(2):
+        await hz.settle()
+        active = [info for info in hz.mgr._agents.values() if not info.done]
+        assert len(active) == hz.mgr._running_count == 1
+        await hz.end(active[0])
+    assert sorted(hz.started) == sorted([blocker.id, restricted[0].id, durable.id])
+    assert hz.mgr._running_count == 0 and not hz.mgr._queue
+    for info in restricted:
+        assert hz.store.get(info.id) is None and not hz.store.events(info.id)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_restricted_spawn_never_claims_a_nonexistent_durable_row(h, mode) -> None:
+    hz = await h(max_concurrent=1)
+    with patch.object(
+        type(hz.mgr._admission), "taskq_claim", wraps=hz.mgr._admission.taskq_claim
+    ) as claim:
+        info = await hz.mgr.spawn_async(
+            "restricted sentinel", parent_session_key="dash:r", _memory_mode=mode
+        )
+    assert info is not None and not info.done and not info.queued
+    claim.assert_not_called()
+    await hz.settle()
+    assert hz.started == [info.id] and hz.mgr._running_count == 1
+    await hz.end(info)
+    assert hz.store.get(info.id) is None and not hz.store.events(info.id)
+    assert hz.mgr._running_count == 0
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_child_reserve_refills_beside_restricted_root_entries(h, mode) -> None:
+    hz = await h(max_concurrent=2)
+    hz.store._window = 1
+    parent = hz.spawn("parent", parent="dash:p")
+    other = hz.spawn("other", parent="dash:o")
+    await hz.settle()
+    roots = [
+        hz.spawn(f"restricted root {index}", parent="dash:r", _memory_mode=mode)
+        for index in range(2)
+    ]
+    hz.block_in_spawn_sub_agents(parent)
+    child = hz.child_of(parent, "durable child")
+    await hz.settle()
+    assert hz.state(parent) == model.WAITING_CHILDREN
+    assert hz.state(child) == model.RUNNING
+    assert hz.mgr._running_count == 2
+    assert {p["_preassigned_id"] for p in hz.mgr._queue} == {info.id for info in roots}
+    await hz.end(child)
+    await hz.end(parent)
+    await hz.end(other)
+    await hz.settle()
+    assert hz.mgr._running_count == 2
+    for info in roots:
+        assert hz.started.count(info.id) == 1
+        await hz.end(info)
+        assert hz.store.get(info.id) is None and not hz.store.events(info.id)
+    assert hz.mgr._running_count == 0 and not hz.mgr._queue
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+@pytest.mark.parametrize("pressure", ["absolute", "posture"])
+async def test_pressure_defers_only_a_subagent_with_a_durable_row(h, mode, pressure) -> None:
+    from kiro_crew.resource_status import AdmissionDecision
+
+    hz = await h(max_concurrent=1)
+    target = (
+        "kiro_crew.subagent.check_memory_available"
+        if pressure == "absolute"
+        else "kiro_crew.subagent.cached_admission_check"
+    )
+    result = (
+        (False, 0.5)
+        if pressure == "absolute"
+        else AdmissionDecision(admitted=False, posture="critical", available_gb=0.5, reason="low")
+    )
+    with (
+        patch(target, return_value=result),
+        patch.object(
+            type(hz.mgr._admission), "taskq_defer", wraps=hz.mgr._admission.taskq_defer
+        ) as defer,
+    ):
+        info = hz.spawn("pressure sentinel", _memory_mode=mode)
+    if mode == "persistent":
+        assert info.queued and not info.done
+        assert hz.store.get(info.id).state == model.QUEUED
+        defer.assert_called_once()
+    else:
+        assert info.done and not info.queued and "spawn refused" in info.error
+        defer.assert_not_called()
+        assert hz.store.get(info.id) is None and not hz.store.events(info.id)
+    assert hz.mgr._running_count == 0 and not hz.started
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+@pytest.mark.parametrize(
+    "phase", ["drain", "pressure", "batch_pressure", "cwd", "governance", "announce"]
+)
+async def test_restricted_admission_diagnostics_exclude_task_bodies(h, caplog, mode, phase) -> None:
+    hz = await h(max_concurrent=1)
+    sentinel = "task-body-sentinel-for-diagnostics"
+    caplog.set_level("INFO")
+    with patch("kiro_crew.subagent.sel") as audit:
+        if phase == "drain":
+            blocker = hz.spawn("blocker")
+            await hz.settle()
+            info = hz.spawn(sentinel, _memory_mode=mode)
+            await hz.end(blocker)
+            await hz.end(info)
+        elif phase in {"pressure", "batch_pressure"}:
+            hz.mgr._on_done = AsyncMock(side_effect=RuntimeError(sentinel))
+            with patch("kiro_crew.subagent.check_memory_available", return_value=(False, 0.5)):
+                info = hz.spawn(
+                    sentinel,
+                    _memory_mode=mode,
+                    batch_id="batch" if phase == "batch_pressure" else "",
+                    batch_total=1 if phase == "batch_pressure" else 0,
+                )
+                await hz.settle()
+        elif phase == "cwd":
+            with patch("kiro_crew.subagent.validate_cwd", return_value=("", sentinel)):
+                info = hz.spawn(sentinel, _memory_mode=mode, cwd="outside")
+        elif phase == "governance":
+            with patch("kiro_crew.subagent._vet_spawn_governance", return_value=sentinel):
+                info = hz.spawn(sentinel, _memory_mode=mode)
+        else:
+            info = hz.spawn(sentinel, _memory_mode=mode)
+            await hz.settle()
+            caplog.clear()
+            audit.reset_mock()
+            hz.mgr._on_done = AsyncMock(side_effect=RuntimeError(sentinel))
+            await hz.mgr._safe_announce(info)
+            await hz.end(info)
+    diagnostic = caplog.text + repr(audit.return_value.log_tool_invocation.call_args_list)
+    if mode == "persistent" and phase != "announce":
+        assert sentinel in diagnostic
+    else:
+        assert sentinel not in diagnostic
+        assert info.id in diagnostic
+    if phase == "batch_pressure":
+        assert info.memory_mode == mode
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+@pytest.mark.parametrize("unreachable", [False, True])
+async def test_restricted_approval_errors_do_not_echo_callback_bodies(
+    h, caplog, mode, unreachable
+) -> None:
+    from kiro_crew.subagent import SpawnApprovalUnreachable
+
+    hz = await h(max_concurrent=1)
+    sentinel = "approval-body-sentinel"
+    hz.mgr._sessions.get_approval_policy.return_value = "ask"
+    hz.mgr._ctx_builder.hooks.auto_approve_subagent_spawn = False
+    error = SpawnApprovalUnreachable(sentinel) if unreachable else RuntimeError(sentinel)
+    hz.mgr._on_spawn_approval = AsyncMock(side_effect=error)
+    caplog.set_level("INFO")
+    info = hz.spawn("approval task", _memory_mode=mode)
+    await hz.settle()
+    assert info.done and hz.mgr._running_count == 0
+    if mode == "persistent":
+        assert sentinel in caplog.text
+    else:
+        assert sentinel not in caplog.text
+    assert info.id in caplog.text
 
 
 # ── starvation: 200:1 demand across two sessions plus the system lane ─────────

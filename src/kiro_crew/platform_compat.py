@@ -4367,38 +4367,6 @@ def pgroup_of_leader(pid: int) -> int | None:
         return None
 
 
-def pid_confirmed_absent(pid: int) -> bool:
-    """Positive absence only; query failures preserve lifecycle records.
-
-    Windows OpenProcess(ERROR_INVALID_PARAMETER) means the PID is absent.
-    An opened, exited process also counts; denied/unknown queries never do.
-    """
-    if type(pid) is not int or not 1 < pid <= 0xFFFFFFFF:
-        return False
-    if IS_POSIX:
-        return pid <= 0x7FFFFFFF and pid_liveness(pid) == PID_DEAD
-    try:
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)  # type: ignore[attr-defined]
-        kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
-        kernel32.OpenProcess.restype = wintypes.HANDLE
-        kernel32.GetExitCodeProcess.argtypes = [wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
-        kernel32.GetExitCodeProcess.restype = wintypes.BOOL
-        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
-        kernel32.CloseHandle.restype = wintypes.BOOL
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            return _windows_last_error() == 87  # ERROR_INVALID_PARAMETER
-        try:
-            code = wintypes.DWORD()
-            return bool(
-                kernel32.GetExitCodeProcess(handle, ctypes.byref(code)) and code.value != 259
-            )
-        finally:
-            kernel32.CloseHandle(handle)
-    except Exception:
-        return False
-
-
 def pid_exists(pid: int) -> bool:
     """Return True iff ``pid`` currently exists (best-effort).
 

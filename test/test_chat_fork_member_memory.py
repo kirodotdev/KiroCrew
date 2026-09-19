@@ -1,4 +1,4 @@
-"""Forks inherit verified private authority before copying any conversation rows."""
+"""Forks capture member identity and strict privacy before copying conversation rows."""
 
 from __future__ import annotations
 
@@ -11,13 +11,14 @@ from aiohttp.streams import EMPTY_PAYLOAD
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from chat_test_helpers import _make_app, _make_state
 
-from kiro_crew import member_memory_auth as auth
+from kiro_crew import execution_context as execution
 from kiro_crew import memory_stores
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.config.sections import MemoryStoreConfig
-from kiro_crew.dashboard import chat_fork, chat_persistence, chat_runner
+from kiro_crew.dashboard import chat_fork, chat_persistence
 from kiro_crew.dashboard.chat_utils import effective_session_key
 from kiro_crew.dashboard.state import _ChatSlot
+from kiro_crew.history import ConversationLog
 
 
 @pytest.fixture
@@ -29,9 +30,13 @@ def fork_source(tmp_path, monkeypatch):
     peer_store = memory_stores.provision_member_memory(cfg, "peer")
     cfg.save()
     state = _make_state(tmp_path / "sessions")
+    state.conversation_log = ConversationLog()
     parent = state.get_or_create_slot("source", agent="writer")
     parent.memory_store = store
-    auth.bind_private_session_store(effective_session_key(parent), store)
+    execution.bind_session_execution(
+        effective_session_key(parent),
+        execution.resolve_member_execution(cfg, "writer", validate_memory_files=False),
+    )
     parent.append("user", "Keep the release checklist.", "msg msg-u")
     parent.append("assistant", "Use the blue checklist.", "msg msg-a")
     parent.drain()
@@ -47,20 +52,22 @@ async def _fork(state, parent):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("memory_mode", ["persistent", "incognito", "temporary"])
-async def test_private_fork_is_pinned_before_copy_and_can_continue_after_restore(
+async def test_member_fork_inherits_identity_before_copy_and_never_persists_restricted_bodies(
     fork_source, monkeypatch, memory_mode
 ):
     _cfg, state, parent, store, _peer_store = fork_source
     parent.memory_mode = memory_mode
-    await chat_persistence.save_slot_off_loop(state, parent)
     parent_key = effective_session_key(parent)
+    captured = execution.read_session_execution(parent_key).with_mode(memory_mode)
+    execution.bind_session_execution(parent_key, captured)
+    await chat_persistence.save_slot_off_loop(state, parent)
     parent_bytes = state.conversation_log._path(parent_key).read_bytes()
     appended = []
     original_append = _ChatSlot.append
 
     def checked_append(slot, *args, **kwargs):
         if slot is not parent:
-            assert auth.read_private_session_store(effective_session_key(slot)) == store
+            assert execution.read_session_execution(effective_session_key(slot)) == captured
             assert slot.memory_store == store
             assert slot.memory_mode == memory_mode
             appended.append(args[0])
@@ -68,7 +75,6 @@ async def test_private_fork_is_pinned_before_copy_and_can_continue_after_restore
 
     monkeypatch.setattr(_ChatSlot, "append", checked_append)
     status, body = await _fork(state, parent)
-
     assert status == 200, body
     child = state._slots[body["key"]]
     key = effective_session_key(child)
@@ -84,58 +90,47 @@ async def test_private_fork_is_pinned_before_copy_and_can_continue_after_restore
         "Keep the release checklist.",
         "Use the blue checklist.",
     ]
-    assert state.conversation_log._path(parent_key).read_bytes() == parent_bytes
-    assert auth.read_private_session_store(parent_key) == store
-    assert auth.read_private_session_store(key) == store
-    assert state.conversation_log.get_metadata(key)["memory_store"] == store
-    # The real continuation guard sees a stored transcript and native-looking
-    # assistant rows; only the protected pin lets this fork retain its member.
-    await asyncio.to_thread(chat_runner._bind_private_slot_memory, key, store)
-    state._slots.pop(child.key)
-    restored = chat_persistence._rehydrate_slot_from_history(state, child.key)
-    assert restored is not None
-    assert restored.memory_store == store
-    assert restored.memory_mode == memory_mode
-    await asyncio.to_thread(chat_runner._bind_private_slot_memory, key, store)
+    assert state.conversation_log._path(parent_key).read_bytes().replace(
+        b"\r\n", b"\n"
+    ) == parent_bytes.replace(b"\r\n", b"\n")
+    assert execution.read_session_execution(key) == captured
+    if memory_mode == "persistent":
+        assert state.conversation_log.get_metadata(key)["execution_context"] == captured.to_record()
+        state._slots.pop(child.key)
+        restored = chat_persistence._rehydrate_slot_from_history(state, child.key)
+        assert restored is not None
+        assert restored.memory_store == store
+        assert restored.memory_mode == memory_mode
+    else:
+        assert not state.conversation_log.has_log(key)
+        assert b"Keep the release checklist" not in parent_bytes
+        state._slots.pop(child.key)
+        assert chat_persistence._rehydrate_slot_from_history(state, child.key) is None
 
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    "damage", ["missing-proof", "corrupt-proof", "peer-proof", "changed-member"]
+    "damage", ["missing-identity", "malformed-identity", "changed-recorded-store"]
 )
-async def test_private_fork_refuses_unproven_or_changed_parent_before_creating_child(
-    fork_source, damage
-):
-    cfg, state, parent, store, peer_store = fork_source
-    if damage == "missing-proof":
-        # An old V1 transcript can name today's private member without possessing
-        # its immutable authority. A new key supplies that genuinely absent case.
-        parent = state.get_or_create_slot("unprotected-source", agent="writer")
-        parent.memory_store = store
-        parent.append("user", "Old V1 conversation", "msg msg-u")
-        parent.append("assistant", "Old V1 answer", "msg msg-a")
-        parent.drain()
-    elif damage == "corrupt-proof":
-        auth._session_binding_path(effective_session_key(parent)).unlink()
-    elif damage == "peer-proof":
-        parent = state.get_or_create_slot("peer-source", agent="writer")
-        parent.memory_store = store
-        auth.bind_private_session_store(effective_session_key(parent), peer_store)
-        parent.append("user", "Foreign conversation", "msg msg-u")
-        parent.drain()
-    else:
-        cfg.agents["writer"].memory_store = "default"
-        cfg.save()
+async def test_member_fork_refuses_inconsistent_parent_before_creating_child(fork_source, damage):
+    _cfg, state, parent, _store, peer_store = fork_source
     await chat_persistence.save_slot_off_loop(state, parent)
+    parent_key = effective_session_key(parent)
+    if damage == "missing-identity":
+        state.conversation_log.update_metadata(parent_key, {"execution_context": None})
+    elif damage == "malformed-identity":
+        state.conversation_log.update_metadata(parent_key, {"execution_context": {"member_id": 7}})
+    else:
+        parent.memory_store = peer_store
     before = set(state._slots)
-    parent_bytes = state.conversation_log._path(effective_session_key(parent)).read_bytes()
-
+    parent_bytes = state.conversation_log._path(parent_key).read_bytes()
     status, body = await _fork(state, parent)
-
     assert status == 503
     assert body["code"] == "store_unavailable"
     assert set(state._slots) == before
-    assert state.conversation_log._path(effective_session_key(parent)).read_bytes() == parent_bytes
+    assert state.conversation_log._path(parent_key).read_bytes().replace(
+        b"\r\n", b"\n"
+    ) == parent_bytes.replace(b"\r\n", b"\n")
 
 
 @pytest.mark.asyncio
@@ -147,11 +142,11 @@ async def test_private_pin_failure_discards_empty_child_and_keeps_source(fork_so
     restricted = set(state._restricted_keys)
     attempted = []
 
-    def cannot_publish(key, store):
+    def cannot_publish(key, captured):
         attempted.append(key)
         raise OSError("binding publication unavailable")
 
-    monkeypatch.setattr(auth, "bind_private_session_store", cannot_publish)
+    monkeypatch.setattr(execution, "bind_session_execution", cannot_publish)
     status, body = await _fork(state, parent)
 
     assert status == 503
@@ -160,7 +155,7 @@ async def test_private_pin_failure_discards_empty_child_and_keeps_source(fork_so
     assert set(state._slots) == before
     assert state._restricted_keys == restricted
     assert not state.conversation_log.has_log(attempted[0])
-    assert auth.read_private_session_store(attempted[0]) is None
+    assert execution.read_session_execution(attempted[0]) is None
 
 
 @pytest.mark.asyncio
@@ -179,7 +174,7 @@ async def test_cancelled_private_fork_drains_binding_and_keeps_landed_proof(
     completed = threading.Event()
     attempted = []
     loop = asyncio.get_running_loop()
-    original_bind = auth.bind_private_session_store
+    original_bind = execution.bind_session_execution
 
     def blocked_bind(key, selected_store):
         attempted.append(key)
@@ -188,7 +183,7 @@ async def test_cancelled_private_fork_drains_binding_and_keeps_landed_proof(
         original_bind(key, selected_store)
         completed.set()
 
-    monkeypatch.setattr(auth, "bind_private_session_store", blocked_bind)
+    monkeypatch.setattr(execution, "bind_session_execution", blocked_bind)
     request = make_mocked_request(
         "POST",
         f"/api/chat/slots/{parent.key}/fork",
@@ -219,9 +214,11 @@ async def test_cancelled_private_fork_drains_binding_and_keeps_landed_proof(
     assert set(state._slots) == before
     assert state._restricted_keys == restricted
     assert not state.conversation_log.has_log(attempted[0])
-    assert auth.read_private_session_store(attempted[0]) == store
-    assert auth.read_private_session_store(parent_key) == store
-    assert state.conversation_log._path(parent_key).read_bytes() == parent_bytes
+    assert execution.read_session_execution(attempted[0]) is None
+    assert execution.read_session_execution(parent_key).store.legacy_name == store
+    assert state.conversation_log._path(parent_key).read_bytes().replace(
+        b"\r\n", b"\n"
+    ) == parent_bytes.replace(b"\r\n", b"\n")
 
 
 @pytest.mark.asyncio
@@ -246,5 +243,5 @@ async def test_existing_v1_forks_keep_their_unprotected_memory_contract(tmp_path
     assert child.agent == "legacy"
     assert child.memory_mode == "incognito"
     assert child.is_restricted is True
-    assert auth.read_private_session_store(effective_session_key(child)) is None
+    assert execution.read_session_execution(effective_session_key(child)).member_id is None
     assert child.messages[0]["content"] == "Keep this V1 conversation"

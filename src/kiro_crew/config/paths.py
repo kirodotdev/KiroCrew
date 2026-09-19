@@ -387,43 +387,6 @@ def peek_data_home() -> Path:
     return _resolve_default_home()
 
 
-def private_runtime_log_dir() -> Path | None:
-    """Diagnostics routing only; this NEVER grants session or memory authority.
-
-    The namespace publishes a readonly marker and an execution-scoped log mount
-    before Python starts, so early configuration diagnostics do not race the
-    gateway's later PID publication. Seatbelt receives a path hint but confines
-    writes to that exact directory independently of the hint.
-    """
-    home = config_dir()
-    if sys.platform == "linux":
-        from kiro_crew.platform_compat import is_readonly_filesystem
-
-        if not is_readonly_filesystem(home):
-            return None
-        marker = home / ".private-member-runtime"
-        try:
-            if not marker.is_symlink() and marker.stat().st_mode & 0o222 == 0:
-                with marker.open("rb") as handle:
-                    if handle.read(2) == b"1":
-                        return home / "agent-logs"
-        except OSError:
-            pass
-    elif sys.platform == "darwin":
-        hint = os.environ.get("_KIROCREW_PRIVATE_LOG_DIRECTORY", "")
-        if hint:
-            path = Path(hint)
-            # circular import: this module is a leaf (see the module docstring) and must
-            # not import from ``kiro_crew`` at import time.
-            from kiro_crew.memory_stores import EXECUTION_LOGS_DIR_NAME, MEMORY_STORES_DIR_NAME
-
-            if path.parent == home / MEMORY_STORES_DIR_NAME / EXECUTION_LOGS_DIR_NAME and (
-                path.name.startswith("member-")
-            ):
-                return path
-    return None
-
-
 def ensure_data_home() -> Path:
     """Eagerly resolve and create the data home — call BEFORE the loop.
 
@@ -449,14 +412,6 @@ def ensure_data_home() -> Path:
     the right outcome, an unbootable gateway is not.
     """
     home = config_dir()
-    if (
-        sys.platform == "linux"
-        and private_runtime_log_dir() is not None
-        and home.stat().st_mode & 0o777 == 0o700
-    ):
-        # The private launcher already established the home. Its namespace view
-        # is readonly; attempting chmod there produces a false security warning.
-        return home
     from kiro_crew.platform_compat import restrict_dir_to_owner
 
     try:
@@ -550,27 +505,27 @@ def config_package_dir() -> Path:
 def _in_ephemeral_tree(path: Path, env: Mapping[str, str] | None = None) -> bool:
     """Whether *path* lives inside an AppImage's ephemeral runtime mount.
 
-    An AppImage runs from a squashfs the runtime mounts under a randomized
-    ``/tmp/.mount_<name>XXXXXX`` directory and unmounts on exit, so anything
-    resolved there is valid ONLY for the life of that process. A machine-wide
-    launcher aimed into it dangles the moment the app quits — the same hazard as
-    :func:`_in_linked_git_worktree`, from a different direction.
+        An AppImage runs from a squashfs the runtime mounts under a randomized
+        ``/tmp/.mount_<name>XXXXXX`` directory and unmounts on exit, so anything
+        resolved there is valid ONLY for the life of that process. A machine-wide
+        launcher aimed into it dangles the moment the app quits — the same hazard as
+        :func:`_in_linked_git_worktree`, from a different direction.
 
-``$APPDIR`` (the mount point) is exported by the AppImage runtime and is the
-    authoritative signal; ``$APPIMAGE`` names the outer image file rather than the
-    mount, so it cannot answer an ancestry test. The ``.mount_`` path component is
-    the fallback for a child process that inherited no environment, matched on the
-    RESOLVED path so a symlink into the mount cannot slip past.
+    ``$APPDIR`` (the mount point) is exported by the AppImage runtime and is the
+        authoritative signal; ``$APPIMAGE`` names the outer image file rather than the
+        mount, so it cannot answer an ancestry test. The ``.mount_`` path component is
+        the fallback for a child process that inherited no environment, matched on the
+        RESOLVED path so a symlink into the mount cannot slip past.
 
-    Deliberately NOT "anything under the temp directory". A scratch tree in
-    ``/tmp`` is every bit as ephemeral, but a blanket temp-dir rule cannot tell a
-    reaped work directory from a legitimate install a developer or test placed
-    there, and the launcher those produce is caught precisely by
-    :func:`_bin_is_usable` instead — by the interpreter being gone, which is the
-    property that actually breaks the command.
+        Deliberately NOT "anything under the temp directory". A scratch tree in
+        ``/tmp`` is every bit as ephemeral, but a blanket temp-dir rule cannot tell a
+        reaped work directory from a legitimate install a developer or test placed
+        there, and the launcher those produce is caught precisely by
+        :func:`_bin_is_usable` instead — by the interpreter being gone, which is the
+        property that actually breaks the command.
 
-    Stdlib-only and subprocess-free for the same reason as the worktree guard:
-    this runs on the gateway start path.
+        Stdlib-only and subprocess-free for the same reason as the worktree guard:
+        this runs on the gateway start path.
     """
     env = os.environ if env is None else env
     appdir = (env.get("APPDIR") or "").strip()

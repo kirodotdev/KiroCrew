@@ -1,8 +1,7 @@
-"""Real namespace gateway, scheduled workflows, projected MCP and SQLite stores.
+"""Real gateway, scheduled workflows, ordinary MCP authentication and SQLite routing.
 
-Only the model's decisions are deterministic. No identity, proof, ownership,
-namespace, store resolver, SessionManager or workflow service is replaced.
-Run explicitly in the namespace-enabled CI job with KIROCREW_E2E_REQUIRE=1.
+Only the model decisions are deterministic. Canonical owner records, transport,
+SessionManager, store APIs and workflow execution use their production paths.
 """
 
 import asyncio
@@ -120,8 +119,6 @@ async def _nested_with_owner_approval(client, session, nested_source):
 
 def test_private_workflows_execute_over_real_projected_mcp():
     with _booted("rich") as (handle, client):
-        cfg = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))
-        assert cfg.get("agent", {}).get("sandbox", "auto") == "auto"
         members = {}
         for marker in ("A", "B"):
             member = f"workflow-e2e-{marker.lower()}"
@@ -167,13 +164,18 @@ def test_private_workflows_execute_over_real_projected_mcp():
         assert "WF_E2E_A_PRIVATE_LESSON" in json.dumps(result)
         assert "WF_E2E_A_PRIVATE_LESSON" in json.dumps(result["recall"])
         assert '"isError": true' not in json.dumps(result)
-        protected = json.loads(
-            (handle.home / "member-memory-bindings" / spawn_id / "memory.json").read_text(
-                encoding="utf-8"
-            )
+        record = json.loads(
+            (handle.home / "subagents" / spawn_id / "state.json").read_text(encoding="utf-8")
         )
         config = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))
-        assert protected["memory_store"] == config["agents"]["workflow-e2e-a"]["memory_store"]
+        assert (
+            record["execution_context"]["store"]["store_id"]
+            == config["agents"]["workflow-e2e-a"]["memory_store"]
+        )
+        assert (
+            record["execution_context"]["member_id"]
+            == config["agents"]["workflow-e2e-a"]["member_id"]
+        )
         for marker in ("B", "V"):
             control_source = f'META = {{"name": "foreign control"}}\nasync def workflow(ctx):\n    return await ctx.agent("[[WF_E2E:CONTROL:{marker}:{starts["A"]}]]")\n'
             control = _post_as(
@@ -186,9 +188,15 @@ def test_private_workflows_execute_over_real_projected_mcp():
             for tool, result in results.items():
                 text = json.dumps(result)
                 if tool == "workflow_list":
-                    assert starts["A"] not in text
+                    assert starts["A"] in text
+                elif tool == "workflow_result":
+                    assert "WF_E2E_A_PRIVATE_LESSON" in text
+                elif tool == "workflow_rerun_subtree":
+                    assert not result.get("isError"), (tool, result)
+                    replay_id = re.search(r"wf_\d+", text).group()
+                    _assert_result(_finished(client, replay_id), "A")
                 else:
-                    assert "refused" in text.lower(), (tool, result)
+                    assert "refused" not in text.lower(), (tool, result)
         config = json.loads((handle.home / "config.json").read_text(encoding="utf-8"))
         for marker in ("A", "B", "V"):
             if marker == "V":

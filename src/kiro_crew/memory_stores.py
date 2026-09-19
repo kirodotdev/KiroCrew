@@ -1,54 +1,25 @@
-"""Named memory stores: the two roots, the shape rule, and the resolvers.
+"""Named V1 stores and explicitly created member V2 stores.
 
-A crew (``cfg.agents[<crew>].memory_store``) names a memory store, and a store
-is a SEPARATE on-disk silo: its own markdown tree, its own FTS index and its
-own vector-store SQLite file. There is no workspace column and no cutover — isolation is the
-file boundary.
+V1 paths retain their existing layout: Global markdown in workspace/memory,
+Global FTS in memory_index.db, and vectors in memory.db. Named V1 stores keep
+those files under memory_stores/<store>.
 
-**There are TWO roots, and conflating them is the sharpest hazard here.** The
-resolvers below answer for the same store name, and they answer with different
-paths:
+A V2 member owns one memory.db with its immutable member/store identity and
+all learned memory tables. Its manual preferences/projects documents remain
+separate. FTS uses that same database. Only explicit new-member creation
+allocates files; resolution never repairs, migrates, copies or initializes data.
+Config membership and captured execution records route built-in operations;
+these paths are not a confidentiality boundary against same-user code.
 
-* :func:`memory_store_dir_for` — the MARKDOWN root, the directory holding
-  ``memory/preferences.md``, ``memory/projects.md`` and ``memory/history/*.md``.
-  For ``"default"`` this is :func:`kiro_crew.memory.workspace_dir`
-  (``config_dir()/"workspace"``), NOT the data home: returning the data home
-  would move every existing install's markdown memory out from under both the
-  consolidator and ``kirocrew memory search``.
-* :func:`resolve_store_path` — the VECTOR FILE. For ``"default"`` this is
-  ``config_dir()/"memory.db"``, byte-identical to the path
-  ``VectorMemoryStore()`` already defaults to.
-
-:func:`memory_index_path_for` answers a third question and does NOT follow the
-markdown root: the DEFAULT store's FTS index stays in the data-home root, beside
-``memory.db``, because that is the location the snapshot ``memory`` component,
-``portability``'s export zip and ``scripts/sync-to-remote.sh`` name for it. A
-NAMED store's index does live inside its own directory, and the first two of
-those consumers carry the whole ``memory_stores/`` tree (minus the host-local
-entries :func:`is_host_local_store_state` names).
-
-Nothing here moves data. A named store starts EMPTY; nothing is copied or
-inferred from the default store.
-
-A supplied named store is resolved exactly or raises UnknownMemoryStore. Existing
-members retain their declared V1 binding until the owner selects private V2.
-New members receive an empty owned V2 store. Private ownership is recorded in
-config, the bounded member-memory.json manifest and the database.
-
-LEAF module: stdlib-only imports at module scope, so ``security.py`` (imported
-very early, and which needs :data:`MEMORY_STORES_DIR_NAME` to build its
-sensitive-path fence) can depend on it without a cycle. Everything else is
-imported inside the function that needs it.
+This module keeps only stdlib imports at module scope to avoid early security
+and configuration import cycles.
 """
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
-import shutil
-import tempfile
 import threading
 import uuid
 from collections.abc import Iterable, Iterator, Sequence
@@ -80,19 +51,13 @@ DEFAULT_MEMORY_STORE = "default"
 #: :func:`resolve_store_path` and ``vector_memory``'s own default.
 MEMORY_DB_FILE = "memory.db"
 
-#: Entries under ``memory_stores/`` that are THIS HOST's runtime state rather than
-#: anyone's memory, spelled here so the writers and the backup tools agree on them.
-#: A bundle (``kirocrew snapshot``, the dashboard export) never carries them in
-#: either direction: the signing key is regenerated on the restoring host exactly
-#: as ``sel_hmac.key`` is, the execution logs are per-process diagnostics of runs
-#: that happened here, and the backup directories are the local rolling-durability
-#: copies plus their pending-restore journals -- the default store's own
-#: ``<home>/backups/`` is outside every snapshot component for the same reason.
+#: Historical credential/diagnostic filenames remain excluded from snapshot
+#: imports and exports. They are never routing authorities and new executions
+#: do not create them. Regular rolling backups and pending restore journals
+#: are also host-local, as with the default store's <home>/backups directory.
 MEMBER_API_KEY_FILE = ".member-api-key"
 MEMBER_BACKUPS_DIR_NAME = ".member-backups"
 EXECUTION_LOGS_DIR_NAME = ".execution-logs"
-#: Local retirement decisions survive restore and cannot be supplied by an archive.
-MEMBER_MEMORY_ARCHIVE_DIR = ".archived-members"
 #: A NAMED V1 store's rolling backups sit inside its own directory (``memory_backup``
 #: aliases this); a V2 member's sit under :data:`MEMBER_BACKUPS_DIR_NAME` instead.
 STORE_BACKUP_DIR_NAME = "backups"
@@ -101,7 +66,6 @@ _HOST_LOCAL_ROOT_ENTRIES: frozenset[str] = frozenset(
         MEMBER_API_KEY_FILE,
         MEMBER_BACKUPS_DIR_NAME,
         EXECUTION_LOGS_DIR_NAME,
-        MEMBER_MEMORY_ARCHIVE_DIR,
     }
 )
 
@@ -383,13 +347,11 @@ def memory_index_path_for(store: str) -> Path:
     store; moving it there would silently drop the index from every backup while
     a restore wrote a copy nothing reads.
 
-    A NAMED store's index lives inside that store's own directory, beside the
-    markdown tree it describes, which is what makes the index per-store and puts
-    it behind the ``memory_stores/`` fence. The snapshot and the export carry
-    that directory as part of the ``memory_stores/`` tree, so the index rides
-    beside its markdown there; ``sync-to-remote.sh`` still names root paths only.
+    A named V1 store's index lives beside its markdown tree. V2 returns its
+    existing ``memory.db`` because its FTS index and learned memory share that
+    database. Snapshot and export include the named store's directory.
 
-    The index is fully DERIVED — ``MemoryStore.rebuild_index`` regenerates it
+    The V1 index is fully DERIVED — ``MemoryStore.rebuild_index`` regenerates it
     from preferences.md, projects.md and history/*.md and reads no index state —
     so a store whose index is not backed up loses search results until the next
     rebuild, never memory.
@@ -397,6 +359,8 @@ def memory_index_path_for(store: str) -> Path:
     from kiro_crew.memory import INDEX_DB_FILE
 
     name = resolve_declared_store(store)
+    if memory_store_version(name) == 2:
+        return resolve_store_path(name)
     if name == DEFAULT_MEMORY_STORE:
         from kiro_crew.config.loader import config_dir
 
@@ -543,7 +507,7 @@ def declared_store_names() -> list[str]:
 
 
 def active_store_names() -> list[str]:
-    """Routine maintenance targets; archived private stores remain owner-visible."""
+    """Routine maintenance targets include every existing member store."""
     from kiro_crew.config.loader import KiroCrewConfig
 
     try:
@@ -558,13 +522,14 @@ def active_store_names() -> list[str]:
     active = []
     for name in sorted(usable_store_names(config.memory_stores) - {DEFAULT_MEMORY_STORE}):
         record = config.memory_stores[name]
-        owner = getattr(record, "owner_member", "")
-        if owner or getattr(record, "memory_version", 1) == 2:
-            if (
-                not owner
-                or getattr(record, "memory_version", 1) != 2
-                or bindings.get(name) != [owner]
-            ):
+        if getattr(record, "memory_version", 1) == 2:
+            member_id = getattr(record, "owner_member_id", "")
+            owners = [
+                alias
+                for alias, member in config.agents.items()
+                if getattr(member, "member_id", "") == member_id
+            ]
+            if not member_id or len(owners) != 1 or bindings.get(name) != owners:
                 continue
         active.append(name)
     return [DEFAULT_MEMORY_STORE, *active]
@@ -620,504 +585,119 @@ def ensure_memory_store_dir(store: str) -> Path:
         return target
 
 
-MEMBER_MEMORY_MANIFEST = "member-memory.json"
-_MEMBER_MEMORY_ARCHIVE_FILE = "archive.json"
-
-
-def _member_archive_path(name: str) -> Path:
-    """Stable retirement marker outside the store tree a restore can replace."""
-    validated = validate_memory_store_name(name)
-    return (
-        memory_stores_root().resolve()
-        / MEMBER_MEMORY_ARCHIVE_DIR
-        / validated
-        / _MEMBER_MEMORY_ARCHIVE_FILE
-    )
-
-
-def _member_archive_record(name: str) -> dict | None:
-    """Read one durable retirement marker, refusing malformed committed state."""
-    from kiro_crew.session_pid_sig import _read_regular_nofollow
-
-    try:
-        # Resolve the supported home/root alias before composing the protected
-        # archive path, then reject redirects even when the final leaf is absent.
-        path = _member_archive_path(name)
-        directory = path.parent
-        if directory.resolve() != directory or path.resolve() != path:
-            raise OSError("retirement marker is redirected")
-        try:
-            directory.lstat()
-        except FileNotFoundError:
-            return None
-        raw = _read_regular_nofollow(path)
-        if raw is None:
-            raise OSError("retirement marker is unreadable")
-        if len(raw.encode("utf-8")) > 4096:
-            raise ValueError("retirement marker is too large")
-        value = json.loads(raw)
-        if (
-            not isinstance(value, dict)
-            or value.get("version") != 1
-            or value.get("archived") is not True
-            or value.get("memory_store") != name
-            or not isinstance(value.get("owner_member"), str)
-            or not value["owner_member"]
-        ):
-            raise ValueError("retirement marker has invalid identity")
-        return value
-    except (OSError, ValueError) as exc:
-        raise UnknownMemoryStore(
-            f"memory store {name!r} retirement marker is invalid: {exc}"
-        ) from exc
-
-
-def require_member_memory_not_archived(name: str, *, expected_owner: str = "") -> None:
-    """Refuse a retired V2 generation even if raw config binds it again."""
-    record = _member_archive_record(name)
-    if record is None:
-        return
-    if expected_owner and record["owner_member"] != expected_owner:
-        raise UnknownMemoryStore(
-            f"memory store {name!r} retirement owner does not match {expected_owner!r}"
-        )
-    raise UnknownMemoryStore(
-        f"memory store {name!r} is archived; retained data was not reactivated"
-    )
-
-
-def _publish_member_archive_dir(staging: Path, destination: Path) -> None:
-    """Publish a complete retirement directory without replacing a winner."""
-    from kiro_crew import platform_compat
-
-    if platform_compat.IS_WINDOWS:
-        os.rename(staging, destination)
-        return
-    parent_fd = os.open(staging.parent, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
-    try:
-        platform_compat.rename_noreplace(
-            staging.name,
-            destination.name,
-            src_dir_fd=parent_fd,
-            dst_dir_fd=parent_fd,
-        )
-    finally:
-        os.close(parent_fd)
-
-
-def archive_member_memory_store(name: str, expected_owner: str) -> bool:
-    """Durably retire one exact private generation before removing its member.
-
-    Returns true only when this call created the marker, so a failed config
-    write can roll back its own admission change without removing an older one.
-    """
-    from kiro_crew import platform_compat
-    from kiro_crew.atomic_write import fsync_dir
-
-    existing = _member_archive_record(name)
-    if existing is not None:
-        if existing["owner_member"] != expected_owner:
-            raise UnknownMemoryStore(f"memory store {name!r} retirement identity changed")
-        return False
-    owner, version = member_memory_identity(name)
-    if owner != expected_owner or version != 2:
-        raise UnknownMemoryStore(
-            f"memory store {name!r} does not belong to Crew Member {expected_owner!r}"
-        )
-    path = _member_archive_path(name)
-    archive_root = path.parent.parent
-    platform_compat.make_owner_only_dir(memory_stores_root())
-    platform_compat.make_owner_only_dir(archive_root)
-    payload = json.dumps(
-        {
-            "version": 1,
-            "archived": True,
-            "memory_store": name,
-            "owner_member": expected_owner,
-        },
-        sort_keys=True,
-    )
-    staging = Path(
-        tempfile.mkdtemp(prefix=f".{path.parent.name}.", suffix=".tmp", dir=archive_root)
-    )
-    try:
-        platform_compat.restrict_dir_to_owner(staging)
-        staged_path = staging / _MEMBER_MEMORY_ARCHIVE_FILE
-        descriptor = os.open(
-            staged_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="") as handle:
-            handle.write(payload)
-            handle.flush()
-            os.fsync(handle.fileno())
-        platform_compat.restrict_to_owner(staged_path)  # lockdown-ok: owner-only staging
-        fsync_dir(staging)
-        published = False
-        try:
-            _publish_member_archive_dir(staging, path.parent)
-            published = True
-        except FileExistsError:
-            record = _member_archive_record(name)
-            if record is None or record["owner_member"] != expected_owner:
-                raise UnknownMemoryStore(f"memory store {name!r} retirement identity changed")
-            return False
-        try:
-            fsync_dir(archive_root)
-        except BaseException:
-            if published:
-                # Publication is visible but its directory entry was not made
-                # durable. Retract it atomically while the config lock still
-                # proves the member is live, rather than strand an active owner
-                # behind a marker whose caller was told creation failed.
-                rollback_member_memory_archive(name, expected_owner)
-            raise
-    finally:
-        shutil.rmtree(staging, ignore_errors=True)
-    return True
-
-
-def rollback_member_memory_archive(name: str, expected_owner: str) -> None:
-    """Remove only a marker this failed deletion transaction just created."""
-    from kiro_crew.atomic_write import fsync_dir
-
-    record = _member_archive_record(name)
-    if record is None or record["owner_member"] != expected_owner:
-        raise UnknownMemoryStore(f"memory store {name!r} retirement identity changed")
-    path = _member_archive_path(name)
-    archive_root = path.parent.parent
-    retired = archive_root / f".{path.parent.name}.rollback-{uuid.uuid4().hex}"
-    os.rename(path.parent, retired)
-    fsync_dir(archive_root)
-    (retired / path.name).unlink()
-    retired.rmdir()
-    fsync_dir(archive_root)
-
-
-def rollback_member_memory_archive_if_active(name: str, expected_owner: str) -> bool:
-    """Rollback only while config still binds the same live member generation."""
-    from kiro_crew.config.loader import coerce_dict_section, update_config_locked
-
-    rolled_back = False
-
-    def inspect(data: dict) -> None:
-        nonlocal rolled_back
-        agents = coerce_dict_section(data, "agents")
-        current = agents.get(expected_owner)
-        if isinstance(current, dict) and current.get("memory_store") == name:
-            rollback_member_memory_archive(name, expected_owner)
-            rolled_back = True
-        return None
-
-    with memory_store_namespace_lock():
-        update_config_locked(mutate=inspect, stamp_meta=False)
-    return rolled_back
-
-
-def _member_manifest(name: str) -> dict:
-    """Read a bounded ownership record without following a substituted file."""
-    target = _named_store_dir(validate_memory_store_name(name))
-    manifest = target / MEMBER_MEMORY_MANIFEST
-    try:
-        if manifest.resolve() != manifest or manifest.stat().st_size > 4096:
-            raise UnknownMemoryStore(f"memory store {name!r} has an invalid ownership record")
-        value = json.loads(manifest.read_text(encoding="utf-8"))
-        if not isinstance(value, dict):
-            raise ValueError("ownership record must be an object")
-        return value
-    except (OSError, ValueError) as exc:
-        raise UnknownMemoryStore(
-            f"memory store {name!r} ownership record is missing or unreadable: {exc}"
-        ) from exc
-
-
 def member_memory_identity(store: str) -> tuple[str, int]:
-    """Return a validated private manifest identity, or fail closed."""
-    require_member_memory_not_archived(store)
-    value = _member_manifest(store)
-    owner = value.get("owner_member")
-    version = value.get("memory_version")
-    if not isinstance(owner, str) or not owner or owner == DEFAULT_MEMORY_STORE or version != 2:
-        raise UnknownMemoryStore(
-            f"memory store {store!r} ownership record is not a private V2 identity"
-        )
-    return owner, version
+    """Read the canonical database identity without any filesystem manifest."""
+    from kiro_crew.vector_memory import read_member_database_identity
+
+    member_id, store_id = read_member_database_identity(_named_store_dir(store) / MEMORY_DB_FILE)
+    if store_id != store:
+        raise UnknownMemoryStore("Member database store identity does not match its location")
+    return member_id, 2
 
 
 def memory_store_version(store: str) -> int:
-    """Identify V2 positively; the global store and unowned legacy stores are V1.
+    """Use the explicit declaration; an invalid member store never becomes V1."""
+    if store in ("", DEFAULT_MEMORY_STORE):
+        return 1
+    from kiro_crew.config.loader import KiroCrewConfig
 
-    Reads only the bounded ownership manifest, so it is safe during vector-store
-    initialization and does not recursively load config. Runtime authorization
-    must still use ``require_member_memory_store``.
-    """
-    if store == DEFAULT_MEMORY_STORE or memory_store_name_defect(store) is not None:
-        return 1
-    try:
-        member_memory_identity(store)
-    except UnknownMemoryStore:
-        return 1
-    return 2
+    record = KiroCrewConfig.load().memory_stores.get(validate_memory_store_name(store))
+    if (
+        record is None
+        or type(record.memory_version) is not int
+        or record.memory_version not in (1, 2)
+    ):
+        raise UnknownMemoryStore("Memory store declaration is unavailable")
+    return record.memory_version
 
 
 def _require_legacy_store_files(store: str, target: Path) -> None:
-    """A legacy declaration cannot erase private manifest or database evidence."""
+    """An explicit member database cannot be opened through the V1 API."""
     import sqlite3
-    import stat
 
-    from kiro_crew.memory_schema import OWNER_MEMBER_META_KEY, PRIVATE_MEMORY_VERSION_META_KEY
-
-    manifest = target / MEMBER_MEMORY_MANIFEST
+    database = target / MEMORY_DB_FILE
+    if not database.exists():
+        return
+    if not database.is_file():
+        raise UnknownMemoryStore(f"memory store {store!r} is unreadable")
     try:
-        try:
-            manifest.lstat()
-        except FileNotFoundError:
-            pass
-        else:
-            raise UnknownMemoryStore(
-                f"memory store {store!r} retains private ownership evidence; V1 was not used"
-            )
-        database = target / MEMORY_DB_FILE
-        try:
-            info = database.lstat()
-        except FileNotFoundError:
-            return
-        if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-            raise OSError("database is not an exclusive regular file")
-        if database.resolve() != database:
-            raise OSError("database is redirected")
         connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
         try:
-            has_meta = connection.execute(
-                "SELECT 1 FROM sqlite_schema WHERE type IN ('table', 'view') AND name='memory_meta'"
-            ).fetchone()
-            if (
-                has_meta
-                and connection.execute(
-                    "SELECT 1 FROM memory_meta WHERE key IN (?, ?) LIMIT 1",
-                    (PRIVATE_MEMORY_VERSION_META_KEY, OWNER_MEMBER_META_KEY),
-                ).fetchone()
-            ):
+            if connection.execute(
+                "SELECT 1 FROM sqlite_schema WHERE name='member_database'"
+            ).fetchone():
                 raise UnknownMemoryStore(
-                    f"memory store {store!r} retains private database identity; V1 was not used"
+                    f"memory store {store!r} is a member database; V1 was not used"
                 )
         finally:
             connection.close()
-    except (OSError, sqlite3.Error) as exc:
-        raise UnknownMemoryStore(
-            f"memory store {store!r} legacy identity cannot be verified: {exc}"
-        ) from exc
-
-
-def _private_database_owner_hint(store: str, member: str) -> bool:
-    """Read only the ownership row as refusal evidence, never as admission."""
-    import sqlite3
-    import stat
-
-    from kiro_crew.memory_schema import OWNER_MEMBER_META_KEY
-
-    try:
-        database = _named_store_dir(store) / MEMORY_DB_FILE
-        if database.resolve() != database:
-            return False
-        descriptor = os.open(
-            database, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
-        )
-        try:
-            info = os.fstat(descriptor)
-            if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1:
-                return False
-            if os.read(descriptor, 16) != b"SQLite format 3\x00":
-                return False
-        finally:
-            os.close(descriptor)
-        connection = sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)
-        try:
-            row = connection.execute(
-                "SELECT 1 FROM memory_meta WHERE key=? AND value=? LIMIT 1",
-                (OWNER_MEMBER_META_KEY, member),
-            ).fetchone()
-            return row is not None
-        finally:
-            connection.close()
-    except (OSError, sqlite3.Error, UnknownMemoryStore):
-        return False
-
-
-def _require_legacy_member_binding(config, member: str, *, inspect_files: bool) -> None:
-    """Reject a lost private binding without adopting any discovered store."""
-    for name, record in config.memory_stores.items():
-        if getattr(record, "owner_member", "") == member:
-            archived = _member_archive_record(name) if inspect_files else None
-            if archived is None or archived["owner_member"] != member:
-                raise UnknownMemoryStore(
-                    f"Crew Member {member!r} has a private memory declaration; "
-                    "its missing or changed binding cannot use V1"
-                )
-    if not inspect_files:
-        return
-    root = memory_stores_root().resolve()
-    slug = re.sub(r"[^a-z0-9]+", "-", member.lower()).strip("-")[:32] or "crew"
-    prefix = f"member-{slug}-"
-    try:
-        with os.scandir(root) as entries:
-            names = [entry.name for entry in entries]
-    except FileNotFoundError:
-        return
-    except OSError as exc:
-        raise UnknownMemoryStore(
-            f"Crew Member {member!r} private memory evidence is unreadable: {exc}"
-        ) from exc
-    for name in names:
-        if name == DEFAULT_MEMORY_STORE or memory_store_name_defect(name) is not None:
-            continue
-        suffix = name.removeprefix(prefix)
-        generated = name.startswith(prefix) and re.fullmatch(r"[0-9a-f]{32}", suffix) is not None
-        try:
-            manifest = _member_manifest(name)
-        except UnknownMemoryStore:
-            # The generated name is a refusal hint only. It never grants an
-            # owner, adopts a store, or makes an unrelated corrupt peer fatal.
-            manifest = {"owner_member": member} if generated else {}
-        if not manifest.get("owner_member") and not generated:
-            manifest = {
-                "owner_member": member if _private_database_owner_hint(name, member) else ""
-            }
-        if generated and (
-            not isinstance(manifest.get("owner_member"), str)
-            or not manifest["owner_member"]
-            or manifest.get("memory_version") != 2
-        ):
-            manifest = {"owner_member": member}
-        if manifest.get("owner_member") != member:
-            continue
-        archived = _member_archive_record(name)
-        if archived is not None and archived["owner_member"] == member:
-            continue
-        raise UnknownMemoryStore(
-            f"Crew Member {member!r} retains private memory evidence at {name!r}; "
-            "restore its binding instead of using V1"
-        )
+    except sqlite3.Error as exc:
+        raise UnknownMemoryStore(f"memory store {store!r} is unreadable") from exc
 
 
 def require_memory_store(store: str, *, config=None, require_directory: bool = True) -> str:
-    """Validate a trusted persisted store binding, without fallback or repair.
-
-    ``default`` is the explicit V1 identity. Callers must distinguish absent
-    legacy metadata from malformed or missing member bindings before calling.
-    Directory existence is required on use, so deleting a member directory
-    cannot silently replace its memory with an empty store.
-    """
+    """Validate a declared store and its exact persisted database identity."""
     validate_memory_store_name(store)
-    if store == DEFAULT_MEMORY_STORE:
-        if require_directory:
-            from kiro_crew.memory_startup import require_memory_ready
-
-            require_memory_ready(store)
-        return store
-    # A retained store tree and ownership manifest are evidence of the retired
-    # generation, not authority to reactivate it. Keep this on the shared
-    # admission seam so callers that intentionally skip filesystem readiness
-    # (configuration and scheduling validation) cannot bypass retirement.
-    require_member_memory_not_archived(store)
-    if require_directory:
-        from kiro_crew.memory_startup import require_memory_ready
-
-        require_memory_ready(store)
     if config is None:
         from kiro_crew.config.loader import KiroCrewConfig
 
         config = KiroCrewConfig.load()
-    if store not in usable_store_names(config.memory_stores):
-        raise UnknownMemoryStore(
-            f"memory store {store!r} is not declared; global memory was not used"
-        )
-    if require_directory:
-        target = _named_store_dir(store)
-        try:
-            # scandir actually opens the directory, unlike exists()/os.access().
-            with os.scandir(target):
-                pass
-        except OSError as exc:
-            raise UnknownMemoryStore(
-                f"memory store {store!r} is missing or unreadable: {exc}; global memory was not used"
-            ) from exc
-    record = config.memory_stores[store]
-    owner = getattr(record, "owner_member", "")
-    if type(getattr(record, "memory_version", None)) is not int:
-        raise UnknownMemoryStore(f"memory store {store!r} has an invalid memory version")
-    if owner or getattr(record, "memory_version", 1) == 2:
-        if not isinstance(owner, str) or not owner or owner == DEFAULT_MEMORY_STORE:
-            raise UnknownMemoryStore(f"memory store {store!r} has no valid private owner")
-        if getattr(record, "memory_version", 1) != 2:
-            raise UnknownMemoryStore(f"memory store {store!r} has inconsistent memory version")
-        bindings = [name for name, agent in config.agents.items() if agent.memory_store == store]
-        if bindings != [owner]:
-            raise UnknownMemoryStore(
-                f"memory store {store!r} must belong exclusively to member {owner!r}"
-            )
+    if store == DEFAULT_MEMORY_STORE:
+        return store
+    record = config.memory_stores.get(store)
+    if (
+        record is None
+        or type(record.memory_version) is not int
+        or record.memory_version not in (1, 2)
+    ):
+        raise UnknownMemoryStore(f"Memory store {store!r} is unavailable; Global was not used")
+    target = _named_store_dir(store)
+    if require_directory and not target.is_dir():
+        raise UnknownMemoryStore(f"Memory store {store!r} is missing; Global was not used")
+    if record.memory_version == 2:
+        from kiro_crew.execution_context import member_config_for_id
+
+        member_id = getattr(record, "owner_member_id", "")
+        _alias, member = member_config_for_id(config, member_id)
+        if member.memory_store != store:
+            raise UnknownMemoryStore("Member and store declarations disagree")
+        if sum(agent.memory_store == store for agent in config.agents.values()) != 1:
+            raise UnknownMemoryStore("A member store cannot be shared")
         if require_directory:
-            manifest = _member_manifest(store)
-            if manifest.get("owner_member") != owner or manifest.get("memory_version") != 2:
-                raise UnknownMemoryStore(
-                    f"memory store {store!r} ownership does not match member {owner!r}"
-                )
-            database = target / MEMORY_DB_FILE
+            from kiro_crew.vector_memory import read_member_database_identity, sqlite3
+
             try:
-                if database.resolve() != database:
-                    raise OSError("database is redirected to another file")
-                with database.open("rb") as handle:
-                    if os.fstat(handle.fileno()).st_nlink != 1:
-                        raise OSError("database has a hard-link alias")
-                    if handle.read(16) != b"SQLite format 3\x00":
-                        raise OSError("database header is invalid")
-            except OSError as exc:
+                identity = read_member_database_identity(target / MEMORY_DB_FILE)
+            except (OSError, ValueError, sqlite3.Error) as exc:
                 raise UnknownMemoryStore(
-                    f"memory store {store!r} database is missing or unreadable: {exc}"
+                    "Member database is missing or unreadable; Global was not used"
                 ) from exc
-    else:
-        if owner != "" or record.memory_version != 1:
-            raise UnknownMemoryStore(f"memory store {store!r} has an invalid legacy declaration")
-        if require_directory:
-            _require_legacy_store_files(store, target)
+            if identity != (member_id, store):
+                raise UnknownMemoryStore("Member database identity does not match its declaration")
+    elif getattr(record, "owner_member_id", "") or record.owner_member:
+        raise UnknownMemoryStore("A V1 store cannot carry a member identity")
+    elif require_directory:
+        _require_legacy_store_files(store, target)
     return store
 
 
 def require_member_memory_store(config, member: str, *, require_directory: bool = True) -> str:
-    """Resolve an existing V1 binding or an exclusively owned V2 store exactly."""
+    """Resolve the explicitly selected member, without guessing from a template."""
     if member == DEFAULT_MEMORY_STORE:
-        if require_directory:
-            from kiro_crew.memory_startup import require_memory_ready
-
-            require_memory_ready(DEFAULT_MEMORY_STORE)
         return DEFAULT_MEMORY_STORE
     agent = config.agents.get(member)
     if agent is None:
-        raise UnknownMemoryStore(f"unknown Crew Member {member!r}; global memory was not used")
-    store = agent.memory_store
-    validate_memory_store_name(store)
-    record = config.memory_stores.get(store) if isinstance(store, str) else None
-    if store == DEFAULT_MEMORY_STORE or (
-        record is not None
-        and getattr(record, "owner_member", None) == ""
-        and type(getattr(record, "memory_version", None)) is int
-        and record.memory_version == 1
-    ):
-        _require_legacy_member_binding(config, member, inspect_files=require_directory)
-        return require_memory_store(store, config=config, require_directory=require_directory)
-    if (
-        not isinstance(store, str)
-        or store == DEFAULT_MEMORY_STORE
-        or record is None
-        or getattr(record, "owner_member", "") != member
-        or getattr(record, "memory_version", 1) != 2
-    ):
-        raise UnknownMemoryStore(
-            f"Crew Member {member!r} has a missing or invalid memory binding. "
-            "Existing memory was not changed."
-        )
-    return require_memory_store(store, config=config, require_directory=require_directory)
+        raise UnknownMemoryStore(f"Unknown Crew Member {member!r}; Global was not used")
+    store = require_memory_store(
+        agent.memory_store, config=config, require_directory=require_directory
+    )
+    record = config.memory_stores.get(store)
+    if agent.member_id and (record is None or record.memory_version != 2):
+        raise UnknownMemoryStore("The member identity has no V2 store; Global was not used")
+    if record is not None and record.memory_version == 2:
+        if not agent.member_id or agent.member_id != record.owner_member_id:
+            raise UnknownMemoryStore("The member's immutable memory identity is unavailable")
+    return store
 
 
 def unusable_legacy_binding(config, member: str) -> str | None:
@@ -1217,153 +797,71 @@ def memory_store_namespace_lock(root: Path | None = None) -> Iterator[None]:
         os.close(fd)
 
 
-@memory_store_namespace_lock()
 def provision_member_memory(config, member: str) -> str:
-    """Allocate an empty private V2 store and bind the member in the given config.
+    """Validate configuration before allocating or acquiring a store write lock."""
+    from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 
-    The caller holds its config mutation lock and persists the record before
-    exposing the member. An exclusive random directory claim and ownership
-    manifest prevent another process or a recreated member adopting old data.
-    Existing private ownership is immutable; this is only creation/explicit
-    initialization of legacy members, never a reset operation.
-    """
+    if set(getattr(config, "degraded_sections", ())) & {"memory", DEGRADED_WHOLE_CONFIG}:
+        raise UnknownMemoryStore("Memory configuration is unreadable")
+    with memory_store_namespace_lock():
+        return _provision_member_memory(config, member)
+
+
+def _provision_member_memory(config, member: str) -> str:
     from kiro_crew import platform_compat
     from kiro_crew.config.sections import MemoryStoreConfig
-    from kiro_crew.memory_startup import require_memory_prepared
+    from kiro_crew.members import slug_for_name
+    from kiro_crew.vector_memory import create_member_database
 
-    require_memory_prepared()
-
-    if member == DEFAULT_MEMORY_STORE:
-        raise UnknownMemoryStore("the default assistant keeps Global Memory V1")
-    if member not in config.agents:
-        raise UnknownMemoryStore(f"unknown Crew Member {member!r}")
+    if member == DEFAULT_MEMORY_STORE or member not in config.agents:
+        raise UnknownMemoryStore("An existing non-default member is required")
     agent = config.agents[member]
-    current = (
-        config.memory_stores.get(agent.memory_store)
-        if isinstance(agent.memory_store, str)
-        else None
-    )
-    if current and (
-        getattr(current, "owner_member", "")
-        or type(current.memory_version) is not int
-        or current.memory_version != 1
-    ):
+    current = config.memory_stores.get(agent.memory_store)
+    if current is not None and current.memory_version == 2:
         return require_member_memory_store(config, member)
-    # A genuinely new member may reuse an old display name while allocating a
-    # fresh generation. Only an existing member is making the V1-to-V2 choice.
-    from kiro_crew.config.loader import KiroCrewConfig
-
-    if member in KiroCrewConfig.load().agents:
-        _require_legacy_member_binding(config, member, inspect_files=True)
-    if isinstance(agent.memory_store, str) and agent.memory_store != DEFAULT_MEMORY_STORE:
-        if memory_store_name_defect(agent.memory_store) is None:
-            _require_legacy_store_files(agent.memory_store, _named_store_dir(agent.memory_store))
-    # A deleted or package-pruned member leaves its old ownership record and
-    # directory intact.  Reusing the display name is a new member generation:
-    # allocate a new random store below rather than silently adopting that
-    # retained history.  The old store remains unbound and therefore fails
-    # require_memory_store() until an explicit recovery flow restores it.
+    member_id = agent.member_id
+    if member_id:
+        raise UnknownMemoryStore("Existing member identity has no valid store; allocation refused")
+    if current is not None and (current.owner_member_id or current.owner_member):
+        raise UnknownMemoryStore("Existing member store identity is invalid")
+    if not member_id:
+        base = slug_for_name(member)
+        identities = [getattr(item, "member_id", "") for item in config.agents.values()]
+        # Deleted members retain their stores; captured work must never resolve
+        # their identities to a newly created member with the same slug.
+        identities.extend(item.owner_member_id for item in config.memory_stores.values())
+        if any(not isinstance(identity, str) for identity in identities):
+            raise UnknownMemoryStore(
+                "Configured member identity must be a string; allocation refused"
+            )
+        existing = set(identities)
+        member_id = base
+        while member_id in existing:
+            member_id = f"{base[:48]}-{uuid.uuid4().hex[:12]}"
     root = memory_stores_root()
     platform_compat.make_owner_only_dir(root)
-    slug = re.sub(r"[^a-z0-9]+", "-", member.lower()).strip("-")[:32] or "crew"
     while True:
-        name = f"member-{slug}-{uuid.uuid4().hex}"
-        if name in config.memory_stores:
-            continue
+        name = f"member-{member_id[:32]}-{uuid.uuid4().hex}"
         target = _named_store_dir(name)
         try:
             target.mkdir(mode=0o700, exist_ok=False)
             break
         except FileExistsError:
             continue
-    manifest = target / MEMBER_MEMORY_MANIFEST
-    try:
-        platform_compat.make_owner_only_dir(target)
-        with manifest.open("x", encoding="utf-8") as handle:
-            json.dump({"owner_member": member, "memory_version": 2}, handle)
-        # Create the canonical V2 database before the member becomes visible.
-        # init() selects algorithms from the manifest without loading config.
-        from kiro_crew.vector_memory import VectorMemoryStore
+    create_member_database(target / MEMORY_DB_FILE, member_id=member_id, store_id=name)
+    from kiro_crew.atomic_write import atomic_write
+    from kiro_crew.memory import PREFERENCES_FILE, PROJECTS_FILE
 
-        vectors = VectorMemoryStore(db_path=target / MEMORY_DB_FILE)
-        try:
-            vectors.init()
-        finally:
-            vectors.close()
-        config.memory_stores[name] = MemoryStoreConfig(owner_member=member, memory_version=2)
-        agent.memory_store = name
-    except BaseException:
-        # Only the just-created manifest and an empty directory are removed.
-        # Never recursively clean a path which another component may have used.
-        manifest.unlink(missing_ok=True)
-        try:
-            target.rmdir()
-        except OSError:
-            logger.warning(
-                "failed member initialization left an unreferenced directory at %s", target
-            )
-        raise
+    manual = target / "memory"
+    manual.mkdir()
+    atomic_write(manual / PREFERENCES_FILE, "# Member Preferences\n", fsync=True)
+    atomic_write(manual / PROJECTS_FILE, "# Member Projects\n", fsync=True)
+    agent.member_id = member_id
+    agent.memory_store = name
+    config.memory_stores[name] = MemoryStoreConfig(
+        owner_member=member, owner_member_id=member_id, memory_version=2
+    )
     return name
-
-
-@memory_store_namespace_lock()
-def retire_unpublished_member_memory_store(name: str, expected_owner: str) -> bool:
-    """Retire one fresh allocation only while current config has no publication.
-
-    The allocation has already created a complete private store, so deleting it
-    would discard evidence and make an ambiguous failure look like an empty retry.
-    Instead, publish the ordinary retirement marker while holding the same
-    cross-process config lock used by every member binding writer.  A store
-    declaration or any agent reference is enough to preserve the generation:
-    either means a competing/completed publication may own it.  Malformed raw
-    sections likewise refuse cleanup because absence cannot be proved safely.
-
-    The caller must pass only the key freshly returned by its own allocation,
-    never an existing V2 binding returned by provision's idempotent path.
-    Returns true only when this call created the retirement marker.  The config
-    document is inspected but never rewritten; a missing config is uncertainty
-    and preserves the store.
-    """
-    from kiro_crew.config.loader import config_path, update_config_locked
-
-    try:
-        locked_path = config_path().resolve(strict=True)
-    except OSError as exc:
-        raise UnknownMemoryStore(
-            "agent configuration is unavailable; the private allocation was preserved"
-        ) from exc
-
-    retired = False
-
-    def retire_if_unpublished(data: dict) -> None:
-        nonlocal retired
-        try:
-            locked_path.lstat()
-        except OSError as exc:
-            raise UnknownMemoryStore(
-                "agent configuration is unavailable; the private allocation was preserved"
-            ) from exc
-        agents = data.get("agents", {})
-        stores = data.get("memory_stores", {})
-        if not isinstance(agents, dict) or not isinstance(stores, dict):
-            raise UnknownMemoryStore(
-                "agent or memory store configuration is unreadable; "
-                "the private allocation was preserved"
-            )
-        if name in stores:
-            return None
-        for entry in agents.values():
-            if not isinstance(entry, dict):
-                raise UnknownMemoryStore(
-                    "agent configuration is unreadable; the private allocation was preserved"
-                )
-            if entry.get("memory_store", DEFAULT_MEMORY_STORE) == name:
-                return None
-        retired = archive_member_memory_store(name, expected_owner)
-        return None
-
-    update_config_locked(locked_path, mutate=retire_if_unpublished)
-    return retired
 
 
 @memory_store_namespace_lock()
@@ -1397,6 +895,9 @@ def persist_member_config(
     )
     agent_record = asdict(config.agents[member])
     if changed_fields is not None:
+        changed_fields = set(changed_fields)
+        if not unchanged_binding:
+            changed_fields.add("member_id")
         if changed_fields - agent_record.keys():
             raise UnknownMemoryStore("member update contains unknown fields")
         if not create and not unchanged_binding and "memory_store" not in changed_fields:
@@ -1435,30 +936,33 @@ def persist_member_config(
                 raise UnknownMemoryStore(
                     f"Crew Member {member!r} memory changed concurrently; reload the roster"
                 )
+        if (
+            isinstance(current, dict)
+            and current.get("member_id")
+            and current["member_id"] != config.agents[member].member_id
+        ):
+            raise UnknownMemoryStore("Member identity is immutable")
         if store_record is not None:
-            # This is the second half of failed-publication cleanup's lock
-            # ordering.  A publisher can validate its in-memory store, pause,
-            # and then lose this config lock to cleanup.  Rechecking the
-            # retirement marker while holding the lock means exactly one side
-            # wins: an earlier publication is visible to cleanup, while an
-            # earlier cleanup prevents a stale publisher reviving the store.
-            require_member_memory_not_archived(store, expected_owner=member)
-            # Retired generations may retain an unbound store with the same
-            # owner display name.  Store identity is the random store key, and
-            # only the newly created key is bound here; never infer a binding
-            # from an older owner_member value.
+            # Publish one immutable member/store pair under the ordinary config lock.
             for name, entry in agents.items():
                 if (
                     name != member
                     and isinstance(entry, dict)
-                    and entry.get("memory_store") == store
+                    and (
+                        entry.get("memory_store") == store
+                        or (
+                            config.agents[member].member_id
+                            and entry.get("member_id") == config.agents[member].member_id
+                        )
+                    )
                 ):
                     raise UnknownMemoryStore(
                         f"memory store {store!r} is already bound to another member"
                     )
             existing = stores.get(store)
             if existing is not None and (
-                not isinstance(existing, dict) or existing.get("owner_member") != member
+                not isinstance(existing, dict)
+                or existing.get("owner_member_id") != config.agents[member].member_id
             ):
                 raise UnknownMemoryStore(f"memory store {store!r} ownership changed concurrently")
             stores[store] = {**(existing or {}), **store_record}

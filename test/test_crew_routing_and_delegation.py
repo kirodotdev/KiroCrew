@@ -17,7 +17,6 @@ from __future__ import annotations
 import json
 
 import pytest
-from member_memory_helpers import patch_private_memory_supported, write_member_manifest
 
 from kiro_crew.trigger_match import MIN_TRIGGER_OVERLAP, rank_triggered, trigger_score, words_of
 
@@ -114,17 +113,12 @@ class TestRanking:
 
 def _materialize_private_stores(config):
     """Create readable, empty owned stores for routing execution fixtures."""
-    from kiro_crew.memory_stores import memory_store_dir_for
-    from kiro_crew.vector_memory import VectorMemoryStore
+    from kiro_crew.memory_stores import provision_member_memory
 
-    for name, record in config.memory_stores.items():
-        if record.memory_version != 2:
-            continue
-        root = memory_store_dir_for(name)
-        write_member_manifest(root, record.owner_member)
-        vector = VectorMemoryStore(db_path=root / "memory.db")
-        vector.init()
-        vector.close()
+    for member in config.agents:
+        if member != config.default_agent:
+            provision_member_memory(config, member)
+    config.save()
 
 
 @pytest.fixture
@@ -134,20 +128,14 @@ def crew_config(tmp_path, monkeypatch):
     (tmp_path / "config.json").write_text(
         json.dumps(
             {
-                "memory_stores": {
-                    "coding": {"owner_member": "coding crew", "memory_version": 2},
-                    "email": {"owner_member": "email crew", "memory_version": 2},
-                },
                 "default_agent": "kirocrew",
                 "agents": {
                     "kirocrew": {},
                     "coding crew": {
-                        "memory_store": "coding",
                         "triggers": "fix the bug, review the pull request",
                         "description": "Owns the codebase",
                     },
                     "email crew": {
-                        "memory_store": "email",
                         "triggers": "draft a reply, inbox",
                         "description": "Owns correspondence",
                     },
@@ -171,7 +159,11 @@ class TestRouteCrew:
 
         from kiro_crew import mcp_core
 
-        legacy = replace(crew_config.agents["coding crew"], memory_store="missing-store")
+        legacy = replace(
+            crew_config.agents["coding crew"],
+            member_id="broken-member",
+            memory_store="missing-store",
+        )
         crew_config.agents = {"legacy": legacy, **crew_config.agents}
         for name in ("legacy", "coding crew", "email crew"):
             crew_config.agents[name].triggers = "fix the bug"
@@ -180,9 +172,12 @@ class TestRouteCrew:
         out = json.loads(mcp_core._do_route_crew("fix the bug"))
 
         assert [item["crew"] for item in out["matches"]] == ["coding crew", "email crew"]
-        assert [item["memory_store"] for item in out["matches"]] == ["coding", "email"]
+        assert [item["memory_store"] for item in out["matches"]] == [
+            crew_config.agents[name].memory_store for name in ("coding crew", "email crew")
+        ]
         assert [item["crew"] for item in out["unavailable"]] == ["legacy"]
-        assert "missing or invalid memory binding" in out["unavailable"][0]["reason"]
+        assert "missing-store" in out["unavailable"][0]["reason"]
+        assert "Global was not used" in out["unavailable"][0]["reason"]
         assert "memory_store" not in out["unavailable"][0]
 
     def test_all_unavailable_is_distinct_from_no_trigger_match(self, crew_config, monkeypatch):
@@ -248,7 +243,7 @@ class TestRouteCrew:
 
         out = json.loads(mcp_core._do_route_crew("please fix the bug in the parser"))
         assert [m["crew"] for m in out["matches"]] == ["coding crew"]
-        assert out["matches"][0]["memory_store"] == "coding"
+        assert out["matches"][0]["memory_store"] == crew_config.agents["coding crew"].memory_store
         assert out["matches"][0]["description"] == "Owns the codebase"
 
     def test_an_email_task_routes_to_the_email_crew(self, crew_config):
@@ -256,7 +251,7 @@ class TestRouteCrew:
 
         out = json.loads(mcp_core._do_route_crew("draft a reply to this inbox thread"))
         assert [m["crew"] for m in out["matches"]] == ["email crew"]
-        assert out["matches"][0]["memory_store"] == "email"
+        assert out["matches"][0]["memory_store"] == crew_config.agents["email crew"].memory_store
 
     def test_no_match_reports_the_default_and_no_crew(self, crew_config):
         from kiro_crew import mcp_core
@@ -283,7 +278,9 @@ class TestDelegationCarriesTheCrewsStore:
 
         coding = resolve_agent_bindings(crew_config, "coding crew").memory_store_name
         email = resolve_agent_bindings(crew_config, "email crew").memory_store_name
-        assert (coding, email) == ("coding", "email")
+        assert coding == crew_config.agents["coding crew"].memory_store
+        assert email == crew_config.agents["email crew"].memory_store
+        assert coding != email
 
     def test_a_crew_name_is_not_a_template_name(self, crew_config):
         """The leak, stated as a test.
@@ -294,8 +291,9 @@ class TestDelegationCarriesTheCrewsStore:
         """
         from kiro_crew.context import _target_key
 
-        _, via_crew = _target_key(None, "coding")
-        assert via_crew == "coding"
+        store = crew_config.agents["coding crew"].memory_store
+        _, via_crew = _target_key(None, store)
+        assert via_crew == store
         key_via_agent, via_agent = _target_key(None, None)
         assert via_agent == "" and key_via_agent == "default"
 
@@ -345,13 +343,14 @@ class TestDelegationCarriesTheCrewsStore:
 
         # This test opens the real owned store but never starts a provider.
         # Host sandbox capability is covered by the member execution tests.
-        patch_private_memory_supported(monkeypatch)
+        store_name = crew_config.agents["coding crew"].memory_store
         builder = ContextBuilder()
         try:
-            await prepare_store_vectors(builder, "coding")
-            assert "coding" in ctx_mod._vector_stores
-            assert ctx_mod._vector_stores["coding"]._db_path.name == "memory.db"
-            assert "memory_stores/coding" in ctx_mod._vector_stores["coding"]._db_path.as_posix()
+            await prepare_store_vectors(builder, store_name)
+            assert store_name in ctx_mod._vector_stores
+            database = ctx_mod._vector_stores[store_name]._db_path
+            assert database.name == "memory.db"
+            assert database.parent.name == store_name
         finally:
             for store in ctx_mod._vector_stores.values():
                 try:
@@ -408,15 +407,11 @@ class TestTheSpawnEndpointActuallyDelegates:
         return resp, mgr
 
     _CFG = {
-        "memory_stores": {
-            "coding": {"owner_member": "coding", "memory_version": 2},
-            "email": {"owner_member": "email", "memory_version": 2},
-        },
         "default_agent": "kirocrew",
         "agents": {
             "kirocrew": {"kiro_agent": "kirocrew"},
-            "coding": {"memory_store": "coding", "kiro_agent": "kirocrew", "triggers": "fix"},
-            "email": {"memory_store": "email", "kiro_agent": "kirocrew", "triggers": "draft"},
+            "coding": {"kiro_agent": "kirocrew", "triggers": "fix"},
+            "email": {"kiro_agent": "kirocrew", "triggers": "draft"},
         },
     }
 
@@ -426,13 +421,19 @@ class TestTheSpawnEndpointActuallyDelegates:
         )
         assert resp.status == 200, resp
         mgr.spawn.assert_called_once()
-        assert mgr.spawn.call_args.kwargs["memory_store"] == "coding"
+        config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        assert (
+            mgr.spawn.call_args.kwargs["memory_store"] == config["agents"]["coding"]["memory_store"]
+        )
 
     def test_a_different_crew_gets_a_different_store(self, tmp_path, monkeypatch):
         _resp, mgr = self._spawn_call(
             {"task": "draft a reply", "crew": "email"}, self._CFG, tmp_path, monkeypatch
         )
-        assert mgr.spawn.call_args.kwargs["memory_store"] == "email"
+        config = json.loads((tmp_path / "config.json").read_text(encoding="utf-8"))
+        assert (
+            mgr.spawn.call_args.kwargs["memory_store"] == config["agents"]["email"]["memory_store"]
+        )
 
     def test_omitting_crew_leaves_the_store_unnamed(self, tmp_path, monkeypatch):
         """Unchanged behaviour for every caller that does not delegate."""
@@ -446,8 +447,8 @@ class TestTheSpawnEndpointActuallyDelegates:
         resp, mgr = self._spawn_call(
             {"task": "x", "crew": "ghost"}, self._CFG, tmp_path, monkeypatch
         )
-        assert resp.status == 400
-        assert json.loads(resp.text)["code"] == "unknown_crew"
+        assert resp.status == 404
+        assert json.loads(resp.text)["code"] == "unknown_member"
         mgr.spawn.assert_not_called()
 
     def test_the_mcp_tool_forwards_the_field_it_accepts(self):
@@ -472,7 +473,9 @@ class TestTheSpawnEndpointActuallyDelegates:
         assert "crew" in schema["properties"]
         validate({"task": "fix the bug", "crew": "coding crew"}, schema)
         validate({"task": "fix the bug"}, schema)
-        assert "private memory" in schema["properties"]["crew"]["description"]
+        description = schema["properties"]["crew"]["description"]
+        assert "member's memory" in description
+        assert "agent alone selects a template" in description
 
     def test_no_guidance_still_tells_the_model_to_use_agent_for_a_crew(self):
         """`spawn_run(agent=<crew>)` is accepted and runs on the DEFAULT store, so

@@ -925,13 +925,22 @@ async def api_chat(request: web.Request) -> web.StreamResponse:
                 try:
                     cfg = await asyncio.to_thread(KiroCrewConfig.load)
                     assigned_store = await pin_private_agent_store(
-                        state, assignment[3], assignment[0], cfg
+                        state, assignment[3], assignment[0], cfg, memory_mode=slot.memory_mode
                     )
                     chosen = await asyncio.to_thread(
-                        resolve_agent_bindings, cfg, assignment[0], assignment[1] or None
+                        resolve_agent_bindings,
+                        cfg,
+                        assignment[0],
+                        assignment[1] or None,
+                        validate_memory_files=False,
                     )
                     selection_change = await _record_explicit_agent_selection(
-                        assignment[3], assignment[0], chosen
+                        assignment[3],
+                        assignment[0],
+                        chosen,
+                        config=cfg,
+                        memory_mode=slot.memory_mode,
+                        app=slot._app or "",
                     )
                 except Exception as exc:
                     from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
@@ -2857,7 +2866,9 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
             else None
         )
         try:
-            bindings = await asyncio.to_thread(resolve_agent_bindings, cfg, agent)
+            bindings = await asyncio.to_thread(
+                resolve_agent_bindings, cfg, agent, validate_memory_files=False
+            )
             workspace = _workspace_name_for_dir(cfg, bindings.workspace_dir)
             if not bindings.requested_resolved:
                 # Log only — the requested binding is the user's intent and is
@@ -3158,15 +3169,22 @@ async def api_chat_slot_create(request: web.Request) -> web.Response:
                 selection_change = None
                 try:
                     assigned_store = await pin_private_agent_store(
-                        state, assignment_key, agent, cfg
+                        state, assignment_key, agent, cfg, memory_mode=slot.memory_mode
                     )
                     chosen = await asyncio.to_thread(
-                        resolve_agent_bindings, cfg, assignment_agent, assignment_project or None
+                        resolve_agent_bindings,
+                        cfg,
+                        assignment_agent,
+                        assignment_project or None,
+                        validate_memory_files=False,
                     )
                     selection_change = await _record_explicit_agent_selection(
                         assignment_key,
                         assignment_agent,
                         chosen,
+                        config=cfg,
+                        memory_mode=slot.memory_mode,
+                        app=slot._app or "",
                     )
                 except Exception as exc:
                     from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
@@ -5526,6 +5544,39 @@ class SlotCloseError(Exception):
         self.status = status
 
 
+def _release_closed_execution(
+    state: DashboardState, slot: "_ChatSlot", session_key: str, execution
+) -> None:
+    """Release restricted identity after its last consumer and provider stop."""
+    from kiro_crew.execution_context import clear_session_execution
+
+    if execution is not None and execution.memory_mode != "persistent":
+        # A queued-prompt executor may start after the live carrier is released.
+        # Keep the retired slot restricted so that late flush still cannot write.
+        slot.memory_mode = execution.with_mode(slot.memory_mode).memory_mode
+        closing_tasks = tuple(
+            task
+            for task in (slot.task, getattr(slot, "_eager_spawn_task", None))
+            if isinstance(task, asyncio.Task)
+        )
+
+        def release_closed_execution(_finished=None) -> None:
+            if any(not task.done() for task in closing_tasks):
+                return
+            if any(effective_session_key(live) == session_key for live in state._slots.values()):
+                return
+            if state.sessions.get_provider(session_key) is not None:
+                return
+            clear_session_execution(session_key, expected=execution)
+
+        # Late cancellation completion retains the old identity until the final
+        # consumer stops. CAS prevents this close from erasing a newer choice.
+        for task in closing_tasks:
+            if not task.done():
+                task.add_done_callback(release_closed_execution)
+        release_closed_execution()
+
+
 async def close_slot(
     state: DashboardState,
     slot: "_ChatSlot",
@@ -5597,6 +5648,10 @@ async def _close_slot(
     # close observed the already-terminal record, leaving an active orphan.
     slot.begin_close()
     closed_at = note_slot_closed(state, name)
+    from kiro_crew.execution_context import read_live_session_execution
+
+    closing_key = effective_session_key(slot)
+    closing_execution = read_live_session_execution(closing_key)
     # Retire the auto-nudge loop BEFORE the awaits below, so no nudge can expire
     # into the session being closed and resurrect it. See
     # _retire_slot_nudge_loop for why disarming alone does not hold.
@@ -5908,6 +5963,7 @@ async def _close_slot(
     # it if the key is no longer ours.
     if _slot_still_ours(state, name, slot):
         await state.sessions.remove(_history_key_for(name))
+    _release_closed_execution(state, slot, closing_key, closing_execution)
     _sync_dashboard_slots(state)
     state.push_slots_update()
     state.push_refresh("history")
@@ -6084,7 +6140,16 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
     archived: list[str] = []
     failed: list[str] = []
     _tasks_to_cancel: list[asyncio.Task] = []
+    from kiro_crew.execution_context import read_live_session_execution
+
     for name in stale_keys:
+        candidate = state._slots.get(name)
+        if candidate is None:
+            continue
+        closing_key = effective_session_key(candidate)
+        closing_execution = read_live_session_execution(closing_key)
+        if state._slots.get(name) is not candidate:
+            continue
         removed = state._slots.pop(name, None)
         if not removed:
             continue
@@ -6229,6 +6294,8 @@ async def api_chat_slots_cleanup(request: web.Request) -> web.Response:
             await state.sessions.remove(_history_key_for(name))
         except Exception:
             logger.warning("Cleanup: session remove failed for %s", name, exc_info=True)
+        else:
+            _release_closed_execution(state, removed, closing_key, closing_execution)
         archived.append(name)
         # Collect running tasks for concurrent cancellation after the loop
         if removed.running and removed.task is not None:
@@ -6348,7 +6415,7 @@ async def _apply_remote_pick_locked(
         # agent is, so it goes in the same write — persisting one without the
         # other would restore the pair inconsistent after a restart.
         persisted["workspace"] = slot.workspace
-    if state.conversation_log:
+    if state.conversation_log and not slot.is_restricted:
         try:
             # update_metadata takes a flock and closes fds — blocking-on-loop
             # prohibited, so it goes to a worker thread (same reasoning as the
@@ -6379,11 +6446,45 @@ async def _apply_remote_pick_locked(
 
 
 async def _record_explicit_agent_selection(
-    session_key: str, agent_name: str | None, bindings: ResolvedBindings
+    session_key: str,
+    agent_name: str | None,
+    bindings: ResolvedBindings,
+    *,
+    config: KiroCrewConfig,
+    memory_mode: str = "persistent",
+    app: str = "",
 ) -> SelectionChange | None:
-    """Drain an authorized selection and its rollback before honoring cancellation."""
+    """Capture the admitted choice and drain publication before cancellation."""
+    from kiro_crew.execution_context import (
+        ExecutionContext,
+        MemoryStoreRef,
+        resolve_member_execution,
+    )
+
+    selected = agent_name or bindings.resolved_alias
+    if bindings.selection_kind == "member":
+        bindings.execution_context = resolve_member_execution(
+            config, selected, memory_mode=memory_mode, app=app, validate_memory_files=False
+        )
+    else:
+        bindings.execution_context = ExecutionContext(
+            None,
+            MemoryStoreRef(bindings.memory_store_name or "default"),
+            "template",
+            bindings.kiro_agent,
+            memory_mode,
+            app=app,
+            selection_name=selected,
+        )
     writer = asyncio.create_task(
-        asyncio.to_thread(record_agent_selection, session_key, agent_name, bindings, replace=True)
+        asyncio.to_thread(
+            record_agent_selection,
+            session_key,
+            agent_name,
+            bindings,
+            replace=True,
+            memory_mode=memory_mode,
+        )
     )
     cancelled: asyncio.CancelledError | None = None
     while True:
@@ -6599,7 +6700,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         owner_request = is_owner_dashboard_request(request)
         if not owner_request:
             # Permitted chat users keep template and legacy V1 choices, but
-            # cannot authorize private-memory admission. Refuse a V2 choice
+            # cannot change a member assignment through aggregate controls. Refuse a V2 choice
             # before any slot, provider or history mutation.
             try:
                 choice_cfg = await asyncio.to_thread(KiroCrewConfig.load)
@@ -6607,7 +6708,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     slot.project or None, operation="api_chat_slot_agent", source="dashboard"
                 )
                 choice = await asyncio.to_thread(
-                    resolve_agent_bindings, choice_cfg, agent_name, slot.project or None
+                    resolve_agent_bindings,
+                    choice_cfg,
+                    agent_name,
+                    slot.project or None,
+                    validate_memory_files=False,
                 )
             except Exception as exc:
                 from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
@@ -6619,27 +6724,27 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 if denied is not None:
                     return denied
         if agent_name != slot.agent:
-            from kiro_crew.member_memory_auth import read_private_session_store
+            from kiro_crew.execution_context import read_session_execution
 
             try:
-                private_store = await asyncio.to_thread(read_private_session_store, session_key)
+                prior_execution = await asyncio.to_thread(read_session_execution, session_key)
             except (OSError, ValueError):
                 return web.json_response(
                     {
                         "error": "This conversation's memory binding could not be read. "
                         "Start a new conversation to choose a different member.",
-                        "code": "private_memory_binding_unavailable",
+                        "code": "member_binding_unavailable",
                     },
                     status=503,
                 )
-            if private_store is not None:
-                # Resetting the provider keeps this key's permanent ownership.
+            if prior_execution is not None and prior_execution.member_id is not None:
+                # Resetting the provider keeps this conversation's member identity.
                 # Refuse before changing the agent, its derived fields or history.
                 return web.json_response(
                     {
                         "error": "This conversation belongs to its original member. "
                         "Start a new conversation to choose a different member.",
-                        "code": "private_memory_session_pinned",
+                        "code": "member_session_pinned",
                     },
                     status=409,
                 )
@@ -6743,7 +6848,11 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             )
             if owner_request:
                 bindings = await asyncio.to_thread(
-                    resolve_agent_bindings, cfg, agent_name, pre_await_project or None
+                    resolve_agent_bindings,
+                    cfg,
+                    agent_name,
+                    pre_await_project or None,
+                    validate_memory_files=False,
                 )
             else:
                 bindings = await asyncio.to_thread(
@@ -6752,6 +6861,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     agent_name,
                     pre_await_project or None,
                     selection_kind=choice.selection_kind,
+                    validate_memory_files=False,
                 )
                 selected_store = cfg.memory_stores.get(bindings.memory_store_name)
                 if selected_store is not None and selected_store.memory_version == 2:
@@ -7083,7 +7193,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # the slot's TRANSCRIPT (the .jsonl the restart scan reads), not the
         # live session the reset above addressed — the same history-vs-session
         # split ``_cancel_target`` documents.
-        conversation_log = state.conversation_log
+        conversation_log = state.conversation_log if not slot.is_restricted else None
         if conversation_log:
 
             async def _rollback_history_selection() -> None:
@@ -7140,7 +7250,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
             # truthful current one. The metadata is transcript-scoped and
             # binding-independent, so its restore needs no further re-check.
             _rollback_switch()
-            if state.conversation_log:
+            if state.conversation_log and not slot.is_restricted:
                 try:
                     await drained_to_thread(
                         state.conversation_log.update_metadata,
@@ -7169,7 +7279,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                 finally:
                     # The protected drain may re-raise cancellation. History
                     # must still settle before the slot/session locks release.
-                    if state.conversation_log:
+                    if state.conversation_log and not slot.is_restricted:
                         await drained_to_thread(
                             state.conversation_log.update_metadata,
                             _history_key_for(name),
@@ -7177,8 +7287,48 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                         )
 
             try:
+                # Validate the old conversation BEFORE publishing its new
+                # canonical identity; otherwise that publication would conceal
+                # template history from the member-selection guard.
+                selected_memory = cfg.memory_stores.get(bindings.memory_store_name)
+                from kiro_crew.execution_context import read_session_execution
+
+                initial_execution = await asyncio.to_thread(read_session_execution, session_key)
+                changed_member = (
+                    initial_execution is None
+                    or initial_execution.member_id
+                    != getattr(selected_memory, "owner_member_id", None)
+                )
+                if (
+                    selected_memory is not None
+                    and selected_memory.memory_version == 2
+                    and changed_member
+                ):
+                    if slot.messages:
+                        raise ValueError("Open a new conversation to choose member memory.")
+                    await release_prewarmed_session(state, session_key, agent_name, cfg)
+                    await pin_private_agent_store(
+                        state,
+                        session_key,
+                        agent_name,
+                        cfg,
+                        memory_mode=slot.memory_mode,
+                        validate_only=True,
+                    )
+                    if (
+                        state._slots.get(slot.key) is not slot
+                        or slot.agent is not committed_agent
+                        or effective_session_key(slot) != session_key
+                        or slot.messages
+                    ):
+                        raise ValueError("The conversation changed during member selection.")
                 selection_change = await _record_explicit_agent_selection(
-                    session_key, agent_name, bindings
+                    session_key,
+                    agent_name,
+                    bindings,
+                    config=cfg,
+                    memory_mode=slot.memory_mode,
+                    app=slot._app or "",
                 )
             except asyncio.CancelledError:
                 await _rollback_owner_selection()
@@ -7202,8 +7352,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                     },
                     status=409,
                 )
-            # A non-owner choice cannot authorize a later private-memory
-            # migration either; a protected private assignment must exist.
+            # A non-owner choice preserves the recorded session assignment.
             slot._memory_assignment_from_history = not owner_request
 
         owner_pick = (
@@ -7219,7 +7368,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
         # linked_session_key without the slot lock, and they carry native
         # context the pin helper refuses. With this gate, pin_key is the slot's
         # own transcript key, which nothing rebinds. The helper verifies the
-        # transcript is empty before issuing a private grant; V1 picks pass
+        # transcript is empty before capturing member context; V1 picks pass
         # through without a grant.
         if (
             owner_pick
@@ -7270,7 +7419,7 @@ async def api_chat_slot_agent(request: web.Request) -> web.Response:
                             status=409,
                         )
                     assigned_store = await pin_private_agent_store(
-                        state, pin_key, agent_name, pin_cfg
+                        state, pin_key, agent_name, pin_cfg, memory_mode=slot.memory_mode
                     )
                 except Exception as exc:
                     from kiro_crew.dashboard.handlers.memory import _store_unavailable_response
@@ -10245,7 +10394,7 @@ def _hydrate_slot_from_history(
     slot._disk_meta_created_at = str(meta.get("created_at") or "") if disk_meta_observed else ""
     slot._disk_meta_observed = disk_meta_observed and bool(meta)
     # This slot's memory assignment comes from restored history, not a fresh
-    # private assignment -- true for every hydration-from-a-persisted-transcript
+    # member selection -- true for every hydration-from-a-persisted-transcript
     # path (resume, the persistence loaders, channel/member/cron restores) and
     # equally for an import, which materialises from a bundle transcript. The
     # runner reads it when selecting the memory binding; the flag is not

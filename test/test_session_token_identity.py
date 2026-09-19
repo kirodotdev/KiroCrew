@@ -17,11 +17,14 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import time
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import Mock, patch
 
 import pytest
 
+from conftest import make_dir_link
 from kiro_crew import mcp_core, members, session_pid, session_pid_sig, session_token_sig
 from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV, mint_stub_session_token
 from kiro_crew.providers.mirrors.identity import control_plane_identity_env
@@ -32,6 +35,38 @@ TOKEN = "c" * 64
 OTHER_TOKEN = "d" * 64
 
 
+def test_tool_policy_tracks_signed_session_rekeys_instead_of_stale_parent(cfg, monkeypatch):
+    from kiro_crew import mcp_shared
+
+    monkeypatch.setattr(mcp_shared, "_excluded_tools_by_session", {})
+    monkeypatch.setattr(mcp_shared, "_last_failure_time", 0.0)
+    monkeypatch.setattr(mcp_shared, "_last_startup_race_time", 0.0)
+    monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
+    monkeypatch.setattr(mcp_shared, "read_local_secret", lambda port: "synthetic-secret")
+    monkeypatch.setattr(mcp_shared, "sel", Mock())
+    requested = []
+
+    def policy(request, **kwargs):
+        key = request.get_header("X-session-key")
+        requested.append(key)
+        assert request.get_header("X-internal-secret") == "synthetic-secret"
+        response = Mock()
+        response.read.return_value = json.dumps({"exclude": [key]}).encode()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        return response
+
+    monkeypatch.setattr(mcp_shared, "loopback_urlopen", policy)
+    monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, TOKEN)
+    monkeypatch.setenv("KIROCREW_SESSION_KEY", STALE_KEY)
+    session_token_sig.publish_session_token(TOKEN, LIVE_KEY)
+    assert mcp_shared._resolve_excluded_tools() == {LIVE_KEY}
+    session_token_sig.publish_session_token(TOKEN, "subagent:child")
+    assert mcp_shared._resolve_excluded_tools() == {"subagent:child"}
+    assert mcp_shared._resolve_excluded_tools(LIVE_KEY) == {LIVE_KEY}
+    assert requested == [LIVE_KEY, "subagent:child"]
+
+
 def _path_for(cfg, token: str):
     return cfg / f"session_token_{hashlib.sha256(token.encode()).hexdigest()}.sig"
 
@@ -40,8 +75,8 @@ def _path_for(cfg, token: str):
 def cfg(tmp_path, monkeypatch):
     """Isolated mapping dir + trust root, with the resolver's OTHER sources off.
 
-    ``current_caller`` and ``protected_member_session_for_pid`` are the two
-    sources the resolvers consult ABOVE the token. They are pinned to "absent"
+    ``current_caller`` is the source the resolvers consult ABOVE the token.
+    It is pinned to "absent"
     so these tests measure the token-vs-env decision rather than whichever of
     them the host process happens to satisfy — a real gateway-injected caller
     context outranking the token is correct behaviour and is covered by the
@@ -58,7 +93,6 @@ def cfg(tmp_path, monkeypatch):
         patch.object(session_token_sig, "sel_hmac_key_path", return_value=key_path),
         patch.object(session_pid_sig, "_sel_hmac_key_bytes", return_value=None),
         patch.object(mcp_core, "current_caller", return_value=None),
-        patch("kiro_crew.member_memory_auth.protected_member_session_for_pid", return_value=None),
     ):
         session_pid_sig._reported.clear()
         yield tmp_path
@@ -357,6 +391,142 @@ class TestMintIsSwitchFree:
         tokens = {mint_stub_session_token() for _ in range(64)}
         assert len(tokens) == 64
         assert all(len(t) == 64 for t in tokens)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("resume", [False, True])
+async def test_kiro_unpooled_control_plane_receives_session_token(cfg, monkeypatch, resume):
+    from test_acp_runtime import _make_runtime
+
+    from kiro_crew.acp import session_handle, session_mcp
+    from kiro_crew.acp.types import METHOD_SESSION_LOAD, METHOD_SESSION_NEW
+
+    entry = {"command": "test-crew", "args": ["mcp"], "env": {}}
+    spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": entry}}
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+    monkeypatch.setattr(session_mcp, "_global_settings", lambda **kwargs: {})
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name: entry)
+    monkeypatch.setattr(session_handle, "_MCP_DRAIN_NO_REPORT_CEILING", 0)
+    runtime, _, _ = _make_runtime()
+    runtime._can_load_session = True
+    sent = []
+
+    async def send(method, params, timeout=None):
+        if method in (METHOD_SESSION_NEW, METHOD_SESSION_LOAD):
+            sent.append(params)
+        return {"sessionId": "sid-token", "modes": {"currentModeId": "kirocrew"}}
+
+    monkeypatch.setattr(runtime, "_send_and_await", send)
+    if resume:
+        await runtime.load_session("", "sid-token", session_key=LIVE_KEY)
+    else:
+        await runtime.create_session(session_key=LIVE_KEY)
+    servers = {item["name"]: item for item in sent[0]["mcpServers"]}
+    assert "kirocrew-core" in servers
+    env = {item["name"]: item["value"] for item in servers["kirocrew-core"]["env"]}
+    monkeypatch.setenv(STUB_SESSION_TOKEN_ENV, env[STUB_SESSION_TOKEN_ENV])
+    assert mcp_core._resolve_session_key_strict() == LIVE_KEY
+
+
+@pytest.mark.parametrize(
+    "restriction",
+    ["stub", "unreferenced", "disabled", "tool", "global", "project", "registry", "command"],
+)
+def test_kiro_identity_projection_preserves_native_restrictions(tmp_path, monkeypatch, restriction):
+    import json
+
+    from kiro_crew.acp import session_mcp
+
+    managed = {"command": "test-crew", "args": ["mcp"]}
+    entry = dict(managed)
+    spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": entry}}
+    settings = {}
+    if restriction == "unreferenced":
+        spec["tools"] = []
+    elif restriction == "disabled":
+        entry["disabled"] = True
+    elif restriction == "tool":
+        entry["disabledTools"] = ["workflow_run"]
+    elif restriction in {"global", "project"}:
+        settings = {"mcpServers": {"kirocrew-core": {"disabledTools": ["workflow_run"]}}}
+        if restriction == "project":
+            path = tmp_path / ".kiro" / "settings" / "mcp.json"
+            path.parent.mkdir(parents=True)
+            path.write_text(json.dumps(settings), encoding="utf-8")
+            settings = {}
+    elif restriction == "command":
+        entry["command"] = "untrusted-custom-command"
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+    monkeypatch.setattr(session_mcp, "_global_settings", lambda **kwargs: settings)
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: restriction == "registry")
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name: managed)
+    assert (
+        session_mcp.kiro_control_plane_servers(
+            "kirocrew",
+            work_dir=tmp_path,
+            existing_names={"kirocrew-core"} if restriction == "stub" else (),
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("scope", ["global", "project"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        "refused",
+        "invalid_json",
+        "invalid_shape",
+        "invalid_servers",
+        "oversized",
+        "sensitive_link",
+        "deep_json",
+    ],
+)
+def test_kiro_identity_projection_fails_closed_on_settings_errors(
+    tmp_path, monkeypatch, scope, failure
+):
+    from kiro_crew import agent, hooks
+    from kiro_crew.acp import session_mcp
+
+    managed = {"command": "test-crew", "args": ["mcp"]}
+    spec = {"tools": ["@kirocrew-core"], "mcpServers": {"kirocrew-core": managed}}
+    global_path = tmp_path / "global" / "mcp.json"
+    project_path = tmp_path / ".kiro" / "settings" / "mcp.json"
+    path = global_path if scope == "global" else project_path
+    path.parent.mkdir(parents=True)
+    content = {
+        "invalid_json": "{",
+        "invalid_shape": "[]",
+        "invalid_servers": '{"mcpServers": []}',
+        "deep_json": "[" * 2000 + "0" + "]" * 2000,
+    }.get(failure, "{}")
+    path.write_text(content, encoding="utf-8")
+    monkeypatch.setattr(agent, "_KIRO_MCP_JSON", global_path)
+    monkeypatch.setattr(session_mcp, "_agent_spec_for", lambda *a, **k: spec)
+    monkeypatch.setattr(session_mcp, "_registry_mode", lambda: False)
+    monkeypatch.setattr(session_mcp, "managed_mcp_spec_entry", lambda name: managed)
+    if failure == "refused":
+        monkeypatch.setattr(hooks, "validate_file_path", lambda raw: None)
+    elif failure == "oversized":
+        monkeypatch.setattr(hooks, "MAX_FILE_BYTES", 1)
+    elif failure == "sensitive_link":
+        target = tmp_path / "synthetic-credential"
+        target.mkdir()
+        target_file = target / "mcp.json"
+        target_file.write_text("{}", encoding="utf-8")
+        path.unlink()
+        path.parent.rmdir()
+        make_dir_link(path.parent, target)
+        monkeypatch.setattr(hooks, "is_sensitive_path", lambda raw: Path(raw) == target_file)
+        monkeypatch.setattr(
+            hooks.platform_compat,
+            "open_file_no_reparse",
+            lambda *a, **k: pytest.fail("A refused credential target must never be opened"),
+        )
+
+    assert session_mcp.kiro_control_plane_servers("kirocrew", work_dir=tmp_path) == []
 
 
 class TestSweep:

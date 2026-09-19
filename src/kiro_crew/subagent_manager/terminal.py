@@ -396,6 +396,7 @@ class TerminalCoordinator(ManagerComponent):
         def _forget(t: "asyncio.Task") -> None:  # type: ignore[type-arg]
             self._manager._report_tasks.discard(t)
             self._manager._report_owners.pop(t, None)
+            self._manager._run_events._forget_finished_live_state(info)
 
         task.add_done_callback(_forget)
         return task

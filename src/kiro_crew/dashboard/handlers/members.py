@@ -114,7 +114,7 @@ def _member_names_for_slug(cfg: KiroCrewConfig, slug: str) -> list[str]:
         if not _AGENT_NAME_RE.match(name):
             continue
         try:
-            if members_mod.slug_for_name(name) == slug:
+            if members_mod.member_slug(name, cfg) == slug:
                 out.append(name)
         except MemberSlugError:
             continue
@@ -161,7 +161,7 @@ async def api_members(request: web.Request) -> web.Response:
         if not _AGENT_NAME_RE.match(name):
             continue
         try:
-            slug = members_mod.slug_for_name(name)
+            slug = members_mod.member_slug(name, cfg)
         except MemberSlugError:
             continue
         store = agent_cfg.memory_store
@@ -287,16 +287,12 @@ async def api_members(request: web.Request) -> web.Response:
 
 
 def _member_thread_slot(cfg, member: str, slug: str) -> tuple[str, str]:
-    """Keep protected V2 DMs; otherwise give private memory a fresh generation."""
-    from kiro_crew.member_memory_auth import read_private_session_store
+    """Choose the member's deterministic DM key without opening learned memory."""
     from kiro_crew.memory_stores import require_member_memory_store
 
-    store = require_member_memory_store(cfg, member)
+    store = require_member_memory_store(cfg, member, require_directory=False)
     record = cfg.memory_stores.get(store)
     if record is None or record.memory_version != 2:
-        return members_mod.member_slot_key(slug), ""
-    legacy_key = members_mod.member_thread_session_alias(slug)
-    if read_private_session_store(legacy_key) == store:
         return members_mod.member_slot_key(slug), ""
     return members_mod.member_slot_key(slug, store), store
 
@@ -535,7 +531,7 @@ async def api_member_thread(request: web.Request) -> web.Response:
                     if protected_store != member_store or slot.memory_store != member_store:
                         return web.json_response(
                             {
-                                "error": "the member thread has a different private-memory assignment",
+                                "error": "the member thread has a different member memory assignment",
                                 "code": "member_slot_conflict",
                             },
                             status=409,
@@ -844,8 +840,10 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
             },
             status=400,
         )
+    # Reuse this off-loop snapshot for identity validation and collision checks.
+    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     try:
-        if members_mod.slug_for_name(member) != slug:
+        if members_mod.member_slug(member, cfg) != slug:
             return web.json_response(
                 {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
             )
@@ -853,9 +851,6 @@ async def api_member_rules_put(request: web.Request) -> web.Response:
         return web.json_response(
             {"error": "member does not match slug", "code": "member_slug_mismatch"}, status=400
         )
-    # Config load does filesystem reads + validation — off-loop, like every
-    # other handler's config access on a request path.
-    cfg = await asyncio.to_thread(KiroCrewConfig.load)
     if member not in cfg.agents:
         return web.json_response(
             {"error": "no crew member for this slug", "code": "member_not_found"}, status=404

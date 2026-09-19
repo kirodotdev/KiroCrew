@@ -8,11 +8,11 @@ One command is the whole offline browser gate. It boots a real gateway wired to 
 packaged fake model backend, then shells the in-tree Playwright suite at it. No
 model, no credentials, no network, no cost.
 
-The member-creation scenarios require a supported OS sandbox even with the fake
-model backend. The Linux CI job enables unprivileged user namespaces and requires
+The Linux CI job enables unprivileged user namespaces and requires
 `unshare --mount --map-root-user true` to succeed before the suite. A failed
-precondition fails the job; the browser fixtures do not bypass private-memory
-admission or skip these scenarios.
+precondition fails the job. This is the ordinary host-sandbox preflight;
+member memory uses canonical application routing and does not require a
+memory-specific namespace or OS confidentiality boundary.
 For the disposable gateway only (`KIROCREW_E2E_EPHEMERAL=1`), authenticated browser
 setup enables `agent.sandbox=auto` through the owner API and reapplies the same
 `agent.acp_backend` value. That field's existing refresh rebuilds the provider
@@ -267,7 +267,7 @@ evidence if a later assertion fails.
 with synthetic member and memory data in ten focused scenarios. The `member-memory-ui-evidence` artifact
 retains its PNGs and focused-spec WebM recordings on successful and failed attempts: desktop/mobile records,
 copy selection, record details, proposals, restore confirmation and pending
-restore, a working legacy V1 member and explicit private-memory opt-in, plus V1/V2 bulk
+restore, a working legacy V1 member and creation of a separate empty V2 member, plus V1/V2 bulk
 selection and edit/forget previews. These are screenshots
 of the test's interaction states, not evidence of a live provider response or a
 Crew delegation. The artifact belongs to its GitHub Actions run and checkout;
@@ -286,8 +286,9 @@ gateway. It also imports an episode through the owner API, corrects its explicit
 linked fact, and restores the resulting replaced experience through the real
 recovery API. The restored episode keeps its ID, text, source and creation time;
 the active facts and observed Global/peer records remain unchanged by restoration.
-The legacy walkthrough captures Set up private memory and a disabled Manage
-memory action with its visible unsaved-work reason. A separate scenario reads
+The legacy walkthrough captures preserved V1 guidance and the absence of a setup
+action. A separately created V2 member shows a disabled Manage memory action with
+its visible unsaved-work reason. A separate scenario reads
 intentional unavailable and mismatched bindings seeded only in the disposable
 gateway's configuration, verifies a healthy member can still be created, and
 performs a real identity-list Retry without claiming it repairs those bindings.

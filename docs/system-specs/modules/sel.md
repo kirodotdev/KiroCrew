@@ -8,17 +8,13 @@ See also the SEL section in [`security.md`](security.md) for the threat-model vi
 
 Storage: `~/.kiro/crew/security_events.jsonl` (append-only JSONL with HMAC-SHA256 chain).
 
-Private member subprocesses keep a separate diagnostic chain in their isolated
-execution log directory: the host path is
-`memory_stores/.execution-logs/member-<random>/audit-<pid>/security_events.jsonl`.
-This host location is hidden from Global V1 and private peers. Linux exposes only
-that execution directory at the child's `agent-logs/`; outer Seatbelt denies peer
-execution paths. The directory choice is established at launch, before protected
-PID publication, so early MCP initialization cannot append to the global chain.
-These are process-local diagnostics with their own keys, not trusted gateway
-audit or session-identity authority. The gateway continues to record memory API
-mutations in its original chain. CLI text logs are persisted beside these local
-chains; write failures remain explicit. V1 storage and verification are unchanged.
+Member executions use the ordinary audit destination. Memory ownership does not
+create separate diagnostic chains or OS-isolated log directories. The shared MCP
+wrapper records attribution and outcomes for query and session-body tools without
+their payloads, including rejected calls. Chat-history search keeps query lengths
+and result counts in its handler audit, never the query text in the wrapper audit.
+Other audit events, signing, verification,
+credential redaction and explicit logging failures retain their existing behavior.
 
 ## Event Schema
 

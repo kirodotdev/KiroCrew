@@ -24,11 +24,10 @@ from chat_test_helpers import (
     _make_state,
 )
 from dashboard_owner_helpers import as_owner
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.acp.types import ACP_BACKEND_CLAUDE, ACP_BACKEND_KIRO, TurnUsage
 from kiro_crew.agent_sdk.capabilities import capabilities_for
-from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.config.loader import KiroCrewConfig, ResolvedBindings
 from kiro_crew.dashboard.chat_runner import _tool_call_ws_payload
 from kiro_crew.dashboard.state import (
     _MAX_SLOT_MESSAGES,
@@ -7875,7 +7874,13 @@ class TestRuntimeWiring:
         mock_cfg.memory_stores = {"oncall-mem": MagicMock()}
         mock_cfg.memory = MagicMock()
 
-        mock_bindings = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
         mock_bindings.workspace_dir = Path("/tmp/oncall")
         mock_bindings.memory_store_name = "oncall-mem"
         mock_bindings.model = ""
@@ -7886,11 +7891,11 @@ class TestRuntimeWiring:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat._workspace_name_for_dir",
@@ -7986,7 +7991,13 @@ class TestRuntimeWiring:
         mock_cfg.default_memory_store = "default"
         mock_cfg.memory_stores = {}
         mock_cfg.memory = MagicMock()
-        mock_bindings = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
         mock_bindings.workspace_dir = Path("/tmp/research")
         mock_bindings.memory_store_name = "default"
         mock_bindings.model = ""
@@ -7996,11 +8007,11 @@ class TestRuntimeWiring:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat._workspace_name_for_dir",
@@ -8067,7 +8078,13 @@ class TestRuntimeWiring:
         mock_cfg.default_memory_store = "default"
         mock_cfg.memory_stores = {}
         mock_cfg.memory = MagicMock()
-        mock_bindings = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
         mock_bindings.workspace_dir = Path("/tmp/research")
         mock_bindings.memory_store_name = "default"
         mock_bindings.model = ""
@@ -8077,11 +8094,11 @@ class TestRuntimeWiring:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat._workspace_name_for_dir",
@@ -8110,7 +8127,13 @@ class TestRuntimeWiring:
         mock_cfg.default_memory_store = "default"
         mock_cfg.memory_stores = {}
         mock_cfg.memory = MagicMock()
-        mock_bindings = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=Path("/tmp/research"),
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
         mock_bindings.workspace_dir = Path("/tmp/research")
         mock_bindings.memory_store_name = "default"
         mock_bindings.model = ""
@@ -8120,11 +8143,11 @@ class TestRuntimeWiring:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat._workspace_name_for_dir",
@@ -8248,7 +8271,13 @@ class TestRuntimeWiring:
         mock_cfg.default_memory_store = "default"
         mock_cfg.memory_stores = {}
         mock_cfg.memory = MagicMock()
-        mock_bindings = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
         mock_bindings.workspace_dir = Path("/tmp/research")
         mock_bindings.memory_store_name = "default"
         mock_bindings.model = ""
@@ -8258,11 +8287,11 @@ class TestRuntimeWiring:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat._workspace_name_for_dir",
@@ -8392,7 +8421,13 @@ class TestRuntimeWiring:
         mock_cfg.memory_stores = {"default": MagicMock()}
         mock_cfg.memory = MagicMock()
 
-        mock_bindings = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
         mock_bindings.workspace_dir = Path("/workspace/dev")
         mock_bindings.memory_store_name = "default"
         mock_bindings.model = ""
@@ -8403,11 +8438,11 @@ class TestRuntimeWiring:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat._workspace_name_for_dir",
@@ -8445,7 +8480,13 @@ class TestRuntimeWiring:
         mock_cfg = MagicMock()
         mock_cfg.agents = {}  # not an alias — resolvable only via the project scope
 
-        mock_bindings = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
         mock_bindings.workspace_dir = Path("/workspace/default")
         mock_bindings.requested_resolved = True
 
@@ -8454,7 +8495,7 @@ class TestRuntimeWiring:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers._workspace_name_for_dir",
@@ -8556,7 +8597,13 @@ class TestRuntimeWiring:
         mock_cfg.memory_stores = {}
         mock_cfg.memory = MagicMock()
 
-        mock_bindings = MagicMock()
+        mock_bindings = ResolvedBindings(
+            workspace_dir=tmp_path,
+            memory_store_name="",
+            effective_memory_config={},
+            kiro_agent="kirocrew",
+            selection_kind="template",
+        )
         mock_bindings.workspace_dir = Path("/tmp/research")
         mock_bindings.memory_store_name = "default"
         mock_bindings.model = ""
@@ -8567,11 +8614,11 @@ class TestRuntimeWiring:
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_handlers.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat._workspace_name_for_dir",
@@ -8648,17 +8695,16 @@ class TestRuntimeWiring:
         mock_bindings = resolve_agent_bindings(mock_cfg, "oncall")
         # The provider and context are doubles; model a supported runtime while
         # keeping member ownership and persisted conversation metadata real.
-        patch_private_memory_supported(monkeypatch)
 
         monkeypatch.setattr("kiro_crew.dashboard.chat.KiroCrewConfig.load", lambda: mock_cfg)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.KiroCrewConfig.load", lambda: mock_cfg)
         monkeypatch.setattr(
             "kiro_crew.dashboard.chat_runner.resolve_agent_bindings",
-            lambda cfg, name, project_dir=None: mock_bindings,
+            lambda cfg, name, project_dir=None, **kwargs: mock_bindings,
         )
 
         # Create a context builder with mocked build_message
@@ -8682,9 +8728,14 @@ class TestRuntimeWiring:
         # Create a slot with retained history, then verify a cold start replays it.
         slot = state.get_or_create_slot("mem-test", agent="oncall")
         if binding_change == "none":
-            from kiro_crew.member_memory_auth import bind_private_session_store
+            from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
 
-            await asyncio.to_thread(bind_private_session_store, "dashboard:mem-test", private_store)
+            captured_execution = await asyncio.to_thread(
+                resolve_member_execution, mock_cfg, "oncall"
+            )
+            await asyncio.to_thread(
+                bind_session_execution, "dashboard:mem-test", captured_execution
+            )
         conversation_log = ConversationLog(base_dir=tmp_path / "sessions")
         conversation_log.init()
         await asyncio.to_thread(
@@ -8722,15 +8773,16 @@ class TestRuntimeWiring:
         loop = asyncio.get_running_loop()
         binding_reads = []
 
-        def checked_bindings(cfg, name, project_dir=None):
+        def checked_bindings(cfg, name, project_dir=None, **kwargs):
             from kiro_crew.memory_stores import UnknownMemoryStore
 
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
+            assert kwargs["validate_memory_files"] is False
             binding_reads.append((name, project_dir))
             if binding_change == "unavailable":
                 raise UnknownMemoryStore("member identity offline")
-            resolved = resolve_agent_bindings(cfg, name, project_dir)
+            resolved = resolve_agent_bindings(cfg, name, project_dir, **kwargs)
             if binding_change == "project":
                 loop.call_soon_threadsafe(setattr, slot, "project", str(tmp_path / "new-project"))
             elif binding_change == "replacement":
@@ -8771,6 +8823,12 @@ class TestRuntimeWiring:
         metadata = conversation_log.get_metadata("dashboard:mem-test")
         assert metadata["memory_store"] == private_store
         assert metadata["agent"] == "oncall"
+        from kiro_crew.execution_context import read_session_execution
+
+        retained_execution = read_session_execution("dashboard:mem-test")
+        assert retained_execution.member_id == captured_execution.member_id
+        assert retained_execution.store == captured_execution.store
+        assert retained_execution.template_id == captured_execution.template_id
         replay = build_message_calls[0]["kwargs"].get("compressed_history")
         assert "frozen retained question" in replay
         assert "frozen retained answer" in replay
@@ -12203,7 +12261,18 @@ class TestMultiPendingApproval:
 class TestApiChatAgentPassing:
     @pytest.mark.asyncio
     async def test_agent_set_on_new_slot(self, tmp_path, monkeypatch):
+        from kiro_crew.config import loader
+
         monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        agents_dir = tmp_path / "agents"
+        agents_dir.mkdir()
+        (agents_dir / "agentrock--my-aim-agent.json").write_text(
+            json.dumps({"name": "my-aim-agent"}), encoding="utf-8"
+        )
+        monkeypatch.setattr(loader, "kiro_agents_dir", lambda: agents_dir)
+        monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS", frozenset())
+        monkeypatch.setattr(loader, "_MATERIALIZED_AGENTS_READY", False)
+        await asyncio.to_thread(loader.refresh_materialized_agents)
         state = _make_state(tmp_path)
         async with TestClient(TestServer(_make_app(state))) as client:
             resp = await client.post(
@@ -12211,6 +12280,7 @@ class TestApiChatAgentPassing:
                 json={"message": "hello", "slot": "agentrock-my-skill", "agent": "my-aim-agent"},
             )
             data = await resp.json()
+            assert resp.status == 200, data
             assert data["ok"] is True
             assert state._slots["agentrock-my-skill"].agent == "my-aim-agent"
 
@@ -16774,10 +16844,9 @@ class TestForkSlot:
     async def test_fork_of_temporary_parent_stays_temporary_with_its_history(self, tmp_path):
         """Temporary blocks memory READS, not the session's own thread history.
 
-        ``build_session_context`` assembles the thread-history block from the
-        child's conversation log before any ``blocks_reads`` gate, so a temporary
-        fork still hands the copied turns to its fresh kiro-cli process -- the
-        fork is useful, and the child is as blank to memory as its parent.
+        Cold provider replay uses the child's live message window. A temporary
+        fork carries its copied turns into the fresh provider without writing
+        those bodies into a durable conversation log.
         """
         state = _make_state(tmp_path)
         slot = state.get_or_create_slot("src", memory_mode="temporary")
@@ -16796,11 +16865,22 @@ class TestForkSlot:
         assert child.blocks_reads is True
         assert f"dashboard:{data['key']}" in state._restricted_keys
 
+        from kiro_crew.context import build_session_replay
         from kiro_crew.dashboard.chat import _history_key_for
 
-        recent = state.conversation_log.recent(_history_key_for(data["key"]))
-        visible = [m["content"] for m in recent if m.get("role") in ("user", "assistant")]
+        history_key = _history_key_for(data["key"])
+        visible = [m["content"] for m in child.messages if m.get("role") in ("user", "assistant")]
         assert visible == ["parent question", "parent answer"]
+        replay = await asyncio.to_thread(
+            build_session_replay,
+            state.conversation_log,
+            history_key,
+            pending_messages=list(child.messages),
+        )
+        assert "parent question" in replay
+        assert "parent answer" in replay
+        assert state.conversation_log.recent(history_key) == []
+        assert not state.conversation_log._path(history_key).exists()
 
     @pytest.mark.asyncio
     async def test_fork_history_visible_to_new_kiro_via_context_builder(self, tmp_path):

@@ -312,12 +312,21 @@ class TestResolveAndSupersede:
         """Only V1 may remove a persisted rule on an inferred contradiction."""
         from kiro_crew import memory_stores
         from kiro_crew.dashboard.handlers.cron import _resolve_and_supersede
+        from kiro_crew.vector_memory import open_member_database
 
         root = tmp_path / "memory_stores"
         monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
         directory = declare_v2_store(tmp_path, "member-alice") if private_memory else tmp_path
-        vs = VectorMemoryStore(db_path=directory / "memory.db")
-        await asyncio.to_thread(vs.init)
+        if private_memory:
+            vs = await asyncio.to_thread(
+                open_member_database,
+                directory / "memory.db",
+                member_id="alice",
+                store_id="member-alice",
+            )
+        else:
+            vs = VectorMemoryStore(db_path=directory / "memory.db")
+            await asyncio.to_thread(vs.init)
         try:
             assert vs.algorithm_version == ("v2" if private_memory else "v1")
             old_rule = {"rule": "Use X format", "category": "tool"}

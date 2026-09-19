@@ -1226,13 +1226,13 @@ answers `tools/list` from):
   is REFUSED whole and visibly, so a kiro-cli that starts logging payloads
   surfaces as a refusal instead of a silent widening
 
-  Once private memory boundaries exist, `kiro_cli_logs` requires a strict caller
-  identity whose canonical memory scope is Global V1 before opening these shared
-  host logs. Private, missing, invalid, or unreadable identities receive a stable
-  refusal and a `denied_memory_scope` audit attempt; audit failure cannot permit
-  a read. Redaction does not establish which member owns ordinary log prose.
-  Pure V1 installations retain the existing diagnostics contract, and this MCP
-  admission guard does not change user-requested diagnostic bundles.
+  Member scope does not prohibit these ordinary diagnostic reads. Credential
+  redaction, source allowlisting and refusal of conversation-bearing logs remain
+  independent data-retention and credential protections.
+  Protocol-log and chat-history tools resolve ordinary strict session identity
+  once before reading, independently of memory version or database availability;
+  workspace filtering, audit attribution and summary requests reuse that key.
+
 - **App bridges (credentialed):** `ops_mission_control_api` — the MCP server
   process holds the gateway's internal secret and forwards only a frozen
   (method, path) allowlist of Ops Mission Control routes; the agent never
@@ -1591,23 +1591,14 @@ model launder one per-call gate decision into many, so do NOT add
 
 ## MCP tools MUST be stateless
 
-Private member runtimes keep the data home read-only even when MCP backend
-sharing is disabled. The direct `kirocrew-cron` server uses the private runtime
-marker only to select `POST /api/crons/tools`; it never falls back to opening
-`crons.json` or `.crons.lock` in the sandbox. The endpoint requires authenticated
-internal transport, verified process or delegated-proof identity matching the
-session header, and agreement between the protected process store and the
-session's validated private member binding. A marker, shared secret or session
-header alone grants no member authority.
-
-The host runs the same argument validation, cron ownership, governance and
-deterministic-job checks as the regular MCP tool dispatcher, in a worker with a
-request-scoped `CallerContext` that is restored even on failure. Private agent
-jobs remain usable through add/list/update/pause/resume/remove; private command
-and script jobs retain their explicit refusal. Transport failures never trigger
-a file-write fallback or an automatic mutation retry; an uncertain response asks
-the caller to inspect `cron_list` before retrying. Global V1 direct runtimes retain
-their existing local cron dispatch.
+The direct `kirocrew-cron` server sends member jobs through
+`POST /api/crons/tools` using ordinary internal transport and strict session
+identity. The gateway captures the canonical execution record and applies the
+same argument validation, cron ownership, governance and deterministic-job
+checks as its regular dispatcher. A request-local `CallerContext` is restored
+even on failure. Transport failure never triggers a local file-write fallback
+or blind mutation retry; callers inspect `cron_list` after an uncertain response.
+Global V1 direct runtimes retain their existing local cron dispatch.
 
 **A new `kirocrew-core` or `kirocrew-cron` tool MUST NOT keep per-caller or
 per-session state in the MCP-server process. Resolve the caller's identity on
@@ -1714,54 +1705,25 @@ The token is a bearer name for a session's identity, so it is never logged, neve
 in `stats()`, and stripped from the register payload before the prewarm recorder
 can persist it.
 
-`register_hook` also resolves through `require_strict_session_key`. Legacy
-Global hooks can still be registered without a conversation; private hooks
-require the gateway-authenticated caller and its protected member binding before
-any private identity is written to the hook session.
+`register_hook` resolves through `require_strict_session_key`. Member hooks
+capture their originating execution record before provider allocation; Global
+hooks retain their existing no-conversation behavior. Hook context and display
+labels do not retarget that record. Direct and pooled member MCP use the same
+ordinary transport contract.
 
-Private Memory V2 requires **member authority**, independent of the shared
-internal secret or a claimed session header. Private ACP clients use direct MCP
-servers inside the member sandbox. They discard the shared broker overlay and
-socket before creating or resuming sessions, so reload and tool mirroring cannot
-restore pooled stubs. The sandbox withholds shared broker endpoints and their
-aliases. An older broker must not act as a host proxy for a private member.
-Global V1 retains its existing pooled MCP path.
+Gatewayd validates the accepted stub's ordinary peer ownership and session
+claim, strips client-supplied caller metadata, and injects the admitted caller for
+each invocation. Shared backends use a request-local `CallerContext`, including
+concurrent tool calls and listings; they never keep a mutable current member on
+the process or connection. The gateway resolves that session's canonical
+execution record once for each memory request and forwards the frozen binding to
+background work.
 
-For calls that reach the current broker, gatewayd captures the accepted
-stub socket's kernel peer PID after a positive owner check, then offloads
-`issue_member_session_proof` immediately before each `tools/call` and `tools/list`. The issuer
-checks the protected published runtime binding and actual process ancestry;
-the Register payload's `ancestor_pids` never grants this authority. Gatewayd
-strips the client's caller block and injects a fresh optional `memberMemoryProof`
-inside its own caller metadata. `CallerContext.member_memory_proof` is omitted
-from diagnostic representations and never populated from environment fallback.
-The shared MCP server forwards only the current invocation's proof in
-`X-Member-Session-Proof`, including the managed-tool policy lookup. A listing
-received while another tool runs uses the listing's own caller and proof.
-Signed proof protocol version 2 remains valid for the originating process
-incarnation, so long `wait` and `spawn` calls retain their own callback authority.
-Every use revalidates the signature, live PID/start identity, protected session
-and store, durable session binding, and current Linux user/mount namespaces or
-macOS inherited sandbox state. An unavailable check refuses authorization.
-Legacy proof protocol version 1 keeps its original 60-second expiry. These are
-transport protocol versions, independent of Memory V1 and Memory V2.
-No proof is cached on a connection or replayed with backend recovery.
-Before forwarding either tool method, gatewayd also
-resolves the protected peer when the caller block is absent: a missing or forged
-session, corrupt binding, or failed proof for a protected runtime refuses that
-invocation outright. Omitting the proof must never downgrade the member into a
-global V1 caller inside the shared backend. Only a genuinely absent protected
-binding retains the legacy unowned V1 behavior.
-For an unpooled MCP process, `CallerContext.from_env()` likewise resolves the
-readonly protected ancestry before any cached legacy identity or environment
-value, and the signed per-session token immediately after it — above the
-process-lifetime cache as well as above the env var, because that cache is what
-would otherwise hide a republished mapping from an already-running child. A resolved
-token is never cached for the same reason. It does not cache private results, so
-rekeys remain visible. A corrupt
-protected record returns an unresolved identity without trying legacy sidecars.
-The caller, recaller and backend-forwarding suites pin forgery removal,
-offloaded per-call issuance and concurrent caller isolation.
+Member memory requires no additional PID-ancestry proof, HMAC capability or
+`X-Member-Session-Proof` header. Direct and pooled MCP follow the same routing
+contract. Ordinary transport authentication, broker claim validation and signed
+PID-sidecar identity remain intact. An execution record that declares a member
+but cannot be resolved fails explicitly instead of becoming a Global V1 call.
 
 An unresolved key is not automatically a refusal. `mcp_computer.py` forwards a
 namespace-only key (`unresolved:<shim pid>`, plus the gateway's per-connection
@@ -1985,17 +1947,17 @@ or the watcher failed at runtime, which the skip cannot see: `POST
 harness, the warm pool holds pre-spawned processes carrying the old config. Use
 Apply & Restart, or `kirocrew config set`, which triggers a restart.
 
-## Private workflow callers
+## Workflow execution identity
 
 Workflow writes resolve the current strict MCP session and pass that same key
 to HTTP. This includes authoring, saved-definition runs, ad-hoc `source` and
 `intent` runs, cancellation and subtree reruns. Missing strict identity refuses
 the write before HTTP; a lenient ancestor-session fallback cannot authorize it.
-Kernel identity or a validated member proof still decides authority;
-headers, workflow ids and template names never select a private store. Workflow
-run/detail/list/cancel/rerun enforce the recorded execution scope. Private worker
-processes use direct projected MCP servers inside their existing OS sandbox,
-not shared V1 broker sessions. The deterministic workflow E2E model executes
+Ordinary transport authentication identifies the caller; the captured execution
+record selects its member and retention mode. Workflow IDs and template names
+do not retarget memory. Run/detail/list/cancel/rerun preserve the original run's
+member while applying ordinary execution permissions. Direct and pooled MCP use
+the same rule. The deterministic workflow E2E model executes
 these real MCP transports through `sandboxed_spawn_argv` and `popen_limited`,
 which applies resource limits after exec rather than running Python in a fork
 child. Temporary launcher profiles are cleaned up even when spawning fails;

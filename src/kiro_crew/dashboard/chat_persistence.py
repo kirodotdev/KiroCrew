@@ -497,11 +497,11 @@ def _sanitize_open_slot_key(raw: object) -> str | None:
 
 
 def _restored_agent_name(session_key: str, meta: dict) -> str:
-    """Restore the protected choice without granting private-memory admission.
+    """Restore the captured choice without changing member identity.
 
     History can retain a provisional agent after an interrupted switch. The
-    protected record is the committed choice; the runner still verifies its
-    namespace, revision and independent private-store assignment before use.
+    canonical execution record is the committed choice; the runner verifies its
+    namespace, revision and captured member/store assignment before use.
     An unreadable record leaves the transcript display intact, and the runner's
     strict read refuses execution rather than treating that display as authority.
     """
@@ -930,12 +930,14 @@ def _pin_private_agent_assignment(
     conversation_log=None,
     native_context: bool = False,
     authorized_store: str | None = None,
+    memory_mode: str = "persistent",
+    validate_only: bool = False,
 ) -> str:
     """Pin an authorized member selection, never a name recovered from history.
 
     Callers must authorize the owner's request or its session-control creation
-    before using this helper. The session-control route rejects private callers
-    from these aggregate controls. Legacy members keep their declared V1 memory.
+    before using this helper. Restricted sessions cannot create persistent child
+    sessions through aggregate controls. Legacy members keep declared V1 memory.
 
     ``authorized_store`` is passed through to :func:`_member_private_selection`,
     which owns both the store classification and that fence.
@@ -943,56 +945,64 @@ def _pin_private_agent_assignment(
     selected, store = _member_private_selection(agent, config, authorized_store=authorized_store)
     if not store:
         return ""
+    from kiro_crew.execution_context import (
+        bind_session_execution,
+        read_session_execution,
+        resolve_member_execution,
+    )
     from kiro_crew.history import ConversationLog
-    from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
-    from kiro_crew.memory_stores import require_member_memory_store
+    from kiro_crew.memory_stores import UnknownMemoryStore
 
-    store = require_member_memory_store(config, selected)
+    execution = resolve_member_execution(
+        config, selected, memory_mode=memory_mode, validate_memory_files=False
+    )
     log = conversation_log if conversation_log is not None else ConversationLog()
     # ``has_messages``, not ``has_log``: the transcript file already exists once
     # the slot's metadata (title, agent, model) was flushed, and an agent pick
     # on an empty chat must not read as "this chat has V1 history". It fails
     # closed: a transcript that exists but cannot be read is not provably
-    # empty, so no grant.
-    if read_private_session_store(session_key) is None:
-        from kiro_crew.memory_stores import UnknownMemoryStore
-
+    # empty, so the member cannot change.
+    previous = read_session_execution(session_key)
+    if (
+        previous is not None
+        and previous.member_id is not None
+        and previous.member_id != execution.member_id
+    ):
+        raise UnknownMemoryStore(
+            "This conversation belongs to another member. Open a new conversation."
+        )
+    if previous is None or previous.member_id is None:
         try:
             has_history = native_context or log.has_messages(session_key)
         except OSError as exc:
             raise UnknownMemoryStore(
                 "This conversation's transcript is unreadable, so its history cannot be "
-                "verified; no private memory was granted."
+                "verified; its member selection was not changed."
             ) from exc
         if has_history:
             raise UnknownMemoryStore(
-                "This conversation retains its V1 history. Open a new conversation for private memory."
+                "This conversation retains its existing history. Open a new conversation for member memory."
             )
-    bind_private_session_store(session_key, store)
+    if previous is not None:
+        if previous.member_id == execution.member_id and previous.store == execution.store:
+            execution = previous.with_mode(memory_mode)
+        else:
+            execution = execution.with_mode(previous.memory_mode)
+    if validate_only:
+        return store
+    bind_session_execution(
+        session_key, execution, replace_existing=previous is not None, expected=previous
+    )
     return store
 
 
 def _member_private_selection(
     agent: str, config: KiroCrewConfig, *, authorized_store: str | None = None
 ) -> tuple[str, str]:
-    """Resolve a pick to ``(selected agent, private V2 store)``, or ``("", "")``.
+    """Resolve an explicit member choice without opening its learned database.
 
-    The ONE spelling of "does this pick want a private grant, and for which
-    store". Both the grant itself and the pre-warm release read it, so neither
-    can drift into accepting a store the other refuses -- the divergence
-    ``named_store_or_empty`` exists to end, and the reason this is a shared
-    function rather than two blocks that happen to agree today.
-
-    ``authorized_store`` narrows the answer to what a caller's authorization
-    actually covers, for the one caller that HAS such a value: ``create_session``
-    runs ``require_memory_delegation`` against ``bindings.memory_store_name``, so
-    that is the only store its creation is cleared for, while the store resolved
-    here comes from the SELECTED AGENT's config entry. The two are not the same
-    value, so without this fence the gate authorizes one store and the grant
-    writes another, and the new session runs on private memory its own
-    ``slot.memory_store`` does not name. The owner's own agent picks leave it
-    ``None``: there the pick IS the authority and there is no separately
-    authorized store to compare against.
+    The selection and prewarm-release paths share this classification. An
+    optional captured store limits the choice to the caller's admitted routing.
     """
     selected = agent or config.default_agent
     if not selected or selected == "default":
@@ -1013,7 +1023,7 @@ def _member_private_selection(
 async def release_prewarmed_session(
     state: DashboardState, session_key: str, agent: str, config: KiroCrewConfig
 ) -> bool:
-    """Drop a speculative pre-warm's resume pointer before a private grant.
+    """Drop a speculative pre-warm's resume pointer before member context capture.
 
     ``session.eager_spawn`` is on by default, so opening a new chat pre-creates
     a session for it while the chat is still on the default agent. That
@@ -1022,12 +1032,12 @@ async def release_prewarmed_session(
     (``SessionManager.reset`` clears the SID only when a live session is still
     registered). Read as a live or resumable runtime, that surviving pointer
     stands for V1 context the transcript does not show -- but on a chat the
-    user has never sent a message in there is no such context, and the grant
+    user has never sent a message in there is no such context, and the member choice
     the owner asked for is refused for a runtime nobody is using.
 
     The pointer is discarded rather than ignored, so the invariant the guard
     protects is satisfied in fact: nothing can resume the default agent's
-    pre-warmed process into the member's private store, and the first private
+    pre-warmed process into the member context, and the first member
     turn cold-starts under the store it validated. Returns whether a pointer
     was dropped.
 
@@ -1066,7 +1076,13 @@ async def release_prewarmed_session(
 
 
 async def pin_private_agent_store(
-    state: DashboardState, session_key: str, agent: str, config: KiroCrewConfig
+    state: DashboardState,
+    session_key: str,
+    agent: str,
+    config: KiroCrewConfig,
+    *,
+    memory_mode: str = "persistent",
+    validate_only: bool = False,
 ) -> str:
     """Run :func:`_pin_private_agent_assignment` off the loop for one slot.
 
@@ -1080,6 +1096,8 @@ async def pin_private_agent_store(
         session_key,
         agent,
         config,
+        memory_mode=memory_mode,
+        validate_only=validate_only,
         conversation_log=state.conversation_log,
         native_context=(
             state.sessions.get_provider(session_key) is not None
@@ -3188,7 +3206,7 @@ def _save_slot_to_history(
     persisted and must not be treated as durable. Every other completion
     (including the benign no-op skips) returns ``True``.
     """
-    if not state.conversation_log:
+    if not state.conversation_log or getattr(slot, "memory_mode", "persistent") != "persistent":
         return True
     # An explicit message snapshot always means "this is the full authoritative
     # window state" → rewrite. Edit paths (rewind/regenerate/fork) pass a snapshot.
@@ -3292,6 +3310,16 @@ def _save_slot_to_history(
         history_key = slot_history_key(slot)
         if getattr(slot, "linked_session_key", "") == routing:
             break
+    from kiro_crew.execution_context import read_session_execution
+
+    def retention_allows_write() -> bool:
+        execution = read_session_execution(note_auth_key)
+        return getattr(slot, "memory_mode", "persistent") == "persistent" and (
+            execution is None or execution.memory_mode == "persistent"
+        )
+
+    if not retention_allows_write():
+        return True
     if expected_history_key is not None and history_key != expected_history_key:
         # The caller authorized a write against a specific transcript and the
         # slot's routing moved before this snapshot (a rebind on the event
@@ -3506,6 +3534,8 @@ def _save_slot_to_history(
 
             def _refresh_under_lock(meta: dict) -> bool:
                 guard_state["ran"] = True
+                if not retention_allows_write():
+                    return False
                 if not meta:
                     return False
                 merged_fields.clear()
@@ -3586,6 +3616,8 @@ def _save_slot_to_history(
         # ``save_slot_off_loop`` helper routes on-loop callers to a worker thread
         # so they take the patient acquire path instead of dropping the save.
         with state.conversation_log._locked(history_key):
+            if not retention_allows_write():
+                return True
             # Status form, not bare ``get_metadata``: the delete-won identity
             # comparison below is exactly the "empty result triggers something
             # destructive" case that ``get_metadata_status`` exists for — a

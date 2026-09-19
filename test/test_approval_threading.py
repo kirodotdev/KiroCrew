@@ -195,6 +195,7 @@ class TestSubagentPassesParentKey:
 
         sessions = MagicMock()
         sessions.get_pid = MagicMock(return_value=None)
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         sessions.get_or_create = AsyncMock(return_value=(MagicMock(), True, False))
         sessions.release = MagicMock()
         sessions.reset = AsyncMock()

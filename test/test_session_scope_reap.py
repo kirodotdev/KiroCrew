@@ -1034,7 +1034,6 @@ async def test_periodic_ticks_reclaim_successive_runtime_trees_without_gateway_r
     for name in (
         "_sweep_session_roots",
         "_sweep_sandbox_artifacts",
-        "_sweep_member_bindings",
         "_maybe_prune_pycache",
         "_sweep_periodic_pids",
     ):

@@ -1084,45 +1084,21 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
     if not hook_id:
         return "Error: hook_id is required"
     context_summary = str(args.get("context_summary", ""))
-    session_key = f"hook:{hook_id}"
-    # The broker's verified caller names the parent; hooks.json is editable
-    # context, never a source of private-memory authority.
-    from kiro_crew.member_memory_auth import (
-        bind_private_session_store,
-        mcp_memory_scope,
-        read_private_session_store,
-    )
+    from kiro_crew.execution_context import capture_session_execution, execution_from_record
 
-    # Legacy Global hooks can be registered without a conversation. Resolving
-    # through the shared gate keeps that behavior while private registration
-    # still requires a trusted caller and the protected member binding below.
+    # Capture the exact parent once. Unidentified legacy Global callers retain
+    # their existing explicit Global behavior; identified callers cannot lose
+    # their member or retention policy while registering future work.
     caller, _ = mcp_core.require_strict_session_key("Error: hook caller is not identified")
     try:
-        store = mcp_memory_scope(caller) or None
-        if store:
-            # The member controls only its own hook namespace. Its choice of
-            # label cannot reserve a Global or another member's runtime key.
-            hook_id = f"{store}:{hook_id}"
-            session_key = f"hook:{hook_id}"
-        existing = read_private_session_store(session_key)
-        if existing is not None and existing != store:
-            return "Error: this hook belongs to another private member"
-        if store:
-            from kiro_crew.mcp_caller import current_caller
-
-            identity = current_caller()
-            if identity is None or not identity.from_gateway:
-                return "Error: private hook registration requires the trusted MCP gateway"
-            from kiro_crew.history import ConversationLog
-
-            bind_private_session_store(session_key, store)
-            log = ConversationLog()
-            log.init()
-            log.update_metadata(session_key, {"memory_store": store})
+        execution = capture_session_execution(caller)
     except (ValueError, OSError):
-        return (
-            "Error: the hook's protected member binding is unavailable; global memory was not used"
-        )
+        return "Error: the hook's execution identity is unavailable; Global was not used"
+    if execution.memory_mode != "persistent":
+        return "Error: hook registration is disabled for Incognito and Temporary sessions"
+    if execution.member_id is not None:
+        hook_id = f"{execution.store.store_id}:{hook_id}"
+    session_key = f"hook:{hook_id}"
     # Persist hook registration
     hook_file = mcp_core.config_dir() / "hooks.json"
     hook_file.parent.mkdir(parents=True, exist_ok=True)
@@ -1139,8 +1115,21 @@ def register_hook(name: str, args: dict[str, Any]) -> str:
                     hooks = json.loads(hook_file.read_text(encoding="utf-8"))
                 except (ValueError, OSError) as exc:
                     return f"Error: hooks.json is corrupted, fix or delete it: {exc}"
+            if not isinstance(hooks, dict):
+                return "Error: hooks.json must contain an object"
+            existing = hooks.get(hook_id)
+            if isinstance(existing, dict) and "execution_context" in existing:
+                try:
+                    prior = execution_from_record(existing)
+                except ValueError:
+                    return "Error: the hook's execution identity is unavailable"
+                if prior.member_id != execution.member_id or prior.store != execution.store:
+                    return "Error: this hook belongs to another member"
+                if prior.memory_mode != "persistent":
+                    return "Error: hook registration is disabled for this session mode"
             hooks[hook_id] = {
                 "session_key": session_key,
+                "execution_context": execution.to_record(),
                 "context_summary": context_summary,
                 "registered_at": mcp_core.time.time(),
                 "compat_flags": 0x4D43,

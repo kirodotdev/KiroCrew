@@ -20,6 +20,12 @@ from kiro_crew import git_coord, shutdown_event
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config import live
 from kiro_crew.config.loader import KiroCrewConfig
+from kiro_crew.execution_context import (
+    ExecutionContext,
+    bind_session_execution,
+    capture_session_execution,
+    execution_from_record,
+)
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.hooks import safe_read_file_bytes_nolink
 from kiro_crew.llm_helpers import stream_and_collect_json
@@ -72,7 +78,11 @@ from kiro_crew.task_reporter import (  # noqa: F401  (NotifyCallback re-exported
     notify,
     save_progress,
 )
-from kiro_crew.workflow_memory import TaskSnapshotError, private_task_operation
+from kiro_crew.workflow_memory import (
+    TaskSnapshotError,
+    capture_admission_execution,
+    capture_execution,
+)
 
 if TYPE_CHECKING:
     from kiro_crew.context import ContextBuilder
@@ -146,6 +156,7 @@ class WorkflowRunPublisher(Protocol):
         workflow_revision: int = 0,
         derived_from_workflow_id: str = "",
         derived_from_revision: int = 0,
+        execution_context: ExecutionContext | None = None,
     ) -> str: ...
 
     async def phase(self, run_id: str, title: str) -> None: ...
@@ -401,7 +412,6 @@ class TaskRunner:
         )
         self._ctor_max_parallel_steps = max_parallel_steps
         self._runs: dict[str, Project] = {}
-        self._unavailable_run_refs: list[dict] = []
         # Serialize registry writes and enforce monotonic ordering. Snapshots
         # are always built on the event-loop thread (see _serialize_runs), so
         # an older snapshot whose offloaded write lands late must not clobber a
@@ -503,6 +513,11 @@ class TaskRunner:
             run = self._runs.get(run_id)
             if run is None or run.status not in ("paused", "planned"):
                 return False
+            if (
+                run.execution_context is not None
+                and run.execution_context.memory_mode != "persistent"
+            ):
+                return False
             resumable.append(run_id)
             return True
 
@@ -535,6 +550,8 @@ class TaskRunner:
 
     async def _taskq_begin_run(self, run: Project) -> None:
         """Accept + claim the run's container row (no lane slot; steps take those)."""
+        if run.execution_context is not None and run.execution_context.memory_mode != "persistent":
+            return
         admission = self._task_admission
         if admission is None or admission.store is None:
             return
@@ -638,6 +655,8 @@ class TaskRunner:
         admission = self._task_admission
         if admission is None:
             return None
+        if run.execution_context is not None and run.execution_context.memory_mode != "persistent":
+            admission = admission.in_memory()
         from kiro_crew.taskq import model as _taskq_model
         from kiro_crew.taskq.adapters import runner as _runner_adapter
 
@@ -788,6 +807,22 @@ class TaskRunner:
         self._workflow_service = service
         self._workflow_initializing = False
 
+    def _capture_execution(self, session_key: str = "") -> ExecutionContext:
+        execution = capture_execution(session_key)
+        modes = getattr(self._ctx, "_session_memory_modes", None)
+        if isinstance(modes, dict):
+            execution = execution.with_mode(modes.get(session_key, "persistent"))
+        return execution
+
+    async def _bind_run_execution(self, run: Project, session_key: str) -> None:
+        if run.execution_context is None:
+            run.execution_context = self._capture_execution()
+        execution = run.execution_context
+        await asyncio.to_thread(bind_session_execution, session_key, execution)
+        modes = getattr(self._ctx, "_session_memory_modes", None)
+        if isinstance(modes, dict):
+            modes[session_key] = execution.memory_mode
+
     async def _workflow_begin(
         self, run: Project, *, source: str = "", persist_link: bool = False
     ) -> None:
@@ -808,6 +843,7 @@ class TaskRunner:
                 workflow_revision=run.workflow_revision,
                 derived_from_workflow_id=run.derived_from_workflow_id,
                 derived_from_revision=run.derived_from_revision,
+                execution_context=run.execution_context,
             )
             if persist_link:
                 persist_task = asyncio.create_task(self._apersist_runs())
@@ -957,7 +993,6 @@ class TaskRunner:
 
     # ── Plan Mode ──
 
-    @private_task_operation
     async def plan(
         self,
         input_text: str = "",
@@ -971,7 +1006,14 @@ class TaskRunner:
         workflow_revision: int = 0,
         workflow_source: str = "",
         session_key: str = "",
+        execution_context: ExecutionContext | None = None,
     ) -> Project:
+        execution = await capture_admission_execution(
+            self._ctx,
+            session_key,
+            execution_context=execution_context,
+            capture_fn=self._capture_execution,
+        )
         self._require_workflow_ready()
         self._agent = agent
         if source == "file":
@@ -1036,6 +1078,7 @@ class TaskRunner:
                 workflow_id=workflow_id,
                 workflow_slug=workflow_slug,
                 workflow_revision=workflow_revision,
+                execution_context=execution,
             )
         except BaseException:
             if created_task_dir:
@@ -1046,11 +1089,7 @@ class TaskRunner:
             self._start_ids_in_flight.discard(task_id)
             raise
         try:
-            from kiro_crew.context import inherit_session_memory
-
-            await inherit_session_memory(
-                self._ctx, session_key, f"{_SESSION_PREFIX}:{task_id}:runtime"
-            )
+            await self._bind_run_execution(run, f"{_SESSION_PREFIX}:{task_id}:runtime")
             if source == "yaml":
                 run.tasks = _decompose_yaml_with_audit(
                     decompose_input,
@@ -1135,6 +1174,7 @@ class TaskRunner:
         input_text: str = "",
         author: str = "",
         session_key: str = "",
+        execution_context: ExecutionContext | None = None,
     ) -> dict[str, str]:
         """Execute one saved task-plan revision through the existing TaskRunner."""
         del author  # reserved for a future TaskRunner attribution surface
@@ -1147,6 +1187,7 @@ class TaskRunner:
             workflow_revision=int(definition.get("revision") or 0),
             workflow_source=str(definition.get("source", "")),
             session_key=session_key,
+            execution_context=execution_context,
         )
         run.original_input = input_text
         await self._apersist_runs()
@@ -1243,7 +1284,6 @@ class TaskRunner:
             "force_approval": task.force_approval,
         }
 
-    @private_task_operation
     async def execute_plan(
         self,
         task_id: str,
@@ -1426,12 +1466,15 @@ class TaskRunner:
         source: str = "",
         workspace_dir: str = "",
         auto_approve: bool = False,
+        input_content: str | None = None,
     ) -> Project:
         self._require_workflow_ready()
         spec_path = Path(spec_path)
-        if not spec_path.exists():
+        if input_content is None and not spec_path.exists():
             raise FileNotFoundError(f"Spec not found: {spec_path}")
-        spec_content = spec_path.read_text(encoding="utf-8").strip()
+        spec_content = (
+            input_content if input_content is not None else spec_path.read_text(encoding="utf-8")
+        ).strip()
         if not spec_content:
             raise ValueError("Spec file is empty")
         if not task_id:
@@ -1455,6 +1498,7 @@ class TaskRunner:
             workflow_revision=existing.workflow_revision if existing else 0,
             derived_from_workflow_id=existing.derived_from_workflow_id if existing else "",
             derived_from_revision=existing.derived_from_revision if existing else 0,
+            execution_context=existing.execution_context if existing else self._capture_execution(),
         )
         run.task_id = task_id
         run.name = name or auto_name(spec_content, str(spec_path))
@@ -1907,6 +1951,8 @@ class TaskRunner:
         auto_approve: bool = False,
         *,
         session_key: str = "",
+        execution_context: ExecutionContext | None = None,
+        input_content: str | None = None,
     ) -> str:
         """Plan and execute *spec_path* in the background; returns the task id.
 
@@ -1916,6 +1962,12 @@ class TaskRunner:
         approval request, a denial) reach the surface the operator started the
         task on rather than one hard-wired destination.
         """
+        execution = await capture_admission_execution(
+            self._ctx,
+            session_key,
+            execution_context=execution_context,
+            capture_fn=self._capture_execution,
+        )
         if self._admission_closed():
             raise ValueError("gateway admission is closed")
         self._require_workflow_ready()
@@ -1927,7 +1979,9 @@ class TaskRunner:
             from kiro_crew.hooks import validate_file_path
 
             safe_sp = validate_file_path(str(spec_path))
-            if safe_sp:
+            if input_content is not None:
+                early_content = input_content[:4000]
+            elif safe_sp:
                 early_content = await asyncio.to_thread(
                     _read_spec_prefix,
                     safe_sp,
@@ -1986,11 +2040,6 @@ class TaskRunner:
             self._start_ids_in_flight.add(task_id)
 
             try:
-                from kiro_crew.context import inherit_session_memory
-
-                await inherit_session_memory(
-                    self._ctx, session_key, f"{_SESSION_PREFIX}:{task_id}:runtime"
-                )
                 self._runs[task_id] = Project(
                     spec_path=str(spec_path),
                     spec_content=early_content,
@@ -2000,6 +2049,10 @@ class TaskRunner:
                     started_at=time.time(),
                     source=source,
                     auto_approve=bool(auto_approve),
+                    execution_context=execution,
+                )
+                await self._bind_run_execution(
+                    self._runs[task_id], f"{_SESSION_PREFIX}:{task_id}:runtime"
                 )
                 if session_key:
                     self._run_session_keys[task_id] = session_key
@@ -2024,6 +2077,11 @@ class TaskRunner:
                             source=source,
                             workspace_dir=workspace_dir,
                             auto_approve=auto_approve,
+                            **(
+                                {"input_content": input_content}
+                                if input_content is not None
+                                else {}
+                            ),
                         )
                     except Exception as exc:
                         logger.exception("start_background task %s failed", task_id)
@@ -2263,7 +2321,6 @@ class TaskRunner:
         )
         return False
 
-    @private_task_operation
     async def retry_from_task(self, task_id: str, from_task: int, agent: str = "") -> str:
         self._require_workflow_ready()
         run = self._resolve_task(task_id)
@@ -2322,8 +2379,7 @@ class TaskRunner:
             except BaseException:
                 # Persistence drains its worker even on repeated cancellation.
                 # Restore in place: callers may retain the Project/Task objects.
-                # A failed public projection can follow a hidden commit; this
-                # restores live state, not disk, until a later snapshot succeeds.
+                # Restore live state until a later snapshot succeeds.
                 run.status, run.error, run.finished_at, run.started_at, run.last_task_time = (
                     previous_run
                 )
@@ -2421,18 +2477,21 @@ class TaskRunner:
     # ── History Integration ──
 
     async def _bound_history_key(self, run: Project, legacy_key: str) -> str:
-        from kiro_crew.context import inherit_session_memory
-        from kiro_crew.member_memory_auth import read_private_session_store
-
         runtime_key = f"{_SESSION_PREFIX}:{run.task_id}:runtime"
-        if await asyncio.to_thread(read_private_session_store, runtime_key) is None:
-            return legacy_key
-        history_key = f"taskrunner:run:{run.task_id}"
-        await inherit_session_memory(self._ctx, runtime_key, history_key)
+        await self._bind_run_execution(run, runtime_key)
+        execution = run.execution_context
+        history_key = (
+            f"taskrunner:run:{run.task_id}"
+            if execution and (execution.member_id or execution.memory_mode != "persistent")
+            else legacy_key
+        )
+        await self._bind_run_execution(run, history_key)
         return history_key
 
     def _log_task(self, history_key: str, run: Project, task: Task) -> None:
-        if not self._conversation_log:
+        if not self._conversation_log or (
+            run.execution_context and run.execution_context.memory_mode != "persistent"
+        ):
             return
         spec_name = Path(run.spec_path).name if run.spec_path else run.task_id
         user_msg = f"[Task: {spec_name}] Task {task.index}: {task.title}"
@@ -2475,34 +2534,25 @@ class TaskRunner:
 
     async def _extract_lesson(self, task: Task, run: Project | None = None) -> None:
         try:
-            from kiro_crew.member_memory_auth import read_private_session_store
             from kiro_crew.memory_stores import UnknownMemoryStore
 
+            execution = run.execution_context if run else self._capture_execution()
+            if execution is None:
+                execution = self._capture_execution()
+            if execution.memory_mode != "persistent":
+                return
             runtime_key = f"{_SESSION_PREFIX}:{run.task_id}:runtime" if run else ""
-            mode_resolver = (
-                getattr(self._ctx, "memory_mode_for_session", None)
-                if isinstance(getattr(self._ctx, "_session_memory_modes", None), dict)
-                else None
-            )
-            if runtime_key and mode_resolver is not None:
-                if await mode_resolver(runtime_key) != "persistent":
-                    return
-            private_store = (
-                await asyncio.to_thread(read_private_session_store, runtime_key)
-                if runtime_key
-                else None
-            )
+            private_store = execution.store.legacy_name if execution.member_id else None
             lesson_store = self._lesson_store
             if not private_store and not lesson_store:
                 return
             private_vectors = None
             if private_store:
-                from kiro_crew.context import inherit_session_memory
-
                 context = self._ctx
                 if context is None:
                     raise UnknownMemoryStore("The task's private lesson context is unavailable")
-                await inherit_session_memory(context, runtime_key, runtime_key)
+                if run is not None:
+                    await self._bind_run_execution(run, runtime_key)
                 private_vectors = await context.ensure_store(private_store)
             prompt = (
                 "A task failed after multiple attempts.\n\n"
@@ -2702,9 +2752,11 @@ class TaskRunner:
         or capture a torn snapshot, so persistence always snapshots here first
         and offloads only the byte-level write.
         """
-        data = list(self._unavailable_run_refs)
+        data: list[dict] = []
         for run in self._runs.values():
-            if run.source == "cron":
+            if run.source == "cron" or (
+                run.execution_context and run.execution_context.memory_mode != "persistent"
+            ):
                 continue
             if run.status in (
                 "planning",
@@ -2720,6 +2772,11 @@ class TaskRunner:
                 data.append(
                     {
                         "task_id": run.task_id,
+                        **(
+                            {"execution_context": run.execution_context.to_record()}
+                            if run.execution_context
+                            else {}
+                        ),
                         "name": run.name,
                         "spec_path": run.spec_path,
                         "status": run.status,
@@ -2853,7 +2910,7 @@ class TaskRunner:
             from kiro_crew.workflow_memory import read_task_registry
 
             try:
-                raw = read_task_registry(path, strict=True)
+                raw = read_task_registry(path)
             except TaskSnapshotError:
                 self._snapshot_recovery_incomplete = True
                 logger.error("Task snapshot recovery incomplete; writes require a restart")
@@ -2869,6 +2926,7 @@ class TaskRunner:
             # and potentially the gateway — from starting. Log loudly and
             # start with an empty in-memory registry without touching the file
             # on disk (so a later, successful read can still recover it).
+            self._snapshot_recovery_incomplete = True
             logger.error(
                 "Failed to read runs registry %s; starting with an empty "
                 "registry (file left untouched)",
@@ -2898,25 +2956,39 @@ class TaskRunner:
         try:
             from kiro_crew.workflow_memory import read_task_snapshot
 
-            private_task_ids: set[str] = set()
-            items = json.loads(
-                read_task_snapshot(
-                    path,
-                    public_payload=raw,
-                    preserve_unavailable=True,
-                    private_task_ids=private_task_ids,
-                )
-            )
-            self._unavailable_run_refs = [
-                item for item in items if item.get("private_payload") is True
-            ]
+            items = json.loads(read_task_snapshot(path, public_payload=raw))
         except Exception as exc:
-            logger.error("Failed to hydrate task snapshot (%s)", type(exc).__name__)
+            self._snapshot_recovery_incomplete = True
+            logger.error("Failed to read task snapshot (%s)", type(exc).__name__)
             return
         for item in items:
-            if item.get("private_payload") is True:
-                continue
             try:
+                execution_context = execution_from_record(item, required=False)
+                if execution_context is None and any(
+                    key in item for key in ("member_id", "memory_store", "memory_mode")
+                ):
+                    # Legacy task snapshots may predate canonical execution
+                    # records. Recover named V1 routing from this run's own
+                    # runtime metadata, never from the current gateway session
+                    # (which would silently select Global after a restart).
+                    task_id = item.get("task_id")
+                    if not isinstance(task_id, str) or not task_id:
+                        raise TaskSnapshotError("Task run has no stable identity")
+                    runtime_key = f"{_SESSION_PREFIX}:{task_id}:runtime"
+                    from kiro_crew.history import ConversationLog
+
+                    metadata, readable = ConversationLog().get_metadata_status(runtime_key)
+                    if not readable or not isinstance(metadata, dict):
+                        raise TaskSnapshotError(
+                            "Task run execution identity is unreadable; Global was not used"
+                        )
+                    if not metadata or not any(
+                        key in metadata for key in ("execution_context", "memory_store")
+                    ):
+                        raise TaskSnapshotError(
+                            "Task run execution identity is unavailable; Global was not used"
+                        )
+                    execution_context = capture_session_execution(runtime_key)
                 tasks = [
                     Task(
                         index=t["index"],
@@ -2936,6 +3008,7 @@ class TaskRunner:
                 run = Project(
                     spec_path=item["spec_path"],
                     spec_content=item.get("spec_content", ""),
+                    execution_context=execution_context,
                     task_id=item["task_id"],
                     name=item.get("name", ""),
                     status=item["status"],
@@ -3016,11 +3089,7 @@ class TaskRunner:
                     )
                 self._runs[run.task_id] = run
             except Exception as exc:
-                # Hydration can succeed even when construction or crash recovery
-                # cannot. Keep private payloads out of both V1 and diagnostics.
-                task_id = item.get("task_id")
-                if isinstance(task_id, str) and task_id in private_task_ids:
-                    self._unavailable_run_refs.append({"task_id": task_id, "private_payload": True})
+                self._snapshot_recovery_incomplete = True
                 logger.error("Failed to deserialize a task snapshot row (%s)", type(exc).__name__)
 
     def _save_progress(self, run: Project) -> None:

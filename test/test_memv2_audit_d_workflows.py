@@ -7,13 +7,13 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import KiroCrewAgentConfig
+from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
 from kiro_crew.history import ConversationLog
-from kiro_crew.member_memory_auth import bind_private_session_store
 from kiro_crew.memory_stores import persist_member_config, provision_member_memory
+from kiro_crew.workflow_memory import capture_execution
 from kiro_crew.workflows import agent_exec, agent_pool, service
 from kiro_crew.workflows.library import WorkflowDefinitionLibrary
 from kiro_crew.workflows.registry import RunHandle
@@ -151,13 +151,12 @@ async def test_cancelled_waiter_cannot_release_another_calls_lease(monkeypatch, 
 
 @pytest.fixture
 def private_parent(monkeypatch):
-    patch_private_memory_supported(monkeypatch)
     cfg = KiroCrewConfig.load()
     cfg.agents["workflow-owner"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
     store = provision_member_memory(cfg, "workflow-owner")
     persist_member_config(cfg, "workflow-owner", create=True)
+    bind_session_execution(PARENT, resolve_member_execution(cfg, "workflow-owner"))
     ConversationLog().update_metadata(PARENT, {"memory_store": store})
-    bind_private_session_store(PARENT, store)
     return store
 
 
@@ -181,6 +180,7 @@ async def invoke(svc, entry, parent):
         name="prior",
         source=SCRIPT,
         session_key=parent,
+        execution_context=capture_execution(parent),
         status="finished",
         agent_results={0: "prior answer"},
     )
@@ -261,19 +261,20 @@ async def test_global_parent_still_runs_when_private_members_exist(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("damage", ["corrupt-binding", "missing-binding", "metadata-downgrade"])
-async def test_unreadable_private_identity_never_falls_back(private_parent, damage):
-    from kiro_crew.member_memory_auth import _session_binding_path
+@pytest.mark.parametrize("damage", ["corrupt-context", "missing-context"])
+async def test_unreadable_canonical_identity_never_falls_back(private_parent, damage):
+    log = ConversationLog()
+    path = log._path(PARENT)
+    lines = path.read_text(encoding="utf-8").splitlines()
+    import json
 
-    path = _session_binding_path(PARENT)
-    if damage == "corrupt-binding":
-        path.write_text("invalid", encoding="utf-8")
-    elif damage == "missing-binding":
-        path.unlink()
+    row = json.loads(lines[0])
+    if damage == "corrupt-context":
+        row["execution_context"] = {"broken": True}
     else:
-        await asyncio.to_thread(
-            ConversationLog().update_metadata, PARENT, {"memory_store": "default"}
-        )
+        row.pop("execution_context")
+    lines[0] = json.dumps(row)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
     sessions = LeaseSessions()
     svc = service.WorkflowService(sessions=sessions, persist=False)
     result = await svc.start(SCRIPT, session_key=PARENT)
@@ -302,6 +303,7 @@ async def test_restored_private_run_cannot_resume_on_global_workers(tmp_path, pr
             name="old-private-run",
             source=SCRIPT,
             session_key=PARENT,
+            execution_context=capture_execution(PARENT),
             status="finished",
             agent_results={0: "private-result"},
         )
@@ -322,13 +324,16 @@ async def test_binding_resolution_runs_off_the_event_loop(monkeypatch):
     loop_thread = threading.get_ident()
     called = []
 
-    def resolve(key):
+    def resolve(self, key):
         called.append((key, threading.get_ident()))
-        raise ValueError("unreadable protected binding")
+        return {}, False
 
-    monkeypatch.setattr(service, "private_memory_store_for_session", resolve)
-    svc = service.WorkflowService(sessions=LeaseSessions(), persist=False)
+    monkeypatch.setattr(ConversationLog, "get_metadata_status", resolve)
+    sessions = LeaseSessions()
+    svc = service.WorkflowService(sessions=sessions, persist=False)
     result = await svc.start(SCRIPT, session_key=PARENT)
     assert result["code"] == "workflow_memory_unavailable"
     assert called and called[0][0] == PARENT
     assert called[0][1] != loop_thread
+    assert not sessions.acquired
+    assert svc.list_runs() == []

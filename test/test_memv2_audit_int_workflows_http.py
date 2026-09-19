@@ -1,6 +1,5 @@
 """Workflow HTTP admission keeps private caller identity ahead of run identity."""
 
-import os
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -9,7 +8,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from member_memory_helpers import env as _member_env
 from member_memory_helpers import make_request
-from member_memory_helpers import member_proof as _member_proof
 
 from kiro_crew import member_memory_auth as auth
 from kiro_crew.dashboard.handlers import workflows
@@ -19,7 +17,6 @@ from kiro_crew.mcp_core import _post as _real_mcp_post
 
 pytestmark = pytest.mark.xdist_group("memory_workflow_http")
 env = _member_env
-member_proof = _member_proof
 
 _ENTRY_POINTS = [
     ("author", "/api/workflows/author", {"intent": "summarize"}, "author"),
@@ -38,35 +35,10 @@ def _service():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("entry,path,body,method", _ENTRY_POINTS)
-@pytest.mark.parametrize(
-    "caller,session,status",
-    [
-        ("proof", "dashboard:alice", 200),
-        ("peer", "dashboard:alice", 200),
-        ("proof", None, 403),
-        ("proof", "dashboard:global", 403),
-        ("peer", None, 403),
-        ("peer", "dashboard:global", 403),
-        ("unknown", None, 403),
-        ("v1", "dashboard:global", 200),
-        ("v1", None, 200),
-        ("v1", "dashboard:alice", 403),
-    ],
-)
-async def test_workflow_http_private_boundary(
-    env, member_proof, monkeypatch, entry, path, body, method, caller, session, status
+@pytest.mark.parametrize("session", ["dashboard:alice", "dashboard:global", None])
+async def test_workflow_http_ordinary_auth_and_canonical_routing(
+    env, entry, path, body, method, session
 ):
-    # Only kernel peer discovery is synthetic; signed proofs, protected records,
-    # store ownership, middleware and handler admission use their real paths.
-    foreign_rerun = (
-        entry == "run_rerun" and caller in {"proof", "peer"} and session == "dashboard:alice"
-    )
-    if foreign_rerun:
-        status = 403
-    peer = os.getpid() if caller in {"peer", "v1"} else None
-    monkeypatch.setattr(auth, "_request_peer_pid", lambda request: peer)
-    if caller == "v1":
-        auth.publish_member_session_pid(os.getpid(), "dashboard:global", memory_store="")
     service = _service()
     env.state.workflow_service = service
     app = web.Application(
@@ -84,21 +56,18 @@ async def test_workflow_http_private_boundary(
     headers = {"X-Internal-Secret": "test-workflow-secret"}
     if session is not None:
         headers["X-Session-Key"] = session
-    if caller == "proof":
-        headers[auth.PROOF_HEADER] = member_proof
     async with TestClient(TestServer(app, host="127.0.0.1")) as client:
         response = await client.post(path, json=body, headers=headers)
         payload = await response.json()
-        assert response.status == status, payload
-    if status != 200:
-        expected = "workflow_memory_unavailable" if foreign_rerun else "member_session_unverified"
-        assert payload["code"] == expected
-        for call in vars(service).values():
-            call.assert_not_called()
+        assert response.status == (409 if session is None else 200), payload
+        unauthorized = await client.post(
+            path, json=body, headers={"X-Internal-Secret": "wrong-secret"}
+        )
+        assert unauthorized.status in (401, 403)
+    if session is None:
+        getattr(service, method).assert_not_called()
     else:
         getattr(service, method).assert_awaited_once()
-        if method == "rerun_subtree":
-            assert service.rerun_subtree.await_args.args[0] == "global-run"
     assert auth.read_private_session_store("dashboard:alice") == "member-alice"
 
 
@@ -141,8 +110,6 @@ async def test_mcp_workflow_real_transport_pins_authenticated_path(
     from kiro_crew import mcp_core
     from kiro_crew.mcp_tools import workflows as tools
 
-    auth.publish_member_session_pid(os.getpid(), "dashboard:global", memory_store="")
-    monkeypatch.setattr(auth, "_request_peer_pid", lambda request: os.getpid())
     monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:global")
     monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: "dashboard:wrong-parent")
     monkeypatch.setattr(mcp_core, "_post", _real_mcp_post)

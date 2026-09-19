@@ -352,6 +352,25 @@ def slug_for_name(name: str) -> str:
     return validate_slug(base)
 
 
+def member_slug(name: str, config=None) -> str:
+    """Use persisted member identity; legacy members retain their existing slug."""
+    if config is None:
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        config = KiroCrewConfig.load()
+    agent = config.agents.get(name)
+    member_id = getattr(agent, "member_id", "") if agent else ""
+    return validate_slug(member_id) if member_id else slug_for_name(name)
+
+
+def _stable_member_slug(slug: str, name: str) -> bool:
+    from kiro_crew.config.loader import KiroCrewConfig
+
+    cfg = KiroCrewConfig.load()
+    agent = cfg.agents.get(name)
+    return bool(agent and getattr(agent, "member_id", "") == slug)
+
+
 def member_dir(slug: str) -> Path:
     """Absolute path to one member's directory, containment-checked.
 
@@ -606,7 +625,16 @@ def read_dm_binding(slug: str) -> dict | None:
     # differs) would otherwise pin A's thread — and A's restored transcript —
     # to B's identity. Colliding names are fine: every name that slugifies to
     # this slug passes; anything else reads as absent.
-    if slug_for_name(data["member"]) != slug:
+    if data.get("member_id") == slug:
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.execution_context import member_config_for_id
+
+        try:
+            alias, _ = member_config_for_id(KiroCrewConfig.load(), slug)
+        except ValueError:
+            return None
+        data["member"] = alias
+    elif slug_for_name(data["member"]) != slug:
         return None
     return data
 
@@ -640,6 +668,7 @@ def write_dm_binding(slug: str, *, member: str, slot_key: str, memory_store: str
             f"(expected {member_slot_key(slug, memory_store)!r}); such a binding always reads back as absent"
         )
     binding = {
+        "member_id": slug if _stable_member_slug(slug, member) else "",
         "member": member,
         "slug": slug,
         "slot_key": slot_key,
@@ -753,7 +782,7 @@ def read_member_rules(slug: str, member: str) -> str:
             f"shape); the member will not run until the file is repaired — "
             f"rewrite or clear the rules via PUT /api/members/{slug}/rules"
         )
-    if data["member"] != member:
+    if data.get("member_id") != slug and data["member"] != member:
         # A colliding slug's file holds another exact name's rules; for THIS
         # member that is "never set", not an error.
         return ""
@@ -817,7 +846,12 @@ def write_member_rules(slug: str, *, member: str, text: str) -> None:
             platform_compat.restrict_dir_to_owner(_dir)
         except OSError:
             logger.debug("could not tighten mode on %s", _dir, exc_info=True)
-    payload = {"member": member, "slug": slug, "rules": text}
+    payload = {
+        "member": member,
+        "member_id": slug if _stable_member_slug(slug, member) else "",
+        "slug": slug,
+        "rules": text,
+    }
     atomic_write(path, json.dumps(payload, ensure_ascii=False), fsync=True)
     # atomic_write's fsync=True forces the file DATA; the rename that
     # publishes it — and, on first save, the just-created member-rules
@@ -1021,7 +1055,7 @@ def record_activity(
     if via:
         entry["via"] = via
     try:
-        slug = slug_for_name(member)
+        slug = member_slug(member)
         path = member_dir(slug)
         if dedupe_session:
             prior, complete = _read_activity_checked(slug)

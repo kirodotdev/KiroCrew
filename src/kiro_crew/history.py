@@ -1828,12 +1828,11 @@ class ConversationLog:
         A transcript file is created by the first METADATA write -- a title,
         an agent pick, a model pick -- long before any message is exchanged,
         so :meth:`has_log` answers "does a file exist", not "was anything
-        said". Callers deciding whether a conversation already carries V1
-        history (the private-memory admission seam) need the second question:
+        said". Callers deciding whether a conversation already carries
+        context before selecting a member need the second question:
         a metadata-only file is an empty conversation.
 
-        Fails CLOSED, because that seam grants permanent private ownership on
-        a False: an absent file is empty, but a file that exists and cannot be
+        An absent file is empty, but a file that exists and cannot be
         read raises ``OSError`` rather than reading as empty, and a record that
         cannot be delivered intact or is not valid JSON counts as content --
         unverifiable history is still history. The forgiving tail readers are
@@ -2911,7 +2910,7 @@ class ConversationLog:
         require_memory_consolidation_session_key(key, expected_store)
         binding = read_private_session_store(key)
         if binding is not None and binding != expected_store:
-            raise ValueError("The transient session belongs to another private store")
+            raise ValueError("The transient session belongs to another memory store")
         path = self._path(key)
         existed = path.exists()
         deleted = self.delete_session(key)

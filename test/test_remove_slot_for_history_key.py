@@ -1727,22 +1727,24 @@ class TestAChildCannotBeBornUnderADeadParent:
         assert cron_owner_matches(owner, "cron:76ef369f") is False
 
     @pytest.mark.parametrize("append_path", ["add", "add-if-absent"])
-    def test_dead_parent_keeps_private_memory_binding_before_owner_release(
+    def test_dead_parent_keeps_captured_member_memory_before_owner_release(
         self, tmp_path, monkeypatch, append_path
     ):
-        """A late child keeps its creator's private memory after becoming ownerless."""
-        from kiro_crew import member_memory_auth
+        """A late child keeps its creator's captured memory after becoming ownerless."""
         from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
+        from kiro_crew.execution_context import bind_session_execution, execution_from_record
         from kiro_crew.memory_stores import provision_member_memory
 
         config = KiroCrewConfig()
         config.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
         store = provision_member_memory(config, "writer")
         monkeypatch.setattr(KiroCrewConfig, "load", classmethod(lambda cls: config))
-        monkeypatch.setattr(member_memory_auth, "read_private_session_store", lambda _key: store)
 
         crons = CronService(base_dir=tmp_path)
-        parent = crons.add_job("nightly", "sweep", every_secs=3600)
+        member_id = config.agents["writer"].member_id
+        parent = crons.add_job("nightly", "sweep", every_secs=3600, member_id=member_id)
+        execution = execution_from_record({"execution_context": parent.execution_context})
+        bind_session_execution(f"cron:{parent.id}", execution)
         live = crons.add_job(
             "live-follow-up",
             "ping",
@@ -1750,7 +1752,7 @@ class TestAChildCannotBeBornUnderADeadParent:
             session_key=f"cron:{parent.id}",
         )
         live_binding = (live.memory_store, live.member_id)
-        assert live_binding == (store, "writer")
+        assert live_binding == (store, member_id)
         assert crons.remove_job(parent.id, actor="cli", source="cli") is True
 
         kwargs = {
@@ -1770,6 +1772,7 @@ class TestAChildCannotBeBornUnderADeadParent:
         # The binding is asserted first: releasing the dead owner must not turn
         # the creator's private schedule into a Global Memory V1 schedule.
         assert (persisted.memory_store, persisted.member_id) == live_binding
+        assert persisted.execution_context == execution.to_record()
         assert persisted.session_key == ""
 
 

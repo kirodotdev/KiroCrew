@@ -11,6 +11,8 @@ from .types import ClaimPoint, PreparedSpawn
 _glue_logger = _logging.getLogger("kiro_crew.subagent_manager.admission")
 
 if TYPE_CHECKING:
+    from ...execution_context import ExecutionContext
+
     pass
 
     from ...subagent import (
@@ -41,6 +43,112 @@ class _GateMixin(ManagerComponent):
         CLAIM_UNAVAILABLE: str
 
         TASK_STORE_UNAVAILABLE_CODE: str
+
+    def resolve_spawn_execution(
+        self,
+        *,
+        parent_session_key="",
+        agent="",
+        conversation_key="",
+        memory_store="",
+        app="",
+        crew="",
+        target_member=None,
+        _memory_mode="persistent",
+        _execution_context=None,
+        _record=...,
+        _inherited_selection=None,
+    ) -> ExecutionContext:
+        """Resolve routing on-loop; async admission supplies its off-loop record read."""
+        from dataclasses import replace
+
+        from kiro_crew.config.loader import KiroCrewConfig
+        from kiro_crew.execution_context import (
+            ExecutionContext,
+            derive_execution,
+            execution_for_store,
+            execution_from_record,
+            read_session_execution,
+        )
+
+        execution: ExecutionContext | None
+        if _execution_context is not None:
+            execution = execution_from_record({"execution_context": _execution_context})
+        elif conversation_key:
+            from kiro_crew.subagent_persistence import read_run_execution
+
+            execution = (
+                read_run_execution(conversation_key.removeprefix("subagent:"))
+                if _record is ...
+                else _record
+            )
+            if execution.selection_kind == "member" and not agent:
+                # Refresh ordinary persona/capability selection for this new
+                # invocation, while retaining the original memory identity.
+                from kiro_crew.execution_context import member_config_for_id
+
+                config = KiroCrewConfig.load()
+                if execution.member_id is not None:
+                    alias, selected = member_config_for_id(config, execution.member_id)
+                else:
+                    alias = execution.selection_name
+                    selected = config.agents.get(alias)
+                    if selected is None:
+                        raise ValueError("selected member is unavailable")
+                execution = replace(
+                    execution,
+                    template_id=selected.kiro_agent or "kirocrew",
+                    selection_name=alias,
+                )
+        else:
+            execution = read_session_execution(parent_session_key) if _record is ... else _record
+            if execution is None:
+                inherited = ("template", "")
+                if parent_session_key and not agent:
+                    inherited = (
+                        self._manager._sessions.get_agent_selection(parent_session_key)
+                        if _inherited_selection is None
+                        else _inherited_selection
+                    )
+                    if (
+                        not isinstance(inherited, tuple)
+                        or len(inherited) != 2
+                        or inherited[0] not in ("template", "member")
+                        or not isinstance(inherited[1], str)
+                    ):
+                        raise ValueError("effective agent template is invalid")
+                execution = execution_for_store(
+                    memory_store,
+                    memory_mode=_memory_mode,
+                    app=app,
+                    template_id=agent or inherited[1],
+                )
+                if inherited[0] == "member":
+                    selected = KiroCrewConfig.load().agents.get(inherited[1])
+                    if selected is None:
+                        raise ValueError("selected member is unavailable")
+                    execution = replace(
+                        execution,
+                        selection_kind="member",
+                        selection_name=inherited[1],
+                        template_id=selected.kiro_agent or "kirocrew",
+                    )
+            execution = derive_execution(
+                execution,
+                target_member=target_member or crew or None,
+                requested_mode=_memory_mode,
+            )
+        execution = execution.with_mode(_memory_mode)
+        if agent and not conversation_key:
+            execution = replace(execution, template_id=agent)
+            if not crew and not target_member:
+                execution = replace(execution, selection_kind="template", selection_name=agent)
+        if execution.app and app and execution.app != app:
+            raise ValueError("subagent app ownership does not match its parent")
+        app = execution.app or app
+        if execution.app != app:
+            execution = replace(execution, app=app)
+        return execution
 
     def spawn_impl(
         self,
@@ -77,6 +185,8 @@ class _GateMixin(ManagerComponent):
         _memory_mode: str | None = None,
         *,
         crew: str = "",
+        target_member: str | None = None,
+        _execution_context: dict | None = None,
     ) -> "SubagentInfo | PreparedSpawn | ClaimPoint | None":
         """Spawn a subagent for *task*.
 
@@ -262,20 +372,28 @@ class _GateMixin(ManagerComponent):
                 )
             )
 
-        # Validate before queueing/starting. An explicit private identity may
-        # never degrade to V1 after deletion, a config error, or a restart.
+        # Capture the immutable parent/continuation before queueing or awaiting.
         try:
-            if not isinstance(memory_store, str):
-                raise ValueError("the supplied memory identity is malformed")
-            if memory_store and _gate:
-                from kiro_crew.memory_stores import require_memory_store
-
-                memory_store = require_memory_store(memory_store)
+            execution = self.resolve_spawn_execution(
+                parent_session_key=parent_session_key,
+                agent=agent,
+                conversation_key=conversation_key,
+                memory_store=memory_store,
+                app=app,
+                crew=crew,
+                target_member=target_member,
+                _memory_mode=_memory_mode,
+                _execution_context=_execution_context,
+            )
+            app = execution.app
+            memory_store = execution.store.legacy_name
+            _memory_mode = execution.memory_mode
         except (OSError, ValueError) as exc:
             return _refuse_row(
                 SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
+                    memory_mode=_memory_mode,
                     agent=agent,
                     parent_session_key=parent_session_key,
                     done=True,
@@ -284,6 +402,11 @@ class _GateMixin(ManagerComponent):
                     batch_total=max(0, int(batch_total)),
                 )
             )
+
+        _persistent_diagnostics = _memory_mode == "persistent"
+        _task_audit = (
+            {"task": _redacted_task[:120]} if _persistent_diagnostics else {"subagent_id": agent_id}
+        )
 
         # --- CWD validation: reject bad paths before consuming a slot ---
         resolved_cwd = cwd if cwd and not _gate else ""
@@ -298,17 +421,25 @@ class _GateMixin(ManagerComponent):
                 allowed_roots = []
             resolved_cwd, cwd_err = validate_cwd(cwd, allowed_roots)
             if cwd_err:
-                logger.warning("Subagent spawn refused: invalid cwd %r: %s", cwd, cwd_err)
+                if _persistent_diagnostics:
+                    logger.warning("Subagent spawn refused: invalid cwd %r: %s", cwd, cwd_err)
+                else:
+                    logger.warning("Subagent %s refused: invalid cwd", agent_id)
                 sel().log_tool_invocation(
                     session_key=parent_session_key or "",
                     source="subagent",
                     tool_name="spawn_run",
                     outcome="rejected_invalid_cwd",
-                    metadata={"cwd": cwd[:200], "reason": cwd_err, "task": _redacted_task[:120]},
+                    metadata=(
+                        {"cwd": cwd[:200], "reason": cwd_err, **_task_audit}
+                        if _persistent_diagnostics
+                        else _task_audit
+                    ),
                 )
                 info = SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
+                    memory_mode=_memory_mode,
                     agent=agent,
                     parent_session_key=parent_session_key,
                     done=True,
@@ -325,19 +456,25 @@ class _GateMixin(ManagerComponent):
         # can spawn — even if the kiro side would allow it.
         gov_spawn_err = _vet_spawn_governance(parent_session_key, agent, app=app) if _gate else None
         if gov_spawn_err:
-            logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
+            if _persistent_diagnostics:
+                logger.warning("Subagent spawn refused by governance: %s", gov_spawn_err)
+            else:
+                logger.warning("Subagent %s refused by governance", agent_id)
             sel().log_tool_invocation(
                 session_key=parent_session_key or "",
                 source="subagent",
                 tool_name="spawn_run",
                 outcome="denied",
-                error=gov_spawn_err,
-                metadata={"agent": agent, "task": _redacted_task[:120]},
+                error=gov_spawn_err if _persistent_diagnostics else "spawn denied by governance",
+                metadata=(
+                    {"agent": agent, **_task_audit} if _persistent_diagnostics else _task_audit
+                ),
             )
             return _refuse_row(
                 SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
+                    memory_mode=_memory_mode,
                     agent=agent,
                     parent_session_key=parent_session_key,
                     done=True,
@@ -379,6 +516,7 @@ class _GateMixin(ManagerComponent):
             # the concurrency gate runs against the GLOBAL memory instead
             # of the crew it was handed to.
             "memory_store": memory_store,
+            "_execution_context": execution.to_record(),
             "crew": crew,
             "_memory_mode": _memory_mode,
             # Same rule for the asking turn: `spawn_async` re-enters from this
@@ -390,7 +528,7 @@ class _GateMixin(ManagerComponent):
             "_agent_prevalidated": _agent_prevalidated,
             "_preassigned_id": agent_id,
         }
-        if _prepare_only:
+        if _prepare_only and _memory_mode == "persistent":
             # ``spawn_async``: every policy gate above has passed; hand back the
             # row to write OFF-LOOP, then re-enter with ``_store_accepted``.
             return PreparedSpawn(
@@ -407,7 +545,7 @@ class _GateMixin(ManagerComponent):
                     approval_mode=approval_mode,
                 ),
             )
-        if not _from_queue and not _store_accepted:
+        if not _from_queue and not _store_accepted and _memory_mode == "persistent":
             store_err = self._manager._admission.taskq_accept(
                 agent_id,
                 queue_params,
@@ -430,6 +568,7 @@ class _GateMixin(ManagerComponent):
                     SubagentInfo(
                         id=agent_id,
                         task=_redacted_task,
+                        memory_mode=_memory_mode,
                         agent=agent,
                         parent_session_key=parent_session_key,
                         done=True,
@@ -439,7 +578,10 @@ class _GateMixin(ManagerComponent):
                         batch_total=max(0, int(batch_total)),
                     )
                 )
-        _durable = self._manager._admission.taskq_store() is not None
+        _durable = (
+            _memory_mode == "persistent" and self._manager._admission.taskq_store() is not None
+        )
+        admitted_memory_mode: str = _memory_mode
 
         def _deferred(reason: str, refused: SubagentInfo) -> SubagentInfo | None:
             # Pressure is a scheduling fact, not a verdict on the task: the row
@@ -459,6 +601,7 @@ class _GateMixin(ManagerComponent):
             queued = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
+                memory_mode=admitted_memory_mode,
                 agent=agent,
                 app=app,
                 parent_session_key=parent_session_key,
@@ -508,7 +651,7 @@ class _GateMixin(ManagerComponent):
                 metadata={
                     "available_gb": avail_gb,
                     "min_gb": min_mem,
-                    "task": _redacted_task[:120],
+                    **_task_audit,
                 },
             )
             # Built ahead of the deferral, not after it: a parked defer whose
@@ -516,6 +659,7 @@ class _GateMixin(ManagerComponent):
             info = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
+                memory_mode=_memory_mode,
                 agent=agent,
                 parent_session_key=parent_session_key,
                 done=True,
@@ -553,13 +697,18 @@ class _GateMixin(ManagerComponent):
             # at the boundary and persist an unmatched fragment.
             from kiro_crew.platform.context import redact_log_via_context
 
-            task_note = redact_log_via_context(_redacted_task)[:120]
+            task_note = (
+                redact_log_via_context(_redacted_task)[:120] if _persistent_diagnostics else ""
+            )
             sel().log_tool_invocation(
                 session_key=parent_session_key or "",
                 source="subagent",
                 tool_name="spawn_run",
                 outcome="memory_check_unavailable",
-                metadata={"min_gb": min_mem, "task": task_note},
+                metadata={
+                    "min_gb": min_mem,
+                    **({"task": task_note} if _persistent_diagnostics else _task_audit),
+                },
             )
 
         # --- Admission gate: DEFER new spawns while host memory posture is
@@ -585,12 +734,13 @@ class _GateMixin(ManagerComponent):
                 metadata={
                     "available_gb": admission.available_gb,
                     "posture": admission.posture,
-                    "task": _redacted_task[:120],
+                    **_task_audit,
                 },
             )
             info = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
+                memory_mode=_memory_mode,
                 agent=agent,
                 parent_session_key=parent_session_key,
                 done=True,
@@ -649,10 +799,15 @@ class _GateMixin(ManagerComponent):
             # it waits on disk and the drain's refill brings it in. A drained
             # spawn that hit the stagger gate re-joins the window directly --
             # it is already the oldest eligible row.
-            if _from_queue or (
-                _window_hint
-                if _window_hint is not None
-                else self._manager._admission.taskq_should_window(agent_id)
+            # Restricted work has no stored row to refill; retain its only copy.
+            if (
+                not _durable
+                or _from_queue
+                or (
+                    _window_hint
+                    if _window_hint is not None
+                    else self._manager._admission.taskq_should_window(agent_id)
+                )
             ):
                 self._manager._queue.append(queue_params)
             logger.info(
@@ -684,6 +839,7 @@ class _GateMixin(ManagerComponent):
                 parent_session_key=parent_session_key,
                 queued=True,
                 memory_mode=_memory_mode,
+                execution_context=execution,
                 batch_id=batch_id,
                 batch_total=max(0, int(batch_total)),
                 include_memory=include_memory,
@@ -716,6 +872,7 @@ class _GateMixin(ManagerComponent):
                 info = SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
+                    memory_mode=_memory_mode,
                     agent=agent,
                     app=app,
                     parent_session_key=parent_session_key,
@@ -742,6 +899,7 @@ class _GateMixin(ManagerComponent):
                 info = SubagentInfo(
                     id=agent_id,
                     task=_redacted_task,
+                    memory_mode=_memory_mode,
                     agent="",
                     parent_session_key=parent_session_key,
                     done=True,
@@ -758,6 +916,8 @@ class _GateMixin(ManagerComponent):
         # the wait, which is what makes cancel-vs-drain safe). ---
         if _claimed is not None:
             taskq_generation, proceed, claim_reason = _claimed
+        elif _memory_mode != "persistent":
+            taskq_generation, proceed, claim_reason = 0, True, ""
         else:
             if _stop_before_claim and self._manager._admission.taskq_store() is not None:
                 # Reserve-then-commit: take the slot NOW, before the caller
@@ -784,6 +944,7 @@ class _GateMixin(ManagerComponent):
             info = SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
+                memory_mode=_memory_mode,
                 agent=agent,
                 app=app,
                 parent_session_key=parent_session_key,
@@ -806,6 +967,7 @@ class _GateMixin(ManagerComponent):
             return SubagentInfo(
                 id=agent_id,
                 task=_redacted_task,
+                memory_mode=_memory_mode,
                 agent=agent,
                 parent_session_key=parent_session_key,
                 queued=True,
@@ -839,6 +1001,7 @@ class _GateMixin(ManagerComponent):
             memory_store=memory_store or "",
             crew=crew,
             memory_mode=_memory_mode,
+            execution_context=execution,
         )
         info._raw_task = task  # unredacted prompt for kiro-cli execution
         info._memory_mode_ready = not bool(conversation_key)
@@ -976,8 +1139,8 @@ class _GateMixin(ManagerComponent):
         assert self._manager._on_done is not None
         try:
             await self._manager._on_done(info)
-        except Exception:
-            logger.exception("Subagent announce failed for %s", info.id)
+        except Exception as exc:
+            logger.error("Subagent announce failed for %s (%s)", info.id, type(exc).__name__)
 
     def _record_crew_log_dispatch(
         self,

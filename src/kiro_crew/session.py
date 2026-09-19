@@ -131,7 +131,6 @@ from kiro_crew.config.paths import config_dir
 from kiro_crew.constants import COMPACT_WAIT_TIMEOUT_SECS
 from kiro_crew.executors import maintenance_executor, subprocess_executor
 from kiro_crew.mcp_gateway.abort import schedule_abort
-from kiro_crew.member_process_records import reclaim_stale_member_bindings
 from kiro_crew.messaging.link import (
     UNBIND_REASON_SESSION_DESTROYED,
     UNBIND_REASON_UNSPECIFIED,
@@ -476,7 +475,7 @@ POOL_DECISIONS: frozenset[str] = frozenset(
         "miss_empty",
         "bypass_resume",
         "bypass_stateless",
-        "bypass_private_memory",
+        "bypass_member_context",
         "bypass_cwd",
         "bypass_effort",
         "bypass_env",
@@ -1206,9 +1205,6 @@ class SessionManager:
             cleanup_orphaned_session_roots=lambda: cleanup_orphaned_session_roots(),
             cleanup_stale_sandbox_profiles=lambda: cleanup_stale_sandbox_profiles(
                 data_home=data_home
-            ),
-            reclaim_member_bindings=lambda cursor: reclaim_stale_member_bindings(
-                data_home=data_home, cursor=cursor
             ),
             prune_pycache=lambda: prune_pycache(),
             collect_active_pids=lambda sessions: _collect_active_pids(

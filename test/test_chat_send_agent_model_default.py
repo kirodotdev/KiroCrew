@@ -25,7 +25,6 @@ import unittest.mock
 from pathlib import Path
 
 import pytest
-from member_memory_helpers import patch_private_memory_supported
 from test_chat_runner_coverage import _complete, _drive, _runner_state, _set_stream, _slot
 
 from kiro_crew.acp.types import EVENT_TEXT_CHUNK
@@ -109,7 +108,7 @@ def _runner_config(tmp_path, monkeypatch):
     """Serve the real config object to every ``KiroCrewConfig.load()`` in the turn."""
     # These turns use a fake provider and exercise model selection. Supply only
     # the host capability result; member provisioning and binding remain real.
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
 
     def _install(cfg: KiroCrewConfig):
         patcher = unittest.mock.patch.object(

@@ -150,17 +150,6 @@ jobs:
             exit 1
           }
 
-      - name: Require real Darwin private-memory Seatbelt enforcement
-        run: |
-          set -o pipefail
-          echo "::remove-matcher owner=python::"
-          pytest -v -n0 --no-cov --timeout=120 \
-            "test/test_member_memory_filesystem.py::test_darwin_kernel_private_memory_boundary" \
-            | tee member-memory-canary.log
-          grep -q "2 passed" member-memory-canary.log || {
-            echo "::error::Darwin V1 and private-memory canaries must both PASS (no skips)"
-            exit 1
-          }
       - name: Terminal handler suite (verbose, so a darwin PTY hang names its test)
         # test/macos-collect-ignore.txt keeps this file out of the shards and this
         # step runs it instead: -v -n0 so every test name streams to the log the

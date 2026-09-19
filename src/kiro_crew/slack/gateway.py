@@ -4374,8 +4374,36 @@ class GatewayOrchestrator:
             session_key, msg = build_cron_session_context(job)
 
             from kiro_crew.cron import resolve_cron_memory
+            from kiro_crew.execution_context import execution_for_store, execution_from_record
 
-            cron_memory_store, cron_agent = await asyncio.to_thread(resolve_cron_memory, job)
+            # Snapshot the job before yielding; reloading a cron cannot rebind it.
+            cron_agents = list(job.agent_sequence)
+            if job.execution_context is not None:
+                cron_execution = execution_from_record({"execution_context": job.execution_context})
+            else:
+                legacy_selection = CronJob(
+                    id=job.id,
+                    name=job.name,
+                    message=job.message,
+                    member_id=job.member_id,
+                    memory_store=job.memory_store,
+                    agent_id=job.agent_id,
+                )
+
+                def resolve_legacy_execution():
+                    # Both calls can load configuration. The worker sees only
+                    # captured selectors, never the scheduler's mutable job.
+                    resolve_cron_memory(legacy_selection, validate_memory_files=False)
+                    return execution_for_store(
+                        legacy_selection.memory_store,
+                        template_id=legacy_selection.agent_id or "kirocrew",
+                    )
+
+                cron_execution = await asyncio.to_thread(resolve_legacy_execution)
+            cron_memory_store, cron_agent = (
+                cron_execution.store.legacy_name,
+                cron_execution.template_id,
+            )
 
             # ── Concurrent execution guard ──
             if (job.script or job.command) and job.id in self._running_script_ids:
@@ -5235,42 +5263,23 @@ class GatewayOrchestrator:
                 Returns (client, is_new, resumed, downgraded)."""
 
                 assert self.sessions is not None
+                from kiro_crew.execution_context import bind_session_execution
+
+                await asyncio.to_thread(bind_session_execution, key, cron_execution)
                 modes = getattr(self.ctx_builder, "_session_memory_modes", None)
                 if isinstance(modes, dict):
+                    # A separately scheduled run is durable work, not a child
+                    # conversation. Only this trusted dispatch admits its key.
                     from kiro_crew.messaging.privacy_mode import strictest
                     from kiro_crew.subagent_persistence import bind_session_memory_mode
                     from kiro_crew.workflows.registry import _await_owned
 
-                    # A separately scheduled run is durable work, not a child
-                    # conversation. Only this trusted dispatch admits its key.
                     publication = asyncio.create_task(
-                        asyncio.to_thread(bind_session_memory_mode, key, "persistent")
+                        asyncio.to_thread(bind_session_memory_mode, key, cron_execution.memory_mode)
                     )
                     admitted_mode = await _await_owned(publication)
                     modes[key] = (
                         strictest((admitted_mode, modes.get(key, "persistent"))) or "persistent"
-                    )
-                if cron_memory_store:
-                    from kiro_crew.context import prepare_store_vectors
-                    from kiro_crew.member_memory_auth import bind_private_session_store
-                    from kiro_crew.memory_stores import memory_store_version
-
-                    log = getattr(self.ctx_builder, "conversation_log", None)
-                    if log is None:
-                        raise RuntimeError(
-                            "memory_unavailable: cannot persist scheduled member identity"
-                        )
-                    # resolve_cron_memory validated the persisted member task;
-                    # the transcript only mirrors this trusted assignment.
-                    if await asyncio.to_thread(memory_store_version, cron_memory_store) == 2:
-                        await asyncio.to_thread(bind_private_session_store, key, cron_memory_store)
-                    await asyncio.to_thread(
-                        log.update_metadata,
-                        key,
-                        {"memory_store": cron_memory_store, "agent": job.member_id},
-                    )
-                    await prepare_store_vectors(
-                        self.ctx_builder, cron_memory_store, session_key=key
                     )
                 try:
                     client, is_new, resumed = await self.sessions.get_or_create(
@@ -5316,7 +5325,7 @@ class GatewayOrchestrator:
             # ── Sequential agent execution ──
             # When agent_sequence has multiple agents, run them sequentially
             # with per-agent session keys and per-job env vars.
-            agents = job.agent_sequence if job.agent_sequence else []
+            agents = cron_agents
             if agent_sequence_dispatches(agents):
                 assert self.sessions is not None
                 assert self.ctx_builder is not None
@@ -5377,6 +5386,7 @@ class GatewayOrchestrator:
                             interactive=False,
                             agent=agent,
                             memory_store=cron_memory_store or None,
+                            execution_context=cron_execution,
                             context_provider=client,
                             resumed=_resumed,
                             needs_reinjection=_seq_reinjection,
@@ -5555,6 +5565,7 @@ class GatewayOrchestrator:
                     interactive=False,
                     agent=cron_agent or None,
                     memory_store=cron_memory_store or None,
+                    execution_context=cron_execution,
                     context_provider=client,
                     resumed=_resumed,
                     needs_reinjection=_needs_reinjection,
@@ -5633,7 +5644,7 @@ class GatewayOrchestrator:
                         _turn_usage,
                         provider=_provider,
                         surface="cron",
-                        agent=read_effective_agent(client) or job.agent_id or "",
+                        agent=read_effective_agent(client) or cron_agent or "",
                         context_used=_used,
                         context_window=_window,
                         elapsed_ms=int((time.monotonic() - _turn_t0) * 1000),

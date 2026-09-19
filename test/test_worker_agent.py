@@ -1924,7 +1924,7 @@ def test_a_re_derive_during_the_hosts_own_pre_spawn_work_does_not_kill_the_sessi
     rt._work_dir = tmp_path / "wd"
     rt._model = None
     rt._sandbox_mode = "auto"
-    rt._private_memory = False
+    rt._member_context = False
     # ``_harness`` is a cached property over the backend, so the stub is installed
     # through the cache slot the runtime itself fills.
     rt._harness_resolved = _EditingHarness()
@@ -3030,7 +3030,7 @@ def _runtime_for_create_session(monkeypatch, tmp_path, sent, terminated):
     rt._agent = "kirocrew"
     rt._crew_agent = "kirocrew"
     rt._work_dir = tmp_path / "wd"
-    rt._private_memory = False
+    rt._member_context = False
     rt._native_launch_sources = {}
     rt._mcp_gateway_overlay = None
     rt._agent_capabilities = {}

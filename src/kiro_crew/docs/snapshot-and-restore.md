@@ -48,24 +48,17 @@ stages the shared paths once.
 `workspace/hygiene_data/` and `workspace/insert_facts*.py` are excluded: they are
 large and regenerable.
 
-`memory_stores/` holds every **named memory store**: one directory per crew member,
-each with its own markdown memory, lessons, FTS index, vector database and
-ownership manifest. All of that rides with `memory`. Host-local entries under
-the tree are this machine's runtime state rather than memory and never ride, in
-either direction: the member signing key (`memory_stores/.member-api-key`,
-regenerated on the restoring host like `sel_hmac.key`), the private execution
-logs (`memory_stores/.execution-logs/`), and the local rolling backups
-(`memory_stores/.member-backups/` and a named store's own `backups/`, which hold
-that host's recovery copies and any pending-restore journal). A restore drops
-them if a hand-built archive carries them. Retirement markers under
-`memory_stores/.archived-members/` also stay on this host and never ride in an
-archive. Replace and rollback preserve these markers, so restoring an older
-configuration does not reactivate a retired private store.
+`memory_stores/` holds named V1 stores and member-scoped V2 stores. V2 learning
+has one SQLite authority, including history, full-text search and vectors;
+manual rules and project guidance remain separate files. Snapshot memory capture
+uses SQLite backup for consistent committed state, including WAL data.
+Local rolling backups and pending restore journals stay on their host. Historical
+host credential and runtime-log filenames are excluded from portable bundles.
 
-Archives contain private memory in cleartext. Keep backup files and temporary
-storage away from untrusted agents. Owner-only staging and ZIP-extraction
-permissions block other OS users, not agents running as the same OS user; the
-live-store path fence does not automatically protect an exported copy.
+Archives contain member memory in cleartext. Keep them in storage appropriate
+for the data. Owner-only staging and extraction permissions protect against other
+OS users, not arbitrary code run as the same user. Member-scoped tools do not
+promise confidentiality for exported copies.
 
 The security event log's HMAC key (`sel_hmac.key`) is deliberately **excluded**
 from every snapshot, and is regenerated on the restoring host. That keeps each

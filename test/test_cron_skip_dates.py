@@ -148,7 +148,7 @@ class TestMcpCronSkipDates:
     """Integration tests for skip_dates via MCP tool layer."""
 
     def test_cron_add_with_skip_dates(self, monkeypatch, tmp_path) -> None:
-        from kiro_crew.mcp_cron import _call_tool
+        from kiro_crew.mcp_cron import _call_tool_locally as _call_tool
 
         # Isolate the cron store to tmp_path so parallel (xdist) cron tests don't
         # race on the shared default jobs file. _call_tool builds its service from
@@ -175,7 +175,7 @@ class TestMcpCronSkipDates:
         assert jobs[0].timezone == "Europe/Luxembourg"
 
     def test_cron_update_skip_dates(self, monkeypatch, tmp_path) -> None:
-        from kiro_crew.mcp_cron import _call_tool
+        from kiro_crew.mcp_cron import _call_tool_locally as _call_tool
 
         monkeypatch.setattr("kiro_crew.mcp_cron.config_dir", lambda: tmp_path)
         monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)

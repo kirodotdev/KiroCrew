@@ -174,6 +174,28 @@ def _patched_config(names, default=CREW):
 
 class TestMemberRoutes:
     @pytest.mark.asyncio
+    async def test_roster_reuses_config_loaded_off_loop(self, tmp_path, monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = _fake_config([CREW, OTHER])
+        loop_thread = threading.get_ident()
+        loads = []
+
+        def load():
+            loads.append(threading.get_ident())
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", load)
+        state = _make_state(tmp_path)
+        loads.clear()
+        async with TestClient(TestServer(_make_members_app(state))) as client:
+            response = await client.get("/api/members")
+            assert response.status == 200
+            assert len((await response.json())["members"]) == 2
+        assert loads and loop_thread not in loads
+        assert len(loads) == 1
+
+    @pytest.mark.asyncio
     async def test_roster_lists_global_crews_with_slugs(self, tmp_path):
         state = _make_state(tmp_path)
         with _patched_config([CREW, "Docs_Writer"]):
@@ -377,7 +399,6 @@ class TestMemberRoutes:
         self, tmp_path, monkeypatch, private, workspace
     ):
         """A new member DM uses the configured workspace for cwd and project guides."""
-        from member_memory_helpers import patch_private_memory_supported
 
         from kiro_crew.config.loader import KiroCrewConfig
         from kiro_crew.config.sections import WorkspaceConfig
@@ -390,7 +411,7 @@ class TestMemberRoutes:
         cfg.workspaces["team-a"] = WorkspaceConfig(dir=str(team_dir))
         cfg.default_workspace = "team-a"
         if private:
-            patch_private_memory_supported(monkeypatch)
+            pass  # Member routing does not depend on OS isolation.
             await asyncio.to_thread(provision_member_memory, cfg, CREW)
         await asyncio.to_thread(cfg.save)
         state = _make_state(tmp_path)
@@ -738,10 +759,6 @@ class TestPinEnforcement:
         cfg.save()
         # No real provider or embedding process runs in this stream harness.
         # Keep private ownership and the protected session binding real.
-        monkeypatch.setattr(
-            "kiro_crew.member_memory_auth.private_memory_execution_supported",
-            lambda **kwargs: True,
-        )
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner._maybe_auto_title", AsyncMock())
         monkeypatch.setattr("kiro_crew.dashboard.chat_runner.generate_session_summary", AsyncMock())
         monkeypatch.setattr(
@@ -1825,12 +1842,11 @@ class TestDenialAuditOffload:
 @pytest.mark.asyncio
 @pytest.mark.parametrize("conflict", ["linked", "store"])
 async def test_private_thread_conflict_names_its_actual_cause(tmp_path, monkeypatch, conflict):
-    from member_memory_helpers import patch_private_memory_supported
 
     from kiro_crew.config.loader import KiroCrewConfig
     from kiro_crew.memory_stores import provision_member_memory
 
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
 
     def configure():
         cfg = KiroCrewConfig.load()
@@ -1860,7 +1876,7 @@ async def test_private_thread_conflict_names_its_actual_cause(tmp_path, monkeypa
             expected = (
                 "the member thread is linked to another session"
                 if conflict == "linked"
-                else "the member thread has a different private-memory assignment"
+                else "the member thread has a different member memory assignment"
             )
             assert body["error"] == expected
             assert "running" not in body["error"]

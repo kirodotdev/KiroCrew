@@ -1,4 +1,4 @@
-"""Snapshot commit failures must never acknowledge an undiscoverable private task."""
+"""Snapshot failures never acknowledge partially persisted task state."""
 
 import asyncio
 import json
@@ -11,7 +11,7 @@ from test_workflows_private_execution import world as _world
 from kiro_crew import atomic_write as atomic
 from kiro_crew.task_models import Project
 from kiro_crew.taskrunner import TaskRunner
-from kiro_crew.workflow_memory import WorkflowScope, private_payload_path, task_snapshot_path
+from kiro_crew.workflow_memory import TaskSnapshotError, WorkflowScope
 from kiro_crew.workflows.store import WorkflowRunStore
 
 world = _world
@@ -24,7 +24,13 @@ def _runner(world, directory):
 async def _private(world, task_id):
     scope = await WorkflowScope.admit(f"wf_{task_id}", world.builder, "dashboard:alice")
     await scope.prepare(world.builder, f"taskrunner:{task_id}:runtime")
-    return Project(spec_path="", spec_content="PRIVATE_BODY", task_id=task_id, status="completed")
+    return Project(
+        spec_path="",
+        spec_content="PRIVATE_BODY",
+        task_id=task_id,
+        status="completed",
+        execution_context=scope.execution_context,
+    )
 
 
 def _fail_io(monkeypatch, target, phase):
@@ -49,44 +55,27 @@ def _fail_io(monkeypatch, target, phase):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("broken", ["public", "private"])
-async def test_workflow_save_prepares_only_bound_target(world, tmp_path, broken):
+async def test_workflow_save_refuses_an_unavailable_store(world, tmp_path):
     scope = await WorkflowScope.admit("wf_target", world.builder, "dashboard:alice")
-    public = tmp_path / "workflows"
-    hidden = private_payload_path(scope.run_id)
-    blocker = public if broken == "public" else hidden.parent
-    blocker.parent.mkdir(parents=True, exist_ok=True)
-    blocker.write_text("not a directory", encoding="utf-8")
-    store = WorkflowRunStore(base_dir=public)
+    base = tmp_path / "workflows"
+    base.write_text("not a directory", encoding="utf-8")
+    store = WorkflowRunStore(base_dir=base)
     row = {
         "run_id": scope.run_id,
         "status": "finished",
-        "source": "PRIVATE_BODY",
-        "execution_binding_version": 1,
+        "source": "BODY",
+        "execution_context": scope.execution_context.to_record(),
     }
-    if broken == "private":
-        with pytest.raises(OSError):
-            await asyncio.to_thread(store.save, scope.run_id, row)
-        assert not store.runs_dir.exists()
-    else:
+    with pytest.raises(OSError):
         await asyncio.to_thread(store.save, scope.run_id, row)
-        assert not store.runs_dir.exists()
-        # The private write must not prepare the broken public directory. But
-        # restart cannot claim a complete inventory until that root is repaired.
-        with pytest.raises(OSError, match="inventory unavailable"):
-            await asyncio.to_thread(WorkflowRunStore(base_dir=public).load_all)
-        public.unlink()  # Remove only this test's deliberate non-directory blocker.
-        recovered = await asyncio.to_thread(WorkflowRunStore(base_dir=public).load_all)
-        assert recovered[0]["source"] == "PRIVATE_BODY"
-        assert not store.runs_dir.exists()
+    assert base.read_text(encoding="utf-8") == "not a directory"
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target_kind", ["public", "private"])
 @pytest.mark.parametrize("phase", ["write", "replace"])
 @pytest.mark.parametrize("mutation", ["first", "update", "add", "delete"])
 async def test_snapshot_failure_and_retry_are_discoverable(
-    world, tmp_path, monkeypatch, target_kind, phase, mutation
+    world, tmp_path, monkeypatch, phase, mutation
 ):
     directory = tmp_path / "tasks"
     runner = _runner(world, directory)
@@ -105,51 +94,33 @@ async def test_snapshot_failure_and_retry_are_discoverable(
         runner._runs.pop(private.task_id)
     public.spec_content = "PUBLIC_NEW"
     expected = {key: run.spec_content for key, run in runner._runs.items()}
-    target = (
-        runner._runs_path() if target_kind == "public" else task_snapshot_path(runner._runs_path())
-    )
+    target = runner._runs_path()
     with monkeypatch.context() as patch:
         calls = _fail_io(patch, target, phase)
         with pytest.raises(OSError):
             await runner._apersist_runs()
         assert calls, "The real atomic write never reached the injected failure"
     restarted = await asyncio.to_thread(_runner, world, directory)
-    # A failed public projection may follow a committed hidden snapshot. A failed
-    # hidden write must leave the entire old snapshot, never a mixed generation.
     actual = {key: run.spec_content for key, run in restarted._runs.items()}
-    if target_kind == "public":
-        assert actual == expected
-    else:
-        old = {"public": "PUBLIC_OLD"}
-        if mutation != "first":
-            old["private"] = "PRIVATE_BODY"
-        assert actual == old
+    old = {"public": "PUBLIC_OLD"}
+    if mutation != "first":
+        old["private"] = "PRIVATE_BODY"
+    assert actual == old
     await runner._apersist_runs()
     await runner._apersist_runs()
     restarted = await asyncio.to_thread(_runner, world, directory)
     assert {key: run.spec_content for key, run in restarted._runs.items()} == expected
-    visible = runner._runs_path().read_text(encoding="utf-8")
-    assert "PRIVATE_" not in visible
+    assert json.loads(runner._runs_path().read_text(encoding="utf-8"))
     assert list(directory.glob("*.tmp")) == []
-    hidden = task_snapshot_path(runner._runs_path())
-    assert list(hidden.parent.glob("*.tmp")) == []
-    # Deliberately stale/missing public projections cannot reanimate a deleted row
-    # or strand a private row after the hidden commit.
-    runner._runs_path().unlink()
-    restarted = await asyncio.to_thread(_runner, world, directory)
-    assert {key: run.spec_content for key, run in restarted._runs.items()} == expected
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target_kind", ["public", "private"])
 @pytest.mark.parametrize("phase", ["write", "replace"])
 async def test_background_admission_does_not_acknowledge_failed_write(
-    world, tmp_path, monkeypatch, target_kind, phase
+    world, tmp_path, monkeypatch, phase
 ):
     runner = _runner(world, tmp_path / "tasks")
-    target = (
-        runner._runs_path() if target_kind == "public" else task_snapshot_path(runner._runs_path())
-    )
+    target = runner._runs_path()
     execute = AsyncMock()
     monkeypatch.setattr(runner, "run", execute)
     with monkeypatch.context() as patch:
@@ -167,33 +138,12 @@ async def test_background_admission_does_not_acknowledge_failed_write(
 
 
 @pytest.mark.asyncio
-async def test_legacy_deleted_private_rows_are_not_discovered(world, tmp_path):
-    private = await _private(world, "deleted")
-    runner = _runner(world, tmp_path / "tasks")
-    runner._runs[private.task_id] = private
-    rows = json.loads(runner._serialize_runs())
-    hidden = task_snapshot_path(runner._runs_path())
-    hidden.parent.mkdir(parents=True, exist_ok=True)
-    hidden.write_text(json.dumps(rows), encoding="utf-8")
-    runner._work_dir.mkdir()
-    runner._runs_path().write_text("[]", encoding="utf-8")
-    restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
-    assert restarted._runs == {}
-    await restarted._apersist_runs()
-    restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
-    assert restarted._runs == {}
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("target_kind", ["public", "private"])
-async def test_failed_delete_remains_retryable(world, tmp_path, monkeypatch, target_kind):
+async def test_failed_delete_remains_retryable(world, tmp_path, monkeypatch):
     runner = _runner(world, tmp_path / "tasks")
     private = await _private(world, "deleted")
     runner._runs[private.task_id] = private
     await runner._apersist_runs()
-    target = (
-        runner._runs_path() if target_kind == "public" else task_snapshot_path(runner._runs_path())
-    )
+    target = runner._runs_path()
     with monkeypatch.context() as patch:
         _fail_io(patch, target, "replace")
         with pytest.raises(OSError):
@@ -206,27 +156,22 @@ async def test_failed_delete_remains_retryable(world, tmp_path, monkeypatch, tar
 
 
 @pytest.mark.asyncio
-async def test_committed_bad_private_row_survives_public_update(world, tmp_path):
+async def test_unreadable_row_blocks_snapshot_replacement(world, tmp_path):
     from kiro_crew.workflow_memory import write_task_snapshot
 
     runner = _runner(world, tmp_path / "tasks")
-    private = await _private(world, "bad")
-    runner._runs[private.task_id] = private
+    member = await _private(world, "bad")
+    runner._runs[member.task_id] = member
     rows = json.loads(runner._serialize_runs())
     rows[0]["task_details"] = [{"index": 1, "status": "passed"}]
     await asyncio.to_thread(write_task_snapshot, runner._runs_path(), json.dumps(rows))
+    before = runner._runs_path().read_bytes()
     restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
-    reference = {"task_id": private.task_id, "private_payload": True}
-    assert restarted._unavailable_run_refs == [reference]
-    restarted._runs["public"] = Project(
-        spec_path="", spec_content="PUBLIC", task_id="public", status="completed"
-    )
-    await restarted._apersist_runs()
-    hidden = json.loads(task_snapshot_path(runner._runs_path()).read_text(encoding="utf-8"))
-    assert hidden["private"] == rows
-    restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
-    assert set(restarted._runs) == {"public"}
-    assert restarted._unavailable_run_refs == [reference]
+    assert restarted._snapshot_recovery_incomplete
+    restarted._runs["public"] = Project("", "PUBLIC", task_id="public", status="completed")
+    with pytest.raises(TaskSnapshotError):
+        await restarted._apersist_runs()
+    assert runner._runs_path().read_bytes() == before
 
 
 @pytest.mark.asyncio
@@ -236,7 +181,7 @@ async def test_cancelled_write_drains_before_new_snapshot(world, tmp_path, monke
     runner = _runner(world, tmp_path / "tasks")
     private = await _private(world, "cancelled")
     runner._runs[private.task_id] = private
-    target = task_snapshot_path(runner._runs_path())
+    target = runner._runs_path()
     entered, release = asyncio.Event(), threading.Event()
     loop = asyncio.get_running_loop()
     real_write = atomic._write_all
@@ -299,7 +244,7 @@ async def test_completion_write_failure_never_publishes_success(
 
     async def execute(_run, _history):
         await asyncio.sleep(0)
-        _fail_io(monkeypatch, task_snapshot_path(runner._runs_path()), "replace")
+        _fail_io(monkeypatch, runner._runs_path(), "replace")
 
     monkeypatch.setattr(runner, "_watchdog_loop", watchdog)
     monkeypatch.setattr(runner, "_execute_tasks", execute)
@@ -326,9 +271,8 @@ async def test_completion_write_failure_never_publishes_success(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("target_kind", ["public", "private"])
 async def test_late_older_snapshot_cannot_overwrite_failed_newer_attempt(
-    world, tmp_path, monkeypatch, target_kind
+    world, tmp_path, monkeypatch
 ):
     runner = _runner(world, tmp_path / "tasks")
     private = await _private(world, "ordered")
@@ -337,9 +281,7 @@ async def test_late_older_snapshot_cannot_overwrite_failed_newer_attempt(
     private.spec_content = "PRIVATE_OLD_QUEUED"
     older_seq, older = runner._next_persist_seq(), runner._serialize_runs()
     private.spec_content = "PRIVATE_NEWER"
-    target = (
-        runner._runs_path() if target_kind == "public" else task_snapshot_path(runner._runs_path())
-    )
+    target = runner._runs_path()
     with monkeypatch.context() as patch:
         _fail_io(patch, target, "replace")
         with pytest.raises(OSError):
@@ -347,7 +289,7 @@ async def test_late_older_snapshot_cannot_overwrite_failed_newer_attempt(
     with pytest.raises(OSError):
         await asyncio.to_thread(runner._commit_snapshot, older_seq, older)
     restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
-    expected = "PRIVATE_NEWER" if target_kind == "public" else "PRIVATE_BODY"
+    expected = "PRIVATE_BODY"
     assert restarted._runs[private.task_id].spec_content == expected
     await runner._apersist_runs()
     await asyncio.to_thread(runner._commit_snapshot, older_seq, older)
@@ -356,37 +298,15 @@ async def test_late_older_snapshot_cannot_overwrite_failed_newer_attempt(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("projection", ["missing", "corrupt"])
-async def test_first_hidden_commit_is_discovered_without_public_projection(
-    world, tmp_path, monkeypatch, projection
-):
-    runner = _runner(world, tmp_path / "tasks")
-    private = await _private(world, "first")
-    runner._runs[private.task_id] = private
-    with monkeypatch.context() as patch:
-        _fail_io(patch, runner._runs_path(), "replace")
-        with pytest.raises(OSError):
-            await runner._apersist_runs()
-    if projection == "corrupt":
-        runner._runs_path().write_text("[broken", encoding="utf-8")
-    restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
-    assert restarted._runs[private.task_id].spec_content == "PRIVATE_BODY"
-    assert not runner._runs_path().with_suffix(".json.corrupt").exists()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("target_kind", ["public", "private"])
 @pytest.mark.parametrize("phase", ["write", "replace"])
-async def test_plan_admission_failure_rolls_back(world, tmp_path, monkeypatch, target_kind, phase):
+async def test_plan_admission_failure_rolls_back(world, tmp_path, monkeypatch, phase):
     from kiro_crew.task_models import Task
 
     runner = _runner(world, tmp_path / "tasks")
     monkeypatch.setattr(
         runner, "_decompose", AsyncMock(return_value=[Task(index=1, title="plan", description="")])
     )
-    target = (
-        runner._runs_path() if target_kind == "public" else task_snapshot_path(runner._runs_path())
-    )
+    target = runner._runs_path()
     with monkeypatch.context() as patch:
         calls = _fail_io(patch, target, phase)
         with pytest.raises(OSError):
@@ -405,7 +325,7 @@ async def test_failed_retry_admission_does_not_leave_a_running_task(world, tmp_p
     private.status = "failed"
     runner._runs[private.task_id] = private
     await runner._apersist_runs()
-    _fail_io(monkeypatch, task_snapshot_path(runner._runs_path()), "replace")
+    _fail_io(monkeypatch, runner._runs_path(), "replace")
     with pytest.raises(OSError):
         await runner.retry_from_task(private.task_id, 1)
     assert private.status == "failed"
@@ -414,38 +334,25 @@ async def test_failed_retry_admission_does_not_leave_a_running_task(world, tmp_p
 
 
 @pytest.mark.asyncio
-async def test_partial_recovery_cannot_overwrite_an_undiscovered_commit(
-    world, tmp_path, monkeypatch
-):
+async def test_unreadable_snapshot_cannot_be_overwritten(world, tmp_path, monkeypatch):
     runner = _runner(world, tmp_path / "tasks")
-    runner._runs["public"] = Project(
-        spec_path="", spec_content="PUBLIC", task_id="public", status="completed"
-    )
+    member = await _private(world, "unavailable")
+    runner._runs[member.task_id] = member
     await runner._apersist_runs()
-    private = await _private(world, "undiscovered")
-    runner._runs[private.task_id] = private
-    with monkeypatch.context() as patch:
-        _fail_io(patch, runner._runs_path(), "replace")
-        with pytest.raises(OSError):
-            await runner._apersist_runs()
-    hidden = task_snapshot_path(runner._runs_path())
-    before = hidden.read_bytes()
-    real_read = Path.read_text
-
-    def unavailable(path, *args, **kwargs):
-        if path == hidden:
-            raise OSError("private disk unavailable")
-        return real_read(path, *args, **kwargs)
+    before = runner._runs_path().read_bytes()
+    from kiro_crew import workflow_memory
 
     with monkeypatch.context() as patch:
-        patch.setattr(Path, "read_text", unavailable)
-        partial = await asyncio.to_thread(_runner, world, runner._work_dir)
-    assert set(partial._runs) == {"public"}
-    with pytest.raises(OSError, match="recovery incomplete"):
-        await partial._apersist_runs()
-    assert hidden.read_bytes() == before
-    restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
-    assert set(restarted._runs) == {"public", private.task_id}
+        patch.setattr(
+            workflow_memory,
+            "read_task_registry",
+            lambda path: (_ for _ in ()).throw(OSError("unreadable")),
+        )
+        restarted = await asyncio.to_thread(_runner, world, runner._work_dir)
+    assert restarted._snapshot_recovery_incomplete
+    with pytest.raises(TaskSnapshotError):
+        await restarted._apersist_runs()
+    assert runner._runs_path().read_bytes() == before
 
 
 @pytest.mark.asyncio

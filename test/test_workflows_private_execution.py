@@ -1,7 +1,6 @@
 """Real workflow/service/session/store integration with only model I/O replaced.
 
-OS capability is pinned in this in-process suite. The namespace-enabled gateway
-E2E is a separate requirement; these tests do not claim kernel/MCP proof coverage.
+The owner records route independent workers without process-isolation proofs.
 """
 
 import asyncio
@@ -9,7 +8,6 @@ import re
 from types import SimpleNamespace
 
 import pytest
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.config.loader import KiroCrewAgentConfig
@@ -22,10 +20,8 @@ from kiro_crew.member_memory_auth import (
 from kiro_crew.memory_stores import persist_member_config, provision_member_memory
 from kiro_crew.session import SessionManager
 from kiro_crew.workflow_memory import (
-    WorkflowMemoryError,
     WorkflowScope,
     authorize_run,
-    binding_path,
 )
 from kiro_crew.workflows import agent_exec, agent_pool, service
 from kiro_crew.workflows.store import WorkflowRunStore
@@ -73,7 +69,7 @@ def world(monkeypatch, event_loop, tmp_path):
 
     from kiro_crew import context
 
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
     home = tmp_path / "host-home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
@@ -118,7 +114,12 @@ def world(monkeypatch, event_loop, tmp_path):
         bind_private_session_store(key, stores[member])
         log.update_metadata(key, {"memory_store": stores[member]})
         vectors = event_loop.run_until_complete(builder.ensure_store(stores[member]))
-        vectors.write_lesson(f"{member.upper()}_PRIVATE_MARKER", "tool", None, "test")
+        vectors.write_lesson(f"{member.upper()}_LEARNED_MARKER", "tool", None, "test")
+        from kiro_crew.members import member_slug, write_member_rules
+
+        write_member_rules(
+            member_slug(member), member=member, text=f"{member.upper()}_PRIVATE_MARKER"
+        )
     models = []
 
     def factory(key, **kwargs):
@@ -320,76 +321,43 @@ async def test_private_execution_keeps_scope_on_every_worker(world, pooled, entr
         store_of_session(world.log, model.key) == world.stores["alice"] for model in world.models
     )
     assert not world.sessions.has_session("dashboard:bob")
-    with pytest.raises(WorkflowMemoryError):
-        await authorize_run(handle.run_id, "dashboard:bob")
-    with pytest.raises(WorkflowMemoryError):
-        await authorize_run(handle.run_id, "dashboard:global")
+    scope = await authorize_run(handle.run_id, "dashboard:bob", record=handle.to_store_json())
+    assert scope.execution_context.store.store_id == world.stores["alice"]
 
 
 @pytest.mark.asyncio
-async def test_private_author_and_restart_rerun_use_protected_binding(world, tmp_path):
+async def test_member_author_and_restart_rerun_use_owner_record(world, tmp_path):
     store = WorkflowRunStore(tmp_path / "workflow-records")
     svc = service.WorkflowService(
         sessions=world.sessions, context_builder=world.builder, store=store
     )
-    assert (await svc.author("private author", author="dashboard:alice"))["ok"]
+    assert (await svc.author("member author", author="dashboard:alice"))["ok"]
     first = await finished(svc, await svc.start(SCRIPT, session_key="dashboard:alice"))
-    assert not list(store.runs_dir.glob("*.json")), "private content leaked into ordinary runs"
+    assert store._path_for(first.run_id).is_file()
+    world.log._path("dashboard:alice").unlink()
     restored = service.WorkflowService(
         sessions=world.sessions, context_builder=world.builder, store=store
     )
-    assert restored.registry.get(first.run_id) is not None
-    denied = await restored.rerun_subtree(first.run_id, caller_session="dashboard:bob")
-    assert denied["code"] == "workflow_memory_unavailable"
+    prior = restored.registry.get(first.run_id)
+    assert prior.execution_context == first.execution_context
     rerun = await finished(
-        restored, await restored.rerun_subtree(first.run_id, 2, caller_session="dashboard:alice")
+        restored, await restored.rerun_subtree(first.run_id, 2, caller_session="dashboard:bob")
     )
     assert rerun.result == first.result
-    binding_path(first.run_id).unlink()
-    denied = await restored.rerun_subtree(first.run_id, caller_session="dashboard:alice")
-    assert denied["code"] == "workflow_memory_unavailable"
+    assert rerun.execution_context.store == first.execution_context.store
 
 
 @pytest.mark.asyncio
-async def test_published_scope_cannot_rebind_and_missing_record_refuses(world):
+async def test_scope_keeps_captured_member_when_parent_record_changes(world):
+    from kiro_crew.execution_context import bind_session_execution, read_session_execution
+
     scope = await WorkflowScope.admit("wf_test", world.builder, "dashboard:alice")
-    with pytest.raises(WorkflowMemoryError):
-        await WorkflowScope.admit("wf_test", world.builder, "dashboard:bob")
-    binding_path(scope.run_id).write_text("broken", encoding="utf-8")
-    before = len(world.models)
-    with pytest.raises(WorkflowMemoryError):
-        await scope.prepare(world.builder, scope.worker_key("unused"))
-    assert len(world.models) == before
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mid_run", [False, True])
-@pytest.mark.parametrize("pooled", [False, True])
-async def test_invalidated_run_fails_without_global_worker(world, monkeypatch, mid_run, pooled):
-    svc = service.WorkflowService(
-        sessions=world.sessions, context_builder=world.builder, pool_agents=pooled, persist=False
+    bind_session_execution(
+        "dashboard:alice", read_session_execution("dashboard:bob"), replace_existing=True
     )
-    started = await svc.start(SCRIPT, session_key="dashboard:alice")
-    assert "run_id" in started, started
-    run_id = started["run_id"]
-    path = binding_path(run_id)
-    if mid_run:
-
-        async def revoke(model, prompt, **kwargs):
-            path.write_text("invalid", encoding="utf-8")
-            return "already completed private work"
-
-        for module in (agent_exec, agent_pool):
-            monkeypatch.setattr(module, "stream_and_collect", revoke)
-    else:
-        path.unlink()
-    handle = svc.registry.get(run_id)
-    await asyncio.wait_for(handle.task, 10)
-    assert handle.status == "failed"
-    assert "Global V1 was not used" in handle.error
-    if not mid_run:
-        assert world.models == []
-    assert all(model._private_memory for model in world.models)
+    key = scope.worker_key("later")
+    await scope.prepare(world.builder, key)
+    assert read_session_execution(key).store.store_id == world.stores["alice"]
 
 
 @pytest.mark.asyncio
@@ -405,21 +373,14 @@ async def test_authenticated_scope_cannot_change_before_service_admission(world)
 
 
 @pytest.mark.asyncio
-async def test_private_persistence_acl_and_eviction_run_off_loop(world, tmp_path, monkeypatch):
+async def test_member_persistence_and_eviction_run_off_loop(world, tmp_path, monkeypatch):
     import json
     import threading
 
-    from kiro_crew import platform_compat
-    from kiro_crew.workflow_memory import private_payload_path, read_binding
-    from kiro_crew.workflows.store import WorkflowRunStore
-
     loop_thread = threading.get_ident()
     seen = []
-    acl_threads = []
-    store = WorkflowRunStore(tmp_path / "public-workflows")
-    save = store.save
-    delete = store.delete
-    restrict = platform_compat.restrict_dir_to_owner
+    store = WorkflowRunStore(tmp_path / "workflow-records")
+    save, delete = store.save, store.delete
 
     def observed_save(rid, payload):
         seen.append(("save", threading.get_ident(), payload["status"], len(payload["events"])))
@@ -429,37 +390,22 @@ async def test_private_persistence_acl_and_eviction_run_off_loop(world, tmp_path
         seen.append(("delete", threading.get_ident(), "", 0))
         return delete(rid)
 
-    def observed_restrict(path):
-        if path == private_payload_path("probe").parent:
-            acl_threads.append(threading.get_ident())
-        return restrict(path)
-
     monkeypatch.setattr(store, "save", observed_save)
     monkeypatch.setattr(store, "delete", observed_delete)
-    monkeypatch.setattr(platform_compat, "restrict_dir_to_owner", observed_restrict)
     svc = service.WorkflowService(
         sessions=world.sessions, context_builder=world.builder, store=store
     )
     svc.registry._max_runs = 1
-    script = """META = {"name": "private checkpoint"}
-async def workflow(ctx):
-    ctx.log("one")
-    ctx.log("two")
-    ctx.log("three")
-    ctx.log("four")
-    return "private result"
-"""
+    script = 'META = {"name": "checkpoint"}\nasync def workflow(ctx):\n    ctx.log("one")\n    ctx.log("two")\n    ctx.log("three")\n    ctx.log("four")\n    return "result"\n'
     first = await svc.start(script, session_key="dashboard:alice")
     rid = first["run_id"]
     await svc.registry.get(rid).task
-    assert read_binding(rid, required=True)["memory_store"] == world.stores["alice"]
-    payload = json.loads(private_payload_path(rid).read_text())
-    assert payload["result"] == "private result"
-    assert not store.runs_dir.exists()
+    payload = json.loads(store._path_for(rid).read_text(encoding="utf-8"))
+    assert payload["result"] == "result"
+    assert payload["execution_context"]["store"]["store_id"] == world.stores["alice"]
     second = await svc.start(script, session_key="dashboard:alice")
     await svc.registry.get(second["run_id"]).task
-    assert not private_payload_path(rid).exists()
+    assert not store._path_for(rid).exists()
     assert any(op == "delete" for op, *_ in seen)
     assert any(status == "running" and count >= 5 for _, _, status, count in seen)
     assert all(thread != loop_thread for _, thread, _, _ in seen)
-    assert acl_threads and all(thread != loop_thread for thread in acl_threads)

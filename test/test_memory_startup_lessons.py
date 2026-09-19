@@ -1,12 +1,15 @@
-"""Cached and direct JSONL lesson access obeys the affected store's recovery fence."""
+"""Cached and direct V1 JSONL / V2 SQLite lessons obey the store recovery fence."""
 
 import dataclasses
+import json
 
 import pytest
 from member_memory_helpers import env as _member_env
 
+from kiro_crew.config import loader
 from kiro_crew.learn import Lesson, LessonStore
 from kiro_crew.memory_startup import MemoryStartup, MemoryStartupUnavailable
+from kiro_crew.vector_memory import open_member_database
 
 env = _member_env
 
@@ -39,49 +42,97 @@ def test_failed_restore_fences_only_its_cached_and_new_lesson_store(env, failed)
         "member-alice": env.home / "memory_stores" / "member-alice",
         "member-bob": env.home / "memory_stores" / "member-bob",
     }
-    # No private manifest or vector tier: legacy is the named V1 JSONL path.
     roots["legacy"].mkdir()
-    stores = {name: LessonStore(base_dir=root) for name, root in roots.items()}
+    config_path = env.home / "config.json"
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    config["memory_stores"]["legacy"] = {}
+    config_path.write_text(json.dumps(config), encoding="utf-8")
+    loader._invalidate_config_cache()
+    stores = {name: LessonStore(base_dir=roots[name]) for name in ("default", "legacy")}
+    stores.update({name: env.tiers[name] for name in ("member-alice", "member-bob")})
     original = Lesson("2026-09-08", "Keep the accepted decision", "knowledge")
-    replacement = Lesson("2026-09-09", "Replace the accepted decision", "knowledge")
-    for store in stores.values():
-        store.save(original)
-        assert _fields(store.load_all()) == _fields([original])  # Populate the mtime cache.
-    before = stores[failed].path.read_bytes()
+    replacement = Lesson("2026-09-09", "Use deployment health checks", "knowledge")
+
+    def read(name, store):
+        return store.get_lessons() if name.startswith("member-") else _fields(store.load_all())
+
+    def save(name, store, lesson):
+        return (
+            store.write_lesson(lesson.rule, lesson.category)
+            if name.startswith("member-")
+            else store.save(lesson)
+        )
+
+    def remove(name, store):
+        return (
+            store.delete_lesson(original.rule, exact=True)
+            if name.startswith("member-")
+            else store.remove(original.rule)
+        )
+
+    before = {}
+    for name, store in stores.items():
+        save(name, store, original)
+        before[name] = read(name, store)
+        assert len(before[name]) == 1
     startup = MemoryStartup.begin()
     try:
         startup.fail_store(failed, ValueError("staged recovery failed"))
         assert startup.complete()
-        for store in (stores[failed], LessonStore(base_dir=roots[failed])):
+        cached = stores[failed]
+        if failed.startswith("member-"):
             with pytest.raises(MemoryStartupUnavailable, match=failed):
-                store.load_all()
+                open_member_database(
+                    roots[failed] / "memory.db", member_id="alice", store_id=failed
+                )
+            candidates = [cached]
+        else:
+            candidates = [cached, LessonStore(base_dir=roots[failed])]
+        for store in candidates:
             with pytest.raises(MemoryStartupUnavailable, match=failed):
-                store.save(replacement)
+                read(failed, store)
             with pytest.raises(MemoryStartupUnavailable, match=failed):
-                store.remove(original.rule)
-            # The persistence primitive also refuses before atomic replacement.
-            with store._lock:
-                with pytest.raises(MemoryStartupUnavailable, match=failed):
-                    store._write_all([replacement])
-        assert stores[failed].path.read_bytes() == before
+                save(failed, store, replacement)
+            with pytest.raises(MemoryStartupUnavailable, match=failed):
+                remove(failed, store)
+            if not failed.startswith("member-"):
+                with store._lock:
+                    with pytest.raises(MemoryStartupUnavailable, match=failed):
+                        store._write_all([replacement])
         for name, store in stores.items():
             if name != failed:
-                assert _fields(store.load_all()) == _fields([original])
-                store.save(replacement)
-                assert _fields(store.load_all()) == _fields([original, replacement])
+                assert read(name, store) == before[name]
+                save(name, store, replacement)
+                if name.startswith("member-"):
+                    values = [json.loads(row["value_json"]) for row in read(name, store)]
+                    rules = [
+                        value["rule"] if isinstance(value, dict) else value for value in values
+                    ]
+                    assert sorted(rules) == sorted([original.rule, replacement.rule])
+                else:
+                    assert read(name, store) == _fields([original, replacement])
     finally:
         startup.stop()
         startup.release()
+    assert read(failed, stores[failed]) == before[failed]
+    for name in ("member-alice", "member-bob"):
+        assert not (roots[name] / "lessons.jsonl").exists()
+        with pytest.raises(ValueError, match="only in the member database"):
+            LessonStore(base_dir=roots[name])
 
 
 def test_preparing_gateway_does_not_create_lesson_file(env):
-    store = LessonStore(base_dir=env.home / "memory_stores" / "member-alice")
-    assert not store.path.exists()
+    root = env.home / "memory_stores" / "member-alice"
+    store = env.tiers["member-alice"]
+    assert store.count_lessons() == 0
     startup = MemoryStartup.begin()
     try:
         with pytest.raises(MemoryStartupUnavailable):
-            store.save(Lesson("2026-09-08", "Do not publish before recovery", "knowledge"))
-        assert not store.path.exists()
+            store.write_lesson("Do not publish before recovery", "knowledge")
+        with pytest.raises(MemoryStartupUnavailable):
+            open_member_database(root / "memory.db", member_id="alice", store_id="member-alice")
+        assert not (root / "lessons.jsonl").exists()
     finally:
         startup.stop()
         startup.release()
+    assert store.count_lessons() == 0

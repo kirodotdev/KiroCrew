@@ -33,7 +33,6 @@ from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from member_memory_helpers import PRIVATE_EXECUTION_GATE
 
 from kiro_crew import cli_commands as cc
 from kiro_crew import sel as sel_mod
@@ -1321,7 +1320,6 @@ class TestAgentCli:
         with (
             patch.object(KiroCrewConfig, "load", return_value=cfg),
             patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            patch(PRIVATE_EXECUTION_GATE, return_value=True),
         ):
             cc._handle_agent(
                 _ns(

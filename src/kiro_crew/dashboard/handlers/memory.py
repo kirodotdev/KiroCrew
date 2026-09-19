@@ -334,7 +334,10 @@ def _validate_private_profile_update(
     owner = record.owner_member
     bindings = resolve_agent_bindings(cfg, owner)
     builder._build_v2_essentials(
-        store, project=str(bindings.workspace_dir), profile_overrides={filename: content}
+        store,
+        member=record.owner_member_id,
+        project=str(bindings.workspace_dir),
+        profile_overrides={filename: content},
     )
 
 
@@ -574,7 +577,7 @@ async def api_memory_history(request: web.Request) -> web.Response:
         return web.json_response({"ok": True})
     try:
         content = await asyncio.to_thread(mem.read_editable_history)
-    except (UnknownMemoryStore, OSError) as exc:
+    except (UnknownMemoryStore, OSError, FileTooLargeError) as exc:
         return _store_unavailable_response(store, exc)
     return _memory_document_response(content)
 
@@ -2225,9 +2228,9 @@ async def api_memory_promote(request: web.Request) -> web.Response:
     if store.algorithm_version == "v2":
         return web.json_response(
             {
-                "error": "Automatic episode promotion is not available for private memory. "
+                "error": "Automatic episode promotion is not available for member memory. "
                 "Review and edit the member's records explicitly.",
-                "code": "promotion_unavailable_for_private_memory",
+                "code": "promotion_unavailable_for_member_memory",
             },
             status=400,
         )

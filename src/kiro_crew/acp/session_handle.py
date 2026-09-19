@@ -772,6 +772,7 @@ class AcpSessionHandle:
         # When True, destroy() skips the transcript unlink (subagent
         # continuability: the transcript is spawn_continue's resume material).
         self.keep_transcript = False
+        self.memory_mode = "persistent"
         # Token carried by THIS session's injected broker-stub entries
         # (``mcp_gateway.claim.mint_stub_session_token``), set by the runtime
         # that created the session. It is what a later claim-push names so
@@ -2786,7 +2787,7 @@ class AcpSessionHandle:
         try:
             await self._runtime.terminate_session(self._session_id)
         finally:
-            if not getattr(self, "keep_transcript", False):
+            if self.memory_mode != "persistent" or not getattr(self, "keep_transcript", False):
                 self._cleanup_transcript()
 
     def _cleanup_transcript(self) -> None:
@@ -2797,7 +2798,11 @@ class AcpSessionHandle:
         guard therefore protects nothing on KAS — that backend's session record is
         already gone, removed by the same verb that freed the session.
         """
-        sid = self._session_id
+        self.cleanup_transcript_files(self._session_id)
+
+    @staticmethod
+    def cleanup_transcript_files(sid: str) -> None:
+        """Remove only the native transcript belonging to a completed session."""
         if not sid:
             return
         sessions_dir = kiro_sessions_dir().resolve()

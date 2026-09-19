@@ -601,8 +601,9 @@ def projected_session_mcp_servers(
     """Return the existing filtered session MCP projection as plain data.
 
     Blocking file reads remain the caller's off-loop responsibility. This does
-    not grant authority or start servers; the provider still owns transport and
-    private-session admission. Errors retain the underlying resolver's behavior.
+    not authenticate callers or start servers; ordinary provider capability checks
+    and authenticated transport still govern admission. Errors retain the
+    underlying resolver's behavior.
     """
     from kiro_crew.acp.session_mcp import session_mcp_servers
 

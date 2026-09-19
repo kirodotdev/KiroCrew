@@ -1,12 +1,10 @@
 """Named memory stores ride the `memory` component, and their host-local half does not.
 
-A crew member's private memory lives under ``memory_stores/<name>/`` and was outside
-every backup path: ``kirocrew snapshot`` and the dashboard export both named the default
-store's files root-relative and nothing else, while the manifest still declared `memory`
-carried. These tests pin the three properties that close that:
+A named store lives under ``memory_stores/<name>/``. Both legacy V1 stores and
+member databases must survive snapshots and dashboard exports intact:
 
-* the tree rides -- markdown, vector file, index, lessons, ownership manifest -- through
-  the snapshot AND the export, and comes back through both restore modes;
+* V1 file surfaces and V2's single SQLite database plus manual profiles ride through
+  snapshots and exports, and come back through both restore modes;
 * the tree's host-local half never rides in EITHER direction: the member signing key,
   the execution logs and the local backup directories are excluded at staging and
   dropped at extraction, and an import strips them from a hand-built archive;
@@ -24,6 +22,9 @@ import tarfile
 import zipfile
 from contextlib import closing
 from pathlib import Path
+
+# pysqlite3 omits Connection.iterdump; use the same SQL dumper on either driver.
+from sqlite3.dump import _iterdump as iter_sql_dump
 from unittest.mock import patch
 
 import pytest
@@ -37,7 +38,6 @@ from kiro_crew.memory_stores import (
     EXECUTION_LOGS_DIR_NAME,
     MEMBER_API_KEY_FILE,
     MEMBER_BACKUPS_DIR_NAME,
-    MEMBER_MEMORY_ARCHIVE_DIR,
     MEMORY_DB_FILE,
     MEMORY_STORES_DIR_NAME,
     STORE_BACKUP_DIR_NAME,
@@ -57,7 +57,6 @@ STORE_MEMORY_FILES = (
     f"{ROOT}/{STORE}/memory/preferences.md",
     f"{ROOT}/{STORE}/memory/history/2026-01-01.md",
     f"{ROOT}/{STORE}/lessons.jsonl",
-    f"{ROOT}/{STORE}/member-memory.json",
 )
 
 #: Everything under the tree that is THIS host's, and a bundle must never carry.
@@ -65,7 +64,6 @@ HOST_LOCAL_FILES = (
     f"{ROOT}/{MEMBER_API_KEY_FILE}",
     f"{ROOT}/{EXECUTION_LOGS_DIR_NAME}/member-abc/agent.log",
     f"{ROOT}/{MEMBER_BACKUPS_DIR_NAME}/{STORE}/pending-restore.json",
-    f"{ROOT}/{MEMBER_MEMORY_ARCHIVE_DIR}/retired-store/archive.json",
     f"{ROOT}/{STORE}/{STORE_BACKUP_DIR_NAME}/memory.20260101T000000Z.db",
 )
 
@@ -90,7 +88,7 @@ def _make_store_db(path: Path, rows: int) -> None:
 
 
 def _plant_named_store(home: Path, *, rows: int = 3) -> None:
-    """A named store with every kind of file it can hold, plus the tree's host-local half."""
+    """A legacy V1 named store and the tree's host-local half."""
     store = home / ROOT / STORE
     _make_store_db(store / MEMORY_DB_FILE, rows)
     with closing(sqlite3.connect(str(store / INDEX_DB_FILE))) as c:
@@ -101,7 +99,6 @@ def _plant_named_store(home: Path, *, rows: int = 3) -> None:
     (store / "memory" / "preferences.md").write_text("- prefers terse answers\n", encoding="utf-8")
     (store / "memory" / "history" / "2026-01-01.md").write_text("# day\n", encoding="utf-8")
     (store / "lessons.jsonl").write_text('{"rule": "x"}\n', encoding="utf-8")
-    (store / "member-memory.json").write_text('{"owner_member": "acme", "memory_version": 2}')
     # A stray sidecar: the backup API copy is self-contained, so this must not ride.
     (store / f"{MEMORY_DB_FILE}-wal").write_bytes(b"\x00" * 32)
     for rel in HOST_LOCAL_FILES:
@@ -112,29 +109,38 @@ def _plant_named_store(home: Path, *, rows: int = 3) -> None:
 
 def _seed_store_generation(home: Path, name: str, version: int) -> Path:
     """Create and close a real store so merge tests can check its next initialization."""
-    from member_memory_helpers import declare_v2_store
-
-    from kiro_crew.vector_memory import VectorMemoryStore
+    from kiro_crew.vector_memory import VectorMemoryStore, create_member_database
 
     directory = home / ROOT / name
     if version == 2:
-        declare_v2_store(home, name)
-    db_path = directory / MEMORY_DB_FILE if version == 2 else home / MEMORY_DB_FILE
-    with closing(VectorMemoryStore(db_path=db_path)) as store:
-        store.init()
-        assert store._memory_version == version
-    if version == 1:
+        create_member_database(directory / MEMORY_DB_FILE, member_id=name, store_id=name)
+    else:
         import shutil
 
+        db_path = home / MEMORY_DB_FILE
+        with closing(VectorMemoryStore(db_path=db_path)) as store:
+            store.init()
+            assert store.algorithm_version == "v1"
         directory.mkdir(parents=True)
         shutil.copy2(db_path, directory / MEMORY_DB_FILE)
     (directory / "memory").mkdir(exist_ok=True)
     (directory / "memory" / "preferences.md").write_text(f"generation {version}", encoding="utf-8")
     if version == 2:
-        with closing(sqlite3.connect(str(directory / INDEX_DB_FILE))) as conn:
-            conn.execute("CREATE VIRTUAL TABLE memory_fts USING fts5(path, content)")
-            conn.commit()
+        (directory / "memory" / "projects.md").write_text("source generation", encoding="utf-8")
     return directory
+
+
+def _declare_named_store(home: Path, *, version: int = 1) -> None:
+    """Declare synthetic routing without deriving identity from a directory."""
+    home.mkdir(parents=True, exist_ok=True)
+    declaration = {"memory_version": version}
+    agents = {}
+    if version == 2:
+        declaration.update(owner_member=STORE, owner_member_id=STORE)
+        agents[STORE] = {"member_id": STORE, "memory_store": STORE}
+    (home / "config.json").write_text(
+        json.dumps({"memory_stores": {STORE: declaration}, "agents": agents}), encoding="utf-8"
+    )
 
 
 def _store_bytes(directory: Path) -> dict[str, bytes]:
@@ -374,7 +380,7 @@ class TestRestoreBringsNamedStoresBack:
     def test_merge_preserves_store_generations(
         self, tmp_path, monkeypatch, existing, per_file_copy
     ):
-        from kiro_crew.vector_memory import VectorMemoryStore
+        from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
         source, destination = tmp_path / "source", tmp_path / "destination"
         source.mkdir()
@@ -391,23 +397,31 @@ class TestRestoreBringsNamedStoresBack:
         if per_file_copy:
             monkeypatch.setattr(snap, "_merge_named_stores", _per_file_store_merge)
         assert restore_main([str(tarball), "--mode", "merge", "--force"] + unpinnable_argv()) == 0
-        with closing(VectorMemoryStore(db_path=kept / MEMORY_DB_FILE)) as store:
-            if existing and per_file_copy:
-                assert (kept / "member-memory.json").exists()
-                with pytest.raises(ValueError, match="private schema"):
-                    store.init()
+        if existing:
+            if per_file_copy:
+                assert _store_bytes(kept) != before
+                assert (kept / "memory/projects.md").read_text() == "source generation"
             else:
-                if existing:
-                    assert _store_bytes(kept) == before
-                    assert not (kept / "member-memory.json").exists()
-                    assert not (kept / INDEX_DB_FILE).exists()
-                else:
-                    for name in ("member-memory.json", MEMORY_DB_FILE, INDEX_DB_FILE):
-                        assert (kept / name).is_file()
+                assert _store_bytes(kept) == before
+                assert not (kept / "memory/projects.md").exists()
+            with closing(VectorMemoryStore(db_path=kept / MEMORY_DB_FILE)) as store:
                 store.init()
-                assert store._memory_version == (1 if existing else 2)
-        for name in ("member-memory.json", MEMORY_DB_FILE, INDEX_DB_FILE):
-            assert (destination / ROOT / "other" / name).is_file()
+                assert store.algorithm_version == "v1"
+        else:
+            with closing(
+                open_member_database(kept / MEMORY_DB_FILE, member_id=STORE, store_id=STORE)
+            ) as store:
+                assert store.algorithm_version == "v2"
+        for name in (STORE, "other"):
+            directory = destination / ROOT / name
+            assert not (directory / INDEX_DB_FILE).exists()
+            assert not (directory / "member-memory.json").exists()
+        with closing(
+            open_member_database(
+                destination / ROOT / "other" / MEMORY_DB_FILE, member_id="other", store_id="other"
+            )
+        ) as store:
+            assert store.algorithm_version == "v2"
 
     def test_a_corrupt_store_database_in_the_bundle_is_refused_before_mutation(
         self, src, tmp_path, monkeypatch
@@ -433,6 +447,78 @@ class TestRestoreBringsNamedStoresBack:
         monkeypatch.setenv("KIROCREW_HOME", str(dst))
         assert restore_main([str(broken), "--mode", "replace", "--force"] + unpinnable_argv()) == 1
         assert (dst / "workspace" / "memory" / "keep.md").is_file(), "nothing moved"
+
+
+@pytest.mark.parametrize("archive_kind", ["snapshot", "export"])
+def test_member_single_database_round_trip_includes_committed_wal(
+    tmp_path, monkeypatch, archive_kind
+):
+    from kiro_crew.vector_memory import create_member_database, open_member_database
+
+    source, destination = tmp_path / "source", tmp_path / "destination"
+    _declare_named_store(source, version=2)
+    monkeypatch.setenv("KIROCREW_HOME", str(source))
+    directory = source / ROOT / STORE
+    database = directory / MEMORY_DB_FILE
+    create_member_database(database, member_id=STORE, store_id=STORE)
+    manual = directory / "memory" / "preferences.md"
+    manual.parent.mkdir()
+    manual.write_text("Review releases carefully", encoding="utf-8")
+    with closing(open_member_database(database, member_id=STORE, store_id=STORE)) as store:
+        store.db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        store.db.execute("PRAGMA wal_autocheckpoint=0")
+        store.apply_consolidation(
+            source_id="wal-span",
+            session_key="chat:acme",
+            source_total=0,
+            snapshot={},
+            messages=[],
+            result={
+                "semantic": [{"key": "project.codename", "value": "aurora", "confidence": 0.9}],
+                "episodic": [{"text": "Approved the aurora release"}],
+                "lessons": [{"rule": "Review release notes before shipping"}],
+                "history_entry": "Approved aurora",
+            },
+        )
+        expected = list(iter_sql_dump(store.db))
+        assert Path(str(database) + "-wal").stat().st_size > 0
+        with closing(sqlite3.connect(database.as_uri() + "?immutable=1", uri=True)) as base:
+            assert base.execute("SELECT count(*) FROM memory_items").fetchone()[0] == 0
+        if archive_kind == "snapshot":
+            artifact = _make_snapshot(source, tmp_path / "out", ["--components", "memory"])
+            members = _members(artifact)
+        else:
+            with patch.object(portability, "_mc_dir", return_value=source):
+                payload, _ = portability.create_export_zip()
+            artifact = tmp_path / "export.zip"
+            artifact.write_bytes(payload)
+            with zipfile.ZipFile(artifact) as bundle:
+                members = {name.split("/", 1)[1] for name in bundle.namelist() if "/" in name}
+        assert f"{ROOT}/{STORE}/{MEMORY_DB_FILE}" in members
+        assert f"{ROOT}/{STORE}/memory/preferences.md" in members
+        assert not any(
+            name.endswith(("-wal", "-shm", "lessons.jsonl", INDEX_DB_FILE))
+            for name in members
+            if name.startswith(f"{ROOT}/{STORE}/")
+        )
+    _declare_named_store(destination, version=2)
+    monkeypatch.setenv("KIROCREW_HOME", str(destination))
+    if archive_kind == "snapshot":
+        assert (
+            restore_main([str(artifact), "--mode", "replace", "--force"] + unpinnable_argv()) == 0
+        )
+    else:
+        with patch.object(portability, "_mc_dir", return_value=destination):
+            portability.apply_import_zip(artifact, mode="replace")
+    with closing(
+        open_member_database(
+            destination / ROOT / STORE / MEMORY_DB_FILE, member_id=STORE, store_id=STORE
+        )
+    ) as restored:
+        assert list(iter_sql_dump(restored.db)) == expected
+        assert restored.search_memory("aurora")
+        assert restored.consolidation_receipt("wal-span") is not None
+    assert (destination / ROOT / STORE / "memory/preferences.md").read_text() == manual.read_text()
 
 
 class TestAPreTreeBundleLeavesLiveStoresAlone:
@@ -1185,7 +1271,7 @@ def test_provisioning_waits_for_replace_and_rollback(
     if without_namespace:
         from kiro_crew.vector_memory import VectorMemoryStore
 
-        provision = provision.__wrapped__
+        provision = memory_stores._provision_member_memory
         publish = publish.__wrapped__
         monkeypatch.setattr(VectorMemoryStore, "init", VectorMemoryStore.init.__wrapped__)
 
@@ -1220,8 +1306,11 @@ def test_provisioning_waits_for_replace_and_rollback(
     assert store.exists() is not without_namespace
     if not without_namespace:
         assert (store / MEMORY_DB_FILE).is_file()
-        assert (store / "member-memory.json").is_file()
-        assert KiroCrewConfig.load().agents["new-member"].memory_store == name
+        from kiro_crew.vector_memory import read_member_database_identity
+
+        member = KiroCrewConfig.load().agents["new-member"]
+        assert read_member_database_identity(store / MEMORY_DB_FILE) == (member.member_id, name)
+        assert member.memory_store == name
 
 
 @pytest.mark.skipif(not platform_compat.IS_WINDOWS, reason="Windows native SQLite handle contract")
@@ -1245,9 +1334,13 @@ def test_windows_open_database_refuses_directory_removal(tmp_path):
 
 @pytest.mark.parametrize("without_admission", [False, True])
 @pytest.mark.parametrize("fail_replace", [False, True])
-@pytest.mark.parametrize("kind", ["preferences", "projects", "history", "lessons"])
+@pytest.mark.parametrize(
+    "kind,version",
+    [(kind, 1) for kind in ("preferences", "projects", "history", "lessons")]
+    + [(kind, 2) for kind in ("preferences", "projects")],
+)
 def test_file_only_writes_serialize_with_replace(
-    tmp_path, monkeypatch, without_admission, fail_replace, kind
+    tmp_path, monkeypatch, without_admission, fail_replace, kind, version
 ):
     import threading
     from concurrent.futures import ThreadPoolExecutor
@@ -1260,15 +1353,25 @@ def test_file_only_writes_serialize_with_replace(
     destination = tmp_path / "destination"
     source = tmp_path / "source"
     monkeypatch.setenv("KIROCREW_HOME", str(destination))
-    memory = MemoryStore(workspace=destination / ROOT / STORE)
-    memory.init()
-    lessons = LessonStore(base_dir=destination / ROOT / STORE)
+    _declare_named_store(destination, version=version)
+    memory = MemoryStore(workspace=destination / ROOT / STORE, memory_version=version)
+    lessons = None
+    if version == 2:
+        from kiro_crew.vector_memory import create_member_database
+
+        for home in (source, destination):
+            create_member_database(
+                home / ROOT / STORE / MEMORY_DB_FILE, member_id=STORE, store_id=STORE
+            )
+    else:
+        memory.init()
+        lessons = LessonStore(base_dir=destination / ROOT / STORE)
     incoming = source / ROOT / STORE / "memory"
     incoming.mkdir(parents=True)
     (incoming / "preferences.md").write_text("restored", encoding="utf-8")
     (source / "MANIFEST.json").write_text(json.dumps({"version": snap.MANIFEST_VERSION}))
-    assert not (destination / ROOT / STORE / MEMORY_DB_FILE).exists()
-    # Exercise the protocol without relying on SQLite or POSIX lifetime admission.
+    assert (destination / ROOT / STORE / MEMORY_DB_FILE).exists() is (version == 2)
+    # Manual files must serialize even without an open SQLite handle's lifetime admission.
     monkeypatch.setattr(member_memory_backup, "acquire_store_use_lock", lambda path: None)
     monkeypatch.setattr(snap, "hold_stores_for_replace", lambda *args: nullcontext())
     target, method, args = {
@@ -1327,8 +1430,12 @@ def test_file_only_writes_serialize_with_replace(
 
 
 @pytest.mark.parametrize("without_admission", [False, True])
-@pytest.mark.parametrize("kind", ["read_preferences", "read_projects", "lessons"])
-def test_file_only_readers_hold_namespace(tmp_path, monkeypatch, kind, without_admission):
+@pytest.mark.parametrize(
+    "kind,version",
+    [(kind, 1) for kind in ("read_preferences", "read_projects", "lessons")]
+    + [(kind, 2) for kind in ("read_preferences", "read_projects")],
+)
+def test_file_only_readers_hold_namespace(tmp_path, monkeypatch, kind, without_admission, version):
     import inspect
     from contextlib import contextmanager
 
@@ -1337,12 +1444,21 @@ def test_file_only_readers_hold_namespace(tmp_path, monkeypatch, kind, without_a
     from kiro_crew.memory import MemoryStore
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    _declare_named_store(tmp_path, version=version)
     directory = tmp_path / ROOT / STORE
-    memory = MemoryStore(workspace=directory)
-    memory.init()
-    lessons = LessonStore(base_dir=directory)
-    lessons.save(Lesson("2026-01-01", "stored", "tool"))
-    lessons._cache = None
+    memory = MemoryStore(workspace=directory, memory_version=version)
+    lessons = None
+    if version == 2:
+        from kiro_crew.vector_memory import create_member_database
+
+        create_member_database(directory / MEMORY_DB_FILE, member_id=STORE, store_id=STORE)
+        memory.write_preferences("manual preferences")
+        memory.write_projects("manual projects")
+    else:
+        memory.init()
+        lessons = LessonStore(base_dir=directory)
+        lessons.save(Lesson("2026-01-01", "stored", "tool"))
+        lessons._cache = None
     if without_admission:
         for cls in (MemoryStore, LessonStore):
             for name, value in list(vars(cls).items()):
@@ -1352,6 +1468,7 @@ def test_file_only_readers_hold_namespace(tmp_path, monkeypatch, kind, without_a
     reads = []
     lock = platform_compat.file_lock
     open_path = Path.open
+    open_descriptor = os.open
 
     @contextmanager
     def observe_lock(fd, **kwargs):
@@ -1371,8 +1488,14 @@ def test_file_only_readers_hold_namespace(tmp_path, monkeypatch, kind, without_a
             reads.append(bool(active))
         return open_path(path, *args, **kwargs)
 
+    def observe_descriptor(path, *args, **kwargs):
+        if Path(path).is_relative_to(directory) and Path(path).suffix == ".md":
+            reads.append(bool(active))
+        return open_descriptor(path, *args, **kwargs)
+
     monkeypatch.setattr(platform_compat, "file_lock", observe_lock)
     monkeypatch.setattr(Path, "open", observe_read)
+    monkeypatch.setattr(os, "open", observe_descriptor)
     if kind == "lessons":
         lessons.load_all()
     else:
@@ -1385,6 +1508,7 @@ def test_nested_named_memory_operations_release_namespace_on_failure(tmp_path, m
     from kiro_crew.memory import MemoryStore
 
     monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    _declare_named_store(tmp_path)
     memory = MemoryStore(workspace=tmp_path / ROOT / STORE)
     memory.init()
     memory.add_preference("nested read and write")
@@ -1396,54 +1520,6 @@ def test_nested_named_memory_operations_release_namespace_on_failure(tmp_path, m
     assert not memory_stores._NAMESPACE_LOCK_STATE.roots
     memory.add_preference("after failure")
     assert "after failure" in memory.read_preferences()
-
-
-@pytest.mark.parametrize("late", [False, True])
-@pytest.mark.parametrize("fail_replace", [False, True])
-@pytest.mark.parametrize("without_preservation", [False, True])
-def test_retirement_survives_replace_and_rollback(
-    tmp_path, monkeypatch, late, fail_replace, without_preservation
-):
-    from kiro_crew import memory_stores
-
-    source, destination = tmp_path / "source", tmp_path / "destination"
-    source.mkdir()
-    destination.mkdir()
-    monkeypatch.setenv("KIROCREW_HOME", str(source))
-    _seed_store_generation(source, STORE, 2)
-    portability._strip_host_local_store_state(source)
-    (source / "MANIFEST.json").write_text(json.dumps({"version": snap.MANIFEST_VERSION}))
-    monkeypatch.setenv("KIROCREW_HOME", str(destination))
-    _seed_store_generation(destination, STORE, 2)
-    if without_preservation:
-        monkeypatch.setattr(
-            memory_stores,
-            "_HOST_LOCAL_ROOT_ENTRIES",
-            memory_stores._HOST_LOCAL_ROOT_ENTRIES - {MEMBER_MEMORY_ARCHIVE_DIR},
-        )
-    if not late:
-        memory_stores.archive_member_memory_store(STORE, STORE)
-    mutate = snap._do_replace_mutations
-
-    def retire_then_replace(*args, **kwargs):
-        if late:
-            memory_stores.archive_member_memory_store(STORE, STORE)
-        mutate(*args, **kwargs)
-        if fail_replace:
-            raise OSError("injected replacement failure")
-
-    monkeypatch.setattr(snap, "_do_replace_mutations", retire_then_replace)
-    if fail_replace:
-        with pytest.raises(OSError, match="injected replacement failure"):
-            snap._do_replace(source, destination, ["memory"], allow_unpinned=True)
-    else:
-        snap._do_replace(source, destination, ["memory"], allow_unpinned=True)
-    preserved = not without_preservation or (fail_replace and not late)
-    if preserved:
-        with pytest.raises(memory_stores.UnknownMemoryStore, match="archived"):
-            memory_stores.require_member_memory_not_archived(STORE)
-    else:
-        memory_stores.require_member_memory_not_archived(STORE)
 
 
 @pytest.mark.asyncio
@@ -1480,7 +1556,7 @@ async def test_named_lessons_request_offloads_locked_operations(monkeypatch, inl
     monkeypatch.setattr(
         handlers, "resolve_lesson_memory_store", AsyncMock(return_value=(STORE, None))
     )
-    monkeypatch.setattr(handlers, "_prepare_private_lesson_store", AsyncMock(return_value=None))
+    monkeypatch.setattr(handlers, "_prepare_member_lesson_store", AsyncMock(return_value=None))
     monkeypatch.setattr(handlers.ContextBuilder, "get_memory_for", factory)
     monkeypatch.setattr(
         handlers, "_lesson_jsonl_store", lambda *args: SimpleNamespace(load_all=read)
@@ -1604,6 +1680,6 @@ async def test_ensure_store_refuses_a_declared_store_without_a_directory(tmp_pat
     (tmp_path / "config.json").write_text(
         json.dumps({"memory_stores": {"cold": {}}}), encoding="utf-8"
     )
-    with pytest.raises(memory_stores.UnknownMemoryStore, match="missing or unreadable"):
+    with pytest.raises(memory_stores.UnknownMemoryStore, match="missing"):
         await context.ContextBuilder.ensure_store("cold")
     assert not (tmp_path / ROOT / "cold").exists()

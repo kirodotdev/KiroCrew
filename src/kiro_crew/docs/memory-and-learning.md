@@ -6,7 +6,7 @@ preferences, project context, daily activity, and corrections you teach it.
 ## Private member context
 
 A member with Memory V2 receives its identity, permanent rules, current briefing,
-private preference/project anchors, and admitted project guides when a conversation
+manual preference/project anchors, and admitted project guides when a conversation
 starts. Unchanged follow-up turns do not resend that complete snapshot. Changes
 refresh it once; a replacement also retires guides removed from the current source
 list. Resume, compaction and a new provider conversation restore it.
@@ -18,6 +18,24 @@ empty attempts do not count as delivery. Native-loaded persona/resources are not
 copied into the initial prompt again when their exact startup content is known.
 Manual, auto and file-matched steering are not promoted to always-on guidance.
 This does not erase text already retained in a conversation or change Global V1.
+
+## Member database
+
+Memory V2 keeps each member's learned facts, rules, experiences, daily summaries,
+source history, revisions, text index and vectors in one SQLite database. A member's
+stable identity selects that database; renaming a member or changing its provider
+or project does not move learned memory. Manual persona, rules, briefing and project
+guides remain documents. Preference/project anchors are owner-managed for V2.
+
+V2 recall does not update access timestamps or repair storage. Missing or damaged
+memory is reported without replacing it; manual member essentials remain usable.
+Backups include the SQLite database and manual preference/project anchors. Restore
+validates the same member identity and waits for live handles to close.
+
+The file layouts and age tiers below describe Global V1 and legacy named V1.
+V2 retains full daily summaries and revisions in its database without age pruning
+or learned Markdown/JSONL copies. Its summaries, accepted facts, rules and source
+receipt publish atomically; retries do not duplicate an acknowledged source span.
 
 ## Memory Types
 
@@ -40,11 +58,14 @@ Conversation summaries organized by date. Natural decay:
 - 181–365 days: retained on disk but not loaded into context
 - 365+ days: pruned automatically
 
-### Lessons (`lessons.jsonl` or vector store)
+### Lessons
 
 Corrections and rules you teach Kiro Crew. Two ways to create:
 1. **Explicit**: say "remember to always use pytest" → saved immediately
 2. **Implicit**: correct Kiro Crew during conversation → extracted during consolidation
+
+Member lessons live in the member's SQLite database. Global V1 also supports the
+legacy `lessons.jsonl` fallback when vector memory is unavailable.
 
 Lessons have two scopes:
 - **Global** (default): shared across all workspaces
@@ -73,9 +94,12 @@ the modes, the guarantees and the durability are the same on both channels, and
 both accept a question after the modifier to mark the conversation and answer in
 one message.
 
-All modes still write session JSONL files (for history/resume). Incognito
-blocks learn_add and consolidation. Temporary additionally blocks memory
-reads — no preferences, history, or lessons are injected into the prompt.
+Persistent sessions retain history for resume. Incognito and Temporary keep new
+conversation bodies in memory and do not write transcript, workflow or task
+snapshots containing them. Incognito blocks learned-memory writes, including
+lesson deletion and consolidation. Temporary additionally blocks memory reads,
+including learned lessons and memory preference/history injection. Manual member
+persona, rules and project context remain available without opening memory.
 
 ## Teaching Kiro Crew
 
@@ -120,7 +144,7 @@ when an earlier apply missed a closed member store. Saved memories are retained;
 keyword search remains available while vectors are rebuilt.
 
 The request survives a gateway restart. Open stores are repaired first. Closed
-or unavailable stores are reported as deferred and handled when opened. A loaded
+or unavailable stores are reported as deferred and handled by explicit maintenance. A loaded
 model does not mean every store has finished rebuilding. An unknown repair scope
 means some stores could not be checked, not that they are empty or repaired.
 
@@ -154,4 +178,4 @@ scheduled jobs.
 ## Editing Memory
 
 - **Dashboard**: Overview → Memory tab → edit preferences.md or projects.md
-- **Chat**: ask Kiro Crew to update its memory files directly
+- **Chat**: ask Kiro Crew to remember or correct a fact through its memory tools

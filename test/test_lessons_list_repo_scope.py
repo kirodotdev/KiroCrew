@@ -49,7 +49,7 @@ async def _list(vector_store, state) -> list[dict]:
     with (
         patch.object(cron, "_blocks_reads_session", return_value=False),
         patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(None, None))),
-        patch.object(cron, "_prepare_private_lesson_store", new=AsyncMock(return_value=None)),
+        patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
         patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vector_store)),
         patch.object(cron, "_get_active_workspace", return_value="default"),
     ):
@@ -244,7 +244,7 @@ async def test_delete_route_validates_the_tier_pair_together() -> None:
         patch.object(cron, "_blocks_reads_session", return_value=False),
         patch.object(cron, "_sel"),
         patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=("", None))),
-        patch.object(cron, "_prepare_private_lesson_store", new=AsyncMock(return_value=None)),
+        patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
         patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
     ):
         async with TestClient(TestServer(app)) as client:
@@ -482,7 +482,7 @@ async def test_jsonl_union_rows_name_their_tier_and_the_delete_honours_it(tmp_pa
     with (
         patch.object(cron, "_blocks_reads_session", return_value=False),
         patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(None, None))),
-        patch.object(cron, "_prepare_private_lesson_store", new=AsyncMock(return_value=None)),
+        patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
         patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
         patch.object(cron, "_get_active_workspace", return_value="ws-1"),
     ):
@@ -509,7 +509,7 @@ async def test_jsonl_union_rows_name_their_tier_and_the_delete_honours_it(tmp_pa
         patch.object(cron, "_blocks_reads_session", return_value=False),
         patch.object(cron, "_sel"),
         patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=("", None))),
-        patch.object(cron, "_prepare_private_lesson_store", new=AsyncMock(return_value=None)),
+        patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
         patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
         patch.object(cron.KiroCrewConfig, "load", return_value=configured),
     ):
@@ -606,7 +606,7 @@ async def test_delete_route_threads_exact_and_refuses_a_non_boolean() -> None:
         patch.object(cron, "_blocks_reads_session", return_value=False),
         patch.object(cron, "_sel"),
         patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=("", None))),
-        patch.object(cron, "_prepare_private_lesson_store", new=AsyncMock(return_value=None)),
+        patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
         patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=None)),
     ):
         async with TestClient(TestServer(app)) as client:

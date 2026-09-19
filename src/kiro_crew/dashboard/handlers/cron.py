@@ -481,7 +481,7 @@ def _resolve_one_shot_at(body: dict[str, Any]) -> tuple[float | None, web.Respon
 
 
 async def api_cron_tools(request: web.Request) -> web.Response:
-    """Run private-runtime cron tools on the host with verified caller scope."""
+    """Run cron tools with ordinary authenticated session routing."""
     if request.get("internal_auth") is not True:
         return web.json_response(
             {
@@ -491,32 +491,22 @@ async def api_cron_tools(request: web.Request) -> web.Response:
             status=403,
         )
     from kiro_crew.member_memory_auth import memory_request_identity
-    from kiro_crew.memory_stores import memory_store_version
 
     actual, verified = await asyncio.to_thread(memory_request_identity, request)
     if not verified or not actual or actual != request.headers.get("X-Session-Key", ""):
         return web.json_response(
             {
-                "error": "This caller's private member session could not be verified. "
-                "Reopen the member conversation and retry.",
+                "error": "This caller's session could not be determined. "
+                "Reopen the conversation and retry.",
                 "code": "member_session_unverified",
             },
             status=403,
         )
     state = request.app["state"]
-    # This resolves the immutable session binding and validates its declared
-    # member/store ownership, then compares it with the verified process store.
+    # Capture canonical routing and mode once before tool dispatch.
     store, refusal = await resolve_lesson_memory_store(request, state, "cron.tools")
     if refusal is not None:
         return refusal
-    if not store or await asyncio.to_thread(memory_store_version, store) != 2:
-        return web.json_response(
-            {
-                "error": "A verified private member store is required.",
-                "code": "member_memory_required",
-            },
-            status=403,
-        )
     body, error = await read_bounded_json(request, max_bytes=_MAX_CRON_BODY_BYTES)
     if error is not None:
         return error
@@ -556,7 +546,7 @@ async def api_cron_tools(request: web.Request) -> web.Response:
     try:
         result = await asyncio.to_thread(dispatch)
     except Exception:
-        logger.exception("Private cron tool dispatch failed")
+        logger.exception("Cron tool dispatch failed")
         return web.json_response(
             {
                 "error": "The cron tool did not finish. Check cron_list before retrying a mutation.",
@@ -2303,25 +2293,11 @@ def _lesson_jsonl_store(
     scope: str = "global",
     workspace: str | None = None,
 ) -> LessonStore:
-    """The JSONL lessons file a caller bound to *silo* reads and writes.
+    """Return only a V1 JSONL learning tier using the recorded store binding.
 
-    THE DESTINATION FOLLOWS THE BINDING, NEVER THE POPULATION. A named store starts
-    empty and nothing is ever copied into it, so "this store holds no lessons" is the
-    ordinary state of a freshly bound crew — and the answer to it is that store's OWN
-    ``lessons.jsonl``, reached through the same ``get_lessons_for`` seam the context
-    builder and the consolidator use. Keying the choice on whether rows exist is what
-    let an empty silo read the operator's global lessons, substring-delete one of them,
-    and file the crew's own correction into the one file every other crew is injected
-    with. ``state.lessons`` and the per-workspace stores are reachable only from the
-    GLOBAL binding, which is where every install without a silo writes.
-
-    A silo takes no *workspace* arm even when *scope* asks for one: a store name and a
-    workspace name are separate namespaces and the store is the tighter scope, the same
-    precedence ``context._target_key`` applies. *scope* carries the
-    ``ALLOWED_LESSON_SCOPES`` wire value, and its default is the value
-    ``LEARN_ADD_SCHEMA`` supplies when a caller names none — which is also what the
-    read-only list route passes, since that route unions the workspace tier rather than
-    selecting between the two.
+    Member V2 callers use their SQLite handle even when it contains no lessons.
+    Workspace selection applies only to Global V1, preserving its existing
+    global/workspace fallback and list union.
     """
     if silo:
         return ContextBuilder.get_lessons_for(memory_store=silo)
@@ -2330,15 +2306,17 @@ def _lesson_jsonl_store(
     return state.lessons
 
 
-async def _prepare_private_lesson_store(store: str) -> web.Response | None:
+async def _prepare_member_lesson_store(store: str) -> web.Response | None:
     """Prepare V2 before synchronous lesson readers can borrow a handle."""
-    from kiro_crew.context import ContextBuilder
-    from kiro_crew.memory_stores import UnknownMemoryStore, memory_store_version
+    import sqlite3
+
+    from kiro_crew.memory_stores import memory_store_version
 
     try:
-        if store and memory_store_version(store) == 2:
-            await ContextBuilder.ensure_store(store)
-    except (UnknownMemoryStore, OSError) as exc:
+        if store and await asyncio.to_thread(memory_store_version, store) == 2:
+            if await ContextBuilder.ensure_store(store) is None:
+                raise ValueError("Member memory database is unavailable")
+    except (ValueError, OSError, sqlite3.Error) as exc:
         return web.json_response({"error": str(exc), "code": "store_unavailable"}, status=503)
     return None
 
@@ -2416,7 +2394,7 @@ async def api_lessons_create(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.create")
     if refusal is not None:
         return refusal
-    memory_refusal = await _prepare_private_lesson_store(_lesson_silo)
+    memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
     _lesson_mem = (
@@ -2561,23 +2539,17 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     # re-add is refused, and the lesson is lost. Gating delete the same way
     # makes the pattern fail closed at step one.
     #
-    # Policy differences from create are carried by the gate's parameters:
-    # incognito sessions MAY delete (an active user action), only temporary
-    # sessions are blocked — both for live slots (``_blocks_reads_session``
-    # below) and, on the archived-session recovery path, via the persisted
-    # memory-mode probe.
+    # Every restricted mode forbids induced persistent writes.
     sk = request.headers.get("X-Session-Key", "")
     refusal = await _recognize_session(
         state,
         sk,
         "lessons.delete",
-        blocks_persisted_mode=_is_temporary_transcript,
+        blocks_persisted_mode=is_incognito_transcript,
     )
     if refusal is not None:
         return refusal
-    # Block lesson deletes from live temporary sessions only.
-    # Incognito allows learn_remove (active user action).
-    if _blocks_reads_session(state, request):
+    if _is_restricted_session(state, request):
         _sel().log_api_access(
             caller=sk,
             operation="lessons.delete",
@@ -2717,7 +2689,7 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.delete")
     if refusal is not None:
         return refusal
-    memory_refusal = await _prepare_private_lesson_store(_lesson_silo)
+    memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
     _lesson_mem = (
@@ -2730,7 +2702,7 @@ async def api_lessons_delete(request: web.Request) -> web.Response:
     # `vs and` rather than `vs_lessons` alone: the rows do not narrow the store,
     # and the store is a real union now that it is resolved per caller instead of
     # arriving untyped from the global getter.
-    if vs and vs_lessons:
+    if vs and (vs_lessons or vs.algorithm_version == "v2"):
         ok = await asyncio.to_thread(vs.delete_lesson, rule_sub, repo_scope, exact=exact)
     else:
         store = _lesson_jsonl_store(state, _lesson_silo, scope, workspace)
@@ -3218,7 +3190,7 @@ async def api_lessons(request: web.Request) -> web.Response:
     _lesson_silo, refusal = await resolve_lesson_memory_store(request, state, "lessons.list")
     if refusal is not None:
         return refusal
-    memory_refusal = await _prepare_private_lesson_store(_lesson_silo)
+    memory_refusal = await _prepare_member_lesson_store(_lesson_silo)
     if memory_refusal is not None:
         return memory_refusal
     _lesson_mem = (
@@ -3284,7 +3256,9 @@ async def api_lessons(request: web.Request) -> web.Response:
     vs_populated = bool(data) or (
         vs is not None and vs_total > 0 and await asyncio.to_thread(vs.has_any_decodable_lesson)
     )
-    if vs_populated:
+    # A member's SQLite database remains its only learned authority even
+    # when empty or undecodable; only V1 has a JSONL fallback tier.
+    if (vs is not None and vs.algorithm_version == "v2") or vs_populated:
         total = vs_total
     else:
         # The JSONL tier of the store this caller is BOUND to, which for a silo is its

@@ -4641,11 +4641,10 @@
       "editor_options_load_failed": "Couldn't load the crew editor's workspace, template, and memory store options.",
       "template_edit_later_note": "Pick the closest starting point — you can switch this agent's template anytime after creating.",
       "template_edit_later_note_member": "Pick the closest starting point — you can switch this member's template anytime after creating.",
-      "private_memory_auto": "This member starts with its own empty private memory. Global Memory V1 stays unchanged.",
-      "private_memory_owned": "Private Memory V2 — only this member can use it.",
-      "private_memory_legacy": "This member uses its current memory (V1).",
-      "private_memory_legacy_confirm": "Private memory (V2) starts empty in a new chat. This member cannot return to its previous memory. Existing data and chats stay.",
-      "initialize_private_memory": "Create private memory",
+      "bindings_member_memory_notice": "New crew members get Member memory (V2). Existing members keep their current memory.",
+      "private_memory_auto": "New members start with empty Member memory (V2). Global Memory V1 stays unchanged.",
+      "private_memory_owned": "This member uses Member memory (V2).",
+      "private_memory_legacy": "This member keeps its current memory (V1). Member memory (V2) is only available when creating a new crew member.",
       "manage_private_memory": "Manage memory",
       "global_memory_v1": "Shared · Global Memory V1",
       "legacy_memory_v1": "Memory V1",
@@ -6461,8 +6460,7 @@
       "failed_to_load_app": "Failed to load app"
     },
     "membersPage": {
-      "drawer_delegated_working": "Delegated work running",
-      "setup_in_crew_manager": "Set up private memory"
+      "drawer_delegated_working": "Delegated work running"
     }
   },
   "privacyDisclosure": {
@@ -6890,7 +6888,7 @@
   "memoryV2": {
     "restore_experience": "Restore experience",
     "chat_member": "Chat with this member",
-    "member_store_label": "Private to {{member}} · Memory {{version}}",
+    "member_store_label": "{{member}} · Member memory ({{version}})",
     "recall_model_notice": "Memory matching is not verified for this model. Check the memories selected for this task.",
     "recall_explanation": "Context the member would receive for this task. Search results below are for browsing and editing.",
     "recall_rules_details": "Lessons are included in Source and retrieval details.",
@@ -6925,7 +6923,7 @@
     "discard_title": "Discard changes",
     "discard_explanation": "Switching memory will discard the open draft and selection.",
     "leave_discard_explanation": "Leaving will discard unsaved drafts and the current selection.",
-    "picker_explanation": "Select Global Memory V1 or one member’s private memory. Member memories are created automatically with their members.",
+    "picker_explanation": "Select Global Memory V1 or member memory. New members receive their own memory.",
     "structured_error": "Use valid JSON, or cancel to keep the saved value.",
     "matched_terms": "Matching terms: {{terms}}",
     "backup_contents": "Backups include this member’s database, preferences, project notes, history, and lessons.",
@@ -6941,11 +6939,11 @@
     "filter_all": "All",
     "clear_search": "Clear search",
     "remembered_count": "Saved memories: {{count}}",
-    "private_status": "Private to this member · Memory V2",
+    "private_status": "Member memory · V2",
     "source_unknown": "Source not recorded",
     "copy_limit": "Select up to 50 items",
     "empty_title": "A fresh start for this member",
-    "empty_body": "Private memory grows as you work. Copy selected memories here; the source stays unchanged.",
+    "empty_body": "Member memory (V2) grows as you work. Copy selected memories here; the source stays unchanged.",
     "no_matches": "No memories match your search",
     "no_matches_hint": "Try another phrase or clear the filters.",
     "profile_hint": "Stable preferences and project context used by this member.",
@@ -6992,8 +6990,7 @@
     "sensitive_document_read_only": "Sensitive values are hidden. This read-only view preserves original content.",
     "restart_interrupts": "Restarting the gateway briefly interrupts active conversations and scheduled work.",
     "copy_action": "Copy memories",
-    "edit_saved_memories": "Edit saved memories",
-    "creating_private_memory": "Creating private memory…"
+    "edit_saved_memories": "Edit saved memories"
   },
   "memoryEditing": {
     "adjust": "Adjust edit",

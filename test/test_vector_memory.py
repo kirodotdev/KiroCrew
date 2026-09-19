@@ -976,7 +976,14 @@ class TestSchemaInit:
         monkeypatch.setattr(
             vm.sqlite3,
             "connect",
-            lambda *a, **k: (events.append("connect"), real_connect(*a, **k))[1],
+            lambda *a, **k: (
+                events.append(
+                    "probe_readonly"
+                    if k.get("uri") and str(a[0]).endswith("?mode=ro")
+                    else "connect"
+                ),
+                real_connect(*a, **k),
+            )[1],
         )
         store = VectorMemoryStore(db_path=db_path)
         try:
@@ -984,7 +991,8 @@ class TestSchemaInit:
         finally:
             store.close()
 
-        assert "connect" in events, events
+        assert events.count("probe_readonly") == 1, events
+        assert events.count("connect") == 1, events
         restricted_db_before = events.index("restrict:mem.db") < events.index("connect")
         assert restricted_db_before, events
 
@@ -1384,6 +1392,52 @@ class TestStemWords:
         assert after_first.misses == 1
         assert after_second.misses == 1, "second call must not re-stem"
         assert after_second.hits == after_first.hits + 1
+
+
+class TestEmbedLogsCarryNoMemoryText:
+    """The embed diagnostics log sizes, never the memory text itself.
+
+    ``text`` is user memory content. A DEBUG line that echoes even a 50-char
+    prefix puts that content into the log; the three branches (success, None,
+    exception) must all stay content-free.
+    """
+
+    _SENTINEL = "SENTINEL-MEMORY-CONTENT-do-not-log"
+
+    def _store(self, tmp_path: Path) -> VectorMemoryStore:
+        store = VectorMemoryStore(db_path=tmp_path / "mem.db")
+        store.init()
+        return store
+
+    def _assert_not_logged(self, caplog: pytest.LogCaptureFixture) -> None:
+        for record in caplog.records:
+            assert self._SENTINEL not in record.getMessage()
+            assert self._SENTINEL not in (record.exc_text or "")
+
+    def test_success_branch(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        store = self._store(tmp_path)
+        store.embed_fn = lambda _t: [0.1, 0.2]
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.vector_memory"):
+            assert store._try_embed(self._SENTINEL) == [0.1, 0.2]
+        self._assert_not_logged(caplog)
+
+    def test_none_branch(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        store = self._store(tmp_path)
+        store.embed_fn = lambda _t: None
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.vector_memory"):
+            assert store._try_embed(self._SENTINEL) is None
+        self._assert_not_logged(caplog)
+
+    def test_exception_branch(self, tmp_path: Path, caplog: pytest.LogCaptureFixture) -> None:
+        store = self._store(tmp_path)
+
+        def boom(_t: str) -> list[float]:
+            raise RuntimeError("embedder down")
+
+        store.embed_fn = boom
+        with caplog.at_level(logging.DEBUG, logger="kiro_crew.vector_memory"):
+            assert store._try_embed(self._SENTINEL) is None
+        self._assert_not_logged(caplog)
 
 
 class TestEmbedFnLazyRebind:

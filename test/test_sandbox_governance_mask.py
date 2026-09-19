@@ -76,6 +76,60 @@ def _expected_exceptions() -> set[str]:
     }
 
 
+@pytest.mark.parametrize("leaf", ("subagents", "member-memory-bindings"))
+def test_run_authority_file_edits_are_refused_but_reads_remain_allowed(tmp_path, monkeypatch, leaf):
+    from kiro_crew.hooks import TOOL_DENY, HookManager, HooksConfig
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    target = tmp_path / leaf / "run-one" / "state.json"
+    target.parent.mkdir(parents=True)
+    target.write_text('{"app":"original-app"}', encoding="utf-8")
+    assert not security.is_sensitive_path(str(target))
+    assert security.is_sensitive_write_path(str(target))
+    gate = HookManager(HooksConfig.from_dict({}))
+    decision = gate.on_tool_call(
+        "Edit run ownership",
+        session_key="cli_chat",
+        tool_kind="edit",
+        raw_params={"path": str(target)},
+    )
+    assert decision.action == TOOL_DENY
+    assert target.read_text(encoding="utf-8") == '{"app":"original-app"}'
+    # The gateway's direct writer remains usable; this is not a host chmod.
+    target.write_text('{"app":"gateway-app"}', encoding="utf-8")
+    assert target.read_text(encoding="utf-8") == '{"app":"gateway-app"}'
+    assert not security.is_sensitive_write_path(str(tmp_path / (leaf + "-notes") / "x"))
+
+
+@pytest.mark.parametrize("mode", _MODES)
+def test_member_memory_is_readable_but_not_writable_in_the_sandbox(mode: str) -> None:
+    """Named-store integrity leaves reads, credentials and governance unchanged."""
+    profile = sandbox._build_seatbelt_profile(mode)
+    for prefix in _CREW_PREFIXES:
+        memory = _crew_path(prefix, "memory_stores")
+        token = _crew_path(prefix, "token_signing.key")
+        policy = _crew_path(prefix, "security_policy.json")
+        assert f'(deny file-read* (subpath "{memory}"))' not in profile
+        assert f'(deny file-write* (literal "{memory}"))' in profile
+        assert f'(deny file-write* (subpath "{memory}"))' in profile
+        assert f'(deny file-link (subpath "{memory}"))' in profile
+        assert security.is_sensitive_path(memory + "/member-one/memory.db")
+        assert f'(deny file-read* (subpath "{token}"))' in profile
+        assert f'(deny file-write* (subpath "{policy}"))' in profile
+
+
+@_POSIX_ONLY
+@pytest.mark.parametrize("mode", _MODES)
+def test_linux_member_memory_is_sealed_without_a_hidden_view(mode: str) -> None:
+    hidden, readonly, _files = _launcher_sets(mode)
+    for prefix in _CREW_PREFIXES:
+        memory = _crew_path(prefix, "memory_stores")
+        assert memory not in hidden
+        assert memory in readonly
+        assert _crew_path(prefix, "token_signing.key") in hidden
+        assert _crew_path(prefix, "security_policy.json") in readonly
+
+
 class TestKeystonesAreSealedInEveryMode:
     """The ceiling files the issue named, on every backend the launcher feeds."""
 
@@ -83,6 +137,7 @@ class TestKeystonesAreSealedInEveryMode:
     #: THESE paths are covered, so a test derived from the same tuple the production
     #: code reads would pass just as happily after someone emptied it.
     KEYSTONES = (
+        "subagents",
         "member-memory-bindings",
         "security_policy.json",
         "admission_policy.json",
@@ -159,7 +214,6 @@ class TestSecretsAreMaskedInEveryMode:
     """Crew-home leaves with no in-sandbox reader are bind-masked, not merely sealed."""
 
     MASKED = (
-        "memory_stores",
         "token_signing.key",
         "refresh_chains.json",
         "kas",
@@ -347,22 +401,32 @@ class TestARelocatedDataHomeIsCoveredToo:
 
     @_POSIX_ONLY
     @pytest.mark.parametrize("mode", _MODES)
-    def test_the_launcher_seals_the_resolved_ceiling(self, mode, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "leaf", ("security_policy.json", "subagents", "member-memory-bindings")
+    )
+    def test_the_launcher_seals_the_resolved_ceiling(self, mode, tmp_path, monkeypatch, leaf):
         root = self._relocate(monkeypatch, tmp_path)
         hidden, readonly, _files = _launcher_sets(mode)
 
-        target = os.path.join(root, "security_policy.json")
+        target = os.path.join(root, leaf)
         assert target in readonly, f"a relocated ceiling is writable in {mode}"
         assert target not in hidden, "it must stay readable — masking a ceiling removes it"
 
     @pytest.mark.parametrize("mode", _MODES)
-    def test_the_seatbelt_profile_covers_the_resolved_paths(self, mode, tmp_path, monkeypatch):
+    @pytest.mark.parametrize(
+        "leaf", ("security_policy.json", "subagents", "member-memory-bindings")
+    )
+    def test_the_seatbelt_profile_covers_the_resolved_paths(
+        self, mode, tmp_path, monkeypatch, leaf
+    ):
         root = self._relocate(monkeypatch, tmp_path)
         profile = sandbox._build_seatbelt_profile(mode)
 
-        ceiling = os.path.join(root, "security_policy.json")
+        ceiling = os.path.join(root, leaf)
         secret = os.path.join(root, "token_signing.key")
         assert f'(deny file-write* (literal "{ceiling}"))' in profile
+        assert f'(deny file-write* (subpath "{ceiling}"))' in profile
+        assert f'(deny file-read* (subpath "{ceiling}"))' not in profile
         assert f'(deny file-read* (subpath "{secret}"))' in profile
 
     def test_the_default_layout_adds_no_duplicate_rule(self, monkeypatch, tmp_path):

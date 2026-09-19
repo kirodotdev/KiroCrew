@@ -159,6 +159,8 @@ def inject_workflow_result(
 
         # 2. Fall back to a dedicated workflow slot only if the chat is gone.
         if slot is None:
+            if snapshot.get("memory_mode", "persistent") != "persistent":
+                return False
             slot = state.get_or_create_slot(name=f"workflow-{run_id}")
             if not getattr(slot, "linked_session_key", ""):
                 slot.linked_session_key = session_key
@@ -187,7 +189,11 @@ def inject_workflow_result(
             )
             # Persist so a follow-up chat turn has the result as context.
             try:
-                if state.conversation_log is not None:
+                if (
+                    state.conversation_log is not None
+                    and snapshot.get("memory_mode", "persistent") == "persistent"
+                    and getattr(slot, "memory_mode", "persistent") == "persistent"
+                ):
                     # inject_workflow_result runs on the event loop (invoked from
                     # the workflow runner's on_done inside an asyncio task), so
                     # offload the lock-backed disk append to a worker thread —
@@ -231,58 +237,76 @@ def inject_workflow_result(
 async def inject_bound_workflow_result(
     state: DashboardState, run_id: str, snapshot: dict, *, on_injected=None
 ) -> bool:
-    """Private results may only reach the run's still-valid original memory."""
+    """Deliver using the run's captured identity without reselecting its memory."""
     import asyncio
 
-    from kiro_crew.member_memory_auth import private_memory_store_for_session
-    from kiro_crew.memory_stores import member_memory_identity
-    from kiro_crew.workflow_memory import WorkflowScope, private_payload_path, read_binding
+    from kiro_crew.config.loader import KiroCrewConfig
+    from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.execution_context import (
+        bind_session_execution,
+        execution_from_record,
+        member_config_for_id,
+        read_session_execution,
+    )
 
     try:
-        binding = await asyncio.to_thread(read_binding, run_id)
-        if binding is None:
-            private_path = await asyncio.to_thread(private_payload_path, run_id)
-            if snapshot.get("execution_binding_version") or await asyncio.to_thread(
-                private_path.exists
-            ):
-                return False
-            if await asyncio.to_thread(
-                private_memory_store_for_session, snapshot.get("session_key", "")
-            ):
+        execution = execution_from_record(snapshot, required=False)
+        if execution is None:
+            if snapshot.get("memory_store") or snapshot.get("member_id"):
                 return False
             return inject_workflow_result(state, run_id, snapshot, on_injected=on_injected)
-        scope = await WorkflowScope.restore(run_id)
-        if snapshot.get("session_key", "") != scope.origin:
+        origin = snapshot.get("session_key", "")
+        if not isinstance(origin, str) or not origin:
             return False
-        current = await asyncio.to_thread(private_memory_store_for_session, scope.origin)
-        if current != scope.store:
-            return False
-        if scope.store:
-            slot = state.get_slot(_slot_key_from_session(scope.origin))
-            if slot is not None:
-                from kiro_crew.dashboard.chat_utils import effective_session_key
-
-                if effective_session_key(slot) != scope.origin or slot.memory_store != scope.store:
-                    return False
-            else:
-                identity = await asyncio.to_thread(member_memory_identity, scope.store)
-                fallback_name = f"workflow-{run_id}"
-                slot = state.get_slot(fallback_name)
-                if slot is not None:
-                    if (
-                        getattr(slot, "linked_session_key", "") != scope.origin
-                        or getattr(slot, "memory_store", "") != scope.store
-                        or getattr(slot, "agent", "") != identity[0]
-                    ):
-                        return False
-                else:
-                    slot = state.get_or_create_slot(
-                        name=fallback_name, agent=identity[0], linked_session_key=scope.origin
-                    )
-                    slot.memory_store = scope.store
-                # A fallback transcript is visible, but is not an active parent turn.
-                on_injected = None
-        return inject_workflow_result(state, run_id, snapshot, on_injected=on_injected)
-    except Exception:
-        # Refusal never routes a private payload into a default fallback chat.
+        # Capture the live target before awaiting config/metadata I/O. Recheck
+        # that same slot after the await rather than selecting another member.
+        slot = state.get_slot(_slot_key_from_session(origin))
+        if slot is not None:
+            admitted = await asyncio.to_thread(read_session_execution, origin)
+            if (
+                state.get_slot(slot.key) is not slot
+                or effective_session_key(slot) != origin
+                or admitted is None
+                or admitted.store != execution.store
+                or getattr(slot, "memory_store", "") != execution.store.legacy_name
+            ):
+                return False
+            if getattr(slot, "memory_mode", "persistent") != execution.memory_mode:
+                return False
+        else:
+            if execution.memory_mode != "persistent":
+                return False
+            agent = execution.template_id
+            if execution.member_id is not None:
+                config = await asyncio.to_thread(KiroCrewConfig.load)
+                agent, _ = member_config_for_id(config, execution.member_id)
+            fallback_name = f"workflow-{run_id}"
+            slot = state.get_slot(fallback_name)
+            if slot is not None and (
+                getattr(slot, "linked_session_key", "") != origin
+                or getattr(slot, "memory_store", "") != execution.store.legacy_name
+                or getattr(slot, "memory_mode", "persistent") != execution.memory_mode
+            ):
+                return False
+            # Bind the original identity when the parent is absent.
+            # The new visible slot inherits it before any provider can start.
+            await asyncio.to_thread(bind_session_execution, origin, execution)
+            if (
+                state.get_slot(_slot_key_from_session(origin)) is not None
+                or state.get_slot(fallback_name) is not slot
+            ):
+                return False
+            if slot is None:
+                slot = state.get_or_create_slot(
+                    name=fallback_name,
+                    agent=agent,
+                    linked_session_key=origin,
+                    memory_mode=execution.memory_mode,
+                )
+                slot.memory_store = execution.store.legacy_name
+            on_injected = None
+        delivered = dict(snapshot)
+        delivered["memory_mode"] = execution.memory_mode
+        return inject_workflow_result(state, run_id, delivered, on_injected=on_injected)
+    except (OSError, ValueError, RuntimeError):
         return False

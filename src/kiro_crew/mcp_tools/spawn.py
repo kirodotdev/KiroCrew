@@ -280,11 +280,16 @@ def schemas() -> list[dict[str, Any]]:
                         "type": "string",
                         "description": (
                             "Crew Member name from select_crew or route_crew. "
-                            "Selects that member's private memory and provider template; "
-                            "agent alone selects only a template. The member must have "
-                            "delegated tasks enabled. A private member may delegate only "
-                            "within its own memory; cross-member delegation requires an "
-                            "owner-level caller. Applies to every task in a batch."
+                            "Selects that member's memory and provider template; agent "
+                            "alone selects a template. The member must have delegated tasks "
+                            "enabled. Omit to inherit the current member. Applies to every task."
+                        ),
+                    },
+                    "target_member": {
+                        "type": "string",
+                        "description": (
+                            "Explicit target Crew Member. Uses its existing memory without "
+                            "copying the parent's learning. Omit to inherit the current member."
                         ),
                     },
                     "agents": {
@@ -632,6 +637,7 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
     # the field is not enough, and a field the handler drops makes every documented
     # `spawn_run(crew=...)` a silent no-op that runs on the operator's own memory.
     crew = args.get("crew") or ""
+    target_member = args.get("target_member") or ""
     agents_list = args.get("agents") or []
     max_turns = args.get("max_turns") or 0
     cwd = args.get("cwd") or ""
@@ -747,6 +753,8 @@ def spawn_run(name: str, args: dict[str, Any]) -> str:
         body: dict[str, Any] = {"task": t, "agent": a, "parent_session": parent_session}
         if crew:
             body["crew"] = crew
+        if target_member:
+            body["target_member"] = target_member
         if batch_id:
             body["batch_id"] = batch_id
             body["batch_total"] = len(task_list)

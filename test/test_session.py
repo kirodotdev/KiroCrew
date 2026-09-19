@@ -44,6 +44,7 @@ def _mock_provider_factory():
     def factory(session_key=None, agent=None, channel_id=None, **kwargs):
         m = AsyncMock()
         m.start = AsyncMock()
+        m.memory_mode = kwargs.get("memory_mode", "persistent")
         m.shutdown = AsyncMock()
         # Explicit, not AsyncMock-generated: the post-semaphore re-validate calls
         # this synchronously, and an auto-generated coroutine would read as
@@ -80,6 +81,7 @@ def _alive_provider_factory():
     def factory(session_key=None, agent=None, channel_id=None, **kwargs):
         m = AsyncMock()
         m.start = AsyncMock()
+        m.memory_mode = kwargs.get("memory_mode", "persistent")
         m.shutdown = AsyncMock()
         m.is_process_alive = lambda: True
         m.is_alive = lambda: True
@@ -3701,6 +3703,7 @@ class TestClaudeBackendCompaction:
         # already registered a fresh replacement under the same key.
         replacement_provider = AsyncMock()
         replacement_provider.shutdown = AsyncMock()
+        replacement_provider.memory_mode = "persistent"
         replacement_provider.is_process_alive = lambda: True
         replacement = _Session(
             provider=replacement_provider, first_turn=FirstTurnState.NOTHING_ARMED
@@ -5293,7 +5296,9 @@ def _run_runtime_factory(created_runtimes: list):
         runtime.is_alive = MagicMock(return_value=True)
         runtime.pid = 4321
         runtime.create_session = AsyncMock(
-            side_effect=lambda **kw: MagicMock(session_id="step-session")
+            side_effect=lambda **kw: MagicMock(
+                session_id="step-session", memory_mode=kw.get("memory_mode", "persistent")
+            )
         )
         runtime.terminate_session = AsyncMock()
         runtime.kill = AsyncMock()
@@ -5474,9 +5479,6 @@ class TestLoadRecoveryHistoryReplay:
 
         def factory(session_key=None, agent=None, channel_id=None, **kwargs):
             provider = object.__new__(AcpProvider)
-            provider._private_memory = False
-            provider._private_memory_session_key = session_key
-            provider._private_memory_prepared = False
             provider._client = MagicMock()
             provider._client._session_id = "fresh-replayed-sid"
             provider._client._work_dir = "/new-workspace"
@@ -5547,9 +5549,6 @@ class TestLoadRecoveryHistoryReplay:
 
         def factory(session_key=None, agent=None, channel_id=None, **kwargs):
             provider = object.__new__(AcpProvider)
-            provider._private_memory = False
-            provider._private_memory_session_key = session_key
-            provider._private_memory_prepared = False
             provider._client = MagicMock()
             provider._client._session_id = "fresh-recovery-sid"
             provider._client._work_dir = "/new-workspace"

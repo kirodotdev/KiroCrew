@@ -16,7 +16,9 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from kiro_crew.cron import CronJob, CronSchedule
+from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.llm_helpers import ToolApprovalPolicy
+from kiro_crew.subagent_persistence import create_agent_folder
 
 
 @pytest.fixture(autouse=True)
@@ -234,7 +236,7 @@ class TestCronApprovalModeValidation:
     """Validation schema accepts valid values, rejects invalid."""
 
     def _simulate_tool_call(self, tool_name: str, arguments: dict) -> str:
-        from kiro_crew.mcp_cron import _call_tool
+        from kiro_crew.mcp_cron import _call_tool_locally as _call_tool
 
         return _call_tool(tool_name, arguments)
 
@@ -348,8 +350,14 @@ class TestSubagentInheritsPolicy:
         mock_client.stream = fake_stream
 
         runner = SubagentManager(sessions=sessions, ctx_builder=ctx_builder)
-        info = SubagentInfo(id="sub1", task="test", parent_session_key=parent_session_key)
+        info = SubagentInfo(
+            id="sub1",
+            task="test",
+            parent_session_key=parent_session_key,
+            execution_context=ExecutionContext(None, MemoryStoreRef("default"), "template", ""),
+        )
 
+        create_agent_folder(info.id, task=info.task, execution_context=info.execution_context)
         asyncio.run(runner._run_inner(info, "subagent:sub1"))
         return captured
 
@@ -405,8 +413,14 @@ class TestSubagentInheritsPolicy:
         runner = SubagentManager(
             sessions=sessions, ctx_builder=ctx_builder, on_tool_approval=on_tool_approval
         )
-        info = SubagentInfo(id="sub1", task="test", parent_session_key=parent_session_key)
+        info = SubagentInfo(
+            id="sub1",
+            task="test",
+            parent_session_key=parent_session_key,
+            execution_context=ExecutionContext(None, MemoryStoreRef("default"), "template", ""),
+        )
 
+        create_agent_folder(info.id, task=info.task, execution_context=info.execution_context)
         with patch("kiro_crew.subagent.sel"):
             asyncio.run(runner._run_inner(info, "subagent:sub1"))
         return mock_client
@@ -842,10 +856,18 @@ class TestSubagentRoleModelForcesDedicatedPath:
         shared = AsyncMock(
             side_effect=AssertionError("shared path taken despite a per-role override")
         )
-        info = SubagentInfo(id="sub1", task="test", parent_session_key="parent-key")
-        with patch.object(runner, "_create_shared_session", shared), patch.object(
-            runner, "_should_use_session_sharing", return_value=True
-        ), patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)):
+        info = SubagentInfo(
+            id="sub1",
+            task="test",
+            parent_session_key="parent-key",
+            execution_context=ExecutionContext(None, MemoryStoreRef("default"), "template", ""),
+        )
+        create_agent_folder(info.id, task=info.task, execution_context=info.execution_context)
+        with (
+            patch.object(runner, "_create_shared_session", shared),
+            patch.object(runner, "_should_use_session_sharing", return_value=True),
+            patch("kiro_crew.config.loader.KiroCrewConfig.load", classmethod(lambda c: cfg)),
+        ):
             asyncio.run(runner._run_inner(info, "subagent:sub1"))
         return captured, shared
 

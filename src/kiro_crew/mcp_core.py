@@ -57,7 +57,6 @@ from kiro_crew.mcp_caller import CallerContext, current_caller, set_current_call
 from kiro_crew.mcp_shared import (
     call_tool_with_logging,
     internal_caller,
-    member_proof_header_value,
     run_mcp_stdio_loop,
 )
 from kiro_crew.mcp_tools import build_tool_list, dispatch
@@ -774,11 +773,6 @@ def _resolve_session_key() -> str:
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
         return ctx.session_key
-    from kiro_crew.member_memory_auth import protected_member_session_for_pid
-
-    protected = protected_member_session_for_pid(os.getpid())
-    if protected is not None:
-        return protected
     # The signed per-session token, ABOVE the env var: after a warm-pool rekey the
     # env key names the previous session and the mapping file names the current
     # one. See :func:`_session_key_from_token`.
@@ -872,11 +866,6 @@ def _resolve_session_key_strict() -> str:
     ctx = current_caller()
     if ctx is not None and ctx.session_key:
         return ctx.session_key
-    from kiro_crew.member_memory_auth import protected_member_session_for_pid
-
-    protected = protected_member_session_for_pid(os.getpid())
-    if protected is not None:
-        return protected
     # The signed per-session token, ABOVE the env var: after a warm-pool rekey the
     # env key names the previous session and the mapping file names the current
     # one. See :func:`_session_key_from_token`.
@@ -961,8 +950,6 @@ def strict_identity_diagnosis(server: str = "kirocrew-core") -> str:
 #: attributed channel sends, crew/app state, cron ownership). These operations
 #: resolve the caller STRICTLY through :func:`require_strict_session_key`, never
 #: the lenient resolver whose ``/proc`` ancestor walk can return a parent slot.
-#: Shared protocol-log access is conditional: private memory boundaries require
-#: strict Global identity; pure V1 keeps read-only diagnostics attribution.
 #: The registry includes every module with a strict operation. This is data:
 #: ``test/test_identity_topology.py`` scans the source tree and fails when a
 #: module calls the strict resolver directly (bypassing the gate) or calls the
@@ -1343,7 +1330,7 @@ def _session_key_header_error(sk: str) -> str | None:
 
 
 def _caller_header() -> dict[str, str]:
-    """Component attribution plus this invocation's private-member authority.
+    """Component attribution for independently authenticated internal requests.
 
     MCP stdio servers declare their component name via
     ``mcp_shared.set_internal_caller`` (done centrally in
@@ -1355,24 +1342,24 @@ def _caller_header() -> dict[str, str]:
     known set before trusting it into an audit line. Processes that never
     declared an identity (CLI, tests) send no header rather than a guess.
 
-    A pooled backend additionally forwards the current caller's short-lived
-    member proof. It is independent of component attribution and is verified
-    against the live runtime binding by the private-memory HTTP authorizer.
     """
-    from kiro_crew.mcp_caller import current_caller
-    from kiro_crew.member_memory_auth import PROOF_HEADER
-
     name = internal_caller()
-    headers = {"X-Internal-Caller": name} if name else {}
-    caller = current_caller()
-    if caller is not None and caller.from_gateway and caller.member_memory_proof:
-        # Only this invocation's gateway-minted proof may cross the pooled
-        # backend boundary. Environment and process-lifetime identity caches do
-        # not establish member authority. Malformed metadata earns no header.
-        proof = member_proof_header_value(caller.member_memory_proof)
-        if proof:
-            headers[PROOF_HEADER] = proof
-    return headers
+    return {"X-Internal-Caller": name} if name else {}
+
+
+def _session_token_header() -> dict[str, str]:
+    """Attach the signed per-session token to internal gateway requests.
+
+    The token is already injected into each MCP server's environment.  Sending
+    it alongside ``X-Session-Key`` lets the gateway bind a loopback TCP request
+    to the session that launched this MCP process; the gateway verifies the
+    signature and the key match.  It is a transport identity proof, not a
+    member-memory capability.
+    """
+    from kiro_crew.mcp_gateway.claim import STUB_SESSION_TOKEN_ENV
+
+    token = os.environ.get(STUB_SESSION_TOKEN_ENV, "")
+    return {"X-Session-Token": token} if token else {}
 
 
 def _transport_failure(message: str, mark: bool) -> dict:
@@ -1607,6 +1594,7 @@ def _post(
         "Content-Type": "application/json",
         "X-Internal-Secret": _internal_secret(),
         **_caller_header(),
+        **_session_token_header(),
     }
     sk = _resolve_session_key() if session_key is None else session_key
     _sk_err = _session_key_header_error(sk)

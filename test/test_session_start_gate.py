@@ -418,7 +418,8 @@ async def test_two_live_collectors_do_not_claim_each_others_frames():
 
 
 @pytest.mark.asyncio
-async def test_timeout_then_late_response_without_adopter_is_torn_down():
+@pytest.mark.parametrize("memory_mode", ["persistent", "incognito", "temporary"])
+async def test_timeout_then_late_response_without_adopter_is_torn_down(memory_mode):
     """No adopter registered: the late session is closed through the runtime's
     per-session teardown -- never by killing the shared runtime -- and the gate
     is released exactly once."""
@@ -427,16 +428,21 @@ async def test_timeout_then_late_response_without_adopter_is_torn_down():
     gate = await _gate()
     try:
         with pytest.raises(AcpSessionStartTimeout) as ei:
-            await rt.create_session(cwd="/w", mcp_servers=[])
+            await rt.create_session(cwd="/w", mcp_servers=[], memory_mode=memory_mode)
         collector = ei.value.collector
         with (
             patch.object(rt, "terminate_session", AsyncMock()) as term,
             patch.object(rt, "kill", AsyncMock()) as kill,
+            patch.object(runtime_mod.AcpSessionHandle, "cleanup_transcript_files") as cleanup,
         ):
             _feed(reader, {"id": collector.req_id, "result": {"sessionId": "late-sid"}})
             await asyncio.wait_for(collector.settled.wait(), timeout=2.0)
             term.assert_awaited_once_with("late-sid")
             kill.assert_not_awaited()
+            if memory_mode == "persistent":
+                cleanup.assert_not_called()
+            else:
+                cleanup.assert_called_once_with("late-sid")
         assert collector.outcome == START_OUTCOME_TORN_DOWN
         assert not rt._dead
         assert gate.releases == 1 and gate.active == 0

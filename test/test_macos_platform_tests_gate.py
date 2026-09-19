@@ -138,7 +138,7 @@ class TestTheMovedLaneIsTheSameLane:
         assert upload["if"] == "always()"
         assert "shard-macos-" in upload["with"]["name"]
 
-    def test_the_three_darwin_contracts_are_still_asserted_by_name(self) -> None:
+    def test_native_peer_identity_and_terminal_contracts_are_asserted_by_name(self) -> None:
         # `pytest -q` does not name passing tests and a skip exits 0, so each of
         # these is asserted to have PASSED by node id. That is the same blindness
         # that once left four mutation-verified tests unrun inside conftest's
@@ -149,7 +149,6 @@ class TestTheMovedLaneIsTheSameLane:
         )
         for node_id in (
             "test/test_socketsec.py::test_macos_check_matches_a_socket_we_connected_to_ourselves",
-            "test/test_member_memory_filesystem.py::test_darwin_kernel_private_memory_boundary",
             "test/test_terminal_handler.py",
         ):
             assert node_id in runs, f"{node_id} is no longer executed on real Darwin"

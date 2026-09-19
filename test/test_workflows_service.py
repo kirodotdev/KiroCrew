@@ -1069,12 +1069,20 @@ async def test_start_task_plan_definition_delegates_to_taskrunner_without_python
 
     assert started["run_id"] == "wf_task"
     assert started["task_id"] == "task_123"
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+
     assert task_runner.calls == [
         {
             "definition": saved,
             "input_text": "from slash",
             "author": "",
             "session_key": "",
+            "execution_context": ExecutionContext(
+                member_id=None,
+                store=MemoryStoreRef("default"),
+                selection_kind="template",
+                template_id="kirocrew",
+            ),
         }
     ]
 
@@ -1679,7 +1687,7 @@ async def test_rerun_keeps_birth_mode_and_current_caller_policy(original, caller
     async def resolve_mode(key):
         return modes[key]
 
-    context = SimpleNamespace(_session_memory_modes={}, memory_mode_for_session=resolve_mode)
+    context = SimpleNamespace(_session_memory_modes=modes, memory_mode_for_session=resolve_mode)
     svc = WorkflowService(sessions=FakeSessions([]), context_builder=context)
     first = await svc.start(GOOD_SCRIPT, session_key="dashboard:original")
     assert "run_id" in first, first
@@ -1689,7 +1697,12 @@ async def test_rerun_keeps_birth_mode_and_current_caller_policy(original, caller
     assert "run_id" in again, again
     result = await _wait_terminal(svc, again["run_id"])
     assert result["status"] == "finished"
-    binding = await asyncio.to_thread(read_binding, again["run_id"], required=True)
+    handle = svc.registry.get(again["run_id"])
+    binding = await asyncio.to_thread(
+        read_binding, again["run_id"], required=True, record=handle.to_store_json()
+    )
+    if binding["memory_mode"] != "persistent":
+        assert not svc.registry._store._path_for(again["run_id"]).exists()
     assert binding["memory_mode"] == (strictest((original, caller)) or "persistent")
 
 

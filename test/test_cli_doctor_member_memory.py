@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import inspect
-import json
 import sqlite3
 from pathlib import Path
 
@@ -12,7 +11,6 @@ import pytest
 from kiro_crew import cli_doctor, memory_stores
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig, config_dir
 from kiro_crew.config.sections import MemoryStoreConfig
-from kiro_crew.memory_schema import OWNER_MEMBER_META_KEY
 from kiro_crew.vector_memory import VectorMemoryStore
 
 
@@ -24,11 +22,14 @@ def _snapshot(home: Path) -> dict[str, bytes]:
 
 def _assert_only_new_sqlite_coordination(home: Path, before: dict[str, bytes], database: Path):
     after = _snapshot(home)
-    # Every original file remains byte-identical, including any existing WAL.
-    assert {name: after[name] for name in before} == before
     added = after.keys() - before.keys()
     wal = str(database.with_name("memory.db-wal").relative_to(home))
     shm = str(database.with_name("memory.db-shm").relative_to(home))
+    # Read-only WAL readers may update SHM read marks; database, committed WAL,
+    # configuration and every other original file remain byte-identical.
+    assert {name: after[name] for name in before if name != shm} == {
+        name: value for name, value in before.items() if name != shm
+    }
     assert added <= {wal, shm}
     if wal in added:
         assert after[wal] == b""
@@ -94,35 +95,38 @@ def test_global_named_v1_and_owned_v2_are_checked_without_writes(members, capsys
             ("healthy-peer", "default"),
         ):
             assert f"{name!r} -> {store!r}: valid binding" in output
-        assert _snapshot(home) == before
+        _assert_only_new_sqlite_coordination(
+            home, before, memory_stores.memory_stores_root() / private_store / "memory.db"
+        )
     assert writes == []
 
 
 @pytest.mark.parametrize(
     ("damage", "member", "reason"),
     [
-        ("missing-manifest", "private", "ownership record is missing or unreadable"),
-        ("wrong-manifest-owner", "private", "ownership does not match member"),
-        ("wrong-config-owner", "private", "missing or invalid memory binding"),
-        ("missing-declaration", "legacy", "missing or invalid memory binding"),
-        ("corrupt-v1-database", "legacy", "legacy identity cannot be verified"),
+        (
+            "missing-database",
+            "private",
+            "Member database is missing or unreadable; Global was not used",
+        ),
+        ("wrong-database-owner", "private", "identity does not match"),
+        ("wrong-config-owner", "private", "member identity is missing or ambiguous"),
+        ("missing-declaration", "legacy", "is unavailable"),
+        ("corrupt-v1-database", "legacy", "is unreadable"),
     ],
 )
 def test_broken_nondefault_binding_reports_reason_and_continues_healthy_peers(
     members, capsys, damage, member, reason
 ):
     cfg, home, private_store, writes = members
-    manifest = (
-        memory_stores.memory_stores_root() / private_store / memory_stores.MEMBER_MEMORY_MANIFEST
-    )
-    if damage == "missing-manifest":
-        manifest.unlink()
-    elif damage == "wrong-manifest-owner":
-        data = json.loads(manifest.read_text(encoding="utf-8"))
-        data["owner_member"] = "different-member"
-        manifest.write_text(json.dumps(data), encoding="utf-8")
+    database = memory_stores.memory_stores_root() / private_store / "memory.db"
+    if damage == "missing-database":
+        database.unlink()
+    elif damage == "wrong-database-owner":
+        with sqlite3.connect(database) as connection:
+            connection.execute("UPDATE member_database SET member_id='different-member'")
     elif damage == "wrong-config-owner":
-        cfg.memory_stores[private_store].owner_member = "different-member"
+        cfg.memory_stores[private_store].owner_member_id = "different-member"
         cfg.save()
     elif damage == "missing-declaration":
         del cfg.memory_stores["legacy-store"]
@@ -145,10 +149,7 @@ def test_broken_nondefault_binding_reports_reason_and_continues_healthy_peers(
     assert "'default' -> 'default': valid binding" in output
     assert "'healthy-peer' -> 'default': valid binding" in output
     assert issues == [f"member memory binding unavailable: {binding}"]
-    if damage == "missing-manifest":
-        _assert_only_new_sqlite_coordination(home, before, manifest.parent / "memory.db")
-    else:
-        assert _snapshot(home) == before
+    _assert_only_new_sqlite_coordination(home, before, database)
     assert writes == []
 
 
@@ -156,7 +157,6 @@ def test_private_identity_in_committed_wal_is_read_without_changing_memory(membe
     cfg, home, private_store, writes = members
     directory = memory_stores.memory_stores_root() / private_store
     database = directory / "memory.db"
-    (directory / memory_stores.MEMBER_MEMORY_MANIFEST).unlink()
     writer = sqlite3.connect(database)
     try:
         assert writer.execute("PRAGMA journal_mode").fetchone() == ("wal",)
@@ -165,8 +165,8 @@ def test_private_identity_in_committed_wal_is_read_without_changing_memory(membe
         original_database = database.read_bytes()
         with writer:
             changed = writer.execute(
-                "UPDATE memory_meta SET value=? WHERE key=?",
-                ("legacy", OWNER_MEMBER_META_KEY),
+                "UPDATE member_database SET member_id=? WHERE singleton=1",
+                ("wrong-owner",),
             )
             assert changed.rowcount == 1
         assert database.read_bytes() == original_database
@@ -179,13 +179,10 @@ def test_private_identity_in_committed_wal_is_read_without_changing_memory(membe
 
         output = capsys.readouterr().out
         assert "'default' -> 'default': valid binding" in output
-        assert f"retains private memory evidence at {private_store!r}" in output
-        assert "'legacy' -> 'legacy-store': unavailable" in output
+        assert f"'private' -> {private_store!r}: unavailable" in output
+        assert "'legacy' -> 'legacy-store': valid binding" in output
         assert "'healthy-peer' -> 'default': valid binding" in output
-        assert issues == [
-            "member memory binding unavailable: 'legacy' -> 'legacy-store'",
-            f"member memory binding unavailable: 'private' -> {private_store!r}",
-        ]
+        assert issues == [f"member memory binding unavailable: 'private' -> {private_store!r}"]
         after = _snapshot(home)
         assert after.keys() == before.keys()
         # The held writer prevents checkpoint/cleanup. Readers may update SHM
@@ -201,7 +198,7 @@ def test_private_identity_in_committed_wal_is_read_without_changing_memory(membe
 
 
 def test_member_store_and_error_text_cannot_inject_terminal_controls(members, capsys):
-    cfg, home, _private_store, writes = members
+    cfg, home, private_store, writes = members
     name = "untrusted\x1b[2J\nmember"
     store = "missing\x1b[2J\nstore"
     cfg.agents[name] = KiroCrewAgentConfig(memory_store=store)
@@ -219,7 +216,9 @@ def test_member_store_and_error_text_cannot_inject_terminal_controls(members, ca
     assert len(issues) == 1
     assert "\x1b" not in issues[0]
     assert "\n" not in issues[0]
-    assert _snapshot(home) == before
+    _assert_only_new_sqlite_coordination(
+        home, before, memory_stores.memory_stores_root() / private_store / "memory.db"
+    )
     assert writes == []
 
 

@@ -24,6 +24,7 @@ def _make_handle(
     """Create a mock AcpSessionHandle with configurable defaults."""
     handle = MagicMock()
     handle.session_id = session_id
+    handle.memory_mode = "persistent"
     handle.is_turn_active = is_turn_active
     handle.last_prompt_stats = AcpPromptStats(
         context_pct=context_pct,
@@ -1005,7 +1006,9 @@ class TestNewConversation:
         await provider.new_conversation()
 
         # Fresh session/new on the SAME runtime (cwd+agent from the runtime).
-        runtime.create_session.assert_awaited_once_with(cwd="/tmp/ws", agent="kirocrew")
+        runtime.create_session.assert_awaited_once_with(
+            cwd="/tmp/ws", agent="kirocrew", memory_mode="persistent"
+        )
         # Handle swapped to the fresh session → next prompt starts clean.
         assert provider._handle is new_handle
         assert provider.session_id == "fresh-session-2"

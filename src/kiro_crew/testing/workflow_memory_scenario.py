@@ -16,7 +16,10 @@ from typing import Any
 
 from kiro_crew.sandbox import popen_limited, sandboxed_spawn_argv
 
-TRIGGER = re.compile(r"\[\[WF_E2E:(START|AUTHOR|WORK|NEST|CONTROL):([ABV])(?::(wf_\d+))?\]\]")
+TRIGGER = re.compile(
+    r"^[ \t]*\[\[WF_E2E:(START|AUTHOR|WORK|NEST|CONTROL):([ABV])(?::(wf_\d+))?\]\][ \t]*$",
+    re.MULTILINE,
+)
 
 
 def source(marker: str) -> str:
@@ -33,6 +36,8 @@ def source(marker: str) -> str:
 
 
 def respond(text: str, servers: list[dict[str, Any]], cwd: str) -> str | None:
+    # Commands occupy their own line in real task/author prompts. A title
+    # transcript quoting "User: [[WF_E2E:...]]" is data, not another execution.
     matches = TRIGGER.findall(text)
     if not matches:
         return None
@@ -56,8 +61,8 @@ def respond(text: str, servers: list[dict[str, Any]], cwd: str) -> str | None:
     responses: queue.Queue[dict | None] = queue.Queue()
     with ExitStack() as cleanup, tempfile.TemporaryFile(mode="w+b") as errors:
         # Dynamic spec input is never a benign fixed command. The common seam
-        # retains the outer private namespace when already confined; no proof
-        # or private identity is manufactured here.
+        # retains the ordinary host sandbox; no execution identity is
+        # manufactured here.
         argv, child_env, profile = sandboxed_spawn_argv(
             [core["command"], *core.get("args", [])], env=env
         )

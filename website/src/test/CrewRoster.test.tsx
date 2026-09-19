@@ -278,7 +278,7 @@ describe('crew roster — memory ownership notice', () => {
      while a match on incidental words would keep passing after the disclosure
      itself was dropped. The assertions below are about STRUCTURE — one
      page-level notice, two per-binding tips. */
-  const NOTICE = i18nT('pages.kiroCrewAgentsPage.bindings_preview_notice')
+  const NOTICE = i18nT('pages.kiroCrewAgentsPage.bindings_member_memory_notice')
   const TIP = i18nT('pages.kiroCrewAgentsPage.bindings_preview_info')
 
   /* The view choice persists to localStorage, so a test here that switches to
@@ -307,7 +307,7 @@ describe('crew roster — memory ownership notice', () => {
     expect(screen.getAllByText(NOTICE)).toHaveLength(1)
   })
 
-  it('keeps workspace guidance and describes the current V1 memory before opt-in', async () => {
+  it('keeps workspace guidance and explains that existing V1 memory stays unchanged', async () => {
     await renderRoster()
     const sheet = await openEditor('oncall')
     gotoPane(sheet, 'place')
@@ -315,8 +315,8 @@ describe('crew roster — memory ownership notice', () => {
     // so the page-level notice is not readable from here — the tooltip is the
     // only place this caveat reaches a user who is mid-edit.
     expect(within(sheet).getAllByTitle(TIP)).toHaveLength(1)
-    const memory = within(sheet).getByText(/This member uses its current memory \(V1\)\./)
-    expect(memory).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
+    const memory = within(sheet).getByText(/This member keeps its current memory \(V1\)\./)
+    expect(memory).toHaveTextContent(/^This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\.$/)
     expect(within(sheet).queryByText(/This member cannot return to its previous memory/)).toBeNull()
   })
 
@@ -576,7 +576,7 @@ describe('crew editor — opening', () => {
     // Create mode has no crew to edit yet, so the bindings start on the defaults.
     expect(within(sheet).getByRole('combobox', { name: 'Workspace' })).toHaveTextContent('default')
     expect(within(sheet).queryByRole('combobox', { name: 'Memory Store' })).not.toBeInTheDocument()
-    expect(within(sheet).getByText(/own empty private memory/i)).toBeInTheDocument()
+    expect(within(sheet).getByText(/empty member memory/i)).toBeInTheDocument()
     // The Agent Template is the exception: it has NO safe default, because
     // pre-filling the built-in made a new crew an alias for the default agent.
     expect(within(sheet).getByRole('combobox', { name: 'Agent Template' }))

@@ -36,7 +36,7 @@ from kiro_crew import cli_commands as cc
 from kiro_crew.config import loader as loader_mod
 from kiro_crew.config.loader import config_dir
 from kiro_crew.memory_stores import DEFAULT_MEMORY_STORE, resolve_store_path
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 # Each test writes ``config.json`` into its own data home and drops the process-wide
 # config cache, so two workers racing that global is a flake.
@@ -129,8 +129,12 @@ def _ns(**kw: object) -> argparse.Namespace:
 
 def _semantic_keys(name: str) -> list[str]:
     """The live semantic keys in *name*'s own vector file, read directly."""
-    store = VectorMemoryStore(db_path=resolve_store_path(name))
-    store.init()
+    path = resolve_store_path(name)
+    if name.startswith("member-"):
+        store = open_member_database(path, member_id=name.removeprefix("member-"), store_id=name)
+    else:
+        store = VectorMemoryStore(db_path=path)
+        store.init()
     try:
         return sorted(str(row["key"]) for row in store.get_all_semantic())
     finally:
@@ -172,7 +176,7 @@ class TestExportReadsTheStoreItWasGiven:
         """
         cc._memory_cmd(_ns(mem_action="export", output=None, store="nosuchstore"))
         out = capsys.readouterr().out
-        assert "'nosuchstore' is not declared" in out
+        assert "'nosuchstore' is unavailable" in out
         assert _GLOBAL_KEY not in out
         assert '"semantic"' not in out
 
@@ -204,7 +208,7 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
 
         cc._memory_cmd(_ns(mem_action="export", output=None, store=_ACME))
         out = capsys.readouterr().out
-        assert "is missing or unreadable" in out
+        assert "is missing" in out
         assert '"semantic"' not in out
         # The recreation is the harm, so its absence is asserted directly rather
         # than inferred from the message above.
@@ -224,7 +228,7 @@ class TestADeletedStoreIsRefusedRatherThanRecreatedEmpty:
         shutil.rmtree(db_path.parent)
 
         cc._memory_cmd(_ns(mem_action="import", file=str(dump), store=_BETA))
-        assert "is missing or unreadable" in capsys.readouterr().out
+        assert "is missing" in capsys.readouterr().out
         assert not db_path.parent.exists()
         assert _semantic_keys(DEFAULT_MEMORY_STORE) == [_GLOBAL_KEY]
 
@@ -482,8 +486,9 @@ class TestAFacetBearingDestinationIsRefusedRatherThanFlattened:
         forget_declared_stores(monkeypatch)
         store_name = "member-alice"
 
-        target = VectorMemoryStore(db_path=resolve_store_path(store_name))
-        target.init()
+        target = open_member_database(
+            resolve_store_path(store_name), member_id="alice", store_id=store_name
+        )
         try:
             assert target.algorithm_version == "v2"
         finally:
@@ -552,7 +557,7 @@ class TestImportWritesToTheStoreItWasGiven:
         dump = tmp_path / "rows.json"
         dump.write_text(json.dumps({"semantic": [{"key": _BETA_KEY, "value": "x"}]}), "utf-8")
         cc._memory_cmd(_ns(mem_action="import", file=str(dump), store="nosuchstore"))
-        assert "is not declared" in capsys.readouterr().out
+        assert "is unavailable" in capsys.readouterr().out
         # The degraded resolution's target, checked explicitly: a refusal that
         # still wrote would have put the row here.
         assert _semantic_keys(DEFAULT_MEMORY_STORE) == [_GLOBAL_KEY]
@@ -683,7 +688,7 @@ class TestCarveTakesTheSameAdmission:
         shutil.rmtree(db_path.parent)
 
         self._carve(_ACME)
-        assert "is missing or unreadable" in capsys.readouterr().out
+        assert "is missing" in capsys.readouterr().out
         # The recreation is the harm, asserted directly rather than inferred.
         assert not db_path.parent.exists()
 

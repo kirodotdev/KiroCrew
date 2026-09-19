@@ -42,6 +42,7 @@ from kiro_crew.agent_sdk.drivers.acp_vocab import (  # noqa: F401 - STOP_* resol
 from kiro_crew.executors import run_in_embed_pool
 
 if TYPE_CHECKING:
+    from kiro_crew.execution_context import ExecutionContext
     from kiro_crew.acp.runtime import AcpRuntime
     from kiro_crew.providers.base import LLMProvider
 
@@ -1422,6 +1423,7 @@ class SubagentInfo:
     # crew reads the global store, which is what every spawn did before crews
     # had silos.
     memory_store: str = ""
+    execution_context: ExecutionContext | None = field(default=None, kw_only=True)
     # A named member remains the conversation owner during a template override.
     crew: str = field(default="", kw_only=True)
     # Session key override for continuation runs: a spawn_continue run reuses
@@ -2586,6 +2588,8 @@ class SubagentManager:
         _child_registration: bool = True,
         *,
         crew: str = "",
+        target_member: str | None = None,
+        _execution_context: dict | None = None,
     ) -> SubagentInfo | None:
         result = self._admission.spawn_impl(
             task,
@@ -2619,6 +2623,8 @@ class SubagentManager:
             _window_hint=_window_hint,
             _child_registration=_child_registration,
             crew=crew,
+            target_member=target_member,
+            _execution_context=_execution_context,
         )
         assert not isinstance(result, PreparedSpawn)
         # ``ClaimPoint`` comes back ONLY for ``_stop_before_claim=True``, whose
@@ -2647,6 +2653,81 @@ class SubagentManager:
         lock wait never blocks the loop, and the caller is still acked only
         once the row exists. Without a durable store this is plain ``spawn``.
         """
+        # Snapshot loop-owned policy inputs before reading a missing durable
+        # carrier. The admission gate below still runs on-loop after the await.
+        if (
+            not isinstance(task, str)
+            or not task.strip()
+            or getattr(self._sessions, "admission_closed", False) is True
+        ):
+            return self.spawn(task, **kwargs)
+        if kwargs.get("_execution_context") is None:
+            from kiro_crew.execution_context import read_session_execution
+            from kiro_crew.subagent_persistence import read_run_execution
+
+            parent = str(kwargs.get("parent_session_key") or "")
+            conversation = str(kwargs.get("conversation_key") or "")
+            mode = kwargs.get("_memory_mode")
+            inherited = None
+            try:
+                if mode is None:
+                    resolver = self._memory_mode_for_session
+                    mode = resolver(parent) if resolver is not None else "persistent"
+                if not isinstance(mode, str) or mode not in {
+                    "persistent",
+                    "incognito",
+                    "temporary",
+                }:
+                    raise ValueError("unknown memory mode")
+                if parent and not kwargs.get("agent") and not conversation:
+                    inherited = self._sessions.get_agent_selection(parent)
+                record_id = (conversation or parent).removeprefix("subagent:")
+                live = (
+                    self._agents.get(record_id)
+                    if (conversation or parent).startswith("subagent:")
+                    else None
+                )
+                record = live.execution_context if live is not None else None
+                if record is None:
+                    record = (
+                        await asyncio.to_thread(read_run_execution, record_id)
+                        if conversation
+                        else await asyncio.to_thread(read_session_execution, parent)
+                    )
+                execution = self._admission.resolve_spawn_execution(
+                    parent_session_key=parent,
+                    conversation_key=conversation,
+                    agent=kwargs.get("agent", ""),
+                    memory_store=kwargs.get("memory_store", ""),
+                    app=kwargs.get("app", ""),
+                    crew=kwargs.get("crew", ""),
+                    target_member=kwargs.get("target_member"),
+                    _memory_mode=mode,
+                    _record=record,
+                    _inherited_selection=inherited,
+                )
+                kwargs["_execution_context"] = execution.to_record()
+                kwargs["_memory_mode"] = execution.memory_mode
+            except (OSError, ValueError) as exc:
+                batch_id = str(kwargs.get("batch_id") or "")
+                batch_total = max(0, int(kwargs.get("batch_total") or 0))
+                if batch_id and not kwargs.get("_from_queue") and not kwargs.get("_store_accepted"):
+                    submitted = self._batch_submitted.setdefault(batch_id, [0, batch_total])
+                    submitted[0] += 1
+                    self._batch_progress_ts[batch_id] = time.time()
+                return self._announce_rejection(
+                    SubagentInfo(
+                        id=kwargs.get("_preassigned_id") or uuid.uuid4().hex[:8],
+                        task=_redact(task),
+                        parent_session_key=parent,
+                        agent=str(kwargs.get("agent") or ""),
+                        memory_mode=mode if isinstance(mode, str) else "persistent",
+                        done=True,
+                        error=f"memory_unavailable: {exc}",
+                        batch_id=batch_id,
+                        batch_total=batch_total,
+                    )
+                )
         store = self._admission.taskq_store()
         if store is None:
             return self.spawn(task, **kwargs)
@@ -2819,6 +2900,9 @@ class SubagentManager:
         _preassigned_id: str = "",
         _memory_mode: str | None = None,
         _crew_log_asked: "tuple[str, int] | None" = None,
+        *,
+        _execution_context=None,
+        _captured_state=...,
     ) -> "SubagentInfo | dict[str, Any] | None":
         return self._continuation._continue_prelude_impl(
             conv_id,
@@ -2831,6 +2915,8 @@ class SubagentManager:
             _preassigned_id,
             _memory_mode,
             _crew_log_asked,
+            _execution_context=_execution_context,
+            _captured_state=_captured_state,
         )
 
     def recorded_cwd(self, conv_id: str) -> str:

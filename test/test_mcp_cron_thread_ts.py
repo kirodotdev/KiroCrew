@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from kiro_crew.cron import CronSchedule, CronService
-from kiro_crew.mcp_cron import _call_tool, _call_tool_inner
+from kiro_crew.mcp_cron import _call_tool_inner, _call_tool_locally
 from kiro_crew.validation import (
     CRON_ADD_SCHEMA,
     MCP_CRON_SCHEMAS,
@@ -46,7 +46,7 @@ class TestCronAddThreadTs:
                 },
             )()
             mock_svc.add_job.return_value = mock_job
-            result = _call_tool(
+            result = _call_tool_locally(
                 "cron_add",
                 {
                     "name": "ops",
@@ -81,7 +81,7 @@ class TestCronAddThreadTs:
                 },
             )()
             mock_svc.add_job.return_value = mock_job
-            result = _call_tool(
+            result = _call_tool_locally(
                 "cron_add",
                 {"name": "ops", "message": "check", "every": 300},
             )
@@ -118,7 +118,7 @@ class TestCronUpdateThreadTs:
             fake_job.session_key = named_cron_caller
             mock_svc.get_job.return_value = fake_job
             mock_svc.update_job.return_value = fake_job
-            result = _call_tool(
+            result = _call_tool_locally(
                 "cron_update",
                 {"job_id": "abc", "thread_ts": "1776298241.408339"},
             )

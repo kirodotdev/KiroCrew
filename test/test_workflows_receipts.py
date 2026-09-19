@@ -9,7 +9,7 @@ from test_workflows_private_execution import world as _world
 from kiro_crew.acp.types import EVENT_COMPACTION_STATUS, EVENT_COMPLETE, EVENT_TEXT_CHUNK
 from kiro_crew.dashboard.workflow_inject import inject_bound_workflow_result
 from kiro_crew.providers.base import LLMEvent, LLMProvider
-from kiro_crew.workflow_memory import WorkflowMemoryError, WorkflowScope, authorize_run
+from kiro_crew.workflow_memory import WorkflowScope, authorize_run
 
 world = _world
 
@@ -124,13 +124,17 @@ async def test_workflow_receipt_requires_productive_raw_success(world, mode):
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("marker", [None, 0, False])
-async def test_mutated_snapshot_cannot_skip_private_delivery_guard(world, marker):
+@pytest.mark.parametrize("carrier", [None, {}, {"member_id": 7}])
+async def test_malformed_member_snapshot_cannot_deliver_without_canonical_identity(world, carrier):
     scope = await WorkflowScope.admit("wf_delivery", world.builder, "dashboard:alice")
-    snapshot = {"run_id": scope.run_id, "session_key": "dashboard:bob", "result": "private"}
-    if marker is not None:
-        snapshot["execution_binding_version"] = marker
-    # A legacy fallback would touch this state. Real protected scope must reject first.
+    snapshot = {
+        "run_id": scope.run_id,
+        "session_key": "dashboard:bob",
+        "result": "member result",
+        "memory_store": scope.store,
+        "execution_context": carrier,
+    }
+    # A malformed member carrier cannot become an ordinary Global result.
     assert not await inject_bound_workflow_result(SimpleNamespace(), scope.run_id, snapshot)
 
 
@@ -147,9 +151,20 @@ async def test_owner_can_cancel_unavailable_store_without_reading_it(world, monk
     await asyncio.to_thread(release_cached_memory_store, world.stores["alice"])
     path.unlink()
     assert not path.exists()
-    with pytest.raises(WorkflowMemoryError):
-        await authorize_run(scope.run_id, "", owner=True)
-    assert await authorize_run(scope.run_id, "", owner=True, require_active=False) == scope
+    from kiro_crew.workflows.registry import RunHandle
+
+    handle = RunHandle(
+        run_id=scope.run_id,
+        name="cancel",
+        session_key=scope.origin,
+        execution_context=scope.execution_context,
+    )
+    snapshot = handle.to_store_json()
+    assert await authorize_run(scope.run_id, "", owner=True, record=snapshot) == scope
+    assert (
+        await authorize_run(scope.run_id, "", owner=True, require_active=False, record=snapshot)
+        == scope
+    )
     called = []
 
     async def cancel(run_id):
@@ -158,7 +173,7 @@ async def test_owner_can_cancel_unavailable_store_without_reading_it(world, monk
 
     state = SimpleNamespace(
         workflow_service=SimpleNamespace(
-            registry=SimpleNamespace(get=lambda _: SimpleNamespace(execution_binding_version=1)),
+            registry=SimpleNamespace(get=lambda _: handle),
             cancel=cancel,
         )
     )

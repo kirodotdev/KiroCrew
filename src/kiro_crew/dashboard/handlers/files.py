@@ -2116,8 +2116,7 @@ async def api_workspaces_create(request: web.Request) -> web.Response:
         # same rule as the plain-create directory: by the time this runs a
         # concurrent create can have adopted the directory and registered it
         # (EEXIST is accepted above), so deleting it is the unsafe option -- it
-        # would leave THAT workspace declared with no directory, the exact state
-        # the private-memory layout refuses on. A full copied tree with nothing
+        # would leave THAT workspace declared with no directory. A full copied tree with nothing
         # pointing at it is indistinguishable from a leak, so say where it is.
         # An uninstalled staging tree is residue nothing can have adopted; drop it
         # off the loop.
@@ -2236,13 +2235,9 @@ async def api_workspaces_update(request: web.Request) -> web.Response:
                     f"Directory '{body['dir']}' is already used by another workspace",
                     "workspace_dir_in_use",
                 )
-            # Same materialize-or-refuse invariant the create path holds: the V2
-            # private-memory layout resolves EVERY declared workspace strictly, so
-            # rebinding to a path that is not a directory arms a refusal for every
-            # private member, including members bound to other workspaces. An
-            # update names a destination the owner already chose, so it refuses
-            # rather than creating one -- creating is the create path's job, and
-            # this transaction has no rollback for a directory it made.
+            # Publish only a usable workspace directory. An update names a
+            # destination the owner already chose; creating it belongs to the
+            # create path, which owns that directory's lifecycle.
             if not resolved.is_dir():
                 raise _WorkspaceConflict(
                     409,

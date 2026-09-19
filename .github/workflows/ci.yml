@@ -1383,17 +1383,6 @@ jobs:
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_runner.py \
             src/kiro_crew/apps/builtins/auto_improvement/tests/test_perf_track_propose.py
 
-      - name: Require real Linux private-memory enforcement
-        run: |
-          set -o pipefail
-          pytest -v -n0 --no-cov --timeout=120 \
-            "test/test_member_memory_filesystem.py::test_kernel_hides_replaced_and_future_global_memory_preserving_live_runtime_and_code" \
-            | tee member-memory-linux-canary.log
-          grep -q "2 passed" member-memory-linux-canary.log || {
-            echo "::error::Linux V1 and private-memory canaries must both PASS (no skips)"
-            exit 1
-          }
-
       - name: Require real V1 vector acceleration regressions
         timeout-minutes: 5
         # Keep optional accelerator dependencies out of the base shards and

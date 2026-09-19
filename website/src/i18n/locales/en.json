@@ -6813,7 +6813,6 @@
       "agents": "Agents",
       "also_used_by_these_crews": "Also used by {{crews}}. Agents that share a store can read each other’s files and memory.",
       "bindings_preview_info": "Memory V2 follows the member through private chats, Crew delegation, scheduled work and restart. Starting knowledge is copied only when you select it.",
-      "bindings_preview_notice": "New members get private Memory V2. Existing members keep their configured Memory V1 until you choose Create private memory for them.",
       "cancel": "Cancel",
       "copy_from_optional": "Copy from (optional)",
       "copy_from_workspace": "Copy from workspace",

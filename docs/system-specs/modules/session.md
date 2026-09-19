@@ -61,12 +61,7 @@ state are composed behind that facade:
 - `session_lifecycle.py` — refresh/reload, reset/remove/destroy/discard,
   identity retirement, stop, drain, and close ordering
 - `session_cleanup.py` — cleanup-task state, watchdog hooks, idle/RSS/stuck-turn
-  policy, and process/filesystem sweeps. Its existing maintenance tick advances
-  a bounded canonical member-process record scan independently of txt mappings;
-  the streaming cursor is closed at exhaustion or cleanup-loop shutdown. On
-  cancellation, repeated requests remain shielded until the executor settles;
-  cleanup then closes the returned cursor once and propagates cancellation. See
-  [security](security.md) for the shared publication/reclamation lock contract.
+  policy, and process/filesystem sweeps
 
 A dashboard slot bound to a remote crew keeps one memory boundary on both sides.
 `remote_relay.create_peer_slot()` always includes the validated `memory_mode` in
@@ -88,194 +83,69 @@ tests have moved off the corresponding legacy seam.
 
 ## Agent selection provenance
 
-A dashboard conversation records whether its agent name selected a provider
-template or a configured member. Discovery may later import that template as a
-same-named private member; this does not change the existing conversation's
-namespace. `session_agent_selection.py` persists the validated choice by exact
-effective session key under
-`member-memory-bindings/agent-selections/<sha256-key>.json`, inside the existing
-sandbox-readonly directory. Owner creation and authorized explicit agent
-selection record the choice, and a validated dispatch records it before provider
-allocation. There is one small selection record per effective conversation key,
-not per turn. Closing a slot does not remove it: saved history can reopen that
-conversation after restart. Records currently persist after transcript deletion
-too; history deletion has no tombstone that retires the key or fences delayed
-saves. Selection retention follows the existing protected identity lifetime,
-rather than treating removal of an editable transcript as revocation of identity.
-A permitted non-owner dashboard caller may select a provider
-template or an existing V1 member, including the default assistant. A private V2
-member choice requires the owner and is refused before provider reset or history
-mutation. Non-owner resolution retains the namespace it first resolved, even if
-discovery imports a same-named member during the request; a V1-to-V2 change during
-resolution is refused too. A non-owner choice cannot authorize private admission
-on a later turn, which still requires an existing protected private assignment.
-Selecting the default assistant resolves and publishes its choice just like a
-named selection. If lookup fails or returns an unresolved name for a conversation
-with a protected choice, the endpoint retains the old agent and returns 503
-before provider reset or metadata writes. A cancelled lookup restores only its
-own provisional agent value. Legacy conversations without a protected choice
-retain their existing unresolved-lookup behavior.
-Resolution captures the current record revision, including an absent record.
-Automatic publication compares that observation under the writer lock and
-refuses a changed selection; a same-value publication is a no-op. An owner
-choice of another agent or namespace therefore survives an obsolete prewarm or
-turn, including a writer thread that finishes after cancellation.
-If an owner switch loses its slot or session during publication, rollback
-restores only that request's record; a later successful selection keeps its win.
-Rebound responses keep the `session_rebound` code and tell the user to retry
-saving the member assignment or agent selection.
-Owner creation and selection drain their publication and rollback threads before
-honoring cancellation. Owner slot creation takes the slot lock before its first
-post-mint await and the session lock for selection publication, in the same order
-as an explicit switch. A delayed template create therefore cannot overwrite a
-later same-name member choice. Creation still explicitly replaces an existing
-protected history selection after the private-memory checks succeed. Protected
-rollback compares the published revision so it cannot erase a later choice.
-Before allocating a new local owner conversation, creation gives gateway memory
-recovery the same bounded grace period as first-turn admission. This applies to
-the default assistant too: binding resolution checks its memory readiness.
-Timeout or recovery failure returns `503 store_unavailable` before allocating a
-slot or publishing identity. The shared recovery task survives request cancellation.
-An explicit switch holds its slot and session locks through cleanup, restores its
-slot fields, and drains protected selection and history rollback as one sequence.
-If the first private-memory grant for an empty owner chat fails after selection
-publication, the same rollback restores all three records before releasing the locks.
-Repeated cancellation during publication or rebound/error cleanup cannot skip
-history restoration or leave a rollback writer running after the handler exits.
-The transcript agent write must succeed before an explicit switch publishes its
-protected selection. A failed write restores request-owned slot fields, attempts
-to restore the transcript and returns 503 without publishing a new selection.
-Cancellation drains the transcript writer and its rollback, including a rollback
-for a rebound session, before releasing the switch locks. If history restoration
-itself fails, recent-session restore, explicit resume and dormant-slot rehydration
-recover the agent from the existing protected selection. The transcript's
-provisional name cannot replace that committed choice. Async restoration fetches
-the protected name off-loop with its other disk inputs; slot mutation remains on
-the event loop. This read grants no private-memory admission and does not change
-the protected record.
+Each session owns one canonical `execution_context` in its ordinary metadata.
+The frozen record binds `member_id` (or explicit Global/V1), `MemoryStoreRef`,
+member/template namespace, provider template, privacy mode and app attribution.
+A configured member has an immutable persisted ID independent of its editable
+label. Templates, projects and display names cannot select member memory.
+Discovery of a same-named member cannot reinterpret an existing template session.
+Resolved dispatch bindings use the canonical `default` name for Global memory,
+including when restored from a captured execution record. Equivalent aliases
+therefore compare equally without changing the selected conversation identity.
 
-Real turns, completion callbacks and eager allocation resolve in that recorded
-namespace. Template allocations pass an explicit empty `crew_agent` through both
-eager and real turns, so capability preparation cannot substitute the default
-member's generation. Member allocations keep their canonical member claim.
-`SessionManager.get_agent_selection(key)` snapshots that allocation-owned
-namespace and name for child inheritance. It returns the captured member alias
-even before capability enrollment, or the literal template for a non-member
-allocation. An absent parent retains the default template; malformed live
-selection state refuses inheritance. Roster changes cannot change this snapshot.
-Templates must still exist, and a recorded member cannot fall back
-to a same-named template after removal. Default-model resolution uses the same
-namespace. The record grants no private-memory authority; all protected store,
-native-context and restored-history checks below still apply. In particular,
-reselecting a private member does not migrate an existing V1 conversation.
-The explicit empty crew claim also excludes a same-named member's model pin.
-A literal template keeps its own model pin or the global fallback; an explicit
-caller model still wins. Legacy callers without a crew claim retain their
-crew-name inference.
+Admission captures the record before asynchronous work and passes it directly to
+provider allocation and prompt construction. Automatic selection publication
+compares the captured record; an explicit concurrent choice wins over delayed
+preparation. Rollback compares only the record this operation published, including
+live restricted-session records. Slot/session locks, drained cancellation,
+ordinary owner/app permissions and governance remain in force. A malformed or
+missing member carrier reports memory unavailable and never chooses Global.
+Existing ordinary V1 sessions retain their V1 behavior; old V2 grants are not
+migrated or used as a second authority.
 
-Missing provenance retains legacy resolution, never infers a template from
-an absent private binding. An unreadable or invalid record refuses allocation.
-Live agent names that conflict with an existing protected record refuse
-allocation. History restoration instead uses the protected name, so a crash
-between an explicit switch's history and selection writes retains the last
-committed choice. A missing protected record keeps the strict legacy path; an
-unreadable record cannot authorize execution. A live provider
-switch publishes its validated template selection, with the current revision
-check, before changing the slot name that history saves. That event can select a
-new template; a restored transcript alone cannot authorize the same change.
-A cancelled provider switch drains its publication thread before restoring the
-exact selection revision it wrote. A failed post-publication slot or binding
-check uses the same rollback. Repeated cancellation cannot abandon publication
-or rollback, and rollback cannot replace a later owner's selection. The slot
-name changes only after publication and binding checks succeed.
-An already ambiguous legacy conversation therefore still needs an explicit
-owner choice or a new conversation.
+Persistent sessions serialize this record in their existing owner metadata.
+Incognito and Temporary sessions keep it in live session state and suppress
+Crew transcript/body persistence. Incognito may read memory; Temporary does not.
+Both refuse learned-memory writes. Children inherit the strictest admitted mode,
+even after a parent closes; replacing a parent cannot broaden their policy.
+If an existing persistent session becomes restricted, its existing owner record
+atomically tightens only retention metadata. No restricted body is added or
+rewritten, and restart cannot recover a weaker mode. A new restricted session
+does not create a durable owner record.
+
+Tab close and idle archival snapshot the live restricted identity before yielding;
+cleanup does not read durable session metadata. Tab close retires its nudge loop
+before other asynchronous work. After the last consumer and provider stop, cleanup
+releases only the captured identity, preserving any replacement session carrier.
 
 ## Private member session ownership
 
-Private essential-context receipts live on the serving provider, not the logical
-session key or shared ContextBuilder. Their identity includes the inner client,
-native session ID and existing `process_instance` token. Replacing a client or
-provider, including an in-place `_Session.adopt_provider`, cannot inherit an old
-receipt. Explicit compaction and in-stream compaction events invalidate receipts;
-a late terminal from the pre-compaction epoch cannot restore one. The existing
-member lifecycle decides forced refresh for fresh, resumed and reinjection turns.
-Private minimal sessions retain their own initial snapshot and receipt.
+The section name is retained for existing documentation links. Member memory is
+application routing, not a confidentiality boundary against arbitrary code under
+the same OS user. There is no separate protected session/run grant, memory PID
+ancestry database, member HMAC capability, namespace mount or Seatbelt memory rule.
+Ordinary transport authentication, owner/app permissions, audit integrity,
+credential redaction and the host sandbox remain independent requirements.
 
+The member and store in an admitted session stay fixed. An explicit provider
+switch may change a template only through the session selection path; it cannot
+select another member store. A new member choice opens a new conversation where
+required by the dashboard ownership contract. Restoring history restores its
+canonical record, rather than resolving the latest display alias or project.
+Cron, workflow and subagent owners carry the same record in their own durable
+state so they do not depend on the lifetime of an originating chat.
 
-An ordinary dashboard chat that has already used private member memory keeps
-that ownership for its lifetime. The agent-switch endpoint reads the protected
-binding for the effective session key before changing any slot fields, resetting
-the provider or writing history. Choosing another member (including the default
-assistant) returns `409 private_memory_session_pinned` and asks the owner to start
-a new conversation. An unreadable binding returns 503; resetting the same member
-and switching an unbound V1 conversation keep their existing behavior.
+Permanent rules, briefing and profile documents are read directly using stable
+member identity. They remain available when the learned database is unavailable.
+Normal member prompts do not inject learned/core rows; explicit recall reports
+an unavailable or mismatched database without falling back to Global.
 
-The provider's in-turn agent-switch event follows the same private boundary in
-every dashboard slot mode. Before provider allocation, the runner validates the
-store off the event loop and freezes its V2 owner from the memory version and
-ownership record. Database schema migrations do not identify a V2 turn. Any
-provider-reported switch on that private turn leaves the selected member intact,
-shows a pinned-member notice, stops consuming further events and resets the
-provider. The notice prevents an empty-response retry from replaying completed
-tool actions. Ordinary unbound V1 chats retain their agent-switch behavior.
-
-Member chat turns validate the member's private memory before provider
-allocation and persist the binding used by memory tools and consolidation.
-Binding resolution runs off-loop using captured member, project and session
-selections. The runner rechecks those fields before private binding and again
-before provider allocation; a changed or replaced slot refuses. Owner
-create/switch paths recheck slot identity after resolution;
-switches retain their commit-token rollback and last pre-reset busy checks. This
-does not allow a protected session key to acquire a different member's store.
-History can restore a displayed agent and recorded store, but cannot grant a
-new private assignment. Recent-session restore, explicit resume, dormant-slot
-rehydration and channel surfacing require an existing protected session binding
-before a V2 turn. This also applies when an empty historical agent now resolves
-to a private configured default. An unresolved member, changed binding or
-unreadable private store surfaces an error instead of borrowing Global Memory V1.
-
-An owner creating a private chat pins the selected member before saving history.
-Authorized `session_create` dispatch does the same before its birth metadata is
-written, so the new worker can start and resume with its protected assignment.
-It also publishes the template/member namespace captured during resolution;
-discovery before the first send cannot turn that template into a private member.
-Publication compares the protected selection revision and cannot replace a newer
-owner choice. Birth writes drain before cancellation is honored. A successful
-write keeps its slot even if the request was cancelled; a failed write retracts
-only an idle, empty slot still owned by that request. Protected identity records
-remain pinned after a history failure: the slot was already addressable, so a
-concurrent turn may have consumed that authority. The private assignment continues
-to reject Global or another member on that key, including after restart.
-The creation path still refuses pre-existing unverified history or native
-context; it cannot adopt an old conversation by writing a member name into it.
-Private callers remain excluded from the owner's session-control routes.
-Opening a member from Members can pin its canonical session after positive owner
-authorization. A linked-session conflict and a live thread's private-memory
-assignment mismatch retain the same refusal code but name their distinct causes;
-running alone is not a refusal reason. A transcript's linked key and the legacy DM binding file cannot
-authorize another session; a colliding member slug needs an existing protected
-match. Uninitialized legacy members remain openable for explicit initialization.
-An explicit owner agent choice on an unbound restored ordinary chat admits its
-next turn only after the existing switch rollback checks succeed. Restarting
-before that turn requires the owner to choose again. Internal callers and
-restored metadata cannot perform that admission.
-
-Cron tabs require the protected assignment published by private cron dispatch.
-A legacy job's provider-template alias cannot become a private member on a
-dashboard follow-up; if it resolves to V2 without that assignment, the turn
-refuses and explains how the owner can select a member explicitly.
-
-Speculative eager allocation stops for every private V2 binding, including
-resume prefetch. The actual turn verifies the protected binding and persists
-the slot before provider allocation.
-It also stops when an explicitly selected member is unresolved, when a restored
-store disagrees with the current resolver, or when its declaration is
-unavailable or inconsistent, and leaves the user-facing explanation to that
-turn. Global Memory V1 and a valid named V1 declaration retain speculative
-eager allocation. Store identity is part of the eager binding snapshot, and
-slot replacement, a running real turn or any binding change after an awaited
-lookup makes the eager task stand down before allocation.
+Essential-context receipts belong to the serving provider, not a shared builder
+or logical key. Inner client, native session ID and process-instance identity
+prevent replacement providers from inheriting receipts. Compaction invalidates
+receipts and late pre-compaction completions cannot restore them. Fresh/resumed
+member lifecycle rules still control reinjection. Member prompt documents are
+prepared before process launch; a warm runtime prepared without them is bypassed.
 
 ## Member capability generations
 
@@ -283,7 +153,7 @@ Enrolled members prepare capabilities only when allocating a new runtime.
 `session_capabilities.prepare_runtime` reconciles ordinary Parent updates and
 verifies the saved materialization off-loop before provider construction. It
 passes the immutable template explicitly while preserving the canonical member,
-private memory binding, history key, caller model and approval policy. An explicit
+member memory binding, history key, caller model and approval policy. An explicit
 or resumed cwd wins; otherwise the member's configured workspace is used. A cwd
 that disagrees with the saved Parent identity refuses startup.
 When no caller model is supplied, allocation resolves the member's model pin by
@@ -2373,31 +2243,13 @@ a trust root on its own; publication therefore also writes a
   graceful-shutdown sweep asks for the narrowing. This pass touches only the
   `session_pid_<pid>` family, never the shared `kiro_session_pids.txt` that
   pass 1 rewrites.
-- **Private member API authority**: the trusted publisher also writes the live
-  private process incarnation, session and immutable target store to
-  `member-memory-bindings/pids/<pid>.json`, under the precreated sandbox-readonly
-  root. Private V2 recall, lesson writes, and consolidation require a positive
-  kernel peer/ancestor match to this record, or a live-process-bound delegated proof
-  issued by the trusted MCP gateway after the same check. The shared internal
-  secret and legacy writable sidecars alone grant no private member authority.
-  A rekey, recycled process, unreadable record, or expired proof refuses the
-  request. Proof signing material is under the sandbox-hidden `memory_stores`
-  root; pooled backends receive proof only in the current call's trusted metadata.
-  Global V1 publication leaves no private PID binding, preserving shared V1 tab
-  behavior. A private session's first trusted preparation additionally pins
-  `member-memory-bindings/sessions/<sha256-key>/memory.json`; later metadata must
-  agree, including after restart. Neither erasing the metadata nor changing it
-  to another store can change this permanent private identity.
-- **Private runtime allocation**: every allocation resolves that trusted binding
-  off the event loop before reusing a provider or claiming a warm process. Private
-  cron, consolidation, delegated and interactive sessions bypass the V1 warm pool
-  and cannot share an ACP runtime. A task with a private parent or target uses its
-  own provider; a private parent with an unbound child refuses execution until the
-  child's trusted memory binding is established. An already-live provider whose isolation differs from its binding
-  is explicitly refused until the session is restarted. Global V1 allocation and
-  sharing stay unchanged. MCP caller discovery checks protected process ancestry
-  before cached identity, environment or legacy sidecars; a malformed protected
-  record remains unresolved and never falls back to those legacy sources.
+- **Member execution routing**: the ordinary session/run owner record carries
+  the immutable member/store snapshot. Strict MCP caller identity still uses
+  the existing transport token and signed `session_pid` publication. No separate
+  member PID publication, process ancestry scan, or member proof token exists.
+  Providers receive the admitted privacy mode before startup; restricted workers
+  do not retain Crew native-transcript copies or raw-frame logs. External engine
+  retention follows that provider's own supported behavior.
 - **Threat model** (full version in the `session_pid_sig.py` module
   docstring): file forgery, cross-pid replay, tampering, and symlink
   planting are blocked; deliberate same-uid impersonation via

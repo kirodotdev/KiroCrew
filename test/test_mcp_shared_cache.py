@@ -75,10 +75,7 @@ def _make_http_error(code: int) -> urllib.error.HTTPError:
 def patch_session_setup(monkeypatch, tmp_path):
     """Patch the gateway-config plumbing so the resolver only depends on
     what the test wants to exercise."""
-    cfg = MagicMock()
-    cfg.dashboard.url = "http://localhost:5476/"
-    monkeypatch.setattr(mcp_shared.KiroCrewConfig, "load", classmethod(lambda cls: cfg))
-    monkeypatch.setattr(mcp_shared, "parse_dashboard_url", lambda url: ("localhost", 5476))
+    monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
     # Provide a writeable config_dir() with a .local_secret.
     monkeypatch.setattr(mcp_shared, "config_dir", lambda: tmp_path)
     (tmp_path / ".local_secret").write_text("test-secret")
@@ -90,6 +87,30 @@ def patch_session_setup(monkeypatch, tmp_path):
 # ─────────────────────────────────────────────────────────────────────
 
 class TestSuccessCaching:
+    @pytest.mark.parametrize("explicit_port", [None, "49876"])
+    def test_policy_target_and_secret_follow_bound_client_port(
+        self, fake_sel, patch_session_setup, monkeypatch, explicit_port
+    ):
+        from kiro_crew.port_resolution import resolve_client_port_src
+
+        monkeypatch.setattr(mcp_shared, "resolve_client_port_src", resolve_client_port_src)
+        monkeypatch.setenv("KIROCREW_BOUND_PORT", "49213")
+        monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:port-test")
+        if explicit_port is None:
+            monkeypatch.delenv("KIROCREW_PORT", raising=False)
+        else:
+            monkeypatch.setenv("KIROCREW_PORT", explicit_port)
+        expected_port = int(explicit_port or "49213")
+        secret = MagicMock(return_value="synthetic-bound-secret")
+        monkeypatch.setattr(mcp_shared, "read_local_secret", secret)
+        urlopen = MagicMock(return_value=_make_http_response({"exclude": ["blocked"]}))
+        monkeypatch.setattr(mcp_shared, "loopback_urlopen", urlopen)
+        assert mcp_shared._resolve_excluded_tools() == {"blocked"}
+        request = urlopen.call_args.args[0]
+        assert request.full_url == f"http://localhost:{expected_port}/api/session-tool-policy"
+        assert request.get_header("X-internal-secret") == "synthetic-bound-secret"
+        secret.assert_called_once_with(expected_port)
+
     def test_first_call_queries_gateway_then_caches(
         self, fake_sel, patch_session_setup, monkeypatch
     ):

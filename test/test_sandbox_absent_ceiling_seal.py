@@ -96,25 +96,27 @@ def _run_seal_loop(targets: list[str]) -> list[tuple[str, int]]:
 
 
 @_POSIX_ONLY
-def test_member_run_identity_is_sealed_before_any_run_exists(crew_home):
-    target = crew_home / "member-memory-bindings"
+@pytest.mark.parametrize("leaf", ("subagents", "member-memory-bindings"))
+def test_run_authority_root_is_sealed_before_its_first_record(crew_home, leaf):
+    target = crew_home / leaf
     assert not target.exists()
     sandbox._materialize_sealable_ceilings()
     assert target.is_dir()
-    calls = _run_seal_loop([str(target)])
-    assert (str(target), _MS_BIND) in calls
-    assert (str(target), _MS_REMOUNT | _MS_BIND | _MS_RDONLY) in calls
+    assert list(target.iterdir()) == []
+    assert _run_seal_loop([str(target)]) == [
+        (str(target), _MS_BIND),
+        (str(target), _MS_REMOUNT | _MS_BIND | _MS_RDONLY),
+    ]
 
 
 @_POSIX_ONLY
-def test_private_memory_root_is_maskable_before_the_first_member_exists(crew_home):
+def test_member_memory_is_not_an_os_hidden_root(crew_home):
     target = crew_home / "memory_stores"
     assert not target.exists()
     sandbox.namespace_argv(["/bin/true"])
-    assert target.is_dir()
     script = sandbox._build_launcher_script("standard")
     match = re.search(r"SENSITIVE_DIRS = (\[.*?\])\n", script, re.S)
-    assert match and str(target) in json.loads(match.group(1))
+    assert match and str(target) not in json.loads(match.group(1))
 
 
 @_POSIX_ONLY
@@ -313,7 +315,7 @@ class TestAnUnsealedCeilingIsNeverSilent:
                 sandbox._materialize_sealable_ceilings()
 
         assert "REFUSING to launch" in caplog.text
-        assert "profiles" in caplog.text
+        assert sandbox._CREW_PRECREATE_READONLY_DIR_LEAVES[0] in caplog.text
 
     def test_failed_publish_warns(self, crew_home, monkeypatch, caplog):
         monkeypatch.setattr(
@@ -494,10 +496,11 @@ class TestADanglingSymlinkRefusesTheSpawn:
 
 @_POSIX_ONLY
 class TestGatewayLauncherDirectoryNeedsARealLeaf:
-    def test_a_resolving_symlink_refuses_the_spawn(self, crew_home, tmp_path):
+    @pytest.mark.parametrize("leaf", ("playwright-cli", "subagents", "member-memory-bindings"))
+    def test_a_resolving_symlink_refuses_the_spawn(self, crew_home, tmp_path, leaf):
         real = tmp_path / "attacker-controlled"
         real.mkdir()
-        target = crew_home / "playwright-cli"
+        target = crew_home / leaf
         target.symlink_to(real, target_is_directory=True)
 
         with pytest.raises(sandbox.SandboxCeilingUnsealable):

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, screen, waitFor, within } from '@testing-library/react'
+import { fireEvent, screen, waitFor } from '@testing-library/react'
 import { renderWithProviders } from './helpers'
 import { MemoryStoreField, memberMemoryState } from '../pages/KiroCrewAgentsPage'
 import JobForm from '../components/JobForm'
@@ -35,32 +35,16 @@ describe('private member memory controls', () => {
 
   it('creates private memory automatically without a store picker', () => {
     renderWithProviders(<MemoryStoreField />)
-    expect(screen.getByText(/own empty private memory/i)).toBeInTheDocument()
+    expect(screen.getByText(/empty member memory/i)).toBeInTheDocument()
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
   })
 
-  it('keeps a legacy member on usable V1 until its owner confirms creating V2', async () => {
-    const initialize = vi.fn()
-    renderWithProviders(<MemoryStoreField member="reviewer" value="default" memoryState="legacy" onInitialize={initialize} />)
+  it('keeps existing V1 memory without offering database creation', () => {
+    renderWithProviders(<MemoryStoreField member="reviewer" value="default" memoryState="legacy" />)
     expect(screen.getByText('default', { exact: true })).toBeVisible()
-    const hint = screen.getByText(/This member uses its current memory \(V1\)\./)
-    expect(hint).toHaveTextContent(/^This member uses its current memory \(V1\)\.$/)
-    expect(screen.queryByText(/This member cannot return to its previous memory/)).toBeNull()
-    expect(initialize).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Create private memory', exact: true }))
-    const confirmation = await screen.findByRole('dialog', { name: 'Create private memory' })
-    await waitFor(() => expect(within(confirmation).getByText(/This member cannot return to its previous memory/)).toBeVisible())
-    expect(confirmation).toHaveTextContent('Private memory (V2) starts empty in a new chat')
-    expect(confirmation).toHaveTextContent('Existing data and chats stay')
-    expect(initialize).not.toHaveBeenCalled()
-    fireEvent.keyDown(document, { key: 'Escape' })
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create private memory' })).toBeNull())
-    expect(initialize).not.toHaveBeenCalled()
-    fireEvent.click(screen.getByRole('button', { name: 'Create private memory', exact: true }))
-    const reopened = await screen.findByRole('dialog', { name: 'Create private memory' })
-    fireEvent.click(within(reopened).getByRole('button', { name: 'Create private memory' }))
-    expect(initialize).toHaveBeenCalledOnce()
-    expect(screen.queryByRole('combobox')).not.toBeInTheDocument()
+    expect(screen.getByText(/^This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\.$/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Create.*memory/i })).toBeNull()
+    expect(screen.queryByRole('combobox')).toBeNull()
   })
 
   it('displays an immutable private identity and protects unsaved edits before navigation', () => {
@@ -75,38 +59,16 @@ describe('private member memory controls', () => {
     expect(manage).not.toHaveBeenCalled()
   })
 
-  it('drops an open confirmation when the member identity changes', async () => {
-    const initialize = vi.fn()
-    const view = renderWithProviders(<MemoryStoreField member="reviewer" value="default" memoryState="legacy" onInitialize={initialize} />)
-    fireEvent.click(screen.getByRole('button', { name: 'Create private memory' }))
-    await screen.findByRole('dialog', { name: 'Create private memory' })
-    view.rerender(<MemoryStoreField member="writer" value="default" memoryState="legacy" onInitialize={initialize} />)
-    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Create private memory' })).toBeNull())
-    expect(initialize).not.toHaveBeenCalled()
-    expect(screen.getByRole('button', { name: 'Create private memory' })).toBeEnabled()
-  })
-
-  it('announces only the private-memory request that is still in progress', () => {
-    const view = renderWithProviders(<MemoryStoreField member="reviewer" value="default" memoryState="legacy" onInitialize={() => {}} busy />)
-    expect(screen.queryByText('Creating private memory…')).toBeNull()
-    view.rerender(<MemoryStoreField member="reviewer" value="default" memoryState="legacy" onInitialize={() => {}} busy initializing />)
-    expect(screen.getByRole('status')).toHaveTextContent('Creating private memory…')
-    view.rerender(<MemoryStoreField member="reviewer" value="member-reviewer-123" memoryState="private" busy initializing />)
-    expect(screen.getByRole('status')).toHaveTextContent('Creating private memory…')
-    view.rerender(<MemoryStoreField member="writer" value="default" memoryState="legacy" onInitialize={() => {}} busy />)
-    expect(screen.queryByText('Creating private memory…')).toBeNull()
-  })
-
   it.each([
     ['unavailable', 'This member’s configured memory store is unavailable. Inspect the cause on the gateway: kirocrew doctor'],
     ['ownership_mismatch', 'This member’s configured memory store belongs to another member. It cannot be used here. Inspect the cause on the gateway: kirocrew doctor'],
   ] as const)('does not offer V1 creation or V2 management for an %s binding', (memoryState, reason) => {
-    renderWithProviders(<MemoryStoreField member="reviewer" value="missing-store" memoryState={memoryState} onInitialize={() => {}} onManage={() => {}} />)
+    renderWithProviders(<MemoryStoreField member="reviewer" value="missing-store" memoryState={memoryState} onManage={() => {}} />)
     expect(screen.getByText(reason, { exact: true })).toBeVisible()
     expect(screen.queryByText(/Open the crew manager/i)).toBeNull()
     expect(screen.queryByText(/unavailable or belongs/i)).toBeNull()
-    expect(screen.queryByText(/This member uses its current memory \(V1\)\./)).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Create private memory' })).toBeNull()
+    expect(screen.queryByText(/This member keeps its current memory \(V1\)\. Member memory \(V2\) is only available when creating a new crew member\./)).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Create member memory' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Manage memory' })).toBeNull()
   })
 })

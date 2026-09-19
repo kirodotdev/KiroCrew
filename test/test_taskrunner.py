@@ -212,9 +212,8 @@ class TestWorkflowRunIntegration:
     ) -> None:
         runner = TaskRunner(sessions=_make_mock_sessions(), auto_test=False, work_dir=tmp_path)
 
-        with patch(
-            "kiro_crew.context.inherit_session_memory",
-            AsyncMock(side_effect=asyncio.CancelledError()),
+        with patch.object(
+            runner, "_bind_run_execution", AsyncMock(side_effect=asyncio.CancelledError())
         ):
             with pytest.raises(asyncio.CancelledError):
                 await runner.plan("cancel during inherited memory")
@@ -1207,7 +1206,7 @@ class TestRun:
             work_dir=tmp_path,
         )
 
-        with patch.object(runner, "self_review", return_value=True):
+        with patch("kiro_crew.task_executor.self_review", return_value=True):
             result = await runner.run(spec)
 
         assert result.status == "completed"
@@ -3612,7 +3611,7 @@ class TestParallelGroups:
 
         runner = TaskRunner(sessions=sessions, auto_test=False, work_dir=tmp_path)
 
-        with patch.object(runner, "self_review", return_value=True):
+        with patch("kiro_crew.task_executor.self_review", return_value=True):
             result = await runner.run(spec)
 
         assert result.status == "completed"

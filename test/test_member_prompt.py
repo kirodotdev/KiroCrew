@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import threading
 import time
 from unittest.mock import patch
 
@@ -620,12 +621,20 @@ class TestMemberSectionInjection:
         assert "[MEMBER IDENTITY]" not in ctx
         assert "[HOW YOU WORK]" not in ctx
 
-    def test_unregistered_crew_still_gets_identity_floor(self, tmp_path):
-        """The auto floor is FOR the crew with no description — Grok Bot's
-        'General Assistant' failure mode is exactly what this covers."""
+    def test_unregistered_crew_refuses_but_configured_empty_description_keeps_floor(self, tmp_path):
+        from kiro_crew.memory_stores import UnknownMemoryStore
+
         with patch(
             "kiro_crew.context.KiroCrewConfig.load",
             return_value=_empty_config(),
+        ):
+            with pytest.raises(UnknownMemoryStore, match="member identity"):
+                _builder(tmp_path).build_session_context(
+                    session_key="dashboard:member-code-reviewer", agent=CREW, member=CREW
+                )
+        with patch(
+            "kiro_crew.context.KiroCrewConfig.load",
+            return_value=_fake_config(description="", triggers=""),
         ):
             ctx = _builder(tmp_path).build_session_context(
                 session_key="dashboard:member-code-reviewer", agent=CREW, member=CREW
@@ -638,7 +647,9 @@ class TestMemberSectionInjection:
         """slug_for_name falls back to the safe noun for unslugifiable names, so
         even a hostile member string resolves to a contained path — the block
         renders (identity floor) and no path escapes the members root."""
-        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=_empty_config()):
+        config = _empty_config()
+        config.agents["!!!"] = KiroCrewAgentConfig()
+        with patch("kiro_crew.context.KiroCrewConfig.load", return_value=config):
             ctx = _builder(tmp_path).build_session_context(
                 session_key="dashboard:member-x", agent=CREW, member="!!!"
             )
@@ -730,6 +741,27 @@ def _as_owner():
 
 
 class TestMemberRulesRoutes:
+    @pytest.mark.asyncio
+    async def test_rules_validation_reuses_config_loaded_off_loop(self, monkeypatch):
+        from kiro_crew.config.loader import KiroCrewConfig
+
+        cfg = _fake_config()
+        loop_thread = threading.get_ident()
+        loads = []
+
+        def load():
+            loads.append(threading.get_ident())
+            return cfg
+
+        monkeypatch.setattr(KiroCrewConfig, "load", load)
+        with _as_owner():
+            async with TestClient(TestServer(_make_rules_app())) as client:
+                response = await client.put(
+                    f"/api/members/{CREW}/rules", json={"member": CREW, "rules": "Be concise."}
+                )
+                assert response.status == 200
+        assert loads and loop_thread not in loads
+
     @pytest.mark.asyncio
     async def test_get_missing_rules_is_empty_not_404(self):
         async with TestClient(TestServer(_make_rules_app())) as client:

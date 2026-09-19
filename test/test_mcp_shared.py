@@ -517,6 +517,62 @@ class TestCallToolWithLoggingRedaction:
     artifact_delete_comment ``reason``) can't be persisted verbatim in the audit
     log even when the per-tool handler only scrubbed its own egress copy."""
 
+    @pytest.mark.parametrize("failure", ["", "validation", "execution"])
+    @pytest.mark.parametrize(
+        "tool",
+        [
+            "memory_recall",
+            "search_chat_history",
+            "learn_add",
+            "spawn_run",
+            "spawn_continue",
+            "spawn_steer",
+            "spawn_sub_agents",
+            "session_send",
+            "register_hook",
+            "task_run",
+            "workflow_author",
+            "workflow_run",
+            "workflow_rerun_subtree",
+            "cron_add",
+            "cron_update",
+        ],
+    )
+    def test_session_body_tools_audit_outcome_without_retaining_payload(self, failure, tool):
+        from kiro_crew.validation import ValidationError
+
+        captured = {}
+
+        class Audit:
+            def log_tool_invocation(self, **kwargs):
+                captured.update(kwargs)
+
+        query = "PERSONAL_QUERY_CANARY"
+
+        def validate(_name, raw):
+            if failure == "validation":
+                raise ValidationError(query, "invalid query field")
+            return raw
+
+        def recall(_name, _args):
+            return f"Error: {query}" if failure else "recalled context"
+
+        with patch.object(mcp_shared, "sel", return_value=Audit()):
+            result = mcp_shared.call_tool_with_logging(
+                tool,
+                {"query": query, "context_summary": query},
+                validate,
+                recall,
+                session_key="dashboard:alice",
+                downstream_service="kirocrew-core",
+            )
+
+        assert captured["tool_name"] == tool
+        assert captured["session_key"] == "dashboard:alice"
+        assert captured["outcome"] == ("failed" if failure else "completed")
+        assert query not in json.dumps(captured)
+        assert result.startswith("Error:") if failure else result == "recalled context"
+
     def test_args_redacted_before_sel_log(self):
         from kiro_crew.mcp_shared import call_tool_with_logging
 
@@ -840,68 +896,68 @@ class TestStdioLoopCallerIdentity:
     def setup_method(self):
         mcp_shared._use_content_length = False
 
-    def test_tool_policy_uses_only_the_current_request_proof(self, monkeypatch):
+    def test_tool_policy_uses_only_the_current_request_identity(self, monkeypatch):
         from kiro_crew.mcp_caller import CallerContext, build_caller_meta
 
         seen = []
         harness = _LoopHarness(monkeypatch, lambda _name, _args: "ok")
 
-        def policy(session="", *, member_memory_proof=""):
-            seen.append((session, member_memory_proof))
+        def policy(session=""):
+            seen.append(session)
             return mcp_shared.ToolPolicy(frozenset(), "")
 
         monkeypatch.setattr(mcp_shared, "_resolve_tool_policy", policy)
         try:
-            for req_id, method, session, proof in (
-                (1, "tools/list", "dashboard:alice", "alice.list-proof"),
-                (2, "tools/call", "dashboard:bob", "bob.call-proof"),
-                (3, "tools/list", "dashboard:global", ""),
+            for req_id, method, session in (
+                (1, "tools/list", "dashboard:alice"),
+                (2, "tools/call", "dashboard:bob"),
+                (3, "tools/list", "dashboard:global"),
             ):
                 msg = _tools_call(req_id, "echo")
                 msg["method"] = method
                 msg["params"]["_meta"] = build_caller_meta(
-                    CallerContext(session_key=session, from_gateway=True, member_memory_proof=proof)
+                    CallerContext(session_key=session, from_gateway=True)
                 )
                 harness.send(msg)
                 assert harness.wait_for(lambda: len(harness.responses) >= req_id)
             assert seen == [
-                ("dashboard:alice", "alice.list-proof"),
-                ("dashboard:bob", "bob.call-proof"),
-                ("dashboard:global", ""),
+                "dashboard:alice",
+                "dashboard:bob",
+                "dashboard:global",
             ]
         finally:
             harness.close()
 
     @pytest.mark.skipif(platform_compat.IS_WINDOWS, reason="select interleave uses a POSIX pipe")
-    def test_listing_while_busy_does_not_borrow_the_running_members_proof(self, monkeypatch):
+    def test_listing_while_busy_does_not_borrow_the_running_members_identity(self, monkeypatch):
         from kiro_crew.mcp_caller import CallerContext, build_caller_meta
 
         call, started, release = _slow_then_echo()
         seen = []
         harness = _LoopHarness(monkeypatch, call)
 
-        def policy(session="", *, member_memory_proof=""):
-            seen.append((session, member_memory_proof))
+        def policy(session=""):
+            seen.append(session)
             return mcp_shared.ToolPolicy(frozenset(), "")
 
         monkeypatch.setattr(mcp_shared, "_resolve_tool_policy", policy)
         try:
-            for req_id, method, session, proof in (
-                (1, "tools/call", "dashboard:alice", "alice.current-proof"),
-                (2, "tools/list", "dashboard:bob", "bob.current-proof"),
+            for req_id, method, session in (
+                (1, "tools/call", "dashboard:alice"),
+                (2, "tools/list", "dashboard:bob"),
             ):
                 msg = _tools_call(req_id, "slow")
                 msg["method"] = method
                 msg["params"]["_meta"] = build_caller_meta(
-                    CallerContext(session_key=session, from_gateway=True, member_memory_proof=proof)
+                    CallerContext(session_key=session, from_gateway=True)
                 )
                 harness.send(msg)
                 if req_id == 1:
                     assert started.wait(timeout=5)
             assert harness.wait_for(lambda: any(row[0] == 2 for row in harness.responses))
             assert seen == [
-                ("dashboard:alice", "alice.current-proof"),
-                ("dashboard:bob", "bob.current-proof"),
+                "dashboard:alice",
+                "dashboard:bob",
             ]
         finally:
             release.set()
@@ -1090,8 +1146,8 @@ class TestStdioLoopCallerIdentity:
     def test_a_gateway_that_declines_this_caller_does_not_refuse(self, monkeypatch):
         """``policy_forbidden`` is a boundary the gateway HOLDS, not one it lost.
 
-        The 403 is ``member_session_unverified``: a session claiming a private
-        memory store without a proof the gateway can verify. That is the steady
+        The 403 is ``member_session_unverified``: a session claiming a member
+        store without a scope the gateway can verify. That is the steady
         state for a whole class of callers rather than a window that closes, so
         refusing would deny them tools permanently. The call proceeds and the
         window is audited.
@@ -1245,10 +1301,7 @@ class TestPerSessionToolPolicy:
     def teardown_method(self):
         self._reset()
 
-    @pytest.mark.parametrize("proof", ["signed.current-proof", "", "bad\r\nheader"])
-    def test_policy_http_forwards_current_proof_without_retaining_it(self, monkeypatch, proof):
-        from types import SimpleNamespace
-
+    def test_policy_http_forwards_each_session_without_a_memory_capability(self, monkeypatch):
         requests = []
 
         def policy(req, timeout=0):
@@ -1257,21 +1310,13 @@ class TestPerSessionToolPolicy:
 
         monkeypatch.setattr(mcp_shared, "loopback_urlopen", policy)
         monkeypatch.setattr(mcp_shared, "read_local_secret", lambda _port: "internal")
-        monkeypatch.setattr(
-            mcp_shared.KiroCrewConfig,
-            "load",
-            classmethod(
-                lambda _cls: SimpleNamespace(dashboard=SimpleNamespace(url="http://localhost:5476"))
-            ),
-        )
-        assert mcp_shared._resolve_tool_policy("dashboard:alice", member_memory_proof=proof).excluded == {
+        monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
+        assert mcp_shared._resolve_tool_policy("dashboard:alice").excluded == {
             "blocked"
         }
         assert mcp_shared._resolve_tool_policy("dashboard:global").excluded == {"blocked"}
         assert requests[0]["X-session-key"] == "dashboard:alice"
-        assert requests[0].get("X-member-session-proof") == (
-            proof if proof == "signed.current-proof" else None
-        )
+        assert "X-member-session-proof" not in requests[0]
         assert "X-member-session-proof" not in requests[1]
         assert mcp_shared._excluded_tools_by_session == {
             "dashboard:alice": {"blocked"},
@@ -1301,11 +1346,7 @@ class TestPerSessionToolPolicy:
             return _Resp(body)
 
         monkeypatch.setattr(mcp_shared, "loopback_urlopen", fake_urlopen)
-        monkeypatch.setattr(
-            mcp_shared.KiroCrewConfig,
-            "load",
-            classmethod(lambda cls: type("C", (), {"dashboard": type("D", (), {"url": "http://localhost:5476"})()})()),
-        )
+        monkeypatch.setattr(mcp_shared, "resolve_client_port_src", lambda port: (5476, "config"))
         monkeypatch.setattr(mcp_shared, "_read_internal_secret", lambda: "s3cr3t", raising=False)
 
         a = mcp_shared._resolve_tool_policy("dashboard:chat-1").excluded

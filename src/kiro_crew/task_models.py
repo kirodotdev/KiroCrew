@@ -5,6 +5,8 @@ from __future__ import annotations
 import enum
 from dataclasses import dataclass, field
 
+from kiro_crew.execution_context import ExecutionContext
+
 # ── Constants ──
 
 MAX_RETRIES = 3
@@ -96,6 +98,7 @@ class Project:
     spec_path: str
     spec_content: str
     tasks: list[Task] = field(default_factory=list)
+    execution_context: ExecutionContext | None = None
     started_at: float = 0.0
     finished_at: float = 0.0
     status: str = "pending"  # pending, planned, running, completed, failed, cancelled

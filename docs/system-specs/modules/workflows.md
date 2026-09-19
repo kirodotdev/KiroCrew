@@ -637,32 +637,30 @@ Two distinct serializations:
   a new process and would otherwise wedge the registry as a zombie that eviction
   refuses to reclaim.
 
-Before each model turn, authoring, pooled workers, named sessions and non-pooled
-workers use `messaging.identity.publish_turn_identity` for their own acquired
-session key and provider PID. Identity publication precedes context construction
-and model dispatch, including author revisions and warm worker turns. It uses the
-shared protected publisher, not an ambient parent key or a fabricated MCP header;
-private store binding and request-side identity verification remain required.
-The MCP `workflow_status`, `workflow_result` and `workflow_list` reads use the
-same strict caller gate as workflow mutations. An unidentified caller is refused
-before any GET, even if the lenient resolver could inherit a parent identity.
-Reads pass the verified key unchanged to HTTP and their result audit; HTTP still
-verifies the private store and run ownership. The explicitly global saved-definition
-library is not a private run listing and retains its existing scope.
-Start, author-start and rerun check the gateway's admission gate both before
-allocating an ID and after awaiting scope binding, before launching the run. A
-gate closed during that await rejects the launch without registering a run.
+Before each model turn, authoring, pooled workers and named sessions publish the
+ordinary strict transport identity for their acquired key. The run itself owns
+one frozen `execution_context` in `RunHandle` and its ordinary JSON checkpoint.
+Service admission captures it once off-loop before admission and passes it into
+the handle before initial registration. A supplied carrier bypasses parent reads;
+later awaits and parent closure cannot change its routing. Workers receive that
+same record; no protected workflow binding or hidden private payload copy exists. Status,
+result and mutations retain ordinary caller, owner/app and governance checks.
+Scope admission snapshots stricter live gateway restrictions and inherited modes
+before capture awaits, then combines them with the captured mode. Its live policy
+port does not read persisted parent records; an absent parent cannot invalidate an
+owned carrier, and invalid retention inputs still refuse admission.
 
-Scope admission also freezes the originating sessions' strictest memory mode in
-the protected binding. Worker preparation carries that mode, not the current
-state of a replacement parent tab. Temporary workers suppress memory-context
-reads; incognito and temporary modes refuse durable-memory writes. A legacy
-binding without a mode remains inspectable but cannot establish a worker's memory
-permission. The gateway supplies policy resolution; standalone engine embedders
-without a session-policy resolver use persistent mode. Re-running a bound run
-combines its frozen mode with the current caller's mode, even for Global V1;
-changing or closing the original parent cannot loosen the rerun. This does not
-change the run's store binding or grant a caller access to another member.
+The carrier freezes the member ID, store ID, namespace, template, app and privacy
+mode. Reruns use the prior handle's carrier even if the parent closed, and combine
+its mode with any stronger requesting mode. Incognito and Temporary runs stay in
+memory and never write source/events/results through the checkpoint store.
+Their agent calls use storeless task admission over the same live lane and
+resource-pressure checks. Call parameters, failure details and dependency waits
+stay in memory; cancellation releases the shared slot without a durable task row.
+Incognito may read memory; Temporary suppresses reads. Both refuse learned-memory
+writes. Missing or malformed member identity is an error, never Global fallback.
+Admission still checks gateway closure before and after awaited registration and
+never launches an unreturned run.
 
 `mark_terminal` is idempotent: only the first terminal transition counts. Its async
 counterpart is used by live workflows and host drivers; it drains queued checkpoints,
@@ -683,7 +681,7 @@ persistence before returning the identity. Cancellation drains admission before
 removing its partial run; no driver is launched for an unreturned identity. Source,
 intent and subtree-rerun entrypoints recheck gateway admission after this new await;
 a closed gate deletes the unlaunched run and returns the existing admission error.
-All live writes, including private directory ACL preparation, use the existing per-run
+All permitted persistent writes use the existing per-run
 snapshot/generation/lock path. Tests simulating an orderly restart await the
 background driver's terminal flush before constructing the replacement service;
 a terminal status in RAM alone is not a durable-completion barrier. A delayed-write
@@ -716,20 +714,7 @@ registry and reset the legacy ID floor to zero. Missing directories on first
 boot are empty only when their nearest existing ancestor is a directory. This
 also checks Windows path-not-found errors beneath a plain file, rather than
 mistaking that broken inventory for a first boot. An unreadable or non-directory
-inventory is an error. Failure
-to resolve the private inventory root is also fatal, before returning any public
-rows: a public-only subset is not a complete recovery. Errors identify inventory
-unavailability and direct storage repair/restart without disclosing private paths.
-This preserves legacy binding-less run files. Explicit `persist=False` remains the
-in-memory choice. Malformed payload records are still rejected independently.
-However, a missing, unreadable or malformed protected binding for a bound record
-(or any record discovered in the private payload root) makes inventory recovery
-fail with a sanitized `WorkflowInventoryError`. The gateway then exposes its
-existing workflows-unavailable response rather than an apparently complete list
-that silently omits that run. Original files are retained for operator repair;
-editable payloads never reconstruct protected authority. This intentionally
-blocks the shared workflow service, not just the unreadable record, until repair
-and restart; it does not claim that corrupt records can be recovered.
+inventory is an error.
 
 The trusted host lifecycle follows the same off-loop persistence rule. Its
 service methods mutate loop-affine handles and event streams on the event loop, then
@@ -774,28 +759,15 @@ Properties that matter:
   when it changes the id a 12-hex-char sha256 prefix of the original is appended,
   so `wf/1` and `wf1` cannot collapse onto one file. Well-formed ids
   (`wf_NNNNNN`) are unchanged.
-- **Bound target first:** `save` validates the protected binding and resolves the
-  actual payload path before preparing a directory. A private save prepares only
-  the hidden target parent, so a broken public workflows directory cannot suppress
-  it. Both private and public directory preparation failures propagate. Neither
-  branch falls back to the other root.
-- **Explicit checkpoint failures:** serialization/write/replace failures are logged
-  by exception type and propagate as fixed, sanitized errors. The registry reports
-  its storage warning separately while preserving the in-memory execution result.
-  Binding and private parent preparation refusals also propagate rather than
-  selecting a public fallback.
-  `load_all` skips corrupt files and returns records oldest-file-first by
-  mtime. Recovery resolves each discovery root once, allowing legitimate data-home
-  ancestor aliases. Each leaf is opened through the cross-platform no-reparse
-  helper; regular-file, single-link, POSIX ownership, exact resolved-root path
-  and JSON reads all use that same descriptor. Protected binding and private
-  payload placement checks still apply before registry hydration. Discovery errors
-  are isolated per root, including private-root resolution, so an unavailable
-  root cannot suppress valid records from the other root. Startup discovery logs
-  retain only the exception type and an opaque record digest, never paths,
-  exception bodies or tracebacks, even outside a private task context. Record
-  digest encoding tolerates surrogate filename characters so logging an unreadable
-  file cannot abort recovery of other records.
+- **One owner record:** every persistent run writes its complete record and
+  canonical execution context to this ordinary run path. Restricted modes are
+  suppressed defensively by both registry and store. No second inventory or
+  member-specific payload root exists.
+- **Explicit checkpoint failures:** serialization/write/replace failures propagate
+  as fixed sanitized errors while live execution results remain available.
+  Recovery retains ordinary descriptor/path/owner checks, rejects malformed
+  records and returns records oldest-first. Inventory access failures propagate;
+  corrupt individual records cannot manufacture a replacement member identity.
 
 `RunRegistry.load_persisted()` rehydrates on startup, fills only ids not already
 in memory, and re-runs eviction so a store with more records than `max_runs`
@@ -819,7 +791,7 @@ callers retaining `orch.task_runner` as well as dashboard admission paths.
 `attach_workflow_service(service)` releases admission atomically with attachment;
 `attach_workflow_service(None)` explicitly releases standalone fallback. Gateway
 failure cleanup detaches and immediately defers again without yielding, preserving
-fail-closed private admission with `workflow_initialization_failed` and a restart
+fail-closed workflow admission with `workflow_initialization_failed` and a restart
 message. Pending recovery alone asks callers to retry. If storage blocks
 indefinitely, mutation requests deliberately keep returning 503 with
 `code: workflow_initializing`; reads and cancellation remain available. Treating
@@ -1010,23 +982,18 @@ host lifecycle (`begin_host_run`, `bind_task`, `phase`, `log`, `step`, `pause`,
 `timeout_secs` property. Every trusted host lifecycle mutation is async when it can
 produce a durable checkpoint, so host drivers await the off-loop persistence path.
 
-Dynamic workflows freeze a gateway-owned execution binding before scheduling.
-The immutable record lives below `member-memory-bindings/workflows`; a private
-run's source, results and replay cache live below the hidden
-`memory_stores/.workflow-runs` root. Ordinary run JSON, source, templates and
-session labels grant no private authority. New records carry an explicit binding
-version; missing or corrupt authority refuses rather than becoming legacy V1.
+Dynamic workflows freeze their canonical execution context before scheduling.
+The ordinary run record owns identity and payload together; the in-memory
+`RunHandle` owns restricted runs. Author attempts and every worker receive the
+frozen carrier before SessionManager allocation and prompt construction. Named
+sessions are local run labels, not references that can adopt arbitrary chat
+memory. Missing or wrong-store data produces an explicit memory error.
 
-Author attempts and pooled, overflow and named workers inherit the run's protected
-anchor before SessionManager allocation. Private prompts pass through
-`ContextBuilder.build_message` after store preparation. Named sessions are labels
-inside a run, not arbitrary existing session keys. Every send, warm reset and
-replay boundary revalidates the scope; invalidation fails without a V1 fallback.
-The author retains REJECT_ALL, and the existing tool and governance ceilings stay
-in force. Private access to run list/detail/cancel/rerun requires matching scope;
-owner-browser management retains owner authority. Reruns inherit protected run
-identity, not a current template or mutable caller field. Completion delivery
-checks the original binding before publishing private content.
+The author retains REJECT_ALL, and ordinary caller, app/owner, tool and governance
+ceilings stay in force. Member memory is not an additional authorization domain.
+Reruns inherit their original handle rather than today's member alias, template
+or parent. Completion delivery checks the original run record and ordinary
+recipient permissions.
 
 Host-driven runs carry `driver`, `source_format`, `task_id`, `capabilities`, and
 saved-definition provenance in every compact and full snapshot. `paused` is an
@@ -1198,13 +1165,12 @@ Registered in `dashboard/server.py`, handled in
 caller's `X-Session-Key` header becomes the run's `author` and `session_key`.
 
 Before author, source run, intent run, saved-definition run or subtree rerun
-calls the service, `internal_memory_scope` verifies the request's protected
-caller against its claimed session. Verification refusals pass through unchanged;
-a verified private caller may execute within that scope. Omitting or replacing
-the session header cannot turn a private process into an unbound caller. Run
-list/detail/cancel/rerun separately compare the caller with protected run identity.
-A run id never grants access to another store. Owner-browser and verified V1
-dispatch retain their authentication paths.
+calls the service, ordinary transport authentication and owner/app permissions
+apply. The session's canonical execution record is captured before asynchronous
+dispatch; missing or malformed member identity refuses instead of selecting Global.
+Run list/detail/cancel/rerun keep ordinary execution permissions. A permitted
+rerun retains the original run's member/store and strictest privacy mode, even
+when requested from another member. Member stores add no separate cross-member ACL.
 
 | Route | Body / params | Response |
 |-------|---------------|----------|
@@ -1497,33 +1463,27 @@ scripts, so the rate is a measurement and not a tautology.
 
 ### Provider receipts and unavailable-store cancellation
 
-Private workflow prompt construction passes the acquired provider and actual
+Member workflow prompt construction passes the acquired provider and actual
 resume state to `ContextBuilder.build_message(context_provider=...)`, after
-`prepare_store_vectors`. The provider's `EssentialDelivery` owns acknowledgment
+best-effort `prepare_store_vectors`. V2 preparation opens only an existing
+database and attaches the lazy embedding callable; it does not warm a model,
+enqueue embeddings or search fragments. Healthy cold starts therefore retain
+query-free scoped lessons. Failed preparation leaves manual essentials usable
+and emits an unavailable-memory diagnostic; prompt construction never creates
+the learned-memory facade or substitutes Global. Temporary skips preparation
+and learned lessons. The provider's `EssentialDelivery` owns acknowledgment
 of a productive, successful raw terminal. Author and pool `is_new` flags describe
 lifecycle only; they never acknowledge essential delivery. Failed or cancelled
 attempts retain the full candidate, and a new conversation has its own receipt.
 
-Completion delivery checks protected run identity even when a supplied snapshot
-omits its binding-version field. A surviving hidden private payload cannot be
-classified as a legacy global run. Owner cancellation may use a valid protected
-run record without opening an unavailable member store; ordinary content reads
-and non-owner operations still require an active, matching memory scope.
-
-The private HTTP scope regression initializes and closes a real Global
-`VectorMemoryStore` off-loop, matching the database normally created by gateway
-startup. Its macOS-only companion compares the native Seatbelt query and
-protected PID lookup before and after that initialization; neither verifier is
-stubbed. Failure diagnostics observe the original request's checks, including
-native result/errno and database existence, and preserve any coverage tracer.
-They report only safe state fields, never private paths, proofs or payloads.
-Passing this fixture on Linux does not establish the macOS native result or the
-separate real-gateway private workflow E2E.
+Completion delivery reads the canonical context even when callers omit display
+fields. Owner cancellation can use an existing run record when learned memory
+is unavailable. Missing or malformed member identity does not become Global.
 
 ### Atomic run identity allocation
 
 Before returning a new `wf_NNNNNN` identity, the service burns its number in
-`config_dir()/member-memory-bindings/workflows/.run-id.json`. The version-1
+`<workflows dir>/.run-id.json`. The version-1
 record has exactly `version` and `high_water`: both are strict integers, and
 `high_water` is a nonnegative uint64. Booleans, floats, unknown versions and
 out-of-range values refuse allocation. Six digits are a minimum display width;
@@ -1548,7 +1508,7 @@ First-use protocol, entirely under that lock:
    atomic replacement, owner-only access, file fsync and parent-directory fsync.
 3. Only after the initial counter is durable, write byte `1` to the permanent
    lock and fsync it and the directory chain. Only then may an ID be allocated.
-4. Select `max(high_water, recovered_floor) + 1`, skip occupied legacy candidates,
+4. Select `max(high_water, recovered_floor) + 1`,
    atomically persist the selected number and sync its parent before returning.
 
 A crash before witness publication leaves either no counter or a valid initial
@@ -1564,29 +1524,13 @@ existing platform limits, including Windows and filesystems without directory
 sync support. This protocol does not detect restoring a syntactically valid old
 backup or destroying both allocator records.
 
-Existing hashed `.reserved/` entries and binding directories are checked for each
-candidate, including binding directories without `memory.json`. They are never
-deleted or replaced by allocation. New allocation creates no per-run reservation.
-New allocator bookkeeping is O(1) space; skipping K consecutive legacy collisions
-is O(K) work. Immutable bindings, including global bindings, still grow with runs,
-so the whole identity store is not O(1). No GC or reclamation is introduced.
-Allocation grants no store or caller authority. Proof, ownership, namespace and
-immutable no-replacement binding publication remain separate and unchanged.
-Exact path checks ignore only Windows' extended-length prefix, including UNC;
-redirects, non-regular or multiply-linked allocator files refuse allocation.
+The counter is ordinary workflow allocation state and creates no per-run grant
+or reservation registry. Allocation grants no memory or caller permission.
+No legacy V2 identity migration, rollback or retirement path is introduced.
 
-This replaces the unmerged reservation protocol in
-[PR #10586](https://github.com/kirodotdev/KiroCrew/pull/10586), verified open before
-implementation. It does not promise mixed-version writers: stop all old
-allocators before using this protocol on the same data home. Old writers do not
-read the new lock or counter. This is a stop-and-upgrade constraint, not a new
-rolling-upgrade coordination mechanism. Do not delete allocator or legacy
-identity records as stale caches.
-
-Saved task-plan execution passes the effective protected caller session to
-TaskRunner, including calls that supply only `author`. TaskRunner's existing
-runtime, worker and reviewer binding path then retains that private store;
-`author` cannot be silently discarded into a Global V1 execution.
+Saved task-plan execution passes its captured execution context to TaskRunner,
+including calls supplying only `author`. Runtime, worker and reviewer contexts
+retain that record; closing the author cannot select Global for the saved work.
 
 ### What one in-process run costs, and the budget that awaits it
 

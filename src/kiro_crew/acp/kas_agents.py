@@ -391,7 +391,7 @@ def _project_mcp_servers(
         if managed:
             # Native MCP children do not inherit the gateway's environment.
             # Take the live listener from the gateway, never from an editable
-            # spec: private sandboxes cannot discover it through host PIDs.
+            # spec or process discovery.
             bound_port = os.environ.get("KIROCREW_BOUND_PORT", "")
             if (
                 1 <= len(bound_port) <= 5

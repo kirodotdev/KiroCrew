@@ -1861,10 +1861,8 @@ class _PinnedCreateRefusal(Exception):
 def materialize_workspace_dir(validated: Path, *, display: str) -> None:
     """Make *validated* exist as a directory: adopt one that is there, create one that is not.
 
-    One writer-side rule shared by the dashboard handler and the CLI, because the
-    V2 private-memory layout resolves EVERY declared workspace with ``strict=True``
-    and refuses every private member while one declared directory is missing -- an
-    entry without a directory is a fleet-wide outage, not an inert row.
+    One writer-side rule shared by the dashboard handler and the CLI: a published
+    workspace must name a usable directory for provider cwd and project documents.
 
     *validated* is the path AS THE CALLER'S VALIDATION RESOLVED IT (``Path.resolve()``
     at validation time). This function never resolves it again: resolving here would
@@ -2926,9 +2924,6 @@ def _build_memory_config(memory_data: dict) -> MemoryConfig:
         semantic_keys=memory_data.get("semantic_keys", []),
         history_idle_hours=memory_data.get("history_idle_hours", 3.0),
         history_max_days=_safe_nonnegative_int(memory_data.get("history_max_days", 365), 365),
-        private_provisioning_enabled=_safe_bool(
-            memory_data.get("private_provisioning_enabled", True), False
-        ),
         backup_enabled=_safe_bool(memory_data.get("backup_enabled", True), True),
         backup_keep=_safe_int(memory_data.get("backup_keep", 7), 7, 1, None),
         migrated=memory_data.get("migrated", False),
@@ -4277,14 +4272,6 @@ class KiroCrewConfig:
                 _dashboard_section["default_memory_mode"] = _default_memory_mode_from(
                     _dashboard_section["default_memory_mode"]
                 )
-            # A malformed pause control must not be dropped back to its enabled default.
-            _memory_section = data.get("memory")
-            if (
-                isinstance(_memory_section, dict)
-                and "private_provisioning_enabled" in _memory_section
-            ):
-                if not isinstance(_memory_section["private_provisioning_enabled"], bool):
-                    _memory_section["private_provisioning_enabled"] = False
             # Validate against JSON Schema (advisory — never fatal)
             _validate_config_data(data)
             # Clamp security-relevant resource-limit knobs to their API ceilings
@@ -4431,6 +4418,7 @@ class KiroCrewConfig:
                     # not survive load — select_crew's roster calls .strip() on it.
                     raw_triggers = entry.get("triggers", "")
                     agents[name] = KiroCrewAgentConfig(
+                        member_id=entry.get("member_id", ""),
                         kiro_agent=entry.get("kiro_agent", ""),
                         workspace=entry.get("workspace", "default"),
                         memory_store=entry.get("memory_store", "default"),
@@ -4503,6 +4491,7 @@ class KiroCrewConfig:
                         defect,
                     )
                 memory_stores[name] = MemoryStoreConfig(
+                    owner_member_id=entry.get("owner_member_id", ""),
                     description=entry.get("description", ""),
                     embedding_provider=entry.get("embedding_provider", ""),
                     owner_member=entry.get("owner_member", ""),
@@ -4519,12 +4508,12 @@ class KiroCrewConfig:
         if not isinstance(default_memory_store_val, str):
             default_memory_store_val = DEFAULT_MEMORY_STORE
         # Reported, not repaired, for the same reason as the store names above.
-        # Legacy default_memory_store is retained for compatibility. Private
+        # Legacy default_memory_store is retained for V1 compatibility. Member
         # member resolution never uses it as a fallback or a filesystem path.
         elif memory_store_name_defect(default_memory_store_val) is not None:
             logger.warning(
                 "default_memory_store %r is not a usable store name (%s); preserved "
-                "for compatibility but not used for private memory resolution",
+                "for V1 compatibility but not used for member memory resolution",
                 default_memory_store_val,
                 memory_store_name_defect(default_memory_store_val),
             )
@@ -6296,7 +6285,7 @@ def resolve_agent_identity(config, agent_name=None, *, selection_kind="") -> tup
     """Alias, provider template and model pin for display/configuration only.
 
     This does not authorize memory access. Runtime callers must resolve the full
-    bindings; a model chip remains inspectable while private memory is unavailable.
+    bindings; a model chip remains inspectable while learned memory is unavailable.
     """
     record, alias, passthrough, _ = _resolve_agent_selection(
         config, agent_name, selection_kind=selection_kind
@@ -6315,6 +6304,7 @@ def resolve_agent_bindings(
     *,
     validate_memory_files: bool = True,
     selection_kind: str = "",
+    execution_context=None,
 ) -> ResolvedBindings:
     """Resolve workspace, memory store, and kiro agent for a session.
 
@@ -6364,17 +6354,25 @@ def resolve_agent_bindings(
 
     from kiro_crew.memory_stores import require_member_memory_store
 
-    # Existing members keep their exact V1 binding until the owner selects V2.
-    # The resolver rejects private ownership damage before admitting legacy use.
+    # Existing V1 members keep their exact configured store binding.
+    # Canonical member/store mismatches are rejected before legacy use.
     store_name = (
-        DEFAULT_MEMORY_STORE
-        if passthrough
-        else require_member_memory_store(
-            config, resolved_alias, require_directory=validate_memory_files
+        execution_context.store.store_id
+        if execution_context is not None
+        else (
+            DEFAULT_MEMORY_STORE
+            if passthrough
+            else require_member_memory_store(
+                config, resolved_alias, require_directory=validate_memory_files
+            )
         )
     )
 
-    kiro_agent = passthrough or agent_cfg.kiro_agent
+    kiro_agent = (
+        execution_context.template_id
+        if execution_context is not None
+        else passthrough or agent_cfg.kiro_agent
+    )
 
     # Build effective memory config via dict-level merge
     store_cfg = config.memory_stores.get(store_name)
@@ -6383,6 +6381,7 @@ def resolve_agent_bindings(
     effective_memory = resolve_memory_store_config(top_level_memory, store_dict)
 
     return ResolvedBindings(
+        execution_context=execution_context,
         workspace_dir=ws_dir,
         memory_store_name=store_name,
         effective_memory_config=effective_memory,

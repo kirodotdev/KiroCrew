@@ -147,6 +147,7 @@ _SENSITIVE_MASK = "••••••••"
 # does not refuse a credential-shaped name, so this view cannot assume one never
 # arrives.
 _AGENT_UNTRUSTED_TEXT_FIELDS = (
+    "member_id",
     "description",
     "triggers",
     "kiro_agent",
@@ -1894,7 +1895,6 @@ _EDITABLE_CONFIG: dict[str, dict] = {
     "agent.sandbox": {"type": "enum", "values": ["auto", "off"]},
     "agent.sandbox_allow_no_isolation": {"type": "bool"},
     "agent.tool_search": {"type": "bool"},
-    "memory.private_provisioning_enabled": {"type": "bool"},
     "agent.completion_keep": {"type": "enum", "values": ["head", "tail", "both"]},
     "agent.completion_keep_chars": {
         "type": "int",

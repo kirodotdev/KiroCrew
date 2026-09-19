@@ -1814,7 +1814,6 @@
         "semantic_keys": [],
         "history_idle_hours": 3.0,
         "history_max_days": 365,
-        "private_provisioning_enabled": true,
         "backup_enabled": true,
         "backup_keep": 7,
         "migrated": false
@@ -2146,20 +2145,6 @@
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 365
-    },
-    {
-      "path": "memory.private_provisioning_enabled",
-      "kind": "core",
-      "type": "boolean",
-      "required": false,
-      "deprecated": false,
-      "sensitive": false,
-      "tags": [],
-      "label": "New Private Memory",
-      "help": "Allow creating private V2 member stores and explicit V1-to-V2 setup. Turn off to pause provisioning; existing V2 execution, management and isolation continue.",
-      "hasChildren": false,
-      "enumValues": null,
-      "defaultValue": true
     },
     {
       "path": "memory.backup_enabled",
@@ -8109,6 +8094,20 @@
       "defaultValue": null
     },
     {
+      "path": "agents.*.member_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Member ID",
+      "help": "Immutable identity assigned when member memory is created.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "agents.*.kiro_agent",
       "kind": "core",
       "type": "string",
@@ -8403,6 +8402,20 @@
       "defaultValue": null
     },
     {
+      "path": "memory_stores.*.owner_member_id",
+      "kind": "core",
+      "type": "string",
+      "required": false,
+      "deprecated": false,
+      "sensitive": false,
+      "tags": [],
+      "label": "Owner Member ID",
+      "help": "Immutable member identity stored in this database.",
+      "hasChildren": false,
+      "enumValues": null,
+      "defaultValue": ""
+    },
+    {
       "path": "memory_stores.*.owner_member",
       "kind": "core",
       "type": "string",
@@ -8411,7 +8424,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Owner Member",
-      "help": "The sole Crew Member owning this private memory store.",
+      "help": "Display label of the Crew Member owning this memory store.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": ""
@@ -8425,7 +8438,7 @@
       "sensitive": false,
       "tags": [],
       "label": "Memory Version",
-      "help": "1 for existing memory; 2 for private member memory.",
+      "help": "1 for existing memory; 2 for member memory.",
       "hasChildren": false,
       "enumValues": null,
       "defaultValue": 1

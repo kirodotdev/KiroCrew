@@ -1099,6 +1099,7 @@ SPAWN_RUN_SCHEMA = ToolSchema(
         # cfg.agents` membership check at the endpoint, which answers 400 with an
         # `unknown_crew` code rather than degrading to the global store.
         FieldSpec("crew", str, max_len=MAX_SHORT_STRING),
+        FieldSpec("target_member", str, max_len=MAX_SHORT_STRING),
     ],
 )
 

@@ -1,54 +1,13 @@
-"""Shared fixtures and builders for the private member-memory (v2) test surface.
+"""Synthetic member SQLite stores and ordinarily authenticated dashboard requests.
 
-Fixture visibility -- this is a PLAIN module, not a ``conftest.py``, and it is
-NOT registered through ``pytest_plugins`` (``test/conftest.py`` is not the rootdir
-conftest, so pytest refuses ``pytest_plugins`` there; a rootdir registration
-would also publish these fixture names to the whole suite). pytest only sees a
-fixture defined here from a test module that imports it, so a consumer pulls the
-fixtures in by name with the alias-and-rebind idiom::
-
-    from member_memory_helpers import env as _member_env
-    from member_memory_helpers import member_proof as _member_proof
-    from member_memory_helpers import request
-
-    env = _member_env
-    member_proof = _member_proof
-
-The rebind is what pytest discovers (a module attribute whose value carries the
-fixture marker registers under the attribute name), and the alias is what keeps
-flake8 quiet: a test parameter named ``env`` shadowing a directly imported,
-otherwise-unused ``env`` is F811, whereas shadowing a module-level assignment is
-not. Plain functions (``request``, ``make_request``, ``declare_v2_store``, ...)
-are imported directly.
-
-What lives here:
-
-* ``env`` / ``member_proof`` -- the two-member (alice, bob) V2 environment under
-  ``KIROCREW_HOME=tmp_path`` with the alice dashboard session bound, and a minted
-  session proof for it.
-* ``write_member_home`` / ``declare_v2_store`` / ``write_member_manifest`` -- the
-  on-disk shape of a V2 store (``<root>/memory_stores/<name>/member-memory.json``),
-  with or without the matching ``config.json``. They bypass
-  ``memory_stores.provision_member_memory`` on purpose: the tests that use them
-  exercise the store contents, not the admission gate.
-* ``forget_declared_stores`` -- drops the config and declared-store memos after a
-  helper above has changed the home on disk.
-* ``patch_private_memory_supported`` -- the sandbox-capability gate patch.
-* ``make_request`` / ``request`` / ``json_payload`` -- the aiohttp
-  ``make_mocked_request`` builder with a readable JSON body and the owner /
-  internal / member-proof claim shapes.
-* ``seed_body`` / ``document_store`` / ``DOCUMENT_CREDENTIAL`` -- seed-route and
-  markdown-document conveniences used by the memory route tests.
-
-Nothing here allocates at import time; every path derives from ``tmp_path`` and
-nothing changes the working directory.
+Fixtures are imported and rebound explicitly by each consumer; this module never
+allocates state at import time or accesses the real crew home.
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
-import os
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -65,10 +24,7 @@ from kiro_crew.context import ContextBuilder
 from kiro_crew.dashboard.handlers import cron
 from kiro_crew.dashboard.handlers._shared import markdown_memory_for_store
 from kiro_crew.memory import MemoryStore
-from kiro_crew.vector_memory import VectorMemoryStore
-
-#: Dotted path of the sandbox-capability gate that ``patch_private_memory_supported`` patches.
-PRIVATE_EXECUTION_GATE = "kiro_crew.member_memory_auth.private_memory_execution_supported"
+from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
 #: A credential-shaped token for "sensitive document" fixtures.
 DOCUMENT_CREDENTIAL = "AKIAIOSFODNN7EXAMPLE"
@@ -80,31 +36,26 @@ MEMBERS = ("alice", "bob")
 
 
 def member_manifest(owner: str, *, memory_version: int = 2) -> dict[str, Any]:
-    """The ``member-memory.json`` record for *owner*; also the ``memory_stores`` config entry."""
-    return {"memory_version": memory_version, "owner_member": owner}
+    """The configured stable owner and database format for a synthetic store."""
+    return {"memory_version": memory_version, "owner_member": owner, "owner_member_id": owner}
 
 
 def write_member_manifest(
     directory: Path, owner: str, *, memory_version: int = 2
 ) -> dict[str, Any]:
-    """Create *directory* and write its ``member-memory.json``; returns the record written."""
+    """Explicitly provision a synthetic member database and return its config."""
     directory.mkdir(parents=True, exist_ok=True)
     record = member_manifest(owner, memory_version=memory_version)
-    (directory / memory_stores.MEMBER_MEMORY_MANIFEST).write_text(
-        json.dumps(record), encoding="utf-8"
-    )
+    database = directory / memory_stores.MEMORY_DB_FILE
+    if memory_version == 2 and not database.exists():
+        create_member_database(database, member_id=owner, store_id=directory.name)
     return record
 
 
 def declare_v2_store(
     home: Path, name: str, owner: str | None = None, *, memory_version: int = 2
 ) -> Path:
-    """Lay down ``<home>/memory_stores/<name>/member-memory.json``; returns the store directory.
-
-    *owner* defaults to *name* without its ``member-`` prefix. Open the tier
-    yourself (``VectorMemoryStore(db_path=directory / memory_stores.MEMORY_DB_FILE)``)
-    so the test owns its close.
-    """
+    """Provision ``<home>/memory_stores/<name>/memory.db``; return its directory."""
     owner = name.removeprefix("member-") if owner is None else owner
     directory = home / "memory_stores" / name
     write_member_manifest(directory, owner, memory_version=memory_version)
@@ -115,14 +66,14 @@ def write_member_home(home: Path, *members: str) -> dict[str, Any]:
     """Declare one V2 store per member under *home* and write the ``config.json`` naming them.
 
     The config carries the ``default`` store, one ``memory_stores`` entry per
-    member (the manifest record) and one agent per member bound to its store.
+    member (the stable identity record) and one agent per member bound to its store.
     Returns the config payload written.
     """
     config: dict[str, Any] = {"memory_stores": {"default": {}}, "agents": {}}
     for member in members:
         name = f"member-{member}"
         config["memory_stores"][name] = write_member_manifest(home / "memory_stores" / name, member)
-        config["agents"][member] = {"memory_store": name}
+        config["agents"][member] = {"memory_store": name, "member_id": member}
     (home / "config.json").write_text(json.dumps(config), encoding="utf-8")
     return config
 
@@ -131,11 +82,6 @@ def forget_declared_stores(monkeypatch: pytest.MonkeyPatch) -> None:
     """Drop the loaded-config and declared-store memos so the next lookup re-reads the home."""
     loader._invalidate_config_cache()
     monkeypatch.setattr(memory_stores, "_DECLARED_MEMO", None)
-
-
-def patch_private_memory_supported(monkeypatch: pytest.MonkeyPatch, value: bool = True) -> None:
-    """Pin the sandbox-capability gate so private execution reads as (un)supported."""
-    monkeypatch.setattr(PRIVATE_EXECUTION_GATE, lambda **kwargs: value)
 
 
 # ── environment fixtures ──────────────────────────────────────────────────────────
@@ -151,8 +97,11 @@ def env(tmp_path, monkeypatch):
         path = (
             tmp_path / "memory.db" if not name else tmp_path / "memory_stores" / name / "memory.db"
         )
-        tier = VectorMemoryStore(db_path=path)
-        tier.init()
+        if name:
+            tier = open_member_database(path, member_id=name.removeprefix("member-"), store_id=name)
+        else:
+            tier = VectorMemoryStore(db_path=path)
+            tier.init()
         tiers[name] = tier
     metadata = {}
     from kiro_crew.history import ConversationLog
@@ -205,19 +154,6 @@ def env(tmp_path, monkeypatch):
         loader._invalidate_config_cache()
 
 
-@pytest.fixture
-def member_proof(env, monkeypatch):
-    from kiro_crew import member_memory_auth, platform_compat
-
-    monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: f"test-start-{pid}")
-    member_memory_auth.publish_member_session_pid(
-        os.getpid(), "dashboard:alice", memory_store="member-alice"
-    )
-    proof = member_memory_auth.issue_member_session_proof("dashboard:alice", os.getpid())
-    assert proof
-    return proof
-
-
 # ── aiohttp request stand-ins ─────────────────────────────────────────────────────
 
 
@@ -242,7 +178,6 @@ def make_request(
     owner_subject: str = "owner",
     internal: bool = False,
     session: str = "dashboard:alice",
-    proof: str = "",
     match_info: dict[str, str] | None = None,
 ) -> web.Request:
     """A mocked dashboard request against *state* in one of the authenticated shapes.
@@ -251,16 +186,13 @@ def make_request(
     is JSON-encoded onto a readable stream with the matching content headers.
     ``owner`` publishes the cookie-path claims (the *owner_subject* identity plus
     an EMPTY app claim); ``internal`` marks the ``X-Internal-Secret`` branch;
-    *proof* rides in ``X-Member-Session-Proof``; *session* is always sent as
-    ``X-Session-Key``.
+    *session* is sent as ``X-Session-Key``.
     """
     method = method or ("POST" if body is not None else "GET")
     target = f"{path}?{urlencode(query)}" if query else path
     app = web.Application()
     app["state"] = state
     headers = {"X-Session-Key": session}
-    if proof:
-        headers["X-Member-Session-Proof"] = proof
     kwargs: dict[str, Any] = {}
     if body is not None:
         raw = json.dumps(body).encode()
@@ -277,9 +209,7 @@ def make_request(
     return result
 
 
-def request(
-    env, *, body=None, query=None, owner=False, internal=False, session="dashboard:alice", proof=""
-):
+def request(env, *, body=None, query=None, owner=False, internal=False, session="dashboard:alice"):
     """``make_request`` against ``env.state``: POST ``/api/memory/seed`` with a body, else GET recall."""
     path = "/api/memory/seed" if body is not None else "/api/memory/recall"
     return make_request(
@@ -290,7 +220,6 @@ def request(
         owner=owner,
         internal=internal,
         session=session,
-        proof=proof,
     )
 
 

@@ -31,7 +31,9 @@ async def test_manager_open_is_off_loop_and_pending_spawn_is_refused(monkeypatch
     monkeypatch.setattr(SpawnAdmissionCoordinator, "open_store_off_loop", True)
     monkeypatch.setenv(store_mod.STRICT_ON_LOOP_ENV, "1")
     monkeypatch.setattr(TaskStore, "open", parked_open)
-    manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
+    sessions = MagicMock()
+    sessions.get_agent_selection.return_value = ("template", "")
+    manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
     try:
         await asyncio.wait_for(entered.wait(), 3)
         assert manager._taskq is None

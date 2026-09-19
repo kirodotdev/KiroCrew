@@ -8,6 +8,7 @@ fresh processes — and that fallback to legacy path works correctly.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -101,6 +102,7 @@ def _mock_sessions(*, sharing_eligible: bool = True) -> MagicMock:
     # Session-sharing runtime
     mock_handle = MagicMock()
     mock_handle.session_id = "shared-session-abc"
+    mock_handle.memory_mode = "persistent"
     mock_handle.is_turn_active = False
     mock_handle.destroy = AsyncMock()
 
@@ -147,7 +149,9 @@ class TestSessionSharingDecision:
     def test_private_crew_target_cannot_share_a_global_parent(self):
         sessions = _mock_sessions(sharing_eligible=True)
         manager = SubagentManager(sessions=sessions, ctx_builder=_mock_ctx_builder_auto(), is_yolo=lambda: True)
-        info = SubagentInfo(id="private-review", task="review", parent_session_key="dashboard:global", memory_store="member-review")
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+        execution = ExecutionContext("review", MemoryStoreRef("member-review", "review"), "member", "kirocrew")
+        info = SubagentInfo(id="private-review", task="review", parent_session_key="dashboard:global", memory_store="member-review", execution_context=execution)
         with _cfg_patch(session_sharing=True):
             assert manager._should_use_session_sharing(info) is False
         sessions.is_session_sharing_eligible.assert_not_called()
@@ -247,7 +251,9 @@ class TestSessionSharingSpawn:
     """Tests for session-sharing subagent spawn and cleanup."""
 
     @pytest.mark.asyncio
-    async def test_private_dedicated_worker_publishes_identity_before_first_tool(self, monkeypatch):
+    async def test_private_dedicated_worker_publishes_identity_before_first_tool(
+        self, monkeypatch, tmp_path
+    ):
         from test_subagent import _mock_ctx_builder_auto_spawn
         from test_subagent import _mock_sessions as dedicated_sessions
 
@@ -255,6 +261,13 @@ class TestSessionSharingSpawn:
         from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
         from kiro_crew.memory_stores import provision_member_memory
 
+        specs = tmp_path / "agents"
+        specs.mkdir()
+        (specs / "kirocrew.json").write_text(
+            json.dumps({"name": "kirocrew", "prompt": "review", "tools": []}), encoding="utf-8"
+        )
+        monkeypatch.setattr("kiro_crew.agent.KIRO_AGENTS_DIR", specs)
+        monkeypatch.setattr("kiro_crew.agent_discovery._KIRO_AGENTS_DIR", specs)
         cfg = KiroCrewConfig.load()
         cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
         store = await asyncio.to_thread(provision_member_memory, cfg, "reviewer")
@@ -275,10 +288,9 @@ class TestSessionSharingSpawn:
 
         async def stream(*args, **kwargs):
             worker = sessions.get_or_create.call_args.args[0]
-            published = await asyncio.to_thread(
-                member_memory_auth.protected_member_session_for_pid, os.getpid()
-            )
-            assert published == worker
+            from kiro_crew.execution_context import read_session_execution
+            published = await asyncio.to_thread(read_session_execution, worker, required=True)
+            assert published.store.store_id == store
             observed.append(worker)
             if False:
                 yield

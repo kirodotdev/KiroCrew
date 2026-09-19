@@ -154,7 +154,6 @@ src/kiro_crew/cli_desktop.py
 src/kiro_crew/cloud/ec2.py
 src/kiro_crew/cloud/launch_engine.py
 src/kiro_crew/cloud/launch_job.py
-src/kiro_crew/config/paths.py
 src/kiro_crew/config/schema.py
 src/kiro_crew/config/validation.py
 src/kiro_crew/connections/alias_record.py
@@ -244,7 +243,6 @@ src/kiro_crew/knowledge/store.py
 src/kiro_crew/knowledge/sync.py
 src/kiro_crew/knowledge/watcher.py
 src/kiro_crew/mcp_apps_render.py
-src/kiro_crew/mcp_caller.py
 src/kiro_crew/mcp_cleanup.py
 src/kiro_crew/mcp_gateway/abort.py
 src/kiro_crew/mcp_gateway/app_call.py
@@ -265,7 +263,6 @@ src/kiro_crew/mcp_gateway/spill.py
 src/kiro_crew/mcp_gateway/stub.py
 src/kiro_crew/mcp_gateway/transport.py
 src/kiro_crew/mcp_gateway/verdict_cache.py
-src/kiro_crew/mcp_shared.py
 src/kiro_crew/mcp_tools/apps.py
 src/kiro_crew/mcp_tools/artifacts.py
 src/kiro_crew/mcp_tools/skills.py
@@ -288,7 +285,6 @@ src/kiro_crew/service/apparmor.py
 src/kiro_crew/service/common.py
 src/kiro_crew/service/linux.py
 src/kiro_crew/service/macos.py
-src/kiro_crew/session_pid_sig.py
 src/kiro_crew/session_workspace.py
 src/kiro_crew/skill_providers/skillsh.py
 src/kiro_crew/skill_usage.py
@@ -467,7 +463,6 @@ test/test_connections_l0_probe.py
 test/test_connections_registry.py
 test/test_connections_tool_aliases.py
 test/test_consolidate_cmd.py
-test/test_consolidation_placeholder_guard.py
 test/test_context_marker_neutralization.py
 test/test_context_ui_language.py
 test/test_continuable_followups.py
@@ -626,7 +621,6 @@ test/test_heartbeat_retention.py
 test/test_heartbeat_sel_prune_offload.py
 test/test_history.py
 test/test_history_atomic_rewrite.py
-test/test_history_consolidation_retry.py
 test/test_history_coverage.py
 test/test_history_locking_remediation.py
 test/test_history_race.py
@@ -693,7 +687,6 @@ test/test_mcp_apps_e2e.py
 test/test_mcp_apps_render.py
 test/test_mcp_artifact_folders.py
 test/test_mcp_artifacts.py
-test/test_mcp_caller.py
 test/test_mcp_core.py
 test/test_mcp_core_arg_crash.py
 test/test_mcp_core_audit_e.py
@@ -715,7 +708,6 @@ test/test_mcp_gateway_exclusive_backend.py
 test/test_mcp_gateway_image_budget.py
 test/test_mcp_gateway_oversize.py
 test/test_mcp_gateway_pool_integ.py
-test/test_mcp_gateway_recaller.py
 test/test_mcp_gateway_shutdown_and_env.py
 test/test_mcp_gateway_stub_admission_fallback.py
 test/test_mcp_gateway_stub_optin.py
@@ -874,14 +866,12 @@ test/test_session_memory.py
 test/test_session_more_coverage.py
 test/test_session_mtime_ordering.py
 test/test_session_pid_sig.py
-test/test_session_pool.py
 test/test_session_rss.py
 test/test_session_sharing.py
 test/test_session_spend_identity.py
 test/test_session_start_timeout_diagnostics.py
 test/test_session_summary_api.py
 test/test_session_summary_extract.py
-test/test_session_summary_generate.py
 test/test_session_thread_map.py
 test/test_session_usage.py
 test/test_ship_report_issues.py

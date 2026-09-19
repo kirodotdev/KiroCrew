@@ -32,7 +32,9 @@ async def test_simultaneous_services_never_share_run_identity(world, second):
     assert "run_id" in other, other
     assert first["run_id"] != other["run_id"]
     runs = await asyncio.gather(finished(services[0], first), finished(services[1], other))
-    scopes = await asyncio.gather(*(WorkflowScope.restore(run.run_id) for run in runs))
+    scopes = await asyncio.gather(
+        *(WorkflowScope.restore(run.run_id, record=run.to_store_json()) for run in runs)
+    )
     assert scopes[0].store == world.stores["alice"]
     assert scopes[1].store == world.stores.get(second, "")
     for run, scope in zip(runs, scopes):
@@ -134,17 +136,13 @@ def test_windows_resolved_prefix_is_only_a_spelling(unc):
     assert strip_extended_length_prefix(extended.parent / "foreign") != plain
 
 
-@pytest.mark.parametrize("component", ["legacy", "lock", "counter"])
+@pytest.mark.parametrize("component", ["lock", "counter"])
 def test_reservation_accepts_resolve_prefix_during_creation(monkeypatch, component):
-    from kiro_crew.workflow_memory import binding_path
-
-    reservation = binding_path("wf_prefix").parent.parent / ".reserved"
     real_resolve = Path.resolve
 
     def resolve(path, *args, **kwargs):
         resolved = real_resolve(path, *args, **kwargs)
         matched = {
-            "legacy": path.parent == reservation,
             "lock": path.name == ".run-id.lock",
             "counter": path.name == ".run-id.json",
         }[component]
@@ -160,49 +158,24 @@ def test_reservation_accepts_resolve_prefix_during_creation(monkeypatch, compone
     assert read_binding("wf_000001") is None
 
 
-@pytest.mark.parametrize("target", ["reservation", "binding", "payload"])
-def test_workflow_paths_still_refuse_real_directory_redirect(tmp_path, target):
+def test_workflow_allocator_refuses_real_directory_redirect(tmp_path):
     from conftest import make_dir_link
-    from kiro_crew.workflow_memory import WorkflowMemoryError, binding_path, private_payload_path
+    from kiro_crew.workflow_memory import WorkflowMemoryError
 
-    binding = binding_path("wf_000001")
-    path = {
-        "reservation": binding.parent.parent / ".reserved",
-        "binding": binding.parent,
-        "payload": private_payload_path("wf_000001").parent,
-    }[target]
+    path = _allocator_root()
     path.parent.mkdir(parents=True, exist_ok=True)
     outside = tmp_path / "foreign"
     outside.mkdir()
     make_dir_link(path, outside)
     with pytest.raises(WorkflowMemoryError, match="redirected"):
-        if target == "payload":
-            private_payload_path("wf_000001")
-        else:
-            allocate_run_id()
+        allocate_run_id()
     assert not list(outside.iterdir())
 
 
 def _allocator_root():
-    from kiro_crew.workflow_memory import binding_path
+    from kiro_crew.workflows.store import default_workflows_dir
 
-    return binding_path("wf_000001").parent.parent
-
-
-def test_legacy_reservation_and_incomplete_binding_are_never_reused():
-    from kiro_crew.workflow_memory import binding_path
-
-    root = _allocator_root()
-    legacy = root / ".reserved" / binding_path("wf_000001").parent.name
-    legacy.mkdir(parents=True)
-    binding_path("wf_000002").parent.mkdir()
-    assert allocate_run_id() == "wf_000003"
-    before = set(root.iterdir())
-    for index in range(4, 20):
-        assert allocate_run_id() == f"wf_{index:06d}"
-    assert set(root.iterdir()) == before
-    assert list((root / ".reserved").iterdir()) == [legacy]
-    assert read_binding("wf_000003") is None
+    return default_workflows_dir()
 
 
 @pytest.mark.parametrize(

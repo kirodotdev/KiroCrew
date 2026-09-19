@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from conftest import make_dir_link
-from kiro_crew import security
+from kiro_crew import sandbox, security
 from kiro_crew.config.loader import KiroCrewConfig, config_dir, workspace_dir_for
 from kiro_crew.config.paths import ensure_data_home
 from kiro_crew.memory import INDEX_DB_FILE, MemoryStore, workspace_dir
@@ -623,6 +623,39 @@ class TestNamedStoresAreFenced:
         assert MEMORY_STORES_DIR_NAME in security._CREW_SECRET_LEAVES
         for prefix in security.crew_home_prefixes():
             assert f"{prefix}/{MEMORY_STORES_DIR_NAME}" in security.sensitive_home_dirs()
+
+    def test_sandbox_preparation_creates_only_an_empty_named_store_root(self) -> None:
+        _write_config({"memory_stores": {"default": {}, "work": {}}})
+        config_path = config_dir() / "config.json"
+        config_before = config_path.read_bytes()
+        root = memory_stores_root()
+        assert not root.exists()
+
+        created = sandbox._materialize_sealable_ceilings()
+
+        assert str(root) in created
+        assert list(root.iterdir()) == []
+        assert config_path.read_bytes() == config_before
+        assert not (config_dir() / MEMORY_DB_FILE).exists()
+        assert not workspace_dir().exists()
+
+    def test_sandbox_preparation_preserves_an_existing_named_v1_root_link(self, tmp_path) -> None:
+        _write_config({"memory_stores": {"work": {}}})
+        target = tmp_path / "named-memory"
+        target.mkdir()
+        store = target / "work"
+        store.mkdir()
+        database = store / MEMORY_DB_FILE
+        database.write_bytes(b"existing V1 database bytes")
+        root = memory_stores_root()
+        make_dir_link(root, target)
+
+        created = sandbox._materialize_sealable_ceilings()
+
+        assert str(root) not in created
+        assert root.resolve() == target.resolve()
+        assert database.read_bytes() == b"existing V1 database bytes"
+        assert MEMORY_STORES_DIR_NAME not in sandbox._CREW_NOFOLLOW_READONLY_DIR_LEAVES
 
     @pytest.mark.parametrize(
         "leaf",

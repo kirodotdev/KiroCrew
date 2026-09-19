@@ -388,8 +388,8 @@ def test_every_cron_tool_audit_names_the_calling_session() -> None:
     already resolved the real caller here for exactly this reason; cron was the
     outlier.
 
-    Asserted through the PUBLIC ``_call_tool`` entry point, not the inner one, since
-    the wrapper is the thing under test.
+    Asserted through ``_call_tool_locally``, the validated host dispatcher used by
+    the authenticated gateway, since its audit wrapper is the thing under test.
     """
     _as_session("dashboard:alice")
     _add_job(f"mine-{uuid.uuid4().hex[:8]}")
@@ -408,7 +408,7 @@ def test_every_cron_tool_audit_names_the_calling_session() -> None:
     mcp_cron.sel = lambda: _Recorder()  # type: ignore[assignment]
     mcp_shared.sel = lambda: _Recorder()  # type: ignore[assignment]
     try:
-        mcp_cron._call_tool("cron_list", {})
+        mcp_cron._call_tool_locally("cron_list", {})
     finally:
         mcp_cron.sel = original  # type: ignore[assignment]
         mcp_shared.sel = original_shared  # type: ignore[assignment]

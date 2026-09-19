@@ -96,6 +96,28 @@ class RunEventCoordinator(ManagerComponent):
     _write_run_agent = staticmethod(write_run_agent)
     __slots__ = ()
 
+    def _forget_finished_live_state(self, info: SubagentInfo) -> None:
+        """Drop a settled run's transient payload unless it owns retained continuation."""
+        from ..subagent_persistence import forget_live_run_state
+
+        manager = self._manager
+        teardown = manager._teardown_gates.get(info.id)
+        if (
+            not info.done
+            or info._recovering
+            or info.id in manager._tasks
+            or info.id in manager._abandoned_state_writers
+            or (teardown is not None and not teardown.is_set())
+            or any(
+                owner.id == info.id and not task.done()
+                for task, owner in manager._report_owners.items()
+            )
+        ):
+            return
+        if f"subagent:{info.id}" in manager._conversations:
+            return
+        forget_live_run_state(info.id)
+
     def _effective_turn_limit_impl(self, info: SubagentInfo) -> int:
         """Resolved turn cap for a run: per-spawn ``max_turns`` → config
         default (``agent.subagent_max_turns``) → hardcoded ``_TURN_LIMIT``.
@@ -174,6 +196,7 @@ class RunEventCoordinator(ManagerComponent):
                 # The worker has landed (drained or abandoned): the conversation
                 # is safe to promote or release again.
                 _mgr._abandoned_state_writers.discard(_aid)
+                _mgr._run_events._forget_finished_live_state(info)
                 # It may also have raised; retrieve it so it never surfaces as an
                 # asynchronous "exception was never retrieved" warning.
                 if not fut.cancelled() and fut.exception() is not None:
@@ -548,6 +571,7 @@ class RunEventCoordinator(ManagerComponent):
                 # event is released by the line above, and one arriving after finds
                 # no entry, which now means exactly "nothing left to wait for".
                 self._manager._teardown_gates.pop(info.id, None)
+                self._forget_finished_live_state(info)
 
         # The report itself already ran (or is running) on the shielded task
         # spawned in the finally above; block until it completes so sequencing is
@@ -741,7 +765,6 @@ class RunEventCoordinator(ManagerComponent):
         # Local imports: this body runs on ``kiro_crew.subagent``'s globals
         # (bind_component_globals), which do not export these names.
         from kiro_crew.agent_sdk.drivers.acp_vocab import EVENT_STRUCTURED_STATUS
-        from kiro_crew.context import require_memory_delegation
         from kiro_crew.recovery.ladder import InfraError
         from kiro_crew.taskq.dependency import classify_exception
 
@@ -751,12 +774,6 @@ class RunEventCoordinator(ManagerComponent):
         # reads every waiting row, and this run may be the first caller.
         _dep_coordinator = await self._manager.dependency_coordinator_async()
 
-        await asyncio.to_thread(
-            require_memory_delegation,
-            getattr(self._manager._ctx_builder, "conversation_log", None),
-            info.parent_session_key,
-            info.memory_store,
-        )
         # Every continuation reaches this allocation boundary, including direct
         # manager callers and recovery. Restore the original conversation's
         # protected mode off-loop before any provider or model context exists.
@@ -785,33 +802,33 @@ class RunEventCoordinator(ManagerComponent):
             finally:
                 info._state_drain_active = False
 
-        # Queue waits and restarts can outlive a member/store configuration.
-        # Revalidate before allocating any provider process for the run.
-        if info.memory_store:
-            from kiro_crew.context import prepare_store_vectors
-            from kiro_crew.member_memory_auth import bind_private_session_store
-            from kiro_crew.memory_stores import memory_store_version, require_memory_store
+        from kiro_crew.execution_context import bind_session_execution
 
-            await asyncio.to_thread(require_memory_store, info.memory_store)
-            if await asyncio.to_thread(memory_store_version, info.memory_store) == 2:
-                # This run's protected dispatch record is the authority. Never
-                # create a private binding from mutable transcript metadata.
-                await asyncio.to_thread(bind_private_session_store, session_key, info.memory_store)
-            if info.memory_mode != "temporary":
-                await prepare_store_vectors(
-                    self._manager._ctx_builder, info.memory_store, session_key=session_key
-                )
-            log = getattr(self._manager._ctx_builder, "conversation_log", None)
-            if log is not None:
-                await asyncio.to_thread(
-                    log.update_metadata, session_key, {"memory_store": info.memory_store}
-                )
-        # Inherit approval policy from parent session; yolo/trust overrides
-        log = getattr(self._manager._ctx_builder, "conversation_log", None)
-        if log is not None:
-            await asyncio.to_thread(
-                log.update_metadata, session_key, {"memory_mode": info.memory_mode}
-            )
+        if info.execution_context is None:
+            raise ValueError("memory_unavailable: no captured execution context")
+        info.execution_context = info.execution_context.with_mode(info.memory_mode)
+        captured_execution = info.execution_context
+        is_continuation = bool(info.conversation_key)
+
+        def publish_execution():
+            execution = captured_execution
+            if is_continuation:
+                from kiro_crew.execution_context import read_session_execution
+
+                original_execution = read_session_execution(session_key, required=True)
+                if original_execution.store != captured_execution.store:
+                    raise ValueError("memory_unavailable: continuation changed memory owner")
+                execution = original_execution.with_mode(captured_execution.memory_mode)
+            bind_session_execution(session_key, execution)
+
+        from kiro_crew.workflows.registry import _await_owned
+
+        publication = asyncio.create_task(asyncio.to_thread(publish_execution))
+        info._state_drain_active = True
+        try:
+            await _await_owned(publication)
+        finally:
+            info._state_drain_active = False
         parent_policy = self._manager._sessions.get_approval_policy(info.parent_session_key)
         # Explicit approval_mode from spawn caller (e.g. Mochi bg agent)
         if not parent_policy and info.approval_mode == "auto":
@@ -872,38 +889,24 @@ class RunEventCoordinator(ManagerComponent):
                     source="subagent",
                     resources=f"subagent_id={info.id}",
                 )
-        # A continuation keeps the gateway-recorded selection, even when a
-        # different parent submits the follow-up. state.json is agent writable
-        # and cannot authorize a template, including after eviction/restart.
-        agent = info.agent
-        selection = ("member", info.crew) if info.crew and not agent else ("template", agent)
-        recorded_selection: tuple[str, str] | None = None
-        if info.conversation_key:
-            conv_id = info.conversation_key.removeprefix("subagent:")
-            try:
-                recorded_selection = await asyncio.to_thread(self._read_run_agent, conv_id)
-            except (OSError, ValueError):
-                # An explicit override can run without known lineage, but it
-                # cannot become authority for later implicit continuations.
-                if not agent:
-                    raise
-            else:
-                if not agent:
-                    selection = recorded_selection
-        elif not agent and not info.crew:
-            selection = self._manager._sessions.get_agent_selection(info.parent_session_key)
-        if (
-            not isinstance(selection, tuple)
-            or len(selection) != 2
-            or selection[0] not in ("template", "member")
-            or not isinstance(selection[1], str)
-            or (selection[0] == "member" and not selection[1])
-        ):
-            raise ValueError("resume_failed: effective agent template is invalid")
-        kind, agent = selection
-        if info.crew or (not info.agent and agent):
-            # Validate the canonical member as well as any explicit template.
-            policy_agent = info.crew or agent
+        # Admission captured both memory identity and this invocation's persona
+        # before any asynchronous work. A continuation's explicit override is
+        # effective only for this turn; its next continuation keeps its lineage.
+        from dataclasses import replace
+
+        execution = info.execution_context
+        durable_selection = (
+            execution.selection_kind,
+            (
+                execution.selection_name
+                if execution.selection_kind == "member"
+                else execution.template_id
+            ),
+        )
+        agent = info.agent or execution.template_id
+        kind = "template" if info.agent else execution.selection_kind
+        if info.crew or execution.member_id or (not info.agent and agent):
+            policy_agent = info.crew or (execution.selection_name if kind == "member" else agent)
             denial = await asyncio.to_thread(
                 _vet_spawn_governance, info.parent_session_key, policy_agent, app=info.app
             )
@@ -916,55 +919,26 @@ class RunEventCoordinator(ManagerComponent):
                 source="subagent",
                 resources=f"subagent_id={info.id},inherited_agent={agent}",
             )
-        # Each follow-up may itself be continued, including after restart.
-        # Preserve the conversation selection independently of this turn's
-        # effective override; unknown lineage must stay unknown.
         effective_cwd = info.cwd or str(getattr(self._manager._sessions, "_pool_cwd", "") or "")
-        if kind == "member" or info.crew:
-            from kiro_crew.config.loader import resolve_agent_bindings
-            from kiro_crew.memory_stores import named_store_or_empty
-
-            member = info.crew or agent
-
-            def member_template() -> str:
-                cfg = KiroCrewConfig.load()
-                bindings = resolve_agent_bindings(
-                    cfg, member, effective_cwd, selection_kind="member"
-                )
-                if not bindings.requested_resolved or bindings.resolved_alias != member:
-                    raise ValueError("resume_failed: selected member is unavailable")
-                if named_store_or_empty(bindings.memory_store_name) != named_store_or_empty(
-                    info.memory_store
-                ):
-                    raise ValueError("memory_unavailable: selected member assignment changed")
-                return bindings.kiro_agent
-
-            resolved_template = await asyncio.to_thread(member_template)
-            if kind == "member":
-                agent = resolved_template
-        if kind == "member" or (info.conversation_key and not info.agent):
+        if agent and (kind == "member" or (info.conversation_key and not info.agent)):
             agent, error, code = await asyncio.to_thread(_validate_agent, agent, effective_cwd)
             if error:
                 info.error_code = code
                 raise RuntimeError(error)
-        durable_selection = (
-            recorded_selection
-            if info.conversation_key
-            else (("member", info.crew) if info.crew else selection)
-        )
         await self._await_identity_write(
             info,
             asyncio.ensure_future(
                 asyncio.to_thread(
                     self._write_run_agent,
                     info.id,
-                    durable_selection[1] if durable_selection is not None else None,
-                    kind=durable_selection[0] if durable_selection is not None else "template",
+                    durable_selection[1],
+                    kind=durable_selection[0],
                 )
             ),
         )
+        turn_execution = replace(execution, template_id=agent)
         extra_kwargs: dict[str, Any] = {
-            "crew_agent": selection[1] if kind == "member" else "",
+            "crew_agent": execution.selection_name if kind == "member" else "",
         }
         # An explicit per-spawn model wins; otherwise fall back to the
         # configured sub-agent role model (agent.role_models['subagent']). When
@@ -1169,9 +1143,14 @@ class RunEventCoordinator(ManagerComponent):
         from kiro_crew.context import prepare_store_vectors
 
         if info.memory_mode != "temporary":
-            await prepare_store_vectors(
-                self._manager._ctx_builder, info.memory_store, session_key=session_key
-            )
+            try:
+                await prepare_store_vectors(
+                    self._manager._ctx_builder, info.memory_store, session_key=session_key
+                )
+            except (OSError, ValueError, RuntimeError):
+                # Learned recall is optional for prompt construction. Explicit
+                # memory tools still report the unavailable captured store.
+                logger.debug("Subagent learned memory is unavailable", exc_info=True)
         full_message, _ = await run_in_embed_pool(
             self._manager._ctx_builder.build_message,
             message,
@@ -1179,6 +1158,7 @@ class RunEventCoordinator(ManagerComponent):
             session_key,
             project=info.cwd or None,
             memory_store=info.memory_store or None,
+            execution_context=turn_execution,
             provider_type=self._manager._provider_label_of(client),
             model_window=_sub_window,
             context_groups=_groups,
@@ -2734,9 +2714,8 @@ class RunEventCoordinator(ManagerComponent):
         All must hold: session_sharing config True; parent session exists and
         is ACP/kiro-backed (not CC); not a CC-specific spawn (model/allowed_tools/bare).
         """
-        # The trusted run preparation has validated this immutable target.
-        # A global parent must never lend its process to a private Crew member.
-        if info.memory_store:
+        # Member capability and native prompt documents are prepared at launch.
+        if info.execution_context is not None and info.execution_context.member_id is not None:
             return False
         try:
             cfg = KiroCrewConfig.load()
@@ -2766,14 +2745,6 @@ class RunEventCoordinator(ManagerComponent):
         provider.shutdown() instead of SessionManager.release/reset.
         """
 
-        from kiro_crew.member_memory_auth import private_memory_store_for_session
-
-        stores = await asyncio.gather(
-            asyncio.to_thread(private_memory_store_for_session, session_key),
-            asyncio.to_thread(private_memory_store_for_session, info.parent_session_key),
-        )
-        if any(stores):
-            raise RuntimeError("Private member memory requires a dedicated runtime")
         runtime = self._manager._get_parent_runtime(info.parent_session_key)
         if runtime is None:
             runtime = await self._manager._sessions.get_subagent_runtime(info.parent_session_key)
@@ -2825,6 +2796,7 @@ class RunEventCoordinator(ManagerComponent):
             # stub token to the subagent before its stubs register, so the
             # subagent cannot act as — or be re-pointed at — its parent.
             session_key=session_key,
+            memory_mode=info.memory_mode,
             on_gate_acquired=_on_gate_acquired,
             late_adopter=_late_adopter,
         )
@@ -2907,6 +2879,7 @@ class RunEventCoordinator(ManagerComponent):
         # it is NOT its parent: without the key its re-claim carries none and
         # gatewayd drops it, leaving this session unable to re-bind its token.
         provider = AcpSessionProvider(handle, runtime, session_key=session_key)
+        provider.memory_mode = info.memory_mode
         # The handle exists now. Publish ownership before any cancellable await so
         # force-reap always takes the shared-session branch and destroys this handle
         # instead of resetting a nonexistent dedicated session.

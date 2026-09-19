@@ -106,12 +106,12 @@ describe('memory record editing in both lineages', () => {
     renderWithProviders(<MemoryRecordsEditor store={store} privateMemory={privateMemory} />)
     await screen.findByText(privateMemory ? 'A fresh start for this member' : 'No memories yet')
     if (privateMemory) {
-      expect(screen.getByText(/the source stays unchanged/)).toBeVisible()
+      expect(screen.getByText('Member memory (V2) grows as you work. Copy selected memories here; the source stays unchanged.')).toBeVisible()
       expect(screen.queryByText('No memories yet')).toBeNull()
     } else {
       expect(screen.getByText('Saved facts, lessons, and experiences appear here.')).toBeVisible()
       expect(screen.queryByText('A fresh start for this member')).toBeNull()
-      expect(screen.queryByText(/Private memory grows/)).toBeNull()
+      expect(screen.queryByText(/Member memory grows/)).toBeNull()
       expect(screen.queryByText(/the source stays unchanged/)).toBeNull()
     }
     expect(screen.queryByRole('checkbox', { name: 'Select this page' })).toBeNull()

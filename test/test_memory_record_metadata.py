@@ -11,7 +11,7 @@ from kiro_crew import memory_record_metadata as meta
 from kiro_crew import memory_stores, vector_memory
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.history_consolidation import HistoryConsolidator
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 
 
 @pytest.fixture(params=["v1", "v2"])
@@ -19,8 +19,13 @@ def store(request, tmp_path, monkeypatch):
     root = tmp_path / "memory_stores"
     monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
     directory = tmp_path if request.param == "v1" else declare_v2_store(tmp_path, "member-alice")
-    tier = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=2)
-    tier.init()
+    if request.param == "v2":
+        tier = open_member_database(
+            directory / "memory.db", member_id="alice", store_id="member-alice", embedding_dim=2
+        )
+    else:
+        tier = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=2)
+        tier.init()
     yield tier
     tier.close()
 
@@ -85,6 +90,12 @@ def test_metadata_backfill_and_older_writer_reconciliation(store):
     store.close()
     store.init()
     current = meta.get_record_metadata(store.db, "key:user.work_email")
+    if store.algorithm_version == "v2":
+        # Ordinary member opens never reconcile writes by unsupported older code.
+        assert current["revision"] == 1
+        assert current["email_addresses"] == ["old@example.com"]
+        assert store.db.total_changes == 0
+        return
     assert current["revision"] == 2
     assert current["email_addresses"] == ["legacy@example.net"]
     revision = dict(

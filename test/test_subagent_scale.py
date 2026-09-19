@@ -2330,11 +2330,15 @@ class TestRetryGating:
     @pytest.mark.asyncio
     async def test_retry_respawns_failed_with_original_task(self):
         from kiro_crew.dashboard.handlers.messaging import api_spawn_retry
+        from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 
         failed = SubagentInfo(id="f1", task="redacted task", parent_session_key="dashboard:m")
         failed.done = True
         failed.error = "boom"
         failed._raw_task = "original raw task"
+        failed.execution_context = ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew"
+        )
         mgr = self._mgr_with(failed)
         new_info = SubagentInfo(id="n1", task="original raw task")
         mgr.spawn = MagicMock(return_value=new_info)

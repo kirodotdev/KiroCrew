@@ -23,10 +23,18 @@ from pathlib import Path
 from types import SimpleNamespace
 from kiro_crew import embeddings as emb
 from kiro_crew.dashboard.handlers import memory
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 home = Path(sys.argv[1])
 mode = sys.argv[2]
 model = home / 'model.gguf'
+
+def open_store(path):
+    if path.parent.name == 'member-late':
+        return open_member_database(path, member_id='late', store_id='member-late', embedding_dim=2)
+    store = VectorMemoryStore(db_path=path, embedding_dim=2)
+    store.init()
+    return store
+
 backend = emb.default_embedding_backend()
 backend._llm = SimpleNamespace(create_embedding=lambda texts: {'data': [{'embedding': [1., 0.]} for _ in texts]}, close=lambda: None)
 emb.install_shared_embedder(backend)
@@ -49,14 +57,12 @@ if mode == 'crash':
     asyncio.run(memory._write_embed_model_config(str(model), 2))
     paths = [home / 'memory.db', home / 'memory_stores/legacy/memory.db', home / 'memory_stores/member-late/memory.db']
     for path in paths[:int(sys.argv[3])]:
-        store = VectorMemoryStore(db_path=path, embedding_dim=2)
-        store.init()
+        store = open_store(path)
         emb.align_store_embedding_space(store)
     os._exit(23)
 name = sys.argv[3] if len(sys.argv) > 3 else 'default'
 path = home / 'memory.db' if name == 'default' else home / 'memory_stores' / name / 'memory.db'
-store = VectorMemoryStore(db_path=path, embedding_dim=2)
-store.init()
+store = open_store(path)
 if mode == 'lazy-lesson':
     store.write_lesson('Always preserve glacier archives')
     backend._llm.create_embedding = lambda texts: {'data': [{'embedding': [1., 0.] if text == 'Always preserve glacier archives' else [0., 1.]} for text in texts]}

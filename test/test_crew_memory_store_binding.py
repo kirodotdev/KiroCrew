@@ -1,9 +1,8 @@
-"""Memory binding shape validation and immutable private member identity."""
+"""Memory binding shape validation and immutable member identity."""
 
 from __future__ import annotations
 
 import json
-import os
 import unittest.mock
 from pathlib import Path
 
@@ -16,16 +15,11 @@ from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.config.sections import MemoryStoreConfig
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
-    UnknownMemoryStore,
     memory_store_binding_defect,
     memory_store_dir_for,
     memory_store_name_defect,
-    memory_stores_root,
-    persist_member_config,
     provision_member_memory,
     require_member_memory_store,
-    require_memory_store,
-    retire_unpublished_member_memory_store,
 )
 
 # One malformed value per rule in the shape table, so a rule dropped from
@@ -54,9 +48,6 @@ def _owner_caller(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
-    )
-    monkeypatch.setattr(
-        "kiro_crew.member_memory_auth.private_memory_execution_supported", lambda **kwargs: True
     )
 
 
@@ -201,187 +192,10 @@ class TestTheDashboardRefusesAMalformedBinding:
         assert KiroCrewConfig.load().agents[seeded_agent].memory_store == DEFAULT_MEMORY_STORE
 
 
-class TestDashboardPrivateBinding:
-    @staticmethod
-    def _unpublished_private_allocation(member: str) -> str:
-        attempted = KiroCrewConfig.load()
-        return provision_member_memory(attempted, member)
-
-    @staticmethod
-    def _private_store_bytes(store: str) -> dict[str, bytes]:
-        import kiro_crew.memory_stores as stores
-
-        # This helper intentionally examines the allocation before config
-        # publication, so the public declared-store resolver must still refuse
-        # it. Compose through the product's identity-checking private helper.
-        directory = stores._named_store_dir(store)
-        return {
-            path.relative_to(directory).as_posix(): path.read_bytes()
-            for path in directory.rglob("*")
-            if path.is_file()
-        }
-
-    def test_failed_publication_retires_only_the_unpublished_generation(
-        self, seeded_agent: str
-    ) -> None:
-        import kiro_crew.memory_stores as stores
-        from kiro_crew.config.loader import config_path
-
-        store = self._unpublished_private_allocation(seeded_agent)
-        config_before = config_path().read_bytes()
-        files_before = self._private_store_bytes(store)
-
-        assert retire_unpublished_member_memory_store(store, seeded_agent)
-        assert config_path().read_bytes() == config_before
-        assert self._private_store_bytes(store) == files_before
-        assert stores._member_archive_record(store) == {
-            "version": 1,
-            "archived": True,
-            "memory_store": store,
-            "owner_member": seeded_agent,
-        }
-        persisted = KiroCrewConfig.load()
-        assert require_member_memory_store(persisted, seeded_agent) == DEFAULT_MEMORY_STORE
-
-        retry = KiroCrewConfig.load()
-        next_store = provision_member_memory(retry, seeded_agent)
-        assert next_store != store
-
-    @pytest.mark.parametrize("publication", ["store-declaration", "agent-reference"])
-    def test_cleanup_preserves_a_generation_visible_in_the_locked_config(
-        self, seeded_agent: str, publication: str
-    ) -> None:
-        import kiro_crew.memory_stores as stores
-        from kiro_crew.config.loader import config_path, update_config_locked
-
-        store = self._unpublished_private_allocation(seeded_agent)
-
-        def publish(doc: dict) -> dict:
-            if publication == "store-declaration":
-                doc.setdefault("memory_stores", {})[store] = {
-                    "owner_member": seeded_agent,
-                    "memory_version": 2,
-                }
-            else:
-                doc["agents"][seeded_agent]["memory_store"] = store
-            return doc
-
-        update_config_locked(mutate=publish)
-        config_before = config_path().read_bytes()
-        files_before = self._private_store_bytes(store)
-
-        assert not retire_unpublished_member_memory_store(store, seeded_agent)
-        assert config_path().read_bytes() == config_before
-        assert self._private_store_bytes(store) == files_before
-        assert stores._member_archive_record(store) is None
-
-    @pytest.mark.parametrize("malformed", ["agents", "memory-stores", "agent-entry"])
-    def test_cleanup_refuses_unreadable_publication_state(
-        self, seeded_agent: str, malformed: str
-    ) -> None:
-        import kiro_crew.memory_stores as stores
-        from kiro_crew.config.loader import config_path, update_config_locked
-
-        store = self._unpublished_private_allocation(seeded_agent)
-
-        def corrupt(doc: dict) -> dict:
-            if malformed == "agents":
-                doc["agents"] = []
-            elif malformed == "memory-stores":
-                doc["memory_stores"] = []
-            else:
-                doc["agents"]["broken"] = "not-an-agent-record"
-            return doc
-
-        update_config_locked(mutate=corrupt)
-        config_before = config_path().read_bytes()
-        files_before = self._private_store_bytes(store)
-
-        with pytest.raises(UnknownMemoryStore, match="preserved"):
-            retire_unpublished_member_memory_store(store, seeded_agent)
-        assert config_path().read_bytes() == config_before
-        assert self._private_store_bytes(store) == files_before
-        assert stores._member_archive_record(store) is None
-
-    def test_cleanup_refuses_a_different_manifest_owner(self, seeded_agent: str) -> None:
-        import kiro_crew.memory_stores as stores
-        from kiro_crew.config.loader import config_path
-
-        store = self._unpublished_private_allocation(seeded_agent)
-        config_before = config_path().read_bytes()
-        files_before = self._private_store_bytes(store)
-
-        with pytest.raises(UnknownMemoryStore, match="does not belong"):
-            retire_unpublished_member_memory_store(store, "another-member")
-        assert config_path().read_bytes() == config_before
-        assert self._private_store_bytes(store) == files_before
-        assert stores._member_archive_record(store) is None
-
-    def test_cleanup_preserves_a_store_when_config_is_missing(self, seeded_agent: str) -> None:
-        import kiro_crew.memory_stores as stores
-        from kiro_crew.config.loader import config_path
-
-        store = self._unpublished_private_allocation(seeded_agent)
-        files_before = self._private_store_bytes(store)
-        config_path().unlink()
-
-        with pytest.raises(UnknownMemoryStore, match="preserved"):
-            retire_unpublished_member_memory_store(store, seeded_agent)
-        assert self._private_store_bytes(store) == files_before
-        assert stores._member_archive_record(store) is None
-
-    def test_cleanup_preserves_a_store_when_config_json_is_malformed(
-        self, seeded_agent: str
-    ) -> None:
-        import kiro_crew.memory_stores as stores
-        from kiro_crew.config.loader import ConfigReadError, config_path
-
-        store = self._unpublished_private_allocation(seeded_agent)
-        files_before = self._private_store_bytes(store)
-        malformed = b'{"agents":'
-        config_path().write_bytes(malformed)
-
-        with pytest.raises(ConfigReadError):
-            retire_unpublished_member_memory_store(store, seeded_agent)
-        assert config_path().read_bytes() == malformed
-        assert self._private_store_bytes(store) == files_before
-        assert stores._member_archive_record(store) is None
-
-    def test_cleanup_winning_the_config_lock_prevents_a_stale_publication(
-        self, seeded_agent: str, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        import kiro_crew.config.loader as loader
-        import kiro_crew.memory_stores as stores
-
-        attempted = KiroCrewConfig.load()
-        store = provision_member_memory(attempted, seeded_agent)
-        real_update = loader.update_config_locked
-
-        def cleanup_before_mutation(*args, mutate, **kwargs):
-            def interleave(doc: dict):
-                assert stores.archive_member_memory_store(store, seeded_agent)
-                return mutate(doc)
-
-            return real_update(*args, mutate=interleave, **kwargs)
-
-        monkeypatch.setattr(loader, "update_config_locked", cleanup_before_mutation)
-        with pytest.raises(UnknownMemoryStore, match="archived"):
-            persist_member_config(
-                attempted,
-                seeded_agent,
-                expected_store=DEFAULT_MEMORY_STORE,
-                changed_fields={"memory_store"},
-            )
-
-        persisted = KiroCrewConfig.load()
-        assert persisted.agents[seeded_agent].memory_store == DEFAULT_MEMORY_STORE
-        assert store not in persisted.memory_stores
-        archive = stores._member_archive_record(store)
-        assert archive is not None
-        assert archive["owner_member"] == seeded_agent
+class TestDashboardMemberBinding:
 
     @pytest.mark.asyncio
-    async def test_create_without_a_store_allocates_private_memory(self):
+    async def test_create_without_a_store_allocates_member_memory(self):
         async with TestClient(TestServer(_crud_app())) as client:
             resp = await client.post(
                 "/api/agents", json={"name": "reviewer", "kiro_agent": "kirocrew"}
@@ -392,6 +206,8 @@ class TestDashboardPrivateBinding:
         assert store != DEFAULT_MEMORY_STORE
         assert cfg.memory_stores[store].owner_member == "reviewer"
         assert cfg.memory_stores[store].memory_version == 2
+        assert cfg.agents["reviewer"].member_id
+        assert cfg.memory_stores[store].owner_member_id == cfg.agents["reviewer"].member_id
 
     @pytest.mark.asyncio
     async def test_delete_then_same_name_create_keeps_old_store_and_starts_fresh(self):
@@ -417,39 +233,7 @@ class TestDashboardPrivateBinding:
         assert cfg.agents["reviewer"].memory_store == new_store
 
     @pytest.mark.asyncio
-    async def test_deleted_private_generation_cannot_be_rebound_or_restored(self):
-        from kiro_crew import memory_backup
-
-        async with TestClient(TestServer(_crud_app())) as client:
-            created = await client.post(
-                "/api/agents", json={"name": "reviewer", "kiro_agent": "kirocrew"}
-            )
-            assert created.status == 200
-            old_store = (await created.json())["memory_store"]
-            database = memory_store_dir_for(old_store) / "memory.db"
-            backup = memory_backup.backup_store(database)
-            assert backup is not None
-            deleted = await client.delete("/api/agents/reviewer")
-            assert deleted.status == 200
-
-        # A hand edit that restores the old config references is not authority
-        # to reactivate the retained generation.
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig(memory_store=old_store)
-        cfg.save()
-        rebound = KiroCrewConfig.load()
-        # Configuration-only callers deliberately skip directory readiness,
-        # but they still pass the shared store-admission seam and must not
-        # reinterpret retained files as a live member generation.
-        with pytest.raises(UnknownMemoryStore, match="archived"):
-            require_memory_store(old_store, config=rebound, require_directory=False)
-        with pytest.raises(UnknownMemoryStore, match="archived"):
-            require_member_memory_store(rebound, "reviewer")
-        with pytest.raises(UnknownMemoryStore, match="archived"):
-            memory_backup.restore_from_backup(backup, old_store)
-
-    @pytest.mark.asyncio
-    async def test_failed_delete_save_rolls_back_its_retirement_marker(self, monkeypatch):
+    async def test_failed_delete_save_preserves_the_member_binding(self, monkeypatch):
         from kiro_crew.config.loader import config_path
 
         cfg = KiroCrewConfig.load()
@@ -475,83 +259,8 @@ class TestDashboardPrivateBinding:
         assert persisted.agents["reviewer"].memory_store == store
         assert require_member_memory_store(persisted, "reviewer") == store
 
-    def test_interrupted_archive_publication_never_commits_a_partial_marker(self, monkeypatch):
-        import kiro_crew.memory_stores as stores
-
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig()
-        store = provision_member_memory(cfg, "reviewer")
-        cfg.save()
-
-        def interrupt(_staging, _destination):
-            raise OSError("interrupted before publication")
-
-        monkeypatch.setattr(stores, "_publish_member_archive_dir", interrupt)
-        with pytest.raises(OSError, match="interrupted before publication"):
-            stores.archive_member_memory_store(store, "reviewer")
-        assert stores._member_archive_record(store) is None
-        assert require_member_memory_store(KiroCrewConfig.load(), "reviewer") == store
-
-    def test_missing_committed_archive_record_does_not_reactivate_a_store(self):
-        import kiro_crew.memory_stores as stores
-
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig()
-        store = provision_member_memory(cfg, "reviewer")
-        cfg.save()
-        assert stores.archive_member_memory_store(store, "reviewer")
-        stores._member_archive_path(store).unlink()
-        with pytest.raises(UnknownMemoryStore, match="retirement marker is invalid"):
-            require_member_memory_store(KiroCrewConfig.load(), "reviewer")
-
-    @pytest.mark.parametrize("redirect", ["store", "archive-root"])
-    def test_dangling_archive_directory_does_not_reactivate_a_store(self, redirect):
-        import kiro_crew.memory_stores as stores
-
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig()
-        store = provision_member_memory(cfg, "reviewer")
-        cfg.save()
-        assert stores.archive_member_memory_store(store, "reviewer")
-        marker = stores._member_archive_path(store)
-        directory = marker.parent
-        marker.unlink()
-        directory.rmdir()
-        if redirect == "archive-root":
-            directory = directory.parent
-            directory.rmdir()
-        try:
-            directory.symlink_to(
-                directory.with_name("missing-archive-target"), target_is_directory=True
-            )
-        except OSError as exc:
-            pytest.skip(f"directory symlinks unavailable: {exc}")
-        with pytest.raises(UnknownMemoryStore, match="retirement marker is invalid"):
-            require_member_memory_store(KiroCrewConfig.load(), "reviewer")
-
-    def test_unreadable_archive_directory_probe_fails_closed(self, monkeypatch):
-        import kiro_crew.memory_stores as stores
-
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig()
-        store = provision_member_memory(cfg, "reviewer")
-        cfg.save()
-        directory = stores._member_archive_path(store).parent
-        real_lstat = Path.lstat
-
-        def unreadable(candidate, *args, **kwargs):
-            if candidate == directory:
-                raise PermissionError("archive directory unreadable")
-            return real_lstat(candidate, *args, **kwargs)
-
-        monkeypatch.setattr(Path, "lstat", unreadable)
-        with pytest.raises(UnknownMemoryStore, match="retirement marker is invalid"):
-            require_member_memory_store(KiroCrewConfig.load(), "reviewer")
-
     @pytest.mark.asyncio
-    async def test_failed_deleter_does_not_undo_a_concurrently_committed_retirement(
-        self, monkeypatch
-    ):
+    async def test_delete_with_a_lost_ack_keeps_committed_config_and_database(self, monkeypatch):
         from kiro_crew.config.loader import config_path, write_config_atomically
 
         cfg = KiroCrewConfig.load()
@@ -574,27 +283,10 @@ class TestDashboardPrivateBinding:
             response = await client.delete("/api/agents/reviewer")
             assert response.status == 500
 
-        rebind = KiroCrewConfig.load()
-        assert "reviewer" not in rebind.agents
-        rebind.agents["reviewer"] = KiroCrewAgentConfig(memory_store=store)
-        rebind.save()
-        with pytest.raises(UnknownMemoryStore, match="archived"):
-            require_member_memory_store(KiroCrewConfig.load(), "reviewer")
-
-    def test_private_database_hard_link_is_refused(self, tmp_path: Path) -> None:
-        cfg = KiroCrewConfig.load()
-        cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
-        store = provision_member_memory(cfg, "reviewer")
-        cfg.save()
-        database = memory_store_dir_for(store) / "memory.db"
-        alias = tmp_path / "memory-alias.db"
-        try:
-            os.link(database, alias)
-        except OSError as exc:
-            pytest.skip(f"hard links unavailable: {exc}")
-
-        with pytest.raises(UnknownMemoryStore, match="hard-link alias"):
-            require_memory_store(store, config=cfg)
+        persisted = KiroCrewConfig.load()
+        assert "reviewer" not in persisted.agents
+        assert store in persisted.memory_stores
+        assert memory_store_dir_for(store).joinpath("memory.db").is_file()
 
     @pytest.mark.parametrize("declared", [True, False])
     @pytest.mark.asyncio
@@ -607,7 +299,7 @@ class TestDashboardPrivateBinding:
                 json={"name": "reviewer", "kiro_agent": "kirocrew", "memory_store": "work"},
             )
             assert resp.status == 400
-            assert (await resp.json())["code"] == "private_memory_required"
+            assert (await resp.json())["code"] == "member_memory_required"
         assert "reviewer" not in KiroCrewConfig.load().agents
 
     @pytest.mark.parametrize("target", ["", "ghost", "work"])
@@ -617,175 +309,8 @@ class TestDashboardPrivateBinding:
         async with TestClient(TestServer(_crud_app())) as client:
             resp = await client.put(f"/api/agents/{seeded_agent}", json={"memory_store": target})
             assert resp.status == 409
-            assert (await resp.json())["code"] == "private_memory_immutable"
+            assert (await resp.json())["code"] == "member_memory_immutable"
         assert KiroCrewConfig.load().agents[seeded_agent].memory_store == DEFAULT_MEMORY_STORE
-
-
-# A store name that was legal before the shape rule existed and carries an
-# operator's real declaration. Kept verbatim by the loader, refused by every
-# resolver, so a member bound to it fails every turn and cannot repair itself
-# through a path that validates the binding it is about to replace.
-DEAD_NAME = "AgentForge"
-
-
-def _seed_dead_legacy_member(name: str = "forge", *, declared: bool = True) -> None:
-    """A member on a legacy store whose NAME the shape rule refuses."""
-    cfg = KiroCrewConfig.load()
-    if declared:
-        cfg.memory_stores[DEAD_NAME] = MemoryStoreConfig()
-    cfg.agents[name] = KiroCrewAgentConfig(
-        kiro_agent="kirocrew", workspace="default", memory_store=DEAD_NAME
-    )
-    cfg.save()
-    loaded = KiroCrewConfig.load()
-    assert loaded.agents[name].memory_store == DEAD_NAME
-    assert (DEAD_NAME in loaded.memory_stores) is declared
-    with pytest.raises(UnknownMemoryStore, match="not lowercase"):
-        require_member_memory_store(loaded, name)
-
-
-class TestADeadLegacyBindingHasAWayOut:
-    """A member on a name-invalid V1 store can be provisioned to V2 or moved to global.
-
-    Neither repair validates the prior binding: the prior binding is exactly
-    what fails, and validating it would leave the member with no supported
-    exit. The exception is as narrow as the state: the name resolves no
-    directory, so nothing under ``memory_stores/`` is read, replaced or
-    removed by leaving it.
-    """
-
-    @pytest.mark.parametrize("declared", [True, False])
-    @pytest.mark.asyncio
-    async def test_provisioning_skips_validating_the_name_it_replaces(self, declared):
-        _seed_dead_legacy_member(declared=declared)
-        async with TestClient(TestServer(_crud_app())) as client:
-            resp = await client.put("/api/agents/forge", json={"provision_memory": True})
-            assert resp.status == 200, await resp.text()
-            body = await resp.json()
-        assert body["new_conversation_required"] is True
-        loaded = KiroCrewConfig.load()
-        store = loaded.agents["forge"].memory_store
-        assert store == body["memory_store"] and store.startswith("member-forge-")
-        assert loaded.memory_stores[store].owner_member == "forge"
-        assert require_member_memory_store(loaded, "forge") == store
-        # The operator's own line is reported, never repaired -- and never erased
-        # by a repair either.
-        assert (DEAD_NAME in loaded.memory_stores) is declared
-        assert not (memory_stores_root() / DEAD_NAME).exists()
-
-    @pytest.mark.asyncio
-    async def test_the_member_can_move_to_the_global_store(self):
-        _seed_dead_legacy_member()
-        async with TestClient(TestServer(_crud_app())) as client:
-            resp = await client.put(
-                "/api/agents/forge", json={"memory_store": DEFAULT_MEMORY_STORE}
-            )
-            assert resp.status == 200, await resp.text()
-            body = await resp.json()
-        assert body["memory_store"] == DEFAULT_MEMORY_STORE
-        assert body["new_conversation_required"] is True
-        loaded = KiroCrewConfig.load()
-        assert loaded.agents["forge"].memory_store == DEFAULT_MEMORY_STORE
-        assert require_member_memory_store(loaded, "forge") == DEFAULT_MEMORY_STORE
-        assert DEAD_NAME in loaded.memory_stores
-
-    @pytest.mark.asyncio
-    async def test_moving_to_the_global_store_keeps_unrelated_edits(self):
-        """The rebind rides the ordinary update: other fields in the same body land."""
-        _seed_dead_legacy_member()
-        async with TestClient(TestServer(_crud_app())) as client:
-            resp = await client.put(
-                "/api/agents/forge",
-                json={"memory_store": DEFAULT_MEMORY_STORE, "description": "repaired"},
-            )
-            assert resp.status == 200, await resp.text()
-        loaded = KiroCrewConfig.load()
-        assert loaded.agents["forge"].memory_store == DEFAULT_MEMORY_STORE
-        assert loaded.agents["forge"].description == "repaired"
-
-    @pytest.mark.parametrize("target", ["", "ghost", "work"])
-    @pytest.mark.asyncio
-    async def test_the_only_other_destination_is_still_refused(self, target):
-        """Global or private memory -- never a shared or undeclared named store."""
-        _seed_dead_legacy_member()
-        _declare_store("work")
-        async with TestClient(TestServer(_crud_app())) as client:
-            resp = await client.put("/api/agents/forge", json={"memory_store": target})
-            assert resp.status == 409
-            body = await resp.json()
-        assert body["code"] == "private_memory_immutable"
-        # The refusal names the real reason rather than calling a V1 name private.
-        assert DEAD_NAME in body["error"] and "not lowercase" in body["error"]
-        assert KiroCrewConfig.load().agents["forge"].memory_store == DEAD_NAME
-
-    @pytest.mark.asyncio
-    async def test_a_live_named_v1_binding_is_still_immutable(self):
-        """Only the dead shape moves; a usable declared V1 name stays put."""
-        _declare_store("work")
-        cfg = KiroCrewConfig.load()
-        cfg.agents["forge"] = KiroCrewAgentConfig(kiro_agent="kirocrew", memory_store="work")
-        cfg.save()
-        async with TestClient(TestServer(_crud_app())) as client:
-            resp = await client.put(
-                "/api/agents/forge", json={"memory_store": DEFAULT_MEMORY_STORE}
-            )
-            assert resp.status == 409
-            assert (await resp.json())["code"] == "private_memory_immutable"
-        assert KiroCrewConfig.load().agents["forge"].memory_store == "work"
-
-    @pytest.mark.parametrize("repair", ["move", "provision"])
-    @pytest.mark.asyncio
-    async def test_stale_private_evidence_of_the_member_is_a_refusal_not_a_crash(self, repair):
-        """A lost private binding is restored, never papered over -- and says so with a 409.
-
-        The member's dead V1 binding is repairable, but another store record still
-        declares this member as its private owner. Both repairs must refuse through
-        the same ``member_memory_unavailable`` contract instead of letting
-        ``persist_member_config`` raise into a 500 after the fields were mutated.
-        """
-        _seed_dead_legacy_member()
-        cfg = KiroCrewConfig.load()
-        cfg.memory_stores["member-forge-" + "0" * 32] = MemoryStoreConfig(
-            owner_member="forge", memory_version=2
-        )
-        cfg.save()
-        body = (
-            {"memory_store": DEFAULT_MEMORY_STORE, "description": "repaired"}
-            if repair == "move"
-            else {"provision_memory": True}
-        )
-        async with TestClient(TestServer(_crud_app())) as client:
-            resp = await client.put("/api/agents/forge", json=body)
-            assert resp.status == 409, await resp.text()
-            payload = await resp.json()
-        assert payload["code"] == "member_memory_unavailable"
-        assert "private memory declaration" in payload["error"]
-        loaded = KiroCrewConfig.load()
-        assert loaded.agents["forge"].memory_store == DEAD_NAME
-        assert loaded.agents["forge"].description == ""
-        assert [n for n in loaded.memory_stores if n.startswith("member-forge-")] == [
-            "member-forge-" + "0" * 32
-        ]
-
-    @pytest.mark.asyncio
-    async def test_a_record_claiming_ownership_under_a_dead_name_stays_refused(self):
-        """Ownership cannot be verified for a store with no path; adopt nothing."""
-        cfg = KiroCrewConfig.load()
-        cfg.memory_stores[DEAD_NAME] = MemoryStoreConfig(owner_member="forge", memory_version=2)
-        cfg.agents["forge"] = KiroCrewAgentConfig(kiro_agent="kirocrew", memory_store=DEAD_NAME)
-        cfg.save()
-        async with TestClient(TestServer(_crud_app())) as client:
-            resp = await client.put(
-                "/api/agents/forge", json={"memory_store": DEFAULT_MEMORY_STORE}
-            )
-            assert resp.status == 409
-            assert (await resp.json())["code"] == "private_memory_immutable"
-            resp = await client.put("/api/agents/forge", json={"provision_memory": True})
-            assert resp.status == 409
-            assert (await resp.json())["code"] == "member_memory_unavailable"
-        loaded = KiroCrewConfig.load()
-        assert loaded.agents["forge"].memory_store == DEAD_NAME
-        assert [n for n in loaded.memory_stores if n.startswith("member-forge-")] == []
 
 
 def _cli_config(tmp_path: Path) -> Path:
@@ -807,6 +332,10 @@ def _cli_config(tmp_path: Path) -> Path:
     return path
 
 
+# A store name that was legal before the shape rule existed and carries an
+# operator's real declaration. Kept verbatim by the loader, refused by every
+# resolver, so a member bound to it fails every turn and cannot repair itself
+# through a path that validates the binding it is about to replace.
 class TestTheCliRefusesAMalformedBinding:
     """``kirocrew agent create``/``update`` apply the same predicate.
 
@@ -867,112 +396,7 @@ class TestTheCliRefusesAMalformedBinding:
         saved = json.loads(cfg_path.read_text(encoding="utf-8"))
         assert saved["agents"]["default"]["memory_store"] == DEFAULT_MEMORY_STORE
 
-
-def _cli_config_with_dead_member(tmp_path: Path) -> Path:
-    """``_cli_config`` plus one member on a legacy store the shape rule refuses."""
-    cfg_path = _cli_config(tmp_path)
-    payload = json.loads(cfg_path.read_text(encoding="utf-8"))
-    payload["agents"]["forge"] = {
-        "kiro_agent": "kirocrew",
-        "workspace": "default",
-        "memory_store": DEAD_NAME,
-    }
-    payload["memory_stores"][DEAD_NAME] = {}
-    cfg_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-    return cfg_path
-
-
-class TestTheCliRepairsADeadLegacyBinding:
-    """``kirocrew agent update <member> --memory-store=default`` is the CLI half.
-
-    The dashboard and the CLI write one ``config.json``; a repair only one of them
-    permits would send the operator to the other verb, or to hand-editing the file.
-    """
-
-    def test_update_moves_the_member_to_the_global_store(self, tmp_path, capsys):
-        cfg_path = _cli_config_with_dead_member(tmp_path)
-        argv = ["kirocrew", "agent", "update", "forge", f"--memory-store={DEFAULT_MEMORY_STORE}"]
-        with (
-            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", argv),
-        ):
-            main()
-        assert "Updated agent: forge" in capsys.readouterr().out
-        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
-        assert saved["agents"]["forge"]["memory_store"] == DEFAULT_MEMORY_STORE
-        # Reported, never repaired: the operator's declaration is left in place.
-        assert DEAD_NAME in saved["memory_stores"]
-
-    @pytest.mark.parametrize("target", ["work", "ghost", "Other"])
-    def test_update_refuses_any_other_destination_and_names_the_defect(
-        self, tmp_path, target, capsys
-    ):
-        cfg_path = _cli_config_with_dead_member(tmp_path)
-        payload = json.loads(cfg_path.read_text(encoding="utf-8"))
-        payload["memory_stores"]["work"] = {}
-        cfg_path.write_text(json.dumps(payload), encoding="utf-8")
-        argv = ["kirocrew", "agent", "update", "forge", f"--memory-store={target}"]
-        with (
-            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", argv),
-            pytest.raises(SystemExit) as exc,
-        ):
-            main()
-        assert exc.value.code == 1
-        err = capsys.readouterr().err
-        assert DEAD_NAME in err and "not lowercase" in err and DEFAULT_MEMORY_STORE in err
-        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
-        assert saved["agents"]["forge"]["memory_store"] == DEAD_NAME
-
-    def test_provision_memory_still_works_without_the_rebind(self, tmp_path, capsys):
-        """The CLI opt-in never validated the prior name; pin that it keeps not doing so."""
-        cfg_path = _cli_config_with_dead_member(tmp_path)
-        argv = ["kirocrew", "agent", "update", "forge", "--provision-memory"]
-        with (
-            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", argv),
-        ):
-            main()
-        assert "Updated agent: forge" in capsys.readouterr().out
-        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
-        store = saved["agents"]["forge"]["memory_store"]
-        assert store.startswith("member-forge-")
-        assert saved["memory_stores"][store]["owner_member"] == "forge"
-
-    def test_update_refuses_the_move_while_private_evidence_of_the_member_remains(
-        self, tmp_path, capsys
-    ):
-        cfg_path = _cli_config_with_dead_member(tmp_path)
-        payload = json.loads(cfg_path.read_text(encoding="utf-8"))
-        payload["memory_stores"]["member-forge-" + "0" * 32] = {
-            "owner_member": "forge",
-            "memory_version": 2,
-        }
-        cfg_path.write_text(json.dumps(payload), encoding="utf-8")
-        argv = ["kirocrew", "agent", "update", "forge", f"--memory-store={DEFAULT_MEMORY_STORE}"]
-        with (
-            unittest.mock.patch("kiro_crew.config.loader.config_path", return_value=cfg_path),
-            unittest.mock.patch("sys.argv", argv),
-            pytest.raises(SystemExit) as exc,
-        ):
-            main()
-        assert exc.value.code == 1
-        assert "private memory declaration" in capsys.readouterr().err
-        saved = json.loads(cfg_path.read_text(encoding="utf-8"))
-        assert saved["agents"]["forge"]["memory_store"] == DEAD_NAME
-
-    def test_the_flag_help_names_the_one_permitted_move(self, capsys):
-        """``--help`` is where an operator with a dead member looks first."""
-        with (
-            unittest.mock.patch("sys.argv", ["kirocrew", "agent", "update", "--help"]),
-            pytest.raises(SystemExit) as exc,
-        ):
-            main()
-        assert exc.value.code == 0
-        out = capsys.readouterr().out
-        assert "cannot be changed, except to 'default'" in " ".join(out.split())
-
-    def test_delete_archives_the_exact_private_generation(self, tmp_path, monkeypatch):
+    def test_delete_preserves_the_member_database(self, tmp_path, monkeypatch):
         cfg_path = _cli_config(tmp_path)
         monkeypatch.setattr("kiro_crew.config.loader.config_path", lambda: cfg_path)
         cfg = KiroCrewConfig.load()
@@ -983,11 +407,10 @@ class TestTheCliRepairsADeadLegacyBinding:
         with unittest.mock.patch("sys.argv", ["kirocrew", "agent", "delete", "reviewer"]):
             main()
 
-        rebind = KiroCrewConfig.load()
-        rebind.agents["reviewer"] = KiroCrewAgentConfig(memory_store=store)
-        rebind.save()
-        with pytest.raises(UnknownMemoryStore, match="archived"):
-            require_member_memory_store(KiroCrewConfig.load(), "reviewer")
+        saved = KiroCrewConfig.load()
+        assert "reviewer" not in saved.agents
+        assert store in saved.memory_stores
+        assert memory_store_dir_for(store).joinpath("memory.db").is_file()
 
 
 class TestWhyAMalformedBindingHadToBeRefused:

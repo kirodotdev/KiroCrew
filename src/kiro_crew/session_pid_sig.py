@@ -301,9 +301,7 @@ def _compute_sig(key: bytes, pid: int | str, payload: str) -> str:
     so every signed mapping written before the format change still verifies.
     """
     subkey = _derive_subkey(key)
-    return hmac.new(
-        subkey, f"{pid}:{payload}".encode("utf-8"), hashlib.sha256
-    ).hexdigest()
+    return hmac.new(subkey, f"{pid}:{payload}".encode("utf-8"), hashlib.sha256).hexdigest()
 
 
 def _parse_mapping_body(raw: str) -> tuple[str, str | None] | None:
@@ -388,9 +386,6 @@ def publish_session_pid(pid: int, session_key: str) -> None:
     else:
         body = session_key
     atomic_write(_txt_path(pid, cfg), body)
-    from kiro_crew.member_memory_auth import publish_member_session_pid
-
-    publish_member_session_pid(pid, session_key, home=cfg)
     key = _load_hmac_key()
     if key is None:
         _report_signing_unavailable()

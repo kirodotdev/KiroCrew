@@ -4425,6 +4425,7 @@ class DashboardState:
         self.file_indexes = FileIndexRegistry()
         # Runtime services share the gateway's policy, never a model-supplied mode.
         from kiro_crew.dashboard.handlers._shared import (
+            live_session_memory_mode,
             require_live_session_memory_mode,
             resolve_session_memory_mode,
         )
@@ -4434,6 +4435,9 @@ class DashboardState:
                 self, key
             )
         if self.context_builder is not None:
+            self.context_builder.live_memory_mode_for_session = (
+                lambda key: live_session_memory_mode(self, key)
+            )
             self.context_builder.memory_mode_for_session = lambda key: resolve_session_memory_mode(
                 self, key
             )

@@ -986,6 +986,7 @@ async def test_warm_reuse_claims_the_fresh_sessions_stubs(
     class _Handle:
         def __init__(self, token: str = "") -> None:
             self.stub_session_token = token
+            self.memory_mode = "persistent"
             self.model = ""
             self.session_id = "fresh"
             self.destroyed = False

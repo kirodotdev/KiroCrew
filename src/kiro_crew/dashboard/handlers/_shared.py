@@ -45,6 +45,7 @@ from kiro_crew.skill_trust import is_project_trusted as _is_project_trusted
 from kiro_crew.skills import skills_dir
 
 if TYPE_CHECKING:
+    from kiro_crew.execution_context import ExecutionContext
     from kiro_crew.platform.interfaces import CapabilityManager
 
 logger = logging.getLogger(__name__)
@@ -408,9 +409,15 @@ async def resolve_lesson_memory_store(
     from kiro_crew.memory_startup import MemoryStartupUnavailable
 
     try:
-        store = await asyncio.to_thread(
-            _session_memory_store, state, request.headers.get("X-Session-Key", "")
-        )
+        if request.get("internal_auth") is True:
+            scope = await member_request_scope(request)
+            if not scope.verified:
+                raise ValueError("Execution identity is unavailable")
+            store = scope.store or ""
+        else:
+            store = await asyncio.to_thread(
+                _session_memory_store, state, request.headers.get("X-Session-Key", "")
+            )
     except MemoryStartupUnavailable as exc:
         return "", web.json_response(
             {"error": _redact_memory_field(str(exc)), "code": "store_unavailable"}, status=503
@@ -458,22 +465,84 @@ async def _audit_private_memory_denial(operation: str, error: str) -> None:
 
 
 class MemberScope(NamedTuple):
-    """The caller identity a request carries, resolved once per request.
-
-    ``session`` is the caller's protected session (``None`` for an unowned
-    process), ``verified`` whether that identity was authenticated, and
-    ``store`` the session's bound memory store (``None`` when unbound or
-    unreadable). Every later check is a decision over these three, so one
-    request's owner-vs-member and bound-store-match answers describe the same
-    caller.
-    """
+    """Authenticated transport attribution and the captured execution target."""
 
     session: str | None
     verified: bool
     store: str | None
+    execution: ExecutionContext | None = None
 
 
 _MEMBER_SCOPE_KEY = "_member_scope"
+
+
+def _cron_execution_from_registry(
+    state: DashboardState | None, session: str
+) -> tuple[bool | None, "ExecutionContext | None"]:
+    """Resolve a code-cron's captured execution without opening its transcript.
+
+    Script crons use the gateway's internal HTTP API, but they do not create a
+    dashboard transcript before the script starts. Their stable ``cron:<id>``
+    key is therefore resolved from the scheduler's in-memory job record, whose
+    ``execution_context`` was captured when the job was admitted. This keeps
+    built-in script helpers on the same canonical route as message crons and
+    refuses a missing or malformed V2 record instead of falling back to Global.
+    Legacy V1 jobs retain their explicit store through ``resolve_cron_memory``.
+
+    ``True`` means a job was found, ``False`` means the configured registry has
+    no such job, and ``None`` means this request has no scheduler registry (for
+    example a reduced Slack-only surface). The first two outcomes are refused
+    or routed by the caller without falling back to a transcript or Global.
+    """
+    if state is None or not session.startswith("cron:"):
+        return None, None
+    parts = session.split(":")
+    job_id = parts[1] if len(parts) > 1 else ""
+    if not job_id:
+        return True, None
+    jobs = getattr(getattr(state, "crons", None), "_jobs", None)
+    if jobs is None:
+        return None, None
+    if not isinstance(jobs, (list, tuple, Mapping)):
+        # The scheduler registry is a concrete list in production. A surface
+        # that exposes only a placeholder object has no registry to consult;
+        # preserve the pre-V2 directive validation path.
+        return None, None
+    try:
+        candidates = jobs.values() if isinstance(jobs, Mapping) else jobs
+        job = next((item for item in candidates if getattr(item, "id", "") == job_id), None)
+    except Exception:  # noqa: BLE001 - identity resolution fails closed
+        return True, None
+    if job is None:
+        return False, None
+    try:
+        from kiro_crew.execution_context import execution_from_record
+
+        marker = object()
+        execution_record = getattr(job, "execution_context", marker)
+        if execution_record is marker:
+            # A reduced/legacy scheduler surface may expose only the caller
+            # ownership fields. It has no V2 routing authority; leave it to the
+            # existing transcript/global path rather than manufacturing one.
+            return None, None
+        if execution_record is not None:
+            execution = execution_from_record({"execution_context": execution_record})
+        else:
+            # A V2 schedule without its captured record is refused. Legacy V1
+            # records keep their old path; this helper must not reinterpret
+            # their display/store fields as a V2 identity.
+            member_id = getattr(job, "member_id", "")
+            memory_store = getattr(job, "memory_store", "")
+            from kiro_crew.memory_stores import memory_store_version
+
+            if not isinstance(member_id, str) or not isinstance(memory_store, str):
+                return None, None
+            if memory_store_version(memory_store) == 2 or (member_id and not memory_store):
+                return True, None
+            return None, None
+        return True, execution
+    except (AttributeError, OSError, ValueError):
+        return True, None
 
 
 async def member_request_scope(request: web.Request) -> MemberScope:
@@ -481,12 +550,34 @@ async def member_request_scope(request: web.Request) -> MemberScope:
     cached = request.get(_MEMBER_SCOPE_KEY)
     if isinstance(cached, MemberScope):
         return cached
-    from kiro_crew.member_memory_auth import memory_request_bound_store, memory_request_identity
+    from kiro_crew.execution_context import read_session_execution
 
     def _resolve() -> MemberScope:
-        session, verified = memory_request_identity(request)
-        store = memory_request_bound_store(request) if verified and session is not None else None
-        return MemberScope(session, verified, store)
+        if request.get("internal_auth") is not True:
+            return MemberScope(None, False, None)
+        session = request.headers.get("X-Session-Key", "")
+        if not isinstance(session, str):
+            return MemberScope(None, False, None)
+        if not session:
+            return MemberScope(None, True, None)
+        try:
+            execution = read_session_execution(session)
+        except (OSError, ValueError):
+            if not session.startswith("cron:"):
+                return MemberScope(session, False, None)
+            execution = None
+        if session.startswith("cron:"):
+            found, cron_execution = _cron_execution_from_registry(request.app.get("state"), session)
+            if found is False or (found is True and cron_execution is None):
+                return MemberScope(session, False, None)
+            if found is True:
+                # The scheduler record is authoritative for a cron run. A
+                # stale transcript must never rebind an existing job after a
+                # retry, restart, or job edit.
+                execution = cron_execution
+        if execution is None:
+            return MemberScope(session, True, "")
+        return MemberScope(session, True, execution.store.legacy_name, execution)
 
     scope = await asyncio.to_thread(_resolve)
     try:
@@ -499,54 +590,40 @@ async def member_request_scope(request: web.Request) -> MemberScope:
 async def internal_memory_scope(
     request: web.Request, operation: str, *, claimed_session: str | None = None
 ) -> tuple[str | None, web.Response | None]:
-    """Resolve private authority once, before reading a caller-selected resource."""
+    """Capture routing from the authenticated request without opening memory."""
     if request.get("internal_auth") is not True:
         return None, None
-    from kiro_crew.member_memory_auth import (
-        private_memory_boundaries_active,
-        private_memory_store_for_session,
-    )
-
-    if not await asyncio.to_thread(private_memory_boundaries_active):
-        return None, None
     scope = await member_request_scope(request)
-    try:
-        if not scope.verified:
-            raise ValueError("unverified caller")
-        if scope.session is not None:
-            if scope.session != request.headers.get("X-Session-Key", ""):
-                raise ValueError("session header mismatch")
-            if claimed_session is not None and claimed_session != scope.session:
-                raise ValueError("claimed session mismatch")
-            if scope.store is None:
-                raise ValueError("unavailable process binding")
-            from kiro_crew.memory_stores import memory_store_version
-
-            private = bool(
-                scope.store and await asyncio.to_thread(memory_store_version, scope.store) == 2
-            )
-            return scope.store if private else None, None
-        if claimed_session and await asyncio.to_thread(
-            private_memory_store_for_session, claimed_session
-        ):
-            raise ValueError("borrowed private session")
-        return None, None
-    except (OSError, ValueError):
-        await _audit_private_memory_denial(
-            operation, "The caller's protected session could not be verified."
-        )
-        return None, web.json_response(
-            {
-                "error": "The caller's member session could not be verified.",
-                "code": "member_session_unverified",
-            },
-            status=403,
-        )
+    if scope.verified and (claimed_session is None or claimed_session == scope.session):
+        return scope.store or None, None
+    await _audit_private_memory_denial(operation, "The execution identity is unavailable.")
+    return None, web.json_response(
+        {
+            "error": "The execution identity is unavailable; Global memory was not used.",
+            "code": "member_identity_unavailable",
+        },
+        status=409,
+    )
 
 
 async def private_chat_route_refusal(request: web.Request) -> web.Response | None:
-    """Keep private tools out of aggregate chat creation and identity controls."""
+    """Keep member tools within their admitted chat controls."""
     scope, refusal = await internal_memory_scope(request, "chat.control")
+    if refusal is not None:
+        # Let the ordinary internal-auth middleware produce its established
+        # caller_record_missing 403 for delegated work removed mid-run. Memory
+        # routing must not turn that host/app security decision into a 409.
+        session = request.headers.get("X-Session-Key", "")
+        if session.startswith(("cron:", "subagent:")):
+            from kiro_crew.dashboard.token_auth import caller_record_is_missing
+
+            state = request.app.get("state")
+            if state is not None and caller_record_is_missing(
+                session,
+                getattr(getattr(state, "crons", None), "_jobs", None),
+                getattr(getattr(state, "subagents", None), "_agents", None),
+            ):
+                return None
     if refusal is not None or scope is None:
         return refusal
     # The follow-up card is an agent-facing callback on its current tab. Other
@@ -579,7 +656,7 @@ async def member_scope_denied_refusal(operation: str) -> web.Response:
     implementation, so the two paths cannot drift on the wording or the audit.
     """
     await _audit_private_memory_denial(
-        operation, "A private member cannot use the owner's aggregate controls."
+        operation, "Agent tools cannot use the owner's aggregate controls."
     )
     return web.json_response(
         {
@@ -593,7 +670,7 @@ async def member_scope_denied_refusal(operation: str) -> web.Response:
 async def private_owner_surface_refusal(
     request: web.Request, operation: str
 ) -> web.Response | None:
-    """Private tools use their scoped API, never the owner's aggregate controls."""
+    """Member tools retain the ordinary owner permission for aggregate controls."""
     scope, refusal = await internal_memory_scope(request, operation)
     if refusal is not None or scope is None:
         return refusal
@@ -627,7 +704,7 @@ def owner_surface_guard(operation: str) -> RouteGuard:
 
 
 def owner_surface_route(handler: Callable[..., Any]) -> Callable[..., Any]:
-    """Refuse a private member before ``handler`` runs; the audit label is its name."""
+    """Check owner permissions before ``handler`` runs; the audit label is its name."""
     return guarded_route(handler, owner_surface_guard(handler.__name__))
 
 
@@ -667,39 +744,19 @@ def guard_owner_surface_routes(
 async def require_private_memory_session(
     request: web.Request, store: str, operation: str, *, session_key: str | None = None
 ) -> web.Response | None:
-    """Authorize an actual member session, retaining owner and Global V1 access."""
-    from kiro_crew.memory_stores import memory_store_version
-
-    private = bool(store and await asyncio.to_thread(memory_store_version, store) == 2)
+    """Require the selected target to match this call's captured execution."""
     if request.get("internal_auth") is not True:
-        return await require_owner_dashboard_request(request, operation) if private else None
-    from kiro_crew.member_memory_auth import PROOF_HEADER, private_memory_boundaries_active
-
+        return await require_owner_dashboard_request(request, operation) if store else None
     scope = await member_request_scope(request)
-    if scope.verified and scope.session is None and not private:
-        return None
-    if (
-        not scope.verified
-        and not private
-        and not request.headers.get(PROOF_HEADER)
-        and not await asyncio.to_thread(private_memory_boundaries_active)
-    ):
-        return None
-    if (
-        scope.verified
-        and scope.session
-        and scope.session == request.headers.get("X-Session-Key", "")
-        and (session_key is None or session_key == scope.session)
-        and scope.store == store
-    ):
-        return None
+    if scope.verified and (session_key is None or session_key == scope.session):
+        if (scope.store or "") == store:
+            return None
     return web.json_response(
         {
-            "error": "This caller's member session could not be verified. "
-            "Retry from the member's active MCP connection; global memory was not used.",
-            "code": "member_session_unverified",
+            "error": "The request does not match its execution memory target; Global was not used.",
+            "code": "member_identity_unavailable",
         },
-        status=403,
+        status=409,
     )
 
 
@@ -2049,6 +2106,11 @@ async def resolve_session_memory_mode(state: DashboardState, key: str) -> str:
         if mode not in VALID_MEMORY_MODES:
             raise ValueError("The originating session's memory mode is invalid")
         return mode
+    from kiro_crew.execution_context import read_session_execution
+
+    execution = await asyncio.to_thread(read_session_execution, key)
+    if execution is not None:
+        return execution.memory_mode
     if key.startswith("subagent:"):
         from kiro_crew.subagent_persistence import read_run_memory_mode
 
@@ -2517,47 +2579,11 @@ async def resolve_requested_memory_store(
     require_ready: bool = True,
     allow_failed: bool = False,
 ) -> tuple[str, web.Response | None]:
-    """The memory store this request addresses, or a refusal.
+    """Route internal tools through their captured execution; owners may select a store.
 
-    Answers ``("", None)`` for the global store and ``(name, None)`` for a silo.
-    The second element is a response to return AS-IS when the request may not
-    have the store it asked for.
-
-    **An absent parameter always addresses the global store.** ``X-Session-Key``
-    is unverified on TCP, so reading that session's recorded binding would let a
-    non-owner dashboard token address any silo by naming another session. This
-    rule covers every content route, including facet pages and grouped counts.
-    With the parameter, the request is asking to
-    address a store it was not handed, which is the OPERATOR's question rather
-    than a caller's, and it takes the owner gate.
-
-    Gating on presence rather than on "the name differs from my binding" is
-    deliberate, and the difference is not cosmetic: ``?store=default`` names the
-    operator's own global memory, so a rule that only fired on a *mismatch*
-    would wave through the single most sensitive value the parameter can carry
-    whenever the caller happened to be unbound.
-
-    The gate is :func:`require_owner_dashboard_request`, and it excludes an agent
-    POSITIVELY rather than by asking "is this not an agent". It requires a
-    non-empty ``request["user"]``, and ``token_auth_middleware`` sets that key on
-    the cookie/query-token path ONLY -- its ``X-Internal-Secret`` branch (kiro-cli,
-    MCP, subagents) hands the request straight to the handler without ever
-    publishing an identity. So "the caller proved it is the dashboard owner" is
-    the thing being checked, and an agent fails it because it has no identity to
-    present, not because it was recognised and rejected. That cross-module
-    property is what makes the parameter safe, so
-    ``test_memory_store_param_is_owner_only`` pins it rather than trusting it to
-    stay true.
-
-    An UNDECLARED name is a 404 and never a degrade. ``resolve_store_path``
-    deliberately degrades an unknown name onto the default store, which here
-    would render the operator's own memory under the label of a store that does
-    not exist -- the request would look like it worked. A malformed name gets the
-    same answer as an unknown one on purpose: distinguishing them would report
-    whether a given name is declared to a caller that has not passed the gate.
-
-    Every refusal carries a machine-readable ``code``, since backend strings have
-    no catalog path.
+    Browser requests without a store retain the Global default. An explicit
+    store parameter always requires the ordinary owner permission, including
+    when it names Global. Unknown selections never fall back to another store.
     """
     from kiro_crew.memory_stores import (
         DEFAULT_MEMORY_STORE,
@@ -2566,10 +2592,22 @@ async def resolve_requested_memory_store(
     )
 
     if MEMORY_STORE_PARAM not in request.query:
-        refusal = await require_private_memory_session(request, "", operation)
-        if refusal is None and require_ready:
-            refusal = memory_startup_refusal(allow_failed=allow_failed)
-        return "", refusal
+        store = ""
+        if request.get("internal_auth") is True:
+            scope = await member_request_scope(request)
+            if not scope.verified:
+                return "", web.json_response(
+                    {
+                        "error": "The execution identity is unavailable; Global was not used.",
+                        "code": "member_identity_unavailable",
+                    },
+                    status=409,
+                )
+            store = scope.store or ""
+        refusal = (
+            memory_startup_refusal(store, allow_failed=allow_failed) if require_ready else None
+        )
+        return store, refusal
 
     denial = await require_owner_dashboard_request(request, operation)
     if denial is not None:
@@ -2597,24 +2635,7 @@ _store_tier_lock = LoopBoundLock()
 
 
 async def markdown_memory_for_store(state: DashboardState, store: str):
-    """The MARKDOWN tier (preferences, projects, daily history, FTS) for *store*.
-
-    ``""`` returns the object the gateway already wired at startup, so the default
-    store's markdown path is untouched by the existence of this function -- the
-    same reason :func:`resolve_requested_memory_store` treats an absent parameter
-    as the global store.
-
-    A silo gets its own :class:`~kiro_crew.memory.MemoryStore` over that store's
-    two resolved roots. Both come from ``memory_stores``, which is the one module
-    that knows a store name maps to a DIFFERENT markdown root and FTS index --
-    and they are separate questions, so passing one path twice would put a silo's
-    index inside the default store's tree.
-
-    ``init()`` is blocking file IO (directory creation, an owner-only tighten, an
-    FTS open), so it is offloaded; the cache is published under a lock because two
-    concurrent requests for a store nobody has opened would otherwise each build
-    one and the loser's handle would leak its FTS connection.
-    """
+    """Return manual documents plus the selected store's learning history facade."""
     from kiro_crew.memory_startup import require_memory_ready
 
     require_memory_ready(store)
@@ -2629,33 +2650,18 @@ async def markdown_memory_for_store(state: DashboardState, store: str):
         config = KiroCrewConfig.load()
         record = config.memory_stores.get(store)
         version = getattr(record, "memory_version", 1)
-        private = bool(getattr(record, "owner_member", "")) or (version == 2)
-        # Legacy named markdown may still initialize its directory on first
-        # use. Private memory must already have its owned, readable database.
-        require_memory_store(store, config=config, require_directory=private)
+        require_memory_store(store, config=config, require_directory=version == 2)
         return version
 
-    async def hold_private_generation(version: int) -> None:
-        if version != 2:
-            return
-        # A private restore swaps the complete store directory, including these
-        # Markdown files and their index. Keep the same lifetime admission held
-        # by the vector tier before any cached Markdown handle can read or write
-        # that generation. Named V1 retains its Markdown-only fallback.
-        from kiro_crew.memory_stores import UnknownMemoryStore
-
-        if await vector_memory_for_store(state, store) is None:
-            raise UnknownMemoryStore(f"Private memory {store!r} could not be prepared")
-
     version = await asyncio.to_thread(validate_target)
-    await hold_private_generation(version)
+    vector = await vector_memory_for_store(state, store) if version == 2 else None
     cache: dict[str, Any] = getattr(state, "_store_markdown", None) or {}
     if store in cache:
         return cache[store]
     async with _store_tier_lock:
         # Deletion may have committed while this request awaited the tier lock.
         version = await asyncio.to_thread(validate_target)
-        await hold_private_generation(version)
+        vector = await vector_memory_for_store(state, store) if version == 2 else None
         cache = getattr(state, "_store_markdown", None) or {}
         if store in cache:
             return cache[store]
@@ -2677,7 +2683,8 @@ async def markdown_memory_for_store(state: DashboardState, store: str):
                 mem = MemoryStore(
                     workspace=workspace,
                     index_db=memory_index_path_for(store),
-                    memory_version=validate_target(),
+                    memory_version=version,
+                    vector_store=vector,
                 )
                 mem.init()
                 # Keep admission while either the cache or an in-flight request owns

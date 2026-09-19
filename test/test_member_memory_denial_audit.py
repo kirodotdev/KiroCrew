@@ -1,4 +1,4 @@
-"""Private authorization refusals survive an unavailable security event log."""
+"""Owner and routing refusals survive an unavailable security event log."""
 
 from __future__ import annotations
 
@@ -9,21 +9,19 @@ from unittest import mock
 
 import pytest
 from member_memory_helpers import env as _member_env
-from member_memory_helpers import member_proof as _member_proof
 from member_memory_helpers import request
 
 from kiro_crew import sel as sel_module
 from kiro_crew.dashboard.handlers import _shared, sessions
 
 env = _member_env
-member_proof = _member_proof
 pytestmark = [pytest.mark.asyncio, pytest.mark.xdist_group("member_memory_denial_audit")]
 
 
 @pytest.mark.parametrize("audit_state", ["init_failure", "write_failure", "healthy"])
-@pytest.mark.parametrize("verified_private", [False, True], ids=["unverified", "private"])
-async def test_private_denial_survives_audit_failure_without_reading_history(
-    env, member_proof, monkeypatch, audit_state, verified_private
+@pytest.mark.parametrize("verified_member", [False, True], ids=["missing_identity", "member"])
+async def test_member_denial_survives_audit_failure_without_reading_history(
+    env, monkeypatch, audit_state, verified_member
 ):
     loop_thread = threading.get_ident()
     initialization_threads = []
@@ -47,25 +45,29 @@ async def test_private_denial_survives_audit_failure_without_reading_history(
         await sel_module.warm_sel_singleton()
     list_history = mock.Mock(return_value=[{"key": "dashboard:owner", "title": "private"}])
     env.state.conversation_log.list_sessions = list_history
+    if not verified_member:
+        monkeypatch.setattr(
+            "kiro_crew.execution_context.read_session_execution",
+            mock.Mock(side_effect=ValueError("invalid execution record")),
+        )
 
     response = await sessions.api_sessions(
         request(
             env,
             internal=True,
-            proof=member_proof if verified_private else member_proof + "tampered",
         )
     )
 
-    assert response.status == 403
+    assert response.status == (403 if verified_member else 409)
     assert json.loads(response.text) == (
         {
             "error": "This operation requires the owner. Use the member's scoped tools instead.",
             "code": "member_scope_denied",
         }
-        if verified_private
+        if verified_member
         else {
-            "error": "The caller's member session could not be verified.",
-            "code": "member_session_unverified",
+            "error": "The execution identity is unavailable; Global memory was not used.",
+            "code": "member_identity_unavailable",
         }
     )
     list_history.assert_not_called()
@@ -81,17 +83,15 @@ async def test_private_denial_survives_audit_failure_without_reading_history(
                 "outcome": "denied",
                 "source": "member_memory",
                 "error": (
-                    "A private member cannot use the owner's aggregate controls."
-                    if verified_private
-                    else "The caller's protected session could not be verified."
+                    "Agent tools cannot use the owner's aggregate controls."
+                    if verified_member
+                    else "The execution identity is unavailable."
                 ),
             }
         ]
 
 
-async def test_owner_and_verified_scoped_member_keep_their_existing_admission(
-    env, member_proof, monkeypatch
-):
+async def test_owner_and_verified_scoped_member_keep_their_existing_admission(env, monkeypatch):
     event_log = mock.Mock(side_effect=RuntimeError("SEL signing key is unavailable"))
     monkeypatch.setattr(sel_module, "sel", event_log)
     list_history = mock.Mock(return_value=[])
@@ -101,8 +101,6 @@ async def test_owner_and_verified_scoped_member_keep_their_existing_admission(
     assert response.status == 200
     assert json.loads(response.text) == {"sessions": [], "total": 0, "has_more": False}
     list_history.assert_called_once_with()
-    scope, refusal = await _shared.internal_memory_scope(
-        request(env, internal=True, proof=member_proof), "spawn.list"
-    )
+    scope, refusal = await _shared.internal_memory_scope(request(env, internal=True), "spawn.list")
     assert scope == "member-alice" and refusal is None
     event_log.assert_not_called()

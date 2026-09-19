@@ -28,7 +28,7 @@ from kiro_crew.memory_recall import (
     _transport_size,
     recall_json,
 )
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
 from .admission import validate_corpus
 from .admission_corpus import ADMISSION_TOPICS
@@ -56,12 +56,10 @@ def ranking_metrics(ids: list[str], relevant: set[str], k: int = 8) -> dict[str,
 
 def _new_store(home: Path, name: str, dim: int) -> VectorMemoryStore:
     directory = home / "memory_stores" / name
-    directory.mkdir(parents=True)
-    (directory / "member-memory.json").write_text(
-        json.dumps({"memory_version": 2, "owner_member": name}), encoding="utf-8"
+    create_member_database(directory / "memory.db", member_id=name, store_id=name)
+    store = open_member_database(
+        directory / "memory.db", member_id=name, store_id=name, embedding_dim=dim
     )
-    store = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=dim)
-    store.init()
     if store.algorithm_version != "v2":
         raise RuntimeError("Evaluation did not open the owned V2 policy")
     return store

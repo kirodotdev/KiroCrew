@@ -46,6 +46,7 @@ def _provider_requesting_tool() -> MagicMock:
 def _ctx_with_hook(action: str) -> MagicMock:
     ctx = MagicMock()
     ctx.conversation_log.get_metadata_status.return_value = ({}, True)
+    ctx.memory_mode_for_session = AsyncMock(return_value="persistent")
     ctx.hooks.on_tool_call = MagicMock(return_value=ToolHookResult(action=action))
     ctx.build_message = MagicMock(return_value=("prompt", None))
     return ctx

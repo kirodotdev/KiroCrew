@@ -351,7 +351,7 @@ def newest_backup(store: str = DEFAULT_MEMORY_STORE) -> Path | None:
 
 
 def _require_v1_restore_database(db: sqlite3.Connection, store: str) -> None:
-    """Accept legacy memory shapes without importing private ownership."""
+    """Accept Global and named V1 shapes without importing a member database."""
     from kiro_crew import memory_schema
 
     lineage = memory_schema.detect_lineage(db)
@@ -359,17 +359,8 @@ def _require_v1_restore_database(db: sqlite3.Connection, store: str) -> None:
         store != DEFAULT_MEMORY_STORE and lineage == memory_schema.LINEAGE_CREW
     ):
         raise ValueError("V1 restore requires a V1 memory database")
-    has_meta = db.execute(
-        "SELECT 1 FROM sqlite_schema WHERE type IN ('table', 'view') AND name='memory_meta'"
-    ).fetchone()
-    if (
-        has_meta
-        and db.execute(
-            "SELECT 1 FROM memory_meta WHERE key IN (?, ?) LIMIT 1",
-            (memory_schema.PRIVATE_MEMORY_VERSION_META_KEY, memory_schema.OWNER_MEMBER_META_KEY),
-        ).fetchone()
-    ):
-        raise ValueError("V1 restore requires a V1 memory database without private ownership")
+    if db.execute("SELECT 1 FROM sqlite_schema WHERE name='member_database'").fetchone():
+        raise ValueError("V1 restore cannot install a member memory database")
 
 
 def restore_from_backup(backup: Path, store: str = DEFAULT_MEMORY_STORE) -> Path:

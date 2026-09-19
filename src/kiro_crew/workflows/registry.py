@@ -97,6 +97,8 @@ class RunHandle:
     # unknown). Such source remains usable for display/rerun, but not promotion.
     source_is_original: bool = True
     execution_binding_version: int = 0
+    execution_context: Any = None
+    memory_mode: str = "persistent"
     args: dict = field(default_factory=dict)
     agent_results: dict = field(default_factory=dict)  # call_index → result (resume cache)
     # call_index → bounded reason that call failed. Kept next to agent_results so a
@@ -124,6 +126,12 @@ class RunHandle:
     # Live durability health, separate from the workflow function's outcome.
     _persistence_error: Optional[str] = field(default=None, init=False, repr=False, compare=False)
 
+    @property
+    def allows_persistence(self) -> bool:
+        """Admission fixes privacy before the first checkpoint is scheduled."""
+        context_mode = getattr(self.execution_context, "memory_mode", self.memory_mode)
+        return self.memory_mode == "persistent" and context_mode == "persistent"
+
     def snapshot(self, *, include_events: bool = True, include_result: bool = True) -> dict:
         """JSON-serializable view of this run (never leaks the asyncio.Task).
 
@@ -144,6 +152,12 @@ class RunHandle:
             "session_key": self.session_key,
             "source_format": self.source_format,
             "execution_binding_version": self.execution_binding_version,
+            **(
+                {"execution_context": self.execution_context.to_record()}
+                if self.execution_context
+                else {}
+            ),
+            "memory_mode": self.memory_mode,
             "driver": self.driver,
             "task_id": self.task_id,
             "capabilities": list(self.capabilities),
@@ -240,6 +254,12 @@ class RunHandle:
             "session_key": self.session_key,
             "source_format": self.source_format,
             "execution_binding_version": self.execution_binding_version,
+            **(
+                {"execution_context": self.execution_context.to_record()}
+                if self.execution_context
+                else {}
+            ),
+            "memory_mode": self.memory_mode,
             "driver": self.driver,
             "task_id": self.task_id,
             "capabilities": list(self.capabilities),
@@ -265,6 +285,8 @@ class RunHandle:
 
     @classmethod
     def from_store_json(cls, obj: dict) -> "RunHandle":
+        from kiro_crew.execution_context import execution_from_record
+
         status = obj.get("status", STATUS_FINISHED)
         error = obj.get("error")
         derived_from = obj.get("derived_from") or {}
@@ -286,6 +308,8 @@ class RunHandle:
             session_key=obj.get("session_key", ""),
             source_format=obj.get("source_format", "python"),
             execution_binding_version=obj.get("execution_binding_version", 0),
+            execution_context=execution_from_record(obj) if obj.get("execution_context") else None,
+            memory_mode=obj.get("memory_mode", "persistent"),
             driver=obj.get("driver", "workflow"),
             task_id=obj.get("task_id", ""),
             capabilities=tuple(obj.get("capabilities") or ()),
@@ -332,7 +356,7 @@ class RunRegistry:
         self._on_event = cb
 
     def _persist(self, handle: RunHandle) -> None:
-        if self._store is None:
+        if self._store is None or not handle.allows_persistence:
             return
         handle._persistence_error = self._persist_snapshot(handle.run_id, handle.to_store_json())
 
@@ -350,7 +374,7 @@ class RunRegistry:
     def persist_soon(self, run_id: str) -> None:
         """Queue a sync callback's checkpoint; terminal settlement owns its drain."""
         handle = self._runs.get(run_id)
-        if handle is None or self._store is None:
+        if handle is None or self._store is None or not handle.allows_persistence:
             return
         task = asyncio.create_task(self.persist_async(run_id))
         handle._pending_checkpoints.add(task)
@@ -516,7 +540,7 @@ class RunRegistry:
     async def persist_async(self, run_id: str) -> None:
         """Snapshot on-loop and serialize the durable mirror off-loop per run."""
         handle = self._runs.get(run_id)
-        if handle is None or self._store is None:
+        if handle is None or self._store is None or not handle.allows_persistence:
             return
         payload = handle.to_store_json()
         handle._persist_generation += 1
@@ -527,7 +551,11 @@ class RunRegistry:
 
         async def _write_latest() -> None:
             async with lock:
-                if generation != handle._persist_generation or self._runs.get(run_id) is not handle:
+                if (
+                    generation != handle._persist_generation
+                    or self._runs.get(run_id) is not handle
+                    or not handle.allows_persistence
+                ):
                     return
                 handle._persistence_error = await asyncio.to_thread(
                     self._persist_snapshot, run_id, payload
@@ -745,6 +773,8 @@ async def start_background_run(
     source: str = "",
     source_is_original: bool = True,
     execution_binding_version: int = 0,
+    execution_context: Any = None,
+    memory_mode: str = "persistent",
     args: Optional[dict] = None,
     workflow_id: str = "",
     workflow_slug: str = "",
@@ -768,6 +798,8 @@ async def start_background_run(
         source=source,
         source_is_original=source_is_original,
         execution_binding_version=execution_binding_version,
+        execution_context=execution_context,
+        memory_mode=memory_mode,
         args=args or {},
         workflow_id=workflow_id,
         workflow_slug=workflow_slug,

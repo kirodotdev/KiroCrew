@@ -1228,6 +1228,7 @@ async def _resume_stop_manager() -> Any:
 
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.get_agent = MagicMock(return_value="")
     sessions.get_approval_policy = MagicMock(return_value="auto")
     sessions.has_session = MagicMock(return_value=True)
@@ -1554,6 +1555,7 @@ class TestStoreOffLoop:
 
         sessions = MagicMock()
         sessions.get_pid = MagicMock(return_value=None)
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         provider = AsyncMock()
         provider.stream = MagicMock(side_effect=lambda *a, **k: iter(()))
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
@@ -1618,6 +1620,7 @@ class TestStoreOffLoop:
 
         sessions = MagicMock()
         sessions.get_pid = MagicMock(return_value=None)
+        sessions.get_agent_selection = MagicMock(return_value=("template", ""))
         provider = AsyncMock()
         provider.stream = MagicMock(side_effect=lambda *a, **k: iter(()))
         sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
@@ -2544,6 +2547,7 @@ async def test_claim_unavailable_leaves_the_row_queued_instead_of_starting(
 
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.get_or_create = AsyncMock()
     sessions.get_agent = MagicMock(return_value="")
     sessions.get_approval_policy = MagicMock(return_value="auto")
@@ -2587,6 +2591,7 @@ async def test_store_accepted_reentry_skips_the_mutable_gates(
 
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     provider = AsyncMock()
     provider.stream = MagicMock(side_effect=lambda *a, **k: iter(()))
     sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
@@ -2637,6 +2642,7 @@ async def test_a_drained_row_refused_by_the_pump_is_failed_in_the_store(
 
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.get_or_create = AsyncMock()
     sessions.get_agent = MagicMock(return_value="")
     sessions.get_approval_policy = MagicMock(return_value="auto")
@@ -2684,6 +2690,7 @@ async def test_batch_members_are_counted_once_including_a_prepare_refusal(
 
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     provider = AsyncMock()
     provider.stream = MagicMock(side_effect=lambda *a, **k: iter(()))
     sessions.get_or_create = AsyncMock(return_value=(provider, True, False))
@@ -2722,6 +2729,7 @@ async def test_spawn_is_refused_typed_when_the_enabled_store_is_unavailable() ->
 
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     sessions.get_or_create = AsyncMock()
     sessions.get_agent = MagicMock(return_value="")
     sessions.get_approval_policy = MagicMock(return_value="auto")
@@ -2754,6 +2762,7 @@ async def _app_manager(monkeypatch: pytest.MonkeyPatch) -> Any:
 
     sessions = MagicMock()
     sessions.get_pid = MagicMock(return_value=None)
+    sessions.get_agent_selection = MagicMock(return_value=("template", ""))
     provider = AsyncMock()
     provider.stream = MagicMock(side_effect=lambda *a, **k: iter(()))
     sessions.get_or_create = AsyncMock(return_value=(provider, True, False))

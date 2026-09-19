@@ -16,7 +16,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 from hypothesis import given, settings
 from hypothesis import strategies as st
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.config.schema import (
     SCHEMA_REGISTRY,
@@ -34,7 +33,7 @@ def _owner_caller(monkeypatch):
         "kiro_crew.dashboard.handlers.source_providers.is_owner_dashboard_request",
         lambda request: True,
     )
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
 
 
 # ---------------------------------------------------------------------------
@@ -303,7 +302,7 @@ class TestAgentCrudProperties:
                     create_data = await resp.json()
                     if memory_store not in ("", "default"):
                         assert resp.status == 400
-                        assert create_data["code"] == "private_memory_required"
+                        assert create_data["code"] == "member_memory_required"
                         assert json.loads(tmp.read_text()) == _seed_config()
                         return
                     assert resp.status == 200
@@ -379,7 +378,7 @@ class TestAgentCrudProperties:
                     refused_rebinding = update_ms and new_ms != private_store
                     if refused_rebinding:
                         assert resp.status == 409
-                        assert (await resp.json())["code"] == "private_memory_immutable"
+                        assert (await resp.json())["code"] == "member_memory_immutable"
                     else:
                         assert resp.status == 200
 

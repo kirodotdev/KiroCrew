@@ -11,7 +11,6 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from kiro_crew import mcp_core, mcp_cron, member_memory_auth, platform_compat
-from kiro_crew.config import paths
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.cron import CronService
 from kiro_crew.dashboard.server import _register_mcp_routes
@@ -26,7 +25,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:alice")
     monkeypatch.delenv("KIROCREW_CHANNEL_ID", raising=False)
     monkeypatch.setattr(platform_compat, "get_process_start_id", lambda pid: f"test-{pid}")
-    monkeypatch.setattr(member_memory_auth, "_proof_process_scope", lambda pid: ["fixture", pid])
     monkeypatch.setattr(platform_compat, "get_ppid", lambda pid: 0)
     cfg = KiroCrewConfig.load()
     log = ConversationLog()
@@ -36,12 +34,9 @@ def env(tmp_path, monkeypatch):
         store = provision_member_memory(cfg, member)
         cfg.save()
         key = f"dashboard:{member}"
-        log.update_metadata(key, {"agent": member, "memory_store": store})
         member_memory_auth.bind_private_session_store(key, store)
-        member_memory_auth.publish_member_session_pid(pid, key, memory_store=store)
-        proof = member_memory_auth.issue_member_session_proof(key, pid)
-        assert proof
-        identities[member] = SimpleNamespace(pid=pid, key=key, store=store, proof=proof)
+        log.update_metadata(key, {"agent": member, "memory_store": store})
+        identities[member] = SimpleNamespace(pid=pid, key=key, store=store)
     # Synthetic process/start/isolation identity replaces the OS lookup. All protected
     # records, proof verification, config/store validation and cron files are real.
     monkeypatch.setattr(member_memory_auth, "_request_peer_pid", lambda request: 70001)
@@ -57,6 +52,10 @@ def app_for(env):
     async def authenticate(request, handler):
         if request.headers.get("X-Internal-Secret") == "fixture-internal-secret":
             request["internal_auth"] = True
+            # The fixture represents the trusted local peer.  Production TCP
+            # callers provide the signed session token instead; marking the
+            # synthetic peer here keeps this test focused on cron routing.
+            request["peer_verified"] = True
         return await handler(request)
 
     app = web.Application(middlewares=[authenticate])
@@ -70,8 +69,6 @@ async def invoke(client, env, name, arguments, *, member="alice", internal=True,
     headers = {"X-Session-Key": identity.key}
     if internal:
         headers["X-Internal-Secret"] = "fixture-internal-secret"
-    if proof:
-        headers[member_memory_auth.PROOF_HEADER] = identity.proof
     response = await client.post(
         "/api/crons/tools", json={"name": name, "arguments": arguments}, headers=headers
     )
@@ -79,9 +76,7 @@ async def invoke(client, env, name, arguments, *, member="alice", internal=True,
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("delegated_proof", [False, True])
-async def test_private_direct_cron_lifecycle_uses_host_store(env, monkeypatch, delegated_proof):
-    monkeypatch.setattr(paths, "private_runtime_log_dir", lambda: env.home / "agent-logs")
+async def test_private_direct_cron_lifecycle_uses_host_store(env, monkeypatch):
     loop = asyncio.get_running_loop()
     opened_by = []
 
@@ -99,7 +94,7 @@ async def test_private_direct_cron_lifecycle_uses_host_store(env, monkeypatch, d
             assert path == "/api/crons/tools"
             assert session_key == env.identities["alice"].key
             status, payload = asyncio.run_coroutine_threadsafe(
-                invoke(client, env, body["name"], body["arguments"], proof=delegated_proof), loop
+                invoke(client, env, body["name"], body["arguments"]), loop
             ).result(timeout=10)
             assert status == 200, payload
             return payload
@@ -176,38 +171,19 @@ async def test_private_deterministic_refusal_propagates_without_persisting(env):
             client, env, "cron_add", {"name": "scriptless", "command": "echo hello", "every": 120}
         )
     assert status == 200
-    assert "memory_unavailable" in body["result"] and "require an agent task" in body["result"]
-    assert CronService(base_dir=env.home).list_jobs(include_disabled=True) == []
+    assert body["result"].startswith("Added job")
+    job = CronService(base_dir=env.home).list_jobs()[0]
+    assert job.memory_store == env.identities["alice"].store
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("case", ["browser", "unverified", "global", "header", "store", "metadata"])
-async def test_endpoint_refuses_unverified_scope_before_opening_cron_store(env, monkeypatch, case):
-    if case in ("unverified", "global", "header"):
-        answer = {
-            "unverified": (None, False),
-            "global": (None, True),
-            "header": ("dashboard:bob", True),
-        }[case]
-        monkeypatch.setattr(member_memory_auth, "memory_request_identity", lambda request: answer)
-    elif case == "store":
-        monkeypatch.setattr(
-            member_memory_auth,
-            "memory_request_bound_store",
-            lambda request: env.identities["bob"].store,
-        )
-    elif case == "metadata":
-        env.state.conversation_log.update_metadata(
-            "dashboard:alice", {"memory_store": env.identities["bob"].store}
-        )
+async def test_endpoint_requires_internal_authentication_before_opening_store(env, monkeypatch):
     opening = mock.Mock(side_effect=AssertionError("unauthorized cron store access"))
     monkeypatch.setattr(mcp_cron, "CronService", opening)
     async with TestClient(TestServer(app_for(env))) as client:
-        status, body = await invoke(client, env, "cron_list", {}, internal=case != "browser")
-    assert status == (503 if case == "metadata" else 403), body
+        status, body = await invoke(client, env, "cron_list", {}, internal=False)
+    assert status == 403
     opening.assert_not_called()
-    assert not (env.home / "crons.json").exists()
-    assert not (env.home / ".crons.lock").exists()
 
 
 @pytest.mark.asyncio
@@ -230,7 +206,6 @@ async def test_unknown_tool_and_malformed_arguments_never_open_store(env, monkey
     ],
 )
 def test_proxy_failure_never_falls_back_or_retries(env, monkeypatch, response):
-    monkeypatch.setattr(paths, "private_runtime_log_dir", lambda: env.home / "agent-logs")
     post = mock.Mock(return_value=response)
     opening = mock.Mock(side_effect=AssertionError("sandbox must not write cron files"))
     monkeypatch.setattr(mcp_core, "_post", post)
@@ -244,7 +219,6 @@ def test_proxy_failure_never_falls_back_or_retries(env, monkeypatch, response):
 
 
 def test_private_proxy_retains_direct_channel_default(env, monkeypatch):
-    monkeypatch.setattr(paths, "private_runtime_log_dir", lambda: env.home / "agent-logs")
     monkeypatch.setenv("KIROCREW_CHANNEL_ID", "C0ABC123")
     post = mock.Mock(return_value={"result": "Added job"})
     monkeypatch.setattr(mcp_core, "_post", post)
@@ -252,15 +226,13 @@ def test_private_proxy_retains_direct_channel_default(env, monkeypatch):
     assert post.call_args.args[1]["arguments"]["channel"] == "C0ABC123"
 
 
-def test_global_v1_direct_runtime_keeps_local_dispatch(env, monkeypatch):
-    monkeypatch.setattr(paths, "private_runtime_log_dir", lambda: None)
-    monkeypatch.setenv("KIROCREW_SESSION_KEY", "dashboard:global")
-    post = mock.Mock(side_effect=AssertionError("V1 must not require private proxy"))
+def test_unidentified_direct_runtime_refuses_writes(env, monkeypatch):
+    monkeypatch.delenv("KIROCREW_SESSION_KEY", raising=False)
+    post = mock.Mock(side_effect=AssertionError("unidentified caller must not forward"))
     monkeypatch.setattr(mcp_core, "_post", post)
     result = mcp_cron._call_tool("cron_add", {"name": "global", "message": "go", "every": 120})
-    assert result.startswith("Added job"), result
-    job = CronService(base_dir=env.home).list_jobs()[0]
-    assert job.memory_store == "" and job.member_id == ""
+    assert result.startswith("Error: cannot determine which session")
+    assert not CronService(base_dir=env.home).list_jobs()
     post.assert_not_called()
 
 

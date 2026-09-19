@@ -111,8 +111,8 @@ Two grants are excluded, and the exclusions are load-bearing:
 
 The posture that transfers is the one held at **allocation**, read off the
 re-resolved caller in the synchronous window after the last gate — not the one
-read on entry. Creation awaits project and agent resolution, private-memory
-delegation validation and optional folder confirmation before the slot exists.
+read on entry. Creation awaits project and agent resolution, execution identity
+validation and optional folder confirmation before the slot exists.
 An operator selecting `normal` in any of those windows would otherwise have a revoked posture resurrected by a
 create already in flight. Revoking mid-call yields an untrusted child.
 
@@ -233,84 +233,50 @@ Two rules give a member caller its shape:
 
 Ordinary (non-member) callers are untouched: they still require the switch.
 
-#### The strict-internal surface admits a crew member, not any private caller
+#### The strict-internal surface admits a member DM slot, not every scoped caller
 
 The five routes sit behind `_require_internal`, which first refuses anything
-without a valid `X-Internal-Secret`, and then — on the authenticated branch —
-runs one private-member gate (`_private_caller_refusal`). That gate resolves the
-caller's private authority ONCE (`internal_memory_scope`) and decides:
+without a valid `X-Internal-Secret`. On the authenticated branch,
+`_private_caller_refusal` captures the caller's canonical execution scope once
+off-loop through `internal_memory_scope`, without opening learned memory:
 
-- an **owner / Global-V1 caller** (no private scope) falls through to the handler,
+- an **owner / Global-V1 caller** (no store scope) falls through to the handler,
   exactly as the surface behaved before member dispatch existed;
-- a **crew member** is ADMITTED while the surface is reachable for it —
-  `agent.member_dispatch` OR the global `agent.session_control` switch — so its
-  request reaches `session_control.py` where the creator-ownership fence above
-  does the real gating. A crew member is recognised here in the SAME two
-  spellings the inner fence uses: (a) a `member-*` session key, OR (b) a chat
-  slot whose bound store (the `scope` `internal_memory_scope` just resolved) is a
-  crew member's V2 store, confirmed by the same `_store_is_member_owned`
-  config-record predicate — so the gate and the fence cannot disagree on what a
-  member is;
-- **every other verified private V2 caller** — one whose store is NOT a crew
-  member's, or a member while BOTH switches are off — keeps the
-  `member_scope_denied` 403;
-- an **unverifiable caller** keeps the `member_session_unverified` 403.
+- a **crew-member DM slot** (a `member-*` session key) is ADMITTED while the
+  surface is reachable for it — `agent.member_dispatch` OR the global
+  `agent.session_control` switch — so its request reaches `session_control.py`
+  where the creator-ownership fence above does the real gating;
+- **every other scoped caller**, including a member while BOTH switches are
+  off, keeps the `member_scope_denied` 403;
+- an **unavailable or mismatched execution identity** returns
+  `member_identity_unavailable` 409.
 
 The gate reads the SAME two switches the switch gate does — `member_dispatch` is
 a bypass ON TOP of `session_control`, not a replacement, so a member with
 `member_dispatch` off falls back UNDER the global switch rather than out of a
 surface the operator left open to everyone. All reads fail closed on an
 unreadable config, so the surface can never open wider than the two switches
-behind it. This gate replaced a blanket refusal that returned `member_scope_denied`
-to every verified V2 caller — which made the member operating model unreachable
-even though `session_control.py` already carried the member fence. The refusal for
-a genuinely non-member private caller is unchanged; the member admission — for a
-DM slot AND for a chat slot bound to a member store — is new.
+behind it. The member DM admission does not widen other scoped callers' access
+or replace the creator-ownership checks in `session_control.py`.
 
-#### A member-created worker stays inside its own private memory
+#### A created worker receives one execution identity
 
-Two guards in `create_session` keep a member's dispatch from laundering work out
-of its private store:
+`create_session` captures the caller's canonical execution before asynchronous
+project or template resolution. An omitted member inherits the caller; an explicit
+member uses its existing stable member/store identity under the ordinary
+delegation rules. Template and project choices do not select memory. The child's
+execution record is published before slot metadata, broadcast or provider startup.
+Publication failure retracts an idle empty child and reports the actual failure.
 
-- **`require_memory_delegation`** runs before the slot is minted. A workspace is
-  not a memory silo — it can host agents bound to different stores — so a private
-  V2 member could otherwise resolve an agent bound to `default`/global or a peer's
-  store. The guard (the one the private spawn path uses) is a no-op for a caller
-  with no private record and a refusal of any target store that is not the private
-  V2 caller's own; the refusal, and a corrupt/unreadable binding file, both map to
-  the `memory_delegation_denied` 403 rather than an unhandled 500. A 403, not a
-  validation 4xx: the store is a legal name and the request is well formed, so the
-  answer is "you may not delegate there", and the refusal carries a FIXED message
-  with `from None` — the guard reads binding files, so its own text can name one.
-- **The caller's protected record** is read to decide whether the child may
-  inherit private authority, and it is read under the caller's CANONICAL history
-  key. `caller_session_key` arrives as any of three spellings of the same session
-  (canonical key, slot key, transcript stem) while the protected read recognizes
-  only the canonical one, so keying it on the raw argument makes the caller's own
-  authority depend on the spelling it chose — the slot and stem forms read back as
-  unbound. For an authorization input that is a bypass, not a lenient read.
-- **The child's private binding** is written before the slot's birth metadata or
-  broadcast, using the child's effective session key — the key the turn path's
-  `_bind_private_slot_memory` reads. Without it a member's worker cannot take its
-  first turn. A version-read or binding-write failure retracts an idle, empty child
-  and reports `agent_store_mismatch`; cancellation retracts the same way and
-  propagates. Work already running is never orphaned by retraction.
-- **The birth-time pin is fenced to the authorized store.**
-  `_pin_private_agent_assignment` derives the store to pin from the SELECTED
-  AGENT's config entry, which is a different value from the
-  `bindings.memory_store_name` the delegation guard checked. `create_session`
-  therefore passes that authorized store down, and the pin writes nothing when the
-  two disagree — otherwise the guard clears one store and the pin binds another,
-  leaving a session running on private memory its own `slot.memory_store` does not
-  name. The owner's own agent picks pass no authorized store, because there the
-  pick IS the authority.
+Member scope is not a ban on cross-member delegation. The existing session-control
+switches, creator ownership fence, application scope and approval policy remain
+independent. Memory identity failure is explicit and never substitutes Global.
+Incognito and temporary children inherit the stricter retention mode.
 
-  An unbound/global caller keeps ordinary creation behavior and gains nothing: its
-  own protected record is untouched. Its child, however, IS bound — to the selected
-  member's own store, the store the guard authorized. Leaving that child unbound
-  while `slot.memory_store` names a V2 store is not the safe reading: the turn path
-  raises `memory_unavailable` on exactly that pair, so the session could never take
-  a turn.
+A session with native provider context cannot change members in place. An unused
+chat may select a member only with selection revision checks covering prewarming,
+resume pointers and late provider completion. Interactive creation and
+`session_create` use the same execution selection rules.
 
 ### The fence propagates to what a fenced caller creates
 

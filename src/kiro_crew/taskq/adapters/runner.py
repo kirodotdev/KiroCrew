@@ -790,6 +790,24 @@ class RunnerAdmission:
 
     # -- plumbing ------------------------------------------------------------
 
+    def in_memory(self) -> RunnerAdmission:
+        """Use the same live resource bounds without a durable task store.
+
+        Restricted work must not reach the persistent dependency coordinator or
+        terminal-write retry queue. The existing storeless handle owns its waits
+        and outcomes in memory while sharing this admission's lane and pressure.
+        """
+        return RunnerAdmission(
+            None,
+            lane=self.lane,
+            pressure=self._pressure,
+            admit_wait_secs=self._admit_wait,
+            clock=self._clock,
+            sleep=self._sleep,
+            ladder=self._ladder,
+            name=self._name,
+        )
+
     @property
     def store(self) -> TaskStore | None:
         try:

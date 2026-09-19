@@ -18,6 +18,7 @@ from kiro_crew.agent import _VALID_HOOK_EVENTS, _shipped_defaults, kiro_agents_d
 from kiro_crew.agent_discovery import _read_agent_spec, list_agents
 from kiro_crew.config.loader import KiroCrewConfig, data_home
 from kiro_crew.dashboard.state import DashboardState
+from kiro_crew.execution_context import ExecutionContext
 from kiro_crew.executors import run_in_embed_pool
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
 from kiro_crew.validation import sanitize_string
@@ -495,6 +496,27 @@ def _load_hook_context(hook_id: str) -> str:
         return ""
     _, injectable = webhooks.resolve_context(raw.get(hook_id))
     return injectable
+
+
+def _load_hook_execution(session_key: str) -> ExecutionContext:
+    """Capture a registration's identity without consulting current member labels."""
+    from kiro_crew.execution_context import capture_session_execution, execution_from_record
+
+    path = _hook_store_path()
+    if path.exists():
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, dict):
+            raise ValueError("Hook registration is malformed")
+        row = raw.get(session_key.removeprefix(_HOOK_SESSION_PREFIX))
+        if isinstance(row, dict) and "execution_context" in row:
+            execution = execution_from_record(row)
+        else:
+            execution = capture_session_execution(session_key)
+    else:
+        execution = capture_session_execution(session_key)
+    if execution.memory_mode != "persistent":
+        raise ValueError("Hook registration is disabled for this session mode")
+    return execution
 
 
 def _verify_hook_token(request: web.Request) -> str | None:
@@ -1005,6 +1027,14 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
 
     permit_acquired = False
     try:
+        try:
+            execution = await asyncio.to_thread(_load_hook_execution, session_key)
+        except (OSError, ValueError):
+            _hook_inflight_sessions.discard(session_key)
+            return web.json_response(
+                {"error": "hook execution identity is unavailable", "code": "memory_unavailable"},
+                status=503,
+            )
         # With a positive count acquire completes synchronously; the key was
         # already claimed above even if a test double or future implementation
         # makes this await yield.
@@ -1027,6 +1057,7 @@ async def api_hooks_agent(request: web.Request) -> web.Response:
                 deliver,
                 timeout_secs,
                 token_id=token_id,
+                execution_context=execution,
             )
         )
     except BaseException:
@@ -1052,11 +1083,19 @@ _EVENT_PERMISSION_REQUEST_KIND = "permission_request"
 
 
 async def _run_hook_inner(
-    state: DashboardState, session_key: str, message: str, agent: str | None
+    state: DashboardState,
+    session_key: str,
+    message: str,
+    agent: str | None,
+    *,
+    execution_context: ExecutionContext | None = None,
 ) -> str:
     """Inner agent turn — called within timeout wrapper."""
+    from dataclasses import replace
+
     from kiro_crew import name_grant
     from kiro_crew.context import _neutralize_structural_markers, session_store_for_turn
+    from kiro_crew.execution_context import bind_session_execution, read_session_execution
     from kiro_crew.hooks import (  # noqa: F811  # circular import
         TOOL_AUTO_APPROVE,
         TOOL_DENY,
@@ -1065,6 +1104,29 @@ async def _run_hook_inner(
     )
     from kiro_crew.providers.base import EVENT_COMPLETE, EVENT_TEXT_CHUNK  # noqa: F811
 
+    execution: ExecutionContext = (
+        execution_context
+        if execution_context is not None
+        else await asyncio.to_thread(_load_hook_execution, session_key)
+    )
+    if execution.memory_mode != "persistent":
+        raise ValueError("Hook execution is disabled for this session mode")
+
+    def bind_captured() -> None:
+        prior = read_session_execution(session_key)
+        if prior is not None and (
+            prior.member_id != execution.member_id
+            or prior.store != execution.store
+            or prior.memory_mode != "persistent"
+        ):
+            raise ValueError("Hook session no longer matches its registered execution")
+        bind_session_execution(session_key, execution, replace_existing=True, expected=prior)
+
+    await asyncio.to_thread(bind_captured)
+    if agent:
+        execution = replace(execution, template_id=agent)
+    else:
+        agent = execution.template_id or None
     memory_store = await session_store_for_turn(state.context_builder, session_key)
     client, is_new, resumed = await state.sessions.get_or_create(session_key, agent=agent)
     full_message = message
@@ -1084,6 +1146,7 @@ async def _run_hook_inner(
             resumed=resumed,
             provider_type=KiroCrewConfig.load().agent.provider,
             memory_store=memory_store,
+            execution_context=execution,
         )
         trusted_prompt = full_message
     if full_message is not trusted_prompt:
@@ -1277,6 +1340,7 @@ async def _run_hook_agent(
     deliver: bool,
     timeout_secs: int,
     token_id: str | None = None,
+    execution_context: ExecutionContext | None = None,
 ) -> None:
     """Execute a webhook-triggered agent turn in an ephemeral session.
 
@@ -1320,7 +1384,10 @@ async def _run_hook_agent(
             )
 
         result_text = await asyncio.wait_for(
-            _run_hook_inner(state, session_key, message, agent), timeout=timeout_secs
+            _run_hook_inner(
+                state, session_key, message, agent, execution_context=execution_context
+            ),
+            timeout=timeout_secs,
         )
     except asyncio.TimeoutError:
         outcome = "timeout"

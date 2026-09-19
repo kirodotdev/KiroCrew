@@ -435,7 +435,6 @@ them, so there is no enable switch here: only knobs for *which* model runs.
 | `memory.decay_rates` | Per-tag episodic recency decay rates, per day (score factor `exp(-rate * days_old)`). Keys are memory tags (case-insensitive); the reserved `default` key replaces the built-in `0.03` for memories matching no configured tag. A memory carrying several configured tags uses the slowest (smallest) rate, so a broad tag can never age out a long-retention one. `0` never ages out of retrieval ranking; `1` falls out of retrieval within about a day. Ranking only: `episodic_max_count` cap eviction (lowest importance, then oldest) still applies regardless of decay rate. Values are clamped to `0..10`; non-numeric values are ignored with a logged warning. Example: `{"legal_precedents": 0.0, "trading_data": 1.0}` | `{}` |
 | `memory.history_idle_hours` | Hours of inactivity before history consolidation | `3.0` |
 | `memory.history_max_days` | Days of history to retain before pruning | `365` |
-| `memory.private_provisioning_enabled` | Allow new private V2 stores for member creation, discovery sync and explicit V1-to-V2 setup; turning off leaves existing stores and their isolation active | `true` |
 | `memory.backup_enabled` | Periodic rotating backups of every active memory store (the default store, named V1 stores and member V2 stores); retention does not delete active memories | `true` |
 | `memory.backup_keep` | Backup copies retained per store, with a minimum of one | `7` |
 
@@ -445,76 +444,35 @@ Global V1 retains its session-start retrieval; V2 injects essential member and
 project guidance and recalls memory fragments on demand. The shared embedding
 worker and its thread defaults affect both versions.
 
-To pause new private memory creation, set `memory.private_provisioning_enabled`
-to the JSON boolean `false` in `config.json`, or use the existing owner-authenticated
-`PATCH /api/config/kirocrew` with this body:
-
-```json
-{"path": "memory.private_provisioning_enabled", "value": false}
-```
-
-Set the value to `true` to resume. The next creation admission reads the setting;
-no gateway restart is needed. Dashboard and CLI member creation, discovery sync
-that would add members, and explicit V1-to-V2 setup refuse while paused. They do
-not create V1 members instead. Existing V1 members keep their bindings, and
-existing V2 execution, memory reads, edits, backups and recovery keep their
-normal isolation checks. Repeating setup for an already-owned V2 store remains
-valid. The setting does not cancel operations already admitted, disable memory
-preparation or withdraw shared startup changes. An absent field defaults to
-`true`; a present non-boolean value pauses creation, and the owner API rejects
-non-boolean writes.
-An unreadable or malformed configuration file or `memory` section also refuses
-new creation until repaired; the default does not override unreadable settings.
-
 #### Named memory stores
 
-Each Crew Member receives its own empty private V2 memory when it is created.
-The generated store is recorded in `agents.<crew>.memory_store` and declared in
-`memory_stores` with its version and owner. Existing Global Memory V1 remains
-with the built-in default assistant; creating a member never copies or migrates it.
+Explicit member creation assigns a stable `member_id`, one managed `store_id`,
+and one SQLite database at `memory_stores/<store_id>/memory.db`. Display names,
+templates, projects and workspaces do not change the memory owner. The database
+contains learned facts, corrections, experiences, history, full-text indexes and
+vectors. Manual member rules and project guidance remain separate documents.
 
 | Key | Description | Default |
 |-----|-------------|---------|
-| `memory_stores` | Store declarations; member entries include `memory_version: 2` and `owner_member`. A missing declaration is an error | `{"default": {}}` |
-| `default_memory_store` | Retained for configuration compatibility; never repairs a missing or invalid member binding | `"default"` |
-| `agents.<crew>.memory_store` | Existing members retain their declared V1 binding; new or opted-in members have an immutable private V2 store identity | Allocated on member creation |
+| `memory_stores` | Declares each managed store, its version and stable owner identity | `{"default": {}}` |
+| `agents.<crew>.member_id` | Stable member identity, independent of its display label | Allocated on member creation |
+| `agents.<crew>.memory_store` | The member's single managed store identity | Allocated on member creation |
+| `default_memory_store` | Existing V1 default configuration; never repairs a member identity | `"default"` |
 
-The `default` store keeps the files it already has — `~/.kiro/crew/workspace/memory/`,
-`~/.kiro/crew/memory.db` and `~/.kiro/crew/memory_index.db`. Nothing moves when you
-add a named store. A named store gets `~/.kiro/crew/memory_stores/<name>/`,
-owner-only, holding that crew's markdown memory, its full-text index and its own
-vector database. `kirocrew snapshot` covers the `default` store; a named store's files
-are not in a snapshot yet.
+Global V1 keeps its existing files and behavior. Creating a member does not copy
+Global learning into that member. Opening a missing, corrupt or wrong-member V2
+database reports an error and never creates an empty replacement. Restore a
+damaged member database from its own daily backup. Backups use SQLite's consistent
+backup API and coordinate restore with active connections. Snapshots include
+named memory stores as well as Global memory.
 
-**Store names are strict, and a bad one is refused rather than guessed at.** A name
-is lowercase, 1–80 characters, made of letters, digits and inner hyphens
-(`^[a-z0-9](?:[a-z0-9-]{0,78}[a-z0-9])?$`), a single path segment, not a Windows
-device name (`con`, `nul`, `aux`, `prn`, `com1`–`com9`, `lpt1`–`lpt9`), and does not
-end in a dot or a space. A name that breaks any of those is reported when the config
-loads and no memory directory is created for it — guessing what was meant is how two
-crews would end up sharing one directory. Your entry stays in `config.json` exactly as
-you wrote it so you can fix the spelling; until you do, a member bound to it
-refuses execution with an explicit memory error. A member stuck on such a name has
-two ways out, and neither needs the gateway stopped: choose empty private memory
-for it (member settings, or `kirocrew agent update <name> --provision-memory`), or
-move it to Global Memory V1 with `kirocrew agent update <name> --memory-store=default`.
-Both leave your declaration and anything under `memory_stores/` untouched; they are
-the only two moves an existing binding ever permits, and only for a name no resolver
-can use.
-
-An undeclared name, mismatched owner, missing directory or unreadable database
-also refuses execution. There is no fallback to `default_memory_store` or Global
-Memory V1. Existing members keep working on their declared V1 store until the
-owner chooses empty V2 memory in member settings, or runs
-`kirocrew agent update <name> --provision-memory`. Their existing memory stays
-untouched. Recover a damaged existing private store from its own
-backup instead of rebinding it to another store.
-
-**Private member execution requires OS filesystem isolation.** File tools fence
-`memory_stores/`, and the process sandbox withholds private stores and Global V1
-memory from member subprocesses. Memory tools reach only the member's bound store
-through the gateway. An unsupported or unavailable sandbox refuses private
-execution; member management and existing V1 bindings remain available.
+Member memory provides separate learning and working context, not adversarial
+confidentiality between agents operated by the same user. Bound memory tools use
+the execution's selected database. Prompt and built-in path guidance discourage
+raw database edits and accidental cross-member file access; arbitrary code can
+read other members' files. Ordinary transport authentication, host sandbox,
+credential protection and enterprise policy remain in force. No additional
+member-memory sandbox is required.
 
 ### Skills
 
@@ -627,7 +585,7 @@ rules so they cannot be opted out of at all.
 | `~/.kiro/crew/workspace/memory/` | Memory files (default store) |
 | `~/.kiro/crew/memory_index.db` | Full-text search index (default store) |
 | `~/.kiro/crew/memory.db` | Semantic, episodic and lesson memory (default store) |
-| `~/.kiro/crew/memory_stores/<name>/` | A named memory store: one crew's private memory, unreadable by the agent's file tools |
+| `~/.kiro/crew/memory_stores/<name>/` | A managed store: one member’s SQLite learning database and manual context files |
 | `~/.kiro/crew/session_map.json` | Session resume mapping |
 | `~/.kiro/crew/snapshots/` | Default output of `kirocrew snapshot` |
 | `~/.kiro/agents/kirocrew.json` | Installed agent config |

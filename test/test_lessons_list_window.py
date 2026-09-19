@@ -32,7 +32,7 @@ from kiro_crew.validation import (
     ValidationError,
     validate_tool_args,
 )
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
 
 def _store(tmp_path) -> VectorMemoryStore:
@@ -67,16 +67,28 @@ def _seed_vector(store: VectorMemoryStore, n: int) -> list[str]:
     return rules
 
 
-async def _call(vector_store, state, query: dict[str, str] | None = None, *, blocked: bool = False):
+async def _call(
+    vector_store,
+    state,
+    query: dict[str, str] | None = None,
+    *,
+    blocked: bool = False,
+    store_name: str | None = None,
+):
     request = MagicMock()
     request.app = {"state": state}
     request.headers = {"X-Session-Key": "dashboard:ui"}
     request.query = dict(query or {})
     with (
         patch.object(cron, "_blocks_reads_session", return_value=blocked),
-        patch.object(cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(None, None))),
-        patch.object(cron, "_prepare_private_lesson_store", new=AsyncMock(return_value=None)),
+        patch.object(
+            cron, "resolve_lesson_memory_store", new=AsyncMock(return_value=(store_name, None))
+        ),
+        patch.object(cron, "_prepare_member_lesson_store", new=AsyncMock(return_value=None)),
         patch.object(cron, "_get_memory", return_value=MagicMock(vector_store=vector_store)),
+        patch.object(
+            cron.ContextBuilder, "get_memory_for", return_value=MagicMock(vector_store=vector_store)
+        ),
         patch.object(cron, "_get_active_workspace", return_value="default"),
         patch.object(cron, "_sel", return_value=MagicMock()),
     ):
@@ -93,6 +105,60 @@ def _window(body: dict) -> dict:
 
 
 # ── the body carries the population and the window ───────────────────────────
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("population", ("empty", "undecodable", "past_end"))
+async def test_member_sqlite_remains_authority_when_the_page_has_no_rows(
+    tmp_path, monkeypatch, population
+) -> None:
+    from kiro_crew import memory_stores
+
+    monkeypatch.setenv("KIROCREW_HOME", str(tmp_path))
+    monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: tmp_path / "memory_stores")
+    path = tmp_path / "memory_stores" / "member-store" / "memory.db"
+    create_member_database(path, member_id="member-id", store_id="member-store")
+    store = open_member_database(path, member_id="member-id", store_id="member-store")
+    try:
+        total = {"empty": 0, "undecodable": 1, "past_end": 2}[population]
+        rules = [f"prefer {_WORDS[i]}" for i in range(total)]
+        for i, rule in enumerate(rules):
+            assert store.write_lesson(rule, "knowledge")
+            with store._db_lock, store.db:
+                store.db.execute(
+                    "UPDATE memory_items SET updated_at = ? WHERE key LIKE 'lesson.%' "
+                    "AND value_json LIKE ?",
+                    (f"2026-01-01T00:00:{i:02d}+00:00", f"%{rule}%"),
+                )
+        if population == "undecodable":
+            with store._db_lock, store.db:
+                store.db.execute(
+                    "UPDATE memory_items SET value_json = 'not json' WHERE key LIKE 'lesson.%'"
+                )
+        offset = 10 if population == "past_end" else 0
+        with patch.object(
+            cron, "_lesson_jsonl_store", side_effect=AssertionError("V2 must not read JSONL")
+        ):
+            if population == "past_end":
+                _, first = await _call(
+                    store, MagicMock(), {"limit": "1"}, store_name="member-store"
+                )
+                assert _rules(first) == rules[-1:]
+                assert _window(first) == {"total": 2, "truncated": True, "limit": 1, "offset": 0}
+            status, body = await _call(
+                store, MagicMock(), {"offset": str(offset)}, store_name="member-store"
+            )
+        assert status == 200
+        assert body["lessons"] == []
+        assert _window(body) == {
+            "total": total,
+            "truncated": total > 0,
+            "limit": LESSON_LIST_LIMIT,
+            "offset": offset,
+        }
+        assert not (path.parent / "lessons.jsonl").exists()
+    finally:
+        store.close()
 
 
 @pytest.mark.asyncio

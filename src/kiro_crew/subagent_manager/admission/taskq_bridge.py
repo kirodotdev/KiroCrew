@@ -1107,10 +1107,12 @@ class _TaskqBridgeMixin(ManagerComponent):
         order); a window with no lane to spare gives up one head instead of
         making no room at all (:meth:`_evict_for_lanes`)."""
         queue = self._manager._queue
+        # Restricted entries have no durable copy and are outside its window.
+        windowed = sum(p.get("_memory_mode", "persistent") == "persistent" for p in queue)
         want = min(len(absent), store.window) if absent else 0
         if absent:
-            self._evict_for_lanes(want - (store.window - len(queue)), lanes)
-        return store.window - len(queue), want
+            windowed -= self._evict_for_lanes(want - (store.window - windowed), lanes)
+        return max(0, store.window - windowed), want
 
     def _refill_fetch(
         self,
@@ -1233,7 +1235,11 @@ class _TaskqBridgeMixin(ManagerComponent):
         while evicted < count:
             by_lane: dict[str, list[int]] = {}
             for idx, params in enumerate(queue):
-                if params.get("_resume_id") or not params.get("_preassigned_id"):
+                if (
+                    params.get("_resume_id")
+                    or not params.get("_preassigned_id")
+                    or params.get("_memory_mode", "persistent") != "persistent"
+                ):
                     continue
                 by_lane.setdefault(self.lane_of_entry(params, lanes), []).append(idx)
             spare = [(len(ids), ids[-1]) for ids in by_lane.values() if len(ids) > 1]

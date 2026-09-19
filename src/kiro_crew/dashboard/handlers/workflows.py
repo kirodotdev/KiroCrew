@@ -188,6 +188,7 @@ async def _run_scope_refusal(
             request.headers.get("X-Session-Key", ""),
             owner=request.get("app") == "" and request.get("internal_auth") is not True,
             required=bool(handle is not None and handle.execution_binding_version),
+            record=handle.to_store_json() if handle is not None else None,
             require_active=not cancelling,
         )
     except (WorkflowMemoryError, ValueError):

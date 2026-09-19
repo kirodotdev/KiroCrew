@@ -12,7 +12,6 @@ from kiro_crew.config.loader import workspace_dir_for
 from kiro_crew.config.paths import project_agents_dir
 from kiro_crew.frontmatter import STEERING_LOADER, split_frontmatter
 from kiro_crew.hooks import safe_read_file_bytes_nolink, validate_file_path
-from kiro_crew.memory_stores import UnknownMemoryStore, require_member_memory_store
 from kiro_crew.platform_compat import first_linked_ancestor, is_link_or_junction
 
 logger = logging.getLogger(__name__)
@@ -86,7 +85,6 @@ def _refuse_managed_source(path: Path) -> None:
                 if top in {
                     "members",
                     "member-rules",
-                    "member-memory-bindings",
                     "backups",
                     "trust",
                 } or top.startswith(("memory", "lessons")):
@@ -106,24 +104,21 @@ def _refuse_managed_source(path: Path) -> None:
         )
 
 
-def member_for_store(store: str | None, claimed_member: str = "") -> tuple[str, str]:
-    """Derive identity from the validated owner, preserving every V1 route."""
-    if not store or store == "default":
+def member_context_identity(member: str, *, member_is_id: bool = True) -> tuple[str, str]:
+    """Resolve an explicit ID or configured name without touching learned memory."""
+    if not member:
         return "", ""
+    from kiro_crew.execution_context import member_config_for_id
+
     cfg = KiroCrewConfig.load()
-    record = cfg.memory_stores.get(store)
-    if record is None or (
-        getattr(record, "memory_version", 1) != 2 and not getattr(record, "owner_member", "")
-    ):
-        return "", ""
-    owner = record.owner_member
-    if require_member_memory_store(cfg, owner) != store:
-        raise UnknownMemoryStore(f"Private memory {store!r} does not match its member")
-    if claimed_member and claimed_member != owner:
-        raise UnknownMemoryStore(
-            f"Private memory {store!r} belongs to {owner!r}, not {claimed_member!r}"
-        )
-    return owner, cfg.agents[owner].kiro_agent or "kirocrew"
+    member_id = member
+    if not member_is_id:
+        configured = cfg.agents.get(member)
+        if configured is not None and not configured.member_id:
+            return "", ""
+        member_id = configured.member_id if configured else ""
+    _, configured_member = member_config_for_id(cfg, member_id)
+    return member_id, configured_member.kiro_agent or "kirocrew"
 
 
 def _comparable_root(root: Path) -> Path:

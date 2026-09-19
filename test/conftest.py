@@ -440,10 +440,6 @@ def _windows_restrict_to_owner_stub(request, _floor_monkeypatch):
         "test_platform_compat_coverage",
         "test_config_rmw_preserves_settings",
         "test_spawn_audit",
-        # These tests validate the descriptor after publication: replacing the
-        # lockdown with a no-op would test the runner's default ACL instead.
-        "test_member_binding_reclaim",
-        "test_member_process_records_windows",
     ):
         yield
         return
@@ -965,6 +961,26 @@ def _disarm_agent_slice_memory_high():
         _sb._SLICE_MEMHIGH_APPLIED = saved_applied
         _sb._SLICE_MEMHIGH_EVENTS_SEEN = saved_events_seen
         _sb._SLICE_MEMHIGH_CLIMB_WARNED = saved_climb_warned
+
+
+@pytest.fixture(autouse=True)
+def _reset_live_execution_records():
+    """A reused temporary home must not inherit another test's live records."""
+
+    def clear():
+        for name, attribute in (
+            ("kiro_crew.execution_context", "_LIVE_EXECUTIONS"),
+            ("kiro_crew.subagent_persistence", "_LIVE_RUN_STATES"),
+        ):
+            module = sys.modules.get(name)
+            if module is not None:
+                getattr(module, attribute).clear()
+
+    clear()
+    try:
+        yield
+    finally:
+        clear()
 
 
 @pytest.fixture(autouse=True)

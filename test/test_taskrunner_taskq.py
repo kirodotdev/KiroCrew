@@ -19,6 +19,7 @@ from overload_fakes import Clock, open_task_store, settle_dependency_park, settl
 from test_taskrunner import _make_mock_sessions
 
 from kiro_crew.acp.types import STOP_REASON_END_TURN, STOP_REASON_TOOL_STALL
+from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
 from kiro_crew.providers.base import LLMEvent
 from kiro_crew.recovery.ladder import RecoveryLadder
 from kiro_crew.taskq import model as m
@@ -118,6 +119,125 @@ def _run(tmp_path: Path, *steps: Step, task_id: str = "r1") -> TaskRun:
 
 def _kinds(store: TaskStore, task_id: str) -> list[str]:
     return [e.kind for e in store.events(task_id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", [None, "persistent", "incognito", "temporary"])
+async def test_taskq_retains_only_persistent_run_and_step_bodies(
+    tmp_path: Path, store: TaskStore, clock: Clock, mode
+) -> None:
+    admission = _admission(store, clock)
+    provider = _provider(lambda n, msg: _done("session result sentinel"))
+    runner = _runner(tmp_path, provider, admission)
+    await runner.adopt_task_rows()
+    step = Step(index=1, title="session step title sentinel", description="session instructions")
+    run = _run(tmp_path, step)
+    run.name = "session task name sentinel"
+    if mode is not None:
+        run.execution_context = ExecutionContext(
+            None, MemoryStoreRef("default"), "template", "kirocrew", mode
+        )
+    runner._runs[run.task_id] = run
+
+    await runner._taskq_begin_run(run)
+    assert await runner._execute_single_task(run, step)
+    run.status = "completed"
+    await runner._taskq_end_run(run)
+    assert provider.calls and step.status == StepStatus.PASSED
+    assert admission.lane.running == 0
+    assert not runner._run_handles
+
+    persistent = mode in (None, "persistent")
+    assert store.count(kind=m.KIND_TASKRUNNER_STEP) == (2 if persistent else 0)
+    for row_id in ("taskrunner:r1", "taskrunner:r1:task1"):
+        if persistent:
+            assert store.get(row_id).state == m.DONE
+            assert "claimed" in _kinds(store, row_id)
+        else:
+            assert store.get(row_id) is None
+            assert store.events(row_id) == []
+
+    path = store.path
+    store.close()
+    reopened = TaskStore(path, window=8, clock=clock, network_fs=False).open()
+    try:
+        assert reopened.count(kind=m.KIND_TASKRUNNER_STEP) == (2 if persistent else 0)
+        report = r.adopt_orphaned_rows(reopened, kinds=(m.KIND_TASKRUNNER_STEP,))
+        assert report.examined == 0 and not report.resumed
+    finally:
+        reopened.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_restricted_and_persistent_steps_share_the_live_lane(
+    tmp_path: Path, store: TaskStore, clock: Clock, mode
+) -> None:
+    admission = _admission(store, clock, cap=1)
+    provider = _provider(lambda n, msg: _done())
+    runner = _runner(tmp_path, provider, admission)
+    await runner.adopt_task_rows()
+    persistent_step = Step(index=1, title="ordinary", description="ordinary instructions")
+    restricted_step = Step(index=1, title="restricted", description="restricted instructions")
+    persistent = _run(tmp_path, persistent_step, task_id="persistent")
+    restricted = _run(tmp_path, restricted_step, task_id="restricted")
+    restricted.execution_context = ExecutionContext(
+        None, MemoryStoreRef("default"), "template", "kirocrew", mode
+    )
+    await runner._taskq_begin_run(persistent)
+    await runner._taskq_begin_run(restricted)
+    assert await asyncio.gather(
+        runner._execute_single_task(persistent, persistent_step),
+        runner._execute_single_task(restricted, restricted_step),
+    ) == [True, True]
+    persistent.status = restricted.status = "completed"
+    await runner._taskq_end_run(persistent)
+    await runner._taskq_end_run(restricted)
+    assert len(provider.calls) == 2 and provider.active["peak"] == 1
+    assert admission.lane.running == admission.lane.waiting == 0
+    assert store.count(kind=m.KIND_TASKRUNNER_STEP) == 2
+    assert store.get("taskrunner:persistent").state == m.DONE
+    assert store.get("taskrunner:persistent:task1").state == m.DONE
+    assert store.get("taskrunner:restricted") is None
+    assert store.get("taskrunner:restricted:task1") is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_restricted_step_cancelled_before_lane_admission_leaves_no_row(
+    tmp_path: Path, store: TaskStore, clock: Clock, mode
+) -> None:
+    admission = _admission(store, clock, cap=1)
+    provider = _provider(lambda n, msg: _done())
+    runner = _runner(tmp_path, provider, admission)
+    await runner.adopt_task_rows()
+    step = Step(index=1, title="restricted title", description="restricted instructions")
+    run = _run(tmp_path, step)
+    run.execution_context = ExecutionContext(
+        None, MemoryStoreRef("default"), "template", "kirocrew", mode
+    )
+    await runner._taskq_begin_run(run)
+    await admission.lane.acquire("another-step")
+    pending = asyncio.create_task(runner._execute_single_task(run, step))
+    try:
+        for _ in range(20):
+            await settle_store_writes(store)
+            if admission.lane.waiting == 1:
+                break
+        assert admission.lane.waiting == 1
+        assert not provider.calls
+    finally:
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+        admission.lane.release("another-step")
+        run.status = "cancelled"
+        await runner._taskq_end_run(run)
+    assert admission.lane.running == admission.lane.waiting == 0
+    assert not runner._run_handles
+    assert store.count(kind=m.KIND_TASKRUNNER_STEP) == 0
+    assert not store.events("taskrunner:r1")
+    assert not store.events("taskrunner:r1:task1")
 
 
 # ── 1. two steps through admission under cap 1 ──────────────────────────────

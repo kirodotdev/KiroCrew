@@ -29,9 +29,13 @@ class TestAcpClientInit:
 
 Session-switch lock registries are reset per test. Reused fixture session keys
 must not retain a contended lock tied to another test's event loop.
+The test floor clears live session and run execution records between tests so a
+reused temporary home cannot inherit another test's routing or retention mode.
 Dispatch doubles provide a concrete `get_agent_selection()` tuple, including
 `("template", "")` for the default template. An unconstrained mock is not a
-valid member or template identity. Session-start collector tests declare their
+valid member or template identity. Session context doubles implement the async
+`memory_mode_for_session()` accessor and return a concrete retention mode.
+Session-start collector tests declare their
 MCP roster explicitly rather than inheriting the installed agent's tools.
 
 ```python
@@ -110,8 +114,12 @@ When stubbing the resolver itself, return `ResolvedBindings` with the intended
 member/template selection. A partial namespace can raise on a missing field
 before the dispatch guard under test is reached.
 Subagent session doubles must return a concrete string from `get_agent`,
-including `""` for the default template. Protected identity publication rejects
+including `""` for the default template. Execution identity publication rejects
 an unconfigured mock before allocating the provider.
+Direct `_run_inner` fixtures create a run record whose execution context matches
+`SubagentInfo.execution_context` before dispatch. Cancellation tests for model
+provenance wait for the `requested_model` write after execution identity has been
+published, so they interrupt the write they intend to exercise.
 
 The backend test floor gives each test an empty advertised-model cache.
 Capturing a session response updates this process-global cache, so a later
@@ -121,8 +129,8 @@ need advertised models seed the cache within their own fixture or body.
 ### Filesystem tests
 
 The subagent registry fixture nests `subagents/` beneath a per-test home.
-Protected run identities live beside the registry, so isolating only the
-registry leaf lets repeated run ids leak authority between tests.
+Session execution records also belong to that test home; isolating only the
+registry leaf lets repeated session keys leak routing state between tests.
 
 Member execution fixtures must provision their own V2 memory before resolving
 bindings. Use `provision_member_memory` inside the isolated test home; do not
@@ -452,10 +460,11 @@ pod state must set `pod_root`, `pods_dir` and `artifacts_dir` under `tmp_path` o
 their configuration object. Keep the real publisher and reader so the fixture
 proves persistence without depending on an existing directory in the host home.
 
-Provider-stub tests of member routing may stub the host capability check at
-`member_memory_auth.private_memory_execution_supported`. They must retain actual
-member provisioning, ownership and store-binding checks. Tests of native Windows
-refusal or the OS sandbox boundary must use the real capability check instead.
+Provider-stub tests of member routing must retain real member provisioning and
+canonical member/store validation in an isolated test home. Memory version adds
+no platform-capability admission. Tests of ordinary host sandbox behavior must
+exercise the real sandbox capability checks rather than substituting member-memory
+policy.
 
 When you add isolation, put it in the rootdir conftest **only** if a test in any
 testpath could damage the host, poison a process global for every later test, or

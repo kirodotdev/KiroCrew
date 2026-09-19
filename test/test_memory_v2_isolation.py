@@ -12,7 +12,6 @@ import ast
 import asyncio
 import contextlib
 import json
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -36,9 +35,7 @@ from kiro_crew.member_memory_auth import bind_private_session_store
 from kiro_crew.memory import INDEX_DB_FILE, MemoryStore
 from kiro_crew.memory_stores import (
     DEFAULT_MEMORY_STORE,
-    MEMBER_MEMORY_MANIFEST,
     MEMORY_DB_FILE,
-    MEMORY_STORES_DIR_NAME,
     UnknownMemoryStore,
     memory_index_path_for,
     memory_store_dir_for,
@@ -46,7 +43,7 @@ from kiro_crew.memory_stores import (
     resolve_store_path,
 )
 from kiro_crew.skills import SkillsLoader
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, create_member_database, open_member_database
 
 #: The two silos, and the crew bound to each. Both are DECLARED in the fixture's
 #: config, because declaring is what makes a store resolvable at all — an undeclared
@@ -82,11 +79,12 @@ def _config_payload() -> dict:
             CODING_CREW: {
                 "kiro_agent": "kirocrew",
                 "memory_store": CODING,
+                "member_id": CODING_CREW,
                 # Bound to the WORKSPACE that shares the store's name, so this
                 # crew alone would expose a resolver that reads one namespace.
                 "workspace": CODING,
             },
-            EMAIL_CREW: {"kiro_agent": "kirocrew", "memory_store": EMAIL},
+            EMAIL_CREW: {"kiro_agent": "kirocrew", "memory_store": EMAIL, "member_id": EMAIL_CREW},
             DEFAULT_CREW: {"kiro_agent": "kirocrew", "memory_store": DEFAULT_MEMORY_STORE},
         },
         "default_agent": DEFAULT_CREW,
@@ -97,8 +95,12 @@ def _config_payload() -> dict:
         "default_workspace": "default",
         "memory_stores": {
             DEFAULT_MEMORY_STORE: {},
-            CODING: {"owner_member": CODING_CREW, "memory_version": 2},
-            EMAIL: {"owner_member": EMAIL_CREW, "memory_version": 2},
+            CODING: {
+                "owner_member": CODING_CREW,
+                "owner_member_id": CODING_CREW,
+                "memory_version": 2,
+            },
+            EMAIL: {"owner_member": EMAIL_CREW, "owner_member_id": EMAIL_CREW, "memory_version": 2},
             "legacy": {},
         },
         "default_memory_store": DEFAULT_MEMORY_STORE,
@@ -120,25 +122,12 @@ class Silos:
 
 @pytest.fixture
 def silos(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
-    # These tests use fake extraction/providers and exercise memory routing;
-    # actual kernel enforcement has its own sandbox integration probe.
-    monkeypatch.setattr(
-        "kiro_crew.member_memory_auth.private_memory_execution_supported", lambda **kwargs: True
-    )
-    monkeypatch.setattr(
-        "kiro_crew.member_memory_auth._request_peer_pid", lambda request: os.getpid()
-    )
     (config_dir() / "config.json").write_text(json.dumps(_config_payload()), encoding="utf-8")
     loader_mod._invalidate_config_cache()
     for name, member in ((CODING, CODING_CREW), (EMAIL, EMAIL_CREW)):
         root = memory_stores_root() / name
         root.mkdir(parents=True)
-        (root / MEMBER_MEMORY_MANIFEST).write_text(
-            json.dumps({"owner_member": member, "memory_version": 2}), encoding="utf-8"
-        )
-        vectors = VectorMemoryStore(db_path=root / MEMORY_DB_FILE)
-        vectors.init()
-        vectors.close()
+        create_member_database(root / MEMORY_DB_FILE, member_id=member, store_id=name)
     (memory_stores_root() / "legacy").mkdir()
 
     # The three process-global caches ``ContextBuilder`` resolves through. Reset per
@@ -204,8 +193,11 @@ def _four_files(memory_store: str | None) -> tuple[Path, Path, Path, Path]:
 def prepared_silos(silos):
     """Model the V2 prepare step for synchronous context/FTS consumers."""
     for name in (CODING, EMAIL):
-        vectors = VectorMemoryStore(db_path=resolve_store_path(name))
-        vectors.init()
+        vectors = open_member_database(
+            resolve_store_path(name),
+            member_id=CODING_CREW if name == CODING else EMAIL_CREW,
+            store_id=name,
+        )
         ctx._vector_stores[name] = vectors
     return silos
 
@@ -214,44 +206,28 @@ def prepared_silos(silos):
 
 
 @pytest.mark.usefixtures("prepared_silos")
-class TestFourFilesPerNamedStore:
-    def test_each_named_store_owns_its_four_files_inside_its_own_directory(self, silos) -> None:
-        """All four live under ``memory_stores/<name>/`` — one directory, one silo."""
-        assert memory_stores_root() == config_dir() / MEMORY_STORES_DIR_NAME
+class TestOneDatabasePerMember:
+    def test_each_member_has_one_authoritative_database(self, silos):
         for name in (CODING, EMAIL):
-            store_dir = memory_stores_root() / name
-            markdown, index, vectors, lessons = _four_files(name)
-            assert markdown == store_dir
-            assert index == store_dir / INDEX_DB_FILE
-            assert vectors == store_dir / MEMORY_DB_FILE
-            assert lessons == store_dir / _LESSONS_FILE
-            # Every one of them INSIDE the store's directory, which is what puts the
-            # whole silo behind the ``memory_stores/`` keystone fence at once.
-            for path in (index, vectors, lessons):
-                assert path.parent == store_dir
+            database = ctx._vector_stores[name]
+            assert database._db_path == memory_stores_root() / name / MEMORY_DB_FILE
+            assert memory_index_path_for(name) == database._db_path
+            with pytest.raises(ValueError, match="only in the member database"):
+                ctx.ContextBuilder.get_lessons_for(memory_store=name)
+            for retired in (INDEX_DB_FILE, _LESSONS_FILE):
+                assert not (database._db_path.parent / retired).exists()
 
-    def test_the_twelve_files_of_three_targets_are_twelve_distinct_paths(self, silos) -> None:
-        """No pair of the three targets shares any of its four files.
+    def test_the_three_databases_have_distinct_paths(self, silos):
+        paths = {resolve_store_path(name) for name in (DEFAULT_MEMORY_STORE, CODING, EMAIL)}
+        assert len(paths) == 3
+        assert not set(_four_files(None)) & {resolve_store_path(CODING), resolve_store_path(EMAIL)}
 
-        By PATH, because object identity was never the broken property: the defect
-        was two distinct ``MemoryStore`` objects reading two markdown trees while
-        both wrote through ONE vector file.
-        """
-        targets = {
-            DEFAULT_MEMORY_STORE: _four_files(None),
-            CODING: _four_files(CODING),
-            EMAIL: _four_files(EMAIL),
-        }
-        every = [path for four in targets.values() for path in four]
-        assert len(set(every)) == len(every) == 12, f"paths collide: {sorted(map(str, every))}"
-
-    def test_the_store_objects_open_the_paths_the_resolvers_named(self, silos) -> None:
-        """``MemoryStore`` is store-agnostic, so the two must not answer differently."""
+    def test_the_store_facades_use_their_own_database(self, silos):
         for name in (CODING, EMAIL):
-            markdown, index, _vectors, _lessons = _four_files(name)
             store = ctx.ContextBuilder.get_memory_for(memory_store=name)
-            assert store._workspace == markdown
-            assert store._index_db == index
+            assert store._workspace == memory_stores_root() / name
+            assert store.vector_store is ctx._vector_stores[name]
+            assert store._index_db == resolve_store_path(name)
 
     def test_the_binding_a_crews_config_resolves_is_the_silo_it_reads(self, silos) -> None:
         """The production chain end to end: config → bindings → store.
@@ -274,16 +250,11 @@ class TestFourFilesPerNamedStore:
         assert coding_store is not silos.global_memory
         assert coding_store._workspace == memory_stores_root() / CODING
 
-    def test_the_index_is_per_store_by_behaviour_not_only_by_path(self, silos) -> None:
-        """A search answering in one store and not the other is the index assertion.
-
-        A path assertion alone would pass with both stores writing one index file, as
-        long as the file names differed on paper.
-        """
+    def test_the_index_is_per_store_by_behaviour_not_only_by_path(self, silos):
         coding = ctx.ContextBuilder.get_memory_for(memory_store=CODING)
         email = ctx.ContextBuilder.get_memory_for(memory_store=EMAIL)
-        coding.write_preferences("# User Preferences\n\n- reviews with a canary stage\n")
-        assert coding.search("canary"), "the writing store cannot find its own row"
+        coding.vector_store.set_semantic("project.release", "canary stage", 1, "user_explicit")
+        assert coding.search("canary")
         assert email.search("canary") == []
         assert silos.global_memory.search("canary") == []
 
@@ -324,12 +295,9 @@ class TestDefaultStorePathsAreTheV1Literals:
         assert VectorMemoryStore()._db_path == silos.global_vectors._db_path
         assert silos.global_lessons._path == config_dir() / _V1_WORKSPACE_DIR / _LESSONS_FILE
 
-    def test_new_private_stores_have_an_empty_database_and_ownership_manifest(self, silos) -> None:
+    def test_new_member_stores_have_only_an_empty_database(self, silos):
         for name in (CODING, EMAIL):
-            assert {p.name for p in (memory_stores_root() / name).iterdir()} == {
-                MEMBER_MEMORY_MANIFEST,
-                MEMORY_DB_FILE,
-            }
+            assert {p.name for p in (memory_stores_root() / name).iterdir()} == {MEMORY_DB_FILE}
 
 
 # ── 3. The three default spellings are one object ─────────────────────────────
@@ -410,7 +378,7 @@ class TestNamedStoreVectorsAreNeverTheGlobalOnes:
         already-cached markdown store, and the reverse order has to find the vectors
         already in the cache. Both must end wired to the store's OWN file.
         """
-        with pytest.raises(UnknownMemoryStore, match="Prepare member"):
+        with pytest.raises((UnknownMemoryStore, RuntimeError), match="[Pp]repar|database"):
             ctx.ContextBuilder.get_memory_for(memory_store=CODING)
         coding = await ctx.ContextBuilder.ensure_store(CODING)
         markdown_first = ctx.ContextBuilder.get_memory_for(memory_store=CODING)
@@ -428,7 +396,7 @@ class TestNamedStoreVectorsAreNeverTheGlobalOnes:
     @pytest.mark.asyncio
     async def test_an_unprepared_private_store_refuses_context_until_prepared(self, silos) -> None:
         """Losing a semantic row is recoverable; reading another crew's rows is not."""
-        with pytest.raises(UnknownMemoryStore, match="Prepare member"):
+        with pytest.raises((UnknownMemoryStore, RuntimeError), match="[Pp]repar|database"):
             ctx.ContextBuilder.get_memory_for(memory_store=CODING)
         assert silos.global_memory.vector_store is silos.global_vectors
 
@@ -471,18 +439,12 @@ class TestWriteIsolation:
         ]
         assert silos.global_vectors.get_episodic_list(limit=10) == []
 
-    def test_a_lesson_written_to_one_stores_jsonl_reaches_no_other(self, silos) -> None:
-        coding = ctx.ContextBuilder.get_lessons_for(memory_store=CODING)
-        email = ctx.ContextBuilder.get_lessons_for(memory_store=EMAIL)
-        global_store = ctx.ContextBuilder.get_lessons_for()
-        assert len({coding._path, email._path, global_store._path}) == 3
-
-        coding.save(Lesson(ts=_LESSON_TS, rule="Rebase before merging.", category="preference"))
-        assert [lesson.rule for lesson in coding.load_all()] == ["Rebase before merging."]
-        assert email.load_all() == []
-        assert global_store.load_all() == []
-        assert coding._path == memory_stores_root() / CODING / _LESSONS_FILE
-        assert not global_store._path.exists(), "the global lessons file must be untouched"
+    def test_member_jsonl_learning_is_refused_without_creating_files(self, silos):
+        for name in (CODING, EMAIL):
+            with pytest.raises(ValueError, match="only in the member database"):
+                ctx.ContextBuilder.get_lessons_for(memory_store=name)
+            assert not (memory_stores_root() / name / _LESSONS_FILE).exists()
+        assert not silos.global_lessons._path.exists()
 
     @pytest.mark.asyncio
     async def test_a_lesson_written_to_one_stores_vector_table_reaches_no_other(
@@ -590,12 +552,11 @@ class TestStoreAndWorkspaceAreSeparateNamespaces:
         silo = ctx.ContextBuilder.get_memory_for(memory_store=CODING)
         assert silo.vector_store is not silos.global_vectors
 
-    def test_the_lessons_seam_splits_the_two_namespaces_too(self, silos) -> None:
+    def test_v1_workspace_lessons_remain_jsonl_and_v2_refuses_them(self, silos):
         ws_lessons = ctx.ContextBuilder.get_lessons_for(CODING)
-        silo_lessons = ctx.ContextBuilder.get_lessons_for(memory_store=CODING)
-        assert ws_lessons._path != silo_lessons._path
         assert ws_lessons._path == config_dir() / _COLLIDING_WS_DIR / _LESSONS_FILE
-        assert silo_lessons._path == memory_stores_root() / CODING / _LESSONS_FILE
+        with pytest.raises(ValueError, match="only in the member database"):
+            ctx.ContextBuilder.get_lessons_for(memory_store=CODING)
 
 
 # ── 8. The consolidator writes to the store it was handed ─────────────────────
@@ -609,7 +570,7 @@ class TestConsolidatorStoreResolution:
     ) -> None:
         from test_history_consolidation_retry import KEY, _make_consolidator, _seed_log
 
-        from kiro_crew import memory_stores
+        from kiro_crew import execution_context, memory_stores
 
         log = await asyncio.to_thread(_seed_log, tmp_path)
         await asyncio.to_thread(bind_private_session_store, KEY, CODING)
@@ -624,16 +585,15 @@ class TestConsolidatorStoreResolution:
                 with pytest.raises(RuntimeError, match="no running event loop"):
                     asyncio.get_running_loop()
                 calls.append(name)
-                if unavailable and name == "store_of_session":
+                if unavailable and name == "read_session_execution":
                     raise UnknownMemoryStore("member identity offline")
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(owner, name, checked)
 
-        watch(ctx, "store_of_session")
+        watch(execution_context, "read_session_execution")
         watch(memory_stores, "memory_store_version")
         watch(ctx.ContextBuilder, "get_memory_for")
-        watch(ctx.ContextBuilder, "get_lessons_for")
         watch(MemoryStore, "read_preferences")
         watch(MemoryStore, "read_projects")
         model = AsyncMock(return_value={"history_entry": "The member finished its task."})
@@ -645,10 +605,10 @@ class TestConsolidatorStoreResolution:
         else:
             await consolidator._consolidate(KEY)
 
-        assert calls.count("store_of_session") == 1
+        assert calls.count("read_session_execution") == 1
         if unavailable:
             model.assert_not_awaited()
-            assert calls == ["store_of_session"]
+            assert calls == ["read_session_execution"]
             assert log.unconsolidated_count(KEY) > 0
             assert ctx._vector_stores == {}
         else:
@@ -656,7 +616,6 @@ class TestConsolidatorStoreResolution:
             assert {
                 "memory_store_version",
                 "get_memory_for",
-                "get_lessons_for",
                 "read_preferences",
                 "read_projects",
             } <= set(calls)
@@ -750,7 +709,7 @@ class TestConsolidatorStoreResolution:
         assert not silos.global_lessons._path.exists()
 
     def test_lessons_are_written_to_the_jsonl_store_passed_in(self, silos, tmp_path) -> None:
-        """The JSONL tier is reached only when the silo has no vector store yet.
+        """The JSONL tier is reached only when the legacy V1 store has no vector store yet.
 
         Misfiling here is worse than losing a row: the fallback is a WRITE target, so
         every crew's corrections append to the one global ``lessons.jsonl``.
@@ -760,7 +719,7 @@ class TestConsolidatorStoreResolution:
         Inheriting takes the dedup-aware vector branch and never reaches the silo's
         own file at all, which is the exact shape of the defect being closed.
         """
-        silo_lessons = ctx.ContextBuilder.get_lessons_for(memory_store=CODING)
+        silo_lessons = ctx.ContextBuilder.get_lessons_for(memory_store="legacy")
         consolidator = self._consolidator(silos, tmp_path)
 
         consolidator._save_lessons(
@@ -784,7 +743,7 @@ class TestConsolidatorStoreResolution:
         means "the global handle", the other means "this silo has no such tier".
         """
         consolidator = self._consolidator(silos, tmp_path)
-        silo_lessons = ctx.ContextBuilder.get_lessons_for(memory_store=CODING)
+        silo_lessons = ctx.ContextBuilder.get_lessons_for(memory_store="legacy")
         with patch.object(ctx, "_build_store_vectors", AsyncMock(return_value=None)):
             unprepared = await ctx.ContextBuilder.ensure_store("legacy")
         assert unprepared is None, "an unavailable legacy tier does not borrow global vectors"
@@ -885,7 +844,6 @@ def _lessons_request(
     body: dict | None = None,
     *,
     claims: dict[str, object] | None = None,
-    private_store: str | None = None,
 ) -> MagicMock:
     """One request shape for all three routes: a session key, plus a body for the two
     that read one. The empty query string is what the dashboard sends — a
@@ -905,25 +863,6 @@ def _lessons_request(
     request.headers = {"X-Session-Key": session_key}
     request.query = {}
     identity = {"internal_auth": True} if claims is None else claims
-    if identity.get("internal_auth") is True:
-        from kiro_crew.member_memory_auth import (
-            PROOF_HEADER,
-            issue_member_session_proof,
-            publish_member_session_pid,
-        )
-
-        # A real protected publication and signature model the trusted MCP
-        # connection; the caller-supplied session header alone grants nothing.
-        store = private_store or (CODING if session_key == _SILO_SESSION_KEY else "")
-        publish_member_session_pid(
-            os.getpid(),
-            session_key,
-            memory_store=store,
-        )
-        proof = issue_member_session_proof(session_key, os.getpid())
-        if store:
-            assert proof
-            request.headers[PROOF_HEADER] = proof
     request.get.side_effect = identity.get
     request.__contains__.side_effect = identity.__contains__
     request.__getitem__.side_effect = identity.__getitem__
@@ -989,7 +928,7 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
         state._slots = {}
         state.sessions.has_session.side_effect = lambda candidate: candidate == key
         silos.global_lessons.save(_operator_lesson())
-        # The exact child key has a live allocation. Protected session/PID
+        # The exact child key has a live allocation. Canonical session
         # bindings and store resolution run unchanged after that gate.
         with patch.object(cron, "_sel"):
             created = await cron.api_lessons_create(
@@ -997,17 +936,16 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
                     state,
                     key,
                     {"rule": _CREW_RULE, "category": "preference"},
-                    private_store=CODING,
                 )
             )
-            listed = await cron.api_lessons(_lessons_request(state, key, private_store=CODING))
+            listed = await cron.api_lessons(_lessons_request(state, key))
 
         assert created.status == 200, created.text
         assert listed.status == 200, listed.text
         assert [row["rule"] for row in json.loads(listed.text)["lessons"]] == [_CREW_RULE]
         assert [lesson.rule for lesson in silos.global_lessons.load_all()] == [_OPERATOR_RULE]
         assert silos.global_vectors.get_lessons() == []
-        assert ctx.ContextBuilder.get_lessons_for(memory_store=EMAIL).load_all() == []
+        assert (await ctx.ContextBuilder.ensure_store(EMAIL)).get_lessons() == []
 
     @pytest.mark.parametrize("route", ["list", "create", "delete"])
     @pytest.mark.parametrize(
@@ -1025,8 +963,8 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
     ) -> None:
         state = await _dashboard_state(silos, tmp_path / "sessions", _SILO_SESSION_KEY, CODING)
         state.owner_id = "operator"
-        lessons = ctx.ContextBuilder.get_lessons_for(memory_store=CODING)
-        lessons.save(_crew_lesson())
+        lessons = await ctx.ContextBuilder.ensure_store(CODING)
+        lessons.write_lesson(_CREW_RULE, category="preference")
         body = {"rule": _CREW_RULE, "category": "preference"} if route != "list" else None
         request = _lessons_request(state, _SILO_SESSION_KEY, body, claims=claims)
         # A header by itself proves nothing: only middleware can publish the marker.
@@ -1043,12 +981,14 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
         assert response.status == (200 if allowed else 403)
         if not allowed:
             assert _CREW_RULE not in response.text
-            assert [lesson.rule for lesson in lessons.load_all()] == [_CREW_RULE]
+            assert [json.loads(row["value_json"])["rule"] for row in lessons.get_lessons()] == [
+                _CREW_RULE
+            ]
             assert silos.global_lessons.load_all() == []
         elif route == "list":
             assert [row["rule"] for row in json.loads(response.text)["lessons"]] == [_CREW_RULE]
         elif route == "delete":
-            assert lessons.load_all() == []
+            assert lessons.get_lessons() == []
 
     async def test_an_empty_silo_lists_no_lessons_rather_than_the_operators(
         self, silos, tmp_path
@@ -1083,22 +1023,16 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
         assert resp.status == 200
         assert json.loads(resp.text)["lessons"] == []
 
-    async def test_a_silo_reads_its_own_jsonl_when_it_holds_no_vector_rows(
-        self, silos, tmp_path
-    ) -> None:
-        """No global read is not no read: the silo's OWN JSONL tier still answers.
-
-        This is the tier the consolidator writes when a silo has no vector store, so a
-        fix that simply refused to fall back would strand every row it wrote there.
-        """
+    async def test_unavailable_member_database_does_not_fall_back_to_jsonl(self, silos, tmp_path):
         state = await _dashboard_state(silos, tmp_path / "sessions", _SILO_SESSION_KEY, CODING)
-        ctx.ContextBuilder.get_lessons_for(memory_store=CODING).save(_crew_lesson())
+        database = memory_stores_root() / CODING / MEMORY_DB_FILE
+        database.unlink()
         silos.global_lessons.save(_operator_lesson())
-
         with _session_mode_gates_open():
             resp = await cron.api_lessons(_lessons_request(state, _SILO_SESSION_KEY))
-
-        assert [row["rule"] for row in json.loads(resp.text)["lessons"]] == [_CREW_RULE]
+        assert resp.status == 503
+        assert _OPERATOR_RULE not in resp.text
+        assert not database.exists()
 
     async def test_a_silo_bound_write_prepares_and_uses_its_own_vectors(
         self, silos, tmp_path
@@ -1120,8 +1054,7 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
             )
 
         assert json.loads(resp.text)["ok"] is True
-        silo_lessons = ctx.ContextBuilder.get_lessons_for(memory_store=CODING)
-        assert silo_lessons.load_all() == []
+        assert not (memory_stores_root() / CODING / _LESSONS_FILE).exists()
         assert [_CREW_RULE] == [
             json.loads(row["value_json"])["rule"]
             for row in ctx._vector_stores[CODING].get_lessons()
@@ -1165,8 +1098,8 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
     async def test_a_silo_bound_delete_still_removes_its_own_lesson(self, silos, tmp_path) -> None:
         """The crew keeps a working delete over the rows it actually owns."""
         state = await _dashboard_state(silos, tmp_path / "sessions", _SILO_SESSION_KEY, CODING)
-        silo_lessons = ctx.ContextBuilder.get_lessons_for(memory_store=CODING)
-        silo_lessons.save(_crew_lesson())
+        silo_lessons = await ctx.ContextBuilder.ensure_store(CODING)
+        silo_lessons.write_lesson(_CREW_RULE, category="preference")
         silos.global_lessons.save(_operator_lesson())
 
         with _session_mode_gates_open():
@@ -1175,7 +1108,7 @@ class TestLessonRoutesFollowTheBindingNotThePopulation:
             )
 
         assert json.loads(resp.text)["ok"] is True
-        assert silo_lessons.load_all() == []
+        assert silo_lessons.get_lessons() == []
         assert [lesson.rule for lesson in silos.global_lessons.load_all()] == [_OPERATOR_RULE]
 
     async def test_the_global_binding_still_reads_and_writes_the_global_store(
@@ -1238,11 +1171,11 @@ _OPERATOR_PREFERENCE = "The operator deploys on Fridays."
 
 
 def _seeded_log(sessions_dir: Path, session_key: str, store: str) -> ConversationLog:
-    """A real log and, for V2, protected binding that agree on *store*.
+    """A real log and, for V2, canonical binding that agree on *store*.
 
     The transcript metadata is written and read back through the real log rather
     than stubbed because the consolidator resolves its WRITE side from that line.
-    Private V2 additionally requires the protected session record that authorizes
+    Member V2 requires the canonical session record that routes
     the READ side; seeding both proves the two sides agree without treating editable
     transcript metadata as authority.
 
@@ -1265,7 +1198,7 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
 
     A channel surface holds no crew alias — only an ``agent``, which is a kiro-cli
     template id and a namespace disjoint from ``cfg.agents``. The session's own
-    protected binding is the authoritative crew identity in scope. The consolidator
+    canonical binding is the authoritative crew identity in scope. The consolidator
     resolves its write side through the same call (``_consolidate`` is pinned to it
     above), so one conversation's reads and writes name one silo.
     """
@@ -1281,7 +1214,7 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
         with pytest.raises(UnknownMemoryStore):
             ctx.store_of_session(log, _CHANNEL_SESSION_KEY)
 
-    def test_subagent_reads_its_protected_binding_without_transcript_metadata(self, silos):
+    def test_subagent_reads_its_own_record_without_transcript_metadata(self, silos):
         from kiro_crew.subagent_persistence import create_agent_folder
 
         create_agent_folder("memoryrun", memory_store=CODING)
@@ -1336,7 +1269,7 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
             def get_metadata(self, _key: str) -> dict:
                 raise OSError("transcript is gone")
 
-        with pytest.raises(UnknownMemoryStore):
+        with pytest.raises(OSError, match="transcript is gone"):
             ctx.store_of_session(Exploding(), _CHANNEL_SESSION_KEY)
 
     def test_the_dashboard_seam_reads_through_the_same_resolver(self, silos, tmp_path) -> None:
@@ -1382,7 +1315,7 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
     async def test_turn_identity_and_first_store_construction_run_off_loop(
         self, silos, tmp_path, monkeypatch, unavailable
     ) -> None:
-        from kiro_crew import embeddings, member_memory_auth, memory_stores
+        from kiro_crew import embeddings, execution_context, memory_stores
 
         silos.builder.conversation_log = await asyncio.to_thread(
             _seeded_log, tmp_path / "sessions", _CHANNEL_SESSION_KEY, CODING
@@ -1396,13 +1329,13 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
                 with pytest.raises(RuntimeError, match="no running event loop"):
                     asyncio.get_running_loop()
                 calls.append(name)
-                if unavailable and name == "read_private_session_store":
-                    raise OSError("member identity offline")
+                if unavailable and name == "read_session_execution":
+                    raise UnknownMemoryStore("member identity offline")
                 return original(*args, **kwargs)
 
             monkeypatch.setattr(owner, name, checked)
 
-        watch(member_memory_auth, "read_private_session_store")
+        watch(execution_context, "read_session_execution")
         watch(ctx, "_resolved_store_name")
         watch(memory_stores, "memory_store_version")
         watch(VectorMemoryStore, "__init__")
@@ -1412,7 +1345,7 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
         if unavailable:
             with pytest.raises(UnknownMemoryStore, match="member identity offline"):
                 await ctx.session_store_for_turn(silos.builder, _CHANNEL_SESSION_KEY)
-            assert calls == ["read_private_session_store"]
+            assert calls == ["read_session_execution"]
             assert ctx._vector_stores == {}
         else:
             assert await ctx.session_store_for_turn(silos.builder, _CHANNEL_SESSION_KEY) == CODING
@@ -1420,7 +1353,7 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
             assert prepared is not silos.global_vectors
             assert prepared._db_path == await asyncio.to_thread(resolve_store_path, CODING)
             assert {
-                "read_private_session_store",
+                "read_session_execution",
                 "_resolved_store_name",
                 "memory_store_version",
                 "__init__",
@@ -1430,7 +1363,7 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
         assert silos.global_vectors.get_all_semantic() == []
 
     @pytest.mark.asyncio
-    async def test_a_private_silo_that_cannot_be_stood_up_stops_the_turn(
+    async def test_unavailable_member_learning_preserves_the_selected_member(
         self, silos, tmp_path
     ) -> None:
         """Skipping the vector tier, never falling back to the global store.
@@ -1445,8 +1378,7 @@ class TestTheSessionsRecordedBindingIsWhatASurfaceReads:
         with patch.object(
             ctx.ContextBuilder, "ensure_store", AsyncMock(side_effect=RuntimeError("no disk"))
         ):
-            with pytest.raises(UnknownMemoryStore, match="no disk"):
-                await ctx.session_store_for_turn(silos.builder, _CHANNEL_SESSION_KEY)
+            assert await ctx.session_store_for_turn(silos.builder, _CHANNEL_SESSION_KEY) == CODING
 
         assert ctx._vector_stores == {}
         assert silos.global_vectors.get_all_semantic() == []
@@ -1550,7 +1482,6 @@ async def _prompt_through_the_channel_pipeline(
     )
     with (
         patch.object(dispatch_mod, "inbound_permitted", _permitted),
-        patch.object(dispatch_mod, "publish_turn_identity", _publish),
         patch.object(dispatch_mod, "run_in_embed_pool", _embed),
         patch.object(dispatch_mod, "TurnDriver", _CapturingDriver),
     ):
@@ -1583,6 +1514,7 @@ class TestTheChannelPipelineReadsTheSessionsOwnSilo:
         )
         silos.global_memory.write_preferences(f"# User Preferences\n\n- {_OPERATOR_PREFERENCE}\n")
 
+        ctx.ContextBuilder.get_memory_for(memory_store=CODING).write_projects("# Projects\n")
         prompt = await _prompt_through_the_channel_pipeline(silos.builder, _CHANNEL_SESSION_KEY)
 
         assert _CREW_PREFERENCE in prompt
@@ -1605,6 +1537,7 @@ class TestTheChannelPipelineReadsTheSessionsOwnSilo:
         )
         silos.global_memory.write_preferences(f"# User Preferences\n\n- {_OPERATOR_PREFERENCE}\n")
 
+        ctx.ContextBuilder.get_memory_for(memory_store=CODING).write_projects("# Projects\n")
         prompt = await _prompt_through_the_channel_pipeline(silos.builder, _CHANNEL_SESSION_KEY)
 
         assert _OPERATOR_PREFERENCE in prompt

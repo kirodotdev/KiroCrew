@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
-import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from member_memory_helpers import patch_private_memory_supported
 
 from kiro_crew.config.loader import KiroCrewAgentConfig, KiroCrewConfig
 from kiro_crew.cron import CronJob, CronService, resolve_cron_memory
@@ -19,7 +16,6 @@ from kiro_crew.member_memory_auth import bind_private_session_store
 from kiro_crew.memory_stores import UnknownMemoryStore, provision_member_memory
 from kiro_crew.subagent import SubagentInfo, SubagentManager
 from kiro_crew.subagent_persistence import (
-    _run_memory_identity_path,
     create_agent_folder,
     read_run_memory_store,
 )
@@ -65,9 +61,9 @@ async def test_task_continuation_refuses_tampered_parent_before_child_binding(me
     parent, child = "task:tampered:runtime", "task:tampered:task1"
     bind_private_session_store(parent, writer)
     log = ConversationLog()
-    await asyncio.to_thread(log.update_metadata, parent, {"memory_store": reviewer})
+    await asyncio.to_thread(log.update_metadata, parent, {"execution_context": {"broken": True}})
     builder = SimpleNamespace(conversation_log=log, ensure_store=AsyncMock())
-    with pytest.raises(UnknownMemoryStore, match="protected member binding"):
+    with pytest.raises(UnknownMemoryStore, match="malformed execution context"):
         await inherit_session_memory(builder, parent, child)
     assert read_private_session_store(child) is None
     builder.ensure_store.assert_not_called()
@@ -106,7 +102,14 @@ async def test_private_task_failure_lesson_never_uses_global_provider_or_store(m
         lesson_store=global_lessons,
         consolidator=SimpleNamespace(_vector_store=global_vectors),
     )
-    run = Project(spec_path="spec.md", spec_content="private task", task_id="failed-private")
+    from kiro_crew.execution_context import read_session_execution
+
+    run = Project(
+        spec_path="spec.md",
+        spec_content="private task",
+        task_id="failed-private",
+        execution_context=read_session_execution(runtime),
+    )
     history_key = await runner._bound_history_key(run, "taskrunner:run:spec")
     assert history_key == "taskrunner:run:failed-private"
     assert store_of_session(ConversationLog(), history_key) == writer
@@ -136,11 +139,11 @@ async def test_private_task_review_refuses_corruption_before_provider(member_sto
     runtime = "taskrunner:broken-review:runtime"
     bind_private_session_store(runtime, writer)
     log = ConversationLog()
-    await asyncio.to_thread(log.update_metadata, runtime, {"memory_store": reviewer})
+    await asyncio.to_thread(log.update_metadata, runtime, {"execution_context": {"broken": True}})
     sessions = MagicMock(open_task_session=AsyncMock())
     run = Project(spec_path="spec.md", spec_content="task", task_id="broken-review")
     builder = SimpleNamespace(conversation_log=log, ensure_store=AsyncMock())
-    with pytest.raises(UnknownMemoryStore, match="protected member binding"):
+    with pytest.raises(UnknownMemoryStore, match="malformed execution context"):
         await self_review(
             run, Task(index=1, title="task", description="work"), sessions, "kirocrew", ctx=builder
         )
@@ -150,21 +153,30 @@ async def test_private_task_review_refuses_corruption_before_provider(member_sto
 
 @pytest.mark.asyncio
 async def test_registered_private_hook_prepares_its_member_on_later_delivery(member_stores):
+    from dataclasses import replace
+
     from kiro_crew.context import store_of_session
-    from kiro_crew.dashboard.handlers.hooks import _run_hook_inner
+    from kiro_crew.dashboard.handlers.hooks import _load_hook_execution, _run_hook_inner
+    from kiro_crew.execution_context import (
+        bind_session_execution,
+        clear_session_execution,
+        read_session_execution,
+    )
     from kiro_crew.mcp_caller import CallerContext
     from kiro_crew.mcp_tools import control
 
     writer, _ = member_stores
     origin, hook_key = "dashboard:hook-owner", f"hook:{writer}:private-report"
     bind_private_session_store(origin, writer)
-    from kiro_crew.member_memory_auth import issue_member_session_proof, publish_member_session_pid
+    captured = replace(
+        read_session_execution(origin, required=True),
+        template_id="captured-template",
+        app="synthetic-app",
+    )
+    bind_session_execution(origin, captured, replace_existing=True)
 
     await asyncio.to_thread(ConversationLog().update_metadata, origin, {"memory_store": writer})
-    publish_member_session_pid(os.getpid(), origin, memory_store=writer)
-    proof = issue_member_session_proof(origin, os.getpid())
-    assert proof
-    caller = CallerContext(session_key=origin, from_gateway=True, member_memory_proof=proof)
+    caller = CallerContext(session_key=origin, from_gateway=True)
     with (
         patch.object(control.mcp_core, "_resolve_session_key_strict", return_value=origin),
         patch("kiro_crew.mcp_caller.current_caller", return_value=caller),
@@ -178,7 +190,14 @@ async def test_registered_private_hook_prepares_its_member_on_later_delivery(mem
         )
     assert result.startswith("Hook registered:")
     log = ConversationLog()
-    assert store_of_session(log, hook_key) == writer
+    admitted = read_session_execution(origin, required=True)
+    assert _load_hook_execution(hook_key) == admitted
+    assert not log._path(hook_key).exists()
+    log.delete_session(origin)
+    clear_session_execution(origin)
+    config = KiroCrewConfig.load()
+    config.agents["writer"].kiro_agent = "later-template"
+    config.save()
     from kiro_crew.member_memory_auth import read_private_session_store
 
     assert read_private_session_store("hook:private-report") is None
@@ -191,37 +210,30 @@ async def test_registered_private_hook_prepares_its_member_on_later_delivery(mem
             SimpleNamespace(context_builder=builder, sessions=sessions), hook_key, "go", None
         )
     builder.ensure_store.assert_awaited_once_with(writer)
-    sessions.get_or_create.assert_awaited_once()
+    sessions.get_or_create.assert_awaited_once_with(hook_key, agent=admitted.template_id)
+    assert store_of_session(log, hook_key) == writer
+    assert read_session_execution(hook_key) == admitted
 
 
-def test_private_hook_cannot_be_registered_by_an_unsigned_backend(member_stores):
-    from kiro_crew.history import ConversationLog
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+@pytest.mark.parametrize("member", [True, False])
+def test_restricted_hook_registration_never_persists_summary(member_stores, mode, member):
+    from kiro_crew.execution_context import bind_session_execution, execution_for_store
     from kiro_crew.mcp_tools import control
-    from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
-    origin = "dashboard:unsigned-hook-owner"
-    bind_private_session_store(origin, writer)
-    # A persisted member assignment does not authenticate the process making
-    # this request, even when the transcript names the same store.
-    ConversationLog().update_metadata(origin, {"memory_store": writer})
-    hooks_file = control.mcp_core.config_dir() / "hooks.json"
-    hooks_before = hooks_file.read_bytes() if hooks_file.exists() else None
-    with (
-        patch.object(control.mcp_core, "_resolve_session_key_strict", return_value=origin),
-        patch("kiro_crew.mcp_caller.current_caller", return_value=None),
-        patch("kiro_crew.member_memory_auth.protected_member_session_for_pid", return_value=None),
-    ):
+    key = "dashboard:restricted-hook"
+    bind_session_execution(key, execution_for_store(writer if member else "", memory_mode=mode))
+    path = control.mcp_core.config_dir() / "hooks.json"
+    before = path.read_bytes() if path.exists() else None
+    with patch.object(control.mcp_core, "_resolve_session_key_strict", return_value=key):
         result = control.register_hook(
-            "register_hook", {"hook_id": "refused", "context_summary": "report"}
+            "register_hook", {"hook_id": "restricted", "context_summary": "DO NOT PERSIST"}
         )
-    assert result == (
-        "Error: the hook's protected member binding is unavailable; global memory was not used"
-    )
-    assert read_private_session_store(origin) == writer
-    assert read_private_session_store("hook:refused") is None
-    assert read_private_session_store(f"hook:{writer}:refused") is None
-    assert (hooks_file.read_bytes() if hooks_file.exists() else None) == hooks_before
+    assert result.startswith("Error: hook registration is disabled")
+    assert (path.read_bytes() if path.exists() else None) == before
+    assert not (path.parent / "hooks.json.lock").exists()
+    assert not ConversationLog()._path(f"hook:{writer}:restricted").exists()
 
 
 @pytest.mark.parametrize("restore_path", ["open", "recent", "channel"])
@@ -237,8 +249,8 @@ def test_history_fields_cannot_grant_private_assignment(
         _apply_recent_session,
         _rehydrate_slot_from_history,
     )
-    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
     from kiro_crew.dashboard.chat_utils import effective_session_key
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
@@ -273,11 +285,14 @@ def test_history_fields_cannot_grant_private_assignment(
     assert slot is not None
     assert effective_session_key(slot) == key
     if protected:
-        _bind_private_slot_memory(key, writer)
+        read_session_execution(key, required=True)
         assert read_private_session_store(key) == writer
     else:
-        with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-            _bind_private_slot_memory(key, writer)
+        with pytest.raises(
+            UnknownMemoryStore,
+            match="canonical execution identity|canonical member identity|missing or malformed execution context",
+        ):
+            read_session_execution(key, required=True)
         assert read_private_session_store(key) is None
 
 
@@ -287,7 +302,7 @@ async def test_http_resume_cannot_authorize_private_transcript(tmp_path, member_
     from chat_test_helpers import _make_app_with_agent_routes, _make_state
     from dashboard_owner_helpers import as_owner
 
-    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
@@ -299,8 +314,11 @@ async def test_http_resume_cannot_authorize_private_transcript(tmp_path, member_
         async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
             response = await client.post("/api/chat/slots/resume-private/resume", json={"key": key})
             assert response.status == 200, await response.text()
-    with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-        _bind_private_slot_memory(key, writer)
+    with pytest.raises(
+        UnknownMemoryStore,
+        match="canonical execution identity|canonical member identity|missing or malformed execution context",
+    ):
+        read_session_execution(key, required=True)
     assert read_private_session_store(key) is None
 
 
@@ -399,7 +417,7 @@ async def test_agent_pick_cannot_promote_an_existing_v1_transcript(tmp_path, mem
     from chat_test_helpers import _make_app_with_agent_routes, _make_state
     from dashboard_owner_helpers import as_owner
 
-    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
@@ -429,8 +447,11 @@ async def test_agent_pick_cannot_promote_an_existing_v1_transcript(tmp_path, mem
     key = "dashboard:owner-pick"
     # Neither an owner pick nor a turn can promote V1 transcript history.
     assert read_private_session_store(key) is None
-    with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-        _bind_private_slot_memory(key, writer)
+    with pytest.raises(
+        UnknownMemoryStore,
+        match="canonical execution identity|canonical member identity|missing or malformed execution context",
+    ):
+        read_session_execution(key, required=True)
     assert read_private_session_store(key) is None
 
 
@@ -449,7 +470,7 @@ async def test_owner_agent_pick_on_empty_chat_pins_private_memory(tmp_path, memb
     from chat_test_helpers import _make_app_with_agent_routes, _make_state
     from dashboard_owner_helpers import as_owner
 
-    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
@@ -477,12 +498,15 @@ async def test_owner_agent_pick_on_empty_chat_pins_private_memory(tmp_path, memb
         assert read_private_session_store(key) == writer
         assert slot.memory_store == writer
         # The first turn confirms the grant instead of refusing it.
-        _bind_private_slot_memory(key, writer)
+        read_session_execution(key, required=True)
         assert read_private_session_store(key) == writer
     else:
         assert read_private_session_store(key) is None
-        with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-            _bind_private_slot_memory(key, writer)
+        with pytest.raises(
+            UnknownMemoryStore,
+            match="canonical execution identity|canonical member identity|missing or malformed execution context",
+        ):
+            read_session_execution(key, required=True)
         assert read_private_session_store(key) is None
 
 
@@ -517,7 +541,7 @@ async def test_unreadable_transcript_pick_is_refused_not_silently_committed(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("slot_kind", ["linked", "channel"])
-async def test_member_pick_on_linked_or_channel_slot_writes_no_grant(
+async def test_member_pick_on_unused_linked_or_channel_slot_captures_identity(
     tmp_path, member_stores, slot_kind
 ):
     from aiohttp.test_utils import TestClient, TestServer
@@ -526,6 +550,7 @@ async def test_member_pick_on_linked_or_channel_slot_writes_no_grant(
 
     from kiro_crew.member_memory_auth import read_private_session_store
 
+    writer, _ = member_stores
     state = _make_state(tmp_path)
     state.sessions.reset = AsyncMock(return_value=True)
     slot = state.get_or_create_slot("native-pick", agent="default")
@@ -540,8 +565,10 @@ async def test_member_pick_on_linked_or_channel_slot_writes_no_grant(
                 "/api/chat/slots/native-pick/agent", json={"agent": "writer"}
             )
             assert response.status == 200, await response.text()
-    assert read_private_session_store("dashboard:native-pick") is None
-    assert read_private_session_store(linked_key) is None
+    assert read_private_session_store("dashboard:native-pick") == (
+        None if slot_kind == "linked" else writer
+    )
+    assert read_private_session_store(linked_key) == (writer if slot_kind == "linked" else None)
 
 
 @pytest.mark.asyncio
@@ -551,7 +578,7 @@ async def test_owner_agent_pick_accepts_message_racing_with_private_pin(tmp_path
     from dashboard_owner_helpers import as_owner
 
     from kiro_crew.dashboard.chat_persistence import pin_private_agent_store
-    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
@@ -560,11 +587,13 @@ async def test_owner_agent_pick_accepts_message_racing_with_private_pin(tmp_path
     slot = state.get_or_create_slot("raced-pick", agent="default")
     key = "dashboard:raced-pick"
 
-    async def pin_with_message(state, session_key, agent, config):
-        assigned_store = await pin_private_agent_store(state, session_key, agent, config)
+    async def pin_with_message(state, session_key, agent, config, **kwargs):
+        assigned_store = await pin_private_agent_store(state, session_key, agent, config, **kwargs)
+        if kwargs.get("validate_only"):
+            return assigned_store
         assert slot.agent == "writer"
         slot.messages.append({"role": "user", "content": "first private message"})
-        _bind_private_slot_memory(session_key, writer)
+        read_session_execution(session_key, required=True)
         return assigned_store
 
     with (
@@ -640,7 +669,7 @@ async def test_owner_second_member_pick_on_pinned_empty_chat_is_refused(tmp_path
                     "/api/chat/slots/pinned-pick/agent", json={"agent": agent}
                 )
                 assert response.status == 409, await response.text()
-                assert (await response.json())["code"] == "private_memory_session_pinned"
+                assert (await response.json())["code"] == "member_session_pinned"
                 assert slot.agent == "writer"
                 assert read_private_session_store(key) == writer
 
@@ -674,7 +703,7 @@ def test_metadata_only_transcript_is_not_v1_history_for_a_private_bind(tmp_path,
     from chat_test_helpers import _make_state
 
     from kiro_crew.dashboard.chat_persistence import _pin_private_agent_assignment
-    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
@@ -684,8 +713,11 @@ def test_metadata_only_transcript_is_not_v1_history_for_a_private_bind(tmp_path,
     state.conversation_log.update_metadata(key, {"agent": "writer", "title": "Empty"})
     assert state.conversation_log.has_log(key)
     assert not state.conversation_log.has_messages(key)
-    with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-        _bind_private_slot_memory(key, writer)
+    with pytest.raises(
+        UnknownMemoryStore,
+        match="canonical execution identity|canonical member identity|missing or malformed execution context",
+    ):
+        read_session_execution(key, required=True)
     assert read_private_session_store(key) is None
     assert (
         _pin_private_agent_assignment(key, "writer", cfg, conversation_log=state.conversation_log)
@@ -698,7 +730,7 @@ def test_metadata_only_transcript_is_not_v1_history_for_a_private_bind(tmp_path,
     state.conversation_log.update_metadata(other, {"agent": "writer"})
     state.conversation_log.append(other, "user", "said something on V1")
     assert state.conversation_log.has_messages(other)
-    with pytest.raises(UnknownMemoryStore, match="retains its V1 history"):
+    with pytest.raises(UnknownMemoryStore, match="retains its existing history"):
         _pin_private_agent_assignment(other, "writer", cfg, conversation_log=state.conversation_log)
     assert read_private_session_store(other) is None
 
@@ -719,7 +751,7 @@ def test_unverifiable_transcript_never_reads_as_empty_for_a_private_bind(tmp_pat
     with open(log._path(corrupt), "ab") as handle:
         handle.write(b"{this is not json\n")
     assert log.has_messages(corrupt)
-    with pytest.raises(UnknownMemoryStore, match="retains its V1 history"):
+    with pytest.raises(UnknownMemoryStore, match="retains its existing history"):
         _pin_private_agent_assignment(corrupt, "writer", cfg, conversation_log=log)
     assert read_private_session_store(corrupt) is None
 
@@ -744,14 +776,14 @@ async def test_owner_member_open_pins_only_its_unambiguous_canonical_session(
     from chat_test_helpers import _make_state
     from test_members_dm_thread import _make_members_app
 
-    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
     from kiro_crew.members import DM_SLOT_MODE, member_slot_key, write_dm_binding
 
     writer, reviewer = member_stores
     state = _make_state(tmp_path)
     legacy_slot_key = member_slot_key("writer")
-    slot_key = member_slot_key("writer", "" if prior == "private" else writer)
+    slot_key = member_slot_key("writer", writer)
     key = f"dashboard:{slot_key}"
     if prior != "fresh":
         write_dm_binding("writer", member="writer", slot_key=legacy_slot_key)
@@ -777,14 +809,12 @@ async def test_owner_member_open_pins_only_its_unambiguous_canonical_session(
         bind_private_session_store(key, reviewer)
     async with TestClient(TestServer(_make_members_app(state))) as client:
         response = await client.post("/api/members/writer/thread")
-        expected = (
-            409 if prior in {"redirected", "collision"} else 503 if prior == "foreign" else 200
-        )
+        expected = 409 if prior == "redirected" else 503 if prior == "foreign" else 200
         assert response.status == expected, await response.text()
-    if prior in {"fresh", "legacy", "private"}:
+    if prior in {"fresh", "legacy", "private", "collision"}:
         slot = state._slots[slot_key]
         assert slot.memory_store == writer
-        _bind_private_slot_memory(key, writer)
+        read_session_execution(key, required=True)
         assert read_private_session_store(key) == writer
     else:
         assert read_private_session_store(key) == (reviewer if prior == "foreign" else None)
@@ -797,9 +827,9 @@ def test_cron_followup_uses_job_authority_not_provider_template_alias(
 ):
     from chat_test_helpers import _make_state
 
-    from kiro_crew.dashboard.chat_runner import _bind_private_slot_memory
     from kiro_crew.dashboard.chat_utils import effective_session_key
     from kiro_crew.dashboard.cron_inject import _bind_cron_slot
+    from kiro_crew.execution_context import read_session_execution
     from kiro_crew.member_memory_auth import read_private_session_store
 
     writer, _ = member_stores
@@ -809,99 +839,27 @@ def test_cron_followup_uses_job_authority_not_provider_template_alias(
         job.member_id = "writer"
         job.memory_store = writer
         bind_private_session_store(key, writer)
+        job.execution_context = read_session_execution(key).to_record()
     else:
         assert resolve_cron_memory(job) == ("", "writer")
     slot = _bind_cron_slot(_make_state(tmp_path), job, [])
     assert effective_session_key(slot) == key
     if private_job:
-        _bind_private_slot_memory(key, writer)
+        read_session_execution(key, required=True)
         assert read_private_session_store(key) == writer
     else:
-        with pytest.raises(UnknownMemoryStore, match="no verified assignment"):
-            _bind_private_slot_memory(key, writer)
+        with pytest.raises(
+            UnknownMemoryStore,
+            match="canonical execution identity|canonical member identity|missing or malformed execution context",
+        ):
+            read_session_execution(key, required=True)
         assert read_private_session_store(key) is None
-
-
-@pytest.mark.parametrize("scope_member", ["writer", "reviewer", "global"])
-def test_history_tools_round_trip_only_protected_filename_aliases(
-    member_stores, monkeypatch, scope_member
-):
-    from kiro_crew import mcp_core
-    from kiro_crew.history import transcript_stem
-    from kiro_crew.mcp_tools import sessions
-
-    writer, reviewer = member_stores
-    entries = [
-        ("dashboard:writer:project_one", writer, "Writer confidential"),
-        ("dashboard:reviewer:project_one", reviewer, "Reviewer confidential"),
-        ("dashboard:global", "", "Global confidential"),
-    ]
-    log = ConversationLog()
-    for key, store, label in entries:
-        if store:
-            bind_private_session_store(key, store)
-        log.append(key, "user", label + " history")
-        log.update_metadata(key, {"memory_store": store, "title": label})
-    scope = {"writer": writer, "reviewer": reviewer, "global": ""}[scope_member]
-    caller = next(key for key, store, _ in entries if store == scope)
-    # Authentication is separately exercised with kernel/proof fixtures. Keep
-    # the index, protected records, metadata and content readers real here.
-    monkeypatch.setattr("kiro_crew.member_memory_auth.mcp_memory_scope", lambda key: scope)
-    monkeypatch.setattr(mcp_core, "require_strict_session_key", lambda error: (caller, ""))
-    monkeypatch.setattr(mcp_core, "_resolve_session_key", lambda: caller)
-    listed = sessions.list_sessions("list_sessions", {"all_workspaces": True})
-    searched = sessions.search_chat_history(
-        "search_chat_history", {"query": "confidential", "all_workspaces": True}
-    )
-    for key, store, label in entries:
-        stem = transcript_stem(key)
-        assert (stem in listed) == (store == scope)
-        assert (label in searched) == (store == scope)
-        fetched = sessions.get_chat_session(
-            "get_chat_session", {"session_key": stem, "all_workspaces": True}
-        )
-        assert (label + " history" in fetched) == (store == scope)
-        if store != scope:
-            assert fetched.startswith("Access denied:")
-
-
-def test_private_history_index_rechecks_records_and_rejects_cross_store_collisions(member_stores):
-    from kiro_crew.history import transcript_stem
-    from kiro_crew.mcp_tools.sessions import _history_memory_visible
-    from kiro_crew.member_memory_auth import _session_binding_path, private_history_session_index
-
-    writer, reviewer = member_stores
-    key = "dashboard:collision:part"
-    alias = "dashboard:collision_part"
-    assert transcript_stem(key) == transcript_stem(alias)
-    log = ConversationLog()
-    bind_private_session_store(key, writer)
-    log.append(key, "user", "writer history")
-    log.update_metadata(key, {"memory_store": writer})
-    index = private_history_session_index()
-    stem = transcript_stem(key)
-    assert _history_memory_visible(stem, writer, index)
-    # An unsigned canonical-key claim cannot redirect a protected lookup.
-    log.update_metadata(key, {"session_key": "dashboard:someone-else"})
-    assert _history_memory_visible(stem, writer, index)
-    bind_private_session_store(alias, reviewer)
-    collision_index = private_history_session_index()
-    assert not _history_memory_visible(stem, writer, collision_index)
-    assert not _history_memory_visible(stem, reviewer, collision_index)
-    assert not _history_memory_visible(stem, "", collision_index)
-    assert not _history_memory_visible(key, writer, collision_index)
-    assert not _history_memory_visible(alias, reviewer, collision_index)
-    # A once-valid snapshot never permits a removed committed record.
-    _session_binding_path(key).unlink()
-    assert not _history_memory_visible(stem, writer, index)
-    with pytest.raises(ValueError, match="committed private history binding"):
-        private_history_session_index()
 
 
 @pytest.fixture
 def member_stores(monkeypatch):
     # Provider calls in this file are doubles; model the supported WSL runtime.
-    patch_private_memory_supported(monkeypatch)
+    pass  # Member routing does not depend on OS isolation.
     cfg = KiroCrewConfig.load()
     cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="write")
     cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew", triggers="review")
@@ -925,7 +883,10 @@ def test_restarted_run_restores_protected_identity_not_agent_editable_state(memb
 def test_missing_private_resume_record_fails_instead_of_global(member_stores):
     writer, _ = member_stores
     create_agent_folder("run1", memory_store=writer)
-    _run_memory_identity_path("run1").unlink()
+    folder = create_agent_folder("run1", memory_store=writer)
+    row = json.loads((folder / "state.json").read_text(encoding="utf-8"))
+    row.pop("execution_context")
+    (folder / "state.json").write_text(json.dumps(row), encoding="utf-8")
     manager = SubagentManager(sessions=MagicMock(), ctx_builder=MagicMock())
     with patch.object(manager, "spawn") as spawn:
         result = manager.continue_conversation("run1", "continue")
@@ -934,21 +895,18 @@ def test_missing_private_resume_record_fails_instead_of_global(member_stores):
 
 
 def test_legacy_resume_without_member_binding_remains_global():
+    from kiro_crew.subagent_persistence import create_agent_folder
+
+    create_agent_folder("legacy")
     assert read_run_memory_store("legacy") == ""
 
 
 @pytest.mark.parametrize("replacement", [None, "", "default", "other"])
-def test_private_channel_binding_survives_restart_and_refuses_metadata_downgrade(
-    member_stores, replacement
-):
+def test_canonical_channel_identity_outranks_legacy_metadata(member_stores, replacement):
     from kiro_crew.context import store_of_session
-    from kiro_crew.member_memory_auth import bind_private_session_store
 
     writer, reviewer = member_stores
-    key = "slack:private-channel-thread"
-    log = ConversationLog()
-    log.init()
-    log.update_metadata(key, {"memory_store": writer})
+    key = "slack:member-channel-thread"
     bind_private_session_store(key, writer)
     assert store_of_session(ConversationLog(), key) == writer
     record = (
@@ -956,328 +914,68 @@ def test_private_channel_binding_survives_restart_and_refuses_metadata_downgrade
         if replacement is None
         else {"memory_store": reviewer if replacement == "other" else replacement}
     )
-    with pytest.raises(UnknownMemoryStore, match="protected member binding"):
-        store_of_session(SimpleNamespace(get_metadata=lambda _: record), key)
+    assert store_of_session(SimpleNamespace(get_metadata=lambda _: record), key) == writer
     assert store_of_session(SimpleNamespace(get_metadata=lambda _: {}), "slack:legacy") == ""
 
 
-def test_private_session_cannot_be_rebound_or_lose_its_protected_record(member_stores):
+def test_member_session_cannot_be_rebound_and_malformed_carrier_refuses(member_stores):
     from kiro_crew.context import store_of_session
-    from kiro_crew.member_memory_auth import _session_binding_path, bind_private_session_store
 
     writer, reviewer = member_stores
     key = "dashboard:pinned-writer"
     bind_private_session_store(key, writer)
-    with pytest.raises(ValueError, match="already bound"):
+    with pytest.raises(ValueError, match="another memory binding"):
         bind_private_session_store(key, reviewer)
-    _session_binding_path(key).unlink()
-    with pytest.raises(UnknownMemoryStore, match="protected member session binding"):
-        store_of_session(SimpleNamespace(get_metadata=lambda _: {}), key)
-
-
-@pytest.mark.parametrize("target", ["default", "legacy", "peer"])
-def test_private_caller_cannot_delegate_into_legacy_or_peer_memory(member_stores, target):
-    from kiro_crew.context import require_memory_delegation
-    from kiro_crew.history import ConversationLog
-    from kiro_crew.member_memory_auth import bind_private_session_store
-
-    writer, peer = member_stores
-    key = "dashboard:private-delegator"
-    log = ConversationLog()
-    log.update_metadata(key, {"memory_store": writer})
-    bind_private_session_store(key, writer)
-    selected = peer if target == "peer" else target
-    with pytest.raises(UnknownMemoryStore, match="must retain"):
-        require_memory_delegation(log, key, selected)
-    require_memory_delegation(log, key, writer)
+    ConversationLog().update_metadata(key, {"execution_context": {"member_id": 7}})
+    with pytest.raises(UnknownMemoryStore, match="canonical|identity|malformed"):
+        store_of_session(ConversationLog(), key)
 
 
 @pytest.mark.asyncio
-async def test_provider_factory_derives_private_fence_from_persisted_identity(
-    member_stores, tmp_path, monkeypatch
+@pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
+async def test_session_allocation_sets_member_context_and_mode_before_native_start(
+    member_stores, tmp_path, monkeypatch, mode
 ):
-    from kiro_crew import member_memory_auth as auth
-
-    writer, _ = member_stores
-    log = ConversationLog()
-    log.init()
-    log.update_metadata("dashboard:member-writer", {"memory_store": writer})
-    bind_private_session_store("dashboard:member-writer", writer)
-    create_agent_folder("private-worker", memory_store=writer)
-    resolve = auth.private_memory_store_for_session
-    loop_thread = threading.get_ident()
-    resolved = []
-
-    def read_identity(key):
-        resolved.append((key, threading.get_ident()))
-        return resolve(key)
-
-    monkeypatch.setattr(auth, "private_memory_store_for_session", read_identity)
-    factory = KiroCrewConfig.load().create_provider_factory()
-    for index, (key, claimed_private, expected) in enumerate(
-        (
-            ("dashboard:member-writer", False, True),
-            ("subagent:private-worker", False, True),
-            ("dashboard:unowned", True, False),
-        )
-    ):
-        provider = factory(key, private_memory=claimed_private, cwd=str(tmp_path / str(index)))
-        assert len(resolved) == index, "synchronous construction must not read private identity"
-        await asyncio.wait_for(provider.prepare_private_memory(), timeout=5)
-        assert provider._private_memory is expected
-        assert provider._client._private_memory is expected
-        await asyncio.wait_for(provider.prepare_private_memory(), timeout=5)
-        assert len(resolved) == index + 1
-    assert all(thread != loop_thread for _, thread in resolved)
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("backend", ["", "kas", "claude"])
-@pytest.mark.parametrize("private", [False, True])
-async def test_direct_provider_start_prepares_private_flags_and_mcp_routing(
-    tmp_path, monkeypatch, backend, private
-):
-    from kiro_crew import member_memory_auth as auth
-    from kiro_crew.acp.client import AcpClient
-    from kiro_crew.providers.acp import AcpProvider
-
-    loop_thread = threading.get_ident()
-    reads = []
-
-    def read_identity(key):
-        reads.append((key, threading.get_ident()))
-        return "member-writer" if private else ""
-
-    monkeypatch.setattr(auth, "private_memory_store_for_session", read_identity)
-    overlay, socket = tmp_path / "overlay", tmp_path / "gateway.sock"
-    provider = AcpProvider(
-        work_dir=tmp_path,
-        session_key="dashboard:direct-private",
-        acp_backend=backend,
-        mcp_gateway_overlay=overlay,
-        mcp_gateway_socket=socket,
-    )
-    started = []
-
-    async def at_launch(_instance):
-        assert threading.get_ident() == loop_thread
-        assert provider._private_memory is private
-        assert provider._client._private_memory is private
-        assert provider._client._mcp_gateway_overlay == (None if private else str(overlay))
-        assert provider._client._mcp_gateway_socket == (None if private else str(socket))
-        assert provider._client._private_mcp_gateway_socket == str(socket)
-        started.append(backend)
-
-    monkeypatch.setattr(AcpProvider, "_start_kiro_runtime", at_launch)
-    monkeypatch.setattr(AcpClient, "ensure_ready", at_launch)
-    monkeypatch.setattr(AcpProvider, "_apply_initial_effort", AsyncMock())
-    await asyncio.wait_for(provider.start(), timeout=5)
-    # A runtime replacement may not yet carry a session key. Repeated start
-    # preserves the prepared original identity without reading that wrapper.
-    provider._client._session_key = ""
-    await asyncio.wait_for(provider.start(), timeout=5)
-    assert started == [backend, backend]
-    assert len(reads) == 1 and reads[0][0] == "dashboard:direct-private"
-    assert reads[0][1] != loop_thread
-
-
-@pytest.mark.asyncio
-async def test_private_provider_preparation_refuses_unsupported_backend_before_start(
-    tmp_path, monkeypatch
-):
-    from kiro_crew import member_memory_auth as auth
-    from kiro_crew.acp.types import ACP_BACKEND_CODEX
-    from kiro_crew.providers.acp import AcpProvider
-
-    monkeypatch.setattr(auth, "private_memory_store_for_session", lambda key: "member-writer")
-    provider = AcpProvider(
-        work_dir=tmp_path, session_key="dashboard:private", acp_backend=ACP_BACKEND_CODEX
-    )
-    launch = AsyncMock()
-    monkeypatch.setattr(provider._client, "ensure_ready", launch)
-    with pytest.raises(UnknownMemoryStore, match="Global Memory V1 was not used"):
-        await asyncio.wait_for(provider.start(), timeout=5)
-    assert not provider._private_memory_prepared
-    assert not provider._private_memory
-    assert not provider._client._private_memory
-    launch.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_private_preparation_failed_read_can_retry_without_publication(tmp_path, monkeypatch):
-    from kiro_crew import member_memory_auth as auth
-    from kiro_crew.providers.acp import AcpProvider
-
-    resolver = MagicMock(side_effect=UnknownMemoryStore("private binding unreadable"))
-    monkeypatch.setattr(auth, "private_memory_store_for_session", resolver)
-    socket = tmp_path / "gateway.sock"
-    provider = AcpProvider(
-        work_dir=tmp_path, session_key="dashboard:retry", mcp_gateway_socket=socket
-    )
-    launch = AsyncMock()
-    monkeypatch.setattr(provider, "_start_kiro_runtime", launch)
-    with pytest.raises(UnknownMemoryStore, match="private binding unreadable"):
-        await asyncio.wait_for(provider.start(), timeout=5)
-    assert not provider._private_memory_prepared
-    assert not provider._private_memory and not provider._client._private_memory
-    assert provider._client._mcp_gateway_socket == str(socket)
-    launch.assert_not_awaited()
-
-    resolver.side_effect = None
-    resolver.return_value = "member-writer"
-    await asyncio.wait_for(provider.start(), timeout=5)
-    assert provider._private_memory_prepared and provider._private_memory
-    assert provider._client._private_memory
-    assert provider._client._mcp_gateway_socket is None
-    assert provider._client._private_mcp_gateway_socket == str(socket)
-    launch.assert_awaited_once()
-    assert resolver.call_count == 2
-
-
-@pytest.mark.asyncio
-async def test_cancelled_private_preparation_does_not_publish_worker_result(tmp_path, monkeypatch):
-    from kiro_crew import member_memory_auth as auth
-    from kiro_crew.providers.acp import AcpProvider
-
-    loop = asyncio.get_running_loop()
-    entered = asyncio.Event()
-    release, finished = threading.Event(), threading.Event()
-
-    def read_identity(key):
-        loop.call_soon_threadsafe(entered.set)
-        try:
-            if not release.wait(timeout=5):
-                raise TimeoutError("test did not release identity read")
-            return "member-writer"
-        finally:
-            finished.set()
-
-    monkeypatch.setattr(auth, "private_memory_store_for_session", read_identity)
-    provider = AcpProvider(work_dir=tmp_path, session_key="dashboard:cancelled")
-    launch = AsyncMock()
-    monkeypatch.setattr(provider, "_start_kiro_runtime", launch)
-    task = asyncio.create_task(provider.start())
-    try:
-        await asyncio.wait_for(entered.wait(), timeout=5)
-        assert not task.done(), "the loop remains responsive while the identity read waits"
-        task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await asyncio.wait_for(task, timeout=5)
-    finally:
-        release.set()
-        if not task.done():
-            task.cancel()
-        await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), timeout=5)
-        assert await asyncio.to_thread(finished.wait, 5)
-    assert not provider._private_memory_prepared
-    assert not provider._private_memory
-    assert not provider._client._private_memory
-    launch.assert_not_awaited()
-
-    monkeypatch.setattr(auth, "private_memory_store_for_session", lambda key: "member-writer")
-    await asyncio.wait_for(provider.start(), timeout=5)
-    assert provider._private_memory_prepared and provider._private_memory
-    launch.assert_awaited_once()
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("changed_binding", [False, True])
-async def test_session_allocation_prepares_real_factory_before_private_comparison(
-    member_stores, tmp_path, monkeypatch, changed_binding
-):
-    from kiro_crew import member_memory_auth as auth
-    from kiro_crew import session_allocation
+    from kiro_crew.execution_context import bind_session_execution, resolve_member_execution
     from kiro_crew.providers.acp import AcpProvider
     from kiro_crew.session import SessionManager
 
-    writer, _ = member_stores
-    key = "cron:private-allocation"
-    bind_private_session_store(key, writer)
-    ConversationLog().update_metadata(key, {"memory_store": writer})
-    resolve = auth.private_memory_store_for_session
-    loop_thread = threading.get_ident()
-    reads = []
-
-    def read_identity(candidate):
-        reads.append((candidate, threading.get_ident()))
-        return "" if changed_binding and len(reads) == 2 else resolve(candidate)
-
-    monkeypatch.setattr(auth, "private_memory_store_for_session", read_identity)
-    monkeypatch.setattr(session_allocation, "private_memory_store_for_session", read_identity)
+    key = "cron:member-allocation"
     cfg = KiroCrewConfig.load()
+    captured = resolve_member_execution(
+        cfg, "writer", memory_mode=mode, validate_memory_files=False
+    )
+    bind_session_execution(key, captured)
     cfg.session.pool_size = 1
     manager = SessionManager(cfg, provider_factory=cfg.create_provider_factory())
     claim = AsyncMock()
     monkeypatch.setattr(manager, "_drain_and_claim", claim)
     monkeypatch.setattr(manager, "_dispatch_hard_kill", MagicMock())
+    launches = []
 
     async def at_launch(provider):
-        assert provider._private_memory and provider._client._private_memory
-        raise RuntimeError("test reached private launch boundary")
+        assert provider.member_context is True
+        assert provider.memory_mode == mode
+        launches.append(provider)
+        raise RuntimeError("observed admitted native launch")
 
-    launch = AsyncMock(side_effect=at_launch)
-
-    # Patch on the instance boundary via a real async method so binding is kept.
-    async def observe_launch(provider):
-        await launch(provider)
-
-    monkeypatch.setattr(AcpProvider, "_start_kiro_runtime", observe_launch)
-    expected = "Provider does not match" if changed_binding else "test reached private launch"
+    monkeypatch.setattr(AcpProvider, "_start_kiro_runtime", at_launch)
     try:
-        with pytest.raises(RuntimeError, match=expected):
+        with pytest.raises(RuntimeError, match="observed admitted native launch"):
             await asyncio.wait_for(
-                manager.get_or_create(key, agent="kirocrew", model="auto", cwd=str(tmp_path)),
-                timeout=5,
+                manager.get_or_create(key, agent="kirocrew", model="auto", cwd=str(tmp_path)), 5
             )
         assert key not in manager._sessions
         claim.assert_not_awaited()
-        if changed_binding:
-            launch.assert_not_awaited()
-        else:
-            launch.assert_awaited_once()
-        assert len(reads) == 2
-        assert all(candidate == key and thread != loop_thread for candidate, thread in reads)
+        assert len(launches) == 1
     finally:
         await manager.close_all()
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("private", [False, True])
-async def test_provider_preserves_private_fence_when_constructing_runtime(tmp_path, private):
-    from kiro_crew.providers.acp import AcpProvider
-
-    with patch("kiro_crew.providers.acp.AcpClient") as client_type:
-        provider = AcpProvider(private_memory=private)
-    assert client_type.call_args.kwargs.get("private_memory", False) is private
-    provider._client = SimpleNamespace(
-        _work_dir=tmp_path,
-        _agent="kirocrew",
-        _sandbox_mode="auto",
-        _extra_env={},
-        _mcp_gateway_overlay=None,
-        _mcp_gateway_socket=None,
-        _private_mcp_gateway_socket=str(tmp_path / "custom-broker.sock"),
-        _resume_session_id="",
-        _model="auto",
-        backend="",
-    )
-    runtime = MagicMock(spawn=AsyncMock(side_effect=RuntimeError("stop before process launch")))
-    with patch("kiro_crew.providers.acp.AcpRuntime", return_value=runtime) as runtime_type:
-        with pytest.raises(RuntimeError, match="stop before process launch"):
-            await provider._start_kiro_runtime_impl({}, {})
-    assert runtime_type.call_args.kwargs.get("private_memory", False) is private
-    assert runtime_type.call_args.kwargs["mcp_gateway_socket"] == (
-        str(tmp_path / "custom-broker.sock") if private else None
-    )
-
-
-@pytest.mark.asyncio
 async def test_private_consolidation_uses_separate_bound_process_and_cleans_it_up(member_stores):
     from kiro_crew.llm_helpers import background_turn
-    from kiro_crew.member_memory_auth import (
-        _session_binding_path,
-        private_memory_store_for_session,
-    )
+    from kiro_crew.member_memory_auth import private_memory_store_for_session
     from kiro_crew.session import BACKGROUND_KEY
 
     client = SimpleNamespace(last_prompt_stats=None)
@@ -1302,7 +1000,6 @@ async def test_private_consolidation_uses_separate_bound_process_and_cleans_it_u
         log = ConversationLog()
         assert not log._path(key).exists()
         assert not log._lock_path(key).exists()
-        assert not _session_binding_path(key).parent.exists()
     assert len(set(keys)) == 2
     sessions.recycle_background.assert_not_awaited()
 
@@ -1310,7 +1007,6 @@ async def test_private_consolidation_uses_separate_bound_process_and_cleans_it_u
 @pytest.mark.asyncio
 async def test_private_consolidation_acquire_failure_removes_generated_artifacts(member_stores):
     from kiro_crew.llm_helpers import background_turn
-    from kiro_crew.member_memory_auth import _session_binding_path
 
     writer, _ = member_stores
     sessions = MagicMock(
@@ -1329,13 +1025,11 @@ async def test_private_consolidation_acquire_failure_removes_generated_artifacts
     log = ConversationLog()
     assert not log._path(key).exists()
     assert not log._lock_path(key).exists()
-    assert not _session_binding_path(key).parent.exists()
 
 
 @pytest.mark.asyncio
 async def test_private_consolidation_preserves_authority_when_retirement_fails(member_stores):
     from kiro_crew.llm_helpers import background_turn
-    from kiro_crew.member_memory_auth import _session_binding_path
 
     writer, _ = member_stores
     client = SimpleNamespace(last_prompt_stats=None)
@@ -1349,7 +1043,9 @@ async def test_private_consolidation_preserves_authority_when_retirement_fails(m
     ):
         key = sessions.get_or_create.call_args.args[0]
     assert ConversationLog()._path(key).exists()
-    assert _session_binding_path(key).is_file()
+    from kiro_crew.execution_context import read_session_execution
+
+    assert read_session_execution(key).store.store_id == writer
     sessions.destroy.assert_not_awaited()
 
 
@@ -1360,28 +1056,8 @@ def test_unreadable_run_without_protected_identity_cannot_become_global(contents
     folder = persistence._agent_dir("broken-identity")
     folder.mkdir(parents=True)
     (folder / "state.json").write_text(contents, encoding="utf-8")
-    with pytest.raises(ValueError, match="run metadata is unreadable"):
+    with pytest.raises(ValueError, match="run record is unavailable"):
         read_run_memory_store("broken-identity")
-
-
-def test_unprotected_old_record_cannot_authorize_a_private_resume(member_stores):
-    from kiro_crew import subagent_persistence as persistence
-
-    writer, _ = member_stores
-    old = persistence._cleanup_identities_path("old-identity").parent / "memory.json"
-    old.parent.mkdir(parents=True)
-    old.write_text(json.dumps({"version": 2, "memory_store": writer}), encoding="utf-8")
-    with pytest.raises(ValueError, match="protected memory record"):
-        read_run_memory_store("old-identity")
-
-
-def test_missing_private_record_cannot_be_hidden_by_editing_run_state(member_stores):
-    writer, _ = member_stores
-    folder = create_agent_folder("edited-state", memory_store=writer)
-    _run_memory_identity_path("edited-state").unlink()
-    (folder / "state.json").write_text("{}", encoding="utf-8")
-    with pytest.raises(ValueError, match="protected memory record"):
-        read_run_memory_store("edited-state")
 
 
 def test_schedule_member_survives_reload_without_origin_chat(tmp_path, member_stores):
@@ -1394,51 +1070,12 @@ def test_schedule_member_survives_reload_without_origin_chat(tmp_path, member_st
     assert resolve_cron_memory(reloaded) == (writer, "kirocrew")
 
 
-@pytest.mark.parametrize("mode", ["command", "script"])
-@pytest.mark.parametrize("inherit", [False, True])
-def test_private_deterministic_schedule_refused_before_persistence(
-    tmp_path, member_stores, mode, inherit
-):
-    writer, _ = member_stores
-    ConversationLog().update_metadata("dashboard:writer", {"memory_store": writer})
-    bind_private_session_store("dashboard:writer", writer)
-    identity = {"session_key": "dashboard:writer"} if inherit else {"member_id": "writer"}
-    body = "echo hello" if mode == "command" else "report.py:run"
-    service = CronService(base_dir=tmp_path / "cron")
-    with pytest.raises(ValueError, match="require an agent task"):
-        service.add_job("daily", "", every_secs=60, **identity, **{mode: body})
-    assert service.list_jobs() == []
-    assert CronService(base_dir=tmp_path / "cron").list_jobs() == []
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["command", "script"])
-async def test_imported_private_deterministic_schedule_never_dispatches(member_stores, mode):
-    from test_cron_gateway_integration import _make_gw_for_llm, _run_llm_callback
-
-    writer, _ = member_stores
-    gateway = _make_gw_for_llm()
-    job = CronJob(
-        id="private-import", name="daily", message="", member_id="writer", memory_store=writer
-    )
-    setattr(job, mode, "echo hello" if mode == "command" else "report.py:run")
-    with (
-        patch("kiro_crew.slack.gateway.run_command_sandboxed") as command,
-        patch("kiro_crew.slack.gateway.run_script_sandboxed") as script,
-        pytest.raises(ValueError, match="require an agent task"),
-    ):
-        await _run_llm_callback(gateway, job)
-    command.assert_not_called()
-    script.assert_not_called()
-    gateway.sessions.get_or_create.assert_not_called()
-
-
 @pytest.mark.parametrize("bad_identity", [None, False, 0, [], {}])
 @pytest.mark.parametrize("field", ["member_id", "memory_store"])
 def test_malformed_schedule_identity_never_means_global(field, bad_identity):
     job = CronJob(id="damaged", name="damaged", message="task")
     setattr(job, field, bad_identity)
-    with pytest.raises(ValueError, match="memory identity is malformed"):
+    with pytest.raises(ValueError, match="malformed schedule identity"):
         resolve_cron_memory(job)
 
 
@@ -1452,28 +1089,11 @@ def test_malformed_spawn_identity_is_refused_before_queueing(bad_identity):
     assert not manager._agents
 
 
-@pytest.mark.asyncio
-async def test_native_windows_private_execution_refuses_before_preparing_provider(
-    member_stores, monkeypatch
-):
-    from kiro_crew.context import prepare_store_vectors
-
-    writer, _ = member_stores
-    monkeypatch.setattr("kiro_crew.member_memory_auth.sys", SimpleNamespace(platform="win32"))
-    patch_private_memory_supported(monkeypatch, value=False)
-    builder = MagicMock(ensure_store=AsyncMock())
-    with pytest.raises(UnknownMemoryStore, match="WSL/Linux gateway"):
-        await prepare_store_vectors(builder, writer)
-    builder.ensure_store.assert_not_called()
-    await prepare_store_vectors(builder, "default")
-    builder.ensure_store.assert_not_called()
-
-
 def test_schedule_inherits_creator_member_once(tmp_path, member_stores):
     writer, reviewer = member_stores
     log = ConversationLog()
-    log.update_metadata("dashboard:writer", {"memory_store": writer, "agent": "writer"})
     bind_private_session_store("dashboard:writer", writer)
+    log.update_metadata("dashboard:writer", {"memory_store": writer, "agent": "writer"})
     service = CronService(base_dir=tmp_path / "cron")
     job = service.add_job("daily", "write report", every_secs=60, session_key="dashboard:writer")
     log.update_metadata("dashboard:writer", {"memory_store": reviewer, "agent": "reviewer"})
@@ -1489,17 +1109,6 @@ def test_v1_provider_template_does_not_become_a_member(tmp_path, member_stores):
     assert resolve_cron_memory(job) == ("", "writer")
 
 
-def test_sandbox_crew_selection_does_not_open_private_memory(member_stores):
-    from kiro_crew.mcp_core import _do_select_crew
-
-    writer, _ = member_stores
-    with patch(
-        "kiro_crew.memory_stores._named_store_dir", side_effect=PermissionError("sandbox hidden")
-    ):
-        selected = json.loads(_do_select_crew("writer"))
-    assert selected["bound"]["memory_store"] == writer
-
-
 @pytest.mark.parametrize("origin", ["dashboard:writer", "subagent:writer-run"])
 def test_sandbox_schedule_inherits_binding_without_opening_private_memory(
     tmp_path, member_stores, origin
@@ -1508,10 +1117,11 @@ def test_sandbox_schedule_inherits_binding_without_opening_private_memory(
     if origin.startswith("subagent:"):
         create_agent_folder("writer-run", memory_store=writer)
     else:
-        ConversationLog().update_metadata(origin, {"memory_store": writer})
         bind_private_session_store(origin, writer)
+        ConversationLog().update_metadata(origin, {"memory_store": writer})
     with patch(
-        "kiro_crew.memory_stores._named_store_dir", side_effect=PermissionError("sandbox hidden")
+        "kiro_crew.vector_memory.read_member_database_identity",
+        side_effect=PermissionError("database unavailable"),
     ):
         job = CronService(base_dir=tmp_path / "cron").add_job(
             "scheduled", "write", every_secs=60, session_key=origin
@@ -1527,7 +1137,7 @@ def test_corrupt_existing_transcript_refuses_memory_resolution_and_scheduling(tm
     log = ConversationLog()
     log.update_metadata("dashboard:broken", {"memory_store": "private-identity"})
     log._path("dashboard:broken").write_text("{truncated metadata\n", encoding="utf-8")
-    with pytest.raises(UnknownMemoryStore, match="global memory was not used"):
+    with pytest.raises(UnknownMemoryStore, match="Global was not used"):
         store_of_session(log, "dashboard:broken")
     service = CronService(base_dir=tmp_path / "cron")
     with pytest.raises(ValueError, match="unreadable"):
@@ -1561,9 +1171,9 @@ async def test_linked_member_hydrates_provider_template_and_keeps_its_memory(
     writer, _ = member_stores
     log = ConversationLog()
     key = "dashboard:linked-writer"
-    log.update_metadata(key, {"memory_store": writer, "agent": recorded_agent})
     bind_private_session_store(key, writer)
-    expected = "custom-template" if recorded_agent == "custom-template" else "kirocrew"
+    log.update_metadata(key, {"memory_store": writer, "agent": recorded_agent})
+    expected = "kirocrew"
     assert persisted_session_agent(log, key) == expected
     await handler._hydrate_thread_overrides(key, log)
     assert handler._thread_agents[key] == expected
@@ -1584,7 +1194,7 @@ async def test_unavailable_private_run_refused_before_provider_allocation():
     sessions.get_or_create = AsyncMock()
     manager = SubagentManager(sessions=sessions, ctx_builder=MagicMock())
     info = SubagentInfo(id="run1", task="task", memory_store="missing-private")
-    with pytest.raises(UnknownMemoryStore):
+    with pytest.raises(ValueError, match="no captured execution context"):
         await asyncio.wait_for(manager._run_inner(info, "subagent:run1"), 5)
     sessions.get_or_create.assert_not_called()
 
@@ -1615,7 +1225,7 @@ async def test_linked_channel_refuses_private_memory_before_provider_and_display
     sessions.get_or_create.assert_not_called()
     renderer.on_text_chunk.assert_awaited_once()
     refusal = renderer.on_text_chunk.call_args.args[0]
-    assert "missing-private" in refusal and "not declared" in refusal
+    assert "Memory store declaration is unavailable" in refusal
     renderer.close.assert_awaited_once()
 
 
@@ -1651,12 +1261,13 @@ async def test_scheduled_member_passes_private_store_to_context(member_stores):
         seen.append(gateway.ctx_builder.conversation_log.get_metadata(args[0])["memory_store"])
         return MagicMock(), True, False
 
+    from kiro_crew.execution_context import execution_for_store
+
+    job.execution_context = execution_for_store(writer).to_record()
     with patch("kiro_crew.context.prepare_store_vectors", new=AsyncMock()) as prepare:
         await _run_llm_callback(gateway, job, get_or_create_side_effect=acquire)
     assert seen == [writer]
-    prepare.assert_awaited_once_with(
-        gateway.ctx_builder, writer, session_key=gateway.sessions.get_or_create.call_args.args[0]
-    )
+    prepare.assert_not_called()
     assert gateway.sessions.get_or_create.call_args.kwargs["agent"] == "kirocrew"
 
 
@@ -1666,7 +1277,7 @@ async def test_deleted_scheduled_member_never_starts_global_provider():
 
     gateway = _make_gw_for_llm()
     job = CronJob(id="member-job", name="daily", message="report", member_id="deleted")
-    with pytest.raises(ValueError, match="unknown Crew Member"):
+    with pytest.raises(ValueError, match="no canonical execution context"):
         await _run_llm_callback(gateway, job)
     gateway.sessions.get_or_create.assert_not_called()
 
@@ -1738,10 +1349,10 @@ def test_transient_history_cleanup_refuses_a_mismatched_protected_store(member_s
     writer, reviewer = member_stores
     key = f"memory-consolidation:{writer}:{uuid4().hex}"
     log = ConversationLog()
-    log.update_metadata(key, {"memory_store": reviewer})
     bind_private_session_store(key, reviewer)
+    log.update_metadata(key, {"memory_store": reviewer})
     original = log._path(key).read_bytes()
-    with pytest.raises(ValueError, match="another private store"):
+    with pytest.raises(ValueError, match="another memory store"):
         log.delete_memory_consolidation_session(key, writer)
     assert log._path(key).read_bytes() == original
 
@@ -1750,50 +1361,37 @@ def test_transient_history_cleanup_refuses_a_mismatched_protected_store(member_s
 @pytest.mark.parametrize("mode", ["persistent", "incognito", "temporary"])
 async def test_task_plan_policy_survives_fresh_gateway_context(tmp_path, monkeypatch, mode):
     from kiro_crew.context import ContextBuilder, inherit_session_memory
-    from kiro_crew.dashboard.state import DashboardState
-    from kiro_crew.subagent_persistence import read_session_memory_mode
-    from kiro_crew.task_models import SESSION_PREFIX
+    from kiro_crew.execution_context import (
+        ExecutionContext,
+        MemoryStoreRef,
+        bind_session_execution,
+        read_session_execution,
+    )
     from kiro_crew.taskrunner import TaskRunner
 
-    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", tmp_path / "subagents")
-    log = ConversationLog()
-    builder = ContextBuilder(conversation_log=log)
+    execution = ExecutionContext(None, MemoryStoreRef("default"), "template", "kirocrew", mode)
+    bind_session_execution("dashboard:parent", execution)
+    builder = ContextBuilder(conversation_log=ConversationLog())
     sessions = MagicMock()
-    state = DashboardState(sessions, None, None, 0, context_builder=builder, conversation_log=log)
-    state._slots["parent"] = SimpleNamespace(
-        is_restricted=mode != "persistent", blocks_reads=mode == "temporary"
-    )
     runner = TaskRunner(sessions=sessions, context_builder=builder, work_dir=tmp_path)
     run = await runner.plan(
         input_text="agents:\n  inspect:\n    prompt: Inspect the input\n",
         source="yaml",
         session_key="dashboard:parent",
     )
-    root = f"{SESSION_PREFIX}:{run.task_id}:runtime"
-    assert read_session_memory_mode(root) == mode
-
-    # Neither the original slot, the old context map nor editable metadata is authority.
-    await asyncio.to_thread(log.update_metadata, root, {"memory_mode": "persistent"})
+    assert run.execution_context == execution
+    root = f"taskrunner:{run.task_id}:runtime"
+    assert read_session_execution(root) == execution
     fresh = ContextBuilder(conversation_log=ConversationLog())
-    fresh_state = DashboardState(sessions, None, None, 0, context_builder=fresh)
-    assert not fresh._session_memory_modes
-    assert fresh_state._slots.get("parent") is None
-    child = f"{SESSION_PREFIX}:{run.task_id}:task1"
-    from kiro_crew.context import prepare_store_vectors
-
-    with patch("kiro_crew.context.prepare_store_vectors", wraps=prepare_store_vectors) as prepare:
-        assert await inherit_session_memory(fresh, root, child) == ""
-    assert prepare.call_count == (0 if mode == "temporary" else 1)
-    if mode != "persistent":
-        assert fresh.conversation_log.get_metadata(child)["memory_mode"] == mode
-    assert fresh._session_memory_modes[child] == mode
-    assert read_session_memory_mode(child) == mode
-    with patch.object(fresh, "build_session_context", wraps=fresh.build_session_context) as build:
-        await asyncio.to_thread(fresh.build_message, "Inspect", True, child)
-    assert build.call_args.kwargs["blocks_reads"] == (mode == "temporary")
-
-    # Automatic failure learning observes the same recovered policy.
     runner._ctx = fresh
+    child = f"taskrunner:{run.task_id}:task1"
+    assert await inherit_session_memory(fresh, root, child) == ""
+    assert read_session_execution(child) == execution
+    assert fresh._session_memory_modes[child] == mode
+    rows = json.loads(runner._runs_path().read_text(encoding="utf-8"))
+    assert bool(rows) == (mode == "persistent")
+    if mode != "persistent":
+        assert not fresh.conversation_log._path(child).exists()
     runner._lesson_store = MagicMock()
     runner._call_llm_for_lesson = AsyncMock(return_value={"rule": "use bounded waits"})
     await runner._extract_lesson(run.tasks[0], run)
@@ -1805,32 +1403,31 @@ async def test_task_plan_policy_survives_fresh_gateway_context(tmp_path, monkeyp
 async def test_runtime_policy_damage_refuses_even_with_persistent_history(
     tmp_path, monkeypatch, damage
 ):
-    from kiro_crew.context import ContextBuilder, inherit_session_memory
-    from kiro_crew.dashboard.state import DashboardState
-    from kiro_crew.subagent_persistence import (
-        _session_mode_identity_path,
-        bind_session_memory_mode,
-    )
+    from kiro_crew.execution_context import ExecutionContext, MemoryStoreRef
+    from kiro_crew.task_models import Project
+    from kiro_crew.taskrunner import TaskRunner
+    from kiro_crew.workflow_memory import TaskSnapshotError
 
-    monkeypatch.setattr("kiro_crew.subagent_persistence._SUBAGENTS_DIR", tmp_path / "subagents")
-    root = "taskrunner:damaged:runtime"
-    bind_session_memory_mode(root, "temporary")
-    record = _session_mode_identity_path(root)
+    runner = TaskRunner(sessions=MagicMock(), work_dir=tmp_path)
+    execution = ExecutionContext(
+        "alice", MemoryStoreRef("alice-store", "alice"), "member", "kirocrew"
+    )
+    run = Project(
+        "", "retained body", task_id="damaged", status="planned", execution_context=execution
+    )
+    runner._runs[run.task_id] = run
+    rows = json.loads(runner._serialize_runs())
     if damage == "missing":
-        record.unlink()
+        rows[0]["execution_context"].pop("member_id")
     elif damage == "corrupt":
-        record.write_text("invalid", encoding="utf-8")
+        rows[0]["execution_context"] = "invalid"
     else:
-        row = json.loads(record.read_text(encoding="utf-8"))
-        row.pop("memory_mode")
-        record.write_text(json.dumps(row), encoding="utf-8")
-    log = ConversationLog()
-    await asyncio.to_thread(log.update_metadata, root, {"memory_mode": "persistent"})
-    builder = ContextBuilder(conversation_log=log)
-    DashboardState(MagicMock(), None, None, 0, context_builder=builder, conversation_log=log)
-    child = "taskrunner:damaged:task1"
-    with pytest.raises(ValueError, match="memory binding unavailable"):
-        await inherit_session_memory(builder, root, child)
-    assert child not in builder._session_memory_modes
-    with pytest.raises(ValueError, match="memory binding unavailable"):
-        bind_session_memory_mode(root, "persistent")
+        rows[0]["execution_context"]["memory_mode"] = "invalid"
+    runner._runs_path().write_text(json.dumps(rows), encoding="utf-8")
+    before = runner._runs_path().read_bytes()
+    restored = TaskRunner(sessions=MagicMock(), work_dir=tmp_path)
+    assert not restored._runs
+    assert restored._snapshot_recovery_incomplete
+    with pytest.raises(TaskSnapshotError):
+        await restored._apersist_runs()
+    assert runner._runs_path().read_bytes() == before

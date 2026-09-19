@@ -258,18 +258,20 @@ name into `ResolvedBindings`, in this order:
 
 An unresolvable workspace falls back to `default_workspace`. Memory identity
 resolves exactly: the reserved `default` assistant uses Global Memory V1;
-existing members keep their declared V1 binding until the owner chooses V2.
-Explicitly created and opted-in members own unique private V2 stores.
-Automatically discovered agents start on Global V1 without private allocation.
-Missing, unreadable,
-shared or mismatched private identity stops execution with an actionable error.
+existing V1 members keep their declared V1 binding.
+Explicitly created members own unique V2 stores identified by an immutable persisted `member_id`, independent of their editable label.
+Automatically discovered agents start on Global V1 without member allocation.
+Missing, unreadable, shared or mismatched member identity makes memory operations
+unavailable without choosing Global. Rules and briefing remain usable without
+the learned database. Member isolation is routing for built-in tools, not secrecy
+against arbitrary code running as the same OS user.
 Selecting a member as `default_agent` preserves that member's memory version and
 binding. With no agents configured, the resolver returns the existing defaults.
 
-Member creation automatically provisions empty private memory. Members cannot
-choose a shared store or rebind their private store. Legacy members may continue
-using V1 or explicitly choose empty V2 memory from their settings; former Global
-or named V1 contents remain untouched. Config fields, atomic publication, ownership manifest and
+Member creation automatically provisions empty member memory. Members cannot
+choose a shared store or rebind their member store. Legacy members may continue
+using V1; member updates never initialize a V2 database. Global and named V1
+contents remain untouched. Config fields, exclusive database creation, immutable database identity and
 recovery semantics are owned by [config](config.md#named-memory-stores-memory_storespy).
 
 A new member DM inherits the member's configured workspace, falling back to
@@ -281,23 +283,16 @@ existing slot is preserved. Reopening a live or restored
 thread keeps its saved workspace and project, including an explicitly empty
 project, rather than resetting a session choice to the member default.
 
-Opting into V2 opens a fresh member conversation. Existing V1 conversation and
-native provider context cannot become private context by changing the config.
-The member-thread binding records its private store generation and reuses that
-conversation across later opens and restarts. An already protected V2 thread
-keeps its existing key. Old schedules and child runs retain their recorded store;
-the opt-in does not relabel past or already assigned work.
-
-Private memory also pins an active dashboard turn to its member in ordinary
-chat slots. A provider-side agent switch stops the stream with a visible notice
-and resets the provider before another turn; later events cannot continue under
-another agent while using that member's memory. This covers member DMs and
-ordinary V2 chats. Ordinary V1 chats keep their existing switch behavior. The
-validation and reset contract is owned by
-[session](session.md#private-member-session-ownership).
+A newly created V2 member starts a fresh conversation. Existing V1 conversation
+and native provider context cannot acquire member memory by changing a label.
+The session execution record binds its member ID and store ID across later opens
+and restarts. Old schedules and child runs retain their captured member/store.
+A provider-side template switch changes persona behavior without selecting a
+new memory owner. Ordinary owner/app, capability, native-history and governance
+checks still apply to selection changes; see [session](session.md#agent-selection-provenance).
 
 The member side panel's Crew summary tab and the editor link to
-`/settings/overview?view=memory&store=<name>`. The private memory workspace has
+`/settings/overview?view=memory&store=<name>`. The member memory workspace has
 Memories, Profile and Recovery tabs: browsing/search/correction/copy stay in
 Memories, preferences and project anchors stay in Profile, and backups plus
 retired experiences stay in Recovery. Advanced facet analysis is collapsed.
@@ -315,9 +310,9 @@ retains its localized error heading and structured diagnostic report. Details
 reveals the redacted reason on demand; Ask the agent receives the same report
 when navigation permits. The cached conversation and its drafts remain available.
 
-Reopening a running private Member DM, including a turn awaiting tool approval,
-reuses its existing protected assignment. The canonical session key, selected
-member, live slot store and protected session store must agree. This read does
+Reopening a running Member DM, including a turn awaiting tool approval,
+reuses its captured execution record. The canonical session key, selected
+member, live slot store and execution record must agree. This read does
 not pin or repair memory while work is active; missing, mismatched or unreadable
 identity still refuses. The handler rechecks slot identity after the off-loop
 store read, and a link to another session remains a conflict.
@@ -343,7 +338,7 @@ Memory V1 even when that string matches a member alias. The editor lists private
 member jobs by exact `member_id`, and an existing job's member is immutable.
 Legacy jobs retain their previous template/sequence display attribution and show
 Global Memory V1 in the member's Schedules pane. Displaying an old schedule there
-does not migrate it or grant access to that member's private store.
+does not migrate it or grant access to that member's member store.
 
 `resolve_effective_model` is the single source of truth for what model a new
 session on a crew starts with, highest tier first: the crew's own `model`, the
@@ -359,11 +354,11 @@ and a junk watchdog override collapses to `0`.
 
 Discovery importing a provider template as a configured member does not rebind
 an existing dashboard conversation that selected the template. Resolved bindings
-carry a positive `selection_kind`; the protected per-session record preserves
+carry a positive `selection_kind`; the canonical session execution record preserves
 that namespace across callbacks and restore. New member conversations still
-resolve and validate the member's private store. An explicit owner agent choice
+capture the member ID and store without opening the learned database. An explicit owner agent choice
 may replace selection provenance, but cannot migrate an existing V1 native
-conversation into private memory. The persistence and legacy-session rules are
+conversation into member memory. The persistence and legacy-session rules are
 owned by [session](session.md#agent-selection-provenance).
 
 `select_crew` has two modes, both answered as JSON by `_do_select_crew`.
@@ -424,19 +419,19 @@ model to delegate to it, and no `via="spawn"` execution entry exists today.
 ## Delegating to a bound crew
 
 Explicit member delegation uses `spawn_run(crew=<member>)`. The member alias
-resolves its provider template and private memory together. The separate
+resolves its provider template and member memory together. The separate
 `agent=` argument identifies a provider template, not a durable member identity;
-it must not be used to infer access to a member's private memory.
+it must not be used to infer access to a member's memory.
 The model-facing `spawn_run` schema advertises `crew` separately from `agent`,
 so a caller can select a member through tool discovery. A batch's `crew` applies
 to every task; delegating to different members requires separate calls.
 
-A private member's own sub-tasks and schedules retain its store. It cannot select
-Global V1 or a peer through `spawn_run` or `cron_add`. The trusted owner or Crew
-coordinator assigns cross-member work; named tool delegation respects the
-recipient's routing opt-in. HTTP spawning verifies the actual calling process
-before accepting a parent session, and the run primitive checks the boundary
-again before allocating a provider.
+An ordinary member sub-task inherits its captured member/store. An explicit
+existing target member selects that member's store under ordinary spawn,
+owner/app and governance permissions. Memory ownership itself adds no separate
+cross-member ACL. Continuations retain the original run's member/store even if
+a different member now requests the continuation. The gateway still requires
+ordinary authenticated session identity before accepting a parent session.
 
 A named-but-unknown agent is **refused**, never silently answered by the default
 agent, with the machine-readable code `agent_not_found`. That refusal is a

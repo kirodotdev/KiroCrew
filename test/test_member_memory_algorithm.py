@@ -15,7 +15,7 @@ from member_memory_helpers import declare_v2_store
 from kiro_crew import memory_edit, memory_stores, memory_v2
 from kiro_crew._sqlite_compat import sqlite3
 from kiro_crew.history_consolidation import HistoryConsolidator
-from kiro_crew.vector_memory import VectorMemoryStore
+from kiro_crew.vector_memory import VectorMemoryStore, open_member_database
 from kiro_crew.vector_memory_constants import _MAX_EPISODIC_RETIRED_PER_WRITE
 
 
@@ -24,10 +24,11 @@ def stores(tmp_path, monkeypatch):
     root = tmp_path / "memory_stores"
     monkeypatch.setattr(memory_stores, "memory_stores_root", lambda: root)
     directory = declare_v2_store(tmp_path, "member-alice")
-    v2 = VectorMemoryStore(db_path=directory / "memory.db", embedding_dim=2)
+    v2 = open_member_database(
+        directory / "memory.db", member_id="alice", store_id="member-alice", embedding_dim=2
+    )
     v1 = VectorMemoryStore(db_path=tmp_path / "memory.db", embedding_dim=2)
-    for store in (v1, v2):
-        store.init()
+    v1.init()
     try:
         yield v1, v2
     finally:

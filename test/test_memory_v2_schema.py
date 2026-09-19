@@ -505,11 +505,10 @@ class TestASiloIsBornOnTheCrewLineage:
         silo = stores(resolve_store_path(_FINANCE))
         assert silo._read_meta(memory_schema.LINEAGE_META_KEY) == memory_schema.LINEAGE_CREW
         assert silo._read_meta(memory_schema.STORE_NAME_META_KEY) == _FINANCE
-        # This declared, unowned crew-schema file is the supported legacy V1
-        # case. Only a positively validated private manifest may add the durable
-        # authorization marker.
-        assert silo._read_meta(memory_schema.PRIVATE_MEMORY_VERSION_META_KEY) is None
-        assert silo._read_meta(memory_schema.OWNER_MEMBER_META_KEY) is None
+        # Declared unowned crew-schema files retain the legacy V1 algorithm.
+        # Only explicit member creation adds the member database identity table.
+        assert silo.algorithm_version == "v1"
+        assert "member_database" not in _objects(silo.db, "table")
 
     def test_no_crew_table_is_without_rowid(self, stores) -> None:
         """``WITHOUT ROWID`` would cost the whole product database its backup.

@@ -14,14 +14,29 @@ mode matches its launch template; shared handles provide no full-spec loading
 claim. Member generation and MCP-readiness checks belong to
 [session](session.md#member-capability-generations).
 
-The trusted `private_memory` constructor flag is preserved from provider creation
-through client/runtime spawn and recovery. Only private member processes pass it
-to the sandbox; the default `False` keeps existing V1 spawn arguments. The OS
-wrapper enforces the actual resolved mode and member-only Global V1 file masks,
-including denial of internal-sandbox delegation or unconfined fallback. Private
-MCP session discovery reads protected real-process ancestry before mutable
-environment or legacy flat PID sidecars, so a stable private root view need not
-expose new global files in order for later MCP callbacks to identify themselves.
+The `member_context` flag captures native instruction sources so essential
+context delivery can deduplicate them; it does not change sandboxing or MCP
+transport. Member calls use the ordinary authenticated session identity and the
+gateway's canonical execution record. No member-specific ancestry proof or
+filesystem-isolation capability is required.
+
+The shared Kiro runtime carries its ordinary signed session token on eligible
+unpooled `kirocrew-core` and `kirocrew-cron` stdio elements, on both `session/new`
+and `session/load`. An empty broker stub list does not remove this identity
+channel. Only existing, referenced managed declarations are projected; an
+existing broker element wins. Disabled servers, native-only restrictions,
+custom commands and registry-governed entries remain with Kiro's native loader
+rather than losing their restrictions in the ACP array. A native entry without
+another verifiable identity channel retains the strict caller refusal.
+
+`memory_mode` is fixed before provider startup and before `session/new`, including
+late-start adoption. Incognito and Temporary suppress Crew raw-frame recording
+and payload diagnostics, do not resume retained native context, and cannot retain
+native transcripts for continuation. Shared-runtime recording latches off before
+a restricted session can emit its first frame. Normal shutdown and abandoned
+late starts clean the native transcript files supported by the provider. This
+does not add a sandbox or promise control over every external provider's own
+on-disk session format or crash recovery.
 
 `AcpClient(acp_backend=...)` selects which subprocess to launch:
 
@@ -274,7 +289,14 @@ flag passed to `kiro-cli acp` at spawn time drives all configuration:
   agent's own `model` field. Only the default kirocrew agent gets KiroCrew's
   configured model override.
 - **MCP servers**: backend-dependent.
-  - **kiro-cli**: `session/new` passes `mcpServers: []` — kiro-cli loads
+  - **kiro-cli**: kiro-cli loads ordinary servers from the agent config. The
+    shared runtime adds eligible managed control-plane elements carrying the
+    per-session token, plus configured broker stubs, to `mcpServers`; it does not
+    project third-party declarations. Override eligibility reads project and
+    global MCP settings through the bounded sensitive-path reader. A refused,
+    unreadable or malformed settings file withholds these overrides, preserving
+    native restrictions; only an absent settings file contributes no restrictions.
+    kiro-cli loads
     servers from the agent config (respects `mcpServers` in the agent's config
     file). Non-kirocrew agents (e.g. AIM-installed) load only their own
     `mcpServers`. The kirocrew agent loads from global `~/.kiro/settings/mcp.json`
@@ -351,8 +373,9 @@ attempts `session/load` instead of `session/new`:
 3. Send `session/load` with `sessionId`, `cwd`, `mcpServers` (the pooled
    broker stubs, re-declared so the resumed session keeps talking to the
    shared gateway — `session/load` re-initializes the session's MCP servers,
-   so an empty list would un-pool the session; `[]` only when the gateway is
-   disabled), and `_meta: {"_kiro.dev/session_file": "<path>"}` (required —
+   so an empty list would un-pool the session), plus eligible unpooled managed
+   elements carrying their session token, and
+   `_meta: {"_kiro.dev/session_file": "<path>"}` (required —
    without it kiro-cli silently ignores the request). `AcpRuntime.load_session`
    builds the same params for the multiplexed runtime.
 4. On success (response contains `modes`): set `_session_id`, `_resumed = True`
@@ -1014,38 +1037,24 @@ Subprocess lifecycle:
 - 10MB stdout buffer for large JSON-RPC lines
 - stderr drained in background (`_drain_stderr`) to prevent pipe deadlock. Each line bumps `_last_activity` (liveness for `is_responsive`), is appended to the bounded 20-entry `_stderr_lines` diagnostic ring buffer, and is forwarded as a redacted `WARNING`. **Exception — suppression filter:** lines matching a marker in the module-level `_SUPPRESSED_STDERR_MARKERS` tuple (currently `thinking_tokens`) are dropped — no `WARNING`, not appended to the ring buffer — but **still** bump `_last_activity`. This handles the claude-agent-acp "Unexpected case: {...thinking_tokens...}" stderr noise. **Mechanism** (confirmed by reading the vendored adapter's `dist/acp-agent.js`): claude-code emits a `system` message with subtype `thinking_tokens`, but the adapter's `switch (message.subtype)` enumerates only ~18 known subtypes (`init`, `status`, `compact_boundary`, `memory_recall`, `api_retry`, …) and routes anything else to `default: unreachable(message)`, which writes `logger.error("Unexpected case: " + JSON.stringify(message))` to stderr — one line per token delta, measured at ~10 lines/sec during active thinking (one per 2–4 thinking tokens). The payload is only `estimated_tokens`/`_delta`/`uuid`/`session_id`, so dropping it loses no response content. This is a forward-compat gap in the vendored adapter, **not** new behavior in a specific claude-code build — the `thinking_tokens` event is present in both `2.1.165.357` and `2.1.168.358` (verified by string-matching both bundled `claude` binaries), so it predates the `.168` update that drew attention to it. The cleaner long-term fix is upstream (add a `thinking_tokens` case to the adapter or bump the vendored version); this filter is the version-agnostic stopgap that also absorbs the next unenumerated subtype's flood. (Note `thinking_tokens` is by far the dominant subtype hitting `unreachable` — ~14k occurrences vs. a handful of rare `permission_denied` across retained logs — which is why the marker tuple stays narrow rather than suppressing all "Unexpected case" lines.) Two concrete reasons to drop rather than downgrade the level: (1) **log hygiene** — `gateway.log` uses `RotatingFileHandler(maxBytes=2MB, backupCount=3)` (`cli.py`), so a sustained burst rolls genuine diagnostics out of the retained 8MB window; (2) **event-loop load** — the file handler is a plain *synchronous* handler and `_drain_stderr` runs on the gateway event loop, so each forwarded line costs a synchronous file write + two regex redaction passes on the same loop that streams responses (small per session, compounding across concurrent thinking sessions). Keeping liveness prevents the idle watchdog from killing an actively-thinking turn; skipping the ring buffer stops a burst from evicting the last real errors. A throttled `DEBUG` summary (≥ `_SUPPRESSED_STDERR_SUMMARY_INTERVAL_SECS` apart, plus a flush at EOF) keeps the suppression observable. Match substrings are kept narrow so a genuine error is never silently swallowed. This is a log-volume / event-loop-load reduction — **not** a fix for any turn-stall or "agent not responding" symptom (no such causal link was established).
 
-### Private member MCP routing
+### Member MCP routing
 
-Private V2 clients and runtimes discard the shared MCP broker overlay and socket
-before session creation. Tool mirroring, reload, resume and runtime recreation
-use direct MCP servers confined to that member's sandbox. Original agent server
-definitions remain available to direct-MCP-capable backends. V1 retains its
-existing broker routing.
+Member clients and runtimes use the ordinary direct or pooled MCP transport
+supported by their backend. The gateway captures canonical member/store routing
+from authenticated session identity; `member_context` controls native instruction
+deduplication. Memory V2 neither discards the shared broker overlay nor requires
+a member-specific sandbox or direct-MCP capability.
 
 KAS projects the gateway's validated `KIROCREW_BOUND_PORT` as `KIROCREW_PORT`
-for native managed MCP servers. This value is derived inside the gateway at
-session creation, not relayed from an editable agent spec. Native children do
-not inherit the gateway environment, and private sandboxes cannot discover its
-listener through host process markers. Without this explicit address, core
-tools can dial the default port while member-scoped ledger tools reach the
-correct instance. Declared secrets and arbitrary environment values remain
-withheld, and non-managed servers receive no gateway port.
+for native managed MCP servers because native children do not inherit the
+gateway environment. The listener address comes from the gateway, not an editable
+agent spec. Declared secrets and arbitrary environment values remain withheld,
+and non-managed servers receive no gateway port.
 
-The original trusted broker endpoint remains available only for sandbox
-validation. Private execution cannot reach that endpoint or its aliases. A
-configured endpoint outside the reserved broker namespaces refuses private
-startup rather than hiding an arbitrary project directory.
-
-The current public Codex ACP backend has no direct MCP projection. Private V2
-execution with that backend therefore refuses before allocation and names the
-remedy: choose a member backend that supports direct MCP. Ordinary V1 Codex
-sessions retain their existing behavior.
-
-The public provider factory uses `agent.member_acp_backend` for member private
-chat and the configured default backend for Crew work and private background
-consolidation. Each effective backend must support direct MCP. Selecting a
-supported member-chat backend alone does not change a Codex default used by
-background work.
+The provider factory selects `agent.member_acp_backend` for member-DM session
+keys and the configured default backend otherwise. Ordinary backend governance,
+selectability, member-capability checks and host sandbox rules remain independent
+requirements; memory version adds no direct-MCP refusal.
 
 ### Cold-start admission and startup telemetry
 

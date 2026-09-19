@@ -20,8 +20,6 @@ from test_subagent_turn_resilience import (
 from kiro_crew.config import KiroCrewConfig
 from kiro_crew.member_memory_auth import (
     bind_private_session_store,
-    issue_member_session_proof,
-    verify_member_session_proof,
 )
 from kiro_crew.messaging.identity import publish_turn_identity
 from kiro_crew.session import SessionManager
@@ -76,9 +74,10 @@ async def test_stream_publishes_each_dedicated_attempt_not_shared(tmp_path, monk
             pid = registry.get_pid(key)
             expected = "dashboard:parent" if shared else key
             assert verify_session_pid(pid) == expected
-            if shared:
-                proof = issue_member_session_proof(expected, pid)
-                assert proof and verify_member_session_proof(proof, expected)
+            from kiro_crew.execution_context import read_session_execution
+
+            execution = read_session_execution(key, required=True)
+            assert execution.store.store_id == "default"
             calls.append(pid)
             if len(calls) == 1:
                 raise _TransientError("retry same live process")
@@ -97,7 +96,14 @@ async def test_stream_publishes_each_dedicated_attempt_not_shared(tmp_path, monk
         registry._sessions[key] = SimpleNamespace(provider=provider)
         sessions.get_pid = registry.get_pid
         manager = _manager(sessions)
-        info = SubagentInfo(id="identity-run", task="return JSON", agent="kirocrew")
+        from kiro_crew.execution_context import execution_for_store
+
+        info = SubagentInfo(
+            id="identity-run",
+            task="return JSON",
+            agent="kirocrew",
+            execution_context=execution_for_store("", template_id="kirocrew"),
+        )
         manager._log_spawned(info)
         if shared:
             # The registered parent PID is deliberately visible to get_pid:
@@ -130,8 +136,8 @@ async def test_stream_publishes_each_dedicated_attempt_not_shared(tmp_path, monk
 
 
 @pytest.mark.asyncio
-async def test_private_binding_publisher_mints_real_proof_for_each_process(tmp_path):
-    """Host publisher/proof integration, not a claim of kernel-confined execution."""
+async def test_member_turn_publishes_ordinary_signed_pid_and_keeps_execution(tmp_path):
+    """Process replacement changes transport identity, not the member snapshot."""
     from kiro_crew.config.loader import KiroCrewAgentConfig
     from kiro_crew.memory_stores import persist_member_config, provision_member_memory
     from kiro_crew.subagent_persistence import create_agent_folder
@@ -150,11 +156,11 @@ async def test_private_binding_publisher_mints_real_proof_for_each_process(tmp_p
             registry._sessions[key] = SimpleNamespace(
                 provider=SimpleNamespace(client=SimpleNamespace(_pid=child.pid))
             )
-            assert issue_member_session_proof(key, child.pid) == ""
             await publish_turn_identity(registry, key)
-            proof = issue_member_session_proof(key, child.pid)
-            assert proof and verify_member_session_proof(proof, key)
-            assert not verify_member_session_proof(proof, "subagent:foreign")
+            assert verify_session_pid(child.pid) == key
+            from kiro_crew.execution_context import read_session_execution
+
+            assert read_session_execution(key).store.store_id == store
 
 
 @pytest.mark.parametrize(

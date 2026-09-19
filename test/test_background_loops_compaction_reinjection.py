@@ -332,6 +332,7 @@ def _task_provider(
 def _task_ctx() -> MagicMock:
     ctx = MagicMock()
     ctx.conversation_log.get_metadata_status.return_value = ({}, True)
+    ctx.memory_mode_for_session = AsyncMock(return_value="persistent")
     ctx.build_message = MagicMock(return_value=("prompt", {}))
     return ctx
 

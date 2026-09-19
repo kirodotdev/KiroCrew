@@ -3,8 +3,9 @@
 For a harness in :data:`~kiro_crew.acp_backends.ACP_BACKENDS_SESSION_MCP_ARRAY`,
 the ``session/new`` / ``session/load`` ``mcpServers`` parameter is where Kiro
 Crew's MCP servers come from and the only place: neither claude-agent-acp nor
-codex-acp reads ``~/.kiro/agents/<name>.json``. kiro-cli reaches the same servers
-through ``--agent``, which is why that backend passes no array at all. Without
+codex-acp reads ``~/.kiro/agents/<name>.json``. kiro-cli reads native servers
+through ``--agent``; managed control planes can also receive per-session
+overrides solely to carry ordinary identity. Without
 the translation here such a session runs with ZERO Kiro Crew tools -- the harness
 itself works (prompts, streaming, permissions) but ``send_message``,
 ``spawn_run``, ``cron_add`` and every user-installed server are simply absent.
@@ -80,7 +81,6 @@ from typing import Any, NamedTuple
 
 from kiro_crew import agent as _agent_mod
 from kiro_crew.agent import (
-    _load_json,
     _mcp_registry_mode,
     agent_spec_path,
     ensure_agent_materialized,
@@ -191,7 +191,33 @@ class _Unread:
 _UNREAD = _Unread()
 
 
-def _global_settings() -> dict[str, Any]:
+def _read_mcp_settings(path: Path) -> dict[str, Any]:
+    """Read settings through the credential gate; only absence means no restrictions."""
+    from kiro_crew.hooks import FileTooLargeError, safe_read_file_bytes, validate_file_path
+
+    # Screen before even probing existence: a Windows link can name an untrusted share.
+    if validate_file_path(str(path)) is None:
+        raise ValueError("MCP settings path was refused")
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return {}
+    try:
+        raw = safe_read_file_bytes(str(path))
+    except FileTooLargeError as exc:
+        raise ValueError("MCP settings exceed the safe read limit") from exc
+    if raw is None:
+        raise ValueError("MCP settings could not be safely read")
+    try:
+        settings = json.loads(raw.decode("utf-8"))
+    except RecursionError as exc:
+        raise ValueError("MCP settings exceed the JSON nesting limit") from exc
+    if not isinstance(settings, dict) or not isinstance(settings.get("mcpServers", {}), dict):
+        raise ValueError("MCP settings must contain an object of servers")
+    return settings
+
+
+def _global_settings(*, strict: bool = False) -> dict[str, Any]:
     """The user's global ``~/.kiro/settings/mcp.json``, ``{}`` when absent or bad.
 
     Read here because the dashboard's tool-off action (``/api/mcp/toggle-tool``)
@@ -203,11 +229,16 @@ def _global_settings() -> dict[str, Any]:
     path a user actually takes. Resolved through the ``agent`` module attribute at
     call time so a test can point it at a temp file the same way it points the
     agents directory.
+
+    ``strict`` preserves read failures for Kiro overrides: native restrictions
+    must remain authoritative when their settings cannot be inspected safely.
     """
     try:
-        return _load_json(_agent_mod._KIRO_MCP_JSON)
-    except Exception:  # pragma: no cover - _load_json is already fail-soft
-        logger.debug("session MCP: global settings unreadable", exc_info=True)
+        return _read_mcp_settings(_agent_mod._KIRO_MCP_JSON)
+    except (OSError, ValueError):
+        if strict:
+            raise
+        logger.debug("session MCP: global settings unreadable")
         return {}
 
 
@@ -759,6 +790,64 @@ def session_mcp_servers(
     out: list[dict[str, Any]] = []
     for name in sorted(servers):
         element = acp_server_element(name, servers[name])
+        if element is not None:
+            out.append(element)
+    return out
+
+
+def kiro_control_plane_servers(
+    agent: str | None,
+    *,
+    work_dir: str | Path | None,
+    existing_names: Collection[str] = (),
+) -> list[dict[str, Any]]:
+    """Carry ordinary session identity without widening Kiro's native tool surface.
+
+    Only an existing managed stdio declaration can be overridden. Native-only
+    restrictions stay in the native declaration instead of being discarded by
+    ACP shaping. Registry entries remain the enterprise catalog's responsibility.
+    """
+    if not agent or _registry_mode():
+        return []
+    spec = _agent_spec_for(agent, work_dir)
+    if not isinstance(spec, dict) or not isinstance(spec.get("mcpServers"), dict):
+        return []
+    allow = _tools_allowlist(spec)
+    try:
+        settings = [_global_settings(strict=True)]
+        if work_dir:
+            settings.append(_read_mcp_settings(Path(work_dir) / ".kiro" / "settings" / "mcp.json"))
+    except (OSError, ValueError):
+        logger.debug("session MCP: withholding Kiro overrides because settings are unreadable")
+        return []
+    supported = {"command", "args", "env", "type", "autoApprove", "disabled", "disabledTools"}
+    out = []
+    for name in CONTROL_PLANE_SERVERS:
+        if name in existing_names or not allow.grants(name):
+            continue
+        entry = spec["mcpServers"].get(name)
+        managed = managed_mcp_spec_entry(name)
+        if not isinstance(entry, dict) or not isinstance(managed, dict):
+            continue
+        sources = [entry]
+        for settings_source in settings:
+            declared = (
+                settings_source.get("mcpServers", {}) if isinstance(settings_source, dict) else {}
+            )
+            if isinstance(declared, dict) and name in declared:
+                sources.append(declared[name])
+        if any(
+            not isinstance(source, dict)
+            or set(source) - supported
+            or source.get("type", "stdio") != "stdio"
+            or source.get("disabled", False) is not False
+            or source.get("disabledTools", []) != []
+            or ("command" in source and source["command"] != managed.get("command"))
+            or ("args" in source and source["args"] != managed.get("args", []))
+            for source in sources
+        ):
+            continue
+        element = acp_server_element(name, entry)
         if element is not None:
             out.append(element)
     return out

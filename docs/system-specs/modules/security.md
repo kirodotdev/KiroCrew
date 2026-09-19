@@ -13,349 +13,86 @@ commands: those retain the sandbox chokepoint and the AST routing audit.
 
 KiroCrew implements defense-in-depth security across multiple layers: OS-level process isolation, credential path protection, input/output validation, authentication, authorization, and audit logging. This document consolidates all security controls and the vulnerabilities they address.
 
-Private member memory directories (`memory_stores/`) are hidden from agent
-processes. Linux creates the empty root before spawning the sandbox so a member
-created later cannot become visible in an older namespace. Protected run bindings
-live separately in the top-level `member-memory-bindings/` directory, exposed
-read-only and likewise precreated. Sandboxed cron metadata lookup can read an
-identity, but shell commands cannot rewrite it. The writable `trust/` tree carries
-no authoritative member memory binding.
+### Member memory boundaries
 
-The trusted V2 Markdown reader validates the named store's exclusive ownership
-before reading its retained files. It checks the opened descriptor's exact path
-and containment, rejects links, hardlinks and non-regular inodes, and bounds the
-read. This internal reader does not relax the generic agent-file sensitive-path
-gate; Global V1 continues to use that gate unchanged.
-V2 preference/project readers and index rebuilds use the same checked reader;
-refused index sources abort and roll back the rebuild. The V2 essential-document
-loader separately rejects managed memory and member-state roots, so a template
-resource cannot import Global V1 or a peer briefing through the generic file
-reader. Explicit private anchors remain tied to the verified owner.
+Cold subagent continuation restores app ownership from the canonical
+`subagents/` run records; retained V1 runs can still read their existing
+`member-memory-bindings/` sidecar. Both roots use ordinary sandbox read-only
+protection and the file-tool write-only gate, including empty-root precreation
+and refusal of redirected roots. Results remain readable and Gateway writers
+remain functional. This protects app authorization integrity without a separate
+grant, duplicate execution record or cross-member read restriction.
 
-Private memory HTTP recall, lesson reads/writes and explicit consolidation also
-require a positively verified calling session. The shared local secret and an
-`X-Session-Key` header alone confer no member authority. The gateway publishes
-process-start-bound identities under the read-only binding root, and the server
-checks kernel peer PID ancestry against those records. Private ACP clients run
-their MCP servers inside the member's sandbox and do not inject shared broker
-stubs on creation, reload or resume. The private filesystem boundary withholds
-the shared broker endpoint, including older daemons that cannot verify a member.
-V1 retains its existing pooling. A trusted proxy call carries
-a signed proof minted from its originating process's verified peer. Current
-proofs last for that process incarnation and are revalidated on every use against
-its live start identity, protected session/store, durable session binding and OS
-isolation identity. Process exit, recycling, changed binding or isolation, and
-unreadable authority refuse access. This permits a long-running tool's own
-callbacks without extending a wall-clock timeout. Legacy signed proof protocol
-version 1 retains its 60-second expiry. The signing
-key lives under the hidden memory root. Unverifiable private calls return
-`403 member_session_unverified`; owner dashboard actions and Global V1 retain
-their existing authorization.
+Memory V2 separates members' learning and work context; it does not promise
+confidentiality between agents running as the same host operator. One stable
+`member_id` owns one stable `store_id`, whose managed path contains one SQLite
+learning authority. Arbitrary code and external tools may read another member's
+files. Prompts and built-in path checks guide correct use and prevent accidental
+raw DB/WAL/SHM edits; they are not an adversarial file-isolation boundary.
 
-Authorization checks the actual private caller even when the claimed target is
-Global V1: a missing or forged legacy session header, omitted proof, or implicit
-global list cannot downgrade its authority. The target must match the private
-store in the protected process record, not mutable transcript metadata. Truly
-unowned host callers retain V1 access through positive Unix/TCP kernel identity
-and OS provenance. Absence from the live ancestor chain is not proof of host
-authority: Linux additionally compares both user and mount namespaces with the
-gateway, and macOS requires a positive unsandboxed Seatbelt query. A reparented
-private descendant retains its OS isolation and is refused when its member
-cannot be verified, including after gateway restart. Probe failure is unknown
-and grants neither Global V1 nor owner authority. Native Windows refuses private
-execution before allocation and retains its V1 caller contract.
+The ordinary Linux and macOS sandboxes expose `memory_stores/` read-only while
+leaving it readable. Built-in named-store mutations run in the gateway; sandboxed
+agent code has no direct writer requirement. Linux may create only the empty
+root to make the directory mount possible, never a database or member config.
+This reuses the normal read-only mount/write-and-link denial, with no per-member
+view, proof, hardlink scan or platform admission requirement. Existing named V1
+root links retain their ordinary handling. The rule provides write integrity
+where the host sandbox is active; sandbox-off execution, external host tools and
+pre-existing writable aliases are not covered. Global V1 paths are unchanged.
 
-The workflow HTTP identity regression reports a complete JSON trace on failure,
-not a truncated assertion repr. It observes the original checks on their calling
-thread: protected-record validation, process incarnation, Seatbelt query return
-and errno, and the fixture's Global target existence. Only branch facts and
-exception classes are included; record contents, paths, proofs and secrets are
-excluded. The observer forwards the existing per-frame tracer and restores it
-on exit, preserving coverage collection. It neither replaces a permission result
-nor retries a probe.
+Normal memory tools use the authenticated caller's canonical execution record.
+The gateway captures it once per request and passes the same member/store/mode
+to checks, execution and background work. Display labels, templates and projects
+do not select a database. Missing member identity or an unavailable, corrupt or
+mismatched database returns a specific error, never an empty replacement or a
+silent Global V1 fallback. Only explicit member creation provisions a database.
+Delegation inherits the member unless an explicit target member is admitted by
+the ordinary delegation rules; continuation retains the original run member.
 
-Ordinary V1 runtimes have explicit process-start-bound V1 records, allowing their
-sandboxed MCP descendants to continue using Global V1. On Linux those descendants
-must share both namespaces with the recorded V1 runtime. The record is not a
-member binding and cannot mint a member proof; shared V1 session rekeys remain
-global. The publication and retirement contract below applies to both V1 and
-private runtimes.
-Pure V1 installations retain the existing internal contract. Pooled MCP
-refuses a missing/mismatched caller before forwarding when the originating
-process has a protected private identity.
+Member-specific namespace/Seatbelt views, hardlink scans, PID ancestry proofs,
+HMAC capabilities and duplicate protected session/run grants are removed. Member
+memory does not require a particular OS sandbox or direct MCP topology. Shared
+MCP uses its ordinary authenticated, request-local caller metadata. Ordinary
+signed PID sidecars and broker caller validation retain their transport duties.
 
-Linux namespace publication has a launcher-owned lifetime. The unsandboxed
-parent keeps its staging inode open, publishes before releasing the child, and
-retires only that inode after normal/nonzero completion or setup failure.
-SIGTERM/SIGINT interrupt pipe handshakes and child waits with `128 + signal`;
-publication and cleanup defer signals, including repeated signals. A signal
-during cleanup does not replace an already collected child exit status.
+Host sandboxing, credential masking, tool allow/deny decisions, HTTP/MCP
+authentication, dashboard-owner and application permissions, SEL integrity and
+mandatory enterprise governance remain independent controls. Explicit dashboard
+`?store=` access still requires owner authorization. Internal calls cannot choose
+arbitrary database paths or gain owner aggregate controls through a memory
+binding. Local owner-token bootstrap still requires positive host provenance or
+a live application backend owned by this gateway; an unknown peer is refused.
+Linux namespace and macOS sandbox queries retained for that bootstrap are host
+authorization checks, not member-memory isolation. On Linux, a CLI peer in a
+different user or mount namespace is refused unless it is a live application
+backend tracked by this gateway. This intentional owner-token bootstrap restriction
+also applies to installations with no members. Container, Snap and Flatpak CLI login across
+namespaces is not claimed as verified.
 
-All current producers, invalidators and reclaimers of `<pid>.json` and
-`<pid>.namespace.json` coordinate on the one stable protected
-`member-memory-bindings/pids/.reclaim.lock`. Sharing one data home requires all
-record publishers and reclaimers to use the coordinated current version.
-The lock is never replaced or
-removed. Protected directory handles, owner checks and no-follow regular-file
-checks reject redirected roots, foreign writers, hardlinks and special files.
-Windows pins directories against rename and validates their local ACLs; POSIX
-addresses children through directory descriptors. On Windows the actual owner
-must be the current user or one of the existing local trusted principals
-(SYSTEM, Administrators, TrustedInstaller), matching the accepted writer set.
-Only after local-volume and actual-owner validation may an Owner Rights
-(`S-1-3-4`) writer refer to that owner. It is not a globally trusted owner SID.
-This accepts the existing lockdown helper's Owner Rights plus current-user
-DACL, including elevated-created objects, without changing ownership or grants.
-An unavailable current SID, remote volume, unrelated owner or writer, NULL DACL,
-unreadable descriptor or unknown ACE type still refuses. POSIX ownership checks
-and authentication readers are unchanged. Lock acquisition failure skips
-publication or reclamation, never permits an unlocked mutation. Contention is
-distinguished from refusal: a publisher (the gateway's `publish_binding` on a
-maintenance worker, or the launcher's unsandboxed parent) that finds the lock
-held retries the non-blocking acquire for at most `LOCK_WAIT_SECS` (2 s; POSIX
-never enters an unbounded `flock`) and publishes if the holder releases within
-that ceiling, so a launch or turn that races a sweep pass is not skipped merely
-because the pass was in progress. The sweep's hold time per pass is bounded by
-`SCAN_BUDGET` entries but not measured; the ceiling is a cap, not an
-expectation. Contention that outlives the ceiling skips this attempt and says
-so: the gateway logs a warning naming the pid and the ceiling, the launcher
-writes a distinct "lock held" warning to stderr. Nothing is written on a skip,
-so the record keeps whatever the previous publication left, and the next turn
-boundary republishes. An unsafe or replaced lock object or an unavailable root
-skips at once without waiting, with the existing message. Reclamation and
-launcher retirement never wait; a contended tick or retirement is retried by
-the next maintenance pass. A shutdown signal that arrives during the launcher's
-wait is deferred like any other publication-time signal and is honored, with
-owned records retired, at the next interruptible handshake after the wait ends. The launcher
-warns and continues without publishing authority when the protected directory
-or lock is unavailable. An unsafe target or a publication failure still refuses
-the launch. Anonymous staging files are cleaned only by their owning writer.
+Context assembly reads the member, manual rules, briefing, execution template and
+project documents directly. It does not open SQLite to discover ownership.
+Source validation, bounded reads and deduplication remain; globs skip managed
+state, while an explicitly invalid source reports its error. Optional learned
+context is omitted with an availability diagnostic if its database cannot open.
+Delivery receipts belong to a specific session and provider incarnation, and are
+committed only after successful delivery. A chat with native context cannot
+switch member in place; unused-chat selection coordinates prewarming, resume
+pointers and late provider results before binding the new execution.
 
-The existing session maintenance tick advances a streaming directory cursor,
-off-loop, bounded by all enumerated names (including non-records). This sweeps
-both canonical families independently of `session_pid_*.txt`, with no new timer
-or per-PID lock. The cursor closes at exhaustion or shutdown. A record is removed
-under the common lock only if its complete recognized schema matches its name
-and its recorded process is positively absent or has a different live start
-identity. Windows absence requires `OpenProcess` reporting an absent PID or a
-successful exited-process query; access denial and other errors preserve it.
-Age, missing start probes and malformed/future records never authorize deletion.
-Live V1/V2 records and all non-record names remain untouched. The auth readers
-and grants are unchanged: publication failure creates no authority. Crashes or
-filesystem refusal can leave canonical records for the next maintenance pass;
-unowned anonymous temps remain outside the sweeper's authority.
+Incognito allows memory reads but no session-induced learning writes; Temporary
+allows neither, including automatic lessons. Recall has no persistent side
+effects. Child, continuation, workflow and task records cannot loosen the mode.
+Restricted payloads stay out of Crew checkpoints, progress files and extraction.
+The shared MCP audit wrapper records tool, session and outcome for memory,
+delegation, task, workflow, cron-write and hook-registration calls without their
+query or body arguments, including validation and execution failures. Independent
+authorization events and audit-chain integrity remain intact.
+Retention mode is established before provider startup and recording. Crew's
+native-session cleanup is a lifecycle operation; external providers' own storage
+and crash behavior remain provider-specific, not a new sandbox guarantee.
 
-The local-secret owner-token mint endpoint also checks kernel identity when
-private members exist. A private process, corrupt binding or unverifiable peer
-receives `403 member_owner_token_refused`; an actual unowned host app/CLI can
-still bootstrap the owner. Possession of `.local_secret` alone cannot promote
-a private agent into dashboard owner authority. A published V1 runtime only
-authorizes its Global V1 operations. Owner bootstrap requires host OS provenance
-OR a caller the gateway's own app-backend registry vouches for: a backend this
-gateway spawned, or one of its descendants, matched only while the gateway still
-holds an unreaped process handle for that root. An adopted backend holds no such
-handle and is refused. That second leg reaches no private member, because the
-protected-binding check runs ahead of it and refuses a bound caller outright.
-A sandboxed macOS app this gateway did not spawn, carrying no trusted runtime
-record, cannot use this local-secret endpoint; use the host login-link CLI. An
-unavailable Seatbelt query likewise fails closed.
-Run the login-link CLI on the same host as the gateway so its process can be
-attributed. For a WSL gateway, mint the link from WSL; a Windows-side client
-cannot supply Linux kernel process identity. The resulting owner login link
-can still be opened in a browser on another host.
-
-At the first trusted private preparation, the gateway permanently records
-`member-memory-bindings/sessions/<sha256-session-key>/memory.json`. Four owner
-dashboard actions are that preparation, all through one helper
-(`pin_private_agent_store`): creating a chat with the member named, a first
-message that creates its chat, opening the member's thread from Members, and
-picking the member in the agent menu of a plain dashboard chat that is still
-EMPTY. Plain means the chat is not a channel, cron or workflow tab: those tabs
-can have their session key linked by an injector that holds no slot lock, and
-they already carry native context, so the menu never grants on them. Empty means
-no message row in the transcript; the file itself is born with the first
-metadata write (title, agent, model), so its existence proves nothing
-(`ConversationLog.has_messages`, not `has_log`). The helper is the one place
-that decides empty: a chat that carries messages, an unreadable transcript, or a
-live or resumable runtime refuses the grant, and the menu pick then unwinds the
-switch and answers `503 store_unavailable`. A grant is immutable, so a pick that
-lands on a chat which already holds a grant for another store is refused before
-anything is committed (`409 private_memory_session_pinned`). A turn can only
-confirm an existing grant, never issue one.
-
-The menu pick reaches that helper with one thing already settled, because
-`session.eager_spawn` is on by default and pre-creates a session for a chat that
-is still on the default agent. That allocation publishes an ACP session id into
-`SessionMap`, and the switch's own reset preserves the persistence entry
-(`SessionManager.reset` clears the SID only while a live session is still
-registered), so the resume pointer outlives the pre-warm it belongs to. Read as
-a resumable runtime it stands for V1 context no transcript row shows, which on a
-chat that has never been sent a message is context that does not exist.
-`release_prewarmed_session` DISCARDS that pointer rather
-than waiving the check, so the runtime the helper sees is honestly absent and the
-first private turn cold-starts under the store it validated — nothing can resume
-the default agent's pre-warmed process into a member's private store. It runs
-only for a pick that names a private V2 member, only while no live provider is
-registered, and only on a transcript that reads as empty; a V1 pick, a live
-provider, an unreadable transcript and a transcript with rows each keep their
-resumable session, so a chat that is not provably empty loses nothing and still
-refuses.
-Subsequent
-turns, consolidation and restart require transcript metadata to agree with this
-record. Missing, malformed or changed metadata cannot become V1 or another
-member. Removing an existing protected file also refuses; a genuinely unbound
-legacy session remains V1. Run-specific protected records remain authoritative
-for subagents. Agent processes cannot edit either protected binding tree.
-The same run directory holds `agent.json`, which records the original conversation
-template before provider allocation. Follow-ups preserve it independently of any
-one-turn agent override. Implicit continuation reads that protected template;
-an edited `subagents/<id>/state.json` cannot select a different prompt or tool
-surface. Missing, unknown or invalid template authority refuses implicit
-continuation; an explicit override cannot establish missing lineage.
-
-Private V2 execution requires a positively available Crew namespace or outer
-Seatbelt backend under the same resolved mode and governance floor as spawning.
-The persisted `agent.sandbox` enablement value is `auto` (`off` disables it);
-the spawn layer resolves the actual tier. For a member DM the guard follows the
-existing member-specific backend selection, so a different default backend
-cannot conceal internal-sandbox delegation or incorrectly prohibit outer Seatbelt.
-Explicit sandbox-off/unconfined execution and macOS Kiro-internal delegation do
-not apply Crew's private path fences and therefore refuse. Native Windows has
-no Crew filesystem sandbox: run member tasks in the WSL/Linux gateway instead.
-This guard runs before member provider allocation and private consolidation;
-native owner dashboard viewing, correction, copying and backup management remain
-available. Windows TCP peer attribution is an API identity check, not a substitute
-for filesystem confinement.
-
-The member DM capability check also precedes new private allocation through
-dashboard member creation, explicit owner V1-to-V2 setup and the equivalent CLI
-commands. Discovery sync creates no private store and retains V1 for new agents.
-An unsupported gateway refuses private creation with the existing platform/backend
-remedy before writing private files or changing the binding. Existing V1 edits
-and already-owned V2 management do not require a new allocation. This preflight
-does not replace the execution guard or fall back to V1.
-
-Private execution also requires direct MCP support from its selected backend.
-The current public Codex ACP backend has no direct projection and is refused
-before allocation; V1 Codex remains available. A custom shared broker socket
-outside the reserved, hidden broker namespaces likewise refuses private startup.
-This keeps a stale broker inaccessible without masking an arbitrary project
-directory. Both refusals identify the setting or backend the user must change.
-Private chat uses the member backend; Crew tasks and private consolidation use
-the configured default backend. Both settings must support direct MCP for those
-paths to run. No refusal switches to another backend or to Global V1.
-
-The trusted private spawn flag also withholds **Global V1** files. A member cannot
-read or write the global SQLite database, its index and sidecars, superseded or
-temporary copies, global lessons, `workspace/memory/`, or the global backup tree.
-Linux uses a namespace-owned directory view of the administrative data-home and
-workspace roots: a file bind mask alone would leak a host's atomic replacement.
-Private launch resolves one workspace snapshot from each known data home's
-`config.json` and `config.local.json`, using the normal deep-merge and
-relative, absolute and home-expanded directory rules. That snapshot covers the
-fixed default root and all configured workspace roots in the Linux views,
-macOS predicates and reserved-memory hardlink preflight. Unreadable declarations
-or an explicitly configured missing/non-directory root refuse private launch
-with a named remedy. No host workspace is created by that check. An absent
-implicit `home/workspace` remains withheld by its sealed home view; a dangling
-implicit link refuses. Explicit roots and redirected implicit roots remain
-required through preflight and Linux view installation, so their disappearance
-cannot silently omit a memory boundary. A changed workspace configuration requires private
-provider recreation before work uses the new layout. The snapshot does not
-classify arbitrary unconfigured copies elsewhere on disk.
-Existing nonmemory child directories remain live and writable, including project
-code; existing loose administrative files are readonly bindings for that process's
-lifetime. New loose root files appear after provider recreation. A member cannot
-create loose files at the Linux administrative roots, including configured
-workspace roots. An external configured workspace receives the same restriction;
-project subdirectories remain writable, but its root is not a writable flat
-repository. Directory symlinks retain path resolution through the final views
-instead of pinning an unfiltered ancestor of a nested workspace.
-This restriction does not apply to ordinary project subdirectories. Protected identity directories and `run/`
-remain live so host publication after spawn still works. The shared
-`mcp-gateway/` directory is withheld from private execution. Source mount aliases
-and symlinks to withheld memory, broker endpoints or peer logs are not exposed.
-
-Each private execution receives its own persistent
-`memory_stores/.execution-logs/member-<random>/` directory, beneath the existing
-fence so even a Global V1 assistant cannot read private diagnostics. Linux mounts
-only that directory at the child's `agent-logs/`; CLI logs
-and process-local SEL diagnostics cannot read a peer execution's logs. A readonly
-namespace marker, accepted only on a kernel-confirmed readonly filesystem,
-chooses this destination before PID identity publication and grants no memory
-or API authority. A marker planted in the writable host home is ignored.
-Outer Seatbelt applies path predicates that
-deny global memory and other execution log directories; its diagnostic path hint
-does not change those kernel predicates. Every overlapping memory deny exempts
-only the current execution's log directory, so that the broad `memory_stores`
-match cannot block its own diagnostics or expose a peer's logs.
-Private logging cannot append to the
-gateway's audit chain. The gateway still records authoritative API mutations.
-Default V1 launcher output and filesystem access retain their previous behavior.
-Interpreter retry warnings log the gateway's verified `sys.executable` directly;
-they do not pass a command argument or the command's later arguments to logging.
-
-Linux Global V1 identity accepts the exact user/mount namespace pair published
-by its trusted launcher parent, pinned to that parent's process start token.
-The parent records the pair under the protected PID directory before releasing
-the sandbox child. A different nested namespace cannot inherit that authority.
-An old PID record with a positively different live start token is ignored;
-unreadable or malformed identity still refuses access.
-
-On macOS, an inherited Global binding additionally requires a positive Seatbelt
-`file-read-data` decision for the trusted Global `memory.db` path. The platform
-helper checks the peer's process incarnation before and after querying the
-kernel. A denied or unknown result grants no Global authority. This preserves
-ordinary sandboxed V1 callers while refusing private descendants that encounter
-a Global ancestor's binding. Private bindings keep their existing protected
-identity checks; owner bootstrap requires an unsandboxed process or a backend the
-gateway's app-backend registry vouches for.
-
-Private members also hide the crew home's `snapshots` and `sessions` directories:
-snapshots can contain Global memory, and transcripts can contain other members'
-context. Gateway-owned history APIs remain outside that filesystem view. Before
-private launch on either OS, a bounded scan of the reserved memory-bearing
-source trees refuses hardlinked files, since a path mask cannot hide another
-name for their inode. It does not scan project trees. If an entry disappears,
-private startup makes at most three complete scan attempts: gateway atomic
-writes can retire `.tmp` files between listing and stat. The retry recognizes
-`FileNotFoundError` directly or as the sanitized scan error's original cause.
-No missing entry is skipped. Repeated disappearance and other I/O failures
-refuse launch and retain their original exception cause. Their bounded outer
-error preserves the `memory_unavailable: cannot verify protected memory hardlinks`
-prefix and reports only a fixed operation (`root_iterdir`, `entry_stat`, or
-`entry_iterdir`), tree category (`root_tmp`, `sessions`, `snapshots`, or `memory`),
-and available unsigned 32-bit integer `errno`/`winerror` values. Root enumeration
-uses the aggregate `memory` category; descendants retain their selected tree's
-category. These fields survive workflow error serialization without exposing
-paths, filenames, exception messages, or private content. Other I/O failures,
-missing required workspace roots and detected hardlinks refuse startup without
-retry. Required-root remedies, hardlink rejection, scan selection and per-scan
-limits are unchanged. The Linux canary checks
-that `/proc` root/cwd/fd aliases cannot cross the launcher's user-namespace
-boundary; runtime evidence still comes from CI, not profile-string inspection.
-
-Real Linux kernel regressions cover unchanged V1 access, private denial after
-atomic replacement and late file creation, inherited relative cwd, aliases,
-peer logs, durable CLI/SEL writes before PID publication, and live runtime/project
-directories. The macOS CI lane requires both variants of
-`test_darwin_kernel_private_memory_boundary` to pass under the real Seatbelt
-kernel: V1 global access, private global denial after replacement and late
-creation, named-store and peer-log denial in both modes, symlink aliases, and
-private own-log and ordinary project read/write access. Authenticated member
-gateway suites run in that lane as well; member databases remain gateway-only.
-The canary also asks the host to query the live child's Global-read authority
-and resolve a protected Global parent binding in both V1 and private modes.
-A skipped canary fails the lane. Runtime evidence comes from the CI result;
-adding the canary alone does not establish Darwin enforcement.
-
-Private hook registration requires a broker-authenticated caller and publishes
-the fixed `hook:<id>` binding in the protected session registry. The editable
-hook context cannot grant or retarget that authority. Delivery resolves and
-prepares the protected store before provider allocation. Task continuations
-use the same protected registry. A private-runtime environment marker provides
-an early explanatory refusal only; its absence grants no authority, and the
-protected registry write remains the publisher boundary.
+See [memory](memory-skills-hooks.md), [session](session.md), and
+[subagents](subagent.md) for storage, selection and retention details.
 
 ## Module layout
 
@@ -603,25 +340,19 @@ under `(allow default)`, never an edition-resolved or user-writable executable.
 - **Saved workflow library (keystone directory `workflow_library`)** — a valid definition is executable source and its presence means the user explicitly promoted it into a durable named capability. Owner-only modes do not isolate a same-UID agent process, so leaving the records under an ordinary workflows directory would let an auto-approved file edit plant a definition that the library would list and run without the confirmation flow. The dedicated `<KIROCREW_HOME>/workflow_library/` directory is therefore on `_CREW_SECRET_LEAVES`, read+write-blocked for agent file tools and every shell form. Classifying the whole directory also protects atomic-write temp files. Run snapshots remain under the configurable `workflows.dir`; only explicitly promoted definitions use this fixed trust root. Dashboard and workflow-service readers/writers open it directly, so human listing, saving, editing, and invocation are unaffected.
 - **Crew appearance library (directory `appearance-library`)** — the packs a user imported for crews to wear (`dashboard/appearances.py`). Only the gateway's owner-gated `/api/appearances` routes read or write it, and they open the directory directly, so putting it on `_CREW_SECRET_LEAVES` changes nothing for the dashboard. It is there because the sandbox bind-mask (`sandbox._CREW_HIDDEN_LEAVES`) covers only the Linux shell plane; on Windows and macOS the agent file tools are gated by `is_sensitive_path` alone, and an unlisted directory lets a prompt-injected `fs_write` rewrite a manifest or erase art the gateway then serves to every roster view. Recovery is a re-import, but corrupting user data is the mainline threat this list exists for.
 - **Runtime exec dir trust root (run-marker sandbox-escape)** — the `run/` dir under the crew home is on the sensitive floor (under every `_CREW_HOME_PREFIXES` entry) because the gateway executes its contents **outside** the agent sandbox: the sandbox launcher scripts (`sandbox.py` execs `python <home>/run/kirocrew_sandbox_*.py`) and the remote-instance run-marker `gateway-<port>.bin` (`instances/run_marker.py`), whose recorded launcher path the SSH token-mint **and** the `restart_remote` action read and `exec` on the remote host. Without this floor entry a prompt-injected / sandboxed agent that could `fs_write` (or `tee`/redirect) a marker — or a launcher — into `run/` could point it at an attacker-controlled binary that the next routine token refresh or restart execs unsandboxed (owner + `-x` checks don't help; agent writes run as the same user) — a reachable sandbox escape. Classifying the whole dir also arms the bash write/extract matcher. The gateway's own writers (`instances/run_marker.write_marker` via `atomic_write`, and the sandbox launcher writer) open these paths directly and do **not** route through `is_sensitive_path()`, so gateway startup/spawn is unaffected.
-- **Named memory stores (keystone directory `memory_stores`)** — each subdirectory of `~/.kiro/crew/memory_stores/` is ONE crew's private memory silo: its markdown memory, its FTS index and its vector-store SQLite file. The whole point of a named store (`memory_stores.py`, see [config](config.md)) is that a crew reaches only its own, and agent file tools run as the same UID as every store on disk — so owner-only modes decide nothing here. Without this entry any crew's agent could read another crew's preferences and lessons straight off disk, or rewrite them to steer that crew's future turns. Read AND write, on the tool path and every shell form (redirect, `sqlite3`, `tar -C` extraction). A DIRECTORY leaf for the reason `routing` and `webhooks` are: markdown memory is published through `atomic_write`'s `mkstemp` sibling, so fencing final names only would leave a writable path to the same bytes under a random temp name.
-  - **The default assistant retains Global V1 filesystem access.** `is_sensitive_path("~/.kiro/crew/memory.db")` is False, as is `~/.kiro/crew/workspace/memory/preferences.md`, while `~/.kiro/crew/memory_stores/work/memory.db` is True. These shared tool-gate answers remain pinned by `test/test_memory_stores.py::TestDefaultStoreStaysReadable`. A positively identified private V2 member receives an additional OS filesystem boundary withholding Global V1 as described above; it cannot inherit the default assistant's access by calling shell commands directly. This member-only boundary leaves existing Global V1 processes unchanged.
-  - **Consequence for readers:** every legitimate reader of a named store must open the path DIRECTLY, the established keystone-reader pattern. Two in-tree readers route through the gate instead, and the split between them is worth knowing before touching either.
-    - `learn.LessonStore.__init__` refuses a sensitive `base_dir` and falls back to the data home. That fallback is a WRITE target, so without a carve-out every crew's corrections append to the one global `lessons.jsonl` — misfiled, not merely lost. The carve-out is at the READER: `learn._is_owned_store_root` admits a base dir whose resolved parent IS `memory_stores_root()`, the same parent equality `memory_stores._named_store_dir` re-checks after composing a path, so a symlinked component cannot smuggle an outside directory past it. It is the tightest test that admits a real store — `memory_stores/` itself, a nested path under a store, `profiles/` and `security_policy.json` all stay refused — and it never raises: a stores root that cannot be resolved is simply not owned, falling through to the ordinary sensitive-path check, which is the safe direction.
-    - `MemoryStore._guarded_entry` (markdown through `hooks.safe_read_file_bytes_nolink`, whose fd-path check calls `is_sensitive_path`) is still refused for a named store, which therefore answers with empty entries. Not a live defect: its only callers are `markdown_snapshot` / `read_history_entries`, reached by two `kirocrew memory` CLI verbs anchored on the DEFAULT store, and `MemoryStore`'s ordinary context read path does plain reads and never touches the gate. Whichever step gives those export surfaces a store name owns this reader — by opening directly, never by weakening this fence, since relaxing `is_sensitive_path` would unfence the subtree for every tool caller too.
-  - **The dashboard's store-scoped routes are keystone readers too, and their authorization is the `?store=` owner gate rather than the file gate.** `markdown_memory_for_store` builds a `MemoryStore` over the silo's own two roots and reads it plainly, and `vector_memory_for_store` reaches that silo's `VectorMemoryStore` through `ContextBuilder.ensure_store`; neither passes `is_sensitive_path`, which is correct — the gateway is the legitimate reader, and routing them through the gate would answer empty for every silo. What keeps that from becoming a way for an AGENT to read a silo through the gateway is that naming a store requires the dashboard owner's own identity, which no agent has: see **Memory-store parameter owner gate** below.
-  - **The injection audit reads every DECLARED store, directly (`security.scan_memory`).** A silo's directive tier is loaded into that crew's prompt, so it is the highest-value prompt-injection target on disk — and it was the one file the audit could not see while it built a bare `VectorMemoryStore()`, i.e. `config_dir()/memory.db` and nothing else. `_declared_store_names()` yields the default store first and then each declared store — ONE enumeration shared by every tier — and `scan_memory` opens each store's `resolve_store_path()` **directly** rather than through the file gate: the keystone-reader pattern, since every path it resolves is `is_sensitive_path` True. The following properties are pinned by `test/test_scan_memory_stores.py`:
-    - **The surface is the operator's DECLARED table, never a directory listing.** Names come from `memory_stores.usable_store_names(cfg.memory_stores)` — the one filter a crew's binding also runs through, so the audit cannot disagree with which stores a crew can actually be bound to. A glob of `memory_stores/` would audit a silo the config no longer declares, or one a restore dropped in.
-    - **Every finding carries a `store` key**, appended LAST so the four pre-existing keys (`type`, `key`, `value`, `warning`) keep their order and values. Findings from every store land in ONE list, so an unattributed row reads as the global store's — which both hides which crew's silo was poisoned and puts one crew's memory text into another crew's report. The two CLI printers label a NAMED store only (`_finding_store_suffix`), so an install with no named stores prints exactly the bytes it always printed.
-    - **Structured metadata and the complete revision journal are audited too.** `memory_record_meta` and `memory_revisions` are read in batches of 128 rows, without filtering out corrected values, forgotten records or unaccepted conflict proposals. Nested JSON is decoded before applying the same injection predicate, including serialized `value_json` inside a before/after snapshot. Additional findings use `metadata` or `revision` types; a revision key identifies the record and journal row. A poisoned leaf already reported for that record's active content is not counted again merely because the journal preserves a copy. This is an audit surface, not an automatic model-context or recall surface. Whole-database member backups include these tables, and snapshot credential redaction scans their physical text columns as it does other tables.
-    - **Fail soft per store, close in a `finally`.** An unreadable or corrupt silo costs that store's findings and nothing else — not the default store's, and not those of the stores scanned after it — because an audit that aborts on the first bad file is an audit an attacker can silence by corrupting one silo. A config that will not load degrades to the default store alone.
-    - **A declared store with no vector file yet is SKIPPED, not opened.** `VectorMemoryStore.init()` creates the directory, the file and (under the crew lineage) decides its shape, so opening an unwritten store would have a read-only audit author a silo holding nothing to scan. The default store keeps its create-on-init behaviour unchanged. Skipping it costs the VECTOR tier only — see the lessons tier below, which is the one that matters on exactly that store.
-    - **Both prompt-injected tiers are audited: the vector rows AND every store's `lessons.jsonl`.** A vector-only audit is blind in the case that matters most. A silo-bound crew's lesson WRITES land in `memory_stores/<name>/lessons.jsonl` precisely when that silo has no vector store — `dashboard/handlers/cron.py`'s `_lesson_jsonl_store` routes by BINDING, and `ContextBuilder.get_lessons_for` creates only the markdown directory via `ensure_memory_store_dir`, never `memory.db` — and `LessonStore.get_context()` injects those rows into that crew's prompt as `[Learned corrections]`. Combined with the skip above, `kirocrew memory audit` printed a clean verdict for an install whose only populated, prompt-injected tier had never been opened. `_lessons_files_to_scan()` therefore lists every store including the default one and including a store with no `memory.db`, and `_scan_store_lessons()` opens the path **directly** — the same keystone-reader pattern, since a named store's lessons file is inside the fence. Details worth knowing before touching it:
-      - **The path comes from `learn.LessonStore` itself** (its public `path` property), not from a composed `<dir>/lessons.jsonl`, so the audit reads the exact file the writer writes — including `__init__`'s fallbacks. A named store's `base_dir` is `resolve_store_path(name).parent`, i.e. what `ensure_memory_store_dir` hands the writer, gated by the same positive `named_store_of_db` attribution check the vector pass uses and re-checked afterwards; a file that resolves outside its own store's directory is NOT audited rather than printed under that crew's name.
-      - **A distinct finding `type`** — `LESSON_FINDING_TYPE` (`"lesson"`), never `semantic`/`episodic` — because the tier decides the remedy (`kirocrew learn remove`, not a memory delete) and because this tier exists on a store that has no vector file at all. The `key` is `lessons.jsonl:<lineno>`, which locates the row; `value` is the matching text, unredacted, matching the vector passes exactly.
-      - **An unreadable lessons file REPORTS** (`LESSONS_UNAUDITABLE`, shaped exactly like `STORE_UNAUDITABLE`) rather than reading clean. An ABSENT file is not a finding — a store's lessons tier appears at the first correction — so the taxonomy is explicit: `FileNotFoundError` skips, every other `OSError`/decode failure surfaces. Fail-soft is on the per-store scan; it never reaches the verdict.
-      - **The screen is unchanged, the surface is wider.** `_contains_injection` over the `rule` and `negative` fields — the two `get_context` renders into the prompt. Every syntactically valid row is screened, including one whose `repo_scope` `load_all` would drop: an audit has no project to evaluate a scope against. The file is read WHOLE, because `LessonStore` loads and rewrites it whole on every save and prunes it to a bounded row count, so a row-count bound here would be a blind spot an attacker could append past.
-      - **The lessons tier does not share the vector stack's fate.** It is stdlib-only and still runs when the optional numpy/faiss import fails, so a missing optional dependency is not a way to silence the one tier a store has when it has no vector store.
-      - Deliberately still out of scope: the per-WORKSPACE lessons files (`workspace_dir_for(<ws>)/lessons.jsonl`, reachable from the `scope: "workspace"` arm of `_lesson_jsonl_store`) and the markdown memory tier. Both are audit gaps of the same class; whichever step widens the audit to workspaces owns the first.
+- **Member memory path guidance (`memory_stores/`)** — built-in raw file tools
+  guard managed member databases and their WAL/SHM sidecars against accidental
+  edits. Trusted memory APIs resolve the canonical execution target and open its
+  database directly with member/store integrity validation. This is not an OS
+  confidentiality promise. Global V1's existing file-tool behavior is unchanged.
+  The memory audit enumerates declared stores, labels every finding by store,
+  and reports missing/unreadable V2 databases rather than treating them as clean.
+  V2 facts, lessons and episodes are scanned from the one SQLite authority;
+  there is no V2 JSONL fallback. V1's optional JSONL lesson tier keeps its own
+  scan even without vectors: absent JSONL is allowed, unreadable JSONL reports
+  `LESSONS_UNAUDITABLE`, and injection findings inspect both `rule` and `negative`.
+  Manual/project source validation remains separate from learned-memory audit.
+
 - **Live-target pointer (keystone leaf `live_target.json`)** — `~/.kiro/crew/live_target.json` decides which checkout the gateway `execve`s into at startup (Dev Fleet "Make live"), so a writable pointer is arbitrary code execution under the gateway's own identity, and a readable one tells an attacker which checkout to aim at. Added to `_CREW_SECRET_LEAVES`, so it is read+write-blocked under every `_CREW_HOME_PREFIXES` entry through the shared file gate. Only the dashboard owner's cutover action writes it — and it does so in the GATEWAY process (`dev_fleet/gateway_routes.py` → `live._make_live` → `live_target.write_target()`), never in the sandboxed Dev Fleet backend: that backend's build children share its namespace (a nested sandbox is denied by design), so a per-backend carve-out of this leaf would let a worktree's `npm ci` lifecycle script choose the gateway's next image. The OS mask (`sandbox._CREW_HIDDEN_LEAVES`) therefore covers the backend too; it reads pointer STATE (which checkout is live/staged, not the file) through `GET /api/apps/dev-fleet/live-target` with its own app token, and that token is refused on every write route. Because `mount(2)` cannot mask an absent path and the crew-home root is writable in-sandbox, the launcher materialises the file as its absent-equivalent `{"checkout": null}` (`live_target.NO_TARGET_DOCUMENT`) before every namespace spawn, so the mask is never vacuous on a host that has not pinned a target. The gateway's own startup reader (`live_target.maybe_reexec` called from `cli.py`) opens it directly rather than through the gate, so live-target resolution is unaffected. **The refusal has three user surfaces, all reading one sentence.** A pointer the mask cannot cover — a symlink of either kind, a non-regular file, or a second hard link — refuses the spawn (`SandboxCeilingUnsealable`), and the shapes that produce it are ordinary operation for a hard-link snapshot tool or a dotfile manager, so an operator meets it without having touched anything. The text is therefore built by the module-level formatters (`_live_target_symlink_detail`, `_live_target_irregular_detail`, `_live_target_multilink_detail`) and read by all three surfaces: the launcher's own refusal; `kirocrew doctor`'s *Live Target Pointer* section, which classifies the pointer BEFORE a spawn tries via `live_target_pointer_unfitness()` and is silent when fit (see [cli](cli.md), *Doctor Checks*); and `cli_chat._run_chat`, which prints the refusal as a message because it is deliberately outside the `AcpError` hierarchy and used to escape as a stack trace that read as a Kiro Crew crash. The dashboard's chat error card needs nothing extra — `_run_chat`'s terminal handler appends the exception's own redacted text — and the refusal does not classify as transient, so the retry ladder cannot absorb it into "Connection lost — retrying…" and leave the operator no reason at all. `test_live_target_pointer_visibility.py` pins each surface and asserts the launcher's exception CONTAINS the probe's sentence verbatim, so a paraphrase in any one of them fails rather than shipping two descriptions of one file. **All three surfaces print that sentence to a terminal, so the formatters defuse it where it is BUILT.** A symlink's target is attacker-chosen bytes handed back raw by `os.readlink`, and the party that plants the pointer is the sandboxed agent this masking exists to contain, so every interpolated value passes through `terminal_safe.safe_terminal_line` inside the formatter rather than at each sink — a surface added later inherits the escaping instead of having to remember it, and the stat-failure refusal on the same path is escaped for the same reason. `safe_terminal_line` and not `repr`: these sentences carry a path and a `find` invocation the operator is meant to COPY, so stripping OSC/CSI and C0/C1 controls (which leaves an ordinary path byte-identical) is right where quoting-and-escaping the whole value would reproduce the unusable fragments `_print_wrapped` avoids by never splitting a token. The escaping tests DISCOVER the formatters by name from the module, so a fourth unfit shape is covered without extending a literal list. An existing pointer that cannot be `lstat`'d propagates its `OSError` rather than answering fit, because `None` here means "nothing to report" and a pointer whose shape was never determined may still refuse every spawn; ABSENT is the one genuinely fit failure to stat, since the launcher publishes the absent-equivalent stub for it. The escaping is NOT confined to this pointer's three sentences: `cli_chat` prints any `SandboxCeilingUnsealable` verbatim, so every builder of that exception is a terminal sink, and the three siblings that interpolate `os.readlink` output the same way (`_refuse_if_dangling_symlink`, `_refuse_if_symlink_leaf`, `_require_real_dir_nofollow` — the third found by grepping for all of them rather than trusting a count) pass through `safe_terminal_line` too, along with the `OSError` text their stat-failure refusals carry. The multilink remedy is additionally `shlex.quote`d: a data home holding a space makes `find /opt/my data -samefile …` a two-directory search that answers a different question WITHOUT erroring, which is the worst failure shape for a diagnostic. It also STATES its own scope: the command searches the data home, while the tools that leave a link there (snapshot and backup runs, a dotfile manager) usually keep theirs elsewhere, so the sentence tells the operator to re-run from the mount point with `-xdev` when the local search reports only the pointer — a hard link cannot cross a filesystem but can sit anywhere on one, and a remedy that quietly searches the wrong subtree reads as proof there is no second link. Quoting applies to the already-escaped display text, so for the pathological case of a path holding a control byte the command is illustrative rather than runnable — a terminal that cannot be driven is worth more than a runnable line. Only the pointer's own symlink check runs on this path: it refuses a superset of what `_refuse_if_dangling_symlink` plus `_refuse_if_symlink_leaf` refused between them, and those helpers say "the masked directory", which names the wrong kind of thing for a JSON document. Full contract: the Dev Fleet spec, *Make Live → Pointer file*.
 - **Agent tag-write grants (keystone directory `tag-grants`)** — `dashboard/chat_tag_grants.py` keeps the per-tag agent-write policy for the `chat_tag` session directive in the data-home directory `tag-grants` (`agent-tag-policy.json`, beside its store key `.signing-key`). The record IS the authorization (which board tags an agent may apply to its own session, and which ids are workflow states for the mutual-exclusivity strip), the same class as `computer_use.json`: it cannot live where the subject of the authorization can write it, and the tag vocabulary it governs (`tags.json`) is agent-writable by design. The whole DIRECTORY is on `_CREW_SECRET_LEAVES` (agent file tools, every shell form, read+write, under every `_CREW_HOME_PREFIXES` entry) and masked on `sandbox._CREW_HIDDEN_LEAVES`, and it is pre-created at 0700 before every namespace spawn (`_CREW_PRECREATE_HIDDEN_DIR_LEAVES`) because the store is created on first use and `mount(2)` cannot mask a name that does not exist yet. Only the gateway opens the path — the authenticated tag CRUD handlers mint and revoke rows, the boot seed mints rows for the five code-constant default states only (never from `tags.json`), and the applier resolves from an installed snapshot — so nothing legitimate reads a grant through a file tool. Beneath the fence the store defends itself: rows carry an HMAC provenance chain keyed under `token_signing.key`, an uncertified key or unverifiable document is quarantined (renamed aside, never deleted) and re-seeded rather than trusted, both files are read through a bounded regular-file reader, and every failure resolves to `("none", False)`. Quarantine and unreadability are surfaced to the agent as `tag_grants_unavailable` rather than as a policy denial, so a rotated token key does not read as a human reservation.
 
@@ -1783,8 +1514,9 @@ whose `conversation_key` matches the canonical `subagent:<original-id>` can
 establish that caller. App attribution and record-existence checks use the same
 resolver; a surviving original record retains its ownership precedence. Missing,
 ambiguous or unreadable records remain refused, and completed continuation
-records alone cannot establish the caller. This in-memory lookup neither reads
-persisted run metadata for authority nor replaces private session/store proof.
+records alone cannot establish the caller. This in-memory lookup does not read
+persisted run metadata to authenticate a live caller. The captured execution
+record supplies member/store routing separately.
 
 **Per-session logout (CWE-613)** (`token_auth.py`): the access cookie is a self-contained HMAC-signed token, so clearing it client-side (`Set-Cookie max_age=0`) does not stop a saved copy replaying until its `session_exp` (up to 20h). `RevokedNonceStore` is a persisted denylist of explicitly-revoked access-cookie nonces (`token_revoked_nonces.json`, mode `0600`, survives gateway restart; each entry stores the token's own `session_exp` as an eviction floor so the file cannot grow unbounded). `POST /api/auth/logout` → `revoke_access_cookie()` validates the token, then records its nonce; `validate_token` (cookie path) is **deny-by-default** — a token whose nonce is revoked, or that carries no nonce at all, is rejected. Link-click token exchange also mints a SEPARATE session cookie (fresh nonce, `register_nonce=False`) rather than reusing the one-time URL/link token as the long-lived cookie, and denylists the consumed link nonce so a captured link copy cannot be replayed as `mc_token_<port>` (the query-param LINK path does not consult the denylist, so legitimate re-navigation of the same link URL within the 5-minute window still re-exchanges for a fresh session cookie).
 

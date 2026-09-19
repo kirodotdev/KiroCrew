@@ -210,11 +210,11 @@ class TestSameBindingGuard:
         original = chat_handlers.resolve_agent_bindings
         calls = []
 
-        def resolve(config, agent, project=None):
+        def resolve(config, agent, project=None, **kwargs):
             with pytest.raises(RuntimeError, match="no running event loop"):
                 asyncio.get_running_loop()
             calls.append((agent, project))
-            result = original(config, agent, project)
+            result = original(config, agent, project, **kwargs)
             if change_project and len(calls) == 1:
                 loop.call_soon_threadsafe(setattr, slot, "project", "/changed-project")
             return result
@@ -372,11 +372,11 @@ async def test_create_resolves_off_loop_without_adopting_a_concurrent_slot(
     calls = []
     replacement = _ChatSlot("offloop-create", agent="another-owner")
 
-    def resolve(config, agent):
+    def resolve(config, agent, **kwargs):
         with pytest.raises(RuntimeError, match="no running event loop"):
             asyncio.get_running_loop()
         calls.append(agent)
-        result = original(config, agent)
+        result = original(config, agent, **kwargs)
         if replace_slot:
             loop.call_soon_threadsafe(
                 dashboard_state._slots.__setitem__, replacement.key, replacement
@@ -423,11 +423,11 @@ async def test_switch_resolves_off_loop_and_refuses_rebound_slot_before_reset(
     original = chat_handlers.resolve_agent_bindings
     calls = []
 
-    def resolve(config, agent, project=None):
+    def resolve(config, agent, project=None, **kwargs):
         with pytest.raises(RuntimeError, match="no running event loop"):
             asyncio.get_running_loop()
         calls.append((agent, project))
-        result = original(config, agent, project)
+        result = original(config, agent, project, **kwargs)
         if change == "replacement":
             loop.call_soon_threadsafe(dashboard_state._slots.__setitem__, slot.key, replacement)
         elif change == "session":

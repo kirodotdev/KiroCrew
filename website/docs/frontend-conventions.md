@@ -302,18 +302,24 @@ the selected store is global and the surface is not private. The narrow form
 stacks its inputs and submit button; its draft joins the store-switch guard,
 pending submission disables the fields, and an error retains them for retry.
 
-Private recall presents the returned fact and experience snippets as compact
+Member-scoped recall presents the returned fact and experience snippets as compact
 evidence cards. Exact serialized model context and source diagnostics live in
 the collapsed Source and retrieval details disclosure. Rules have their own
 indicator and full context there; fact snippets do not represent the rules
 included in recall. The disclosure accepts the recall API's structured copy
 origin as well as the record browser's serialized origin.
 
-Before a legacy member opts into private V2, a confirmation dialog explains that
-the next chat starts a fresh conversation and the member cannot switch back to V1.
-Only its explicit create action submits the request; Cancel keeps the existing
-binding. Prior conversations and V1 data remain. The Crew Manager notice
-distinguishes new members from existing V1 members. A disabled Manage memory
+Memory V2 uses member-scoped language (成员记忆 in Chinese), without a lock badge
+or a promise of confidentiality between members. Database errors remain distinct
+from embedding-model errors; configured and active models, keyword and vector
+status, reload/rebuild confirmations, checkpoint failure evidence, and counts
+with their actual units remain visible.
+
+Only explicit member creation initializes an empty Memory V2 database. Existing
+members retain their current memory; edits offer no provisioning or migration
+action. An unavailable member database remains an error and requires restoring
+its backup. The Crew Manager notice distinguishes new members from existing
+members. A disabled Manage memory
 action shows its unsaved-changes reason as visible helper text for keyboard and
 touch users. Member status distinguishes an explicitly
 different configured owner from an unavailable or unverified binding. Unavailable

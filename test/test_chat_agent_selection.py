@@ -12,7 +12,6 @@ import pytest
 from aiohttp.test_utils import TestClient, TestServer, make_mocked_request
 from chat_test_helpers import _make_app_with_agent_routes, _make_state, drain_background_tasks
 from dashboard_owner_helpers import as_owner
-from member_memory_helpers import patch_private_memory_supported
 from test_members_dm_thread import _make_members_app
 
 from kiro_crew.agent_discovery import AgentInfo
@@ -25,7 +24,8 @@ from kiro_crew.dashboard.chat_persistence import (
     rehydrate_slot_from_history_async,
 )
 from kiro_crew.dashboard.handlers import agents
-from kiro_crew.member_memory_auth import bind_private_session_store, read_private_session_store
+from kiro_crew.execution_context import read_session_execution
+from kiro_crew.member_memory_auth import read_private_session_store
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
     UnknownMemoryStore,
@@ -39,7 +39,6 @@ from kiro_crew.providers.base import (
     LLMEvent,
 )
 from kiro_crew.session_agent_selection import (
-    _selection_path,
     record_agent_selection,
     resolve_session_agent_bindings,
     session_agent_selection_kind,
@@ -47,6 +46,34 @@ from kiro_crew.session_agent_selection import (
 from kiro_crew.skills import SkillsLoader
 
 TEMPLATE = "kirocrew-conductor"
+
+
+def test_global_session_binding_matches_equivalent_alias(monkeypatch):
+    from kiro_crew import execution_context, session_agent_selection
+
+    cfg = KiroCrewConfig()
+    cfg.agents = {
+        "original": KiroCrewAgentConfig(kiro_agent="kirocrew"),
+        "equivalent": KiroCrewAgentConfig(kiro_agent="kirocrew"),
+    }
+    cfg.default_agent = "original"
+    captured = execution_context.ExecutionContext(
+        None,
+        execution_context.MemoryStoreRef("default"),
+        "member",
+        "kirocrew",
+        selection_name="original",
+    )
+    monkeypatch.setattr(session_agent_selection, "read_session_execution", lambda _: captured)
+    stored = resolve_session_agent_bindings(
+        resolve_agent_bindings, cfg, "dashboard:global-alias", "original"
+    )
+    requested = resolve_agent_bindings(cfg, "equivalent")
+    assert requested.requested_resolved
+    assert stored.same_dispatch_binding(requested)
+    assert stored.memory_store_name == "default"
+    assert stored.execution_context is captured
+    assert not stored.same_dispatch_binding(replace(requested, memory_store_name="other-store"))
 
 
 def _turn_state(tmp_path, monkeypatch):
@@ -74,7 +101,6 @@ def _turn_state(tmp_path, monkeypatch):
 
 
 async def _template_chat(tmp_path, monkeypatch, *, first_turn=True):
-    patch_private_memory_supported(monkeypatch)
     cfg = KiroCrewConfig.load()
     assert TEMPLATE not in cfg.agents
     cfg.save()
@@ -129,7 +155,6 @@ async def _template_chat(tmp_path, monkeypatch, *, first_turn=True):
 @pytest.mark.asyncio
 async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, monkeypatch):
     """A delayed template create cannot replace an explicit member selection."""
-    patch_private_memory_supported(monkeypatch)
     cfg = KiroCrewConfig.load()
     assert TEMPLATE not in cfg.agents
     cfg.save()
@@ -237,7 +262,7 @@ async def test_slot_create_cannot_overwrite_later_same_name_member(tmp_path, mon
             assert slot.memory_store == private_store
 
             def final_selection():
-                return json.loads(_selection_path(key).read_text(encoding="utf-8"))
+                return read_session_execution(key).to_record()
 
             selected = await asyncio.wait_for(asyncio.to_thread(final_selection), 10)
             assert selected == publications["member"], {
@@ -331,7 +356,10 @@ async def test_discovery_keeps_existing_template_conversation(tmp_path, monkeypa
     await asyncio.wait_for(drain_background_tasks(state), 10)
     assert state.sessions.get_or_create.await_count == 1
     state.sessions.record_failure.assert_not_awaited()
-    assert state.context_builder.build_message.call_args.kwargs["memory_store"] == "default"
+    assert (
+        state.context_builder.build_message.call_args.kwargs["execution_context"].store.store_id
+        == "default"
+    )
     assert state.sessions.get_or_create.call_args.kwargs["agent"] == TEMPLATE
     assert read_private_session_store("dashboard:template-chat") is None
 
@@ -400,7 +428,7 @@ async def test_interrupted_provider_switch_restores_selection(
         "kiro_crew.config.loader._materialized_kiro_agent",
         lambda name, project_dir=None: name if name in (TEMPLATE, later_agent) else "",
     )
-    before = _selection_path(key).read_bytes()
+    before = read_session_execution(key).to_record()
     provider = state.sessions.get_or_create.return_value[0]
     state.sessions.reset = AsyncMock(return_value=True)
     writer_started, release_writer, writer_finished = (threading.Event() for _ in range(3))
@@ -464,7 +492,7 @@ async def test_interrupted_provider_switch_restores_selection(
         release_rollback.set()
         await asyncio.wait_for(asyncio.gather(task, return_exceptions=True), 15)
         assert await asyncio.wait_for(asyncio.to_thread(writer_finished.wait, 10), 11)
-        assert _selection_path(key).read_bytes() == before
+        assert read_session_execution(key).to_record() == before
         assert retired_after_writer == [(True, True)]
         assert slot.agent == TEMPLATE
         metadata = await asyncio.to_thread(state.conversation_log.get_metadata, key)
@@ -505,7 +533,7 @@ async def test_restored_agent_conflict_cannot_replace_protected_selection(
         "kiro_crew.config.loader._materialized_kiro_agent",
         lambda name, project_dir=None: name if name in (TEMPLATE, later_agent) else "",
     )
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     # A crash between the history write and owner-selection publication leaves
     # these two records disagreeing. History must not become replacement authority.
     await asyncio.to_thread(state.conversation_log.update_metadata, key, {"agent": later_agent})
@@ -547,57 +575,25 @@ async def test_restored_agent_conflict_cannot_replace_protected_selection(
     state.sessions.record_failure.assert_not_awaited()
     state.sessions.get_or_create.assert_awaited_once()
     assert state.sessions.get_or_create.call_args.kwargs["agent"] == TEMPLATE
-    assert state.context_builder.build_message.call_args.kwargs["memory_store"] == "default"
+    assert (
+        state.context_builder.build_message.call_args.kwargs["execution_context"].store.store_id
+        == "default"
+    )
     assert read_private_session_store(key) is None
-    assert _selection_path(key).read_bytes() == protected
+    assert read_session_execution(key).to_record() == protected
     assert not any(row["role"] == "error" for row in slot.messages)
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("restore", [False, True], ids=["live", "restored"])
-@pytest.mark.parametrize(
-    "damage",
-    [
-        "missing",
-        "corrupt",
-        "wrong_session",
-        "missing_revision",
-        "protected_private",
-        "missing_template",
-    ],
-)
-async def test_unverified_selection_never_downgrades_private_memory(
-    tmp_path, monkeypatch, damage, restore
+@pytest.mark.parametrize("damage", [{}, {"member_id": "missing"}])
+async def test_malformed_canonical_selection_refuses_before_provider_start(
+    tmp_path, monkeypatch, damage
 ):
-    state, slot, private_store = await _template_chat(tmp_path, monkeypatch)
+    state, slot, _ = await _template_chat(tmp_path, monkeypatch)
     key = "dashboard:template-chat"
-    path = _selection_path(key)
-    if damage == "missing":
-        path.unlink()
-        # Display/history fields cannot manufacture the protected namespace.
-        await asyncio.to_thread(
-            state.conversation_log.update_metadata,
-            key,
-            {"agent_selection": "template", "selection_kind": "template"},
-        )
-    elif damage == "corrupt":
-        path.write_text("{", encoding="utf-8")
-    elif damage == "wrong_session":
-        row = json.loads(path.read_text())
-        row["session_key"] = "dashboard:another-conversation"
-        path.write_text(json.dumps(row), encoding="utf-8")
-    elif damage == "missing_revision":
-        row = json.loads(path.read_text())
-        del row["revision"]
-        path.write_text(json.dumps(row), encoding="utf-8")
-    elif damage == "protected_private":
-        await asyncio.to_thread(bind_private_session_store, key, private_store)
-    else:
-        monkeypatch.setattr("kiro_crew.config.loader._materialized_kiro_agent", lambda *a: "")
-    if restore:
-        state = _turn_state(tmp_path, monkeypatch)
-        slot = _rehydrate_slot_from_history(state, "template-chat")
-        assert slot is not None
+    from kiro_crew.history import ConversationLog
+
+    await asyncio.to_thread(ConversationLog().update_metadata, key, {"execution_context": damage})
     state.sessions.get_or_create.reset_mock()
     state.context_builder.build_message.reset_mock()
     await asyncio.wait_for(chat_runner._run_chat(state, slot, "continue"), 10)
@@ -608,24 +604,20 @@ async def test_unverified_selection_never_downgrades_private_memory(
 
 
 @pytest.mark.asyncio
-async def test_owner_reselection_replaces_namespace_without_authorizing_v1_history(
+async def test_owner_reselection_cannot_promote_existing_template_context_to_member(
     tmp_path, monkeypatch
 ):
     state, slot, _ = await _template_chat(tmp_path, monkeypatch)
     key = "dashboard:template-chat"
     state.sessions.reset = AsyncMock(return_value=True)
-    assert session_agent_selection_kind(key, TEMPLATE) == "template"
+    previous = read_session_execution(key)
     async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
         response = await client.post(
             "/api/chat/slots/template-chat/agent", json={"agent": TEMPLATE}
         )
-        assert response.status == 200, await response.text()
-    assert session_agent_selection_kind(key, TEMPLATE) == "member"
-    assert read_private_session_store(key) is None
-    state.sessions.get_or_create.reset_mock()
-    await asyncio.wait_for(chat_runner._run_chat(state, slot, "continue"), 10)
-    await asyncio.wait_for(drain_background_tasks(state), 10)
-    state.sessions.get_or_create.assert_not_awaited()
+        assert response.status == 503, await response.text()
+    assert read_session_execution(key) == previous
+    assert session_agent_selection_kind(key, TEMPLATE) == "template"
     assert read_private_session_store(key) is None
 
 
@@ -643,7 +635,10 @@ async def test_discovery_before_first_allocation_preserves_owner_template_pick(
         assert state.sessions.get_or_create.call_args.kwargs["speculative"] is True
     else:
         await asyncio.wait_for(chat_runner._run_chat(state, slot, "Complete the task."), 10)
-        assert state.context_builder.build_message.call_args.kwargs["memory_store"] == "default"
+        assert (
+            state.context_builder.build_message.call_args.kwargs["execution_context"].store.store_id
+            == "default"
+        )
     await asyncio.wait_for(drain_background_tasks(state), 10)
     state.sessions.get_or_create.assert_awaited_once()
     assert state.sessions.get_or_create.call_args.kwargs["agent"] == TEMPLATE
@@ -835,7 +830,7 @@ async def test_failed_agent_history_write_keeps_prior_selection(tmp_path, monkey
         lambda name, project_dir=None: name if name in (TEMPLATE, later_agent) else "",
     )
     state.sessions.reset = AsyncMock(return_value=True)
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     prior = (slot.agent, slot.workspace, slot.project, slot.memory_store)
     publish = MagicMock(wraps=record_agent_selection)
     monkeypatch.setattr(chat_handlers, "record_agent_selection", publish)
@@ -850,7 +845,7 @@ async def test_failed_agent_history_write_keeps_prior_selection(tmp_path, monkey
     assert (slot.agent, slot.workspace, slot.project, slot.memory_store) == prior
     assert slot._dirty
     publish.assert_not_called()
-    assert _selection_path(key).read_bytes() == protected
+    assert read_session_execution(key).to_record() == protected
 
     # A fresh dashboard and ConversationLog read the durable state, not the
     # rolled-back slot or its metadata cache.
@@ -893,7 +888,7 @@ async def test_failed_agent_history_write_keeps_prior_selection(tmp_path, monkey
 async def test_failed_agent_lookup_preserves_existing_selection(tmp_path, monkeypatch, failure):
     state, slot, _ = await asyncio.wait_for(_template_chat(tmp_path, monkeypatch), 20)
     key = "dashboard:template-chat"
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     metadata = state.conversation_log.get_metadata(key)
     prior = (slot.agent, slot.workspace, slot.project, slot.memory_store)
     state.sessions.reset = AsyncMock(return_value=True)
@@ -914,7 +909,7 @@ async def test_failed_agent_lookup_preserves_existing_selection(tmp_path, monkey
             assert response.status == 503, await response.text()
     state.sessions.reset.assert_not_awaited()
     assert (slot.agent, slot.workspace, slot.project, slot.memory_store) == prior
-    assert _selection_path(key).read_bytes() == protected
+    assert read_session_execution(key).to_record() == protected
     assert state.conversation_log.get_metadata(key) == metadata
     state.sessions.get_or_create.reset_mock()
     await asyncio.wait_for(chat_runner._run_chat(state, slot, "Continue."), 10)
@@ -927,7 +922,7 @@ async def test_failed_agent_lookup_preserves_existing_selection(tmp_path, monkey
 async def test_cancelled_agent_lookup_preserves_existing_selection(tmp_path, monkeypatch):
     state, slot, _ = await asyncio.wait_for(_template_chat(tmp_path, monkeypatch), 20)
     key = "dashboard:template-chat"
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     metadata = state.conversation_log.get_metadata(key)
     prior = (slot.agent, slot.workspace, slot.project, slot.memory_store)
     state.sessions.reset = AsyncMock(return_value=True)
@@ -956,7 +951,7 @@ async def test_cancelled_agent_lookup_preserves_existing_selection(tmp_path, mon
             await asyncio.wait_for(chat_handlers.api_chat_slot_agent(request), 10)
     state.sessions.reset.assert_not_awaited()
     assert (slot.agent, slot.workspace, slot.project, slot.memory_store) == prior
-    assert _selection_path(key).read_bytes() == protected
+    assert read_session_execution(key).to_record() == protected
     assert state.conversation_log.get_metadata(key) == metadata
     state.sessions.get_or_create.reset_mock()
     await asyncio.wait_for(chat_runner._run_chat(state, slot, "Continue."), 10)
@@ -1038,8 +1033,9 @@ async def test_non_owner_switch_keeps_durable_selection(tmp_path, monkeypatch, s
         state.sessions.get_or_create.reset_mock()
         await asyncio.wait_for(chat_runner._run_chat(state, slot, "Continue."), 10)
         await asyncio.wait_for(drain_background_tasks(state), 10)
-        state.sessions.get_or_create.assert_not_awaited()
-        state.sessions.record_failure.assert_awaited_once()
+        state.sessions.get_or_create.assert_awaited_once()
+        state.sessions.record_failure.assert_not_awaited()
+        assert read_session_execution("dashboard:template-chat").store.store_id == "default"
         assert read_private_session_store("dashboard:template-chat") is None
 
 
@@ -1050,7 +1046,7 @@ async def test_non_owner_member_upgraded_during_lookup_is_refused(tmp_path, monk
     cfg.agents["legacy-worker"] = replace(cfg.agents[cfg.default_agent])
     cfg.save()
     key = "dashboard:template-chat"
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     metadata = state.conversation_log.get_metadata(key)
     prior = (slot.agent, slot.workspace, slot.project, slot.memory_store)
     state.sessions.reset = AsyncMock(return_value=True)
@@ -1080,7 +1076,7 @@ async def test_non_owner_member_upgraded_during_lookup_is_refused(tmp_path, monk
     assert calls == 2
     state.sessions.reset.assert_not_awaited()
     assert (slot.agent, slot.workspace, slot.project, slot.memory_store) == prior
-    assert _selection_path(key).read_bytes() == protected
+    assert read_session_execution(key).to_record() == protected
     assert state.conversation_log.get_metadata(key) == metadata
 
 
@@ -1088,7 +1084,7 @@ async def test_non_owner_member_upgraded_during_lookup_is_refused(tmp_path, monk
 async def test_non_owner_member_switch_is_refused_before_mutation(tmp_path, monkeypatch):
     state, slot, _ = await asyncio.wait_for(_template_chat(tmp_path, monkeypatch), 20)
     key = "dashboard:template-chat"
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     metadata = state.conversation_log.get_metadata(key)
     prior = (slot.agent, slot.workspace, slot.project, slot.memory_store)
     state.sessions.reset = AsyncMock(return_value=True)
@@ -1104,7 +1100,7 @@ async def test_non_owner_member_switch_is_refused_before_mutation(tmp_path, monk
         assert response.status == 403, await response.text()
     state.sessions.reset.assert_not_awaited()
     assert (slot.agent, slot.workspace, slot.project, slot.memory_store) == prior
-    assert _selection_path(key).read_bytes() == protected
+    assert read_session_execution(key).to_record() == protected
     assert state.conversation_log.get_metadata(key) == metadata
 
 
@@ -1122,7 +1118,7 @@ async def test_cancelled_agent_history_write_drains_before_restore(
         lambda name, project_dir=None: name if name in (TEMPLATE, later_agent) else "",
     )
     state.sessions.reset = AsyncMock(return_value=True)
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     started, release, finished = (threading.Event() for _ in range(3))
     restore_started, release_restore, restore_finished = (threading.Event() for _ in range(3))
     update_metadata = state.conversation_log.update_metadata
@@ -1188,7 +1184,7 @@ async def test_cancelled_agent_history_write_drains_before_restore(
         assert restore_finished.is_set()
         assert writes == [later_agent, TEMPLATE]
         assert slot.agent == TEMPLATE
-        assert _selection_path(key).read_bytes() == protected
+        assert read_session_execution(key).to_record() == protected
         restored = _turn_state(tmp_path, monkeypatch)
         restored_slot = _rehydrate_slot_from_history(restored, "template-chat")
         assert restored_slot is not None and restored_slot.agent == TEMPLATE
@@ -1225,7 +1221,7 @@ async def test_cancelled_agent_switch_with_failed_history_restore(tmp_path, monk
     )
     state.sessions.reset = AsyncMock(return_value=True)
     key = "dashboard:template-chat"
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     started, release, finished = (threading.Event() for _ in range(3))
     update_metadata = state.conversation_log.update_metadata
 
@@ -1302,7 +1298,7 @@ async def test_cancelled_agent_switch_with_failed_history_restore(tmp_path, monk
             restored_slot = restored._slots[slot.key]
         assert restored_slot is not None
         assert restored_slot.agent == TEMPLATE
-        assert _selection_path(key).read_bytes() == protected
+        assert read_session_execution(key).to_record() == protected
         await asyncio.wait_for(chat_runner._run_chat(restored, restored_slot, "Continue."), 10)
         await asyncio.wait_for(drain_background_tasks(restored), 10)
         restored.sessions.record_failure.assert_not_awaited()
@@ -1323,7 +1319,7 @@ async def test_cancelled_agent_switch_with_failed_history_restore(tmp_path, monk
 async def test_rebound_owner_switch_restores_selection_provenance(
     tmp_path, monkeypatch, interleaving
 ):
-    state, slot, _ = await _template_chat(tmp_path, monkeypatch)
+    state, slot, _ = await _template_chat(tmp_path, monkeypatch, first_turn=False)
     key = "dashboard:template-chat"
     state.sessions.reset = AsyncMock(return_value=True)
     to_thread = asyncio.to_thread
@@ -1353,7 +1349,7 @@ async def test_rebound_owner_switch_restores_selection_provenance(
     assert session_agent_selection_kind(key, TEMPLATE) == (
         "member" if interleaving == "later_pick" else "template"
     )
-    assert read_private_session_store(key) is None
+    assert (read_private_session_store(key) is not None) is (interleaving == "later_pick")
 
 
 @pytest.mark.asyncio
@@ -1363,7 +1359,9 @@ async def test_cancelled_owner_writer_cannot_overwrite_later_choice(
     tmp_path, monkeypatch, later_choice, cancel_count
 ):
     """A cancelled owner still owns its running publication until it settles."""
-    state, slot, _ = await asyncio.wait_for(_template_chat(tmp_path, monkeypatch), 20)
+    state, slot, _ = await asyncio.wait_for(
+        _template_chat(tmp_path, monkeypatch, first_turn=False), 20
+    )
     key = "dashboard:template-chat"
     later_agent = TEMPLATE if later_choice == "same_name_template" else "kirocrew-worker"
     monkeypatch.setattr(
@@ -1493,16 +1491,16 @@ async def test_cancelled_owner_writer_cannot_overwrite_later_choice(
         assert results[1].status == 200, results[1].text
         assert set(writer_threads) == {"cancelled", "later"}
         assert all(thread != loop_thread for thread in writer_threads.values())
-        assert publications["cancelled"]["kind"] == "member"
-        assert publications["later"]["kind"] == "template"
+        assert publications["cancelled"]["selection_kind"] == "member"
+        assert publications["later"]["selection_kind"] == "template"
 
         def final_identity():
-            selection = json.loads(_selection_path(key).read_text(encoding="utf-8"))
+            selection = read_session_execution(key).to_record()
             metadata = state.conversation_log.get_metadata(key)
             return {
-                "protected_agent": selection["agent"],
+                "protected_agent": selection["selection_name"],
                 "protected_namespace": session_agent_selection_kind(key, later_agent),
-                "protected_revision": selection["revision"],
+                "protected_revision": selection["selection_revision"],
                 "slot_agent": str(slot.agent),
                 "history_agent": metadata["agent"],
             }
@@ -1512,7 +1510,7 @@ async def test_cancelled_owner_writer_cannot_overwrite_later_choice(
         assert observed == {
             "protected_agent": later_agent,
             "protected_namespace": "template",
-            "protected_revision": publications["later"]["revision"],
+            "protected_revision": publications["later"]["selection_revision"],
             "slot_agent": later_agent,
             "history_agent": later_agent,
             "cancelled_handler_retired_after_writer": [True],
@@ -1538,7 +1536,9 @@ async def test_cancelled_rebound_cleanup_finishes_before_later_owner(
     tmp_path, monkeypatch, cleanup_phase, cancel_count
 ):
     """Neither rollback write may outlive the handler or skip the other write."""
-    state, slot, _ = await asyncio.wait_for(_template_chat(tmp_path, monkeypatch), 20)
+    state, slot, _ = await asyncio.wait_for(
+        _template_chat(tmp_path, monkeypatch, first_turn=False), 20
+    )
     history_key = "dashboard:template-chat"
     rebound_key = "task:rebound-cleanup"
     later_agent = "kirocrew-worker"
@@ -1718,7 +1718,7 @@ async def test_failed_empty_chat_private_grant_restores_protected_selection(tmp_
         _template_chat(tmp_path, monkeypatch, first_turn=False), 20
     )
     key = "dashboard:template-chat"
-    protected = _selection_path(key).read_bytes()
+    protected = read_session_execution(key).to_record()
     prior = (slot.agent, slot.memory_store, slot._memory_assignment_from_history)
     state.sessions.reset = AsyncMock(return_value=True)
 
@@ -1739,7 +1739,7 @@ async def test_failed_empty_chat_private_grant_restores_protected_selection(tmp_
 
     pin.assert_awaited_once()
     assert (slot.agent, slot.memory_store, slot._memory_assignment_from_history) == prior
-    assert _selection_path(key).read_bytes() == protected
+    assert read_session_execution(key).to_record() == protected
     assert session_agent_selection_kind(key, TEMPLATE) == "template"
     assert state.conversation_log.get_metadata(key)["agent"] == TEMPLATE
     assert read_private_session_store(key) is None
@@ -1752,7 +1752,6 @@ def _prewarmed_member_state(tmp_path, monkeypatch, *, sid: str | None):
     and the switch handler's own reset preserves the persistence entry, so what
     survives into the pin is a resume pointer with no live provider.
     """
-    patch_private_memory_supported(monkeypatch)
     cfg = KiroCrewConfig.load()
     cfg.agents["reviewer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
     store = provision_member_memory(cfg, "reviewer")
@@ -1848,3 +1847,34 @@ async def test_prewarmed_session_is_kept_when_the_chat_is_not_provably_empty(
     )
     assert released is False
     state.sessions.forget_conversation.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["incognito", "temporary"])
+async def test_restricted_member_selection_and_turn_never_persist_transcript(
+    tmp_path, monkeypatch, mode
+):
+    from kiro_crew.history import ConversationLog
+
+    cfg = KiroCrewConfig.load()
+    cfg.agents["writer"] = KiroCrewAgentConfig(kiro_agent="kirocrew")
+    member_store = provision_member_memory(cfg, "writer")
+    cfg.save()
+    state = _turn_state(tmp_path, monkeypatch)
+    slot = state.get_or_create_slot("restricted", agent="default", memory_mode=mode)
+    state.sessions.reset = AsyncMock(return_value=True)
+    async with TestClient(TestServer(as_owner(_make_app_with_agent_routes(state)))) as client:
+        response = await client.post("/api/chat/slots/restricted/agent", json={"agent": "writer"})
+        assert response.status == 200, await response.text()
+    key = "dashboard:restricted"
+    captured = read_session_execution(key)
+    assert captured.memory_mode == mode
+    assert captured.store.store_id == member_store
+    slot.append("user", "restricted body sentinel")
+    await asyncio.wait_for(chat_runner._run_chat(state, slot, "restricted body sentinel"), 10)
+    await asyncio.wait_for(drain_background_tasks(state), 10)
+    state.sessions.get_or_create.assert_awaited_once()
+    assert not state.conversation_log.has_log(key)
+    assert not ConversationLog().has_log(key)
+    if mode == "temporary":
+        state.context_builder.ensure_store.assert_not_awaited()

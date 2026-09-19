@@ -2040,7 +2040,9 @@ def _memory_stores_to_scan() -> list[tuple[str, Path | None]]:
                     path,
                 )
                 continue
-            if not path.exists():
+            from kiro_crew.memory_stores import memory_store_version
+
+            if not path.exists() and memory_store_version(name) != 2:
                 logger.warning(
                     "memory store %r has no vector file yet; its vector tier is not audited",
                     name,
@@ -2147,6 +2149,10 @@ def _lessons_files_to_scan() -> list[tuple[str, Path]]:
     files: list[tuple[str, Path]] = []
     for name in memory_stores_declared_names():
         try:
+            from kiro_crew.memory_stores import memory_store_version
+
+            if memory_store_version(name) == 2:
+                continue
             if name == DEFAULT_MEMORY_STORE:
                 # No ``base_dir``: byte-identical with the global ``LessonStore()`` every
                 # write path constructs, so the default store's file is the one the
@@ -2306,7 +2312,12 @@ def _scan_memory_record_history(
     The same poisoned leaf repeated in an active row and its journal is one finding
     for that record; a different historical payload remains separately reportable.
     """
-    for table, kind in (("memory_record_meta", "metadata"), ("memory_revisions", "revision")):
+    for table, kind, identity, prefix in (
+        ("memory_record_meta", "metadata", "record_id", ""),
+        ("memory_revisions", "revision", "record_id", ""),
+        ("memory_history", "history", "day", "history:"),
+        ("memory_consolidations", "consolidation", "source_id", "consolidation:"),
+    ):
         with store._db_lock:
             if not store.db.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",  # wokeignore:rule=master
@@ -2323,7 +2334,7 @@ def _scan_memory_record_history(
                 break
             for values in rows:
                 row = dict(zip(columns, values))
-                record_id = str(row["record_id"])
+                record_id = prefix + str(row[identity])
                 matches = list(_memory_audit_matches(row))
                 fresh = [
                     value
@@ -2335,7 +2346,7 @@ def _scan_memory_record_history(
                 reported.update(
                     (record_id, _hashlib.sha256(value.encode()).digest()) for value in matches
                 )
-                key = f"{record_id}@{row['id']}" if kind == "revision" else record_id
+                key = f"{record_id}@{row['id']}" if "id" in row else record_id
                 findings.append(
                     {
                         "type": kind,
@@ -2406,13 +2417,10 @@ def scan_memory() -> list[dict]:
     Returns one flat list of findings, each carrying the ``store`` it came from.
     The default store comes first, then each declared named store in name order.
 
-    Covers the vector store's semantic and episodic rows, its metadata and immutable
-    revision journal (including proposals), then every store's JSONL lessons file.
-    History is audit-only and is not added to model context. The lessons tier is not
-    completeness for its own sake — a silo-bound crew's corrections land there exactly
-    when that silo has no vector store, so an install whose only populated,
-    prompt-injected tier is a ``lessons.jsonl`` is precisely the install a vector-only
-    audit hands a clean verdict to.
+    Covers SQLite facts, directives, episodes, metadata, immutable revisions,
+    learned history and consolidation receipts, then V1's JSONL lessons file.
+    Historical values are audit-only and are not added to model retrieval. V2
+    never consults an old learned-file sidecar as another authority.
 
     Scanning named stores is not completeness for its own sake either: a crew silo's
     directive tier is loaded into that crew's prompt, so it is the highest-value
@@ -2449,7 +2457,23 @@ def scan_memory() -> list[dict]:
 
     for store_name, db_path in _memory_stores_to_scan():
         try:
-            store = VectorMemoryStore() if db_path is None else VectorMemoryStore(db_path=db_path)
+            from kiro_crew.memory_stores import memory_store_version
+
+            member_store = db_path is not None and memory_store_version(store_name) == 2
+            if member_store and db_path is not None:
+                from kiro_crew.config.loader import KiroCrewConfig
+                from kiro_crew.vector_memory import open_member_database
+
+                config = KiroCrewConfig.load()
+                store = open_member_database(
+                    db_path,
+                    member_id=config.memory_stores[store_name].owner_member_id,
+                    store_id=store_name,
+                )
+            else:
+                store = (
+                    VectorMemoryStore() if db_path is None else VectorMemoryStore(db_path=db_path)
+                )
         except Exception:
             logger.warning(
                 "could not open memory store %r for an injection audit", store_name, exc_info=True
@@ -2457,7 +2481,8 @@ def scan_memory() -> list[dict]:
             findings.append(_unauditable_finding(store_name))
             continue
         try:
-            store.init()
+            if not member_store:
+                store.init()
             _scan_memory_store(store, store_name, findings)
         except Exception:
             logger.warning(

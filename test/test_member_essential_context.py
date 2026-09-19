@@ -18,7 +18,6 @@ from kiro_crew.member_essential_context import MemberEssentialContextError
 from kiro_crew.members import slug_for_name, write_member_rules
 from kiro_crew.memory import MemoryStore
 from kiro_crew.memory_stores import (
-    MEMBER_MEMORY_MANIFEST,
     UnknownMemoryStore,
     memory_store_dir_for,
     persist_member_config,
@@ -76,14 +75,17 @@ def env(tmp_path, monkeypatch):
         (project / path).write_text(body, encoding="utf-8")
     write_member_rules(slug_for_name("writer"), member="writer", text="Do not publish drafts.")
     forbidden = Mock(side_effect=AssertionError("essential context performed retrieval"))
-    tier = SimpleNamespace(
-        algorithm_version="v2",
-        recall=forbidden,
-        get_semantic_context=forbidden,
-        get_episodic_context=forbidden,
-        has_any_lesson=lambda: True,
-        get_lessons_context=lambda **kwargs: "",
+    from kiro_crew.vector_memory import open_member_database
+
+    tier = open_member_database(
+        memory_store_dir_for(store) / "memory.db",
+        member_id=cfg.agents["writer"].member_id,
+        store_id=store,
     )
+    monkeypatch.setattr(tier, "recall", forbidden)
+    monkeypatch.setattr(tier, "get_semantic_context", forbidden)
+    monkeypatch.setattr(tier, "get_episodic_context", forbidden)
+    monkeypatch.setattr(tier, "get_lessons_context", lambda **kwargs: "")
     monkeypatch.setattr(context_module, "_memory_stores", {})
     monkeypatch.setattr(context_module, "_vector_stores", {store: tier})
     memory = ContextBuilder.get_memory_for(memory_store=store)
@@ -95,7 +97,12 @@ def env(tmp_path, monkeypatch):
         lessons=LessonStore(base_dir=tmp_path / "lessons"),
     )
     return SimpleNamespace(
-        builder=builder, store=store, project=project, memory=memory, forbidden=forbidden
+        builder=builder,
+        store=store,
+        member=cfg.agents["writer"].member_id,
+        project=project,
+        memory=memory,
+        forbidden=forbidden,
     )
 
 
@@ -115,6 +122,7 @@ def test_every_lifecycle_derives_owner_and_injects_actual_sources(env, fresh, op
         fresh,
         "cron:member-task",
         memory_store=env.store,
+        member=env.member,
         project=str(env.project),
         **options,
     )
@@ -143,12 +151,17 @@ def test_tail_and_updated_soul_survive_small_ordinary_context_budget(env):
     body = "Complete guide:\n" + "Important rule.\n" * 2200 + "TAIL_MUST_SURVIVE"
     (env.project / "AGENTS.md").write_text(body, encoding="utf-8")
     first = env.builder.build_session_context(
-        memory_store=env.store, project=str(env.project), model_window=32_000
+        memory_store=env.store, member=env.member, project=str(env.project), model_window=32_000
     )
     assert body in first
     (env.project / "SOUL.md").write_text("UPDATED_SOUL", encoding="utf-8")
     followup, _ = env.builder.build_message(
-        "Continue", False, memory_store=env.store, project=str(env.project), model_window=32_000
+        "Continue",
+        False,
+        memory_store=env.store,
+        member=env.member,
+        project=str(env.project),
+        model_window=32_000,
     )
     assert body in followup and "UPDATED_SOUL" in followup
     env.forbidden.assert_not_called()
@@ -158,7 +171,7 @@ def test_oversized_essential_refuses_with_source_name_instead_of_partial_prompt(
     (env.project / "AGENTS.md").write_text("x" * 64_001, encoding="utf-8")
     with pytest.raises(MemberEssentialContextError, match="AGENTS.md"):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
 
 
@@ -220,6 +233,7 @@ def test_validated_profile_commit_excludes_a_concurrent_sibling_writer(env):
         workspace=env.memory._workspace,
         index_db=env.memory._index_db,
         memory_version=2,
+        vector_store=env.memory.vector_store,
     )
     competing.init()
     env.memory.write_preferences("before")
@@ -260,7 +274,12 @@ def test_explicit_withholding_keeps_conduct_but_never_reads_project_or_memory(en
     (env.project / "AGENTS.md").write_bytes(b"\xff")
     env.memory._guarded_entry = Mock(side_effect=AssertionError("withheld memory read"))
     message, _ = env.builder.build_message(
-        "Continue", False, memory_store=env.store, project=str(env.project), **options
+        "Continue",
+        False,
+        memory_store=env.store,
+        member=env.member,
+        project=str(env.project),
+        **options,
     )
     assert "You are writer." in message and "Do not publish drafts." in message
     assert "Bound Soul" in message
@@ -268,19 +287,248 @@ def test_explicit_withholding_keeps_conduct_but_never_reads_project_or_memory(en
     assert "call memory_recall" not in message
 
 
-def test_other_member_claim_and_missing_private_manifest_never_use_generic_identity(env):
-    with pytest.raises(UnknownMemoryStore, match="belongs to"):
+def test_unknown_member_identity_refuses_without_inference_from_store(env):
+    with pytest.raises(UnknownMemoryStore, match="member identity"):
         env.builder.build_message("Continue", False, memory_store=env.store, member="other")
-    (memory_store_dir_for(env.store) / MEMBER_MEMORY_MANIFEST).unlink()
-    with pytest.raises(UnknownMemoryStore):
-        env.builder.build_message("Continue", False, memory_store=env.store)
+
+
+def test_unavailable_database_preserves_complete_member_context(env, monkeypatch):
+    def unavailable(*args, **kwargs):
+        raise UnknownMemoryStore("member database unavailable")
+
+    monkeypatch.setattr(env.builder, "get_memory_for", unavailable)
+    monkeypatch.setattr(context_module, "_vector_stores", {})
+    message = env.builder.build_session_context(
+        memory_store=env.store,
+        member=env.member,
+        project=str(env.project),
+    )
+    assert "Do not publish drafts." in message
+    assert "Bound Soul: preserve the user's voice." in message
+    assert "Project rules: run the review checks." in message
+    assert "[Member memory unavailable]" in message
+    assert "Global memory was not used" in message
+
+
+def test_cold_member_prompt_never_constructs_learned_memory(env, monkeypatch):
+    monkeypatch.setattr(context_module, "_memory_stores", {})
+    monkeypatch.setattr(context_module, "_vector_stores", {})
+    forbidden = Mock(side_effect=AssertionError("prompt opened the learned store"))
+    monkeypatch.setattr(env.builder, "get_memory_for", forbidden)
+    message, _ = env.builder.build_message(
+        "Continue after restart",
+        True,
+        member=env.member,
+        memory_store=env.store,
+        project=str(env.project),
+    )
+    assert "Do not publish drafts." in message
+    assert "Bound Soul: preserve the user's voice." in message
+    assert "Preference anchor" in message
+    assert "[Member memory unavailable]" in message
+    forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("entrypoint", ["message", "session"])
+@pytest.mark.parametrize("selection", ["missing-alias", "colliding-alias", "captured-member"])
+def test_execution_namespace_controls_member_prompt_identity(env, entrypoint, selection):
+    from dataclasses import replace
+
+    from kiro_crew.execution_context import execution_for_store, resolve_member_execution
+
+    config = KiroCrewConfig.load()
+    template = "writer" if selection == "colliding-alias" else "critic-runtime"
+    (env.project / ".kiro" / "agents" / f"{template}.json").write_text(
+        json.dumps({"name": template, "prompt": "CAPTURED_TEMPLATE_INSTRUCTIONS"}),
+        encoding="utf-8",
+    )
+    if selection == "captured-member":
+        execution = replace(
+            resolve_member_execution(config, "writer"),
+            selection_kind="template",
+            selection_name=template,
+            template_id=template,
+        )
+        config.agents["writer"].kiro_agent = "task-template"
+        config.save()
+    else:
+        execution = execution_for_store("default", template_id=template)
+    options = dict(
+        execution_context=execution,
+        agent=template,
+        project=str(env.project),
+        minimal_context=True,
+    )
+    if entrypoint == "message":
+        prompt, _ = env.builder.build_message("Continue the task", True, **options)
+        assert "Continue the task" in prompt
+    else:
+        prompt = env.builder.build_session_context(**options)
+    if selection == "captured-member":
+        assert "A careful bilingual writer" in prompt
+        assert "Do not publish drafts." in prompt
+        assert "Preference anchor" in prompt
+        assert "CAPTURED_TEMPLATE_INSTRUCTIONS" in prompt
+        assert "Execution task instructions." not in prompt
+        assert execution.store.store_id == env.store
+    else:
+        assert "[MEMBER IDENTITY]" not in prompt
+        assert "[V2 ESSENTIAL CONTEXT" not in prompt
+        assert "Do not publish drafts." not in prompt
+        assert "Preference anchor" not in prompt
+        assert execution.store.store_id == "default"
+    env.forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("other_v2", [False, True])
+def test_captured_member_id_wins_over_another_members_alias(env, other_v2):
+    from kiro_crew.execution_context import resolve_member_execution
+
+    config = KiroCrewConfig.load()
+    execution = resolve_member_execution(config, "writer")
+    config.agents["original-writer"] = config.agents.pop("writer")
+    config.agents[env.member] = KiroCrewAgentConfig(
+        kiro_agent="critic-runtime", description="OTHER_MEMBER_PERSONA"
+    )
+    if other_v2:
+        provision_member_memory(config, env.member)
+    config.save()
+    message, _ = env.builder.build_message(
+        "Keep the captured identity",
+        True,
+        execution_context=execution,
+        project=str(env.project),
+    )
+    assert "A careful bilingual writer" in message
+    assert "Bound Soul: preserve the user's voice." in message
+    assert "OTHER_MEMBER_PERSONA" not in message
+    assert "Execution task instructions." not in message
+    env.forbidden.assert_not_called()
+
+
+@pytest.mark.parametrize("entrypoint", ["message", "session"])
+@pytest.mark.parametrize("replacement_v2", [False, True])
+def test_deleted_captured_member_never_renders_replacement_persona(env, entrypoint, replacement_v2):
+    from kiro_crew.execution_context import resolve_member_execution
+
+    config = KiroCrewConfig.load()
+    captured = resolve_member_execution(config, "writer")
+    assert captured.member_id == "writer"
+    del config.agents["writer"]
+    config.agents["writer"] = KiroCrewAgentConfig(
+        kiro_agent="critic-runtime", description="REPLACEMENT_PERSONA"
+    )
+    if replacement_v2:
+        provision_member_memory(config, "writer")
+    config.save()
+    write_member_rules(
+        config.agents["writer"].member_id or "writer",
+        member="writer",
+        text="REPLACEMENT_PERMANENT_RULE",
+    )
+    options = dict(execution_context=captured, project=str(env.project))
+    # Refuse the missing stable identity instead of combining a replacement's
+    # persona/rules with the retained execution's old memory anchors.
+    with pytest.raises(UnknownMemoryStore, match="member identity"):
+        if entrypoint == "message":
+            env.builder.build_message("Continue the retained task", True, **options)
+        else:
+            env.builder.build_session_context(**options)
+
+
+@pytest.mark.parametrize("entrypoint", ["message", "session"])
+@pytest.mark.parametrize("selected_v2", [False, True])
+def test_explicit_member_name_does_not_select_another_members_id(env, entrypoint, selected_v2):
+    config = KiroCrewConfig.load()
+    config.agents["original-writer"] = config.agents.pop("writer")
+    config.agents["writer"] = KiroCrewAgentConfig(
+        kiro_agent="critic-runtime", description="EXPLICIT_NAME_PERSONA"
+    )
+    store = provision_member_memory(config, "writer") if selected_v2 else "default"
+    config.save()
+    options = dict(member="writer", memory_store=store, project=str(env.project))
+    if entrypoint == "message":
+        prompt, _ = env.builder.build_message("Use the selected member", True, **options)
+    else:
+        prompt = env.builder.build_session_context(**options)
+    assert "EXPLICIT_NAME_PERSONA" in prompt
+    assert "A careful bilingual writer" not in prompt
+    assert "Bound Soul: preserve the user's voice." not in prompt
+
+
+def test_strict_member_section_and_profile_validation_refuse_deleted_id(env):
+    config = KiroCrewConfig.load()
+    config.agents["writer"] = KiroCrewAgentConfig(description="REPLACEMENT_V1_PERSONA")
+    config.save()
+    with pytest.raises(UnknownMemoryStore, match="member identity"):
+        env.builder._build_member_section(env.member, strict=True)
+    with pytest.raises(UnknownMemoryStore, match="member identity"):
+        env.builder._build_v2_essentials(env.store, member=env.member)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("available", [False, True])
+async def test_workflow_cold_prompt_prepares_only_optional_lessons(env, monkeypatch, available):
+    import asyncio
+
+    from kiro_crew import embeddings
+    from kiro_crew.execution_context import resolve_member_execution
+    from kiro_crew.workflow_memory import WorkflowScope
+
+    vectors = {}
+    monkeypatch.setattr(context_module, "_memory_stores", {})
+    monkeypatch.setattr(context_module, "_vector_stores", vectors)
+    no_model = Mock(side_effect=AssertionError("prompt performed embedding"))
+    monkeypatch.setattr(embeddings, "_shared_sync_embed", no_model)
+    if not available:
+
+        async def unavailable(_store):
+            raise UnknownMemoryStore("synthetic unavailable database")
+
+        monkeypatch.setattr(env.builder, "ensure_store", unavailable)
+    config = await asyncio.to_thread(KiroCrewConfig.load)
+    execution = resolve_member_execution(config, "writer")
+    scope = WorkflowScope("wf_000099", env.store, "", execution_context=execution)
+    try:
+        message = await scope.prompt(
+            env.builder,
+            scope.worker_key("cold"),
+            "Continue after restart",
+            is_new=True,
+            agent="writer-template",
+            cwd=str(env.project),
+            provider=None,
+        )
+        assert "Do not publish drafts." in message
+        assert "Bound Soul: preserve the user's voice." in message
+        assert ("[Member memory unavailable]" in message) is not available
+        assert bool(vectors) is available
+        no_model.assert_not_called()
+    finally:
+        for store in vectors.values():
+            store.close()
+
+
+@pytest.mark.parametrize("options", [{"blocks_reads": True}, {"context_groups": frozenset()}])
+def test_withheld_memory_never_opens_database(env, monkeypatch, options):
+    forbidden = Mock(side_effect=AssertionError("withheld memory opened a database"))
+    monkeypatch.setattr(env.builder, "get_memory_for", forbidden)
+    message = env.builder.build_session_context(
+        memory_store=env.store,
+        member=env.member,
+        project=str(env.project),
+        **options,
+    )
+    assert "Do not publish drafts." in message
+    assert "Bound Soul: preserve the user's voice." in message
+    forbidden.assert_not_called()
 
 
 def test_unreadable_anchor_refuses_even_on_warm_turn(env):
     env.memory._preferences_file.write_bytes(b"\xff")
     with pytest.raises(MemberEssentialContextError, match="preferences"):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
 
 
@@ -293,7 +541,7 @@ def test_declared_resource_cannot_escape_admitted_project_root(env, tmp_path):
     )
     with pytest.raises(MemberEssentialContextError, match="outside.md"):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
 
 
@@ -305,7 +553,7 @@ def test_nonrecursive_glob_does_not_expand_declared_scope(env):
     spec = env.project / ".kiro" / "agents" / "writer-template.json"
     spec.write_text(json.dumps({"name": "writer-template", "resources": ["file://guides/*.md"]}))
     message, _ = env.builder.build_message(
-        "Continue", False, memory_store=env.store, project=str(env.project)
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
     )
     assert "DIRECT_GUIDE" in message and "NESTED_NOT_DECLARED" not in message
 
@@ -319,7 +567,7 @@ def test_unreadable_project_template_does_not_fall_back_to_another_soul(env, mon
     monkeypatch.setattr(agent, "agent_spec_path", fallback)
     with pytest.raises(MemberEssentialContextError, match="writer-template.json"):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
     fallback.assert_not_called()
 
@@ -352,6 +600,7 @@ def test_runtime_override_keeps_the_memory_owners_soul(env):
         False,
         agent="critic-runtime",
         memory_store=env.store,
+        member=env.member,
         project=str(env.project),
     )
     assert "You are writer." in message
@@ -439,14 +688,14 @@ def test_owner_cleared_empty_anchors_are_valid_but_missing_source_refuses(env):
     env.memory._preferences_file.write_text("", encoding="utf-8")
     env.memory._projects_file.write_text("", encoding="utf-8")
     message, _ = env.builder.build_message(
-        "Continue", False, memory_store=env.store, project=str(env.project)
+        "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
     )
     assert "You are writer." in message and "Project Soul" in message
     assert "Preference anchor" not in message and "Project anchor" not in message
     env.memory._preferences_file.unlink()
     with pytest.raises(MemberEssentialContextError, match="preferences"):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
 
 
@@ -482,7 +731,7 @@ def test_glob_leaf_link_cannot_silently_drop_a_declared_guide(env):
     spec.write_text(json.dumps({"name": "writer-template", "resources": ["file://guides/*.md"]}))
     with pytest.raises(MemberEssentialContextError, match="linked.md"):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
 
 
@@ -492,7 +741,7 @@ def test_malformed_declared_template_fields_refuse_explicitly(env, field, value)
     spec.write_text(json.dumps({"name": "writer-template", field: value}), encoding="utf-8")
     with pytest.raises(MemberEssentialContextError, match=field):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
 
 
@@ -507,7 +756,7 @@ def test_linked_directory_is_refused_before_enumerating_outside_sources(env, tmp
     spec.write_text(json.dumps({"name": "writer-template", "resources": ["file://guides/*.md"]}))
     with pytest.raises(MemberEssentialContextError, match="guides"):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
 
 
@@ -584,7 +833,12 @@ def test_inherited_product_prompt_uses_session_start_not_essentials(
     )
 
     message, _ = env.builder.build_message(
-        "Continue", fresh, memory_store=env.store, project=str(env.project), **options
+        "Continue",
+        fresh,
+        memory_store=env.store,
+        member=env.member,
+        project=str(env.project),
+        **options,
     )
 
     assert message.count("[V2 ESSENTIAL CONTEXT") == 1
@@ -613,7 +867,12 @@ def test_custom_persona_is_not_classified_by_template_name(env, template, source
     spec.write_text(json.dumps({"name": template, "prompt": prompts[source]}), encoding="utf-8")
 
     message, _ = env.builder.build_message(
-        "Continue", False, agent="task-template", memory_store=env.store, project=str(env.project)
+        "Continue",
+        False,
+        agent="task-template",
+        memory_store=env.store,
+        member=env.member,
+        project=str(env.project),
     )
 
     assert "CUSTOM_OWNER_PERSONA" in message
@@ -632,7 +891,7 @@ def test_unmanaged_prompt_outside_root_is_not_exempted_by_name(env, tmp_path, te
 
     with pytest.raises(MemberEssentialContextError, match="outside the admitted document root"):
         env.builder.build_message(
-            "Continue", False, memory_store=env.store, project=str(env.project)
+            "Continue", False, memory_store=env.store, member=env.member, project=str(env.project)
         )
 
 
@@ -786,7 +1045,7 @@ def test_workspace_glob_excludes_managed_subtrees_before_scanning(env, monkeypat
 
     monkeypatch.setattr(essentials.os, "scandir", scan)
     message, _ = env.builder.build_message(
-        "Continue", False, memory_store=env.store, project=str(project)
+        "Continue", False, memory_store=env.store, member=env.member, project=str(project)
     )
     assert "WORKSPACE_CHILD_GUIDE" in message
     assert "MANAGED_CONTENT_MUST_NOT_LOAD" not in message

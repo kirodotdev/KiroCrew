@@ -263,7 +263,7 @@ class TestMcpCronUserActions:
         return job
 
     def _simulate_tool_call(self, tool_name: str, arguments: dict) -> str:
-        from kiro_crew.mcp_cron import _call_tool
+        from kiro_crew.mcp_cron import _call_tool_locally as _call_tool
 
         return _call_tool(tool_name, arguments)
 
@@ -575,7 +575,7 @@ class TestBadInputsCaught:
         return _call_tool(name, args)
 
     def _cron_call(self, name: str, args: dict) -> str:
-        from kiro_crew.mcp_cron import _call_tool
+        from kiro_crew.mcp_cron import _call_tool_locally as _call_tool
 
         return _call_tool(name, args)
 

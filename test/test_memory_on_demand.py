@@ -4,40 +4,37 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from test_member_essential_context import env as _member_env
 
 from kiro_crew.context import CONTEXT_GROUP_LESSONS, ContextBuilder
 from kiro_crew.learn import LessonStore
 from kiro_crew.memory import MemoryStore
 from kiro_crew.skills import SkillsLoader
 
+env = _member_env
 
-def test_v2_prompt_lifecycles_leave_retrieval_to_the_tool(tmp_path):
-    memory = MemoryStore(workspace=tmp_path / "workspace")
+
+def test_v2_prompt_lifecycles_leave_retrieval_to_the_tool(env, monkeypatch):
+    memory = env.memory
     memory.write_preferences("Use a concise reply.")
     memory.write_projects("The active project is Beacon.")
     forbidden = Mock(side_effect=AssertionError("prompt construction attempted retrieval"))
     rules = Mock(return_value="[Scoped correction: run the project checks.]")
-    memory._vector_store = SimpleNamespace(
-        algorithm_version="v2",
-        recall=forbidden,
-        get_semantic_context=forbidden,
-        get_episodic_context=forbidden,
-        has_any_lesson=lambda: True,
-        get_lessons_context=rules,
-    )
+    for name in ("recall", "get_semantic_context", "get_episodic_context"):
+        monkeypatch.setattr(memory.vector_store, name, forbidden)
+    monkeypatch.setattr(memory.vector_store, "get_lessons_context", rules)
     memory.read_recent_history = forbidden
-    builder = ContextBuilder(
-        memory=memory,
-        skills=SkillsLoader(skills_path=tmp_path / "skills", install_builtins=False),
-        lessons=LessonStore(base_dir=tmp_path),
+    builder = env.builder
+    binding = dict(member=env.member, memory_store=env.store, project=str(env.project))
+    first, _ = builder.build_message(
+        "Find our earlier deployment decision", True, "session", **binding
     )
-    first, _ = builder.build_message("Find our earlier deployment decision", True, "session")
     assert "Use a concise reply." in first
     assert "The active project is Beacon." in first
     assert "Scoped correction" in first and "memory_recall" in first
     for options in ({}, {"needs_reinjection": True}):
-        builder.build_message("Now another topic", False, "session", **options)
-    builder.build_message("Continue after restart", True, "session", resumed=True)
+        builder.build_message("Now another topic", False, "session", **binding, **options)
+    builder.build_message("Continue after restart", True, "session", resumed=True, **binding)
     forbidden.assert_not_called()
     assert rules.call_args_list
     assert all(call.kwargs["query_text"] == "" for call in rules.call_args_list)

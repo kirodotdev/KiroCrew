@@ -2869,18 +2869,18 @@ export default function MembersPage() {
                       ? t('pages.kiroCrewAgentsPage.memory_binding_mismatch')
                       : t('pages.kiroCrewAgentsPage.memory_binding_unavailable')}
             </span>
-            <Btn onClick={() => {
-              const destination = activeMemory === 'global' || activeMemory === 'private'
-                ? `/settings/overview?view=memory&store=${encodeURIComponent(active.name === 'default' ? 'default' : String(active.memory_store))}`
-                : `${CREW_MANAGER_PATH}&crew=${encodeURIComponent(active.name)}`
-              leave(() => navigate(destination), destination)
-            }}>
-              {activeMemory === 'global' || activeMemory === 'private'
-                ? t('pages.kiroCrewAgentsPage.manage_private_memory')
-                : activeMemory === 'legacy'
-                  ? t('pages.membersPage.setup_in_crew_manager')
+            {activeMemory !== 'legacy' && (
+              <Btn onClick={() => {
+                const destination = activeMemory === 'global' || activeMemory === 'private'
+                  ? `/settings/overview?view=memory&store=${encodeURIComponent(active.name === 'default' ? 'default' : String(active.memory_store))}`
+                  : `${CREW_MANAGER_PATH}&crew=${encodeURIComponent(active.name)}`
+                leave(() => navigate(destination), destination)
+              }}>
+                {activeMemory === 'global' || activeMemory === 'private'
+                  ? t('pages.kiroCrewAgentsPage.manage_private_memory')
                   : t('pages.kiroCrewAgentsPage.open_crew_manager')}
-            </Btn>
+              </Btn>
+            )}
           </div>
           {/* One exit, into the crew manager (the only writer), landing on
               THIS member's editor — the same destination as the header face,

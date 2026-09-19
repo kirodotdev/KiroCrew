@@ -2130,15 +2130,6 @@ class MemoryConfig:
         default=365,
         metadata=_meta("History Max Days", "Maximum days of history to retain."),
     )
-    private_provisioning_enabled: bool = field(
-        default=True,
-        metadata=_meta(
-            "New Private Memory",
-            "Allow creating private V2 member stores and explicit V1-to-V2 setup. "
-            "Turn off to pause provisioning; existing V2 execution, management "
-            "and isolation continue.",
-        ),
-    )
     backup_enabled: bool = field(
         default=True,
         metadata=_meta(
@@ -3619,6 +3610,10 @@ class DashboardConfig:
 
 @dataclass
 class KiroCrewAgentConfig:
+    member_id: str = field(
+        default="",
+        metadata=_meta("Member ID", "Immutable identity assigned when member memory is created."),
+    )
     kiro_agent: str = field(
         default="",
         metadata=_meta("Kiro Agent", "Kiro agent name (modeId for session/set_mode)."),
@@ -3749,13 +3744,19 @@ class WorkspaceConfig:
 
 @dataclass
 class MemoryStoreConfig:
+    owner_member_id: str = field(
+        default="",
+        metadata=_meta("Owner Member ID", "Immutable member identity stored in this database."),
+    )
     owner_member: str = field(
         default="",
-        metadata=_meta("Owner Member", "The sole Crew Member owning this private memory store."),
+        metadata=_meta(
+            "Owner Member", "Display label of the Crew Member owning this memory store."
+        ),
     )
     memory_version: int = field(
         default=1,
-        metadata=_meta("Memory Version", "1 for existing memory; 2 for private member memory."),
+        metadata=_meta("Memory Version", "1 for existing memory; 2 for member memory."),
     )
     description: str = field(
         default="",
@@ -4821,6 +4822,7 @@ class ResolvedBindings:
     memory_store_name: str
     effective_memory_config: dict
     kiro_agent: str
+    execution_context: object | None = None
     # The Kiro Crew agent's own default model, "" when it pins none. Ranks below
     # a per-session pick and above the bound kiro agent's pin / the global
     # agent.model fallback. Defaulted so existing keyword constructions and
@@ -4863,6 +4865,8 @@ class ResolvedBindings:
         ``requested_resolved``/``effective_memory_config`` (the former is
         request metadata the caller checks separately; the latter is derived
         from ``memory_store_name`` plus global config shared by both sides).
+        ``execution_context`` carries the admitted session's identity and mode;
+        session selection checks those separately before comparing these targets.
         """
         return (
             self.kiro_agent == other.kiro_agent
