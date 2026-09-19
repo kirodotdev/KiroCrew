@@ -349,6 +349,30 @@ def needs_default_filing(meta: dict[str, Any]) -> bool:
     )
 
 
+def _rebind_unbound_channel_slot(slot: "_ChatSlot", session_key: str) -> bool:
+    """Bind *slot* to *session_key* when it is an unbound channel survivor.
+
+    Returns True when a binding was applied.
+
+    A slot surfaced before the session map could answer for its stem holds the
+    history but routes nothing back, so the tab is one-way until a human
+    re-links it. The map answer is the trusted one, so the first pass that can
+    resolve the stem heals it.
+
+    The provenance check is not implied by the slot NAME: any caller can create
+    a slot named for a live channel stem, and binding on the name alone would
+    route that tab's later turns into the channel's conversation.
+    """
+    if not slot.channel_origin or slot.linked_session_key:
+        return False
+    if not session_key or not is_channel_session_key(session_key):
+        return False
+    slot.linked_session_key = session_key
+    # Flagged, or the periodic flush skips it and the next restart refuses all over again.
+    slot._dirty = True
+    return True
+
+
 def surface_channel_session(
     state: "DashboardState",
     session_info: dict[str, Any],
@@ -401,6 +425,11 @@ def surface_channel_session(
     # it for free because the key is the slot's identity.
     slot_name = channel_slot_name(stem)
     if slot_name in state._slots:
+        # Covers the same-pass creation race ONLY. The reconciler never re-passes an
+        # existing slot here, so a survivor from an earlier pass is healed in
+        # _reconcile_channel_slots_locked instead.
+        if _rebind_unbound_channel_slot(state._slots[slot_name], session_key):
+            logger.info("channel surface: rebound previously unbound slot %s", slot_name)
         return None
     if session_key and not is_channel_session_key(session_key):
         logger.warning(
@@ -867,7 +896,22 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
             continue
         if float(s.get("modified", 0) or 0) > slot._channel_window_mtime:
             refreshable.append(s)
-    if not pending and not refreshable:
+    # Unbound survivors. A slot surfaced before the session map could answer for its
+    # stem is in NEITHER list above -- `pending` excludes a slot that already exists,
+    # and `_window_refresh_is_safe` rejects one with no linked key -- so without this
+    # bucket the tab stays one-way for the process lifetime even once the stem
+    # resolves. Needs no transcript read, so the steady state stays a metadata scan.
+    rebindable: list[tuple[str, "_ChatSlot"]] = []
+    if state.sessions:
+        for s in eligible:
+            key = s.get("key", "")
+            slot = state._slots.get(channel_slot_name(key))
+            if slot is None or slot.linked_session_key or not slot.channel_origin:
+                continue
+            resolved = state.sessions.channel_key_for_stem(key)
+            if resolved:
+                rebindable.append((resolved, slot))
+    if not pending and not refreshable and not rebindable:
         return 0
 
     def _load_messages() -> dict[str, list[dict[str, Any]]]:
@@ -1117,7 +1161,15 @@ async def _reconcile_channel_slots_locked(state: "DashboardState", window_minute
         except Exception:
             logger.warning("channel reconcile: failed to refresh %s", key, exc_info=True)
 
-    if surfaced or refreshed:
+    rebound = 0
+    for resolved, slot in rebindable:
+        # Re-checked inside the helper: a turn on either surface may have bound the
+        # slot while this pass's reads were in flight.
+        if _rebind_unbound_channel_slot(slot, resolved):
+            rebound += 1
+            logger.info("channel reconcile: rebound previously unbound slot %s", slot.key)
+
+    if surfaced or refreshed or rebound:
         if surfaced:
             # Publish the new tab to the dashboard-surface registry BEFORE the
             # broadcast. Every gate that asks "does this session have a tab?"
