@@ -13649,7 +13649,7 @@
         "spellcheck_input": "Revisar la ortografía en la entrada de mensajes",
         "spellcheck_input_desc": "Subraya las palabras mal escritas en el campo de mensaje con una línea roja ondulada. Desactívalo para dejar de ver los subrayados rojos mientras escribes.",
         "show_pasted_text_in_full": "Mostrar el texto pegado completo",
-        "show_pasted_text_in_full_desc": "Mantener un pegado largo como texto editable en el campo de mensaje, en lugar de plegarlo en una etiqueta de pegado. {{chord}} sigue haciéndolo para un solo pegado. Un pegado muy grande puede ralentizar la escritura.",
+        "show_pasted_text_in_full_desc": "Mantener un pegado largo como texto editable en el campo de mensaje, en lugar de plegarlo en una etiqueta de pegado. Cuando está desactivado, {{chord}} mantiene un solo pegado como texto. Un pegado muy grande puede ralentizar la escritura.",
         "smooth": "Suave",
         "soft_stop_budget_seconds": "Margen de parada suave (segundos)",
         "somewhat": "Algo técnico",

@@ -13648,7 +13648,7 @@
         "spellcheck_input": "Controlla l'ortografia nel campo messaggio",
         "spellcheck_input_desc": "Sottolinea le parole scritte male nel campo messaggio con una linea rossa ondulata. Disattivalo per non vedere più le sottolineature rosse mentre scrivi.",
         "show_pasted_text_in_full": "Mostra per intero il testo incollato",
-        "show_pasted_text_in_full_desc": "Mantiene un incollaggio lungo come testo modificabile nel campo del messaggio, invece di ridurlo a un chip di incollaggio. {{chord}} continua a farlo per un singolo incollaggio. Un incollaggio molto grande può rallentare la digitazione.",
+        "show_pasted_text_in_full_desc": "Mantiene un incollaggio lungo come testo modificabile nel campo del messaggio, invece di ridurlo a un chip di incollaggio. Quando è disattivata, {{chord}} mantiene un singolo incollaggio come testo. Un incollaggio molto grande può rallentare la digitazione.",
         "smooth": "Fluido",
         "soft_stop_budget_seconds": "Budget per l'arresto graduale (secondi)",
         "somewhat": "In parte",

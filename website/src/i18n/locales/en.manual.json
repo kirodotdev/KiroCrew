@@ -5646,7 +5646,7 @@
         "spellcheck_input": "Spell Check Message Input",
         "spellcheck_input_desc": "Underline misspelled words in the message input with a red squiggle. Turn it off to stop the red underlines while you type.",
         "show_pasted_text_in_full": "Show Pasted Text in Full",
-        "show_pasted_text_in_full_desc": "Keep a long paste as editable text in the message input instead of folding it into a paste chip. {{chord}} still does that for one paste. A very large paste can make the input slow.",
+        "show_pasted_text_in_full_desc": "Keep a long paste as editable text in the message input instead of folding it into a paste chip. When this is off, {{chord}} keeps a single paste as text. A very large paste can make the input slow.",
         "smooth": "Smooth",
         "both_head_tail_with_truncation_marker": "Both (head + tail with truncation marker)",
         "data_ml": "Data / ML",
