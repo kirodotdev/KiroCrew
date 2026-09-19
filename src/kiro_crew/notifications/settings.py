@@ -1,10 +1,12 @@
 """Per-channel notification settings.
 
-User preferences for each notification channel: mute and priority override.
-Stored in ``~/.kiro/crew/notification_settings.json`` as::
+User preferences for each notification channel: mute, priority override, and
+bridge routing. Stored in ``~/.kiro/crew/notification_settings.json`` as::
 
     {"channel_settings": {"system.heartbeat": {"muted": true},
-                          "oncall-radar.ticket-update": {"priority": "critical"}}}
+                          "oncall-radar.ticket-update": {"priority": "critical"},
+                          "system.approval": {"deliver_to": ["slack"],
+                                              "deliver_min_priority": "critical"}}}
 
 Semantics (applied at the delivery sink, keeping the bus pure):
 
@@ -14,9 +16,17 @@ Semantics (applied at the delivery sink, keeping the bus pure):
   count, sound, native banner, feed styling) skips it.
 - **priority**: user override wins over the producer-requested priority and
   the channel default.
+- **deliver_to** / **deliver_min_priority**: the notification bridge's routing
+  rule for this channel -- which chat transports receive the note as an owner
+  DM, and the minimum effective priority that routes. Absent or empty means no
+  bridging, which is the behavior an install has before a user arms a route.
+  Read by ``notifications.bridge.BridgeDispatcher``, never by ``apply()``:
+  ``apply()`` mutates the note every sink sees, and routing is one sink's
+  decision about a note it did not change.
 - ``system.approval`` is protected: it cannot be muted and its priority
   cannot be lowered (approval still interrupts while heartbeat can be
-  silenced everywhere).
+  silenced everywhere). Protection is about attention, not about egress, so a
+  protected channel may be routed or unrouted freely.
 """
 
 from __future__ import annotations
@@ -28,6 +38,11 @@ from typing import Any
 
 from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.loader import config_dir
+from kiro_crew.notifications.bridge import (
+    DEFAULT_DELIVER_MIN_PRIORITY,
+    normalize_deliver_to,
+    normalize_min_priority,
+)
 from kiro_crew.notifications.bus import PRIORITIES
 
 logger = logging.getLogger(__name__)
@@ -35,6 +50,13 @@ logger = logging.getLogger(__name__)
 # Channels whose attention semantics the user may not weaken: approvals gate
 # agent actions, so silencing them would stall work invisibly.
 PROTECTED_CHANNELS = frozenset({"system.approval"})
+
+# The stored keys that decide EGRESS rather than dashboard presentation. Named
+# once because two call sites must agree on them -- the settings PUT refuses an
+# app token that sets them, and the channels GET withholds them from one -- and a
+# set spelled twice is how a third routing key added later reaches an app token
+# through whichever site was not updated.
+DELIVERY_SETTING_KEYS = frozenset({"deliver_to", "deliver_min_priority"})
 
 _SETTINGS_FILENAME = "notification_settings.json"
 _lock = threading.Lock()
@@ -101,11 +123,20 @@ class ChannelSettings:
         muted: bool | None = None,
         priority: str | None = None,
         clear_priority: bool = False,
+        deliver_to: list[str] | None = None,
+        deliver_min_priority: str | None = None,
+        clear_delivery: bool = False,
     ) -> dict[str, Any]:
         """Update one channel's settings and persist. Returns the new entry.
 
         Raises :class:`ChannelSettingsError` for an unknown priority value,
-        or an attempt to mute / lower a protected channel.
+        an attempt to mute / lower a protected channel, or an unusable
+        bridge routing rule (unknown transport id, bad floor).
+
+        ``deliver_to=[]`` and ``clear_delivery=True`` both disarm bridging;
+        the empty list is what the Settings UI sends when a user clears the
+        multi-select, and clearing drops both keys so a disarmed entry keeps
+        no floor for an absent route.
         """
         if priority is not None and priority not in PRIORITIES:
             raise ChannelSettingsError(
@@ -116,6 +147,20 @@ class ChannelSettings:
                 raise ChannelSettingsError(f"{channel} cannot be muted")
             if priority is not None and priority != "critical":
                 raise ChannelSettingsError(f"{channel} priority cannot be lowered")
+        # Validate the routing rule BEFORE taking the lock: a rejected value
+        # must not reach the read-modify-write, let alone the file.
+        transports: tuple[str, ...] | None = None
+        floor: str | None = None
+        if deliver_to is not None:
+            try:
+                transports = normalize_deliver_to(deliver_to)
+            except ValueError as exc:
+                raise ChannelSettingsError(str(exc)) from exc
+        if deliver_min_priority is not None:
+            try:
+                floor = normalize_min_priority(deliver_min_priority)
+            except ValueError as exc:
+                raise ChannelSettingsError(str(exc)) from exc
         # _lock serializes WRITERS only (read-modify-write below); readers
         # are lock-free because this method rebinds self._settings wholesale.
         with _lock:
@@ -129,6 +174,26 @@ class ChannelSettings:
                 entry.pop("priority", None)
             elif priority is not None:
                 entry["priority"] = priority
+            if clear_delivery:
+                entry.pop("deliver_to", None)
+                entry.pop("deliver_min_priority", None)
+            else:
+                if transports is not None:
+                    if transports:
+                        entry["deliver_to"] = list(transports)
+                    else:
+                        # Disarmed: the floor describes an absent route, so it
+                        # goes with it rather than lingering to be silently
+                        # reused if the route is re-armed.
+                        entry.pop("deliver_to", None)
+                        entry.pop("deliver_min_priority", None)
+                if floor is not None and entry.get("deliver_to"):
+                    entry["deliver_min_priority"] = floor
+            # An armed route with no explicit floor gets the default written
+            # down, so what routes is readable from the stored entry instead
+            # of depending on a reader applying the same default.
+            if entry.get("deliver_to") and not entry.get("deliver_min_priority"):
+                entry["deliver_min_priority"] = DEFAULT_DELIVER_MIN_PRIORITY
             # Persist the candidate FIRST, commit memory only on success:
             # otherwise a full/read-only filesystem would leave the rejected
             # setting active in memory (until restart) while disk kept the

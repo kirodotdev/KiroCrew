@@ -6,7 +6,7 @@ created: 2026-07-28
 last-audited: 2026-08-03
 audited-at: 0ab6ed48
 doc-pr: 670
-implementation-prs: []
+implementation-prs: [11794]
 tracking-issues: [589]
 supersedes: ["rfc-local-notification-bus.md#resolved-design-questions-1"]
 superseded-by: []
@@ -19,7 +19,7 @@ superseded-by: []
 > `docs/system-specs/modules/app-notifications.md` is the record of what the
 > bus does today.
 
-- Status: accepted — the document is merged (PR #670) with an open tracking issue, but **zero implementation code exists**. `notifications/bridge.py` and `BridgeDispatcher` do not exist; `ChannelSettings` carries only `muted` + `priority`, with no `deliver_to` / `deliver_min_priority`; egress is still the single hardcoded dashboard sink at `dashboard/state.py:1758`. No open PR and no live branch is building B1–B4.
+- Status: accepted, with **phase B1 implemented**. `notifications/bridge.py` holds `BridgeDispatcher`; `ChannelSettings` carries `deliver_to` / `deliver_min_priority` alongside `muted` + `priority`; egress is a composite in `DashboardState._deliver_note` (local sink first and synchronous, bridge scheduled after); `slack/notification_sink.py` is the first sink. Phases B2–B4 are unimplemented: the remaining transports resolve to no sink, there is no Settings UI, and bridged messages carry no interactive actions. `docs/system-specs/modules/app-notifications.md` records the shipped behavior.
 - Correction to the Summary below: it says the bus RFC's "Phases 1–5, all shipped". Phases 1/3/4 are complete, but Phase 2 has no producer app and Phase 5's kind-routing cleanup is still present in `NotificationDetailPanel.tsx`. Every dependency **this** RFC actually needs is real; the blanket claim is not.
 - Author: zezhexu
 - Created: 2026-07-28

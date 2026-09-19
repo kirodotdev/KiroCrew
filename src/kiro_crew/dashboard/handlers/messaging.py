@@ -68,6 +68,7 @@ from kiro_crew.dashboard.state import (
     CRON_NOTIFY_END,
     CRON_NOTIFY_PREFIX,
     DashboardState,
+    bridge_sink_implemented,
 )
 from kiro_crew.dashboard.token_auth import caller_names_a_missing_slot
 from kiro_crew.messaging.display_safety import redact_for_display
@@ -79,13 +80,20 @@ from kiro_crew.messaging.renderer import (
     format_overflow,
 )
 from kiro_crew.messaging.transport import delivery_confirmed
+from kiro_crew.notifications.bridge import KNOWN_BRIDGE_TRANSPORTS
 from kiro_crew.notifications.bus import (
     NotificationPayload,
     NotificationValidationError,
 )
+from kiro_crew.notifications.settings import (
+    DELIVERY_SETTING_KEYS,
+    PROTECTED_CHANNELS,
+    ChannelSettingsError,
+)
 from kiro_crew.platform.governance_profiles import HOST_SESSION_KEY
 from kiro_crew.platform_compat import IS_MACOS
 from kiro_crew.security import is_sensitive_path, redact_credentials, redact_exfiltration_urls
+from kiro_crew.sel import sel
 from kiro_crew.slack.format import build_options_blocks, extract_options
 from kiro_crew.slack.outbound import OPTIONS_FALLBACK_TEXT, PostedOptions
 from kiro_crew.solo_spawn import (
@@ -1340,15 +1348,24 @@ async def api_notification_channels(request: web.Request) -> web.Response:
     stored settings, and whether it is protected (approval cannot be muted).
     Channels with stored settings but no live registration (e.g. app
     currently disabled) are included so mutes remain visible and editable.
+    Also returns ``bridge_transports``: the transport ids a routing rule may
+    name, each flagged with whether it can receive right now.
     """
-    from kiro_crew.notifications.settings import PROTECTED_CHANNELS
-
     state: DashboardState = request.app["state"]
     registered = state.notification_bus.channels()
     stored = state.notification_channel_settings.all_settings()
+    # An app token may READ the pre-existing mute/priority state but not the
+    # owner's routing choice, for the same reason it cannot write it: those two
+    # fields say which chat surfaces the owner's notifications reach. Withholding
+    # the fields rather than refusing the route keeps the pre-existing contract
+    # for any app already reading channel settings.
+    hide_delivery = bool(request.get("app", ""))
     channels = []
     for channel in sorted(set(registered) | set(stored)):
         source = channel.split(".", 1)[0]
+        settings = stored.get(channel, {})
+        if hide_delivery and settings:
+            settings = {k: v for k, v in settings.items() if k not in DELIVERY_SETTING_KEYS}
         channels.append(
             {
                 "channel": channel,
@@ -1356,21 +1373,43 @@ async def api_notification_channels(request: web.Request) -> web.Response:
                 "registered": channel in registered,
                 "default_priority": registered.get(channel),
                 "protected": channel in PROTECTED_CHANNELS,
-                "settings": stored.get(channel, {}),
+                "settings": settings,
             }
         )
-    return web.json_response({"channels": channels})
+    # The transport ids a route may name, each with two SEPARATE facts about it.
+    # Separate because they answer different questions and a single "available"
+    # would have to lie about one of them: `connected` is whether the transport
+    # itself is up, and `bridgeable` is whether a bridge sink exists for it at
+    # all. Only slack is bridgeable today, so a connected-but-not-bridgeable
+    # transport routes to an audited skip -- which the picker must be able to
+    # see, or it would offer a row that can never deliver. Validation still uses
+    # the KNOWN set, so a transport that is merely down keeps its saved route.
+    connected = state.channel_status()
+    return web.json_response(
+        {
+            "channels": channels,
+            "bridge_transports": [
+                {
+                    "transport": transport,
+                    "connected": bool(connected.get(transport, {}).get("connected")),
+                    "bridgeable": bridge_sink_implemented(transport),
+                }
+                for transport in KNOWN_BRIDGE_TRANSPORTS
+            ],
+        }
+    )
 
 
 async def api_notification_channel_settings(request: web.Request) -> web.Response:
     """PUT /api/notifications/channels/settings — update one channel's settings.
 
-    Body: ``{"channel": str, "muted"?: bool, "priority"?: str|null}`` —
-    ``priority: null`` clears the override. Protected channels reject mute
-    and priority-lowering with 400.
+    Body: ``{"channel": str, "muted"?: bool, "priority"?: str|null,
+    "deliver_to"?: [str]|null, "deliver_min_priority"?: str|null}`` —
+    ``priority: null`` clears the override, ``deliver_to: null`` clears the
+    bridge route, ``deliver_to: []`` disarms it (what the Settings UI sends
+    when the multi-select is emptied). Protected channels reject mute and
+    priority-lowering with 400; an unknown transport id or floor is 400 too.
     """
-    from kiro_crew.notifications.settings import ChannelSettingsError
-
     state: DashboardState = request.app["state"]
     try:
         body = await request.json()
@@ -1393,6 +1432,62 @@ async def api_notification_channel_settings(request: web.Request) -> web.Respons
     priority = body.get("priority")
     if has_priority and priority is not None and not isinstance(priority, str):
         return web.json_response({"error": "priority must be a string or null"}, status=400)
+    # Bridge routing. Shape is checked here so a malformed request is a 400
+    # rather than reaching the writer; the transport ids and the floor are
+    # checked by ChannelSettings.update against the KNOWN transport set, which
+    # keeps one validator for the HTTP path and the hand-edited-file path.
+    has_deliver_to = "deliver_to" in body
+    deliver_to = body.get("deliver_to")
+    if has_deliver_to and deliver_to is not None and not isinstance(deliver_to, list):
+        return web.json_response(
+            {
+                "error": "deliver_to must be a list of transport ids or null",
+                "code": "invalid_deliver_to",
+            },
+            status=400,
+        )
+    has_floor = "deliver_min_priority" in body
+    deliver_min_priority = body.get("deliver_min_priority")
+    if has_floor and deliver_min_priority is not None and not isinstance(deliver_min_priority, str):
+        return web.json_response(
+            {
+                "error": "deliver_min_priority must be a string or null",
+                "code": "invalid_deliver_min_priority",
+            },
+            status=400,
+        )
+    # An APP token may not touch the two routing fields. `muted`/`priority` are
+    # dashboard-local display state, but these two decide whether the OWNER's
+    # notifications leave the machine as chat DMs, which is the owner's call and
+    # not an installed app's.
+    #
+    # The check lives here because the transport layer's exclusion is declarative
+    # and defeatable: `app_token_path_allowed` deliberately grants only
+    # `/api/notifications/push` and its comment says app tokens must not reach
+    # `/api/notifications`, but its final clause still honours the app's own
+    # `permissions.api`, and `_api_pattern_matches` treats a bare
+    # `/api/notifications` prefix as covering every child path. So an installed
+    # app that declares that prefix is granted this route, and an owner
+    # installing such an app is an ordinary supported flow rather than an attack.
+    # Guarding the FIELDS rather than the route keeps the pre-existing
+    # mute/priority contract for any app already using it, and refuses exactly
+    # the authority the bridge introduced.
+    app_name = request.get("app", "")
+    if app_name and DELIVERY_SETTING_KEYS & set(body):
+        sel().log_api_access(
+            caller=f"app:{app_name}",
+            operation="notification_channel_delivery_settings",
+            outcome="denied",
+            source="notifications_api",
+            error="app token cannot set notification delivery routing",
+        )
+        return web.json_response(
+            {
+                "error": "notification delivery routing is owner-only",
+                "code": "delivery_routing_owner_only",
+            },
+            status=403,
+        )
     try:
         # update() persists via atomic_write (blocking file I/O) -- keep it
         # off the event loop. ChannelSettings serializes internally with its
@@ -1403,6 +1498,11 @@ async def api_notification_channel_settings(request: web.Request) -> web.Respons
             muted=muted,
             priority=priority if has_priority and priority is not None else None,
             clear_priority=has_priority and priority is None,
+            deliver_to=deliver_to if has_deliver_to and deliver_to is not None else None,
+            deliver_min_priority=(
+                deliver_min_priority if has_floor and deliver_min_priority is not None else None
+            ),
+            clear_delivery=has_deliver_to and deliver_to is None,
         )
     except ChannelSettingsError as exc:
         return web.json_response({"error": str(exc)}, status=400)
@@ -1472,11 +1572,13 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
     # was, so refusing centrally would also refuse the person's own in-flight
     # calls on every internal route. This route refuses because of what it
     # publishes -- ``source="system"`` on the system.agent channel.
-    if caller_names_a_missing_slot(
-        getattr(state, "_slots", None), request.headers.get("X-Session-Key", "")
-    ):
+    # Read ONCE and reused below as the note's producing session: the refusal
+    # and the attribution must be judging the same string, and the bridge's
+    # governance subject is exactly what this check has just vouched for.
+    caller_key = request.headers.get("X-Session-Key", "").strip()
+    if caller_names_a_missing_slot(getattr(state, "_slots", None), caller_key):
         _sel().log_api_access(
-            caller=str(request.headers.get("X-Session-Key") or ""),
+            caller=caller_key,
             operation="notification_agent_push",
             outcome="denied",
             source="notifications_api",
@@ -1516,6 +1618,24 @@ async def api_notification_agent_push(request: web.Request) -> web.Response:
         url=body.get("url"),
         group_key=body.get("group_key"),
         actions=actions,
+        # The producing session, so the notification bridge vets the AGENT's own
+        # governance profile and not just the host's. Without it every agent note
+        # reaches the bridge with no session subject at all -- ``source`` is the
+        # fixed ``"system"`` above and nothing else here names a producer -- so an
+        # agent whose profile denies ``channels/slack`` is refused by
+        # ``send_message`` on that transport and then egresses to the same Slack
+        # DM through ``send_notification``. One producer, one transport, one
+        # policy, two answers.
+        #
+        # Server-set on THIS route, unlike the note claims the bridge normally
+        # reads: the agent publish path never passes the request body's ``meta``
+        # into the payload, so this key cannot be body-supplied here, and the
+        # missing-slot check above has already refused a ``dashboard:`` key whose
+        # slot is gone. It is still only ADDED to the bridge's subjects, never
+        # substituted for the host's, because the bridge cannot tell a server-set
+        # claim from a body-set one and the added-only polarity is what keeps a
+        # forged claim unable to widen anything.
+        meta={"session_key": caller_key} if caller_key else {},
     )
     try:
         note = state.notification_bus.push(payload)
