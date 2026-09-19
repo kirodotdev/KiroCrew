@@ -810,10 +810,21 @@ def _consolidate_cmd(args) -> None:
                     print(f"  {key}: no unconsolidated messages, skipping")
                     continue
                 print(f"  {key}: consolidating {count} messages...")
-                if await consolidator.consolidate_now(key):
-                    print(f"  {key}: done ✓")
-                else:
+                if not await consolidator.consolidate_now(key):
                     print(f"  {key}: skipped (consolidation retry backoff)")
+                    continue
+                # consolidate_now drains the tail over as many bounded passes as
+                # it takes, but it can stop short — a backoff armed part-way
+                # through, or a span it could not advance over. Report what the
+                # transcript says rather than the call's success flag: this
+                # process exits here, with no idle sweep behind it to finish a
+                # remainder, so a bare "done" would be the last word on messages
+                # nothing has read.
+                left = conv_log.unconsolidated_count(key)
+                if left:
+                    print(f"  {key}: partially consolidated, {left} message(s) remain")
+                else:
+                    print(f"  {key}: done ✓")
             except Exception:
                 logger.debug("consolidate (or SEL) failed for %s", key, exc_info=True)
 
