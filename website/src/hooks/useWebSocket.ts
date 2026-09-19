@@ -2,7 +2,7 @@ import { useEffect, useRef, useCallback } from 'react'
 import { useQueryClient, type QueryClient } from '@tanstack/react-query'
 import { isArtifactEditing } from '../utils/artifactEditGuard'
 import { isReconcileNote } from '../lib/noteContract'
-import { useAppDispatch, useAppSelector } from '../store'
+import { useAppDispatch, useAppSelector, useAppStore } from '../store'
 import { store } from '../store'
 import { sseStatus, sseYolo, sseConnected, sseDisconnected, sseSlots, sseTodoUpdate, sseMcpReportUpdate, setChannelTrusted, sseSlotTitle, triggerRefresh, fetchSlots, markSlotUnread, remoteSlotRead, setUpdateProgress, sseSubagentStatus, sseSubagentText, touchSlotActivity, patchSlotSourceLinks, type SubagentDetail } from '../store/dashboardSlice'
 import { addNotification, ackNotificationByTs, unackNotificationByTs, removeNotificationByTs, clearAllNotifications, fetchNotifications, markBootNotificationsFetched } from '../store/notificationsSlice'
@@ -325,8 +325,14 @@ const bufferedText = (entry: ChunkBufEntry): string => entry.parts.map((p) => p.
  *  same 50 KB threshold for the same reason. */
 const CHUNK_BUF_FLUSH_CHARS = 50_000
 
+/** See the row-delivery watchdog inside `useWebSocket`. Exported so the
+ *  threshold is asserted rather than guessed at in the spec. */
+export const ROW_STALL_MS = 100_000
+export const ROW_STALL_TICK_MS = 15_000
+
 export function useWebSocket() {
   const dispatch = useAppDispatch()
+  const appStore = useAppStore()
   const queryClient = useQueryClient()
   const wsRef = useRef<WebSocket | null>(null)
   const closingRef = useRef(false)  // true when cleanup intentionally closes WS
@@ -2657,6 +2663,118 @@ export function useWebSocket() {
     wsRef.current = null
     reconnectTimerRef.current = setTimeout(connect, 0)
   }, [connect])
+
+  /* The watchdog's escalation target. `forceReconnect` depends on `connect` and
+   * so on the whole socket setup, while the watchdog's interval must keep one
+   * progress stamp across renders: taking the callback through a ref keeps a
+   * new identity from restarting the interval and resetting that stamp, which
+   * a re-created callback would do often enough that the 100s rule never fires. */
+  const forceReconnectRef = useRef(forceReconnect)
+  useEffect(() => {
+    forceReconnectRef.current = forceReconnect
+  }, [forceReconnect])
+
+  /* Row-delivery watchdog.
+   *
+   * A dropped socket already has two owners: the reconnect handler above
+   * re-hydrates the active slot, and `useDashboardHealthProbe` polls
+   * /api/status while `dashboard.connected === false`. Neither covers the case
+   * this guards. The socket stays OPEN -- so nothing reconnects and the probe
+   * never runs -- while chat frames for the active slot stop arriving. The
+   * transcript then freezes mid-turn with no client-visible sign, and
+   * `slotRunning`, set at send and cleared only by a `_done`/error frame, stays
+   * true: the composer keeps offering Stop for a turn whose rows have stopped
+   * updating, and the only way back is a manual reload -- which works only
+   * because it re-fetches over HTTP instead of trusting the live channel.
+   *
+   * This is that re-fetch, moved inside the running app. While the active slot
+   * believes it is running and neither the row count nor the tail row's length
+   * has moved for ROW_STALL_MS, dispatch the same `refreshSlot` the reconnect
+   * path uses. It is idempotent (a count-matched server page replaces
+   * `messages`) and self-healing: `refreshSlot.fulfilled` writes `slotRunning`
+   * from the server's own `running`, so a turn that ended while its rows were
+   * stranded stops claiming to be running.
+   *
+   * ROW_STALL_MS sits above the longest legitimate silence inside a working
+   * turn (about 100s between tool rows on a slow agent). A false positive costs
+   * one GET and one no-op merge -- never a lost row. The steady state costs
+   * nothing: a tick reads app state and issues no request unless a slot this
+   * client believes is running has gone ROW_STALL_MS without progress.
+   *
+   * Scope, deliberately: this watches the slot THIS client believes is running.
+   * A client whose belief is wrong -- a turn started on another device whose run
+   * frame was lost, so the slot looks idle here -- is NOT covered: nothing
+   * re-checks a slot this client believes idle, and the socket carries no
+   * timer-driven liveness signal to hang that check on. Covering it from here
+   * would cost a steady slots GET per visible tab to guard a case no report has
+   * produced. The successor is a per-connection keepalive frame, which gives
+   * every frame family one clock to test silence against instead of a poll per
+   * belief.
+   */
+  useEffect(() => {
+    let rows = -1
+    let tail = -1
+    let stampedAt = Date.now()
+    const id = setInterval(() => {
+      const chat = appStore.getState().chat
+      const msgs = chat.messages
+      const last = msgs[msgs.length - 1]
+      const lastLen = last ? (last.rawText ?? last.content ?? '').length : 0
+      // Any change to the row count, or to the tail row's text, is progress --
+      // including a chunk appended in place to the streaming row.
+      if (msgs.length !== rows || lastLen !== tail) {
+        rows = msgs.length
+        tail = lastLen
+        stampedAt = Date.now()
+        return
+      }
+      const believesRunning = chat.slotRunning || chat.slotState !== 'idle'
+      if (!chat.activeSlot || !believesRunning) {
+        stampedAt = Date.now()
+        return
+      }
+      if (Date.now() - stampedAt < ROW_STALL_MS) return
+      stampedAt = Date.now()
+      const slot = chat.activeSlot
+      /* What this client held when the stall was declared. A returned page that
+       * carries a durable row outside this set is proof the socket missed
+       * deliveries rather than the turn being slow: the server produced rows
+       * while the transcript sat still, over a socket that never closed.
+       * `meta.mid` identifies the server's own rows; client-only rows have none
+       * and prove nothing. */
+      const held = new Set<string>()
+      for (const row of msgs) {
+        // `meta.mid` is typed `unknown` on the row, so the string test is what
+        // makes it a usable set key -- and a row whose mid is not a string
+        // proves nothing about what the socket delivered.
+        const mid = row?.meta?.mid
+        if (typeof mid === 'string' && mid) held.add(mid)
+      }
+      void dispatch(refreshSlot(slot))
+        .unwrap()
+        .then((page) => {
+          const rows = page?.messages ?? []
+          const missed = rows.some((row) => {
+            const mid = row?.meta?.mid
+            return typeof mid === 'string' && !!mid && !held.has(mid)
+          })
+          if (!missed) return
+          /* Escalate to a reconnect: its catch-up re-reads every frame family
+           * this socket carries (slots, notifications, approvals, questions,
+           * workflow runs, artifacts, member threads), which is what the frozen
+           * sidebar and badges need -- this slot's rows were only the visible
+           * symptom. Gated on the proof above, so a turn that is merely slow
+           * -- the likelier reading of 100s of silence -- never pays for a
+           * socket teardown, which discards buffered partial chunks. */
+          forceReconnectRef.current()
+        })
+        .catch(() => {
+          /* A failed GET proves nothing about the socket; the next stall tick
+           * asks again, and the rows path reports its own failures. */
+        })
+    }, ROW_STALL_TICK_MS)
+    return () => clearInterval(id)
+  }, [dispatch, appStore])
 
   useEffect(() => {
     closingRef.current = false  // reset for StrictMode re-mount
