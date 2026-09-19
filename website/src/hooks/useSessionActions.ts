@@ -193,7 +193,13 @@ export function useSessionActions(mode?: string): SessionActions {
         const current = store.getState().dashboard.slots.find(slot => slot.key === key)?.pinned ?? false
         if (current !== pinned) dispatch(updateSlotPin({ key, pinned }))
       }
-      queryClient.invalidateQueries({ queryKey: ['chat-slots'] })
+      // No server re-read is attempted here, on purpose: this branch IS the
+      // failed re-read, and the authoritative pinned state arrives without one.
+      // Every accepted `PATCH /api/chat/slots/{slot}/pin` ends in
+      // `push_slots_update()`, and a websocket reconnect refetches the whole
+      // list. The `invalidateQueries({ queryKey: ['chat-slots'] })` this branch
+      // used to end with was never that retry -- no query is registered on that
+      // key, so it refreshed nothing (#10204).
     }
   }, [dispatch, queryClient])
 
