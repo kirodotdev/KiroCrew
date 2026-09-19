@@ -29,7 +29,7 @@ from unittest.mock import patch
 
 import pytest
 
-from kiro_crew.session_map import SESSION_MAP_FILENAME, SessionMap
+from kiro_crew.session_map import REPLAY_PENDING_FLAG, SESSION_MAP_FILENAME, SessionMap
 
 
 @pytest.fixture
@@ -420,3 +420,264 @@ class TestDeferredFlush:
         persisted = _map_file(tmp_path)
         assert persisted["dashboard:a"]["sid"] == "sid-a"
         assert persisted["dashboard:b"]["sid"] == "sid-b"
+
+
+class TestReplaySettlement:
+    @staticmethod
+    async def _seed(session_map: SessionMap, key: str) -> None:
+        session_map.set(key, "sid-prior", provider="acp", cwd="/prior")
+        session_map.set_flag(key, REPLAY_PENDING_FLAG, True)
+        await session_map.aflush()
+        await _settle(session_map)
+
+    @pytest.mark.parametrize("promote_sid", [True, False])
+    @pytest.mark.asyncio
+    async def test_write_failure_restores_prior_state(
+        self, session_map, tmp_path, monkeypatch, promote_sid
+    ):
+        key = "dashboard:replay-failure"
+        await self._seed(session_map, key)
+        real_write = session_map._write_payload
+        calls = 0
+
+        def fail_settlement_then_write_compensation(payload, seq):
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise OSError("settlement write failed")
+            return real_write(payload, seq)
+
+        monkeypatch.setattr(
+            session_map,
+            "_write_payload",
+            fail_settlement_then_write_compensation,
+        )
+
+        with pytest.raises(OSError, match="settlement write failed"):
+            if promote_sid:
+                await session_map.settle_replay_sid(
+                    key,
+                    "sid-fresh",
+                    provider="acp",
+                    cwd="/fresh",
+                    replay_flag=REPLAY_PENDING_FLAG,
+                )
+            else:
+                await session_map.settle_replay_flag(
+                    key,
+                    replay_flag=REPLAY_PENDING_FLAG,
+                )
+
+        entry = session_map._data[key]
+        assert entry["sid"] == "sid-prior"
+        assert entry["provider"] == "acp"
+        assert entry["cwd"] == "/prior"
+        assert session_map.get_flag(key, REPLAY_PENDING_FLAG) is True
+        assert session_map._dirty is True
+        await session_map.aflush()
+        persisted = _map_file(tmp_path)[key]
+        assert persisted["sid"] == "sid-prior"
+        assert persisted["flags"][REPLAY_PENDING_FLAG] is True
+        assert calls == 2, "the restored state was not retried by the durability boundary"
+
+    @pytest.mark.asyncio
+    async def test_cancellation_compensates_after_late_worker_and_keeps_concurrent_state(
+        self, session_map, tmp_path, monkeypatch
+    ):
+        key = "dashboard:replay-cancel"
+        await self._seed(session_map, key)
+        entered = threading.Event()
+        release = threading.Event()
+        real_write = session_map._write_payload
+        settlement_seq: list[int] = []
+
+        def gated_settlement(payload, seq):
+            data = json.loads(payload)
+            if data[key]["sid"] == "sid-fresh" and not settlement_seq:
+                settlement_seq.append(seq)
+                entered.set()
+                assert release.wait(timeout=10)
+            return real_write(payload, seq)
+
+        monkeypatch.setattr(session_map, "_write_payload", gated_settlement)
+        task = asyncio.create_task(
+            session_map.settle_replay_sid(
+                key,
+                "sid-fresh",
+                provider="acp",
+                cwd="/fresh",
+                replay_flag=REPLAY_PENDING_FLAG,
+            )
+        )
+        await _await_event(entered, "the replay settlement worker write")
+
+        # This mutation is independent of the replay key and must survive the
+        # rollback snapshot written after the cancelled worker drains.
+        session_map.set("dashboard:concurrent", "sid-concurrent")
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _settle(session_map)
+
+        entry = session_map._data[key]
+        assert entry["sid"] == "sid-prior"
+        assert session_map.get_flag(key, REPLAY_PENDING_FLAG) is True
+        persisted = _map_file(tmp_path)
+        assert persisted[key]["sid"] == "sid-prior"
+        assert persisted[key]["flags"][REPLAY_PENDING_FLAG] is True
+        assert persisted["dashboard:concurrent"]["sid"] == "sid-concurrent"
+        assert session_map._written_seq > settlement_seq[0]
+
+    @pytest.mark.asyncio
+    async def test_success_promotes_sid_and_clears_replay_debt(self, session_map, tmp_path):
+        key = "dashboard:replay-success"
+        await self._seed(session_map, key)
+
+        await session_map.settle_replay_sid(
+            key,
+            "sid-fresh",
+            provider="acp",
+            cwd="/fresh",
+            replay_flag=REPLAY_PENDING_FLAG,
+        )
+
+        entry = session_map._data[key]
+        assert entry["sid"] == "sid-fresh"
+        assert entry["provider"] == "acp"
+        assert entry["cwd"] == "/fresh"
+        assert session_map.get_flag(key, REPLAY_PENDING_FLAG) is False
+        persisted = _map_file(tmp_path)[key]
+        assert persisted["sid"] == "sid-fresh"
+        assert persisted.get("flags", {}).get(REPLAY_PENDING_FLAG) is not True
+
+    @pytest.mark.asyncio
+    async def test_same_key_clear_supersedes_cancelled_settlement(
+        self, session_map, tmp_path, monkeypatch
+    ):
+        key = "dashboard:replay-superseded"
+        await self._seed(session_map, key)
+        entered = threading.Event()
+        release = threading.Event()
+        real_write = session_map._write_payload
+
+        def gated_settlement(payload, seq):
+            if json.loads(payload)[key]["sid"] == "sid-fresh":
+                entered.set()
+                assert release.wait(timeout=10)
+            return real_write(payload, seq)
+
+        monkeypatch.setattr(session_map, "_write_payload", gated_settlement)
+        task = asyncio.create_task(
+            session_map.settle_replay_sid(
+                key,
+                "sid-fresh",
+                provider="acp",
+                cwd="/fresh",
+                replay_flag=REPLAY_PENDING_FLAG,
+            )
+        )
+        await _await_event(entered, "the superseded settlement worker")
+        session_map.clear_sid(key)
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await _settle(session_map)
+
+        entry = session_map._data[key]
+        assert entry["sid"] == ""
+        assert entry["discarded_sid"] == "sid-fresh"
+        assert session_map.get_flag(key, REPLAY_PENDING_FLAG) is False
+        persisted = _map_file(tmp_path)[key]
+        assert persisted["sid"] == ""
+        assert persisted.get("flags", {}).get(REPLAY_PENDING_FLAG) is not True
+
+    @pytest.mark.asyncio
+    async def test_cancelled_settlement_retries_failed_compensation(
+        self, session_map, tmp_path, monkeypatch
+    ):
+        key = "dashboard:replay-compensation-retry"
+        await self._seed(session_map, key)
+        entered = threading.Event()
+        release = threading.Event()
+        real_write = session_map._write_payload
+        compensation_attempts = 0
+
+        def flaky_compensation(payload, seq):
+            nonlocal compensation_attempts
+            data = json.loads(payload)
+            if data[key]["sid"] == "sid-fresh":
+                entered.set()
+                assert release.wait(timeout=10)
+                return real_write(payload, seq)
+            compensation_attempts += 1
+            if compensation_attempts == 1:
+                raise OSError("transient compensation failure")
+            return real_write(payload, seq)
+
+        monkeypatch.setattr(session_map, "_write_payload", flaky_compensation)
+        task = asyncio.create_task(
+            session_map.settle_replay_sid(
+                key,
+                "sid-fresh",
+                provider="acp",
+                cwd="/fresh",
+                replay_flag=REPLAY_PENDING_FLAG,
+            )
+        )
+        await _await_event(entered, "the settlement before compensation retry")
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert compensation_attempts == 2
+        assert session_map._data[key]["sid"] == "sid-prior"
+        assert session_map.get_flag(key, REPLAY_PENDING_FLAG) is True
+        persisted = _map_file(tmp_path)[key]
+        assert persisted["sid"] == "sid-prior"
+        assert persisted["flags"][REPLAY_PENDING_FLAG] is True
+
+    @pytest.mark.asyncio
+    async def test_session_identity_fence_preserves_same_value_successor(
+        self, session_map, tmp_path, monkeypatch
+    ):
+        key = "dashboard:replay-successor"
+        await self._seed(session_map, key)
+        entered = threading.Event()
+        release = threading.Event()
+        real_write = session_map._write_payload
+
+        def gated_settlement(payload, seq):
+            entered.set()
+            assert release.wait(timeout=10)
+            return real_write(payload, seq)
+
+        monkeypatch.setattr(session_map, "_write_payload", gated_settlement)
+        current = {"value": True}
+        task = asyncio.create_task(
+            session_map.settle_replay_sid(
+                key,
+                "sid-fresh",
+                provider="acp",
+                cwd="/fresh",
+                replay_flag=REPLAY_PENDING_FLAG,
+                still_current=lambda: current["value"],
+            )
+        )
+        await _await_event(entered, "the identity-fenced settlement worker")
+        current["value"] = False
+        task.cancel()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        entry = session_map._data[key]
+        assert entry["sid"] == "sid-fresh"
+        assert entry["provider"] == "acp"
+        assert entry["cwd"] == "/fresh"
+        assert session_map.get_flag(key, REPLAY_PENDING_FLAG) is False
+        persisted = _map_file(tmp_path)[key]
+        assert persisted["sid"] == "sid-fresh"
+        assert persisted.get("flags", {}).get(REPLAY_PENDING_FLAG) is not True

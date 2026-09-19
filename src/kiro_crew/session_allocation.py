@@ -27,6 +27,7 @@ from kiro_crew.metrics.sessions import (
     record_session_ended,
     record_session_started,
 )
+from kiro_crew.session_map import REPLAY_PENDING_FLAG
 
 if TYPE_CHECKING:
     from kiro_crew.providers.base import LLMProvider
@@ -1240,6 +1241,7 @@ class SessionAllocationService:
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
+        defer_replay_sid_promotion: bool = False,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
@@ -1266,6 +1268,7 @@ class SessionAllocationService:
                 speculative=speculative,
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
+                defer_replay_sid_promotion=defer_replay_sid_promotion,
                 _won_race_retries=_won_race_retries,
                 **extra_factory_kwargs,
             )
@@ -1301,6 +1304,7 @@ class SessionAllocationService:
         speculative: bool = False,
         speculative_resume: bool = False,
         wait_if_busy: bool = True,
+        defer_replay_sid_promotion: bool = False,
         _won_race_retries: int = 0,
         **extra_factory_kwargs: Any,
     ) -> tuple[LLMProvider, bool, bool]:
@@ -1414,20 +1418,27 @@ class SessionAllocationService:
                 raise RuntimeError("No provider factory configured")
             factory = owner._provider_factory
 
-        resume_sid: str | None = None
+        mapped_resume_sid: str | None = None
+        durable_replay_pending = False
         is_stateless = (
             key in (constants.background_key, constants.heartbeat_key)
             or any(key.startswith(prefix) for prefix in constants.stateless_prefixes)
         ) and not owner._is_continuable_key(key)
         if not is_stateless:
-            resume_sid = owner._session_map.get(key)
+            mapped_resume_sid = owner._session_map.get(key)
+            durable_replay_pending = owner._session_map.get_flag(key, REPLAY_PENDING_FLAG)
+        replay_deferral_requested = defer_replay_sid_promotion or durable_replay_pending
+        # The old SID remains the durable fallback while replay is pending, but
+        # this allocation must start fresh rather than resume the conversation
+        # whose preserved-thinking prefix was rejected.
+        resume_sid = None if replay_deferral_requested else mapped_resume_sid
         if speculative and resume_sid and not speculative_resume:
             raise SpeculativeResumeRefused(key)
 
         from kiro_crew.session_capabilities import prepare_runtime
 
         effective_cwd = cwd
-        if not effective_cwd and resume_sid:
+        if not effective_cwd and mapped_resume_sid:
             stored_cwd = owner._session_map.get_cwd(key)
             if stored_cwd and await asyncio.to_thread(Path(stored_cwd).is_dir):
                 effective_cwd = stored_cwd
@@ -1758,16 +1769,27 @@ class SessionAllocationService:
                     session.capability_member = preparation.member
                     session.loaded_capabilities = stamp
                     self.state.capability_failures.pop(key, None)
-                    replay_needed = getattr(provider, "_history_replay_needed", False) is True
+                    provider_replay_needed = (
+                        getattr(provider, "_history_replay_needed", False) is True
+                    )
+                    replay_needed = provider_replay_needed or replay_deferral_requested
                     provider_label = self._deps.provider_label(provider)
-                    defer_sid_promotion = (
-                        replay_needed
-                        and provider.defer_replay_sid_promotion is True
-                        and provider_label == constants.provider_label_default
+                    is_acp_provider = self._deps.is_acp_provider(provider)
+                    binding_replay_deferral = replay_deferral_requested and is_acp_provider
+                    defer_sid_promotion = replay_needed and (
+                        binding_replay_deferral
+                        or (
+                            provider.defer_replay_sid_promotion is True
+                            and provider_label == constants.provider_label_default
+                        )
                     )
                     if provider_switched or replay_needed:
                         session.provider_switch_replay = True
-                    if replay_needed and provider_label != constants.provider_label_default:
+                    if (
+                        replay_needed
+                        and provider_label != constants.provider_label_default
+                        and not binding_replay_deferral
+                    ):
                         owner._session_map.clear_sid(key)
                     self._sessions[key] = session
                     self.advance_ownership_generation(key)
@@ -1874,6 +1896,7 @@ class SessionAllocationService:
                 speculative=speculative,
                 speculative_resume=speculative_resume,
                 wait_if_busy=wait_if_busy,
+                defer_replay_sid_promotion=defer_replay_sid_promotion,
                 _won_race_retries=_won_race_retries + 1,
                 **extra_factory_kwargs,
             )

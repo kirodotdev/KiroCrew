@@ -9391,6 +9391,61 @@ class TestIsTransientRawError:
         assert auth_exc.transient is False
         assert "authentication failed" in str(auth_exc).lower()
 
+    def test_raise_acp_error_types_thinking_conversation_binding_mismatch(self):
+        import pytest
+
+        from kiro_crew.acp.client import (
+            AcpConversationBindingMismatch,
+            AcpError,
+            _raise_acp_error,
+        )
+
+        mismatch = {
+            "code": -32603,
+            "message": "Prompt failed",
+            "data": (
+                "messages.3.content.0: Invalid `signature` in `thinking` block. "
+                "The block is bound to a different conversation. Content before "
+                "this block differs from when it was created."
+            ),
+        }
+        with pytest.raises(AcpConversationBindingMismatch) as mismatch_error:
+            _raise_acp_error(mismatch)
+        assert mismatch_error.value.transient is False
+
+        reverse_order = {
+            "code": -32603,
+            "message": "Prompt failed",
+            "data": (
+                "The block is bound to a different conversation. "
+                "messages.3.content.0: Invalid `signature` in `thinking` block."
+            ),
+        }
+        with pytest.raises(AcpConversationBindingMismatch):
+            _raise_acp_error(reverse_order)
+
+        # Two unrelated fields cannot be combined into a recovery verdict.
+        split_fields = {
+            "code": -32603,
+            "message": "The block is bound to a different conversation.",
+            "data": "messages.3.content.0: Invalid `signature` in `thinking` block.",
+        }
+        with pytest.raises(AcpError) as split_error:
+            _raise_acp_error(split_fields)
+        assert not isinstance(split_error.value, AcpConversationBindingMismatch)
+
+        # A signature that is merely invalid may be tampered or undecryptable.
+        # The provider does not document conversation replacement as a repair for
+        # that case, so it must stay outside the recoverable subtype.
+        tampered = {
+            "code": -32603,
+            "message": "Prompt failed",
+            "data": "messages.3.content.0: Invalid `signature` in `thinking` block.",
+        }
+        with pytest.raises(AcpError) as tampered_error:
+            _raise_acp_error(tampered)
+        assert not isinstance(tampered_error.value, AcpConversationBindingMismatch)
+
     def test_acp_error_default_transient_is_none(self):
         from kiro_crew.acp.client import AcpError
 

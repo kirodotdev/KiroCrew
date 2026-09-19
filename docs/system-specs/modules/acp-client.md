@@ -316,6 +316,16 @@ Custom agents use cold start with `--agent <name>` flag at spawn time.
 
 `initialize` → `session/load` or `session/new` → `set_mode` (conditional) → `set_model` (conditional) → drain notifications → `session/prompt`
 
+A provider rejection whose one raw field contains both ``Invalid `signature` in
+`thinking` block`` and ``bound to a different conversation`` is raised as
+`AcpConversationBindingMismatch`, not a generic `AcpError`. The two-clause match
+is deliberate: a tampered or undecryptable signature lacks the conversation
+clause and stays terminal. The mismatch is also non-transient — retrying the
+same native session resends the same incompatible preserved-thinking history.
+The dashboard may recover once by discarding only that native conversation and
+cold-starting from its visible transcript; the ACP host cannot set Anthropic's
+`thinking.block_binding` request field because kiro-cli owns the provider request.
+
 `ensure_ready()` creates `_work_dir` once per instance (off-loop `mkdir -p`,
 remembered via a flag) so the per-prompt warm path pays no filesystem syscall;
 `_spawn()` re-creates it (also off-loop) on every spawn, and `_reset_state()`
