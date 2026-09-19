@@ -1896,11 +1896,12 @@ async def background_turn(
     memory_store: str = "",
     crew_log_kind: str = "",
     crew_log_session_key: str = "",
+    session_key: str | None = None,
 ) -> "AsyncIterator[Any]":
     """Take the shared background session for ONE turn, then release and account.
 
     Every background caller needs the same three steps around its prompt: acquire
-    the shared session (which takes its per-session semaphore), release that
+    its persistent session (which takes its per-session semaphore), release that
     semaphore in a ``finally`` or the next caller deadlocks on it, and recycle the
     session afterwards. Callers that hand-rolled those steps had no reason to also
     record what the turn cost, so background spend reached the provider's bill
@@ -1927,7 +1928,7 @@ async def background_turn(
     """
     from kiro_crew.session import BACKGROUND_AGENT, BACKGROUND_KEY  # circular import
 
-    key = BACKGROUND_KEY
+    key = session_key or BACKGROUND_KEY
     # Pinned before the first suspension point for the same reason the other
     # background helper does it: the owning slot can be reset or recycled while
     # this turn runs, and its successor is a different ledger unit. Everything the
@@ -2033,8 +2034,12 @@ async def background_turn(
             try:
                 if memory_store:
                     await _cleanup_memory_consolidation_session(sessions, key, memory_store, log)
-                else:
+                elif key == BACKGROUND_KEY:
                     await sessions.recycle_background()
+                else:
+                    await sessions.recycle_background(
+                        session_key=key, agent=agent or BACKGROUND_AGENT
+                    )
             except Exception:
                 logger.debug("background recycle failed task=%s", task, exc_info=True)
 

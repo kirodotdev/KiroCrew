@@ -40,6 +40,7 @@ class TestTelemetryChannelOf:
         assert telemetry_channel_of("telegram_123") == "telegram"
 
     def test_local_surfaces_get_their_own_labels(self):
+        assert telemetry_channel_of("_consolidate") == "consolidation"
         assert telemetry_channel_of("dashboard:chat-60-1785802461") == "dashboard"
         assert telemetry_channel_of("cron:job-1") == "cron"
         assert telemetry_channel_of("subagent:abc123") == "subagent"
