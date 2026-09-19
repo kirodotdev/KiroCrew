@@ -46,6 +46,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from kiro_crew import platform_compat
+from kiro_crew.atomic_write import atomic_write
 from kiro_crew.config.paths import config_dir
 from kiro_crew.platform_compat import pid_exists
 
@@ -122,11 +123,14 @@ class DumpFile:
         pass
 
     if sys.platform == "win32":
+
         @property
         def name(self) -> str:
             """Provide the file path as ``name`` for diagnostics."""
             return str(self._path)
+
     else:
+
         @property
         def name(self) -> str:
             return str(self._path)
@@ -841,11 +845,7 @@ def pid_identity_alive(pid: int, pid_domain: str | None, start_id: str | None) -
         # Before the own-PID shortcut: a restarted gateway can be handed the
         # crashed one's PID, and then "this process" is NOT the writer.
         current = _pid_start_id(pid)
-        if (
-            current is not None
-            and _start_ids_comparable(start_id, current)
-            and current != start_id
-        ):
+        if current is not None and _start_ids_comparable(start_id, current) and current != start_id:
             return False
     if pid == os.getpid():
         return True
@@ -905,3 +905,104 @@ def dump_replay_lines(
         result.append(ln)
         total += len(ln)
     return result, False
+
+
+#: Marker recording the identity of the gateway process that last completed
+#: startup. Lives beside the dumps because it answers a question only a dump
+#: reader asks, and it is swept by the same data-home lifecycle.
+HEALTHY_MARKER_NAME = "last-healthy-boot"
+
+#: The marker is one short line. Bounding the read keeps a marker that grew
+#: -- or was replaced by something large -- from being pulled into memory on
+#: the boot path.
+_HEALTHY_MARKER_MAX_BYTES = 256
+
+
+def _healthy_marker_path(dumps_dir: Path | None = None) -> Path:
+    return (dumps_dir or get_dumps_dir()) / HEALTHY_MARKER_NAME
+
+
+def _read_healthy_marker(dumps_dir: Path | None = None) -> str:
+    """Read the marker without letting its path decide how long this takes.
+
+    The marker sits in the data home's dumps directory, which the agent can
+    write to. ``read_text`` would FOLLOW a symlink planted at that name and
+    BLOCK opening a FIFO, and the caller's ``except`` cannot catch a hang --
+    cautious boot would wait forever on a file whose whole purpose is to make
+    boots faster, on the boot path, with no recovery.
+
+    ``O_NOFOLLOW`` refuses the link and ``O_NONBLOCK`` refuses the FIFO. Both
+    are POSIX-only, so the ``S_ISREG`` check is what carries the guarantee
+    everywhere: anything that is not a regular file reads as absent, which is
+    the same conservative answer a missing marker gives.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_NOFOLLOW", 0)
+    fd = os.open(_healthy_marker_path(dumps_dir), flags)
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return ""
+        return os.read(fd, _HEALTHY_MARKER_MAX_BYTES).decode("utf-8", "replace")
+    finally:
+        os.close(fd)
+
+
+def record_healthy_boot(dumps_dir: Path | None = None) -> None:
+    """Record that THIS process reached a serving state.
+
+    Written once, when the dashboard publishes ``DashboardState.ready``. The
+    content is this process's own ``(pid, domain, start_id)`` — the same
+    identity triple a dump header carries — so a later boot can ask whether
+    the instance that wrote a given dump had ever finished starting up.
+
+    Never raises: the marker is an optimisation for the NEXT boot, and a data
+    home that cannot take the write must not fail a gateway that is otherwise
+    healthy. A missing marker reads as "did not reach healthy", which is the
+    conservative answer.
+    """
+    try:
+        pid = os.getpid()
+        line = f"{pid} {_pid_domain()} {_pid_start_id(pid) or '-'}" + chr(10)
+        # Through atomic_write for its UNIQUE O_EXCL temp file, not just for
+        # the rename. A temp name derived from the PID is fully predictable and
+        # this directory is agent-writable, so a symlink planted at that name
+        # would be FOLLOWED by a plain write and would truncate whatever it
+        # points at, with no recovery -- the same reasoning as the O_NOFOLLOW
+        # on the read side. newline= keeps the byte on disk the one the reader
+        # splits on.
+        atomic_write(_healthy_marker_path(dumps_dir), line, newline="")
+    except Exception:  # noqa: BLE001 - never fail a healthy boot over a hint
+        logger.debug("could not record healthy-boot marker", exc_info=True)
+
+
+def dump_owner_reached_healthy(dump_path: Path, dumps_dir: Path | None = None) -> bool:
+    """Did the gateway that wrote *dump_path* ever finish starting up?
+
+    True only when the marker names the SAME process as the dump header: same
+    PID, same PID domain, and a start identity present and equal on both
+    sides. Anything less is False.
+
+    The asymmetry is deliberate. A false True says "the startup battery is
+    exonerated" and removes the stagger, which is exactly how a host that
+    wedges during startup re-wedges; a false False only costs a slower boot,
+    which is the behaviour that exists today. So a missing marker, a missing
+    start identity on either side (a platform
+    :func:`platform_compat.get_process_start_id` does not cover), a recycled
+    PID, or a marker from another host all answer False.
+    """
+    try:
+        owner = _dump_owner(dump_path)
+        if owner is None:
+            return False
+        pid, domain, start_id = owner
+        if domain is None or start_id is None:
+            return False
+        raw = _read_healthy_marker(dumps_dir).strip()
+        parts = raw.split()
+        if len(parts) != 3:
+            return False
+        m_pid, m_domain, m_start = parts
+        if m_start == "-":
+            return False
+        return m_pid == str(pid) and m_domain == domain and m_start == start_id
+    except Exception:  # noqa: BLE001 - unreadable marker means "not healthy"
+        return False

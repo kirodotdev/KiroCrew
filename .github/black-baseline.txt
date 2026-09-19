@@ -161,14 +161,12 @@ src/kiro_crew/connections/alias_record.py
 src/kiro_crew/connections/l0_record.py
 src/kiro_crew/connections/tool_aliases.py
 src/kiro_crew/cron_history.py
-src/kiro_crew/dashboard/cautious_boot.py
 src/kiro_crew/dashboard/channel_folders.py
 src/kiro_crew/dashboard/chat_auto_tag.py
 src/kiro_crew/dashboard/chat_folder_suggest.py
 src/kiro_crew/dashboard/chat_nav.py
 src/kiro_crew/dashboard/chat_slack.py
 src/kiro_crew/dashboard/chat_title.py
-src/kiro_crew/dashboard/crash_dump_store.py
 src/kiro_crew/dashboard/file_index.py
 src/kiro_crew/dashboard/handlers/artifacts.py
 src/kiro_crew/dashboard/handlers/ask_question.py
@@ -425,7 +423,6 @@ test/test_builtin_skill_sync_safety.py
 test/test_capability_agents_plugins.py
 test/test_capability_mcp_registry.py
 test/test_catalog_inventory.py
-test/test_cautious_boot.py
 test/test_cc_agent_resolution.py
 test/test_changelog_handler.py
 test/test_channel_activation.py
