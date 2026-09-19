@@ -3972,6 +3972,231 @@ sibling `emit_internal_read_audit(read_id)` — same audit + fail-closed contrac
 `_AUDIT_ONLY_READ_IDS` registry. Adding an allowlist entry is a security-review event; the bytes
 never reach an LLM/agent surface.
 
+### `SessionLaneChanged` — board-lane transitions (`_fire_session_lane_changed`)
+
+**Status: this section specifies a PENDING implementation, not the tree as it
+stands.** `SessionLaneChanged` is not a live hook event yet: `HOOK_EVENTS`,
+`ALLOWED_HOOK_EVENTS` and `_VALID_HOOK_EVENTS` carry exactly the five
+turn-lifecycle events, and none of the symbols named below exist in `src/`. Read
+every present-tense sentence here as the contract the implementation must meet.
+Until it lands, `handlers/hooks.py` and the Hooks page behave as the rest of this
+module already describes.
+
+The implementation is PR #7669, and this section stands or falls with it: it is
+owned by that PR, is asserted against the code by a spec-pinning test that ships
+there, and **must be deleted if #7669 is withdrawn** rather than left describing
+code that never arrived. The RFC amendment in
+`docs/request-for-change/rfc-session-tag-change-event.md` records which writers
+emit and which remain silent; that document, not this section, is where the
+firing coverage is stated.
+
+Fires when a chat session's **status** tags change through a session-level tag
+transition, so an automation can react to a board lane transition as it happens
+rather than on a timer.
+
+**What it buys, stated exactly: latency, not the removal of reconciliation.**
+Reaction is no longer bounded by a poll interval, and the delta is computed once
+here instead of by every consumer. It does NOT retire the polling loop for a
+subscriber that needs certainty: the RFC states the v1 delivery bar this event
+ships under, and it does not promise every arrival, so such a subscriber still
+re-reads the board. A subscriber that can
+tolerate a missed transition can drop its timer; one doing irreversible work
+cannot, and gains only latency.
+
+**What counts as a status tag, stated once.** `_is_status_tag` is
+`bool(isinstance(tag, dict) and tag.get("status"))` — plain truthiness — and every reader asks
+it: the drop path's mutual-exclusion strip, the delete path, the auto-tagger, and this event's
+dispatch filter. One rule rather than two, and deliberately the rule the board ALREADY uses:
+the tag manager's lightning toggle reads `!!t.status`, and `GET /api/chat/tags` serves the
+field as stored. So any value Python calls truthy is a lane, including a hand-edited
+`"status": "false"` (a non-empty string), and only an absent field, `false`, `0` or `""` is
+not. A stricter predicate would read better in isolation and would RECLASSIFY such a tag from
+a lane to an ordinary one — silently un-stripping it on the drop path, where the board still
+draws it as a column — so the narrowing is left to whatever change owns board behaviour. This
+one adds an event.
+
+**Why the name is LANE-scoped, not tag-general.** The event name is the one part of
+this surface that can never be corrected: once a hook subscribes, renaming is a
+breaking change for that hook, and unlike a payload key there is no additive way to
+migrate it. The firing contract is status-tags-only, so a tag-general name would
+promise more than the event delivers — and it would make the obvious future
+widening (fire on ALL tag changes) a BREAKING change rather than an additive one:
+every no-matcher subscriber would silently begin receiving auto-tag noise from
+`maybe_auto_tag`, which writes non-status tags routinely. Under a lane-scoped name
+that widening is a NEW event (`SessionTagsChanged`, still unused) beside this one,
+and existing subscribers are untouched. The name was deliberately narrowed before
+merge for exactly that reason; widening the contract later must add an event rather
+than redefine this one.
+
+**This section is the event's compatibility surface.** The payload keys and the matcher token grammar are what a registered hook binds to, so changing either
+breaks existing hooks — they are documented here rather than left to be inferred
+from the first subscriber.
+
+**It ships with ZERO registered subscribers, and that is the cheapest moment it
+will ever have.** The event name, the four payload keys and the token grammar are a
+one-way door: every one of them becomes a compatibility obligation the instant a
+hook binds to it, and today nothing does, so the surface is still free to change.
+That is inherent to adding any hook event rather than a defect of this one — but it
+is the reason the contract is written down BEFORE a subscriber exists rather than
+after, and the reason the name was narrowed pre-merge. Reviewers judging this
+surface should treat now as the last point at which a correction is free; the
+status-only scoping is what keeps the expected future widening additive.
+
+**Payload (stdin JSON).** All three keys are stamped unconditionally, so a hook that
+always reads one never `KeyError`s on an addition-only or removal-only change:
+
+| key | meaning |
+|-----------|--------------------------------------------------|
+| `slot` | the session key whose tags changed |
+| `added` | **status** tag ids added by this transition |
+| `removed` | **status** tag ids removed by this transition |
+
+`added` and `removed` are **status-only**, not the raw set difference. A single tag
+edit can bundle a lane change with a plain-label change, and emitting the whole
+delta would put `added:<label>` in the matcher context — letting a hook match a
+non-status tag, which contradicts the status-only firing contract above. There is no
+`tags` key: a subscriber needing the session's full current state re-reads the live
+store, because dispatch is off the request path and the board can move again first.
+
+Filtering the delta cannot make it empty. The fire gate compares the status-only
+sets, so a dispatch happens only when they differ — the symmetric difference then
+holds at least one id. This is load-bearing rather than incidental: `fire` consults
+a matcher only when the context is non-empty, so an empty delta would skip matcher
+filtering and run EVERY hook registered for the event, the opposite of the intent.
+
+The **delta** is the point: with `tags` alone every consumer would have to persist
+its own prior snapshot to answer "was Done just added?", which moves the diffing
+into every subscriber instead of doing it once here.
+
+**Matcher grammar** (built by the module-private `_session_lane_matcher_context`,
+which lives beside `HOOK_EVENT_SESSION_LANE_CHANGED` because the GRAMMAR is the
+event's contract, not the writer's; the builder has no caller outside `hooks.py`,
+since the fire derives the context itself). Tokens are **direction-tagged** and carry the tag **id only**:
+
+```
+added:<id>;  removed:<id>;
+```
+
+Direction is in the grammar because the motivating case is "a session **entered**
+Done"; an untagged context cannot express it, since an `<id>` matcher would fire on
+leaving the lane too.
+
+**A bare lane id matches NOTHING.** The default matcher mode is `glob` and
+matching is **whole-string** `fnmatch`, so a selector must carry wildcards:
+
+| intent            | `glob` selector   | `contains` selector |
+|-------------------|-------------------|---------------------|
+| entered a lane    | `*added:<id>;*`   | `added:<id>;`       |
+| left a lane       | `*removed:<id>;*` | `removed:<id>;`     |
+| any movement      | `*:<id>;*`        | `:<id>;`            |
+
+**Both bounds of the id are load-bearing, not decoration.** Matching is `fnmatch`
+against the whole context, so a selector must pin the id at each end or it matches a
+DIFFERENT lane and the hook that runs belongs to someone else — for a close-out hook,
+an irreversible action on the wrong session.
+
+- The trailing `;` stops a selector for a short id also matching every longer id it
+  **prefixes**: without it `*added:abc*` fires on `added:abcdef;`.
+- The leading `:` stops it matching an id it is a **suffix** of: `*abc;*` fires on
+  `added:xabc;`, because that token ends with the same `abc;`. The direction-tagged
+  rows get this bound for free from `added:`/`removed:`, which is why only the
+  direction-free row has to spell the `:` out.
+
+Neither bound is forgeable: `:` and `;` are both outside the id allowlist
+(`_TOKEN_ALLOWED = re.compile(r"\A[a-z0-9_.-]+\Z")`), so no id can contain either. Two
+generated ids are the same length `uuid4().hex[:12]` and can neither prefix nor suffix each
+other, but `tags.json` is
+hand-editable and legacy artifacts exist — the same path the token validator guards.
+
+**Why the validator is an allowlist and not a separator screen.** `:` and `;` are
+rejected inside an id so it cannot forge its own bounds, but refusing only the
+separators still admits glob metacharacters, and the grammar is consumed by `fnmatch`:
+an id of `*` would make the selector written for it match EVERY lane change and run
+that tag's hook on sessions it was never registered for. Enumerating the safe
+characters refuses that whole class instead of the separators that happened to be
+foreseen. `.` IS admitted, because it is none of those things — `fnmatch` treats it as a
+literal, so a hand-named `in.review` reaches the grammar rather than vanishing from every
+matcher context. The allowlist is lower-case only, because `_context_matches` folds case and
+an upper-case id would otherwise admit two spellings of one token; an id the validator
+refuses is skipped with a logged warning rather than silently dropped.
+
+**Why ids and not display names.** Emitting `added:<name>` alongside the id read
+better — an author could write `*added:In_Review*` for a lane shown as "In Review" —
+but it put a user-controlled string into a structural grammar and cost more than it
+bought. Whitespace divides tokens and `:` divides a direction from its value, so a
+name had to be escaped or one lane could forge another lane's token; a collapsing
+sanitizer turned out to be many-to-one (`In Review`, `In:Review` and a literal
+`In_Review` all became `In_Review`), which fires a destructive close-out hook for
+the **wrong** lane, so the escape had to be injective; and the resulting spelling
+(`*added:In_20Review*`) would have been frozen contract from the first subscriber
+onward. Ids already select a lane, contain no separator to escape, and are stable
+across renames, so a matcher keeps working when a lane is relabelled.
+
+The sequencing is settled by the asymmetry: adding name tokens later is **additive**,
+removing them later is **breaking**, and this event ships with zero subscribers — so
+leaving that grammar unfrozen costs nothing today. A subscriber wanting the
+human-readable label reads `added`/`removed` from the payload and resolves the
+ids it finds there; the follow-up event-picker UI can resolve a name to an id when
+composing the matcher.
+
+An id is **validated, not escaped**: ids are `uuid4().hex[:12]`, but `tags.json` is
+persisted state a human can edit, so an id carrying whitespace or `:` is skipped
+rather than tokenized. That degrades matching for that one tag instead of splitting
+into two tokens or forging the opposite direction.
+
+**Contract limits, all deliberate:**
+
+- **Status tags only.** `chat_auto_tag.maybe_auto_tag` writes non-status tags
+  routinely and never writes status ones, so firing on every tag would make the
+  event chatty for the board-lane case that motivates it while adding nothing.
+- **Informational — a hook cannot veto.** Exit code 2 blocks a `PreToolUse` call;
+  this event ignores it. By the time it fires the write is applied and the drag has
+  happened, so a veto would make the board unusable when a hook breaks rather than
+  preventing anything. A refused or rolled-back write never fires it.
+- **Only ids are tokenized, and an id must match the single `_TOKEN_ALLOWED` allowlist stated above, so nothing user-controlled reaches the grammar.**
+  Whitespace separates tokens and `:` separates a direction from its value, so a tag
+  NAME reaching a token raw could forge either: a lane named `removed:done` would
+  emit `added:removed:done` and fire a `*removed:done*` cleanup hook on a session
+  that just ENTERED a lane, and `done x` would split and forge a match for a
+  different lane called `done`. Escaping names was tried and dropped as a
+  subtraction: the escape had to be *injective* (collapsing separator runs to `_`
+  made `In Review`, `In:Review` and a literal `In_Review` share one token, firing a
+  destructive hook for the wrong lane), and its spelling would then be frozen
+  contract. Dropping name tokens removes that surface instead of guarding it — see
+  the matcher-grammar section above for the sequencing argument. Ids are
+  `uuid4().hex[:12]` and carry no separator, but are **validated** anyway because
+  `tags.json` is persisted state: a malformed id is skipped, never rewritten.
+- **Three event allowlists diverge intentionally.** The event is in
+  `hooks.HOOK_EVENTS` (dispatchable) and `validation.ALLOWED_HOOK_EVENTS`
+  (registrable through the hook create/update API), and deliberately **absent**
+  from `agent._VALID_HOOK_EVENTS` — kiro-cli rejects a generated agent config
+  naming an event it does not know. A test pins all three memberships together
+  with this rationale, so the divergence cannot be "fixed" by syncing them.
+
+**The SEL rows this event adds, stated so an auditor can find them and a host can
+budget them.** A lane-dispatch decision writes ONE `log_api_access` row under
+`operation="hooks.session_lane_changed"`, on either outcome, so the count does not
+depend on whether the dispatch was permitted. The rate is per DECISION, not per
+session and not per tag: deleting a status tag strips it from every session holding
+it and still records one row for that whole batch. The floor is zero and zero is the
+default shipping state — the row is written only once an enabled `SessionLaneChanged`
+hook is registered, so a host with no subscriber adds none. No volume figure is
+stated here on purpose: nothing in the implementation measures one, so any
+rows-per-day number would be an estimate rather than a contract.
+
+**Known deferral (partially mitigated here).** Resolving the `capabilities.script_hooks`
+gate walks `profiles/` synchronously, so any `async` caller resolving it inline stalls the
+event loop for that walk — a `no-blocking-call-on-event-loop` violation reachable from lane
+dispatch. Both `async` call sites in `hooks.py` therefore await ONE seam,
+`_script_hooks_capability_denied_async`, which hops to a thread. Unconditional, not keyed on
+the event: scoping it to `SessionLaneChanged` was tried and withdrawn, because it put an
+equality branch in shared dispatch that every future event would grow while leaving the
+other events stalling anyway. Centralised in one wrapper rather than a hop at each call
+site, because it remains a CALLER-side workaround: the cause-level remedy is non-blocking
+resolution, or a cached fingerprint, in the owning module — and when that lands there is one
+seam to delete instead of a hop per caller. Synchronous callers outside this module still
+resolve inline and still stall.
+
 ### User kiro-cli Hooks (`agent.kiro_hooks` in `config.json`)
 
 User-defined kiro-cli hooks that persist across `kirocrew update`. Follows the
