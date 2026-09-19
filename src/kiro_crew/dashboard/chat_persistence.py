@@ -1075,6 +1075,37 @@ async def release_prewarmed_session(
     return bool(await asyncio.to_thread(sessions.forget_conversation, session_key))
 
 
+def member_store_ownership_holds(config: KiroCrewConfig, member: str, entry_store: str) -> bool:
+    """Whether *member* still privately owns *entry_store* according to *config*.
+
+    The one spelling of that question, shared by the reopen path in
+    ``handlers/members.py`` and the grant below, so the check that returns a
+    thread and the check that publishes authority over it cannot drift apart.
+
+    :func:`require_member_memory_store` answers identity -- the member exists,
+    its store resolves, nothing else owns that store, and the store's own
+    recorded identity matches the member's immutable id -- and comparing its
+    answer with *entry_store* is the continuity check: a member repointed while
+    the request waited owns something other than what the caller decided about. It is
+    deliberately blind to the record's ``owner_member`` NAME, which is what
+    :func:`session_control._store_is_member_owned` authorizes admission on, so
+    that field is compared here too: a reopen tolerating a stale name would
+    serve a thread the admission gate refuses.
+
+    Blocking: the identity check reads the store's database, so call it in a
+    thread.
+    """
+    from kiro_crew.memory_stores import UnknownMemoryStore, require_member_memory_store
+
+    try:
+        if require_member_memory_store(config, member) != entry_store:
+            return False
+    except UnknownMemoryStore:
+        return False
+    record = config.memory_stores.get(entry_store)
+    return record is not None and record.owner_member == member
+
+
 async def pin_private_agent_store(
     state: DashboardState,
     session_key: str,
@@ -1084,26 +1115,59 @@ async def pin_private_agent_store(
     memory_mode: str = "persistent",
     validate_only: bool = False,
 ) -> str:
-    """Run :func:`_pin_private_agent_assignment` off the loop for one slot.
+    """Pin one dashboard selection from current private ownership off the loop.
 
     ``native_context`` is whether the session already has a live or resumable
     provider: such a session carries V1 context no transcript row shows yet.
-    Callers snapshot the slot before awaiting and re-compare afterwards; this
-    helper only owns the file IO hop and the probe.
+    Callers snapshot the slot before awaiting and re-compare afterwards.
+
+    Every selection is resolved and published from config read under the store
+    namespace lock, and that lock is held through immutable binding publication,
+    so member deletion, recreation, and store retirement cannot land between
+    validation and publication. The request-entry member/store pair is kept only
+    to compare against: a selection whose privateness or store changed while the
+    request waited is refused rather than published, in either direction. A
+    grant downgraded to non-private would write member content to the shared
+    store, and one upgraded to private would publish authority the caller never
+    asked for. This wrapper deliberately does not take the async config lock:
+    callers may already hold a slot lock, while config writers serialize private
+    ownership changes through the namespace lock.
     """
-    return await asyncio.to_thread(
-        _pin_private_agent_assignment,
-        session_key,
-        agent,
-        config,
-        memory_mode=memory_mode,
-        validate_only=validate_only,
-        conversation_log=state.conversation_log,
-        native_context=(
-            state.sessions.get_provider(session_key) is not None
-            or bool(state.sessions.resumable_sid(session_key))
-        ),
+    selected = agent or config.default_agent
+    _entry_selected, entry_store = _member_private_selection(selected, config)
+    native_context = state.sessions.get_provider(session_key) is not None or bool(
+        state.sessions.resumable_sid(session_key)
     )
+
+    from kiro_crew.memory_stores import UnknownMemoryStore, memory_store_namespace_lock
+
+    changed = (
+        f"Crew Member {selected!r} changed during private memory assignment; "
+        "no private memory was granted"
+    )
+
+    @memory_store_namespace_lock()
+    def pin_current_assignment() -> str:
+        current = KiroCrewConfig.load()
+        # The classification the selection path already uses, asked of current
+        # config: an empty store means the selection is not private, so one
+        # comparison covers both a changed store and a changed privateness.
+        _current_selected, current_store = _member_private_selection(selected, current)
+        if current_store != entry_store:
+            raise UnknownMemoryStore(changed)
+        if current_store and not member_store_ownership_holds(current, selected, current_store):
+            raise UnknownMemoryStore(changed)
+        return _pin_private_agent_assignment(
+            session_key,
+            selected,
+            current,
+            conversation_log=state.conversation_log,
+            native_context=native_context,
+            memory_mode=memory_mode,
+            validate_only=validate_only,
+        )
+
+    return await asyncio.to_thread(pin_current_assignment)
 
 
 def _member_restore_identity(slot_name: str) -> tuple[str, str] | None:
