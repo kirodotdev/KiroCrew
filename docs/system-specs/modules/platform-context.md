@@ -468,6 +468,101 @@ provider error or an explicit empty, relative, missing, non-file or non-executab
 target refuses restart; only `None` takes the existing `respawn_executable()` →
 `reexec_python_module()` path, including core-managed virtual environments.
 
+`respawn_executable()` answers the cached `sys.executable` for every layout but
+the managed venv it re-resolves through the stable link, so an install whose
+update writes the new release into a new versioned directory and REMOVES the
+previous one leaves that path naming a deleted file. The restart then cannot
+happen at all, which is the whole update. `gateway_restart.resolve_launch_shim()`
+is the last resort for exactly that state: when `respawn_executable()`'s answer is
+no longer a present executable file, both consumers take the pathname this process
+was LAUNCHED through and re-enter it as a launcher, on the same
+`reexec_launcher()` path an edition target uses. A stable shim lives outside the
+versioned tree by construction, so a launch pathname that survived the prune is
+not in the tree that was pruned and cannot resurrect the old version.
+
+The pathname is snapshotted at module import — during boot, since both consumers
+import this module at module scope — rather than read from `sys.argv` at restart
+time, so the target cannot follow a later rewrite of that list. Its origin is the
+exec that started the process, the same origin as the `sys.argv[1:]` every restart
+already re-execs verbatim, so it authorizes nothing new. It is validated as an
+explicit launcher is — non-empty, NUL-free, absolute, a present executable file —
+plus a positive check that the basename is this platform's `[project.scripts]`
+entry point (`kirocrew`, or `kirocrew.exe` on Windows, which carries the native
+`.exe` rule), and its symlinks are not resolved. Anything else answers `None` and
+the caller keeps its existing refusal: this only ADDS a target after the
+interpreter check has already rejected one, and never relaxes that check. Two
+shapes stay unrecoverable from inside the process and need an operator-declared
+target instead — a wrapper that execs an absolute versioned interpreter, which
+leaves its child no reference to itself, and a shim published under a name that is
+not this project's entry point.
+
+The launch pathname is an ordinary file, so unlike an edition launcher it carries
+no trust from where it came from, and `resolve_launch_shim` additionally requires
+that an agent on this host could not have chosen what it executes, read as
+OWNERSHIP. A read-only mode proves nothing against its owner, who may `chmod u+w`
+and then write, so `os.access(W_OK)` returning False on a file the gateway's uid
+owns is no restriction at all. Only a path owned by another uid, which an
+organization-packaged install under `/usr/local` or `/opt` is, is beyond a process
+running as the gateway. The whole ancestor CHAIN is examined, because a rename or a
+symlink swap chooses the target as effectively as an in-place rewrite and can be
+done at any level. The walk follows the route COMPONENT BY COMPONENT as the kernel
+does, rather than comparing two endpoint spellings, and each object on that route
+contributes itself and its own ancestors. Endpoints are not enough: with `/opt/bin`
+a link to `/srv/bin` and `/srv/bin/kirocrew` a link to `/usr/lib/kirocrew`, the
+lexical chain holds `/opt` and the resolved chain holds `/usr`, while the middle hop
+`/srv` -- where retargeting actually happens -- is in neither. A route that cannot
+be traced, a symlink cycle or one deeper than the kernel would follow, answers
+agent-chosen. The enumeration over-approximates deliberately: extra candidates can
+only make the rule stricter.
+Every uncertain answer counts as agent-chosen: an unreadable `stat`, and Windows,
+where the process has no POSIX uid to compare and the ACL question is not attempted,
+so the shim fallback never engages there.
+
+Ownership of the shim answers for its own bytes, and for a compiled launcher those
+are the bytes that run. A SCRIPT is different: the kernel runs the interpreter its
+`#!` line names, so a root-owned shim over an interpreter the gateway's uid can
+write still hands that uid the executed code. The same ownership rule is therefore
+applied to that interpreter, on both the path as written and its symlink target,
+since the kernel follows the link while an agent who can rewrite the link chooses
+what it points at. An interpreter that cannot be identified is refused rather than
+guessed: a relative or bare word, and `#!/usr/bin/env python3`, whose first word is
+a root-owned finder while the program itself comes from `PATH`. A trusted script's
+own body is not policed -- it may name any program it likes, and that choice belongs
+to whoever owns the shim, which by then is not the gateway's uid.
+
+A shim the gateway's own uid could write is REFUSED, with no second answer. A
+content digest taken at import would authorize it, but only by accepting that the
+bytes may be swapped again between the check and the exec, and an exec of
+attacker-chosen code is not a residual worth a per-user convenience. So the recovery
+covers an install whose shim belongs to another uid and refuses a per-user one.
+
+The shim is judged ONCE, before any teardown begins, and never re-read after the
+drain. A re-check there was implemented and removed: `close_all` sets the session
+registry's closing flag and nothing clears it, so a refusal at that point would
+leave the gateway alive and permanently unable to serve. It also protects against
+nothing an agent can do, since a shim is only accepted when its whole chain belongs
+to another uid, which this uid cannot change during the window.
+
+`os.execv` does not return on success, so an exec that raises means the target went
+away during the drain -- which for such a shim takes a separate privileged package
+operation. Both consumers handle that rather than letting it escape. The dashboard
+handler reports it with the operator's remedy, that sessions are stopped and a
+relaunch is needed, and returns False. The orchestrator restores the respawn resolver
+it clears just before the exec and sets its deferral flag, so
+`_retry_pending_update_restart` can finish the update without a second apply.
+Restoring session admission is NOT attempted: the registry's fence has no release,
+and adding one belongs with the session lifecycle rather than here.
+
+When no interpreter and no shim survive, the orchestrator's automatic-update
+restart DEFERS instead of proceeding: it returns before saving, fencing or
+draining, sets its deferral flag and retains the respawn resolver, so
+`_retry_pending_update_restart` finishes the update once an operator repairs the
+install and no second apply is needed. Walking the drain and the callback fence
+only to have `os.execv` raise `ENOENT` would end every session for a restart that
+cannot happen, which is what that path did before for every pruned-interpreter
+case. The dashboard handler's equivalent refusal (`return False`, no drain) is
+unchanged.
+
 The core executes `[launcher, *sys.argv[1:]]` directly, without a shell or Python
 `-m` prefix, and never resolves the launcher's symlinks: dispatch may depend on
 its basename. `reexec_launcher` preserves the inherited environment, including

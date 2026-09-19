@@ -8366,7 +8366,13 @@ class TestCallbackSafeUpdateRestart:
         reexec.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_restart_fences_then_closes_and_final_drains(self, monkeypatch):
+    async def test_restart_fences_then_closes_and_final_drains(self, monkeypatch, tmp_path):
+        # A REAL interpreter: the restart verifies the resolved one still exists
+        # before it drains anything, so a path naming nothing would drive the
+        # deferral instead of the ordering under test.
+        interpreter = tmp_path / "python"
+        interpreter.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+        gw.platform_compat.chmod_safe(interpreter, 0o700)
         order: list[str] = []
         orch = _make_orchestrator()
         orch.dashboard_state = None
@@ -8387,7 +8393,7 @@ class TestCallbackSafeUpdateRestart:
             lambda *_args, **_kwargs: order.append("exec"),
         )
 
-        await orch._restart_after_update(lambda: "/python")
+        await orch._restart_after_update(lambda: str(interpreter))
 
         assert order == ["drain:30.0", "fence", "close", "drain:None", "exec"]
         assert orch._pending_update_respawn is None

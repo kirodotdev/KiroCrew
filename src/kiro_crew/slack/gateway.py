@@ -183,7 +183,7 @@ from kiro_crew.executors import (
     subprocess_executor,
 )
 from kiro_crew.frontend import build_frontend_async
-from kiro_crew.gateway_restart import resolve_restart_launcher
+from kiro_crew.gateway_restart import resolve_launch_shim, resolve_restart_launcher
 from kiro_crew.gateway_shutdown_budget import GRACEFUL_SHUTDOWN_SECS
 from kiro_crew.heartbeat import (
     HEARTBEAT_TASK_TIMEOUT_SECS,
@@ -11717,6 +11717,45 @@ class GatewayOrchestrator:
         self._pending_update_respawn = respawn
         launcher = await asyncio.to_thread(resolve_restart_launcher)
         exe = await asyncio.to_thread(respawn) if launcher is None else None
+        if exe is not None and not (os.path.isfile(exe) and os.access(exe, os.X_OK)):
+            # Same condition the dashboard's ``_restart_gateway`` recovers, and
+            # worse here: with no guard on this path ``os.execv`` would raise
+            # ENOENT after the callback fence and every session had already been
+            # closed. An update whose install removes the previous version's
+            # directory prunes the tree this interpreter lived in; the pathname
+            # this process was launched through survives it. Resolved here, with
+            # the other target, so it is settled before any drain begins.
+            shim = await asyncio.to_thread(resolve_launch_shim)
+            if shim is None:
+                # Nothing left to exec. Returning here is the point: the drain,
+                # the callback fence and close_all all still lie ahead, and
+                # walking through them only to have os.execv raise ENOENT would
+                # end every session for a restart that cannot happen. Deferred
+                # rather than abandoned -- the retained respawn plus this flag
+                # send the coordinator back through _retry_pending_update_restart,
+                # so an operator who repairs the install gets the restart without
+                # a second apply.
+                self._update_apply_deferred = True
+                logger.error(
+                    "Update applied but the gateway cannot restart itself: neither "
+                    "the respawn interpreter %s nor a usable launch pathname exists. "
+                    "Restart it from a terminal.",
+                    exe,
+                )
+                if self.dashboard_state:
+                    self.dashboard_state.push_update_progress(
+                        "error",
+                        "Update installed, but this gateway cannot restart itself "
+                        "-- its Python executable was removed by the install. "
+                        "Restart from a terminal to finish.",
+                    )
+                return
+            logger.info(
+                "Respawn interpreter %s no longer exists; restarting through the "
+                "launch pathname instead",
+                exe,
+            )
+            launcher, exe = shim, None
         if self.dashboard_state:
             self.dashboard_state.push_update_progress("restarting", "Preparing safe restart…")
             from kiro_crew.dashboard.chat import save_all_slots_to_history
@@ -11771,10 +11810,28 @@ class GatewayOrchestrator:
         await self._drain_update_callback_work(timeout=None)
         logger.info("Update callback drain complete, restarting gateway")
         self._pending_update_respawn = None
-        if launcher is not None:
-            platform_compat.reexec_launcher(launcher, sys.argv[1:])
-        else:
-            platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        # See the dashboard sibling: verified once before the drain, never again
+        # after close_all, whose closing flag nothing clears. execv does not return
+        # on success, so the handler runs only when the target went away mid-drain;
+        # the respawn resolver is put back so _retry_pending_update_restart can
+        # finish the update once an operator repairs the install, which is the whole
+        # reason this method retains one.
+        try:
+            if launcher is not None:
+                platform_compat.reexec_launcher(launcher, sys.argv[1:])
+            else:
+                platform_compat.reexec_python_module("kiro_crew", sys.argv[1:], executable=exe)
+        except OSError:
+            self._pending_update_respawn = respawn
+            self._update_apply_deferred = True
+            logger.exception("Gateway restart exec failed after sessions were closed")
+            if self.dashboard_state:
+                self.dashboard_state.push_update_progress(
+                    "error",
+                    "The update installed, but this gateway could not restart: its "
+                    "restart target disappeared while sessions were closing. "
+                    "Relaunch from a terminal to finish.",
+                )
 
     async def _check_for_updates_legacy(self) -> None:
         """Legacy update check — the existing layout-aware logic."""
