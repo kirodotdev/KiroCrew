@@ -2259,6 +2259,9 @@ class _ChatSlot:
         "_pending_steers",
         "_steer_delivery_ids",
         "_steer_send_ids",
+        "_steer_user_origin",
+        "_steer_admissions",
+        "_steer_audience_fences",
         "_wait_state",
         "_end_wait_request",
         "_wait_last_ping",
@@ -3128,6 +3131,44 @@ class _ChatSlot:
         # carries `meta.sendId` like an accepted steer's row does. A steer
         # that persists its own row stamps the id directly and drops this entry.
         self._steer_send_ids: dict[str, str] = {}
+        # Whether an in-flight steer was typed by the session's OWN human, keyed by
+        # the same message text as the two maps above and kept in the same LOCKSTEP.
+        # The requeue reads it to decide `directive_user_origin`, which exempts a
+        # queue entry from the drain's LINKED drop. That exemption exists because
+        # "the author typed into the session's own surface" -- true of the composer,
+        # false of a `session_send` steer from a peer -- so the requeue cannot
+        # derive it from the slot and has to be told. Absent means NOT the session's
+        # own human: an unrecorded steer fails closed into the ordinary drop.
+        self._steer_user_origin: dict[str, bool] = {}
+        # The containment that held when an in-flight steer was AUTHORIZED, keyed by
+        # the same message text and kept in the same LOCKSTEP. The requeue stamps it
+        # on the queue entry instead of reading the slot again: its own moment is the
+        # turn's teardown, on the far side of the steer RPC's suspension, so a mirror
+        # linked during that suspension would be folded into the baseline and then
+        # read as "held at admission" by the drain -- which is exactly the audience
+        # the authorization refused. Absent means the entry carries NO containment
+        # key, which puts it on the drain's fail-closed floor: checked against every
+        # currently held constraint rather than against a baseline built at teardown.
+        self._steer_admissions: dict[str, dict] = {}
+        # Admission snapshots of the peer steers that influenced THIS turn, keyed by
+        # an opaque token. The turn consults them before publishing its CROSS-SURFACE
+        # reply leg and withholds it when a constraint newly holds:
+        # the steer RPC suspends on `stdin.drain()`, `_deliver_cross_surface_reply`
+        # resolves the mirror live at reply-delivery time, and a fast turn can deliver
+        # before the sender's post-RPC check resumes -- so reacting after the fact
+        # cannot stop a reply that is already sent. An entry is recorded BEFORE the
+        # RPC, synchronously with the authorization that admitted the send.
+        #
+        # The entry is RETAINED for the whole turn rather than released once the
+        # sender's own check passes: the reply publishes later still, and a mirror
+        # bound between that check and the publication would be just as unauthorized.
+        # Keeping the admission here lets the decision be made where it can be exact
+        # -- synchronously at delivery, against the containment holding THEN -- which
+        # is also why an ordinary steer costs the channel audience nothing.
+        #
+        # TURN-SCOPED: the turn's teardown empties it, so one turn's withheld reply
+        # never silences the next, whose authorization is its own.
+        self._steer_audience_fences: dict[str, dict] = {}
         # In-flight `wait` tool sleep, as reported by the tool's own keepalive
         # ping: {"wait_id": str, "seconds": int, "deadline_ts": float}. The
         # deadline is on the dashboard's clock (see api_session_keepalive) so

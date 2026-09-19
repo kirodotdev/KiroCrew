@@ -33,6 +33,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
@@ -45,7 +46,7 @@ from kiro_crew.config.loader import (
 )
 from kiro_crew.config.resolution import DEGRADED_WHOLE_CONFIG
 from kiro_crew.crew_log import emit as crew_log_emit
-from kiro_crew.dashboard.chat_delivery import sanitize_outbound
+from kiro_crew.dashboard.chat_delivery import sanitize_outbound, start_queue_persist
 from kiro_crew.dashboard.chat_folders import _unhide_folder
 from kiro_crew.dashboard.chat_persistence import _TRANSIENT_ROLES as _PERSISTENCE_TRANSIENT_ROLES
 from kiro_crew.dashboard.chat_utils import (
@@ -2244,6 +2245,7 @@ async def send_to_target(
     caller_session_key: str,
     target: str,
     message: str,
+    steer: bool = False,
     caller_fenced: bool | None = None,
 ) -> dict[str, Any]:
     """Deliver *message* to *target* as its next agent turn.
@@ -2257,6 +2259,38 @@ async def send_to_target(
     carries the containment that held here, and a constraint newly held at
     delivery time drops it with a visible notice instead of executing it under
     the weaker authorization that admitted it.
+
+    ``steer`` asks for a THIRD outcome on a busy target: the message cuts into
+    the turn already running (``steer_into_running_turn``) instead of waiting for
+    it, so a caller watching a worker go the wrong way can say so while the work
+    is still in flight rather than after it lands. Reported as ``steered``, its
+    own field, for the same reason ``started`` is one.
+
+    Two properties make that arm safe rather than a hole in the queued arm's
+    checks. The delivery happening NOW removes the queue's waiting window and
+    leaves a narrower one: the steer RPC suspends on ``stdin.drain()``.
+
+    * Containment is re-validated at the queue drain because a queued prompt runs
+      later than the moment it was authorized, so the target can gain a channel
+      link or an outbound mirror while it waits. Nothing suspends between
+      ``authorize_target`` and the steer call, so the text is committed against the
+      containment the gate cleared — but the RPC's own suspension is a window, and
+      each outcome closes it differently. The fallback re-runs the gate before
+      taking the queue arm and refuses a target that resolves to a different slot
+      OBJECT. A requeued steer becomes an ordinary queued entry and meets the drain
+      unexempted. A SUCCESSFUL steer cannot be recalled, so the admission
+      containment is compared against the post-RPC containment and the turn is
+      stopped when a constraint newly holds — the reply path resolves its mirror
+      live, so a mirror linked mid-turn is a real audience.
+    * Provenance is carried by the text, not by the delivery mode: both arms hand
+      over the same redacted, envelope-prefixed prompt, so neither the target
+      agent nor a person reading the transcript can read an injected message as
+      something the human typed. It also travels to the requeue as
+      ``user_origin=False``, so a peer's steer does not inherit the composer's
+      exemption from the drain's LINKED drop.
+
+    A steer that cannot be injected falls back to the queue — never dropped, and
+    the caller is told it queued rather than steered.
 
     The turn is NOT charged against the background-turn cap, and deliberately so:
     that cap only binds unattended (app-owned) slots, and every target this
@@ -2317,16 +2351,246 @@ async def send_to_target(
     # limit and keeps the error keyed to what the caller actually sent.
     prompt = _SEND_PROVENANCE.format(caller=caller_key or "unknown") + sanitize_outbound(body)
 
-    # `_run_chat` is passed straight through, NOT wrapped in
-    # `state.run_background_turn`: that cap is structurally unreachable here.
-    # `run_background_turn` returns the coroutine untouched for an attended slot
-    # (`state.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
-    # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
-    # every `_app` target above (`app_scoped_target`) — so no target this
-    # function can reach is ever unattended, and a wrapper would only add a
-    # never-taken timeout arm. The composer's own queued path does the same
-    # (`server.py` passes `_run_chat` directly).
-    started = bool(slot.enqueue_or_run_prompt(prompt, _run_chat, state))
+    steered = False
+    requeued = False
+    # Containment names that newly held when a successful steer's turn was stopped;
+    # empty on every other path. Read by the audit below.
+    steer_audience_changed: list[str] = []
+    # True only when the containment stop below raised. The steer was already
+    # consumed by the turn at that point, so the failure travels in the audit trail
+    # and the caller still sees the delivery it got.
+    steer_containment_stop_failed = False
+    if steer and (slot.running or slot._in_stage_execution):
+        # The mid-turn arm. ONE text is handed to both arms, so what the target
+        # reads and what its transcript keeps are the same bytes either way:
+        # already redacted, already carrying the provenance envelope, so an
+        # injected steer can no more pose as human typing than a queued delivery
+        # can. ``chat_delivery`` runs its own ``sanitize_outbound`` before it
+        # appends the row, which is a second pass over text that already cleared
+        # the same guard.
+        #
+        # Gated on ``slot.running or slot._in_stage_execution`` because a steer
+        # needs a turn to cut into: the turn publishes the steer-capable client and
+        # clears it at teardown, so on an idle slot there is nothing to inject and
+        # the queue-or-run arm below is the whole delivery. The second half is the
+        # predicate every producer that must not start a concurrent turn reads --
+        # between a plan's stages ``slot.running`` reads False while the plan is
+        # still live. There is no steer client in that window, so this arm's own
+        # re-gate hands the text to the queue branch below rather than to a turn.
+        #
+        # Deferred import for the cycle `_run_chat` above documents.
+        from kiro_crew.dashboard.chat_delivery import (
+            STEER_REQUEUED,
+            STEER_STEERED,
+            steer_into_running_turn,
+        )
+
+        # Captured BEFORE the RPC and synchronous with the gate above -- no await
+        # separates `authorize_target` from here -- so this IS the containment the
+        # authorization cleared, recorded in the drain's own vocabulary so the
+        # comparison below is the same one queued prompts get.
+        admission = containment_meta(state, slot)
+
+        # Which turn this steer is going into. `_turn_generation` increments on every
+        # task assignment, so it identifies a turn even if a later task object reuses
+        # an address. Captured here, synchronously with the gate, because the stop
+        # below must not cancel a DIFFERENT turn: if the steered turn ends during the
+        # RPC and a queued prompt starts the next one, `slot` still reads as running
+        # and an unguarded stop would cancel work that never received this text.
+        steered_turn_generation = slot._turn_generation
+
+        # Set BEFORE the RPC, synchronously with the gate above, because this is the
+        # half the post-RPC stop cannot cover: `_deliver_cross_surface_reply` runs
+        # from the turn's own completion path and resolves the mirror live, so a turn
+        # that finishes while this coroutine is suspended would publish to the new
+        # audience before any check of ours resumes. Reacting cannot recall a sent
+        # reply; withholding until the check has run can.
+        audience_fence = uuid.uuid4().hex
+        slot._steer_audience_fences[audience_fence] = admission
+
+        # `user_origin=False`: this text was not typed into the target's own
+        # surface. The requeue reads it to decide `directive_user_origin`, and a
+        # peer must not inherit the composer's exemption from the LINKED drop.
+        outcome = await steer_into_running_turn(
+            state, slot, prompt, user_origin=False, admission=admission
+        )
+        steered = outcome == STEER_STEERED
+        # The turn ended while the steer RPC was suspended and its teardown moved
+        # the text onto the queue: it WILL run, and taking the queue arm below
+        # would deliver it a second time. Reported as a queued delivery, which is
+        # what it now is.
+        requeued = outcome == STEER_REQUEUED
+        if requeued and state._slots.get(slot.key) is not slot:
+            # The teardown queued this text on THIS slot object, and the key has
+            # since stopped resolving to it -- the target was closed and recreated
+            # while the RPC was suspended on `stdin.drain()`. The queue that now
+            # holds the prompt belongs to a detached object no drain will ever
+            # reach, so the text is gone. Refusing is the only honest answer: the
+            # `steered` arm already guards this same replacement (it records
+            # `slot_replaced` below) and the fallback arm re-runs the gate, so this
+            # was the one outcome that reported success for a prompt that had
+            # quietly stopped existing.
+            #
+            # Object identity, not `key != key`: a fresh object under the same key
+            # compares equal by key and would pass a key comparison.
+            raise SessionControlError(
+                "that target was replaced while the steer was in flight and the "
+                "message did not survive the hand-over; re-read the session list "
+                "and send again",
+                code="target_moved",
+                status=409,
+            )
+        if steered:
+            # The text is IN the running turn: `STEER_STEERED` means kiro-cli
+            # acknowledged consumption, so unlike the requeue arm there is nothing
+            # left to remove and unlike the fallback arm there is nothing left to
+            # refuse. What can still be prevented is the turn's remaining output
+            # reaching an audience this send was never authorized against -- a
+            # mirror linked, retargeted, or a channel link bound while the RPC was
+            # suspended on `stdin.drain()`. `_deliver_cross_surface_reply` resolves
+            # the mirror LIVE at reply-delivery time, so that audience is real and
+            # not fixed at turn start.
+            #
+            # So: compare, and stop the turn when a constraint newly holds. One
+            # cooperative cancel, the same thing the Stop button's first press does,
+            # with `escalate=False` because this is one automatic decision and not a
+            # person who watched a cancel fail to take.
+            #
+            # This comparison does NOT decide whether the reply may be published. The
+            # admission recorded before the RPC stays on the slot for the whole turn,
+            # and the publisher re-evaluates it at delivery -- a mirror bound between
+            # this moment and the reply would be just as unauthorized, and only the
+            # publisher's own moment can see it.
+            steer_audience_changed = newly_held_constraints(
+                containment_snapshot(state, slot, on_probe_failure=True), admission
+            )
+            if state._slots.get(slot.key) is not slot:
+                # The slot object was replaced under the same name while the RPC was
+                # in flight, so the turn holding this text belongs to a session that
+                # the name has stopped resolving to. Reported alongside the containment
+                # names rather than folded into them: it is an identity change, not
+                # a constraint that newly holds.
+                steer_audience_changed = [*steer_audience_changed, "slot_replaced"]
+            if steer_audience_changed:
+                # Deferred import for the cycle the steer import above documents.
+                from kiro_crew.dashboard.chat_handlers import stop_slot_turn
+
+                if slot._turn_generation != steered_turn_generation:
+                    # The turn this text entered has already ended and another one
+                    # has started on the same slot. Stopping now would cancel work
+                    # that never received this steer, which is worse than the
+                    # exposure being narrowed: the steered turn is over, so whatever
+                    # it published is already published, and the fence recorded
+                    # before the RPC still withholds the cross-surface legs for the
+                    # remainder of the turn that holds it.
+                    steer_audience_changed = [
+                        *steer_audience_changed,
+                        "turn_rolled_over_stop_skipped",
+                    ]
+                else:
+                    # The text is already consumed by the turn at this point, so this
+                    # stop is a best-effort narrowing of what the turn goes on to
+                    # publish -- it is NOT part of delivering the message. Letting it
+                    # raise would abort before the success audit and the ok:True
+                    # return below, reporting a steer the turn has already taken as
+                    # failed; the caller's natural response is to send again, which
+                    # delivers the same text twice. The turn's own reply legs consult
+                    # the audience fence recorded before the RPC, so containment does
+                    # not depend on this stop succeeding.
+                    try:
+                        await stop_slot_turn(
+                            state,
+                            slot,
+                            source="session_send_steer_containment",
+                            escalate=False,
+                        )
+                    except Exception:
+                        logger.exception(
+                            "Containment stop failed after a steer was consumed "
+                            "(slot=%s, newly held=%s); the fence still withholds "
+                            "cross-surface publication",
+                            slot.key,
+                            steer_audience_changed,
+                        )
+                        steer_containment_stop_failed = True
+        else:
+            # Not steered: no text of ours is inside the running turn on this path, so
+            # there is nothing for the record to protect -- the requeue arm's entry
+            # faces the drain and the fallback arm re-runs the gate. Dropped by key so
+            # another peer's concurrent steer keeps its own.
+            slot._steer_audience_fences.pop(audience_fence, None)
+        if not steered and not requeued:
+            # STEER_UNAVAILABLE: no live steer-capable client, an RPC that lost the
+            # text, or an identical steer already in flight. The message falls back
+            # to the queue arm rather than being dropped — but that arm records the
+            # containment holding at APPEND time for the drain to re-assert, and
+            # the RPC above suspends, so the state it would record can differ from
+            # the state this send was authorized against. Re-run the gate so the
+            # snapshot cannot certify a link the authorization never saw.
+            # The prewarm before the gate at the top of this function predates the
+            # steer RPC, which suspends: a config edit during that suspension
+            # invalidates the cache, and `authorize_target` -> `session_control_enabled`
+            # would then run `KiroCrewConfig.load()` synchronously on the shared loop,
+            # stalling every other session while a file is read and validated. Warming
+            # again here is what `prewarm_enabled_check`'s own docstring prescribes for
+            # a gate that sits after an await.
+            await prewarm_enabled_check()
+            regated = authorize_target(
+                state,
+                caller_session_key=caller_session_key,
+                target=target,
+                operation="send",
+                precomputed_ownership_fenced=caller_fenced,
+            )
+            if regated is not slot:
+                # Object identity, not ``regated.key != slot.key``. The delivery
+                # below uses THIS ``slot`` object, so a target closed and resumed
+                # under the same key during the RPC yields a fresh object whose key
+                # still compares equal: the guard would pass, the message would land
+                # on the detached object, and the caller would be told it succeeded.
+                raise SessionControlError(
+                    "that target resolved to a different session while the steer "
+                    "was in flight; re-read the session list and send again",
+                    code="target_moved",
+                    status=409,
+                )
+
+    if steered or requeued:
+        # Neither arm starts a turn: a steer runs inside one that is already going,
+        # and a requeued steer waits for the next like any queued message.
+        started = False
+    elif slot._in_stage_execution:
+        # A multi-stage plan is mid-flight. ``enqueue_or_run_prompt`` gates on
+        # ``slot.running`` alone, and between stages that reads False because each
+        # stage's ``_run_chat`` closes its own turn, so handing it the prompt here
+        # would start a SECOND turn racing the plan. Queue it instead, stamped the
+        # same way that method stamps, and hold it until the plan ends.
+        #
+        # ``slot.running or slot._in_stage_execution`` is the predicate every
+        # producer that must not start a concurrent turn reads: the composer
+        # (``chat_handlers``), the cron injection (``handlers/messaging``), the nudge
+        # arm (``handlers/autonudge``) and the transfer gate. The steer arm above
+        # reads it too, and between stages there is no live steer client, so a steer
+        # falls through its re-gate to this branch.
+        slot.queue_append(prompt, meta=containment_meta(state, slot))
+        # The queue is this prompt's ONLY record until the plan's drain picks it up,
+        # and the caller is handed a success receipt below. Without an immediate
+        # write, a restart inside the ordinary flush interval loses a message the
+        # sender was told had landed. Every other producer that appends and returns
+        # success does this; the inter-stage branch was the one that did not.
+        start_queue_persist(state, slot)
+        started = False
+    else:
+        # `_run_chat` is passed straight through, NOT wrapped in
+        # `state.run_background_turn`: that cap is structurally unreachable here.
+        # `run_background_turn` returns the coroutine untouched for an attended slot
+        # (`state.py`, "this wrapper is inert"), `_ChatSlot.unattended` is
+        # `bool(self._app) and not self._human_seen`, and `authorize_target` refuses
+        # every `_app` target above (`app_scoped_target`) — so no target this
+        # function can reach is ever unattended, and a wrapper would only add a
+        # never-taken timeout arm. The composer's own queued path does the same
+        # (`server.py` passes `_run_chat` directly).
+        started = bool(slot.enqueue_or_run_prompt(prompt, _run_chat, state))
     try:
         state.push_slots_update()
     except Exception:  # pragma: no cover - sidebar refresh is best-effort
@@ -2337,9 +2601,29 @@ async def send_to_target(
         operation="send",
         slot_key=slot.key,
         outcome="allowed",
-        detail={"started": started, "chars": len(body)},
+        # `steer` is what the caller ASKED for and `steered` is what happened, so a
+        # fallback to the queue is readable in the trail rather than looking like a
+        # caller that never asked.
+        detail={
+            "started": started,
+            "steer_requested": bool(steer),
+            "steered": steered,
+            "chars": len(body),
+            # Only when a steer's turn was actually stopped, so the common shape is
+            # unchanged. Names the constraints that newly held, which is what a
+            # reader needs to tell this apart from an ordinary delivery: the message
+            # WAS delivered into the turn and the turn was then cancelled because
+            # its audience had changed under the RPC.
+            **({"steer_stopped_on": steer_audience_changed} if steer_audience_changed else {}),
+            # The stop raised. Present only in that case, so its absence is not a
+            # claim that a stop succeeded on a path where none was attempted. The
+            # delivery outcome above is unchanged: the turn had already taken the
+            # text, and the audience fence recorded before the RPC still withholds
+            # cross-surface publication whether or not the stop took.
+            **({"steer_containment_stop_failed": True} if steer_containment_stop_failed else {}),
+        },
     )
-    return {"ok": True, "target": slot.key, "started": started}
+    return {"ok": True, "target": slot.key, "started": started, "steered": steered}
 
 
 def read_messages(

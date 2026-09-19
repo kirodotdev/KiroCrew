@@ -497,7 +497,15 @@ class TestAnInterruptDuringTheL1Backoff:
     @pytest.mark.asyncio
     async def test_a_steer_drops_the_requeue(self, tmp_path):
         def _steer(_state, slot):
-            slot._pending_steers = ["forget that — read the gateway log instead"]
+            text = "forget that — read the gateway log instead"
+            slot._pending_steers = [text]
+            # See the module-level `_steer`: the composer records provenance AND
+            # the admission alongside the append, and without the admission the
+            # requeued entry carries no containment key and the drain drops it on
+            # its fail-closed floor instead of letting the person's message take
+            # over.
+            slot._steer_user_origin[text] = True
+            slot._steer_admissions[text] = containment_meta(_state, slot)
 
         run = await _turn_interrupted_during_the_backoff(tmp_path, "chat-1-l1steer", _steer)
 
@@ -647,7 +655,22 @@ def _press_stop_in_flight(_state, slot):
 
 
 def _steer(_state, slot):
-    slot._pending_steers.append("forget that — read the gateway log instead")
+    text = "forget that — read the gateway log instead"
+    slot._pending_steers.append(text)
+    # What `steer_into_running_turn` records, and the reason it has to be recorded
+    # here too: assigning `_pending_steers` skips the ONLY production writer of
+    # that list (`chat_delivery.steer_into_running_turn`), which registers both of
+    # these in lockstep with the append.
+    #
+    # `_steer_user_origin` is the provenance the requeue reads for
+    # `directive_user_origin`; it defaults to False so a peer's `session_send`
+    # steer cannot inherit the exemption a person typing into this session has.
+    # `_steer_admissions` is the containment the send was authorized against;
+    # absent, the requeued entry carries no containment key and the drain drops it
+    # on its fail-closed floor. This helper simulates a COMPOSER steer, so it
+    # reports both the way the composer does.
+    slot._steer_user_origin[text] = True
+    slot._steer_admissions[text] = containment_meta(_state, slot)
 
 
 def _followup(state, slot):

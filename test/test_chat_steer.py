@@ -64,6 +64,47 @@ class TestApiChatSteer:
         assert "queue_push" not in events  # steered, not queued
 
     @pytest.mark.asyncio
+    async def test_composer_steer_records_its_admission_for_the_requeue(
+        self, tmp_path, monkeypatch, _patch_sel
+    ):
+        """The composer stamps the containment its own request was admitted under.
+
+        Its requeue runs in the turn's teardown, past the RPC's suspension, so
+        without the stamp a mirror linked during that suspension would be folded
+        into the entry's baseline and survive the drain. The LINKED exemption does
+        not save it: a new outbound mirror is never exempt, because the author does
+        not control mirror links.
+
+        Read from INSIDE the RPC, the only vantage point where "before the
+        suspension" is observable.
+        """
+        monkeypatch.setattr("kiro_crew.dashboard.state.config_dir", lambda: tmp_path)
+        state = _make_state(tmp_path)
+        state.broadcast_ws = MagicMock()
+        slot = _running_slot(state)
+
+        seen: dict = {}
+
+        async def _inspect(msg):
+            seen["stamp"] = slot._steer_admissions.get(msg)
+            seen["origin"] = slot._steer_user_origin.get(msg)
+            return True
+
+        client_mock = MagicMock()
+        client_mock.supports_steer = True
+        client_mock.steer = AsyncMock(side_effect=_inspect)
+        slot._acp_client = client_mock
+
+        async with TestClient(TestServer(_make_app(state))) as client:
+            resp = await client.post(
+                "/api/chat", json={"slot": "test", "message": "go left", "steer": True}
+            )
+            assert resp.status == 200
+
+        assert seen["stamp"] is not None, "the composer must record its admission too"
+        assert seen["origin"] is True, "and mark the text as its own human's"
+
+    @pytest.mark.asyncio
     async def test_app_authenticated_steer_falls_back_to_fail_closed_queue(
         self, tmp_path, monkeypatch, _patch_sel
     ):

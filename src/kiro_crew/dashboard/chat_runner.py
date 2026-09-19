@@ -3830,6 +3830,37 @@ async def _deliver_auth_error_to_slack(
         )
 
 
+def cross_surface_withheld(state: Any, slot: Any) -> bool:
+    """Whether *slot*'s turn must NOT publish its reply to a linked channel.
+
+    True when a peer steered this turn and the containment holding NOW is not the
+    containment that steer was admitted under. Evaluated HERE, synchronously with the
+    publication it guards, which is the only place the answer cannot go stale:
+    :func:`_deliver_cross_surface_reply` resolves the mirror live, so a link bound at
+    any point before this moment is effective, and a reply already sent cannot be
+    recalled.
+
+    The sender cannot answer this on its own behalf. It records the admission before
+    its RPC and keeps it for the whole turn, because a check it runs when the RPC
+    returns says nothing about a mirror bound between then and the reply. So the
+    sender's job is to record and to stop the turn on what it can see; the decision
+    about publishing belongs to the publisher.
+
+    Costs the channel audience nothing when nothing moved -- the comparison is exact
+    rather than precautionary. Withholds only when a constraint that
+    ``authorize_target`` refuses newly holds, and then the transcript still keeps the
+    reply.
+    """
+    fences = getattr(slot, "_steer_audience_fences", None)
+    if not fences:
+        return False
+    # circular import: session_control imports this package's modules at module level.
+    from kiro_crew.dashboard.session_control import containment_snapshot, newly_held_constraints
+
+    now = containment_snapshot(state, slot, on_probe_failure=True)
+    return any(newly_held_constraints(now, admission) for admission in fences.values())
+
+
 async def _deliver_cross_surface_reply(state: Any, session_key: str, assistant_text: str) -> None:
     """Deliver a completed dashboard reply to a linked NON-Slack channel.
 
@@ -6256,9 +6287,6 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
     """
     if not slot._pending_steers:
         return
-    # circular import: session_control imports this package's modules at module level.
-    from kiro_crew.dashboard.session_control import containment_meta
-
     requeued = slot._pending_steers[:]
     slot._pending_steers.clear()
     for steer_msg in reversed(requeued):
@@ -6292,7 +6320,17 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         # its admission is re-affirmed — a link appearing between here and the
         # drain must drop it like any other queued prompt, while a session that
         # was ALREADY channel-born keeps its steers.
-        _meta: dict = containment_meta(state, slot)
+        #
+        # The snapshot comes from the SEND's gate, never from reading the slot here:
+        # this requeue runs in the teardown, past the steer RPC's suspension, so a
+        # slot read would fold a mirror linked during that suspension into the
+        # baseline and the drain would then read the widened audience as admitted.
+        # `steer_into_running_turn` requires the stamp from every caller, so the
+        # absent case is a steer registered by code that predates it; that entry
+        # carries NO containment key and the drain checks it against every currently
+        # held constraint, which is the documented fail-closed floor.
+        _recorded = getattr(slot, "_steer_admissions", {}).pop(steer_msg, None)
+        _meta: dict = dict(_recorded) if _recorded else {}
         _did = getattr(slot, "_steer_delivery_ids", {}).pop(steer_msg, "")
         if _did:
             _meta["steer_delivery_id"] = _did
@@ -6309,18 +6347,27 @@ def _requeue_unconsumed_steers(state: "DashboardState", slot: "_ChatSlot") -> No
         _sid = getattr(slot, "_steer_send_ids", {}).pop(steer_msg, "")
         if _sid:
             _meta["sendId"] = _sid
-        # Provenance is derivable, not guessed: `steer_into_running_turn` has
-        # exactly one caller (the api_chat composer branch), and app isolation
-        # confines app-surface requests to app-scoped slots — so every steer
-        # into a NON-app slot came from the authenticated human composer. That
-        # provenance is what exempts the requeued card from the LINKED drop,
-        # exactly as the composer's own queued
-        # fallback is exempt; an app slot's steers stay unexempted (False).
+        # Provenance is REPORTED by the steer's caller, not derived from the slot.
+        # `steer_into_running_turn` has two callers that differ on exactly this
+        # point: the api_chat composer branch, whose text its session's own human
+        # typed, and `session_send`, whose text a peer sent. The slot cannot tell
+        # them apart, and the difference is the whole point of the flag:
+        # `directive_user_origin` exempts the entry from the drain's LINKED drop
+        # because "the author typed into the session's own surface", which is true
+        # of the composer and false of a peer. Deriving it would hand a peer the
+        # human's exemption, so a link appearing while the steer RPC was suspended
+        # would let the peer's text run and mirror to an audience
+        # `authorize_target` refuses outright.
+        #
+        # Absent means NOT the session's own human: an unrecorded steer fails closed
+        # into the ordinary drop rather than inheriting the exemption. An app slot's
+        # steers stay unexempted as before.
+        _origin = bool(getattr(slot, "_steer_user_origin", {}).pop(steer_msg, False))
         qid = slot.queue_insert(
             0,
             steer_msg,
             meta=_meta,
-            directive_user_origin=not bool(getattr(slot, "_app", "")),
+            directive_user_origin=_origin and not bool(getattr(slot, "_app", "")),
         )
         try:
             content, _ = redact_exfiltration_urls(steer_msg)
@@ -10699,8 +10746,14 @@ async def _run_chat(
                         {"id": _nat_card, "slot": slot.key, "text": f"\u2192 {_ntool}\n"},
                     )
                 await fire_tool_hooks(state._hook_store, event.title, event.tool_input)
-                # Mirror tool call to linked Slack stream
-                if _mirror_stream_ts:
+                # Mirror tool call to linked Slack stream. Fenced like the reply
+                # legs: a tool's purpose line is the peer's steer showing through in
+                # what the model chose to do next, published to a thread whose owner
+                # is resolved live. The check is a dict emptiness test on the
+                # overwhelming majority of turns -- `cross_surface_withheld` returns
+                # before probing anything when no peer steer is recorded -- so paying
+                # it per event costs nothing on a turn nobody interfered with.
+                if _mirror_stream_ts and not cross_surface_withheld(state, slot):
                     try:
                         if _mirror_active_task:
                             await state.slack_client.append_task(
@@ -15035,7 +15088,20 @@ async def _run_chat(
                 )
 
         # ── Bidirectional sync: mirror response to linked Slack thread ──
-        if assistant_text and state.slack_client and _mirror_thread and _mirror_chan:
+        # Gated on the SAME audience fence as the channel-neutral leg below. Slack is
+        # a cross-surface audience like any other: it resolves its thread owner live
+        # (`get_session_for_thread`) and carries supersession handling precisely
+        # because a relink can land mid-turn, so a peer steer admitted against an
+        # unlinked target can have its reply published here to a conversation the
+        # authorization never saw. Fencing only the non-Slack leg would leave the
+        # busier surface open.
+        if (
+            assistant_text
+            and state.slack_client
+            and _mirror_thread
+            and _mirror_chan
+            and not cross_surface_withheld(state, slot)
+        ):
             try:
                 from kiro_crew.slack.format import (  # circular: slack.format -> dashboard.state -> chat
                     build_options_blocks,
@@ -15116,7 +15182,15 @@ async def _run_chat(
         # a preceding question on the linked surface — withholding it would strand
         # that question unanswered.
         if not is_slash:
-            await _deliver_cross_surface_reply(state, session_key, assistant_text)
+            if cross_surface_withheld(state, slot):
+                logger.info(
+                    "withholding cross-surface reply for %s: %d unresolved steer "
+                    "audience fence(s)",
+                    session_key,
+                    len(slot._steer_audience_fences),
+                )
+            else:
+                await _deliver_cross_surface_reply(state, session_key, assistant_text)
     except asyncio.CancelledError:
         _crew_log_error = "CancelledError"
         _persist_partial_reply()
@@ -16508,7 +16582,11 @@ async def _run_chat(
         try:
             if _mirror_stream_ts and state.slack_client and _mirror_chan:
                 try:
-                    if _mirror_active_task:
+                    # Fenced for the same reason the in-progress append is: if that
+                    # one was withheld, marking it complete here would publish the
+                    # title for the first time. This runs BEFORE the fence is
+                    # cleared below, so it still sees the turn's own records.
+                    if _mirror_active_task and not cross_surface_withheld(state, slot):
                         await state.slack_client.append_task(
                             _mirror_chan,
                             _mirror_stream_ts,
@@ -16631,6 +16709,12 @@ async def _run_chat(
         # individually cancellable — a user who meant "discard" clicks ✕;
         # nothing is ever silently lost.
         _requeue_unconsumed_steers(state, slot)
+        # Drop the peer-steer admissions with the turn they belonged to. They govern
+        # whether THIS turn may publish across surfaces, which is their whole job;
+        # carrying them further would judge a later turn by an authorization that was
+        # never about it. Cleared unconditionally, so a hard stop, a crash or a
+        # gateway abort cannot leave a record behind to silence the next turn.
+        slot._steer_audience_fences.clear()
         # ── Retire any wait countdown ──
         # A healthy `wait` clears its own state with a final keepalive ping, but
         # that ping is best-effort and cannot run at all if the MCP subprocess

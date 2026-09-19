@@ -310,11 +310,18 @@ async def api_session_control_send(request: web.Request) -> web.Response:
         message = body.get("message")
         if not isinstance(message, str) or not message.strip():
             raise sc.SessionControlError("message is required", code="message_required")
+        # Strictly typed, never truthiness: this body is app-controlled, and
+        # coercing "false" (a non-empty string) into True would silently cut into
+        # a running turn for a caller that asked for the queue.
+        steer = body.get("steer", False)
+        if not isinstance(steer, bool):
+            raise sc.SessionControlError("steer must be a boolean", code="invalid_steer")
         result = await sc.send_to_target(
             state,
             caller_session_key=_read_session_key(request),
             target=_target(body),
             message=message,
+            steer=steer,
             caller_fenced=_carried_fence(request),
         )
     except sc.SessionControlError as exc:
