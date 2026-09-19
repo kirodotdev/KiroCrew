@@ -1,3 +1,5 @@
+import os
+
 """Regression tests for _resolve_skill_root edition-root resolution.
 
 Edition-contributed skill roots now come from the CPP seam
@@ -39,9 +41,7 @@ def _isolate_config():
 
 def _set_edition_roots(monkeypatch, *roots):
     """Patch the extra_skills() seam to expose *roots* as edition skill roots."""
-    monkeypatch.setattr(
-        DefaultMcpToolingProvider, "extra_skills", lambda self: list(roots)
-    )
+    monkeypatch.setattr(DefaultMcpToolingProvider, "extra_skills", lambda self: list(roots))
 
 
 def test_resolve_skill_root_resolves_edition_nested_key(tmp_path, monkeypatch):
@@ -428,3 +428,474 @@ def test_edition_root_already_keyed_elsewhere_is_not_re_added_as_package(tmp_pat
     # And the roots the core owns are still enumerated under their own prefixes.
     assert data_home.resolve() in [r.resolve() for prefix, r in pairs if prefix == ""]
     assert kiro_user.resolve() in [r.resolve() for prefix, r in pairs if prefix == "kiro-user/"]
+
+
+def _key_safe(qualifier: str) -> bool:
+    """Whether *qualifier* survives its own key's parse, asserted DIRECTLY.
+
+    The derivation is a lowercase-hex digest, so this states the property the resolver
+    depends on rather than routing through a production predicate: nothing here can be
+    read as the key separator, as glob pattern syntax, as a traversal element, or as
+    more than one path segment. Asserted here in the test rather than in production
+    because the resolver needs no per-value filter -- it requires equality with
+    a derived digest, and any value failing these checks equals no digest and so
+    resolves to nothing on its own.
+    """
+    return bool(
+        qualifier
+        and _shared._SKILL_KEY_QUALIFIER_SEP not in qualifier
+        and not any(c in qualifier for c in _shared._GLOB_CHARS)
+        and ".." not in qualifier
+        and "/" not in qualifier
+        and "\\" not in qualifier
+        and not qualifier.startswith((".", "~"))
+    )
+
+
+def test_split_package_skill_key_leaves_an_unqualified_key_untouched():
+    """No separator means no qualifier — the pre-existing grammar, verbatim.
+
+    This is what keeps the change additive: every key emitted before it existed
+    still reaches the same code path with the same relative path.
+    """
+    assert _shared._split_package_skill_key("shared-skill") == (None, "shared-skill")
+    assert _shared._split_package_skill_key("SomePkg/shared-skill") == (
+        None,
+        "SomePkg/shared-skill",
+    )
+
+
+def test_split_package_skill_key_ignores_a_half_empty_qualifier():
+    """A stray separator degrades to "unqualified", never to an empty glob.
+
+    ``:shared-skill`` with an empty qualifier would otherwise filter every
+    candidate out, and ``shared-skill:`` would glob ``/SKILL.md`` off the root.
+    """
+    assert _shared._split_package_skill_key(":shared-skill") == (None, ":shared-skill")
+    assert _shared._split_package_skill_key("shared-skill:") == (None, "shared-skill:")
+
+
+def test_a_colon_named_directory_is_not_mistaken_for_a_qualifier():
+    """A skill directory legitimately containing ``:`` must still key to its own path.
+
+    Reserving the separator would otherwise 404 such a directory with no fallback: the key
+    parsed as ``qualifier=<dir-prefix>`` and resolved to nothing. Only the minted SHAPE -- a
+    fixed-width lowercase hex digest -- is read as a qualifier, so the reservation costs
+    nothing to a pre-existing name.
+    """
+    width = _shared._ROOT_IDENTITY_DIGEST_BYTES * 2
+    for literal in ("weird:name", "Notes:2026/SKILL.md", "a:b", "A" * width + ":tool"):
+        assert _shared._split_package_skill_key(literal) == (None, literal), literal
+    # Non-vacuity: a real minted qualifier still splits, so the guard did not disable the
+    # grammar it protects.
+    minted = "0" * width
+    assert _shared._split_package_skill_key(f"{minted}:shared-skill") == (
+        minted,
+        "shared-skill",
+    )
+
+
+def test_a_root_identity_token_is_stable_and_unique_per_root(tmp_path):
+    """Same root -> same token across calls; different root -> different token.
+
+    Stability is what makes a key usable at all: a token that changed between two
+    enumerations would break every key on its own, and ``hash()`` would do exactly
+    that, being salted per process. Uniqueness is what closes the replacement hazard.
+    """
+    one = tmp_path / "p" / "A" / "skills"
+    two = tmp_path / "p" / "A" / "v2" / "skills"
+    for d in (one, two):
+        d.mkdir(parents=True)
+
+    first = _shared._root_identity_token(one)
+    assert first is not None
+    assert first == _shared._root_identity_token(one), "must be stable across calls"
+    assert first != _shared._root_identity_token(two), "must differ per root"
+
+    # An alias reaching the SAME directory is the SAME identity, since the token is
+    # taken from the canonical path -- an edition advertising both must not split in two.
+    alias = tmp_path / "alias-root"
+    alias.symlink_to(one, target_is_directory=True)
+    assert _shared._root_identity_token(alias) == first
+
+    # The token is one legal segment: no key separator, no glob metacharacter, and it
+    # passes the resolver's own predicate, so a composed qualifier round-trips.
+    assert _shared._SKILL_KEY_QUALIFIER_SEP not in first
+    assert not any(c in first for c in _shared._GLOB_CHARS)
+    assert _key_safe(first)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Windows paths are text; no undecodable byte")
+def test_a_root_named_with_undecodable_bytes_still_yields_a_token(tmp_path):
+    """A POSIX root can be named with a byte the filesystem encoding cannot decode.
+
+    Python surfaces such a byte as a LONE SURROGATE via surrogateescape, and
+    ``str.encode("utf-8")`` REFUSES a lone surrogate — so taking the digest that way
+    raised ``UnicodeEncodeError`` out of catalog enumeration for every install carrying
+    one. A crash, not the fail-closed ``None`` the function documents: enumeration is
+    reached from the skills catalog, so one such bundle took the whole listing down
+    rather than dropping one row.
+
+    ``os.fsencode`` reverses the same mapping, so the digest is taken over the root's
+    real bytes. Asserted through ``_root_identity_token`` as well, because that is
+    the caller the exception actually propagated through.
+    """
+    raw = os.path.join(os.fsencode(str(tmp_path)), b"pkg-\xff-bundle")
+    try:
+        os.mkdir(raw)
+    except OSError as exc:
+        # A UTF-8-enforcing filesystem (APFS) refuses the name outright, so a root carrying
+        # an undecodable byte cannot exist there and there is nothing to guard against.
+        pytest.skip(f"this filesystem will not store an undecodable name: {exc}")
+    odd = _shared.Path(os.fsdecode(raw))
+    assert odd.is_dir(), "fixture root was not created"
+    # surrogateescape maps an undecodable byte 0x80-0xFF to U+DC80-U+DCFF. Asserted by
+    # CODEPOINT rather than by a "\\udc" literal, which is a truncated escape in source.
+    assert any(
+        any(0xDC80 <= ord(ch) <= 0xDCFF for ch in part) for part in odd.parts
+    ), "no surrogate present -- the fixture would not exercise the fix"
+
+    token = _shared._root_identity_token(odd)
+    assert token is not None
+    assert _key_safe(token)
+
+    # The caller must not raise either, and must still distinguish this root.
+    plain = tmp_path / "pkg-plain-bundle"
+    plain.mkdir()
+    assert _shared._root_identity_token(plain) != token
+
+    # POSITIVE CONTROL: an ordinary root still tokenises, so a pass above is not the
+    # function having become a no-op that returns None for everything.
+    assert _shared._root_identity_token(plain) is not None
+
+
+def test_a_qualifier_the_resolver_would_refuse_is_never_returned(tmp_path):
+    """Every derived qualifier must be one the resolver accepts, on hostile roots.
+
+    An earlier spelling picked a path SEGMENT and rejected one only when it CARRIED the
+    separator, so a segment the resolver refuses for a DIFFERENT reason -- a leading
+    ``.`` or ``~``, or a traversal element -- was still returned, and the catalogue then
+    offered ``package/<that>:<rel>`` whose qualifier fails
+    key-safe by construction: offered and unresolvable.
+
+    A digest cannot carry any of those, so the guarantee is now structural rather than
+    filtered. Kept because the ROOTS are the hostile part: a root whose own name is
+    ``..`` or ``~PkgA`` must still yield an acceptable qualifier.
+    """
+    for hostile in (".PkgA", "~PkgA", "..", "."):
+        # The roots must EXIST: a root that cannot be stat'ed now refuses outright, and a
+        # refusal would satisfy "no hostile name leaked" without testing the derivation.
+        root = tmp_path / hostile / "skills"
+        root.mkdir(parents=True, exist_ok=True)
+        got = _shared._root_identity_token(root)
+        assert got != hostile, f"returned {got!r}, which the resolver refuses"
+        assert got is not None, hostile
+        assert _key_safe(got), got
+    # Positive control: two hostile roots still get DISTINCT qualifiers, so the
+    # assertions above are not satisfied by some constant fallback.
+    (tmp_path / "ctl-a" / "skills").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "ctl-b" / "skills").mkdir(parents=True, exist_ok=True)
+    assert _shared._root_identity_token(
+        tmp_path / "ctl-a" / "skills"
+    ) != _shared._root_identity_token(tmp_path / "ctl-b" / "skills")
+
+
+def test_a_qualifier_is_always_key_safe_and_resolver_acceptable(tmp_path, monkeypatch):
+    """A derived qualifier must survive its own key's parse, structurally.
+
+    The hazard is a qualifier carrying the key separator: ``package/<qualifier>:<rel>``
+    would then split at the qualifier's own colon, leaving a rel that names nothing --
+    a key the catalog offers and the resolver cannot reach. An earlier spelling picked a
+    human-legible PATH SEGMENT, so it had to filter candidates for this (a Windows drive
+    anchor is exactly such a segment: ``PureWindowsPath("C:/x").parts[0]`` is ``"C:\\\\"``),
+    and a root whose every candidate was rejected produced no qualifier at all.
+
+    A digest cannot be unsafe, so the filter is gone rather than merely passing. Pinned
+    on real roots that would have defeated the old segment rules -- one whose every
+    segment is shared with the other, and one whose only distinguishing segment carries
+    the separator -- because those are the shapes at risk of yielding ``None``.
+    """
+    shallow = tmp_path / "x" / "PkgA" / "skills"
+    deep = tmp_path / "x" / "nested" / "PkgA" / "skills"
+    for root in (shallow, deep):
+        root.mkdir(parents=True)
+
+    for root in (shallow, deep):
+        q = _shared._root_identity_token(root)
+        assert q is not None, root
+        assert _shared._SKILL_KEY_QUALIFIER_SEP not in q, q
+        assert not any(c in q for c in ("*", "?", "[")), q
+        assert ".." not in q, q
+        # AND the predicate the resolver itself applies to an incoming qualifier.
+        assert _key_safe(q), q
+
+    # Distinct roots, distinct qualifiers -- so the collision is addressable, which is
+    # what the old segment rules could not promise for this pair.
+    assert _shared._root_identity_token(shallow) != _shared._root_identity_token(deep)
+
+
+def test_the_qualifier_is_stable_against_unrelated_bundle_changes(tmp_path):
+    """The same root keys the same way no matter what else is installed.
+
+    This is the property a segment-derived qualifier lacks: its segment was the
+    first one absent from every OTHER colliding root, so installing or removing an
+    unrelated bundle re-spelled the key of a root that had not moved. A key is a durable
+    handle -- the editor holds one and the agent-config write path resolves one -- so a
+    spelling that shifts underneath an untouched root is a defect even though each
+    individual resolve was self-consistent.
+
+    Derived from the root alone, so there is no set to be relative to. Asserted by
+    deriving for one root while its NEIGHBOURS change around it.
+    """
+    subject = tmp_path / "packages" / "PkgA" / "eventId-1" / "skills"
+    subject.mkdir(parents=True)
+    first = _shared._root_identity_token(subject)
+    assert first is not None
+
+    # Install two unrelated bundles, one of which shares every segment of the subject
+    # except its own -- the shape that would force the segment deeper or to None.
+    for extra in ("PkgB/eventId-2", "PkgA/eventId-1/nested"):
+        (tmp_path / "packages" / extra / "skills").mkdir(parents=True)
+        assert _shared._root_identity_token(subject) == first, extra
+
+    # And removing one does not move it either.
+    (tmp_path / "packages" / "PkgB" / "eventId-2" / "skills").rmdir()
+    assert _shared._root_identity_token(subject) == first
+
+
+def _q(root):
+    """The qualifier production derives for *root*: its identity digest.
+
+    A test cannot spell a digest literally without hardcoding one, which would pass for
+    the wrong reason and break on any tmp path change. Composing it from the same
+    function production uses keeps each test pinning the part it is ABOUT -- WHICH root
+    a key resolves to -- rather than the digest's value.
+    """
+    token = _shared._root_identity_token(_shared.Path(root))
+    assert token is not None, f"no identity token for {root}"
+    return token
+
+
+def test_package_collision_reports_its_two_outcomes(tmp_path):
+    """``_package_collision`` must separate no-collision from a real collision.
+
+    Enumeration needs the distinction -- one mints the unqualified key, the other mints
+    one qualified key per copy -- while resolution refuses the first. Collapsing them
+    would make the fold either drop a perfectly good uncollided skill or mint a key no
+    root answers to.
+    """
+    rel = "shared-skill"
+
+    def root_with(sub: str, body: str):
+        root = tmp_path / sub
+        (root / rel).mkdir(parents=True)
+        (root / rel / "SKILL.md").write_text(body, encoding="utf-8")
+        return root
+
+    # 1. ONE distinct copy -> no qualifiers, and the caller keys it unqualified.
+    solo = root_with("packages/PkgA/eventId-1/skills", "# solo")
+    copies, qualifiers = _shared._package_collision([(solo, solo / rel / "SKILL.md")])
+    assert len(copies) == 1
+    assert qualifiers is None, "a single copy has no qualified spelling"
+
+    # 2. TWO distinct copies -> one qualifier each, and they differ.
+    other = root_with("packages/PkgB/eventId-2/skills", "# other")
+    copies, qualifiers = _shared._package_collision(
+        [(solo, solo / rel / "SKILL.md"), (other, other / rel / "SKILL.md")]
+    )
+    assert len(copies) == 2
+    assert qualifiers == [_q(solo), _q(other)], qualifiers
+    assert len(set(qualifiers)) == 2
+
+    # 3. An ALIAS reaching copy 1's file is not a second copy, so the collision
+    #    collapses back to case 1 rather than manufacturing a qualified key.
+    alias = tmp_path / "packages" / "PkgAlias" / "eventId-3" / "skills"
+    alias.mkdir(parents=True)
+    (alias / rel).symlink_to(solo / rel, target_is_directory=True)
+    copies, qualifiers = _shared._package_collision(
+        [(solo, solo / rel / "SKILL.md"), (alias, alias / rel / "SKILL.md")]
+    )
+    assert len(copies) == 1, copies
+    assert qualifiers is None
+
+    # 4. The shape that could be a THIRD outcome: one root sharing every segment with
+    #    the other, which no distinguishing segment could split, so the whole collision
+    #    was dropped as unqualifiable. Digests differ regardless of shared spelling, so
+    #    this is now an ordinary case 2 -- the omission branch survives only as a
+    #    fail-closed backstop for a root that does not canonicalise.
+    twin = root_with("twin/skills", "# twin")
+    deeper = root_with("twin/nested/skills", "# deeper")
+    copies, qualifiers = _shared._package_collision(
+        [(twin, twin / rel / "SKILL.md"), (deeper, deeper / rel / "SKILL.md")]
+    )
+    assert len(copies) == 2, copies
+    assert qualifiers == [_q(twin), _q(deeper)], qualifiers
+    assert len(set(qualifiers)) == 2
+
+
+def test_the_qualifier_is_too_wide_to_grind_a_stale_key_onto_another_root(tmp_path):
+    """A stale key must not be re-bindable by CHOOSING an install path that collides.
+
+    The docstring's promise is that a different root cannot produce a given qualifier.
+    That holds only while the digest is too wide to search: a narrow one is ground
+    against, not merely collided with by accident, so the width IS the guarantee.
+    """
+    import hashlib
+    import os
+
+    from kiro_crew.dashboard.handlers import _shared
+
+    base = tmp_path.resolve()
+
+    # Mechanism control: at a deliberately narrow width the collision is findable in a
+    # few hundred tries, which is what makes a narrow qualifier re-bindable at all.
+    def _narrow(p):
+        return hashlib.blake2b(os.fsencode(str(p)), digest_size=2).hexdigest()
+
+    seen: dict[str, object] = {}
+    ground: tuple[object, object] | None = None
+    for i in range(20000):
+        cand = base / f"bundle-{i}" / "skills"
+        token = _narrow(cand)
+        if token in seen:
+            ground = (seen[token], cand)
+            break
+        seen[token] = cand
+    assert ground is not None, "narrow-width grind found no collision; control is broken"
+
+    first, second = ground
+    assert _narrow(first) == _narrow(second), "control pair does not actually collide"
+
+    for r in (first, second):
+        r.mkdir(parents=True)
+
+    # The shipped width must make that search infeasible rather than merely unlikely.
+    bits = _shared._ROOT_IDENTITY_DIGEST_BYTES * 8
+    assert bits >= 128, f"qualifier is {bits} bits, narrow enough to grind a rebinding"
+
+    token = _shared._root_identity_token(first)
+    assert token is not None
+    assert len(token) * 4 >= 128, f"qualifier renders {len(token) * 4} bits"
+
+    # And the pair that collided at the narrow width must NOT collide at the shipped one,
+    # so the extra width is doing the separating rather than merely being present.
+    assert _shared._root_identity_token(first) != _shared._root_identity_token(second)
+
+
+def test_a_bundle_replaced_at_the_same_path_cannot_re_derive_the_qualifier(tmp_path):
+    """The canonical path alone is not an identity, so it must not be the whole basis.
+
+    Uninstalling a bundle and installing another at the SAME path left the digest
+    unchanged, so a key an editor still held resolved to the replacement's file and the
+    write path persisted a skill the user never selected. Binding the root's device and
+    inode makes the identity per-instance: the replacement is a different root, the stale
+    key fails to resolve, and the write path rejects the whole request.
+    """
+    root = tmp_path / "packages" / "PkgA" / "eventId-1" / "skills"
+    (root / "shared-skill").mkdir(parents=True)
+    (root / "shared-skill" / "SKILL.md").write_text("# first bundle", encoding="utf-8")
+
+    first = _shared._root_identity_token(root)
+    assert first is not None, "the fixture root has no identity"
+    assert _shared._root_identity_token(root) == first, "identity is unstable in place"
+
+    # Uninstall, then install a DIFFERENT bundle at exactly the same path.
+    import shutil
+
+    shutil.rmtree(tmp_path / "packages" / "PkgA")
+    (root / "shared-skill").mkdir(parents=True)
+    (root / "shared-skill" / "SKILL.md").write_text("# second bundle", encoding="utf-8")
+
+    second = _shared._root_identity_token(root)
+    assert second is not None, "the replacement root has no identity"
+    assert second != first, "a replacement bundle re-derived the replaced bundle's qualifier"
+
+
+def test_a_recycled_inode_does_not_re_derive_the_replaced_bundles_qualifier(tmp_path):
+    """A replacement bundle handed the SAME inode number must still get a new qualifier.
+
+    An inode number is a reusable resource: uninstall a bundle and install another at the
+    same path and the replacement can receive the identical ``st_ino``. Binding the
+    qualifier to ``dev:ino`` alone therefore re-derives the REPLACED bundle's key, so a
+    key an editor still holds resolves to the replacement's file and the write path
+    persists a skill nobody selected. ``st_ctime_ns`` is what cannot be recycled with it.
+
+    Recycling cannot be forced on demand, so the allocator is stood in for: the stat the
+    token is taken over reports the replaced inode's own dev:ino with a later creation
+    time, which is exactly the state a recycling allocator produces. The later time is
+    constructed rather than measured, because this filesystem's timestamp granularity is
+    coarse enough (~20ms on xfs here) that a real recreate lands in the same granule.
+    """
+    root = tmp_path / "packages" / "PkgA" / "eventId-1" / "skills"
+    (root / "tool").mkdir(parents=True)
+    (root / "tool" / "SKILL.md").write_text("# first bundle", encoding="utf-8")
+
+    before = root.stat()
+    first = _shared._root_identity_token(root)
+    assert first is not None
+
+    class _Recycled:
+        """The replaced inode's number, carrying the replacement's later creation time."""
+
+        st_dev = before.st_dev
+        st_ino = before.st_ino
+        st_ctime_ns = before.st_ctime_ns + 1
+        # Held EQUAL on purpose: the creation-time bump alone must discriminate, so this
+        # cannot pass merely because the newer field moved too.
+        st_mtime_ns = before.st_mtime_ns
+
+    class _RecycledRoot(type(root)):
+        """A root whose stat reports the recycled triple.
+
+        A subclass rather than a patch of ``Path.stat``: patching that globally reaches
+        pytest's own failure formatting and takes the run down with an INTERNALERROR
+        instead of reporting the assertion.
+        """
+
+        def stat(self, *a, **k):
+            return _Recycled()
+
+    second = _shared._root_identity_token(_RecycledRoot(str(root)))
+
+    assert second is not None
+    assert second != first, "a recycled inode re-derived the replaced bundle's qualifier"
+
+
+def test_a_holders_qualifier_does_not_depend_on_who_else_is_in_the_set(tmp_path):
+    """One root's qualifier must be the same whoever else holds the rel.
+
+    A segment-derived qualifier is set-dependent: adding a holder that shares the chosen
+    segment forces the derivation deeper or to nothing, so a key minted against the narrow
+    set stops matching against the wider one. A per-root digest is set-independent, which is
+    what makes an enumerated key resolvable no matter which tier the resolver reached. This
+    asserts that property directly, because no end-to-end fixture can: widening the set
+    changes nothing observable while the derivation stays per-root.
+    """
+    rel = "shared-skill"
+
+    def root_with(where, body):
+        r = tmp_path / where
+        (r / rel).mkdir(parents=True)
+        (r / rel / "SKILL.md").write_text(body, encoding="utf-8")
+        return r
+
+    a = root_with("packages/PkgA/eventId-1/skills", "# a")
+    b = root_with("packages/PkgB/eventId-2/skills", "# b")
+    # Shares PkgA with *a*: the segment a segment-rule would have picked to tell them apart.
+    c = root_with("packages/PkgA/eventId-3/skills", "# c")
+
+    def qualifier_for(root, others):
+        entries = [(r, r / rel / "SKILL.md") for r in [root, *others]]
+        copies, qualifiers = _shared._package_collision(entries)
+        assert qualifiers is not None, "the fixture produced no qualified spelling"
+        for (r, _f), q in zip(copies, qualifiers):
+            if r == root:
+                return q
+        raise AssertionError(f"{root} vanished from its own collision set")
+
+    narrow = qualifier_for(a, [b])
+    wider = qualifier_for(a, [b, c])
+    assert narrow == wider, (
+        "a root's qualifier changed when another holder joined the set, so a key minted "
+        f"against one set cannot resolve against the other: {narrow} != {wider}"
+    )
