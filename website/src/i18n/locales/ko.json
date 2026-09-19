@@ -12847,6 +12847,16 @@
         "copy_failed_select_the_link_and_copy_it_manually": "복사하지 못했습니다. 링크를 선택하고 직접 복사하세요."
       },
       "aboutPanel": {
+        "agent_request_body_latest": "에이전트({{who}})가 최신 버전으로 업데이트를 요청했습니다. 설치하기 전까지 아무것도 바뀌지 않습니다.",
+        "agent_request_body_version": "에이전트({{who}})가 v{{version}}(으)로 업데이트를 요청했습니다. 설치하기 전까지 아무것도 바뀌지 않습니다.",
+        "agent_request_decline": "거절",
+        "agent_request_decline_failed": "요청을 거절할 수 없습니다",
+        "agent_request_expires": "{{when}} 만료",
+        "agent_request_feed_differs": "v{{requested}}을(를) 요청했지만 업데이트 피드는 v{{found}}을(를) 제공합니다. 설치하면 v{{found}}이(가) 됩니다.",
+        "agent_request_heading": "에이전트가 업데이트를 요청했습니다",
+        "agent_request_install": "설치하고 다시 시작",
+        "agent_request_install_version": "v{{version}} 설치하고 다시 시작",
+        "agent_request_unknown_requester": "에이전트",
         "diverged": "분기됨",
         "checkout_diverged_from_upstream": "이 체크아웃은 업스트림에서 분기되었습니다({{distance}}). rebase 또는 merge로 업데이트하세요 — 아무것도 자동으로 적용되지 않으므로 로컬 커밋은 안전합니다.",
         "commits_ahead_other": "{{count}}개 커밋 앞섬",

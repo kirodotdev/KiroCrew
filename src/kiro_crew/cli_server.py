@@ -2090,7 +2090,17 @@ def _update_approve() -> None:
     shadow apply itself and restarts; progress lands on the dashboard's
     update overlay.
     """
+    from kiro_crew.platform.update_capability import MANAGED_BY_ELECTRON, derive_capability
     from kiro_crew.platform.update_stepup import read_pending
+
+    # A packaged desktop install has no host-side approval: the app's own
+    # updater owns the bytes, and the human click in Settings › About is the
+    # approval. Saying so and exiting cleanly beats hunting for a nonce that
+    # this shape never writes.
+    if derive_capability().managed_by == MANAGED_BY_ELECTRON:
+        print("ℹ️  This is a packaged desktop install.")
+        print("   Approve the update in the app: Settings › About › Install & restart.")
+        return
 
     print("👻 Approving the pending in-app update…\n")
     # Default read: never writes. This runs in the CLI process, outside the

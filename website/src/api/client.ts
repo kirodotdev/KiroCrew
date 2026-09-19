@@ -4249,7 +4249,9 @@ export const api = {
   // In-app wheel update step-up: arming records the request and returns the
   // host command to run; the approval nonce never reaches this client.
   armUpdate: () => post('/api/update/arm').then(j) as Promise<{ ok?: boolean; armed?: boolean; request_id?: string; version?: string; expires_in?: number; approve_command?: string; error?: string; code?: string }>,
-  armStatus: () => fetch('/api/update/arm').then(j) as Promise<{ armed: boolean; request_id?: string; version?: string; expires_in?: number; approve_command?: string }>,
+  armStatus: () => fetch('/api/update/arm').then(j) as Promise<{ armed: boolean; managed_by?: string; request_id?: string; version?: string; requested_by?: string; armed_at?: number; expires_in?: number; approve_command?: string }>,
+  // Decline a packaged-app update request. Removes a nudge, grants nothing.
+  dismissUpdateArm: (requestId: string) => del(`/api/update/arm?request_id=${encodeURIComponent(requestId)}`).then(j) as Promise<{ ok?: boolean; armed?: boolean; dismissed?: boolean }>,
   cancelUpdate: () => post('/api/update/cancel').then(j),
   simulateUpdate: (opts?: { delay?: number; fail_at?: string }) => post('/api/update/simulate', opts || {}).then(j),
   pickFiles: () => post('/api/upload').then(j) as Promise<{ paths: string[] }>,

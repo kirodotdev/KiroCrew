@@ -784,6 +784,16 @@ _MIXED_INTERNAL_API_PATHS = frozenset(
         # Called by MCP (loopback + secret) AND browser polling
         # (DCV/SSH-forwarded cookie auth).  See token_auth.py.
         "/api/spawn",
+        # The update step-up's arm record: POST (arm), GET (status), DELETE
+        # (decline). Two callers, two credentials: the About panel polls it with
+        # a cookie, and an agent asking for an app update presents
+        # X-Internal-Secret. EXACT path — a sibling of the STRICT
+        # `/api/update/approve`, never its prefix: token_auth matches `p` or
+        # `p + "/"`, so `/api/update` here would turn a host-only approval into
+        # a cookie-reachable one. Arming grants nothing (the record carries no
+        # nonce and no endpoint installs from it), so a mixed admission widens
+        # nothing.
+        "/api/update/arm",
         "/api/chat",
         "/api/lessons",
         # MCP recall still requires the handler's protected member/session proof.

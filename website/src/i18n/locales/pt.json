@@ -13209,6 +13209,16 @@
         "copy_failed_select_the_link_and_copy_it_manually": "Falha ao copiar. Selecione o link e copie-o manualmente."
       },
       "aboutPanel": {
+        "agent_request_body_latest": "Um agente ({{who}}) pediu para atualizar para a versão mais recente. Nada muda até você instalar.",
+        "agent_request_body_version": "Um agente ({{who}}) pediu para atualizar para a v{{version}}. Nada muda até você instalar.",
+        "agent_request_decline": "Recusar",
+        "agent_request_decline_failed": "Não foi possível recusar a solicitação",
+        "agent_request_expires": "Expira {{when}}",
+        "agent_request_feed_differs": "A v{{requested}} foi solicitada, mas o canal oferece a v{{found}}. Instalar traz a v{{found}}.",
+        "agent_request_heading": "Um agente solicitou uma atualização",
+        "agent_request_install": "Instalar e reiniciar",
+        "agent_request_install_version": "Instalar a v{{version}} e reiniciar",
+        "agent_request_unknown_requester": "Um agente",
         "diverged": "Divergente",
         "checkout_diverged_from_upstream": "Este checkout divergiu do seu upstream ({{distance}}). Faça rebase ou merge para atualizar — nada é aplicado automaticamente, então seus commits locais estão seguros.",
         "commits_ahead_one": "{{count}} commit à frente",

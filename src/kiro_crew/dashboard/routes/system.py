@@ -46,6 +46,10 @@ def register(app: web.Application) -> None:
     # remote dashboard bearer cannot read.
     app.router.add_post("/api/update/arm", handlers.api_update_arm)
     app.router.add_get("/api/update/arm", handlers.api_update_arm_status)
+    # Declining a packaged-app request. SPA-callable like arm: it removes a
+    # nudge, grants nothing, and the side of the decision that says "no" must
+    # not be the harder one to reach.
+    app.router.add_delete("/api/update/arm", handlers.api_update_disarm)
     app.router.add_post("/api/update/approve", handlers.api_update_approve)
     # Restart with no update. Sibling of /api/update rather than a mode of it:
     # /api/update refuses every layout that is not a git checkout, while a

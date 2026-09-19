@@ -13029,6 +13029,16 @@
         "copy_failed_select_the_link_and_copy_it_manually": "कॉपी नहीं हो सका। लिंक चुनें और उसे मैन्युअल रूप से कॉपी करें।"
       },
       "aboutPanel": {
+        "agent_request_body_latest": "एक एजेंट ({{who}}) ने नवीनतम संस्करण पर अपडेट करने को कहा। इंस्टॉल करने तक कुछ नहीं बदलेगा।",
+        "agent_request_body_version": "एक एजेंट ({{who}}) ने v{{version}} पर अपडेट करने को कहा। इंस्टॉल करने तक कुछ नहीं बदलेगा।",
+        "agent_request_decline": "अस्वीकार करो",
+        "agent_request_decline_failed": "अनुरोध अस्वीकार नहीं हो सका",
+        "agent_request_expires": "{{when}} समाप्त",
+        "agent_request_feed_differs": "v{{requested}} माँगा गया, पर अपडेट फ़ीड v{{found}} देता है। इंस्टॉल करने पर v{{found}} मिलेगा।",
+        "agent_request_heading": "एक एजेंट ने अपडेट का अनुरोध किया",
+        "agent_request_install": "इंस्टॉल करो और रीस्टार्ट करो",
+        "agent_request_install_version": "v{{version}} इंस्टॉल करो और रीस्टार्ट करो",
+        "agent_request_unknown_requester": "एक एजेंट",
         "diverged": "अलग हो गया",
         "checkout_diverged_from_upstream": "यह चेकआउट अपने अपस्ट्रीम से अलग हो गया है ({{distance}})। अपडेट करने के लिए rebase या merge करो — कुछ भी अपने आप लागू नहीं होता, इसलिए तुम्हारे लोकल कमिट सुरक्षित हैं।",
         "commits_ahead_one": "{{count}} कमिट आगे",

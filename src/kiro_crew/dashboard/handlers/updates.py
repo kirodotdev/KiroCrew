@@ -2483,25 +2483,117 @@ async def _audit_update_event(
     await asyncio.to_thread(_write)
 
 
+async def _arm_packaged_app(request: web.Request) -> web.Response:
+    """Arm an update REQUEST for a packaged desktop install (dmg/appimage/deb/rpm).
+
+    Not a step-up. The managed-venv lane needs one because the gateway itself
+    performs the apply, so something has to prove a human authorised it. On a
+    packaged install the gateway performs nothing: the bytes belong to the
+    desktop app's updater, and the only control that starts it is the click in
+    Settings › About inside the app's own renderer. That click IS the approval.
+    So the record this writes is a nudge with context — which version, who
+    asked, when — and carries no nonce, no token, nothing an approval could
+    present. There is no gateway endpoint that turns it into an install, which
+    is what makes agent self-approval impossible by construction rather than by
+    fence: an agent can read its own request and gain nothing from doing so.
+
+    The requester may NAME a version (``{"version": "0.6.0"}``); absent, the
+    request is for whatever the feed offers. Display-only either way — the
+    app's updater decides what downloads, and the panel says when they differ.
+    """
+    from kiro_crew.platform.app_update_request import get_app_update_requests
+
+    if resolve_provider() is not None:
+        error = "updates on this host are managed by policy"
+        await _audit_update_event(request, operation="update.arm", outcome="denied", error=error)
+        return web.json_response(
+            {"error": error, "code": "arm_policy_managed", "governance": True}, status=409
+        )
+    try:
+        body = await request.json()
+    except Exception:
+        body = None
+    version = ""
+    if isinstance(body, dict):
+        raw = body.get("version")
+        if raw is not None and not isinstance(raw, str):
+            return web.json_response(
+                {"error": "version must be a string", "code": "invalid_version"}, status=400
+            )
+        version = (raw or "").strip()
+    if version and _downgrade_target_below_min_version(version, _release_channel()):
+        error = "selected release is below the required minimum version"
+        await _audit_update_event(
+            request, operation="update.arm", outcome="denied", error=error, resources=f"v{version}"
+        )
+        return web.json_response(
+            {"error": error, "code": "arm_below_min_version", "governance": True}, status=409
+        )
+    # Who asked, for the panel. A session key names the agent conversation; a
+    # user mark names a dashboard login; neither is trusted for anything but
+    # display, so a spoofed value costs nothing.
+    requested_by = str(request.get("user") or request.headers.get("X-Session-Key") or "dashboard")[
+        :64
+    ]
+    req, is_new_ask = await asyncio.to_thread(
+        get_app_update_requests().arm, target_version=version, requested_by=requested_by
+    )
+    state: DashboardState = request.app["state"]
+    label = f"v{version}" if version else "the latest version"
+    if is_new_ask:
+        # The existing notification path: this is what reaches a chat-only
+        # user's bell, so their next visit to the app lands on the request.
+        # Once per distinct ask — a looping agent turn re-arming the same
+        # request must not ring the bell once per iteration.
+        state.notify(
+            "update",
+            "An agent requested an app update",
+            f"{requested_by} asked to update Kiro Crew to {label}. Approve it in Settings › About.",
+            url="/settings/about",
+        )
+    await _audit_update_event(
+        request,
+        operation="update.arm",
+        outcome="granted",
+        resources=f"{label} (app lane, by {requested_by})",
+    )
+    return web.json_response({"ok": True, **req.to_public(time.time())})
+
+
 async def api_update_arm(request: web.Request) -> web.Response:
     """POST /api/update/arm — arm a pending in-app update (SPA-callable).
 
-    Arming grants nothing: it records the request and writes the approval
-    nonce to a file only the host can read. The response NEVER carries the
-    nonce. Refused for every shape except the managed venv, when a downgrade
-    would cross below the active minimum-version floor, and when neither a
-    newer update nor a pending channel move is cached — an arm must name the
-    version the check reported, not whatever the feed happens to serve later (the apply
-    re-verifies against the signed manifest anyway).
+    Which lane the arm records is derived from the INSTALL SHAPE, through the
+    one derivation every update surface shares. A packaged desktop install gets
+    a nonce-free request that the app's own About panel turns into an install
+    with a human click (see :func:`_arm_packaged_app`). A managed venv gets the
+    step-up below.
+
+    Arming grants nothing on either lane. For the managed venv it records the
+    request and writes the approval nonce to a file only the host can read; the
+    response NEVER carries the nonce. Refused for every other shape, when a
+    downgrade would cross below the active minimum-version floor, and when
+    neither a newer update nor a pending channel move is cached — an arm must
+    name the version the check reported, not whatever the feed happens to
+    serve later (the apply re-verifies against the signed manifest anyway).
     """
     # Function-local: boot-path rule, same as _restart_gateway's import.
     from kiro_crew.platform import update_stepup
+    from kiro_crew.platform.update_capability import MANAGED_BY_ELECTRON, derive_capability
     from kiro_crew.platform.wheel_engine import running_from_managed_venv
+
+    # Offloaded: the derivation shells out to git and touches disk.
+    capability = await asyncio.to_thread(derive_capability)
+    if capability.managed_by == MANAGED_BY_ELECTRON:
+        return await _arm_packaged_app(request)
 
     if not await asyncio.to_thread(running_from_managed_venv):
         return web.json_response(
             {
-                "error": "in-app update applies only to the cli.sh managed-venv install",
+                "error": (
+                    "in-app update applies only to the cli.sh managed-venv install "
+                    "and the packaged desktop app"
+                ),
                 "code": "arm_wrong_shape",
             },
             status=409,
@@ -2551,15 +2643,78 @@ async def api_update_arm(request: web.Request) -> web.Response:
 
 
 async def api_update_arm_status(request: web.Request) -> web.Response:
-    """GET /api/update/arm — the armed request, SPA-safe projection."""
+    """GET /api/update/arm — the armed request, SPA-safe projection.
+
+    Either lane's record, whichever exists; arm dispatches on install shape so
+    at most one does. The packaged-app projection carries ``managed_by:
+    "electron"`` so the About panel can offer the in-app Install click rather
+    than the host command the managed-venv lane needs.
+    """
     from kiro_crew.platform import update_stepup
+    from kiro_crew.platform.app_update_request import get_app_update_requests
 
     # clear_expired=True: this runs inside the gateway, where the expiry
     # cleanup is serialized against arm under the module mutex.
     pending = await asyncio.to_thread(lambda: update_stepup.read_pending(clear_expired=True))
-    if pending is None:
+    if pending is not None:
+        return web.json_response({**update_stepup.public_view(pending), "managed_by": "kirocrew"})
+    requests = get_app_update_requests()
+    req = await asyncio.to_thread(requests.current)
+    if req is None:
         return web.json_response({"armed": False})
-    return web.json_response(update_stepup.public_view(pending))
+    # Policy is re-checked at PUBLISH, not only at arm. The record lives in a
+    # file an agent can write, so a request that would have been refused at arm
+    # — a policy-pinned host, a version below the floor — must not surface a
+    # card just because it arrived by another route. A refused record is also
+    # dropped, so the card does not flicker back on the next poll.
+    if resolve_provider() is not None or (
+        req.target_version
+        and _downgrade_target_below_min_version(req.target_version, _release_channel())
+    ):
+        await asyncio.to_thread(requests.clear)
+        await _audit_update_event(
+            request,
+            operation="update.arm",
+            outcome="denied",
+            error="request refused by update policy at publish",
+            resources=f"v{req.target_version or 'latest'} ({req.request_id})",
+        )
+        return web.json_response({"armed": False})
+    return web.json_response(req.to_public(time.time()))
+
+
+async def api_update_disarm(request: web.Request) -> web.Response:
+    """DELETE /api/update/arm?request_id=… — decline a packaged-app update request.
+
+    SPA-callable for the same reason arming is: it removes a nudge rather than
+    granting anything. Without it the About panel's request card would offer
+    only the control that installs, for the whole TTL, which is pressure and
+    not consent.
+
+    ``request_id`` is REQUIRED and names the request the panel SHOWED. Only that
+    request is removed: a click on a card rendering request A must not erase a
+    request B an agent made after the render, because B is a decision the user
+    has not seen. A stale id is not an error — the answer says what is live
+    now, and the panel's next poll renders it.
+
+    Packaged lane only. The managed-venv step-up's nonce file is a different
+    record with its own lifecycle and is not touched here.
+    """
+    from kiro_crew.platform.app_update_request import get_app_update_requests
+
+    request_id = request.query.get("request_id", "")
+    if not request_id:
+        return web.json_response(
+            {"error": "request_id is required", "code": "invalid_request_id"}, status=400
+        )
+    requests = get_app_update_requests()
+    removed = await asyncio.to_thread(requests.decline, request_id)
+    if removed:
+        await _audit_update_event(
+            request, operation="update.disarm", outcome="success", resources=request_id
+        )
+    still = await asyncio.to_thread(requests.current)
+    return web.json_response({"ok": True, "armed": still is not None, "dismissed": removed})
 
 
 async def api_update_approve(request: web.Request) -> web.Response:

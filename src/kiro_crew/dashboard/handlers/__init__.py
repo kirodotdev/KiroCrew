@@ -600,6 +600,7 @@ from kiro_crew.dashboard.handlers.updates import (  # noqa: E402, F401
     api_update_cancel,
     api_update_channel,
     api_update_check,
+    api_update_disarm,
     api_update_simulate,
     get_update_info,
     install_log_ring_handler,

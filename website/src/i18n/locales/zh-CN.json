@@ -12847,6 +12847,16 @@
         "copy_failed_select_the_link_and_copy_it_manually": "复制失败。请选择该链接并手动复制。"
       },
       "aboutPanel": {
+        "agent_request_body_latest": "一个代理（{{who}}）请求更新到最新版本。在你安装之前，什么都不会改变。",
+        "agent_request_body_version": "一个代理（{{who}}）请求更新到 v{{version}}。在你安装之前，什么都不会改变。",
+        "agent_request_decline": "拒绝",
+        "agent_request_decline_failed": "无法拒绝该请求",
+        "agent_request_expires": "{{when}}失效",
+        "agent_request_feed_differs": "请求的是 v{{requested}}，但更新源提供的是 v{{found}}。安装后会得到 v{{found}}。",
+        "agent_request_heading": "有代理请求更新",
+        "agent_request_install": "安装并重启",
+        "agent_request_install_version": "安装 v{{version}} 并重启",
+        "agent_request_unknown_requester": "一个代理",
         "diverged": "已分叉",
         "checkout_diverged_from_upstream": "此检出已与上游分叉（{{distance}}）。请用 rebase 或 merge 更新——不会自动应用任何更改，你的本地提交是安全的。",
         "commits_ahead_other": "领先 {{count}} 个提交",
