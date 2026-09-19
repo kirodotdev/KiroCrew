@@ -27,6 +27,7 @@ from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.credential_errors import is_credential_propagation_delay
 from kiro_crew.hooks import (
     _EDIT_TOOL_KIND,
+    _normalize_tool_name,
     fire_tool_hooks,
     get_global_hook_store,
     hook_gate_kwargs,
@@ -1114,9 +1115,44 @@ def _extract_tool_input_strings(tool_input: str) -> list[str]:
 _MAX_SCANNABLE_TOOL_INPUT_CHARS = MAX_SCANNABLE_COMMAND_CHARS
 
 
+def _path_tier_exempt(event: object) -> str | None:
+    """The one string of *event* the path tier does not resolve, or ``None``.
+
+    The path tier reads a PATH; a shell tool's COMMAND is command text, which the
+    gate does not match paths in because the OS sandbox holds the credential
+    stores away from the shell. Only the recovered command text
+    (``AcpEvent.shell_command``) is exempt, and only when the client classified
+    the frame as shell AND no MCP server serves it: kiro-cli can classify an
+    execute-kind frame as shell while also naming an MCP server
+    (``classify_tool_call`` carries the identity and keeps the shell verdict),
+    and an MCP-served tool runs outside the sandbox. Every OTHER string of a
+    shell frame stays path-gated -- a shell-kind tool with structured
+    parameters (kiro-cli ``use_aws``) can carry a discrete credential path as an
+    argument, and in ``standard`` sandbox mode ``~/.aws`` is visible to the
+    shell, so the path tier over that argument is the control there, not the
+    sandbox. Same condition as ``hooks.on_tool_call``; both read the client's
+    own classification, never the payload's.
+    """
+    if not bool(getattr(event, "is_shell", False)):
+        return None
+    if getattr(event, "mcp_server_name", "") or "":
+        return None
+    command = getattr(event, "shell_command", None)
+    return command if isinstance(command, str) and command else None
+
+
+def _is_exempt_command_text(text: str, exempt_command: str | None) -> bool:
+    """*text* is the exempt command, with or without a display prefix."""
+    if exempt_command is None:
+        return False
+    return text == exempt_command or _normalize_tool_name(text) == exempt_command
+
+
 def _title_denial(
     title: str,
     denied_regexes: list[str] | None,
+    *,
+    exempt_command: str | None = None,
 ) -> tuple[str, str] | None:
     """Return the always-enforced denial for the tool *title*, or ``None``.
 
@@ -1129,7 +1165,16 @@ def _title_denial(
     place. The tuple is ``(kind, reason)`` with *kind* ``"path"`` / ``"bash"`` /
     ``"regex"``; the reasons are the exact strings the on-loop checks produced.
     """
-    path_refusal = sensitive_path_refusal(title)
+    # The path tier reads a PATH. A shell tool's recovered COMMAND is command text,
+    # which the gate deliberately does not match paths in (``hooks.on_tool_call``
+    # makes the same exemption): resolving ``cd /x && grep ...`` as a filename
+    # never matched, but it spent a resolver round-trip per call and, under a
+    # stall, refused the command as a sensitive path. ``exempt_command`` is
+    # :func:`_path_tier_exempt`'s answer -- the one string that is that text; a
+    # title that is not the command stays gated.
+    path_refusal = (
+        None if _is_exempt_command_text(title, exempt_command) else sensitive_path_refusal(title)
+    )
     if path_refusal:
         # A stall is passed through as worded (recognised by its fixed prefix, which
         # the deny guidance classifies by); a match keeps this producer's wording.
@@ -1214,6 +1259,8 @@ def _edit_target_denial(
 def _first_tool_input_denial(
     strings: list[str],
     denied_regexes: list[str] | None,
+    *,
+    exempt_command: str | None = None,
 ) -> tuple[str, str, str] | None:
     """Return the first tool_input denial among *strings*, or ``None``.
 
@@ -1249,7 +1296,13 @@ def _first_tool_input_denial(
                 ),
                 s[:64],
             )
-        path_refusal = sensitive_path_refusal(s)
+        # Same exemption as ``_title_denial``: only the recovered command text is
+        # command text. A shell frame's OTHER payload strings (a structured
+        # ``use_aws`` argument naming a path) stay path-gated -- see
+        # :func:`_path_tier_exempt`.
+        path_refusal = (
+            None if _is_exempt_command_text(s, exempt_command) else sensitive_path_refusal(s)
+        )
         if path_refusal:
             if is_unverifiable_path_refusal(path_refusal):
                 return ("path", path_refusal, s)
@@ -2701,7 +2754,9 @@ async def _resolve_permission(
         # ``is_sensitive_path`` (which does release the GIL) and yields between
         # the strings. Title first, so a request denied on its title
         # reports the title-tier reason and mechanism exactly as before.
-        title_hit = _title_denial(normalized, _denied_regexes)
+        title_hit = _title_denial(
+            normalized, _denied_regexes, exempt_command=_path_tier_exempt(event)
+        )
         if title_hit is not None:
             return (title_hit[0], title_hit[1], normalized, "always_deny")
         if _edit_target_gated:
@@ -2718,7 +2773,9 @@ async def _resolve_permission(
                 "always_deny_input",
             )
         if _input_strings:
-            input_hit = _first_tool_input_denial(_input_strings, _denied_regexes)
+            input_hit = _first_tool_input_denial(
+                _input_strings, _denied_regexes, exempt_command=_path_tier_exempt(event)
+            )
             if input_hit is not None:
                 return (*input_hit, "always_deny_input")
         return None

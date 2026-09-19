@@ -905,7 +905,16 @@ class HookManager:
         # while a bash command ("cat ~/.aws/credentials") resolves to a
         # non-sensitive path and is NOT matched on its text -- the OS sandbox is
         # what keeps the credential stores and the governance keystone out of the
-        # shell's reach. is_sensitive_bash_command carries the size ceiling, the
+        # shell's reach. A shell tool's recovered COMMAND is therefore not handed
+        # to the path tier: resolving ``cd /x && grep ...`` as a filename never
+        # matched, but it spent a resolver round-trip per call and, under a
+        # resolver stall, refused the command as ``access to sensitive path: cd
+        # /x && grep ...`` -- a refusal naming something that is not a path as a
+        # credential. ``is_shell`` and ``command`` are the client's own
+        # classification and recovery of the tool frame, the same provenance the
+        # shell gates below trust; a shell tool whose command is a bare path is
+        # left to the sandbox, as every command is.
+        # is_sensitive_bash_command carries the size ceiling, the
         # IMDS detector and the environment-credential detector.
         # The always-on gates below are keyed by rule id, so resolve the effective
         # regex set to ids ONCE here and thread it in. ``None`` means all enabled,
@@ -923,11 +932,23 @@ class HookManager:
         # the encoded form — honouring a pin late is not honouring it.
         ctx = current_context()
         enabled_ids = security.enabled_rule_ids(self._effective_denied(ctx))
+        # The exemption is for the recovered COMMAND of a SANDBOXED shell only.
+        # kiro-cli can classify an execute-kind frame as shell while also
+        # naming an MCP server (``classify_tool_call``: the identity is carried,
+        # the shell verdict stands), and an MCP-served tool runs outside the
+        # agent sandbox that this exemption leans on -- so its targets stay
+        # path-gated. Likewise a shell-kind tool with structured parameters
+        # (``use_aws``) may carry a discrete credential path as an argument, and
+        # in ``standard`` sandbox mode ``~/.aws`` is visible to the shell: the
+        # raw_params tier below is the control there, so only the command text
+        # itself (the normalized title when it IS the command, and ``command``)
+        # is spared the resolver.
+        exempt_command = command if (is_shell and command and not mcp_server_name) else None
         for target in security_targets:
             # Reason-or-None, like the two tiers below: a stall is refused with its
             # own wording (unverifiable, not a match) instead of being reported as
             # a credential hit on whatever the target happened to be.
-            reason = sensitive_path_refusal(target)
+            reason = sensitive_path_refusal(target) if target != exempt_command else None
             if reason:
                 return ToolHookResult.deny(reason)
             # execute_bash (prefixed or bare) — IMDS reach, env-credential leaks,
