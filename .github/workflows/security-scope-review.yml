@@ -796,17 +796,33 @@ jobs:
 
       # The candidate set reached this job as an ARTIFACT, and an artifact is
       # world-readable on a public repository. It also has to reach the classifier
-      # BYTE-FAITHFUL: `deny_diff` classifies these exact strings at both refs, so a
-      # placeholder where a command used to be is a command nobody ever refused,
-      # which classifies as allowed. So this cannot scrub -- it probes a COPY and
-      # refuses the run, the same answer the normalized corpus gets before its own
-      # upload.
+      # BYTE-FAITHFUL: `deny_diff` selects rows by `kind` and `platform` and classifies
+      # `command_or_flow` at both refs, so a placeholder where a command used to be is
+      # a command nobody ever refused, which classifies as allowed.
+      #
+      # So the probe splits the file by WHAT THE CLASSIFIER READS. A shape in one of
+      # those three fields still refuses the run, exactly as before: it can be neither
+      # rewritten (that measures an operation nobody proposed) nor dropped (that
+      # silently removes the boundary the row probes, on rows the reviewer wrote out of
+      # the diff under review -- a coverage hole an author could steer). A shape in
+      # `reason`, which is prose the classifier never reads, removes THAT FIELD and
+      # nothing else: the row is still classified, at both refs, on the bytes the
+      # reviewer wrote. That is the case a change whose SUBJECT is ARNs and account ids
+      # keeps hitting, and it costs one row's explanation instead of the whole run.
+      #
+      # REMOVED rather than redacted: a `[REDACTED-` marker in a corpus is read by the
+      # publish path's own grep, which withholds a confirmed row on finding one.
       #
       # HERE rather than in `generate`, and that is the whole reason this step
       # moved: the probe IS `scope_redact.py`, a repository program, and `generate`
-      # holds the Bedrock credential. The rows are already public by the time this
-      # runs, so the refusal is what it can still buy -- a row carrying a credential
-      # shape is never adjudicated, and the corpus the legs read never travels.
+      # holds the Bedrock credential. That is also why the rule lives in the redactor
+      # and not in `scope_candidates.py`: this job may bootstrap the harness from the
+      # CHECKOUT, so a pull request could otherwise supply the program that decides
+      # whether its own rows carry a credential. The redactor is staged from the base
+      # blob above and is never taken from this workspace -- which is exactly why the
+      # flag is FEATURE-DETECTED below. The staged copy can predate it, and handing it
+      # an argument it does not know is an argparse exit 2 that says nothing about
+      # credentials at all.
       - name: Probe the candidate set for credential shapes
         id: probe
         env:
@@ -832,19 +848,65 @@ jobs:
           probe=0
           python "$REDACTOR" --mode json --fail-if-changed scrub-probe-candidates.json || probe=$?
           rm -f scrub-probe-candidates.json
-          if [ "$probe" != "0" ] && [ "$probe" != "10" ]; then
-            echo "::error::the candidate set could not be checked for credential shapes, and it travels to the validation job as a public artifact. Refusing to upload it unchecked."
+          if [ "$probe" = "0" ]; then
+            # Nothing in the file needs attention, so the real file is never opened for
+            # writing. That is most runs, and it is why the copy-probe earns its place:
+            # the byte-faithfulness of the normal path is not merely preserved by the
+            # prune below, it is never exercised by it.
+            echo "candidates_ok=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # WHICH field carries it decides what happens, and only the staged base
+          # redactor can answer that. Detected rather than assumed: this copy comes from
+          # the base ref, so it can predate the flag, and handing it an unknown argument
+          # is an argparse exit 2 that says nothing about credentials. A grep of the
+          # staged FILE rather than a `--help` run: the probe must not be a redactor
+          # invocation with no `--mode`, since every call in this lane declares the file
+          # shape it is scrubbing.
+          if ! grep -q -- "--drop-changed-fields" "$REDACTOR"; then
+            echo "::warning::the base-owned redactor at this base commit predates --drop-changed-fields, so a credential shape cannot be attributed to a field. Refusing the run, which is the answer this redactor can give."
+            # Exit 10 is the redactor's own answer to "did this change", which is the
+            # whole question the probe asks. Reading it beats grepping the probe's text
+            # for a marker: a redacted secret VALUE carries the unprefixed `[REDACTED]`
+            # spelling, so a `[REDACTED-` grep misses exactly the credential class the
+            # candidate set most needs caught.
+            if [ "$probe" = "10" ]; then
+              echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
+            else
+              echo "::error::the candidate set could not be checked for credential shapes, and it travels to the validation job as a public artifact. Refusing to upload it unchecked."
+            fi
             exit 1
           fi
-          # Exit 10 is the redactor's own answer to "did this change", which is the
-          # whole question the probe asks. Reading it beats grepping the probe's text
-          # for a marker: a redacted secret VALUE carries the unprefixed `[REDACTED]`
-          # spelling, so a `[REDACTED-` grep misses exactly the credential class the
-          # candidate set most needs refused.
-          if [ "$probe" = "10" ]; then
-            echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL). The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so it can be neither published nor rewritten. Re-run so the reviewer proposes the operation without the embedded credential."
-            exit 1
-          fi
+          # EVERY non-zero probe comes here, not just exit 10. A credential shape in an
+          # object KEY is the `--mode json` scrub's own exit 1 -- rewriting a key would
+          # change the schema its consumer reads -- and that is exactly a case the prune
+          # settles by removing the field, so refusing on the generic answer would red
+          # the lane over something the precise answer handles. A file the prune also
+          # cannot read still ends in the catch-all below.
+          #
+          # IN PLACE now, and only now: the pruned rows ARE the corpus `validate` reads
+          # next, so the removal has to land in the file it reads. Every classified field
+          # keeps the bytes the reviewer wrote. The prose that goes is still readable in
+          # the `security-scope-candidates-raw` artifact `generate` uploaded, which is
+          # where a reader goes to see it.
+          prune=0
+          python "$REDACTOR" --mode json --drop-changed-fields --fail-if-changed candidates.json || prune=$?
+          case "$prune" in
+            0)
+              echo "The candidate set needed no field removed; the generic probe answered on text the prune places elsewhere."
+              ;;
+            10)
+              echo "::warning::a candidate row carried a credential shape (an access-key id, an ARN, an account id or a credential-bearing assignment) in a field the classifier does not read, and that FIELD was removed. Every row is still adjudicated, on the bytes the reviewer wrote; only the removed field's explanation is absent from this run's report. The count is above."
+              ;;
+            11)
+              echo "::error::a candidate operation carries a credential shape (an access-key id, an ARN, an account id or a credential-bearing URL) in a field the classifier reads. The candidate set travels as a public artifact and must stay byte-faithful for the classifier, so that field can be neither published nor rewritten -- and dropping the row would silently remove the boundary it probes. Re-run so the reviewer proposes the operation without the embedded credential, or record a human override for this head with /ai-review override scope <sha>: <reason>, which skips this lane whole."
+              exit 1
+              ;;
+            *)
+              echo "::error::the candidate set could not be pruned of credential shapes, so the corpus that would reach the legs is not one anybody checked. Refusing to upload it."
+              exit 1
+              ;;
+          esac
           echo "candidates_ok=true" >> "$GITHUB_OUTPUT"
 
       - name: Validate the candidates against the base corpus
