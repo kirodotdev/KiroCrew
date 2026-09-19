@@ -20,6 +20,12 @@ vi.mock('../pages/ProjectDetailPage', () => ({
   ),
 }))
 
+vi.mock('../components/MoveToCrewDialog', () => ({
+  default: ({ unitId }: { unitId: string }) => (
+    <div role="dialog" data-testid="taskrun-move-dialog">move:{unitId}</div>
+  ),
+}))
+
 vi.mock('../components/AgentSelector', () => ({
   default: ({ value, onChange }: { value: string; onChange: (name: string) => void }) => (
     <select
@@ -93,6 +99,14 @@ async function openRun(name = 'Existing'): Promise<HTMLElement> {
   await screen.findByTestId('project-detail')
   return screen.getByTestId('project-detail').parentElement!.parentElement!
     .querySelector<HTMLElement>('div.border-b')!
+}
+
+function openHeaderOverflow(header: HTMLElement): void {
+  fireEvent.pointerDown(within(header).getByRole('button', { name: 'More actions' }), {
+    button: 0,
+    ctrlKey: false,
+    pointerType: 'mouse',
+  })
 }
 
 let alertSpy: ReturnType<typeof vi.spyOn>
@@ -481,7 +495,8 @@ describe('ProjectsPage — header actions for a planned run', () => {
     resetApi([planned()])
     const { store } = renderWithProviders(<ProjectsPage />)
     const header = await openRun()
-    fireEvent.click(within(header).getByRole('button', { name: 'Chat' }))
+    openHeaderOverflow(header)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Chat' }))
     await waitFor(() => expect(api.planContext).toHaveBeenCalledWith('run-1'))
     await waitFor(() => expect(store.getState().chat.pendingInput).toContain('PLAN CONTEXT'))
   })
@@ -491,7 +506,8 @@ describe('ProjectsPage — header actions for a planned run', () => {
     vi.mocked(api.planContext).mockResolvedValue({ ok: true, context: '' })
     const { store } = renderWithProviders(<ProjectsPage />)
     const header = await openRun()
-    fireEvent.click(within(header).getByRole('button', { name: 'Chat' }))
+    openHeaderOverflow(header)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Chat' }))
     await waitFor(() => expect(api.planContext).toHaveBeenCalledTimes(1))
     expect(store.getState().chat.pendingInput).toBeNull()
   })
@@ -500,7 +516,8 @@ describe('ProjectsPage — header actions for a planned run', () => {
     resetApi([planned()])
     renderWithProviders(<ProjectsPage />)
     const header = await openRun()
-    fireEvent.click(within(header).getByRole('button', { name: 'Discard' }))
+    openHeaderOverflow(header)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Discard' }))
     await waitFor(() => expect(api.deleteTaskRun).toHaveBeenCalledWith('run-1'))
     expect(await screen.findByPlaceholderText('Describe your task...')).toBeInTheDocument()
   })
@@ -569,6 +586,18 @@ describe('ProjectsPage — header actions by run status', () => {
     expect((within(header).getByRole('checkbox') as HTMLInputElement).checked).toBe(true)
   })
 
+  it('keeps Move reachable through overflow instead of adding a peer button', async () => {
+    resetApi([mkRun({ status: 'completed' })])
+    renderWithProviders(<ProjectsPage />)
+    const header = await openRun()
+    expect(within(header).queryByRole('button', { name: 'Preview a move to crew…' })).not.toBeInTheDocument()
+
+    openHeaderOverflow(header)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Preview a move to crew…' }))
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument()
+  })
+
   it('moves a completed run into a chat slot', async () => {
     resetApi([mkRun({ status: 'completed' })])
     renderWithProviders(<ProjectsPage />)
@@ -593,7 +622,8 @@ describe('ProjectsPage — header actions by run status', () => {
     resetApi([mkRun({ status: 'completed', spec_content: 'rebuild the index' })])
     renderWithProviders(<ProjectsPage />)
     const header = await openRun()
-    fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
+    openHeaderOverflow(header)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Schedule' }))
     await waitFor(() => expect(api.createCron).toHaveBeenCalledWith({
       name: 'Project: Existing',
       message: 'run __inline__:rebuild the index',
@@ -606,7 +636,8 @@ describe('ProjectsPage — header actions by run status', () => {
     resetApi([mkRun({ status: 'completed', spec_content: '', original_input: '' })])
     renderWithProviders(<ProjectsPage />)
     const header = await openRun()
-    fireEvent.click(within(header).getByRole('button', { name: 'Schedule' }))
+    openHeaderOverflow(header)
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Schedule' }))
     await waitFor(() => expect(alertSpy).toHaveBeenCalledWith('No spec/idea to schedule'))
     expect(api.createCron).not.toHaveBeenCalled()
   })
