@@ -1921,6 +1921,30 @@ describe('MembersPage unread drain', () => {
     expect(screen.getAllByTestId('member-unread-dot')).toHaveLength(1)
   })
 
+  it('the roster unread dot reads the status token, not brand accent', async () => {
+    // #10479: an element that conveys STATE reads a semantic status token, so a
+    // theme can keep the cue distinct from brand chrome. `var(--accent)` is the
+    // hue of links, chips and the send button, so on a theme whose accent is its
+    // status colour the "your turn" cue disappears into ordinary chrome. The
+    // sidebar's own dot was rebound in #10488 (ChatSidebar.tsx:2197, :6550); this
+    // pins the roster row to the same token so the two cannot drift again.
+    localStorage.setItem(LAST_MEMBER_KEY, 'scout')
+    const { store } = await renderPage([
+      row({ bound: true, slot_key: 'member-oncall' }),
+      row({ name: 'scout', slug: 'scout' }),
+    ])
+    await screen.findByTestId('chat-pane-stub', undefined, PANE_READY)
+    act(() => {
+      store.dispatch(markSlotUnread('member-oncall'))
+    })
+    // `style.background`, not `toHaveStyle`: the latter compares COMPUTED
+    // values, and the test DOM resolves an unregistered custom property to the
+    // empty string, so it would fail on both tokens alike. This is the spelling
+    // ChatSidebar.statusMarker.test.tsx already uses for the sibling dot.
+    const dot = await screen.findByTestId('member-unread-dot')
+    expect(dot.style.background).toBe('var(--ok)')
+  })
+
   it('opening the thread clears the roster dot along with the badge', async () => {
     localStorage.setItem(LAST_MEMBER_KEY, 'scout')
     const { store } = await renderPage([

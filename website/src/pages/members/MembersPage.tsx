@@ -267,7 +267,10 @@ const STATUS_TITLE_KEY: Record<MemberStatusFilter, string> = {
 const STATUS_ICON: Record<MemberStatusFilter, (active: boolean) => React.ReactNode> = {
   working: (active) => <Zap size={12} className={active ? 'text-[var(--warn)]' : 'text-muted'} {...(active ? { fill: 'var(--warn)', stroke: 'none' } : {})} />,
   needs_you: (active) => <MessageCircleQuestionMark size={12} className={active ? 'text-[var(--info)]' : 'text-muted'} />,
-  unread: (active) => <Circle size={12} className={active ? 'text-accent' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--accent)' } : {})} />,
+  // Status token, not brand accent: this row is the legend/toggle for the same
+  // unread state whose roster dot reads `var(--ok)` below, and for the sidebar
+  // chip that was rebound in #10488 (#10479).
+  unread: (active) => <Circle size={12} className={active ? 'text-[var(--ok)]' : 'text-muted'} {...(active ? { strokeWidth: 0, fill: 'var(--ok)' } : {})} />,
   patrolling: (active) => <Goal size={12} className={active ? 'text-accent' : 'text-muted'} />,
 }
 /** The A–Z row reuses the sidebar menu's label. The activity row does NOT
@@ -1981,14 +1984,16 @@ export default function MembersPage() {
                 </span>
                 {/* Unread marker on the row's right edge — the IM convention
                     (and where the rail badge sits), vertically centered by the
-                    row's items-center. Accent-filled w-2 h-2 like ChatSidebar's
-                    unread dot, with a real accessible name: nothing else on
-                    the row says "unread". The left side is taken — presence
-                    rides the avatar. */}
+                    row's items-center. w-2 h-2 filled with the STATUS token
+                    like ChatSidebar's unread dot (#10479/#10488) — not brand
+                    accent, which a theme also spends on links and chips — with
+                    a real accessible name: nothing else on the row says
+                    "unread". The left side is taken — presence rides the
+                    avatar. */}
                 {isUnread(m) && (
                   <span
                     className="w-2 h-2 rounded-full shrink-0"
-                    style={{ background: 'var(--accent)' }}
+                    style={{ background: 'var(--ok)' }}
                     role="img"
                     aria-label={t('pages.membersPage.unread_message')}
                     title={t('pages.membersPage.unread_message')}

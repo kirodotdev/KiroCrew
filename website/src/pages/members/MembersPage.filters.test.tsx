@@ -272,6 +272,30 @@ describe('MembersPage filters', () => {
     expect(screen.getByTestId('member-filtered-out')).toBeInTheDocument()
   })
 
+  it('the active unread status row lights its status token, not brand accent', async () => {
+    // The STATUS_ICON map's own contract is "lit in the state's colour when
+    // active", and three of its four rows honour it: working -> --warn,
+    // needs_you -> --info. `unread` was the one reading brand accent, which is
+    // also what the sidebar's unread filter chip stopped doing in #10488
+    // (ChatSidebar.tsx SESSION_FILTERS). Asserting on the ACTIVE icon is the
+    // point: inactive rows are `text-muted` for every state, so an inactive
+    // assertion would pass whatever the active colour is.
+    await renderPage([row('conductor'), row('pkg-a')])
+    await openFilters()
+    fireEvent.click(screen.getByTestId('member-filter-status-unread'))
+    const rowEl = screen.getByTestId('member-filter-status-unread')
+    expect(rowEl).toHaveAttribute('aria-checked', 'true')
+    const icon = rowEl.querySelector('svg')
+    expect(icon).not.toBeNull()
+    expect(icon?.getAttribute('fill')).toBe('var(--ok)')
+    expect(icon?.getAttribute('class') || '').not.toContain('text-accent')
+    // The two neighbours are the control: they already read status tokens, so a
+    // change that swept the whole map to one colour would fail here.
+    const working = screen.getByTestId('member-filter-status-working')
+    fireEvent.click(working)
+    expect(working.querySelector('svg')?.getAttribute('fill')).toBe('var(--warn)')
+  })
+
   it('sort switches between recent activity and name and persists', async () => {
     await renderPage([
       row('zed', { last_active_ts: 300 }),
