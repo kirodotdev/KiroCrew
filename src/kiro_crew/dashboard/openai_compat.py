@@ -26,7 +26,11 @@ from kiro_crew import members as members_mod
 from kiro_crew.config.loader import KiroCrewConfig
 from kiro_crew.context import _neutralize_structural_markers
 from kiro_crew.dashboard.chat_runner import _run_chat
-from kiro_crew.dashboard.kiro_readiness import reject_if_kiro_unverified
+from kiro_crew.dashboard.chat_utils import effective_session_key
+from kiro_crew.dashboard.kiro_readiness import (
+    live_session_signs_in_via_kiro_cli,
+    reject_if_kiro_unverified,
+)
 from kiro_crew.dashboard.state import DashboardState, _normalize_slot_key
 from kiro_crew.dashboard.turn_dispatch import chat_turn_timeout_secs
 from kiro_crew.security import redact_credentials, redact_exfiltration_urls
@@ -130,24 +134,6 @@ def _redact(text: str) -> str:
 
 async def api_completions(request: web.Request) -> web.StreamResponse:
     """POST /v1/chat/completions — OpenAI-compatible chat endpoint."""
-    # Unlike the dashboard, this endpoint has no transcript the caller reads: the
-    # collectors below pick up only `chunk`/`assistant` roles, so the `error` card
-    # an AcpAuthRequired turn appends is invisible and the request would return
-    # HTTP 200 with empty content — an SDK client cannot tell that apart from a
-    # model that legitimately said nothing. Fail closed until this endpoint
-    # translates AcpAuthRequired into an OpenAI-shaped error.
-    blocked = await reject_if_kiro_unverified(request)
-    if blocked is not None:
-        return web.json_response(
-            {
-                "error": {
-                    "message": "Kiro CLI setup or sign-in is required before starting a session.",
-                    "type": "service_unavailable_error",
-                    "code": "kiro_prerequisite_required",
-                }
-            },
-            status=503,
-        )
     state: DashboardState = request.app["state"]
 
     try:
@@ -265,31 +251,66 @@ async def api_completions(request: web.Request) -> web.StreamResponse:
             {"error": {"message": "invalid id (slot name)", "type": "invalid_request_error"}},
             status=400,
         )
+    # App tokens get ONE uniform answer for the whole member-* space,
+    # BEFORE any existence check -- including the readiness gate's live-session
+    # peek below, which would otherwise answer 503 for a member slot holding a
+    # live kiro session and 404 for one that does not: an app can never own a member slot, so
+    # the reservation 409 for a missing key next to the ownership 404
+    # for an existing one would let an app enumerate member threads.
+    if (
+        slot_id
+        and request.get("app", "")
+        and _normalize_slot_key(slot_id).startswith(members_mod.DM_SLOT_KEY_PREFIX)
+    ):
+        sel().log_api_access(
+            caller=request.get("app", ""),
+            operation="openai_compat.chat",
+            outcome="denied",
+            source="app_isolation",
+            resources=f"slot={slot_id}",
+            error="app cannot access member slots",
+        )
+        return web.json_response(
+            {
+                "error": {"message": "not found", "type": "invalid_request_error"},
+                "code": "not_found",
+            },
+            status=404,
+        )
+    # Unlike the dashboard, this endpoint has no transcript the caller reads: the
+    # collectors below pick up only `chunk`/`assistant` roles, so the `error` card
+    # an AcpAuthRequired turn appends is invisible and the request would return
+    # HTTP 200 with empty content — an SDK client cannot tell that apart from a
+    # model that legitimately said nothing. Fail closed until this endpoint
+    # translates AcpAuthRequired into an OpenAI-shaped error.
+    #
+    # Gated here, once the slot is known, rather than before the body is read:
+    # an `id` naming a slot with a LIVE session continues that session, which
+    # keeps the harness it started on across a PATCH of agent.acp_backend
+    # (the same rule regenerate applies), so the configured default is the wrong
+    # backend to gate on for it. A missing or not-yet-live slot gets a fresh
+    # session on the configured default, which is what a `None` verdict reads.
+    live_slot = state._slots.get(_normalize_slot_key(slot_id)) if slot_id else None
+    live_verdict = (
+        live_session_signs_in_via_kiro_cli(state, effective_session_key(live_slot))
+        if live_slot is not None
+        else None
+    )
+    blocked = await reject_if_kiro_unverified(request, signs_in_via_kiro_cli=live_verdict)
+    if blocked is not None:
+        return web.json_response(
+            {
+                "error": {
+                    "message": "Kiro CLI setup or sign-in is required before starting a session.",
+                    "type": "service_unavailable_error",
+                    "code": "kiro_prerequisite_required",
+                }
+            },
+            status=503,
+        )
     completion_id = _make_id()
 
     if slot_id:
-        # App tokens get ONE uniform answer for the whole member-* space,
-        # BEFORE any existence check: an app can never own a member slot, so
-        # the reservation 409 for a missing key next to the ownership 404
-        # for an existing one would let an app enumerate member threads.
-        if request.get("app", "") and _normalize_slot_key(slot_id).startswith(
-            members_mod.DM_SLOT_KEY_PREFIX
-        ):
-            sel().log_api_access(
-                caller=request.get("app", ""),
-                operation="openai_compat.chat",
-                outcome="denied",
-                source="app_isolation",
-                resources=f"slot={slot_id}",
-                error="app cannot access member slots",
-            )
-            return web.json_response(
-                {
-                    "error": {"message": "not found", "type": "invalid_request_error"},
-                    "code": "not_found",
-                },
-                status=404,
-            )
         # Membership must be checked on the canonical (filename-charset) key —
         # get_or_create_slot folds unsafe chars, so a raw slot_id may map to an
         # existing slot even when the raw string is absent from _slots.

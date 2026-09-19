@@ -17,15 +17,25 @@ latched value can be arbitrarily stale. That splits the callers in two:
   history by the time the turn fails. See
   ``docs/system-specs/modules/acp-client.md`` § "Poll-driven spawn sites are
   readiness-gated".
+
+Both halves describe a KIRO-CLI sign-in, so both apply only while the selected
+harness authenticates through kiro-cli's identity store
+(:func:`backend_signs_in_via_kiro_cli` over :func:`selected_backend`). On a
+deployment whose
+``agent.acp_backend`` is claude-agent-acp or codex-acp the latch describes a
+binary the sessions never spawn: refusing on it locked every gated endpoint
+behind a kiro-cli sign-in the operator had deliberately stopped needing.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 
 from aiohttp import web
 
+from kiro_crew.acp_backends import backends_retired_by_host_logout
 from kiro_crew.kiro_prerequisite import KiroPrerequisiteService
 
 logger = logging.getLogger(__name__)
@@ -61,6 +71,92 @@ _clock = time.monotonic
 # Small enough that an external logout cannot linger behind this gate, large
 # enough that a burst of callers collapses onto one probe.
 _VERIFY_MAX_AGE_SECS = 30.0
+
+
+async def selected_backend() -> str | None:
+    """The configured ``agent.acp_backend``, or ``None`` when config is unreadable.
+
+    Reads the SAME field the provider factory builds a session from (already
+    normalized by ``resolve_selected_backend``), off the loop because
+    ``KiroCrewConfig.load`` stats -- and on a cache miss re-reads --
+    ``config.json``. The import is deferred: this module is imported by every
+    gated handler, and ``kiro_crew.config`` is heavier than anything else it
+    needs.
+
+    Read ONCE per request and passed along. A handler that reads the backend for
+    its own branch and then lets the gate read it again has two snapshots, and a
+    ``PATCH agent.acp_backend`` landing between them lets the kiro-cli branch
+    proceed on the first while the gate stands aside on the second -- one
+    unauthenticated spawn, which is exactly the browser-opening event the gate
+    exists to prevent.
+    """
+
+    from kiro_crew.config import KiroCrewConfig
+
+    try:
+        cfg = await asyncio.to_thread(KiroCrewConfig.load)
+    except Exception:
+        logger.warning(
+            "Could not read agent.acp_backend; keeping the kiro-cli readiness gate",
+            exc_info=True,
+        )
+        return None
+    backend = getattr(getattr(cfg, "agent", None), "acp_backend", "")
+    return backend if isinstance(backend, str) else None
+
+
+def backend_signs_in_via_kiro_cli(backend: str | None) -> bool:
+    """Whether *backend* authenticates through kiro-cli's identity store.
+
+    Answered as POSITIVE membership in ``backends_retired_by_host_logout()``
+    (harness-parity H5/H6): kiro-cli and KAS resolve every access token from that
+    store, so a kiro-cli sign-in verdict is a verdict about their sessions. A
+    harness outside the set (claude-agent-acp, codex-acp) signs in some other way,
+    and the readiness probe -- ``kiro-cli --version`` then ``whoami`` -- says
+    nothing about whether its sessions can run.
+
+    ``None`` (unknown: config unreadable, or a provider that is not an ACP
+    harness) answers ``True``, failing CLOSED toward the gate: the kiro-cli latch
+    keeps governing exactly as it did before this question existed. Guessing
+    "foreign harness" on a broken config would un-gate the browser-opening spawn
+    on the one host where nothing else can be trusted either.
+    """
+
+    if backend is None:
+        return True
+    return backend in backends_retired_by_host_logout()
+
+
+def live_session_signs_in_via_kiro_cli(state: object, session_key: str) -> bool | None:
+    """Whether a LIVE session on *session_key* signs in through kiro-cli, or ``None``.
+
+    A live session keeps the backend it was started on: ``PATCH
+    agent.acp_backend`` refreshes the defaults new sessions are built with and
+    deliberately retires nothing in flight (``handlers/core.py``). So for a
+    caller that CONTINUES an existing session -- regenerate does, it neither
+    discards nor rebuilds -- the configured default is the wrong thing to gate
+    on after a switch: the turn will run on the old harness, and if that is a
+    signed-out kiro-cli the history is rewritten before the auth failure lands.
+
+    The answer is the provider's OWN declaration, ``uses_kiro_identity_store``
+    (harness-parity H14) -- the same membership the gate derives for a
+    configured backend through :func:`backend_signs_in_via_kiro_cli`, read from
+    the one place the session layer already reads it, so the id is never
+    re-derived here. Peeks only, never creates: ``state.sessions._sessions`` is
+    read the way ``chat_runner`` reads it for ``/compact``. Anything that is not
+    a live session carrying a ``bool`` declaration answers ``None`` -- a mocked
+    manager, a key with no session, a provider that declares nothing -- and the
+    caller then falls back to the configured backend, which is what a fresh
+    session would get.
+    """
+
+    sessions = getattr(getattr(state, "sessions", None), "_sessions", None)
+    if not isinstance(sessions, dict):
+        return None
+    declared = getattr(
+        getattr(sessions.get(session_key), "provider", None), "uses_kiro_identity_store", None
+    )
+    return declared if isinstance(declared, bool) else None
 
 
 async def kiro_session_ready(service: object) -> bool:
@@ -215,7 +311,12 @@ def _service(request: web.Request) -> object:
     return service
 
 
-async def reject_if_kiro_unverified(request: web.Request) -> web.Response | None:
+async def reject_if_kiro_unverified(
+    request: web.Request,
+    *,
+    backend: str | None = None,
+    signs_in_via_kiro_cli: bool | None = None,
+) -> web.Response | None:
     """Return 503 for the endpoints that must fail closed on a stale latch.
 
     Two classes qualify, both because the ACP attempt cannot be their authority:
@@ -245,10 +346,41 @@ async def reject_if_kiro_unverified(request: web.Request) -> web.Response | None
     :func:`kiro_verified_ready` — a stale ``ready=True`` is as dangerous as a
     stale ``ready=False`` here (it authorizes the history rewrite or the
     browser-opening spawn), and only these paths pay for the re-probe.
+
+    The latch governs ONLY a harness that signs in through kiro-cli
+    (:func:`backend_signs_in_via_kiro_cli`). *backend* is the harness the caller
+    is about to act on: a caller that already read the configured backend for
+    its own branch passes that same snapshot so one request cannot authorize a
+    spawn on two different configurations, and a caller that continues a live
+    session passes that session's own verdict as *signs_in_via_kiro_cli*
+    (:func:`live_session_signs_in_via_kiro_cli`), which survives a hot switch of
+    the default and outranks *backend*. Left ``None``, the configured backend
+    is read here. For a backend outside the identity-store set this returns
+    ``None`` without consulting the service: the destructive
+    reruns and ``/v1/chat/completions`` then start their turn on that harness,
+    whose own ACP attempt is the authority for its sign-in, exactly as it is for
+    an ordinary send. That leaves the ``/v1/chat/completions`` empty-200 case
+    (an ``AcpAuthRequired`` card its collectors cannot see) open on those
+    harnesses, which is the pre-existing gap the 503 papered over for kiro-cli
+    alone — a permanent 503 on a working Claude Code install was the larger
+    defect. The poll-driven spawn sites do NOT rely on this ``None``: they test
+    the membership themselves and never resolve kiro-cli for a foreign harness,
+    because the binary may still be installed and signed out on that host and the
+    browser storm is what the spawn does, whatever the selected backend.
     """
 
-    if await kiro_verified_ready(_service(request)):
-        _clear_refusal_warning()
-        return None
-    _warn_refused_once(_log_safe_path(request))
-    return web.json_response(_KIRO_NOT_READY_RESPONSE, status=503)
+    if signs_in_via_kiro_cli is None:
+        if backend is None:
+            backend = await selected_backend()
+        signs_in_via_kiro_cli = backend_signs_in_via_kiro_cli(backend)
+    if signs_in_via_kiro_cli:
+        if await kiro_verified_ready(_service(request)):
+            _clear_refusal_warning()
+            return None
+        _warn_refused_once(_log_safe_path(request))
+        return web.json_response(_KIRO_NOT_READY_RESPONSE, status=503)
+    logger.debug(
+        "%s: kiro-cli readiness gate not applicable to the selected backend",
+        _log_safe_path(request),
+    )
+    return None
