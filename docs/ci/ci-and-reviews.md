@@ -395,6 +395,15 @@ Where the coverage went:
 `test/test_macos_platform_tests_gate.py` pins all of it, including the property that
 nothing on the `pull_request` path may instantiate a macOS runner.
 
+The native contracts in `test/test_darwin_native_provider_reap.py` and their
+`session_pid`, `session_lifecycle`, `session_cleanup`, and `session_pool` callers
+are explicit on-demand paths. They exercise real Darwin process identities,
+zombie-root reaping, reaped-root group recovery, escaped descendants, and three
+rounds each of idle expiry, pool-health TTL and claim-time TTL cleanup. Only the
+provider protocol and clock are simulated; every process belongs to the test,
+and fixture cleanup is independent of the production reaper. These are native
+regression tests, not a live-gateway soak or a before/after memory measurement.
+
 Details worth knowing:
 
 - **CodeBuild-hosted runner (pilot).** `cfn-lint` is the first job whose
